@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +20,8 @@ from app.llm import prompts
 
 @pytest.fixture(autouse=True)
 def _clear_prompt_state(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("MAVRIS_DEV", raising=False)
+    monkeypatch.delenv("MARVIS_DEV", raising=False)
     monkeypatch.delenv("MARVIS_PROMPT_HOT_RELOAD", raising=False)
     monkeypatch.delenv("MAVRIS_PROMPT_HOT_RELOAD", raising=False)
     monkeypatch.delenv("MARVIS_ENV", raising=False)
@@ -47,38 +48,33 @@ def test_development_prompt_hot_reload(monkeypatch: pytest.MonkeyPatch, tmp_path
     prompt = prompt_dir / "dynamic.md"
     prompt.write_text("first", encoding="utf-8")
     monkeypatch.setattr(prompts, "PROMPT_DIR", prompt_dir)
+    monkeypatch.setenv("MAVRIS_DEV", "1")
 
     assert prompts.load_prompt("dynamic.md") == "first"
 
-    time.sleep(0.01)
+    first_mtime = prompt.stat().st_mtime
     prompt.write_text("second", encoding="utf-8")
+    os.utime(prompt, (first_mtime + 2, first_mtime + 2))
 
     assert prompts.load_prompt("dynamic.md") == "second"
 
 
-def test_prompt_watcher_invalidates_cached_prompt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_invalidate_prompt_cache_forces_reload(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     prompt_dir = tmp_path / "prompts"
     prompt_dir.mkdir()
     prompt = prompt_dir / "watched.md"
     prompt.write_text("first", encoding="utf-8")
     monkeypatch.setattr(prompts, "PROMPT_DIR", prompt_dir)
 
-    prompt_path = prompts.prompt_path("watched.md")
-    assert prompts._load_prompt_text(prompt_path) == "first"
+    assert prompts.load_prompt("watched.md") == "first"
 
     prompt.write_text("second", encoding="utf-8")
-    stat = prompt.stat()
-    prompts._CACHE[prompt_path] = prompts._CachedPrompt(
-        content="first",
-        mtime_ns=stat.st_mtime_ns,
-        size=stat.st_size,
-    )
 
-    assert prompts._load_prompt_text(prompt_path) == "first"
+    assert prompts.load_prompt("watched.md") == "first"
 
     prompts.invalidate_prompt_cache(prompt)
 
-    assert prompt_path not in prompts._CACHE
+    assert "watched.md" not in prompts._CACHE
     assert prompts.load_prompt("watched.md") == "second"
 
 
@@ -92,8 +88,9 @@ def test_production_prompt_cache_can_skip_reload(monkeypatch: pytest.MonkeyPatch
 
     assert prompts.load_prompt("cached.md") == "first"
 
-    time.sleep(0.01)
+    first_mtime = prompt.stat().st_mtime
     prompt.write_text("second", encoding="utf-8")
+    os.utime(prompt, (first_mtime + 2, first_mtime + 2))
 
     assert prompts.load_prompt("cached.md") == "first"
 

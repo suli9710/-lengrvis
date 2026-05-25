@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -24,6 +25,7 @@ from app.api import (
     routes_system,
     routes_tasks,
 )
+from app.config import AppSettings
 from app.core import db
 from app.core.audit import record
 from app.core.errors import AppError
@@ -34,6 +36,15 @@ from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_mobile_
 from app.services.scheduler_service import get_scheduler
 from app.tools.registry import register_all_tools
 from app.indexer.file_watcher import get_file_watcher
+
+
+def _dev_api_enabled(settings: AppSettings) -> bool:
+    return (settings.mode or "").lower() == "dev" or str(os.getenv("MAVRIS_DEV") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 @asynccontextmanager
@@ -61,6 +72,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     db.init_db()
+    settings = get_effective_settings()
     app = FastAPI(title="Marvis Agent EXE Backend", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
@@ -108,6 +120,10 @@ def create_app() -> FastAPI:
         routes_skills.router,
     ]:
         app.include_router(router, prefix="/api")
+    if _dev_api_enabled(settings):
+        from app.api.routes_prompts import router as prompts_router
+
+        app.include_router(prompts_router, prefix="/api")
     app.include_router(routes_chat.ws_router)
     app.include_router(routes_chat.ws_router, prefix="/api")
     app.include_router(routes_mobile.ws_router)
