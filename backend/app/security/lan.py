@@ -26,4 +26,11 @@ def allow_lan_desktop_api() -> bool:
 
 
 def is_mobile_lan_http_path(path: str) -> bool:
-    return path in {"/health", "/api/health", "/api/pair"} or path.startswith("/api/mobile/")
+    return (
+        path in {"/health", "/api/health", "/api/pair", "/api/pair/request", "/api/pair/confirm"}
+        or path.startswith("/api/mobile/")
+        or path.startswith("/ws/mobile/")
+        or path.startswith("/api/ws/mobile/")
+        or path.startswith("/ws/remote/")
+        or path.startswith("/api/ws/remote/")
+    )

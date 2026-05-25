@@ -2451,6 +2451,12 @@ button:disabled {
   font-size: 13px;
 }
 
+.mobile-pairing__visual {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
 .mobile-pairing__code {
   min-width: 104px;
   padding: 8px 10px;
@@ -2463,6 +2469,28 @@ button:disabled {
   letter-spacing: 0;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+.mobile-pairing__matrix {
+  display: grid;
+  grid-template-columns: repeat(6, 8px);
+  grid-template-rows: repeat(6, 8px);
+  gap: 3px;
+  padding: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.mobile-pairing__cell {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--line-soft);
+}
+
+.mobile-pairing__cell--active {
+  background: var(--brand);
 }
 
 .mobile-pairing__error {
@@ -3091,6 +3119,15 @@ button:disabled {
   .toggle-list,
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .mobile-pairing {
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+  }
+
+  .mobile-pairing__visual {
+    justify-items: start;
   }
 
   .detail-grid > .panel:nth-child(3),

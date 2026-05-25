@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = PROJECT_ROOT / "backend"
 DEFAULT_DATA_DIR = PROJECT_ROOT / ".marvis_data"
 CONFIG_PARENT_SEARCH_DEPTH = 5
+DEFAULT_JWT_SECRET = secrets.token_hex(32)
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -114,6 +116,7 @@ class AppSettings:
     allow_cloud_context: bool = False
     allow_file_content_upload: bool = False
     allow_browser_network: bool = False
+    remote_desktop_enabled: bool = False
     app_allowlist: list[str] = field(default_factory=list)
     browser_max_page_bytes: int = 250000
     document_max_chars_to_llm: int = 30000
@@ -124,6 +127,7 @@ class AppSettings:
     mcp_servers: list[dict] = field(default_factory=list)
     allow_mock_fallback: bool = True
     strict_state_machine: bool = False
+    jwt_secret: str = field(default_factory=lambda: DEFAULT_JWT_SECRET)
 
     @classmethod
     def from_sources(cls) -> "AppSettings":
@@ -226,6 +230,7 @@ class AppSettings:
             allow_cloud_context=flag("MARVIS_ALLOW_CLOUD_CONTEXT", "allow_cloud_context", False),
             allow_file_content_upload=flag("MARVIS_ALLOW_FILE_CONTENT_UPLOAD", "allow_file_content_upload", False),
             allow_browser_network=flag("MARVIS_ALLOW_BROWSER_NETWORK", "allow_browser_network", False),
+            remote_desktop_enabled=flag("MARVIS_REMOTE_DESKTOP_ENABLED", "remote_desktop_enabled", False),
             app_allowlist=app_allowlist_items,
             browser_max_page_bytes=int(value("MARVIS_BROWSER_MAX_PAGE_BYTES", "browser_max_page_bytes", 250000)),
             document_max_chars_to_llm=int(value("MARVIS_DOCUMENT_MAX_CHARS_TO_LLM", "document_max_chars_to_llm", 30000)),
@@ -238,11 +243,15 @@ class AppSettings:
             mcp_servers=_normalize_mcp_servers(value("MARVIS_MCP_SERVERS", "mcp_servers", [])),
             allow_mock_fallback=flag("MARVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", True),
             strict_state_machine=flag("MARVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
+            jwt_secret=str(
+                value_any(("MARVIS_JWT_SECRET", "MAVRIS_JWT_SECRET"), "jwt_secret", DEFAULT_JWT_SECRET)
+            ),
         )
 
     def public_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["api_key"] = "***" if self.api_key else ""
+        data["jwt_secret"] = "***" if self.jwt_secret else ""
         return data
 
     def merged(self, overrides: dict[str, Any] | None) -> "AppSettings":

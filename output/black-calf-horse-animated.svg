@@ -1,0 +1,199 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 137 147" role="img" aria-labelledby="title desc">
+  <title id="title">Running animated black calf-horse mascot</title>
+  <desc id="desc">An animated running black calf-horse mascot matching the reference pose, with a forward lean, stretched front leg, folded rear leg, yellow scarf, raised tail and grey platform.</desc>
+  <style>
+    :root {
+      --black: #050505;
+      --cream: #f3f3f2;
+      --eye: #f7f7f5;
+      --yellow: #ffd21a;
+      --platform: #d8dbd8;
+      --platform-top: #eef0ed;
+      --platform-edge: #c8ccc8;
+    }
+
+    rect {
+      fill: var(--cream);
+    }
+
+    #mascot {
+      transform-origin: 65px 72px;
+      animation: runBody 0.5s ease-in-out infinite;
+    }
+
+    #head {
+      transform-origin: 46px 42px;
+      animation: headDrive 0.5s ease-in-out infinite;
+    }
+
+    #body {
+      transform-origin: 90px 72px;
+      animation: bodyDrive 0.5s ease-in-out infinite;
+    }
+
+    #scarf-main {
+      transform-origin: 43px 66px;
+      animation: scarfStream 0.5s ease-in-out infinite;
+    }
+
+    #scarf-flap {
+      transform-origin: 46px 79px;
+      animation: scarfKick 0.5s ease-in-out infinite;
+    }
+
+    #front-leg-long {
+      transform-origin: 45px 79px;
+      animation: frontLong 0.5s ease-in-out infinite;
+    }
+
+    #front-leg-short {
+      transform-origin: 64px 98px;
+      animation: frontShort 0.5s ease-in-out infinite;
+    }
+
+    #rear-leg-folded {
+      transform-origin: 103px 103px;
+      animation: rearFolded 0.5s ease-in-out infinite;
+    }
+
+    #rear-leg-back {
+      transform-origin: 116px 96px;
+      animation: rearBack 0.5s ease-in-out infinite;
+    }
+
+    #tail {
+      transform-origin: 126px 88px;
+      animation: tailDrive 0.5s ease-in-out infinite;
+    }
+
+    #eyes {
+      transform-origin: 70px 40px;
+      animation: blink 3.4s linear infinite;
+    }
+
+    @keyframes runBody {
+      0%, 100% { transform: translate(5px, 14px) scale(0.76) rotate(-5deg); }
+      50% { transform: translate(7px, 7px) scale(0.76) rotate(-9deg); }
+    }
+
+    @keyframes headDrive {
+      0%, 100% { transform: rotate(0deg) translateX(0); }
+      50% { transform: rotate(-5deg) translateX(-1px); }
+    }
+
+    @keyframes bodyDrive {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(4deg) translateY(-1px); }
+    }
+
+    @keyframes scarfStream {
+      0%, 100% { transform: rotate(0deg) translateX(0); }
+      50% { transform: rotate(-6deg) translateX(-3px); }
+    }
+
+    @keyframes scarfKick {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(16deg) translateY(1px); }
+    }
+
+    @keyframes frontLong {
+      0%, 100% { transform: rotate(0deg) translate(0, 0); }
+      50% { transform: rotate(18deg) translate(-1px, -3px); }
+    }
+
+    @keyframes frontShort {
+      0%, 100% { transform: rotate(0deg) translate(0, 0); }
+      50% { transform: rotate(-20deg) translate(1px, 2px); }
+    }
+
+    @keyframes rearFolded {
+      0%, 100% { transform: rotate(0deg) translate(0, 0); }
+      50% { transform: rotate(-17deg) translate(1px, 2px); }
+    }
+
+    @keyframes rearBack {
+      0%, 100% { transform: rotate(0deg) translate(0, 0); }
+      50% { transform: rotate(19deg) translate(2px, -3px); }
+    }
+
+    @keyframes tailDrive {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(-16deg) translateX(1px); }
+    }
+
+    @keyframes blink {
+      0%, 91%, 100% { transform: scaleY(1); }
+      94%, 96% { transform: scaleY(0.08); }
+    }
+  </style>
+
+  <rect width="137" height="147"/>
+
+  <g id="platform">
+    <path d="M13 110 H121 L128 116 V130 H4 V116 Z" fill="var(--platform)"/>
+    <path d="M17 104 H114 L121 110 H13 Z" fill="var(--platform-top)"/>
+    <path d="M4 130 H128 V135 H4 Z" fill="var(--platform-edge)"/>
+    <path d="M0 137 H18 C19.5 137 20.5 139 19 140.5 L14 145 H0 Z" fill="#d1d4d1"/>
+    <path d="M102 137 H137 V145 H108 C104 145 101.5 142 102 137 Z" fill="#d1d4d1"/>
+    <path d="M17 104 H114" fill="none" stroke="#bfc3bf" stroke-width="1.2"/>
+  </g>
+
+  <g id="mascot" transform="translate(5 14) scale(0.76) rotate(-5 60 60)">
+    <g id="tail">
+      <path d="M124 86 C137 81 147 72 152 59 C155 52 163 52 166 58 C160 74 148 88 131 97 Z" fill="var(--black)"/>
+    </g>
+
+    <g id="body">
+      <path
+        d="M43 39
+           C54 29 69 25 86 29
+           C99 32 110 39 119 49
+           L126 40 L126 55 L136 50 L132 64 L145 64 L134 74 L148 78 L133 82
+           C132 95 123 105 107 110
+           C88 116 65 110 52 96
+           C42 85 39 70 43 55 Z"
+        fill="var(--black)"/>
+    </g>
+
+    <g id="head">
+      <path d="M31 18 L18 6 C32 7 42 13 48 27 C41 23 36 20 31 18 Z" fill="var(--black)"/>
+      <path d="M26 25 L6 36 L11 52 L38 51 L46 37 L37 21 Z" fill="var(--black)"/>
+      <g id="eyes">
+        <ellipse cx="62" cy="39" rx="5.2" ry="7.4" fill="var(--eye)" transform="rotate(5 62 39)"/>
+        <ellipse cx="76" cy="39" rx="5.1" ry="7.2" fill="var(--eye)" transform="rotate(-7 76 39)"/>
+        <ellipse cx="63" cy="41" rx="1.7" ry="2.7" fill="var(--black)"/>
+        <ellipse cx="75" cy="41" rx="1.7" ry="2.7" fill="var(--black)"/>
+      </g>
+    </g>
+
+    <g id="front-leg-long">
+      <path d="M42 78 L60 98 L42 127 L24 127 L40 102 L18 89 Z" fill="var(--black)"/>
+    </g>
+    <g id="front-leg-short">
+      <path d="M63 97 L76 113 L65 139 L48 139 L56 118 L40 106 Z" fill="var(--black)"/>
+    </g>
+    <g id="rear-leg-folded">
+      <path d="M98 101 L113 90 L125 101 L113 118 L95 118 L106 103 Z" fill="var(--black)"/>
+    </g>
+    <g id="rear-leg-back">
+      <path d="M113 92 L135 104 L130 123 L147 123 L154 95 L128 78 Z" fill="var(--black)"/>
+    </g>
+
+    <g id="scarf-main">
+      <path
+        d="M40 54
+           C60 49 83 46 122 46
+           C126 52 126 59 121 66
+           C87 68 62 72 44 78 Z"
+        fill="var(--yellow)"/>
+    </g>
+    <g id="scarf-flap">
+      <path
+        d="M44 78
+           C52 75 61 73 72 72
+           L69 91
+           C58 89 50 85 44 78 Z"
+        fill="var(--yellow)"/>
+    </g>
+  </g>
+</svg>
