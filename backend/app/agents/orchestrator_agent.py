@@ -535,7 +535,7 @@ class OrchestratorAgent:
             return task
 
         tool = self.registry.get(step.tool_name)
-        action = await self._consult_subagent(task, step, observation=None)
+        action = None if approval.approval_type == "remote_input" else await self._consult_subagent(task, step, observation=None)
         if action and action.kind == "done":
             step.status = StepStatus.SKIPPED
             self._persist_plan_update(plan, "Approved step skipped after subagent marked it done.")

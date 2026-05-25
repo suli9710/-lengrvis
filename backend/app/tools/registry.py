@@ -35,12 +35,13 @@ def register_all_tools(
     skill_directories: Iterable[str] | None = None,
     load_skills: bool = True,
 ) -> ToolRegistry:
-    from app.tools import app_excel, app_tools, browser_tools, cluster_tools, document_tools, file_tools, search_tools, system_tools, vision_tools
+    from app.tools import app_excel, app_tools, browser_tools, cluster_tools, document_tools, file_tools, remote_tools, search_tools, system_tools, vision_tools
 
     registry._tools.clear()
     file_tools.register(registry)
     document_tools.register(registry)
     system_tools.register(registry)
+    remote_tools.register(registry)
     app_tools.register(registry)
     app_excel.register(registry)
     browser_tools.register(registry)

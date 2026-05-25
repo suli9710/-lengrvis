@@ -333,6 +333,7 @@ export interface AppSettings {
   theme: "system" | "light" | "dark";
   workspaceRoot: string;
   allowBrowserNetwork: boolean;
+  remoteDesktopEnabled: boolean;
   appAllowlist: string[];
   browserMaxPageBytes: number;
   browserScreenshotDir: string;

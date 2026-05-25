@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useState } from "react";
 
 import type { AppSettings, BackendStatus, LocalLLMHealth, McpServerConfig } from "../../shared/types";
-import type { MavrisApiClient, MobilePairingCode } from "../lib/apiClient";
+import type { MavrisApiClient, MobileDevice, MobilePairingCode } from "../lib/apiClient";
 import { zhBackendState } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 
@@ -37,6 +37,7 @@ export function SettingsPanel({
   const [pairing, setPairing] = useState<MobilePairingCode | null>(null);
   const [pairingError, setPairingError] = useState("");
   const [isPairing, setIsPairing] = useState(false);
+  const [pairedDevices, setPairedDevices] = useState<MobileDevice[]>([]);
 
   useEffect(() => {
     setDraft(settings);
@@ -54,11 +55,23 @@ export function SettingsPanel({
     const response = await api.createMobilePairingCode();
     if (response.ok && response.data) {
       setPairing(response.data);
+      void refreshPairedDevices();
     } else {
       setPairingError(response.error?.message ?? "Unable to create pairing code");
     }
     setIsPairing(false);
   };
+
+  const refreshPairedDevices = useCallback(async () => {
+    const response = await api.listMobileDevices();
+    if (response.ok && response.data) {
+      setPairedDevices(response.data.devices);
+    }
+  }, [api]);
+
+  useEffect(() => {
+    void refreshPairedDevices();
+  }, [refreshPairedDevices]);
 
   return (
     <Panel
@@ -209,6 +222,16 @@ export function SettingsPanel({
           <label>
             <input
               type="checkbox"
+              checked={draft.remoteDesktopEnabled}
+              onChange={(event) =>
+                setDraft((current) => ({ ...current, remoteDesktopEnabled: event.target.checked }))
+              }
+            />
+            <span>手机远程桌面控制</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
               checked={draft.allowCloudContext}
               onChange={(event) =>
                 setDraft((current) => ({ ...current, allowCloudContext: event.target.checked }))
@@ -286,22 +309,46 @@ export function SettingsPanel({
       </div>
       <div className="mobile-pairing">
         <div className="mobile-pairing__copy">
-          <strong>Android remote approval</strong>
-          <span>Use this one-time code in the mobile companion on the same LAN.</span>
+          <strong>手机配对</strong>
+          <span>在 Android 伴侣 App 输入同一局域网的服务器地址和一次性配对码。</span>
           {pairing ? (
             <small>
-              Server: http://{pairing.server.host}:{pairing.server.port} · expires {new Date(pairing.expires_at).toLocaleTimeString()}
+              服务器：http://{pairing.server.host}:{pairing.server.port} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
             </small>
           ) : null}
+          {pairedDevices.length ? (
+            <small>已配对：{pairedDevices.map((device) => device.device_name || device.device_id).join("、")}</small>
+          ) : (
+            <small>暂无已配对设备</small>
+          )}
           {pairingError ? <small className="mobile-pairing__error">{pairingError}</small> : null}
         </div>
-        <div className="mobile-pairing__code">{pairing?.code ?? "------"}</div>
+        <PairingVisualCode code={pairing?.code} />
         <button className="button button--secondary" onClick={() => void createPairingCode()} disabled={isPairing} type="button">
           {isPairing ? <Loader2 size={16} aria-hidden="true" style={{ animation: "dot-spin 1s linear infinite" }} /> : <KeyRound size={16} aria-hidden="true" />}
-          Pair
+          生成配对码
         </button>
       </div>
     </Panel>
+  );
+}
+
+function PairingVisualCode({ code }: { code?: string }) {
+  const normalized = code ?? "------";
+  const bits = Array.from({ length: 36 }, (_, index) => {
+    const charCode = normalized.charCodeAt(index % normalized.length) || 45;
+    return (charCode + index * 7) % 3 !== 0;
+  });
+
+  return (
+    <div className="mobile-pairing__visual" aria-label={code ? `配对码 ${code}` : "尚未生成配对码"}>
+      <div className="mobile-pairing__code">{normalized}</div>
+      <div className="mobile-pairing__matrix" aria-hidden="true">
+        {bits.map((active, index) => (
+          <span key={index} className={active ? "mobile-pairing__cell mobile-pairing__cell--active" : "mobile-pairing__cell"} />
+        ))}
+      </div>
+    </div>
   );
 }
 

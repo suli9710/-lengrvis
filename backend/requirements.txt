@@ -1,6 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.8
+PyJWT>=2.10
 httpx>=0.27
 PyYAML>=6.0
 psutil>=6.0
@@ -18,6 +19,9 @@ croniter>=2.0
 numpy>=1.26
 pywin32>=306; platform_system=="Windows"
 watchdog>=4.0
+
+# Optional: remote desktop input injection fallback (ctypes handles basic Windows clicks)
+# pyautogui>=0.9.54; platform_system=="Windows"
 
 # Optional: NPU/GPU acceleration
 # onnxruntime-directml>=1.18; sys_platform == 'win32'

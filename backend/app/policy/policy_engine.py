@@ -245,6 +245,10 @@ class PolicyEngine:
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if tool_name in {"file.trash", "app.uninstall_app", "browser.submit_form"}:
             return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+        if tool_name in {"remote.click", "remote.type_text", "remote.key_press"}:
+            return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+        if tool_name == "remote.view_screen":
+            return RiskLevel.R1_OPEN_ONLY
         if tool_name in {
             "file.copy",
             "file.move",

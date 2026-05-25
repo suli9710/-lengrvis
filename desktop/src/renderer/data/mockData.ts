@@ -197,6 +197,7 @@ export const sampleSettings: AppSettings = {
   theme: "system",
   workspaceRoot: "C:\\Users\\Suli\\Desktop\\mavris",
   allowBrowserNetwork: false,
+  remoteDesktopEnabled: false,
   appAllowlist: ["notepad", "calculator", "calc"],
   browserMaxPageBytes: 250000,
   browserScreenshotDir: "C:\\Users\\Suli\\Desktop\\mavris\\.marvis_data\\browser_screenshots",
