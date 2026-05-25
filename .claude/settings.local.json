@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --prefix desktop run typecheck)",
+      "Bash(npm --prefix desktop run build)",
+      "Bash(node -e \"const p = require\\('playwright'\\); console.log\\('chromium=', !!p.chromium, 'firefox=', !!p.firefox\\);\")",
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\desktop\\\\dist\\\\renderer\" -Recurse | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize; \"---portable renderer---\"; Get-ChildItem \"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\dist\\\\Mavris-win-portable\\\\resources\\\\app\\\\dist\\\\renderer\" -Recurse | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize; \"---portable backend---\"; Get-ChildItem \"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\dist\\\\Mavris-win-portable\\\\resources\\\\backend\" | Select-Object Name, LastWriteTime, Length | Format-Table -AutoSize)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Copy-Item *)",
+      "Bash(python -m pytest backend/tests/test_mode_routing.py -x --tb=short)",
+      "Bash(python -m pytest backend/tests/ --tb=short)",
+      "Bash(python -m pytest backend/tests/test_vision_tools.py backend/tests/test_file_tools_index_system_api.py --tb=short)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"exit=$?\")",
+      "WebSearch",
+      "Bash(python -m pytest backend/tests/test_notification_service.py backend/tests/test_file_watcher.py backend/tests/test_ollama_service.py backend/tests/test_clustering.py -v --no-header)",
+      "Bash(python -m pytest backend/tests/ -v --no-header)"
+    ]
+  }
+}

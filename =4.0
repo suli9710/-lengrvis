@@ -1,0 +1,8 @@
+Collecting watchdog
+  Downloading watchdog-6.0.0-py3-none-win_amd64.whl.metadata (44 kB)
+Downloading watchdog-6.0.0-py3-none-win_amd64.whl (79 kB)
+Installing collected packages: watchdog
+Successfully installed watchdog-6.0.0
+
+[notice] A new release of pip is available: 25.0.1 -> 26.1.1
+[notice] To update, run: python.exe -m pip install --upgrade pip

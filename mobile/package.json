@@ -1,0 +1,24 @@
+{
+  "name": "mavris-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^3.1.0",
+    "expo": "^56.0.4",
+    "expo-device": "^56.0.4",
+    "expo-notifications": "^56.0.13",
+    "lucide-react-native": "^1.16.0",
+    "react": "^19.2.6",
+    "react-native": "^0.85.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.15",
+    "typescript": "^6.0.3"
+  }
+}

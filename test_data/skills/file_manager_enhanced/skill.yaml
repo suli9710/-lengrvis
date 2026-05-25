@@ -1,0 +1,116 @@
+name: file-manager-enhanced
+version: "1.0.0"
+agent_owner: FileAgent
+risk: R2_REVERSIBLE_MODIFY
+tools:
+  - name: skill.file_manager.batch_rename
+    description: Batch rename files in an authorized directory with glob matching and a template.
+    risk: R2_REVERSIBLE_MODIFY
+    supports_dry_run: true
+    requires_authorized_path: true
+    input_schema:
+      type: object
+      properties:
+        directory:
+          type: string
+        match_glob:
+          type: string
+        template:
+          type: string
+        start_index:
+          type: integer
+        dry_run:
+          type: boolean
+      required:
+        - directory
+        - template
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        renamed:
+          type: integer
+        plan:
+          type: array
+    execution:
+      type: python
+      entry: handlers/batch_rename.py
+      timeout_seconds: 15
+  - name: skill.file_manager.archive_by_rules
+    description: Move files into archive folders under an authorized destination according to ordered glob rules.
+    risk: R2_REVERSIBLE_MODIFY
+    supports_dry_run: true
+    requires_authorized_path: true
+    input_schema:
+      type: object
+      properties:
+        source_dir:
+          type: string
+        archive_dir:
+          type: string
+        rules:
+          type: array
+          items:
+            type: object
+        unmatched_destination:
+          type: string
+        dry_run:
+          type: boolean
+      required:
+        - source_dir
+        - archive_dir
+        - rules
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        moved:
+          type: integer
+        plan:
+          type: array
+    execution:
+      type: python
+      entry: handlers/archive_by_rules.py
+      timeout_seconds: 20
+  - name: skill.file_manager.zip_package
+    description: Create a zip package from authorized files or folders with include and exclude glob controls.
+    risk: R2_REVERSIBLE_MODIFY
+    supports_dry_run: true
+    requires_authorized_path: true
+    input_schema:
+      type: object
+      properties:
+        source_paths:
+          type: array
+          items:
+            type: string
+        output_zip:
+          type: string
+        include_globs:
+          type: array
+          items:
+            type: string
+        exclude_globs:
+          type: array
+          items:
+            type: string
+        dry_run:
+          type: boolean
+      required:
+        - source_paths
+        - output_zip
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        packaged:
+          type: integer
+        output_zip:
+          type: string
+    execution:
+      type: python
+      entry: handlers/zip_package.py
+      timeout_seconds: 30

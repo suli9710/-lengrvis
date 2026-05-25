@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Mavris Approval",
+    "slug": "mavris-approval",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "mavrisapproval",
+    "userInterfaceStyle": "light",
+    "android": {
+      "package": "com.mavris.approval",
+      "permissions": [
+        "POST_NOTIFICATIONS"
+      ],
+      "usesCleartextTraffic": true
+    },
+    "plugins": [
+      "expo-notifications"
+    ]
+  }
+}

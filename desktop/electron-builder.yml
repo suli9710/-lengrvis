@@ -1,0 +1,41 @@
+appId: com.mavris.desktop
+productName: Mavris
+copyright: Copyright (c) 2026 Mavris
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - package.json
+
+asar: true
+
+extraMetadata:
+  main: dist/main/main.js
+
+win:
+  target:
+    - nsis
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  extraResources:
+    - from: ../dist/backend.exe
+      to: backend/backend.exe
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  extraResources:
+    - from: ../dist/backend
+      to: backend/backend
+
+linux:
+  target:
+    - AppImage
+  category: Utility
+  artifactName: ${productName}-${version}-${arch}.${ext}
+  extraResources:
+    - from: ../dist/backend
+      to: backend/backend

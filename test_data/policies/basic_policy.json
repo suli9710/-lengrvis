@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "default": "deny",
+  "rules": [
+    {
+      "effect": "allow",
+      "subjects": ["user", "agent"],
+      "actions": ["files.read", "files.list", "index.query"],
+      "resources": ["workspace://*"]
+    },
+    {
+      "effect": "deny",
+      "subjects": ["*"],
+      "actions": ["shell.exec", "files.delete"],
+      "resources": ["*"]
+    }
+  ]
+}

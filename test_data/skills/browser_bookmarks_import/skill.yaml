@@ -1,0 +1,63 @@
+name: browser-bookmarks-import
+version: "1.0.0"
+agent_owner: BrowserAgent
+risk: R2_REVERSIBLE_MODIFY
+tools:
+  - name: skill.browser_bookmarks.discover
+    description: Read Chrome or Edge bookmark JSON files and return normalized bookmark records without writing memory.
+    risk: R0_READ_ONLY
+    supports_dry_run: true
+    input_schema:
+      type: object
+      properties:
+        paths:
+          type: array
+          items:
+            type: string
+        max_bookmarks:
+          type: integer
+        dry_run:
+          type: boolean
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        bookmarks:
+          type: array
+        count:
+          type: integer
+    execution:
+      type: python
+      entry: handlers/bookmarks.py
+      timeout_seconds: 10
+  - name: skill.browser_bookmarks.import_to_memory
+    description: Import Chrome or Edge bookmark JSON files into Mavris Memory as searchable bookmark facts.
+    risk: R2_REVERSIBLE_MODIFY
+    supports_dry_run: true
+    input_schema:
+      type: object
+      properties:
+        paths:
+          type: array
+          items:
+            type: string
+        max_bookmarks:
+          type: integer
+        dry_run:
+          type: boolean
+      required:
+        - paths
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        imported:
+          type: integer
+        bookmarks:
+          type: array
+    execution:
+      type: python
+      entry: handlers/bookmarks.py
+      timeout_seconds: 15

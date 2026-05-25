@@ -1,0 +1,36 @@
+llm:
+  provider_name: mock
+  base_url: https://api.openai.com/v1
+  api_key: ""
+  model: gpt-4o-mini
+  # Privacy mode automatically prefers an ONNX GenAI model bundle when present.
+  # Set onnx_model_path or MARVIS_ONNX_MODEL_PATH to a Qwen2.5-3B ONNX GenAI directory/config,
+  # or place the bundle under ./.marvis_data/models. onnx_execution_provider may be DirectML,
+  # OpenVINO, CPU, or blank for automatic preference.
+  onnx_model_path: ""
+  onnx_execution_provider: ""
+  embedding_model: text-embedding-3-small
+  temperature: 0.2
+  max_tokens: 1600
+  timeout: 30
+
+paths:
+  data_dir: ./.marvis_data
+  skill_directories:
+    - ./.marvis_data/skills
+  allowed_directories:
+    - ./test_data/files/workspace
+  app_allowlist:
+    - notepad
+    - calculator
+    - calc
+
+privacy:
+  mode: privacy
+  allow_cloud_context: false
+  allow_file_content_upload: false
+  allow_browser_network: false
+  strict_state_machine: false
+  browser_max_page_bytes: 250000
+  document_max_chars_to_llm: 30000
+  browser_screenshot_dir: ""

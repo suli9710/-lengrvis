@@ -1,0 +1,26 @@
+name: demo-echo
+version: "1.0.0"
+agent_owner: FileAgent
+risk: R0_READ_ONLY
+tools:
+  - name: skill.demo.echo
+    description: Echo text through the demo Python skill handler.
+    risk: R0_READ_ONLY
+    input_schema:
+      type: object
+      properties:
+        text:
+          type: string
+      required:
+        - text
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        echo:
+          type: string
+    execution:
+      type: python
+      entry: handlers/echo.py
+      timeout_seconds: 5

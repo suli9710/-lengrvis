@@ -1,0 +1,4 @@
+{
+  "message": "Contact Alice at alice@example.com or 555-0199. Provider key: sk-test-1234567890abcdef.",
+  "expected_redactions": ["email", "phone", "api_key"]
+}

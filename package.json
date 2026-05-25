@@ -1,0 +1,14 @@
+{
+  "name": "mavris",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mavris workspace packaging and QA scripts",
+  "scripts": {
+    "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1",
+    "test": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1",
+    "build": "powershell -ExecutionPolicy Bypass -File ./scripts/build.ps1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

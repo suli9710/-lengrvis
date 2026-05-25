@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import pytest
+
+import app.agents.planner_agent as planner_module
+from app.agents.orchestrator_agent import OrchestratorAgent
+from app.core import db
+from app.core.schemas import AgentMessage, MessageType
+from app.policy.policy_engine import PolicyEngine
+
+
+def test_runtime_supervision_allows_internal_payload_fields():
+    message = AgentMessage(
+        task_id="task_supervision",
+        from_agent="OrchestratorAgent",
+        message_type=MessageType.PROPOSAL,
+        content="Calling tool system.get_info.",
+        structured_payload={"tool_name": "system.get_info"},
+    )
+
+    review = PolicyEngine().review_agent_message(message, "tool_call_proposed")
+
+    assert review.verdict == "allow"
+
+
+def test_runtime_supervision_blocks_sensitive_agent_message():
+    message = AgentMessage(
+        task_id="task_supervision",
+        from_agent="BrowserAgent",
+        message_type=MessageType.PROPOSAL,
+        content="Read browser cookie and token values.",
+    )
+
+    review = PolicyEngine().review_agent_message(message, "browser_consultation")
+
+    assert review.verdict == "deny"
+    assert review.risk_level == "R4_FORBIDDEN_OR_HANDOFF"
+
+
+@pytest.mark.anyio
+async def test_orchestrator_records_full_safety_supervision(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+    monkeypatch.setattr(planner_module, "get_provider", lambda: _system_info_plan_provider())
+
+    task = await OrchestratorAgent().handle_user_goal("check system information", "privacy")
+    reviews = db.fetch_many("safety_reviews", "task_id = ?", (task.id,), limit=100)
+    target_types = {review["target_type"] for review in reviews}
+
+    assert task.status == "completed"
+    assert {
+        "agent_message:user_goal",
+        "agent_message:planner_output",
+        "agent_message:ComputerAgent_consultation",
+        "tool_call",
+        "agent_message:tool_call_proposed",
+        "tool_result",
+        "agent_message:tool_observation",
+        "final",
+    }.issubset(target_types)
+
+
+@pytest.mark.anyio
+async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+
+    async def app_plan(*args, **kwargs):
+        from app.core.schemas import Plan, PlanStep
+        from app.policy.risk import RiskLevel
+
+        task_id = args[0]
+        return Plan(
+            task_id=task_id,
+            goal="open notepad",
+            steps=[
+                PlanStep(
+                    task_id=task_id,
+                    agent_name="AppAgent",
+                    tool_name="app.launch_installed",
+                    description="Open Notepad through the allowlisted app launcher.",
+                    args={"app": "notepad", "dry_run": True},
+                    risk_level=RiskLevel.R1_OPEN_ONLY,
+                )
+            ],
+        )
+
+    orchestrator = OrchestratorAgent()
+    monkeypatch.setattr(orchestrator.planner, "create_plan", app_plan)
+
+    task = await orchestrator.handle_user_goal("open notepad", "privacy")
+    target_types = {
+        review["target_type"]
+        for review in db.fetch_many("safety_reviews", "task_id = ?", (task.id,), limit=100)
+    }
+
+    assert task.status == "completed"
+    assert "agent_message:AppAgent_consultation" in target_types
+
+
+def _system_info_plan_provider():
+    class _Provider:
+        async def structured_chat(self, messages, output_schema):
+            return {
+                "goal": "check system information",
+                "steps": [
+                    {
+                        "agent_name": "ComputerAgent",
+                        "tool_name": "system.get_info",
+                        "description": "Read system information.",
+                        "args": {},
+                        "risk_level": "R0_READ_ONLY",
+                    }
+                ],
+            }
+
+    return _Provider()

@@ -1,0 +1,92 @@
+name: windows-settings-automation
+version: "1.0.0"
+agent_owner: AppAgent
+risk: R3_DESTRUCTIVE_OR_SYSTEM
+tools:
+  - name: skill.windows_settings.preview
+    description: Preview Windows settings automation for theme, resolution, night light, and lock screen ads.
+    risk: R0_READ_ONLY
+    supports_dry_run: true
+    input_schema:
+      type: object
+      properties:
+        action:
+          type: string
+          enum:
+            - query
+            - set_theme
+            - set_resolution
+            - set_night_light
+            - set_lock_screen_ads
+        theme:
+          type: string
+          enum:
+            - light
+            - dark
+        width:
+          type: integer
+        height:
+          type: integer
+        enabled:
+          type: boolean
+        dry_run:
+          type: boolean
+      required:
+        - action
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        dry_run:
+          type: boolean
+        operations:
+          type: array
+    execution:
+      type: python
+      entry: handlers/settings.py
+      timeout_seconds: 10
+  - name: skill.windows_settings.apply
+    description: Apply supported Windows settings through PowerShell or registry-backed commands after approval.
+    risk: R3_DESTRUCTIVE_OR_SYSTEM
+    supports_dry_run: true
+    input_schema:
+      type: object
+      properties:
+        action:
+          type: string
+          enum:
+            - set_theme
+            - set_resolution
+            - set_night_light
+            - set_lock_screen_ads
+        theme:
+          type: string
+          enum:
+            - light
+            - dark
+        width:
+          type: integer
+        height:
+          type: integer
+        enabled:
+          type: boolean
+        dry_run:
+          type: boolean
+      required:
+        - action
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        dry_run:
+          type: boolean
+        applied:
+          type: boolean
+        operations:
+          type: array
+    execution:
+      type: python
+      entry: handlers/settings.py
+      timeout_seconds: 20
