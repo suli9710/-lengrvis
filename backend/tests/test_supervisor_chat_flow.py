@@ -224,7 +224,8 @@ async def test_file_delete_path_creates_trash_approval(monkeypatch, tmp_path):
     approvals = db.fetch_many("approvals", "task_id = ?", (response.task_id,), limit=10)
     plans = db.fetch_many("plans", "task_id = ?", (response.task_id,), limit=1)
 
-    assert task["status"] == "waiting_user_approval"
+    assert task["status"] == "execution"
+    assert task["execution_stage"] == "awaiting_approval"
     assert approvals
     assert approvals[0]["diff_preview"]["diff_preview"][0]["action"] == "trash"
     assert Path(approvals[0]["diff_preview"]["diff_preview"][0]["path"]) == target

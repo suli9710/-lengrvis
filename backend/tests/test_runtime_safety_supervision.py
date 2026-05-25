@@ -5,8 +5,11 @@ import pytest
 import app.agents.planner_agent as planner_module
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import AgentMessage, MessageType
+from app.core.schemas import AgentMessage, MessageType, Plan, PlanStep, StepStatus
+from app.orchestration.task_phase import TaskPhase
 from app.policy.policy_engine import PolicyEngine
+from app.policy.risk import RiskLevel
+from app.tools.schemas import ToolDefinition
 
 
 def test_runtime_supervision_allows_internal_payload_fields():
@@ -100,6 +103,55 @@ async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, t
 
     assert task.status == "completed"
     assert "agent_message:AppAgent_consultation" in target_types
+
+
+@pytest.mark.anyio
+async def test_tool_call_denial_keeps_task_denied(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+
+    orchestrator = OrchestratorAgent()
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="test.forbidden_runtime",
+            description="forbidden runtime tool",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+            agent_owner="ComputerAgent",
+            supports_dry_run=False,
+            requires_authorized_path=False,
+            execute=lambda args, context: {"ok": True},  # noqa: ARG005
+        )
+    )
+
+    async def forbidden_plan(*args, **kwargs):  # noqa: ANN002, ANN003, ARG001
+        task_id = args[0]
+        return Plan(
+            task_id=task_id,
+            goal="forbidden tool",
+            steps=[
+                PlanStep(
+                    task_id=task_id,
+                    agent_name="ComputerAgent",
+                    tool_name="test.forbidden_runtime",
+                    description="Call a tool whose registry definition is forbidden.",
+                    args={},
+                    risk_level=RiskLevel.R0_READ_ONLY,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(orchestrator.planner, "create_plan", forbidden_plan)
+
+    task = await orchestrator.handle_user_goal("run forbidden tool", "privacy")
+    plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
+
+    assert task.status == TaskPhase.CANCELLED
+    assert plan.steps[0].status == StepStatus.DENIED
+    assert "denied" in task.final_summary.lower()
 
 
 def _system_info_plan_provider():

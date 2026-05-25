@@ -54,10 +54,18 @@ def cluster_files(payload: dict | None = None):
     settings = get_effective_settings()
     context = {"allowed_directories": settings.allowed_directories, "settings": settings}
     args: dict = {}
-    if payload and payload.get("k"):
+    payload = payload or {}
+    if payload.get("k"):
         try:
             args["k"] = int(payload["k"])
         except (TypeError, ValueError):
             pass
-    tool = tool_registry.get("file.cluster_by_content")
+    for key in ("group_by", "cluster_by", "paths", "image_paths", "images", "limit", "metadata_weight"):
+        if key in payload:
+            args[key] = payload[key]
+    group_by = str(payload.get("group_by") or "").strip().lower()
+    image_grouping = group_by in {"image", "images", "scene", "people", "objects", "tags", "time", "location"}
+    if group_by in {"image", "images"}:
+        args["group_by"] = payload.get("cluster_by") or "auto"
+    tool = tool_registry.get("image.cluster_images" if image_grouping else "file.cluster_by_content")
     return tool.execute(args, context)

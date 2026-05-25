@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from app.agents.app_agent import AppAgent
@@ -28,24 +26,27 @@ from app.core.schemas import (
     StepStatus,
     Task,
     TaskStatus,
-    ToolCall,
     ToolResult,
     now_iso,
 )
 from app.llm.registry import get_effective_settings, get_provider
 from app.orchestration.agent_bus import AgentBus
+from app.orchestration.dispatcher import EventDispatcher
+from app.orchestration.handlers import (
+    CompletionHandler,
+    ConsultationHandler,
+    PlanningHandler,
+    RecoveryHandler,
+    StepExecutionHandler,
+    StepSchedulerHandler,
+)
+from app.orchestration.handlers.context import StepExecutionOutcome
+from app.orchestration.goal_stack import GoalStack
 from app.orchestration.state_machine import safe_transition
-from app.policy.policy_engine import BROWSER_WRITE_TOOLS
+from app.perception.context_store import handle_perception_event
 from app.policy.risk import SafetyVerdict
-from app.services.approval_event_service import publish_approval_created
 from app.services.task_recording_service import capture_step_screenshot, recording_enabled
 from app.tools.registry import register_all_tools
-
-
-@dataclass(slots=True)
-class StepExecutionOutcome:
-    kind: str
-    result: ToolResult | None = None
 
 
 class OrchestratorAgent:
@@ -53,9 +54,11 @@ class OrchestratorAgent:
 
     def __init__(self) -> None:
         self.bus = AgentBus()
+        self.dispatcher = EventDispatcher(self.bus)
         self.planner = PlannerAgent(self.bus)
         self.safety = SafetyReviewAgent(self.bus)
         self.memory = MemoryAgent(self.bus)
+        self.goal_stack = GoalStack(scope="default")
         self.subagents: dict[str, BaseAgent] = {
             "FileAgent": FileAgent(self.bus),
             "DocumentAgent": DocumentAgent(self.bus),
@@ -67,7 +70,22 @@ class OrchestratorAgent:
         self.registry = register_all_tools(settings=get_effective_settings())
         self._supervised: dict[str, set[str]] = {}
         self._supervision_cursor: dict[str, str] = {}
-        self._path_locks: dict[str, asyncio.Lock] = {}
+        self.planning_handler = PlanningHandler(self)
+        self.consultation_handler = ConsultationHandler(self)
+        self.step_scheduler_handler = StepSchedulerHandler(self)
+        self.step_execution_handler = StepExecutionHandler(self)
+        self.recovery_handler = RecoveryHandler(self)
+        self.completion_handler = CompletionHandler(self)
+        self._register_handlers()
+
+    def _register_handlers(self) -> None:
+        self.planning_handler.register(self.dispatcher)
+        self.consultation_handler.register(self.dispatcher)
+        self.step_scheduler_handler.register(self.dispatcher)
+        self.step_execution_handler.register(self.dispatcher)
+        self.recovery_handler.register(self.dispatcher)
+        self.completion_handler.register(self.dispatcher)
+        self.dispatcher.register("perception.screen_state", handle_perception_event)
 
     def _set_status(self, task: Task, status: TaskStatus, *, final_summary: str | None = None) -> Task:
         if final_summary is not None:
@@ -93,184 +111,10 @@ class OrchestratorAgent:
         return await self.run_task(task)
 
     async def run_task(self, task: Task) -> Task:
-        goal = task.user_goal
-        mode = task.mode
-        if not self._supervise_new_agent_messages(task.id, "user_goal"):
-            return self._set_status(
-                task,
-                TaskStatus.DENIED,
-                final_summary="SafetyReviewAgent stopped the task during initial runtime supervision.",
-            )
-
-        goal_review = self.safety.review_goal(task.id, goal)
-        if goal_review.verdict == SafetyVerdict.DENY:
-            return self._set_status(task, TaskStatus.DENIED, final_summary=goal_review.safe_alternative)
-
-        memory_context = await self._recall_memory(goal)
-        plan = await self.planner.create_plan(
-            task.id,
-            goal,
-            mode,
-            [tool.name for tool in self.registry.list()],
-            memory_context=memory_context,
-        )
-        db.upsert_model("plans", plan)
-        if not self._supervise_new_agent_messages(task.id, "planner_output"):
-            return self._set_status(
-                task,
-                TaskStatus.DENIED,
-                final_summary="SafetyReviewAgent stopped the task after PlannerAgent output.",
-            )
-
-        self._set_status(task, TaskStatus.AGENT_CONSULTATION)
-        for agent in self.subagents.values():
-            agent.consult(plan)
-            if not self._supervise_new_agent_messages(task.id, f"{agent.name}_consultation"):
-                return self._set_status(
-                    task,
-                    TaskStatus.DENIED,
-                    final_summary=f"SafetyReviewAgent stopped the task after {agent.name} consultation.",
-                )
-
-        plan_review = self.safety.review_plan(plan)
-        self._set_status(task, TaskStatus.REVIEWING_PLAN)
-
-        if plan_review.verdict == SafetyVerdict.DENY:
-            return self._set_status(task, TaskStatus.DENIED, final_summary=plan_review.safe_alternative)
-
-        await self._process_steps(task, plan)
-        if task.status not in {TaskStatus.DENIED, TaskStatus.FAILED}:
-            final_review = self.safety.final_review(plan, task.status, task.final_summary)
-            if final_review.verdict == SafetyVerdict.DENY:
-                self._set_status(task, TaskStatus.DENIED, final_summary=final_review.safe_alternative)
-        if task.status == TaskStatus.COMPLETED:
-            await self._consolidate_memory(task, plan)
-        return task
+        return await self.planning_handler.run_task(task)
 
     async def _process_steps(self, task: Task, plan: Plan) -> None:
-        try:
-            by_id, _dependents = self._build_step_graph(plan)
-        except ValueError as exc:
-            for step in plan.steps:
-                if step.status == StepStatus.PENDING:
-                    step.status = StepStatus.FAILED
-            self._set_status(task, TaskStatus.FAILED, final_summary=str(exc))
-            record("task.step_graph_invalid", self.name, {"error": str(exc)}, task_id=task.id)
-            return
-
-        context = self._tool_context()
-        pending = {
-            step.id
-            for step in plan.steps
-            if step.status
-            not in {
-                StepStatus.SUCCEEDED,
-                StepStatus.SKIPPED,
-                StepStatus.FAILED,
-                StepStatus.DENIED,
-                StepStatus.WAITING_USER_APPROVAL,
-            }
-        }
-        running: dict[asyncio.Task, PlanStep] = {}
-        observations: dict[str, ToolResult] = {}
-        any_waiting = False
-        revision_requested = False
-        stop_requested = False
-
-        while pending or running:
-            if not stop_requested:
-                ready = self._ready_steps(pending, by_id)
-                threaded_tools = len(ready) > 1
-                if len(ready) == 1 and not running:
-                    step = ready[0]
-                    pending.remove(step.id)
-                    observation = self._dependency_observation(step, observations)
-                    outcome = await self._execute_step(task, plan, step, context, observation, threaded_tools=False)
-                    if outcome.result is not None:
-                        observations[step.id] = outcome.result
-                    if outcome.kind == "waiting_user_approval":
-                        any_waiting = True
-                        stop_requested = True
-                    elif outcome.kind == "revision_requested":
-                        revision_requested = True
-                        stop_requested = True
-                    elif outcome.kind in {"fatal_denied", "fatal_failed"}:
-                        stop_requested = True
-                    if stop_requested:
-                        break
-                    continue
-                for step in ready:
-                    pending.remove(step.id)
-                    observation = self._dependency_observation(step, observations)
-                    work = asyncio.create_task(
-                        self._execute_step(task, plan, step, context, observation, threaded_tools=threaded_tools),
-                        name=f"step-{step.id}",
-                    )
-                    running[work] = step
-
-            if not running:
-                self._mark_blocked_steps(pending, by_id)
-                break
-
-            done, _ = await asyncio.wait(running.keys(), return_when=asyncio.FIRST_COMPLETED)
-            outcomes = await asyncio.gather(*done, return_exceptions=True)
-            for work, outcome in zip(done, outcomes):
-                step = running.pop(work)
-                if isinstance(outcome, Exception):
-                    step.status = StepStatus.FAILED
-                    self._set_status(task, TaskStatus.FAILED, final_summary=self._friendly_tool_error(str(outcome)))
-                    record("task.step_failed_unhandled", self.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
-                    stop_requested = True
-                    continue
-                if outcome.result is not None:
-                    observations[step.id] = outcome.result
-                if outcome.kind == "waiting_user_approval":
-                    any_waiting = True
-                    stop_requested = True
-                elif outcome.kind == "revision_requested":
-                    revision_requested = True
-                    stop_requested = True
-                elif outcome.kind in {"fatal_denied", "fatal_failed"}:
-                    stop_requested = True
-
-            if stop_requested and running:
-                remaining = list(running.keys())
-                outcomes = await asyncio.gather(*remaining, return_exceptions=True)
-                for work, outcome in zip(remaining, outcomes):
-                    step = running.pop(work)
-                    if isinstance(outcome, Exception):
-                        step.status = StepStatus.FAILED
-                        record("task.step_failed_unhandled", self.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
-                        continue
-                    if outcome.result is not None:
-                        observations[step.id] = outcome.result
-                    if outcome.kind == "waiting_user_approval":
-                        any_waiting = True
-                    elif outcome.kind == "revision_requested":
-                        revision_requested = True
-                break
-
-            if not running and pending and not self._ready_steps(pending, by_id):
-                self._mark_blocked_steps(pending, by_id)
-                break
-
-        if task.status in {TaskStatus.DENIED, TaskStatus.FAILED}:
-            record("task.finished_or_waiting", self.name, {"status": task.status}, task_id=task.id)
-            return
-        if revision_requested:
-            target = TaskStatus.PAUSED
-            summary = "A subagent requested plan revision; automatic replanning was not repeated for this step."
-        elif any_waiting:
-            target = TaskStatus.WAITING_USER_APPROVAL
-            summary = "Plan generated and waiting for approval on modifying steps."
-        elif any(step.status == StepStatus.FAILED for step in plan.steps):
-            target = TaskStatus.FAILED
-            summary = "Task failed while processing one or more steps."
-        else:
-            target = TaskStatus.COMPLETED
-            summary = "Task completed with read-only/open-only MVP tools."
-        self._set_status(task, target, final_summary=summary)
-        record("task.finished_or_waiting", self.name, {"status": task.status}, task_id=task.id)
+        await self.step_scheduler_handler.process_steps(task, plan)
 
     async def _execute_step(
         self,
@@ -282,405 +126,17 @@ class OrchestratorAgent:
         *,
         threaded_tools: bool = False,
     ) -> StepExecutionOutcome:
-        step.task_id = step.task_id or task.id
-        self._set_status(task, TaskStatus.EXECUTING_STEP)
-        try:
-            tool = self.registry.get(step.tool_name)
-        except KeyError as exc:
-            step.status = StepStatus.FAILED
-            self._set_status(task, TaskStatus.FAILED, final_summary=self._friendly_tool_error(str(exc)))
-            return StepExecutionOutcome("fatal_failed")
-
-        risk = tool.risk_level
-        action = await self._consult_subagent(task, step, observation=observation)
-        if action and action.kind == "done":
-            step.status = StepStatus.SKIPPED
-            result = ToolResult(
-                tool_call_id=f"{step.id}_subagent_done",
-                ok=True,
-                observation=action.rationale or f"{step.tool_name} already complete.",
-            )
-            self.bus.publish_text(
-                task.id,
-                self.name,
-                f"Skipped step after {step.agent_name} marked it done: {step.description}",
-                message_type=MessageType.OBSERVATION,
-                step_id=step.id,
-                structured_payload={"subagent_action": action.model_dump(), "skipped": True},
-            )
-            self._supervise_new_agent_messages(task.id, "subagent_done")
-            return StepExecutionOutcome("skipped", result)
-        if action and action.kind == "request_revision":
-            self._handle_subagent_revision_request(task, step, action)
-            result = ToolResult(
-                tool_call_id=f"{step.id}_revision_request",
-                ok=True,
-                observation=action.follow_up_question or action.rationale or "Subagent requested plan revision.",
-            )
-            if not self._supervise_new_agent_messages(task.id, "subagent_revision_request"):
-                step.status = StepStatus.DENIED
-                self._set_status(
-                    task,
-                    TaskStatus.DENIED,
-                    final_summary="SafetyReviewAgent stopped the task after a subagent revision request.",
-                )
-                return StepExecutionOutcome("fatal_denied", result)
-            return StepExecutionOutcome("revision_requested", result)
-        if action and action.kind == "propose_tool":
-            try:
-                tool = self._apply_subagent_tool_proposal(task, step, action)
-            except KeyError as exc:
-                step.status = StepStatus.FAILED
-                self._set_status(task, TaskStatus.FAILED, final_summary=self._friendly_tool_error(str(exc)))
-                self.bus.publish_text(
-                    task.id,
-                    self.name,
-                    f"Subagent proposed an unavailable tool: {action.tool_name}",
-                    message_type=MessageType.REVISION,
-                    step_id=step.id,
-                    structured_payload={"subagent_action": action.model_dump(), "error": str(exc)},
-                )
-                self._supervise_new_agent_messages(task.id, "subagent_invalid_tool")
-                return StepExecutionOutcome("fatal_failed")
-            risk = tool.risk_level
-            if not self._supervise_new_agent_messages(task.id, "subagent_proposal_applied"):
-                step.status = StepStatus.DENIED
-                self._set_status(
-                    task,
-                    TaskStatus.DENIED,
-                    final_summary="SafetyReviewAgent stopped the task after applying a subagent proposal.",
-                )
-                return StepExecutionOutcome("fatal_denied")
-            self._persist_plan_update(plan, "Plan step updated from subagent tool proposal.")
-        self._set_status(task, TaskStatus.REVIEWING_TOOL_CALL)
-        if step.tool_name in BROWSER_WRITE_TOOLS:
-            browser_review = self.safety.review_browser_write(task.id, step.id, step.tool_name, step.args)
-            if browser_review and browser_review.verdict == SafetyVerdict.DENY:
-                step.status = StepStatus.DENIED
-                self.bus.publish_text(
-                    task.id,
-                    self.name,
-                    f"Denied browser write {step.tool_name}: {'; '.join(browser_review.reasons)}",
-                    step_id=step.id,
-                )
-                self._supervise_new_agent_messages(task.id, "browser_write_denied")
-                return StepExecutionOutcome("step_denied")
-        review = self.safety.review_tool_call(task.id, step.id, step.tool_name, step.args, risk)
-        if review.verdict == SafetyVerdict.DENY:
-            step.status = StepStatus.DENIED
-            self.bus.publish_text(task.id, self.name, f"Denied step: {step.description}", step_id=step.id)
-            self._supervise_new_agent_messages(task.id, "tool_call_denied")
-            return StepExecutionOutcome("step_denied")
-        if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
-            before_frame = await self._capture_step_frame(task, step, "before_dry_run")
-            try:
-                preview = await self._execute_tool_with_locks(
-                    tool,
-                    step,
-                    {**step.args, "dry_run": True},
-                    context,
-                    threaded=threaded_tools,
-                )
-            except Exception as exc:  # noqa: BLE001
-                preview = {"error": str(exc)}
-            finally:
-                after_frame = await self._capture_step_frame(task, step, "after_dry_run")
-                self._publish_step_recording(
-                    task,
-                    step,
-                    [before_frame, after_frame],
-                    tool_name=step.tool_name,
-                    agent=step.agent_name,
-                )
-            preview_result = ToolResult(
-                tool_call_id=f"{step.id}_dry_run",
-                ok=not bool(preview.get("error")),
-                output=preview,
-                error=str(preview.get("error", "")),
-                observation=f"{step.tool_name} dry-run preview generated.",
-            )
-            if not preview_result.ok:
-                step.status = StepStatus.FAILED
-                self._set_status(
-                    task,
-                    TaskStatus.FAILED,
-                    final_summary=self._friendly_tool_error(preview_result.error),
-                )
-                self.bus.publish_text(
-                    task.id,
-                    step.agent_name,
-                    task.final_summary,
-                    role=OpenAIMessageRole.TOOL,
-                    message_type=MessageType.OBSERVATION,
-                    step_id=step.id,
-                    structured_payload=preview_result.model_dump(),
-                )
-                return StepExecutionOutcome("fatal_failed", preview_result)
-            post_preview_review = self.safety.review_tool_result(
-                task.id,
-                step.id,
-                step.tool_name,
-                preview_result,
-                risk,
-            )
-            if post_preview_review.verdict == SafetyVerdict.DENY:
-                step.status = StepStatus.DENIED
-                self._set_status(task, TaskStatus.DENIED, final_summary=post_preview_review.safe_alternative)
-                return StepExecutionOutcome("fatal_denied", preview_result)
-            approval = Approval(
-                task_id=task.id,
-                step_id=step.id,
-                message=review.user_confirmation_message or step.description,
-                diff_preview=preview,
-            )
-            db.upsert_model("approvals", approval)
-            publish_approval_created(approval)
-            step.status = StepStatus.WAITING_USER_APPROVAL
-            self.bus.publish_text(
-                task.id,
-                "HumanGateAgent",
-                "Waiting for user approval before executing modifying operation.",
-                message_type=MessageType.REVIEW,
-                step_id=step.id,
-            )
-            self._supervise_new_agent_messages(task.id, "approval_gate")
-            return StepExecutionOutcome("waiting_user_approval", preview_result)
-
-        call = ToolCall(task_id=task.id, step_id=step.id, tool_name=step.tool_name, args=step.args, risk_level=risk, dry_run=False)
-        db.upsert_model("tool_calls", call)
-        self.bus.publish_text(
-            task.id,
-            self.name,
-            f"Calling tool {step.tool_name}.",
-            message_type=MessageType.PROPOSAL,
-            step_id=step.id,
-            tool_calls=[
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": step.tool_name,
-                        "arguments": step.args,
-                    },
-                }
-            ],
-            structured_payload=call.model_dump(),
+        return await self.step_execution_handler.execute_step(
+            task,
+            plan,
+            step,
+            context,
+            observation,
+            threaded_tools=threaded_tools,
         )
-        if not self._supervise_new_agent_messages(task.id, "tool_call_proposed"):
-            step.status = StepStatus.DENIED
-            self._set_status(
-                task,
-                TaskStatus.DENIED,
-                final_summary="SafetyReviewAgent stopped the task before executing a tool call.",
-            )
-            return StepExecutionOutcome("fatal_denied")
-        before_frame = await self._capture_step_frame(task, step, "before")
-        try:
-            step.status = StepStatus.RUNNING
-            self._set_status(task, TaskStatus.EXECUTING_TOOL)
-            output = await self._execute_tool_with_locks(tool, step, step.args, context, threaded=threaded_tools)
-            result = ToolResult(
-                tool_call_id=call.id,
-                ok=not bool(output.get("error")),
-                output=output,
-                error=str(output.get("error", "")),
-                changed_paths=list(output.get("changed_paths", [])),
-                rollback_info=dict(output.get("rollback_info", {})),
-                observation=step.expected_observation or f"{step.tool_name} completed.",
-            )
-        except Exception as exc:
-            result = ToolResult(tool_call_id=call.id, ok=False, error=str(exc), observation=f"{step.tool_name} failed.")
-        finally:
-            after_frame = await self._capture_step_frame(task, step, "after")
-            self._publish_step_recording(task, step, [before_frame, after_frame], tool_name=step.tool_name, agent=step.agent_name)
-        db.upsert_model("tool_results", result)
-        post_tool_review = self.safety.review_tool_result(task.id, step.id, step.tool_name, result, risk)
-        if post_tool_review.verdict == SafetyVerdict.DENY:
-            step.status = StepStatus.DENIED
-            self._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
-            return StepExecutionOutcome("fatal_denied", result)
-        self.bus.publish_text(
-            task.id,
-            step.agent_name,
-            result.observation if result.ok else result.error,
-            role=OpenAIMessageRole.TOOL,
-            message_type=MessageType.OBSERVATION,
-            step_id=step.id,
-            tool_call_id=call.id,
-            structured_payload=result.model_dump(),
-        )
-        if not self._supervise_new_agent_messages(task.id, "tool_observation"):
-            step.status = StepStatus.DENIED
-            self._set_status(
-                task,
-                TaskStatus.DENIED,
-                final_summary="SafetyReviewAgent stopped the task after observing tool output.",
-            )
-            return StepExecutionOutcome("fatal_denied", result)
-        step.status = StepStatus.SUCCEEDED if result.ok else StepStatus.FAILED
-        await self._reflect_on_step(task, step, result)
-        return StepExecutionOutcome("succeeded" if result.ok else "failed", result)
 
     async def execute_approved_step(self, approval: Approval) -> Task:
-        task_data = db.fetch_one("tasks", approval.task_id)
-        if not task_data:
-            raise KeyError(f"Task not found: {approval.task_id}")
-        task = Task.model_validate(task_data)
-
-        plan = self._latest_plan_for_task(task.id)
-        step = next((item for item in plan.steps if item.id == approval.step_id), None)
-        if step is None:
-            raise KeyError(f"Step not found for approval: {approval.step_id}")
-        if step.status == StepStatus.SUCCEEDED:
-            return task
-
-        tool = self.registry.get(step.tool_name)
-        action = None if approval.approval_type == "remote_input" else await self._consult_subagent(task, step, observation=None)
-        if action and action.kind == "done":
-            step.status = StepStatus.SKIPPED
-            self._persist_plan_update(plan, "Approved step skipped after subagent marked it done.")
-            self._set_status(task, TaskStatus.COMPLETED, final_summary="Approved step was already complete.")
-            return task
-        if action and action.kind == "request_revision":
-            self._handle_subagent_revision_request(task, step, action)
-            step.status = StepStatus.SKIPPED
-            self._persist_plan_update(plan, "Approved step paused after subagent requested plan revision.")
-            self._set_status(
-                task,
-                TaskStatus.PAUSED,
-                final_summary="A subagent requested plan revision before the approved step could execute.",
-            )
-            return task
-        if action and action.kind == "propose_tool":
-            proposed_tool_name = action.tool_name or step.tool_name
-            merged_args = {**dict(step.args or {}), **dict(action.args or {})}
-            if proposed_tool_name != step.tool_name or merged_args != step.args:
-                self._handle_subagent_revision_request(task, step, action)
-                step.status = StepStatus.SKIPPED
-                self._persist_plan_update(plan, "Approved step paused because subagent proposed a different tool call.")
-                self._set_status(
-                    task,
-                    TaskStatus.PAUSED,
-                    final_summary="A subagent proposed a different tool call after approval; a fresh review is required.",
-                )
-                return task
-        args = {**step.args, "dry_run": False, "approved": True, "approval_id": approval.id}
-        call = ToolCall(
-            task_id=task.id,
-            step_id=step.id,
-            tool_name=step.tool_name,
-            args=args,
-            risk_level=tool.risk_level,
-            dry_run=False,
-        )
-        db.upsert_model("tool_calls", call)
-
-        step.status = StepStatus.RUNNING
-        self._set_status(task, TaskStatus.EXECUTING_TOOL)
-        self._persist_plan_update(plan, "Plan status updated after user approval.")
-
-        self.bus.publish_text(
-            task.id,
-            self.name,
-            f"Calling approved tool {step.tool_name}.",
-            message_type=MessageType.PROPOSAL,
-            step_id=step.id,
-            tool_calls=[
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {
-                        "name": step.tool_name,
-                        "arguments": args,
-                    },
-                }
-            ],
-            structured_payload=call.model_dump(),
-            metadata={"approval_id": approval.id, "approved_by_user": True},
-        )
-        if not self._supervise_new_agent_messages(task.id, "approved_tool_call_proposed"):
-            step.status = StepStatus.DENIED
-            self._set_status(
-                task,
-                TaskStatus.DENIED,
-                final_summary="安全审核 Agent 在执行已批准工具前拦截了任务。",
-            )
-            self._persist_plan_update(plan, "Plan denied before approved tool execution.")
-            return task
-
-        before_frame = await self._capture_step_frame(task, step, "before_approved")
-        try:
-            output = await self._execute_tool_with_locks(tool, step, args, self._tool_context())
-            result = ToolResult(
-                tool_call_id=call.id,
-                ok=not bool(output.get("error")),
-                output=output,
-                error=str(output.get("error", "")),
-                changed_paths=list(output.get("changed_paths", [])),
-                rollback_info=dict(output.get("rollback_info", {})),
-                observation=step.expected_observation or f"{step.tool_name} completed.",
-            )
-        except Exception as exc:
-            result = ToolResult(
-                tool_call_id=call.id,
-                ok=False,
-                error=str(exc),
-                observation=f"{step.tool_name} failed.",
-            )
-        finally:
-            after_frame = await self._capture_step_frame(task, step, "after_approved")
-            self._publish_step_recording(
-                task,
-                step,
-                [before_frame, after_frame],
-                tool_name=step.tool_name,
-                agent=step.agent_name,
-                metadata={"approval_id": approval.id, "approved_by_user": True},
-            )
-
-        db.upsert_model("tool_results", result)
-        post_tool_review = self.safety.review_tool_result(task.id, step.id, step.tool_name, result, tool.risk_level)
-        if post_tool_review.verdict == SafetyVerdict.DENY:
-            step.status = StepStatus.DENIED
-            self._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
-            self._persist_plan_update(plan, "Plan denied after approved tool execution.")
-            return task
-
-        self.bus.publish_text(
-            task.id,
-            step.agent_name,
-            result.observation if result.ok else self._friendly_tool_error(result.error),
-            role=OpenAIMessageRole.TOOL,
-            message_type=MessageType.OBSERVATION,
-            step_id=step.id,
-            tool_call_id=call.id,
-            structured_payload=result.model_dump(),
-        )
-        if not self._supervise_new_agent_messages(task.id, "approved_tool_observation"):
-            step.status = StepStatus.DENIED
-            self._set_status(
-                task,
-                TaskStatus.DENIED,
-                final_summary="安全审核 Agent 在观察已批准工具结果后拦截了任务。",
-            )
-            self._persist_plan_update(plan, "Plan denied after approved tool observation.")
-            return task
-
-        step.status = StepStatus.SUCCEEDED if result.ok else StepStatus.FAILED
-        if result.ok:
-            pending_approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task.id, "pending"), limit=100)
-            target_status = TaskStatus.WAITING_USER_APPROVAL if pending_approvals else TaskStatus.COMPLETED
-            summary = (
-                "已按你的审批执行，目标已移入回收站。"
-                if step.tool_name == "file.trash"
-                else "已按你的审批执行修改操作。"
-            )
-            self._set_status(task, target_status, final_summary=summary)
-        else:
-            self._set_status(task, TaskStatus.FAILED, final_summary=self._friendly_tool_error(result.error))
-        self._persist_plan_update(plan, "Plan status updated after approved tool execution.")
-        record("task.approved_step_executed", self.name, {"approval_id": approval.id, "ok": result.ok}, task_id=task.id)
-        return task
+        return await self.step_execution_handler.execute_approved_step(approval)
 
     def _latest_plan_for_task(self, task_id: str) -> Plan:
         plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
@@ -690,7 +146,7 @@ class OrchestratorAgent:
 
     def _tool_context(self) -> dict:
         settings = get_effective_settings()
-        return {"allowed_directories": settings.allowed_directories, "settings": settings}
+        return {"allowed_directories": settings.allowed_directories, "settings": settings, "registry": self.registry}
 
     async def _capture_step_frame(self, task: Task, step: PlanStep, phase: str) -> dict[str, Any]:
         if not recording_enabled():
@@ -743,185 +199,22 @@ class OrchestratorAgent:
         )
 
     def _build_step_graph(self, plan: Plan) -> tuple[dict[str, PlanStep], dict[str, set[str]]]:
-        by_id: dict[str, PlanStep] = {}
-        dependents: dict[str, set[str]] = {}
-        for idx, step in enumerate(plan.steps, start=1):
-            if not step.id:
-                step.id = f"step_{idx}"
-            if step.id in by_id:
-                raise ValueError(f"Duplicate plan step id: {step.id}")
-            by_id[step.id] = step
-            dependents.setdefault(step.id, set())
-
-        for step in plan.steps:
-            normalized: list[str] = []
-            for dependency in step.depends_on:
-                dependency_id = str(dependency).strip()
-                if not dependency_id:
-                    continue
-                if dependency_id == step.id:
-                    raise ValueError(f"Plan step {step.id} cannot depend on itself.")
-                if dependency_id not in by_id:
-                    raise ValueError(f"Plan step {step.id} depends on unknown step id: {dependency_id}")
-                if dependency_id not in normalized:
-                    normalized.append(dependency_id)
-                dependents.setdefault(dependency_id, set()).add(step.id)
-            step.depends_on = normalized
-
-        if self._has_step_cycle(by_id):
-            raise ValueError("Plan step dependency graph contains a cycle.")
-        return by_id, dependents
+        return self.step_scheduler_handler._build_step_graph(plan)
 
     def _has_step_cycle(self, by_id: dict[str, PlanStep]) -> bool:
-        temporary: set[str] = set()
-        permanent: set[str] = set()
-
-        def visit(step_id: str) -> bool:
-            if step_id in permanent:
-                return False
-            if step_id in temporary:
-                return True
-            temporary.add(step_id)
-            for dependency in by_id[step_id].depends_on:
-                if visit(dependency):
-                    return True
-            temporary.remove(step_id)
-            permanent.add(step_id)
-            return False
-
-        return any(visit(step_id) for step_id in by_id)
+        return self.step_scheduler_handler._has_step_cycle(by_id)
 
     def _ready_steps(self, pending: set[str], by_id: dict[str, PlanStep]) -> list[PlanStep]:
-        ready = [
-            by_id[step_id]
-            for step_id in pending
-            if all(self._dependency_finished(by_id[dependency]) for dependency in by_id[step_id].depends_on)
-        ]
-        return sorted(ready, key=lambda step: (step.order, step.id))
+        return self.step_scheduler_handler._ready_steps(pending, by_id)
 
     def _dependency_finished(self, step: PlanStep) -> bool:
-        return step.status in {
-            StepStatus.SUCCEEDED,
-            StepStatus.SKIPPED,
-        }
+        return self.step_scheduler_handler._dependency_finished(step)
 
     def _dependency_observation(self, step: PlanStep, observations: dict[str, ToolResult]) -> ToolResult | None:
-        for dependency in reversed(step.depends_on):
-            if dependency in observations:
-                return observations[dependency]
-        return None
+        return self.step_scheduler_handler._dependency_observation(step, observations)
 
     def _mark_blocked_steps(self, pending: set[str], by_id: dict[str, PlanStep]) -> None:
-        for step_id in list(pending):
-            step = by_id[step_id]
-            blocked = [
-                dependency
-                for dependency in step.depends_on
-                if by_id[dependency].status in {StepStatus.FAILED, StepStatus.DENIED, StepStatus.WAITING_USER_APPROVAL}
-            ]
-            if blocked:
-                step.status = StepStatus.SKIPPED
-                pending.remove(step_id)
-                self.bus.publish_text(
-                    step.task_id,
-                    self.name,
-                    f"Skipped step because dependency did not complete: {', '.join(blocked)}",
-                    message_type=MessageType.OBSERVATION,
-                    step_id=step.id,
-                    structured_payload={"blocked_by": blocked},
-                )
-
-    async def _execute_tool_with_locks(
-        self,
-        tool,
-        step: PlanStep,
-        args: dict[str, Any],
-        context: dict[str, Any],
-        *,
-        threaded: bool = False,
-    ) -> dict[str, Any]:
-        lock_keys = self._write_lock_keys(tool, args)
-        if not lock_keys:
-            if threaded:
-                return await asyncio.to_thread(tool.execute, args, context)
-            return tool.execute(args, context)
-        locks = [self._path_locks.setdefault(key, asyncio.Lock()) for key in lock_keys]
-        return await self._execute_tool_under_locks(tool, args, context, locks, threaded=threaded)
-
-    async def _execute_tool_under_locks(
-        self,
-        tool,
-        args: dict[str, Any],
-        context: dict[str, Any],
-        locks: list[asyncio.Lock],
-        *,
-        threaded: bool = False,
-    ) -> dict[str, Any]:
-        if not locks:
-            if threaded:
-                return await asyncio.to_thread(tool.execute, args, context)
-            return tool.execute(args, context)
-        async with locks[0]:
-            return await self._execute_tool_under_locks(tool, args, context, locks[1:], threaded=threaded)
-
-    def _write_lock_keys(self, tool, args: dict[str, Any]) -> list[str]:
-        if not self._is_write_tool(tool):
-            return []
-        if args.get("dry_run") is True:
-            return []
-
-        keys: set[str] = set()
-        for value in self._candidate_write_paths(args):
-            path = self._normalize_lock_path(value)
-            if not path:
-                continue
-            keys.add(path)
-            parent = str(Path(path).parent)
-            if parent and parent != path:
-                keys.add(parent)
-        return sorted(keys)
-
-    def _is_write_tool(self, tool) -> bool:
-        risk = getattr(tool, "risk_level", None)
-        risk_value = getattr(risk, "value", str(risk or ""))
-        if risk and risk_value.startswith(("R2", "R3")):
-            return True
-        if getattr(tool, "supports_dry_run", False):
-            return True
-        name = getattr(tool, "name", "")
-        return name in BROWSER_WRITE_TOOLS or any(
-            token in name
-            for token in (".copy", ".move", ".rename", ".trash", ".write", ".create", ".delete", ".uninstall")
-        )
-
-    def _candidate_write_paths(self, args: dict[str, Any]) -> list[Any]:
-        result: list[Any] = []
-        for key in (
-            "path",
-            "source",
-            "destination",
-            "target",
-            "target_path",
-            "target_folder",
-            "folder",
-            "directory",
-            "output_path",
-        ):
-            value = args.get(key)
-            if value:
-                result.append(value)
-        return result
-
-    def _normalize_lock_path(self, value: Any) -> str:
-        if not isinstance(value, (str, Path)):
-            return ""
-        text = str(value).strip()
-        if not text:
-            return ""
-        try:
-            return str(Path(text).expanduser().resolve(strict=False)).casefold()
-        except OSError:
-            return text.casefold()
+        self.step_scheduler_handler._mark_blocked_steps(pending, by_id)
 
     def _persist_plan_update(self, plan: Plan, content: str) -> None:
         db.upsert_model("plans", plan)
@@ -1079,23 +372,23 @@ class OrchestratorAgent:
 
     async def _recall_memory(self, goal: str) -> list:
         try:
-            return await self.memory.recall(goal, k=3)
+            memories = await self.memory.recall(goal, k=3)
+            lessons = await self.memory.recall(goal, k=3, tags=["lesson"])
+            seen: set[str] = set()
+            combined = []
+            for item in [*lessons, *memories]:
+                item_id = getattr(item, "id", "")
+                if item_id in seen:
+                    continue
+                seen.add(item_id)
+                combined.append(item)
+            return combined[:5]
         except Exception as exc:
             record("memory.recall_failed", self.name, {"error": str(exc)})
             return []
 
     async def _consolidate_memory(self, task: Task, plan: Plan) -> None:
-        summary = task.final_summary or f"Completed task: {task.user_goal}"
-        try:
-            await self.memory.remember(
-                summary,
-                task_id=task.id,
-                kind="task_summary",
-                tags=[step.agent_name for step in plan.steps if step.agent_name][:3],
-                source=self.name,
-            )
-        except Exception as exc:
-            record("memory.consolidate_failed", self.name, {"task_id": task.id, "error": str(exc)})
+        await self.completion_handler.consolidate_memory(task, plan)
 
     async def _reflect_on_step(self, task: Task, step, result: ToolResult) -> None:
         try:
@@ -1146,6 +439,8 @@ class OrchestratorAgent:
             action = await agent.act(step, context, observation=observation, provider=provider)
         except Exception as exc:
             record("subagent.act_failed", agent.name, {"step": step.id, "error": str(exc)}, task_id=task.id)
+            return None
+        if action is None:
             return None
         diverged = bool(
             action.kind == "propose_tool"

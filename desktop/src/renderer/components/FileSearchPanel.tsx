@@ -2,7 +2,7 @@ import { FileText, Layers, Search } from "lucide-react";
 import { useState } from "react";
 
 import type { FileSearchResult } from "../../shared/types";
-import type { BackendClusterEntry, MavrisApiClient } from "../lib/apiClient";
+import type { BackendClusterEntry, FileClusterOptions, MavrisApiClient } from "../lib/apiClient";
 import { Badge, Panel } from "./Panel";
 
 interface FileSearchPanelProps {
@@ -12,11 +12,47 @@ interface FileSearchPanelProps {
   api?: MavrisApiClient;
 }
 
+type FileClusterDimension =
+  | "content"
+  | "type"
+  | "extension"
+  | "image_auto"
+  | "scene"
+  | "people"
+  | "objects"
+  | "tags"
+  | "time"
+  | "location";
+
+interface FileClusterDimensionOption {
+  value: FileClusterDimension;
+  label: string;
+  description: string;
+}
+
+const CLUSTER_DIMENSION_OPTIONS: FileClusterDimensionOption[] = [
+  { value: "content", label: "内容", description: "按文件名和扩展名做轻量内容聚类" },
+  { value: "type", label: "类型", description: "按后端识别的文件类型分组" },
+  { value: "extension", label: "扩展名", description: "按文件扩展名精确分组" },
+  { value: "image_auto", label: "图片自动", description: "按图片语义和元数据自动聚类" },
+  { value: "scene", label: "场景", description: "按图片场景标签分组" },
+  { value: "people", label: "人物", description: "按图片中的人物数量分组" },
+  { value: "objects", label: "物体", description: "按图片中的可见物体分组" },
+  { value: "tags", label: "标签", description: "按图片结构化标签分组" },
+  { value: "time", label: "时间", description: "按图片拍摄或修改时间分组" },
+  { value: "location", label: "地点", description: "按图片 GPS 位置分组" }
+];
+
 export function FileSearchPanel({ results, isSearching, onSearch, api }: FileSearchPanelProps) {
   const [query, setQuery] = useState("");
   const [clusters, setClusters] = useState<BackendClusterEntry[]>([]);
   const [isClustering, setIsClustering] = useState(false);
   const [clusterError, setClusterError] = useState<string | null>(null);
+  const [clusterDimension, setClusterDimension] = useState<FileClusterDimension>("content");
+  const [clusterResultDimension, setClusterResultDimension] = useState<FileClusterDimension>("content");
+
+  const selectedClusterDimension = clusterDimensionOption(clusterDimension);
+  const resultClusterDimension = clusterDimensionOption(clusterResultDimension);
 
   const submit = async () => {
     await onSearch(query.trim());
@@ -24,18 +60,26 @@ export function FileSearchPanel({ results, isSearching, onSearch, api }: FileSea
 
   const runCluster = async () => {
     if (!api) return;
+    const requestedDimension = clusterDimension;
     setIsClustering(true);
     setClusterError(null);
-    const response = await api.clusterFiles({});
-    setIsClustering(false);
-    if (response.ok && response.data?.ok) {
-      setClusters(response.data.clusters ?? []);
-      if (!response.data.clusters?.length) {
-        setClusterError("没有可分组的索引文件。请先在设置里加入授权目录并触发索引。");
+    setClusterResultDimension(requestedDimension);
+    try {
+      const response = await api.clusterFiles(clusterPayloadFor(requestedDimension));
+      if (response.ok && response.data?.ok) {
+        setClusters(response.data.clusters ?? []);
+        if (!response.data.clusters?.length) {
+          setClusterError("没有可分组的索引文件。请先在设置里加入授权目录并触发索引。");
+        }
+      } else {
+        setClusters([]);
+        setClusterError(response.data?.error || response.error?.message || "分组失败");
       }
-    } else {
+    } catch (error) {
       setClusters([]);
-      setClusterError(response.data?.error || response.error?.message || "分组失败");
+      setClusterError(error instanceof Error ? error.message : "分组失败");
+    } finally {
+      setIsClustering(false);
     }
   };
 
@@ -64,15 +108,32 @@ export function FileSearchPanel({ results, isSearching, onSearch, api }: FileSea
           搜索
         </button>
         {api ? (
-          <button
-            className="button button--ghost"
-            onClick={() => void runCluster()}
-            disabled={isClustering}
-            title="按文件名/扩展名对索引内容做轻量聚类"
-          >
-            <Layers size={16} aria-hidden="true" />
-            智能分组
-          </button>
+          <>
+            <label className="cluster-dimension-picker" title={selectedClusterDimension.description}>
+              <span>维度</span>
+              <select
+                aria-label="选择文件聚类维度"
+                value={clusterDimension}
+                onChange={(event) => setClusterDimension(event.target.value as FileClusterDimension)}
+                disabled={isClustering}
+              >
+                {CLUSTER_DIMENSION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className="button button--ghost"
+              onClick={() => void runCluster()}
+              disabled={isClustering}
+              title={selectedClusterDimension.description}
+            >
+              <Layers size={16} aria-hidden="true" />
+              智能分组
+            </button>
+          </>
         ) : null}
       </div>
       <div className="file-results">
@@ -93,7 +154,10 @@ export function FileSearchPanel({ results, isSearching, onSearch, api }: FileSea
         <section className="file-cluster" style={{ marginTop: 12 }}>
           <div className="row row--between">
             <strong>智能分组</strong>
-            <Badge tone="info">{clusters.length} 组</Badge>
+            <div className="row">
+              <Badge tone="neutral">{resultClusterDimension.label}</Badge>
+              <Badge tone="info">{clusters.length} 组</Badge>
+            </div>
           </div>
           {clusterError ? <p className="muted">{clusterError}</p> : null}
           <ul className="file-cluster__list">
@@ -117,4 +181,29 @@ export function FileSearchPanel({ results, isSearching, onSearch, api }: FileSea
       ) : null}
     </Panel>
   );
+}
+
+function clusterDimensionOption(value: FileClusterDimension): FileClusterDimensionOption {
+  return CLUSTER_DIMENSION_OPTIONS.find((option) => option.value === value) ?? CLUSTER_DIMENSION_OPTIONS[0];
+}
+
+function clusterPayloadFor(dimension: FileClusterDimension): FileClusterOptions {
+  switch (dimension) {
+    case "type":
+      return { groupBy: "type", clusterBy: "type" };
+    case "extension":
+      return { groupBy: "extension", clusterBy: "extension" };
+    case "image_auto":
+      return { groupBy: "image", clusterBy: "auto" };
+    case "scene":
+    case "people":
+    case "objects":
+    case "tags":
+    case "time":
+    case "location":
+      return { groupBy: dimension, clusterBy: dimension };
+    case "content":
+    default:
+      return {};
+  }
 }

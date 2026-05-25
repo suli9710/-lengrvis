@@ -346,6 +346,7 @@ export function App() {
   const [isApprovalOpen, setIsApprovalOpen] = useState(false);
   const [mode, setMode] = useState<AssistantMode>("privacy");
   const [activeView, setActiveView] = useState<ViewKey>("home");
+  const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [chatDraftSeed, setChatDraftSeed] = useState("");
   const [conversationResetKey, setConversationResetKey] = useState(0);
@@ -567,6 +568,18 @@ export function App() {
     };
   }, [api, latestTaskId, refreshTaskSnapshot]);
 
+  useEffect(() => {
+    const unsubscribe = window.mavris?.notifications.onOpenTask((taskId) => {
+      setFocusedTaskId(taskId);
+      setActiveView("agents");
+      void refreshTaskSnapshot();
+    });
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [refreshTaskSnapshot]);
+
   const submitApprovalDecision = async (
     approvalId: string,
     decision: "approved" | "denied",
@@ -713,7 +726,7 @@ export function App() {
             />
             <div className="conversation-side">
               <PlanViewer plan={plan} />
-              <TaskTimeline tasks={tasks} api={api} />
+              <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
             </div>
           </section>
         ) : null}
@@ -736,7 +749,7 @@ export function App() {
           <section className="detail-grid">
             <AgentConversationPanel conversations={agentConversations} />
             <SchedulePanel api={api} />
-            <TaskTimeline tasks={tasks} api={api} />
+            <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
             <PlanViewer plan={plan} />
           </section>
         ) : null}

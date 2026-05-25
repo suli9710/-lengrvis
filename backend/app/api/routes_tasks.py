@@ -4,9 +4,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
 from app.core import db
+from app.core.errors import StateTransitionError
 from app.core.schemas import AgentMessage, Task, TaskStatus
-from app.llm.registry import get_effective_settings
-from app.orchestration.state_machine import ensure_transition_allowed
+from app.orchestration.state_machine import safe_transition
+from app.orchestration.task_phase import TaskPhase
 from app.services import task_recording_service
 from app.services.task_service import get_task, list_tasks, set_task_status
 from app.tools import rollback_tools
@@ -164,10 +165,10 @@ def rollback(task_id: str):
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
-    if get_effective_settings().strict_state_machine:
-        ensure_transition_allowed(task, TaskStatus.ROLLED_BACK)
+    if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
+        raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
     outcome = rollback_tools.execute_rollback(task_id)
-    set_task_status(task_id, TaskStatus.ROLLED_BACK)
+    safe_transition(task, TaskStatus.ROLLED_BACK, actor="TaskService")
     return outcome
 
 

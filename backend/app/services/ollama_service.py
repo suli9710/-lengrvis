@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import subprocess
 import sys
@@ -108,3 +109,80 @@ async def pull_model(model: str | None = None) -> dict[str, Any]:
             return {"ok": False, "model": target, "error": f"Pull failed with status {resp.status_code}"}
     except Exception as exc:
         return {"ok": False, "model": target, "error": str(exc)}
+
+
+async def pull_model_streaming(model: str | None = None):
+    """Pull a model with streaming progress. Yields dicts with progress info."""
+    target = model or RECOMMENDED_MODEL
+    record("ollama.pull_start", "OllamaService", {"model": target, "streaming": True})
+
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_API}/api/pull",
+                json={"name": target, "stream": True},
+                timeout=600.0,
+            ) as resp:
+                if resp.status_code != 200:
+                    yield {"status": "error", "error": f"Pull failed with status {resp.status_code}"}
+                    return
+                async for line in resp.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                        total = data.get("total", 0)
+                        completed = data.get("completed", 0)
+                        pct = round(completed / total * 100, 1) if total else 0
+                        yield {
+                            "status": data.get("status", "downloading"),
+                            "total": total,
+                            "completed": completed,
+                            "percent": pct,
+                        }
+                    except (json.JSONDecodeError, ZeroDivisionError):
+                        continue
+        record("ollama.pull_complete", "OllamaService", {"model": target})
+        yield {"status": "success", "model": target}
+    except Exception as exc:
+        yield {"status": "error", "error": str(exc)}
+
+
+async def install_local_model(model: str | None = None):
+    """Full install flow: detect Ollama -> install if needed -> pull model.
+    Yields progress dicts for WebSocket streaming."""
+    target = model or RECOMMENDED_MODEL
+
+    # Step 1: Check if Ollama is installed
+    if not is_installed():
+        yield {"phase": "install", "status": "installing", "message": "Installing Ollama..."}
+        result = await install()
+        if not result.get("ok"):
+            yield {"phase": "install", "status": "error", "error": result.get("error", "Installation failed")}
+            return
+        yield {"phase": "install", "status": "done", "message": "Ollama installed successfully."}
+    else:
+        yield {"phase": "install", "status": "skipped", "message": "Ollama already installed."}
+
+    # Step 2: Check if Ollama is running
+    running = await is_running()
+    if not running:
+        yield {"phase": "start", "status": "waiting", "message": "Waiting for Ollama server to start..."}
+        for _ in range(10):
+            await asyncio.sleep(2)
+            if await is_running():
+                running = True
+                break
+        if not running:
+            yield {"phase": "start", "status": "error", "error": "Ollama server not responding. Please start it manually."}
+            return
+    yield {"phase": "start", "status": "done", "message": "Ollama server is running."}
+
+    # Step 3: Pull model with progress
+    yield {"phase": "pull", "status": "starting", "model": target}
+    async for progress in pull_model_streaming(target):
+        yield {"phase": "pull", **progress}
+
+    # Step 4: Switch provider
+    yield {"phase": "switch", "status": "done", "message": f"Local model {target} is ready.", "model": target}

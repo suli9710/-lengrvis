@@ -1,0 +1,61 @@
+name: wps-office-document
+version: "0.1.0"
+agent_owner: DocumentAgent
+risk: R2_REVERSIBLE_MODIFY
+tools:
+  - name: skill.wps_office.open_edit_document
+    description: Preview or execute a WPS Office document open/edit workflow through COM or UIAutomation.
+    risk: R2_REVERSIBLE_MODIFY
+    supports_dry_run: true
+    requires_authorized_path: true
+    app_target:
+      app_id: wps.office
+      display_name: WPS Office
+      platform: windows
+      interface: com
+      window_title: WPS
+      capabilities:
+        - open_document
+        - edit_text
+        - save_document
+    workflow:
+      target_app: wps.office
+      action: open_edit_document
+      interface: com
+      data_transfer:
+        document_path: path
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+        operation:
+          type: string
+          enum:
+            - open
+            - replace_text
+            - append_text
+        find_text:
+          type: string
+        replacement_text:
+          type: string
+        append_text:
+          type: string
+        dry_run:
+          type: boolean
+      required:
+        - path
+        - operation
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        dry_run:
+          type: boolean
+        intent:
+          type: object
+    execution:
+      type: python
+      entry: handlers/intent.py
+      timeout_seconds: 5

@@ -528,11 +528,26 @@ export class MavrisApiClient {
     };
   }
 
-  clusterFiles(options: { k?: number } = {}): Promise<ApiResponse<BackendClusterResponse>> {
-    return this.request<BackendClusterResponse, { k?: number }>({
+  clusterFiles(options: FileClusterOptions = {}): Promise<ApiResponse<BackendClusterResponse>> {
+    const body: BackendClusterRequest = {};
+    const groupBy = options.group_by ?? options.groupBy;
+    const clusterBy = options.cluster_by ?? options.clusterBy;
+    const metadataWeight = options.metadata_weight ?? options.metadataWeight;
+    const imagePaths = options.image_paths ?? options.imagePaths;
+
+    if (typeof options.k === "number") body.k = options.k;
+    if (groupBy) body.group_by = groupBy;
+    if (clusterBy) body.cluster_by = clusterBy;
+    if (options.paths?.length) body.paths = options.paths;
+    if (imagePaths?.length) body.image_paths = imagePaths;
+    if (options.images?.length) body.images = options.images;
+    if (typeof options.limit === "number") body.limit = options.limit;
+    if (typeof metadataWeight === "number") body.metadata_weight = metadataWeight;
+
+    return this.request<BackendClusterResponse, BackendClusterRequest>({
       endpoint: "/api/files/cluster",
       method: "POST",
-      body: options.k ? { k: options.k } : {},
+      body,
       timeoutMs: 15_000
     });
   }
@@ -1243,17 +1258,49 @@ interface BackendFileSearchResponse {
 }
 
 export interface BackendClusterEntry {
-  cluster_id: number;
+  cluster_id: number | string;
   size: number;
   preview: string[];
   suggested_name?: string;
+  group_by?: string;
+  group_value?: string;
 }
 
 export interface BackendClusterResponse {
   ok: boolean;
   clusters: BackendClusterEntry[];
   count?: number;
+  total?: number;
+  method?: string;
+  group_by?: string;
+  cluster_by?: string;
   error?: string;
+}
+
+export interface FileClusterOptions {
+  k?: number;
+  groupBy?: string;
+  group_by?: string;
+  clusterBy?: string;
+  cluster_by?: string;
+  paths?: string[];
+  imagePaths?: string[];
+  image_paths?: string[];
+  images?: string[];
+  limit?: number;
+  metadataWeight?: number;
+  metadata_weight?: number;
+}
+
+interface BackendClusterRequest {
+  k?: number;
+  group_by?: string;
+  cluster_by?: string;
+  paths?: string[];
+  image_paths?: string[];
+  images?: string[];
+  limit?: number;
+  metadata_weight?: number;
 }
 
 interface BackendSettings {

@@ -1908,6 +1908,22 @@ button:disabled {
   gap: 10px;
 }
 
+.timeline__item {
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  transition:
+    border-color 0.18s var(--ease-out),
+    background 0.18s var(--ease-out),
+    box-shadow 0.18s var(--ease-out);
+}
+
+.timeline__item--focused {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  box-shadow: var(--shadow-sm);
+}
+
 .timeline__marker,
 .step-row__index {
   width: 30px;
@@ -2203,6 +2219,7 @@ button:disabled {
 .search-row {
   display: flex;
   align-items: stretch;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -2233,6 +2250,38 @@ button:disabled {
 
 .input-with-icon input:focus {
   box-shadow: none;
+}
+
+.cluster-dimension-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.cluster-dimension-picker select {
+  min-width: 96px;
+  min-height: 30px;
+  padding: 0 26px 0 8px;
+  border: 0;
+  background-color: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  outline: none;
+}
+
+.cluster-dimension-picker:focus-within {
+  border-color: rgba(74, 108, 247, 0.55);
+  box-shadow: 0 0 0 3px rgba(74, 108, 247, 0.12);
 }
 
 /* Fields */

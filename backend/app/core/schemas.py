@@ -7,6 +7,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.orchestration.execution_stage import ExecutionStage
+from app.orchestration.step_phase import StepPhase
+from app.orchestration.task_phase import TaskPhase
 from app.policy.risk import RiskLevel, SafetyVerdict
 
 
@@ -18,12 +21,41 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex}"
 
 
-class TaskStatus(StrEnum):
-    CREATED = "created"
-    PLANNING = "planning"
-    REVIEWING_PLAN = "reviewing_plan"
-    AGENT_CONSULTATION = "agent_consultation"
-    PLAN_FINAL_REVIEW = "plan_final_review"
+LEGACY_TASK_STATUS_MAP: dict[str, tuple[TaskPhase, ExecutionStage]] = {
+    "created": (TaskPhase.CREATED, ExecutionStage.IDLE),
+    "planning": (TaskPhase.PLANNING, ExecutionStage.IDLE),
+    "reviewing_plan": (TaskPhase.PLAN_REVIEW, ExecutionStage.IDLE),
+    "agent_consultation": (TaskPhase.CONSULTATION, ExecutionStage.IDLE),
+    "plan_final_review": (TaskPhase.PLAN_REVIEW, ExecutionStage.IDLE),
+    "waiting_user_approval": (TaskPhase.EXECUTION, ExecutionStage.AWAITING_APPROVAL),
+    "executing_step": (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
+    "reviewing_tool_call": (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
+    "executing_tool": (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
+    "recording_observation": (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
+    "agent_discussion": (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
+    "reviewing_next_step": (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
+    "final_review": (TaskPhase.FINAL_REVIEW, ExecutionStage.IDLE),
+    "completed": (TaskPhase.COMPLETED, ExecutionStage.IDLE),
+    "denied": (TaskPhase.CANCELLED, ExecutionStage.IDLE),
+    "failed": (TaskPhase.FAILED, ExecutionStage.IDLE),
+    "paused": (TaskPhase.EXECUTION, ExecutionStage.PAUSED),
+    "cancelled": (TaskPhase.CANCELLED, ExecutionStage.IDLE),
+    "rolled_back": (TaskPhase.FAILED, ExecutionStage.IDLE),
+}
+
+
+class TaskStatus:
+    """Legacy constant facade backed by TaskPhase.
+
+    Kept for older orchestrator call sites while the public Task model stores
+    TaskPhase in ``status``.
+    """
+
+    CREATED = TaskPhase.CREATED
+    PLANNING = TaskPhase.PLANNING
+    REVIEWING_PLAN = TaskPhase.PLAN_REVIEW
+    AGENT_CONSULTATION = TaskPhase.CONSULTATION
+    PLAN_FINAL_REVIEW = TaskPhase.PLAN_REVIEW
     WAITING_USER_APPROVAL = "waiting_user_approval"
     EXECUTING_STEP = "executing_step"
     REVIEWING_TOOL_CALL = "reviewing_tool_call"
@@ -31,13 +63,13 @@ class TaskStatus(StrEnum):
     RECORDING_OBSERVATION = "recording_observation"
     AGENT_DISCUSSION = "agent_discussion"
     REVIEWING_NEXT_STEP = "reviewing_next_step"
-    FINAL_REVIEW = "final_review"
-    COMPLETED = "completed"
-    DENIED = "denied"
-    FAILED = "failed"
+    FINAL_REVIEW = TaskPhase.FINAL_REVIEW
+    COMPLETED = TaskPhase.COMPLETED
+    DENIED = TaskPhase.CANCELLED
+    FAILED = TaskPhase.FAILED
     PAUSED = "paused"
-    CANCELLED = "cancelled"
-    ROLLED_BACK = "rolled_back"
+    CANCELLED = TaskPhase.CANCELLED
+    ROLLED_BACK = TaskPhase.FAILED
 
 
 class StepStatus(StrEnum):
@@ -94,7 +126,7 @@ class ChatMessage(BaseModel):
 
 class ChatResponse(BaseModel):
     task_id: str | None = None
-    status: TaskStatus | None = None
+    status: TaskPhase | None = None
     message: str
     delegated: bool = False
     agent: str = "SupervisorAgent"
@@ -112,6 +144,7 @@ class PlanStep(BaseModel):
     risk_level: RiskLevel = RiskLevel.R0_READ_ONLY
     requires_approval: bool = False
     status: StepStatus = StepStatus.PENDING
+    step_phase: StepPhase = StepPhase.PENDING
     depends_on: list[str] = Field(default_factory=list)
     rollback_strategy: str = ""
 
@@ -132,11 +165,44 @@ class Plan(BaseModel):
 class Task(BaseModel):
     id: str = Field(default_factory=lambda: new_id("task"))
     user_goal: str
-    status: TaskStatus = TaskStatus.CREATED
+    status: TaskPhase = TaskPhase.CREATED
+    phase: TaskPhase = TaskPhase.CREATED
+    execution_stage: ExecutionStage = ExecutionStage.IDLE
     mode: str = "privacy"
     final_summary: str = ""
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_status_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        raw_status = normalized.get("status")
+        raw_phase = normalized.get("phase")
+        raw_stage = normalized.get("execution_stage")
+
+        status_text = str(raw_status.value if isinstance(raw_status, StrEnum) else raw_status or "").strip()
+        phase_text = str(raw_phase.value if isinstance(raw_phase, StrEnum) else raw_phase or "").strip()
+
+        mapped = LEGACY_TASK_STATUS_MAP.get(status_text)
+        if mapped is not None:
+            phase, stage = mapped
+            normalized["status"] = phase
+            normalized["phase"] = raw_phase or phase
+            normalized["execution_stage"] = raw_stage or stage
+            return normalized
+
+        if not status_text and phase_text:
+            normalized["status"] = raw_phase
+            normalized["phase"] = raw_phase
+            return normalized
+
+        if status_text:
+            normalized["phase"] = raw_phase or raw_status
+        return normalized
 
 
 class AgentMessage(BaseModel):

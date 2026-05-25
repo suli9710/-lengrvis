@@ -1,6 +1,6 @@
 import { AlertCircle, CheckCircle2, Download, KeyRound, Loader2, Play, Plus, Save, Square, Trash2 } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { AppSettings, BackendStatus, LocalLLMHealth, McpServerConfig } from "../../shared/types";
 import type { MavrisApiClient, MobileDevice, MobilePairingCode } from "../lib/apiClient";
@@ -12,6 +12,35 @@ function zhMode(mode: AppSettings["mode"]): string {
   if (mode === "hybrid") return "混合";
   return "隐私（需本地 LLM）";
 }
+
+const LOCAL_MODEL_OPTIONS = [
+  { value: "qwen2.5:3b", label: "Qwen2.5 3B" },
+  { value: "qwen2.5:7b", label: "Qwen2.5 7B" },
+  { value: "llama3.2:3b", label: "Llama 3.2 3B" }
+] as const;
+
+const INSTALL_MODEL_WS_PATHS = ["/ws/settings/install-local-model", "/api/ws/settings/install-local-model"] as const;
+const INSTALL_MODEL_WS_RETRY_DELAY_MS = 2_500;
+
+interface InstallModelRequest {
+  model: string;
+}
+
+interface InstallModelProgress {
+  stage: string;
+  percent: number;
+  error?: string;
+}
+
+interface InstallModelStartResponse {
+  ok?: boolean;
+  message?: string;
+  error?: string;
+  progress?: InstallModelProgress;
+}
+
+type InstallModelStatus = "idle" | "installing" | "completed" | "error";
+type InstallModelSocketStatus = "idle" | "connecting" | "connected" | "reconnecting" | "closed";
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -98,6 +127,9 @@ export function SettingsPanel({
           </div>
           <LocalLlmHealthNotice health={localLlmHealth} />
         </label>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <LocalModelInstaller api={api} apiBaseUrl={draft.apiBaseUrl} />
+        </div>
         <label className="field">
           <span>API 地址</span>
           <input
@@ -331,6 +363,322 @@ export function SettingsPanel({
       </div>
     </Panel>
   );
+}
+
+function LocalModelInstaller({ api, apiBaseUrl }: { api: MavrisApiClient; apiBaseUrl: string }) {
+  const [model, setModel] = useState<(typeof LOCAL_MODEL_OPTIONS)[number]["value"]>("qwen2.5:3b");
+  const [status, setStatus] = useState<InstallModelStatus>("idle");
+  const [socketStatus, setSocketStatus] = useState<InstallModelSocketStatus>("idle");
+  const [progress, setProgress] = useState<InstallModelProgress>({
+    stage: "选择模型后即可安装到本地推理环境。",
+    percent: 0
+  });
+  const closeProgressSocketRef = useRef<() => void>();
+
+  const isInstalling = status === "installing";
+
+  const closeProgressSocket = useCallback(() => {
+    closeProgressSocketRef.current?.();
+    closeProgressSocketRef.current = undefined;
+  }, []);
+
+  useEffect(() => closeProgressSocket, [closeProgressSocket]);
+
+  const applyProgress = useCallback(
+    (nextProgress: InstallModelProgress) => {
+      const normalizedProgress = normalizeInstallModelProgress(nextProgress);
+      setProgress(normalizedProgress);
+
+      if (normalizedProgress.error) {
+        setStatus("error");
+        closeProgressSocket();
+        return;
+      }
+
+      if (normalizedProgress.percent >= 100) {
+        setStatus("completed");
+        setSocketStatus("closed");
+        closeProgressSocket();
+      }
+    },
+    [closeProgressSocket]
+  );
+
+  const openProgressSocket = useCallback(() => {
+    closeProgressSocket();
+
+    if (typeof WebSocket === "undefined") {
+      setSocketStatus("closed");
+      return;
+    }
+
+    let socket: WebSocket | null = null;
+    let closedByCaller = false;
+    let retryId: number | undefined;
+    let pathIndex = 0;
+    let receivedProgress = false;
+
+    const connect = () => {
+      setSocketStatus(pathIndex === 0 && !receivedProgress ? "connecting" : "reconnecting");
+      socket = new WebSocket(buildInstallModelWebSocketUrl(apiBaseUrl, INSTALL_MODEL_WS_PATHS[pathIndex], model));
+
+      socket.onopen = () => {
+        setSocketStatus("connected");
+      };
+      socket.onmessage = (event) => {
+        receivedProgress = true;
+        const nextProgress = parseInstallModelProgress(event.data);
+        if (nextProgress) {
+          applyProgress(nextProgress);
+        }
+      };
+      socket.onerror = () => {
+        setSocketStatus("reconnecting");
+      };
+      socket.onclose = () => {
+        socket = null;
+        if (closedByCaller) {
+          setSocketStatus("closed");
+          return;
+        }
+        if (!receivedProgress && pathIndex < INSTALL_MODEL_WS_PATHS.length - 1) {
+          pathIndex += 1;
+        }
+        retryId = window.setTimeout(connect, INSTALL_MODEL_WS_RETRY_DELAY_MS);
+      };
+    };
+
+    connect();
+
+    closeProgressSocketRef.current = () => {
+      closedByCaller = true;
+      if (retryId !== undefined) window.clearTimeout(retryId);
+      socket?.close();
+      socket = null;
+      setSocketStatus("closed");
+    };
+  }, [apiBaseUrl, applyProgress, closeProgressSocket, model]);
+
+  const installModel = async () => {
+    setStatus("installing");
+    setProgress({ stage: "正在连接安装进度通道...", percent: 0 });
+    openProgressSocket();
+
+    const response = await api.request<InstallModelStartResponse, InstallModelRequest>({
+      endpoint: "/api/settings/install-local-model",
+      method: "POST",
+      body: { model },
+      timeoutMs: 30_000
+    });
+
+    if (!response.ok) {
+      closeProgressSocket();
+      setStatus("error");
+      setProgress({
+        stage: response.error?.message ?? "安装请求失败，请检查后端连接。",
+        percent: 0,
+        error: response.error?.message ?? "安装请求失败"
+      });
+      return;
+    }
+
+    if (response.data?.progress) {
+      applyProgress(response.data.progress);
+    }
+
+    if (response.data?.ok === false || response.data?.error) {
+      closeProgressSocket();
+      setStatus("error");
+      setProgress({
+        stage: response.data.error ?? response.data.message ?? "安装任务启动失败。",
+        percent: response.data.progress?.percent ?? progress.percent,
+        error: response.data.error ?? response.data.message ?? "安装任务启动失败"
+      });
+      return;
+    }
+
+    setProgress((current) =>
+      current.percent > 0
+        ? current
+        : {
+            stage: response.data?.message ?? "安装任务已启动，等待后端推送进度...",
+            percent: 1
+          }
+    );
+  };
+
+  const tone =
+    status === "completed"
+      ? "success"
+      : status === "error"
+        ? "danger"
+        : isInstalling
+          ? "info"
+          : "neutral";
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: 12,
+        padding: "12px",
+        border: "1px solid var(--line-soft)",
+        borderRadius: "var(--r-md)",
+        background: "var(--surface-soft)"
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "start", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ display: "grid", gap: 3, minWidth: 0 }}>
+          <strong style={{ color: "var(--text)", fontSize: 13 }}>端侧模型安装</strong>
+          <span style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.45 }}>
+            选择模型后由后端安装到本地运行时，进度会通过 WebSocket 实时更新。
+          </span>
+        </div>
+        <Badge tone={tone}>{zhInstallModelStatus(status, socketStatus)}</Badge>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 1fr) auto", gap: 10, alignItems: "end" }}>
+        <label className="field">
+          <span>模型</span>
+          <select
+            value={model}
+            disabled={isInstalling}
+            onChange={(event) => setModel(event.target.value as (typeof LOCAL_MODEL_OPTIONS)[number]["value"])}
+          >
+            {LOCAL_MODEL_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label} ({option.value})
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="button button--primary"
+          disabled={isInstalling}
+          onClick={() => void installModel()}
+          style={{ minWidth: 158 }}
+        >
+          {isInstalling ? <Loader2 size={16} aria-hidden="true" style={{ animation: "dot-spin 1s linear infinite" }} /> : <Download size={16} aria-hidden="true" />}
+          {isInstalling ? "正在安装" : "一键安装本地模型"}
+        </button>
+      </div>
+
+      <InstallModelProgressBar progress={progress} />
+      {progress.error ? (
+        <span style={{ color: "var(--red)", fontSize: 12, fontWeight: 700 }}>{progress.error}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function InstallModelProgressBar({ progress }: { progress: InstallModelProgress }) {
+  const percent = clampPercent(progress.percent);
+
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <span style={{ minWidth: 0, color: "var(--text-soft)", fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {progress.stage}
+        </span>
+        <span style={{ color: "var(--muted)", fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+          {percent}%
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label="本地模型安装进度"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        style={{
+          height: 8,
+          overflow: "hidden",
+          borderRadius: 999,
+          border: "1px solid var(--line-soft)",
+          background: "var(--surface)"
+        }}
+      >
+        <div
+          style={{
+            width: `${percent}%`,
+            height: "100%",
+            borderRadius: 999,
+            background: progress.error ? "var(--red)" : "linear-gradient(90deg, var(--brand) 0%, var(--teal) 100%)",
+            transition: "width 0.25s var(--ease-out)"
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function zhInstallModelStatus(status: InstallModelStatus, socketStatus: InstallModelSocketStatus) {
+  if (status === "completed") return "已完成";
+  if (status === "error") return "安装失败";
+  if (status === "installing") {
+    if (socketStatus === "connected") return "接收进度";
+    if (socketStatus === "reconnecting") return "重连进度";
+    return "安装中";
+  }
+  return "待安装";
+}
+
+function buildInstallModelWebSocketUrl(baseUrl: string, path: string, model: string): string {
+  const url = new URL(path, getInstallModelBackendBaseUrl(baseUrl));
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("model", model);
+  return url.toString();
+}
+
+function getInstallModelBackendBaseUrl(baseUrl: string): string {
+  const candidate = window.mavris?.backendBaseUrl || baseUrl || "http://127.0.0.1:8000";
+  return /^https?:\/\//i.test(candidate) ? candidate : "http://127.0.0.1:8000";
+}
+
+function parseInstallModelProgress(data: unknown): InstallModelProgress | null {
+  try {
+    const payload = typeof data === "string" ? JSON.parse(data) : data;
+    return readInstallModelProgress(payload);
+  } catch {
+    return null;
+  }
+}
+
+function readInstallModelProgress(payload: unknown): InstallModelProgress | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const direct = payload as Partial<InstallModelProgress> & { progress?: unknown; message?: unknown };
+  if (typeof direct.progress === "object" && direct.progress !== null) {
+    return readInstallModelProgress(direct.progress);
+  }
+
+  const hasStage = typeof direct.stage === "string" || typeof direct.message === "string";
+  const hasPercent = typeof direct.percent === "number";
+  if (!hasStage && !hasPercent && typeof direct.error !== "string") {
+    return null;
+  }
+
+  return normalizeInstallModelProgress({
+    stage: typeof direct.stage === "string" ? direct.stage : typeof direct.message === "string" ? direct.message : "正在安装本地模型...",
+    percent: typeof direct.percent === "number" ? direct.percent : 0,
+    error: typeof direct.error === "string" ? direct.error : undefined
+  });
+}
+
+function normalizeInstallModelProgress(progress: InstallModelProgress): InstallModelProgress {
+  return {
+    stage: progress.stage || (progress.error ? "安装失败" : "正在安装本地模型..."),
+    percent: clampPercent(progress.percent),
+    ...(progress.error ? { error: progress.error } : {})
+  };
+}
+
+function clampPercent(percent: number) {
+  if (!Number.isFinite(percent)) return 0;
+  return Math.max(0, Math.min(100, Math.round(percent)));
 }
 
 function PairingVisualCode({ code }: { code?: string }) {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -64,6 +65,32 @@ class MemoryAgent(BaseAgent):
         except Exception:
             pass
         return memory
+
+    async def remember_lesson(
+        self,
+        lesson: dict[str, Any],
+        *,
+        task_id: str = "",
+        tags: list[str] | None = None,
+        source: str = "system",
+    ) -> Memory:
+        """Store a structured post-task lesson for future planning."""
+        normalized = {
+            "goal_pattern": str(lesson.get("goal_pattern") or "").strip(),
+            "tool": str(lesson.get("tool") or "").strip(),
+            "args_pattern": lesson.get("args_pattern") or {},
+            "outcome": str(lesson.get("outcome") or "").strip(),
+            "reason": str(lesson.get("reason") or "").strip(),
+        }
+        tool_tag = normalized["tool"] or "unknown_tool"
+        content = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        return await self.remember(
+            content,
+            task_id=task_id,
+            kind="lesson",
+            tags=["lesson", tool_tag, *(tags or [])],
+            source=source,
+        )
 
     async def recall(
         self,

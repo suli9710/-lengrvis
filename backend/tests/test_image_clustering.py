@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from app.core import db
+from app.api import routes_files
 from app.tools import cluster_tools, vision_tools
 from app.tools.registry import register_all_tools
 
@@ -22,6 +23,7 @@ def _write_fixture_image(
     description: str,
     scene_type: str,
     people_count: int,
+    visible_objects: list[str] | None = None,
     captured_at: str | None = None,
     gps: tuple[float, float] | None = None,
 ) -> None:
@@ -32,6 +34,8 @@ def _write_fixture_image(
     info.add_text("marvis_description", description)
     info.add_text("marvis_scene_type", scene_type)
     info.add_text("marvis_people_count", str(people_count))
+    if visible_objects:
+        info.add_text("marvis_visible_objects", ",".join(visible_objects))
     if captured_at:
         info.add_text("marvis_captured_at", captured_at)
     if gps:
@@ -83,6 +87,20 @@ def test_describe_image_returns_structured_labels_from_local_metadata(tmp_path: 
     assert result["metadata"]["gps"]["latitude"] == pytest.approx(37.7749)
 
 
+def test_structure_image_labels_reads_structured_provider_text():
+    description = """
+    {"people_count": 2, "scene": "office", "visible_objects": ["laptop", "desk"]}
+    """
+
+    labels = vision_tools.structure_image_labels(description)
+
+    assert labels["people_count"] == 2
+    assert labels["scene_type"] == "office"
+    assert labels["scene"] == "office"
+    assert labels["visible_objects"] == ["laptop", "desk"]
+    assert labels["objects"] == ["laptop", "desk"]
+
+
 def test_cluster_images_uses_semantic_labels_and_exif_context(tmp_path: Path):
     _write_fixture_image(
         tmp_path / "sf-beach-1.png",
@@ -130,8 +148,122 @@ def test_cluster_images_uses_semantic_labels_and_exif_context(tmp_path: Path):
     assert all("structured_labels" in image for cluster in result["clusters"] for image in cluster["images"])
 
 
+def test_cluster_images_group_by_scene_uses_structured_label_buckets(tmp_path: Path):
+    _write_fixture_image(
+        tmp_path / "beach-1.png",
+        description="Two people on a beach with ocean and sand.",
+        scene_type="beach",
+        people_count=2,
+    )
+    _write_fixture_image(
+        tmp_path / "beach-2.png",
+        description="A beach photo with ocean.",
+        scene_type="beach",
+        people_count=0,
+    )
+    _write_fixture_image(
+        tmp_path / "office.png",
+        description="One person working in an office with a laptop.",
+        scene_type="office",
+        people_count=1,
+    )
+
+    result = cluster_tools.cluster_images(
+        {"group_by": "scene", "paths": [str(tmp_path)]},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is True
+    assert result["group_by"] == "scene"
+    assert result["method"] == "structured_label_grouping"
+    groups = {cluster["group_value"]: cluster for cluster in result["clusters"]}
+    assert groups["beach"]["size"] == 2
+    assert groups["office"]["size"] == 1
+
+
+def test_cluster_images_group_by_objects_allows_multi_label_membership(tmp_path: Path):
+    _write_fixture_image(
+        tmp_path / "desk-laptop.png",
+        description="Office desk with a laptop and screen.",
+        scene_type="office",
+        people_count=0,
+        visible_objects=["desk", "laptop"],
+    )
+    _write_fixture_image(
+        tmp_path / "only-laptop.png",
+        description="A laptop on a table.",
+        scene_type="office",
+        people_count=0,
+        visible_objects=["laptop"],
+    )
+
+    result = cluster_tools.cluster_images(
+        {"group_by": "objects", "paths": [str(tmp_path)]},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    groups = {cluster["group_value"]: cluster for cluster in result["clusters"]}
+    assert groups["laptop"]["size"] == 2
+    assert groups["desk"]["size"] == 1
+
+
 def test_image_cluster_tool_is_registered_for_file_agent():
     registry = register_all_tools(load_skills=False)
     tool = registry.get("image.cluster_images")
 
     assert tool.agent_owner == "FileAgent"
+
+
+def test_cluster_files_route_preserves_default_file_clustering(monkeypatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    class FakeTool:
+        def execute(self, args, context):  # noqa: ANN001
+            captured["args"] = args
+            captured["context"] = context
+            return {"ok": True, "clusters": [{"cluster_id": 0, "size": 1, "preview": [], "suggested_name": "x"}], "count": 1}
+
+    class FakeRegistry:
+        def list(self):  # noqa: ANN201
+            return [object()]
+
+        def get(self, name):  # noqa: ANN001, ANN201
+            captured["tool_name"] = name
+            return FakeTool()
+
+    monkeypatch.setattr("app.tools.registry.registry", FakeRegistry())
+    monkeypatch.setattr("app.llm.registry.get_effective_settings", lambda: type("Settings", (), {"allowed_directories": [str(tmp_path)]})())
+
+    result = routes_files.cluster_files({"k": "2"})
+
+    assert result["ok"] is True
+    assert captured["tool_name"] == "file.cluster_by_content"
+    assert captured["args"] == {"k": 2}
+
+
+def test_cluster_files_route_routes_image_group_by(monkeypatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    class FakeTool:
+        def execute(self, args, context):  # noqa: ANN001
+            captured["args"] = args
+            captured["context"] = context
+            return {"ok": True, "clusters": [], "count": 0, "total": 0, "group_by": args.get("group_by")}
+
+    class FakeRegistry:
+        def list(self):  # noqa: ANN201
+            return [object()]
+
+        def get(self, name):  # noqa: ANN001, ANN201
+            captured["tool_name"] = name
+            return FakeTool()
+
+    monkeypatch.setattr("app.tools.registry.registry", FakeRegistry())
+    monkeypatch.setattr("app.llm.registry.get_effective_settings", lambda: type("Settings", (), {"allowed_directories": [str(tmp_path)]})())
+
+    result = routes_files.cluster_files({"group_by": "scene", "paths": [str(tmp_path)]})
+
+    assert result["ok"] is True
+    assert result["group_by"] == "scene"
+    assert captured["tool_name"] == "image.cluster_images"
+    assert captured["args"] == {"group_by": "scene", "paths": [str(tmp_path)]}

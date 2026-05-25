@@ -1,0 +1,52 @@
+name: wechat-desktop-message
+version: "0.1.0"
+agent_owner: AppAgent
+risk: R2_REVERSIBLE_MODIFY
+tools:
+  - name: skill.wechat_desktop.send_message
+    description: Preview or execute a WeChat Desktop message workflow using UIAutomation selectors.
+    risk: R2_REVERSIBLE_MODIFY
+    supports_dry_run: true
+    app_target:
+      app_id: wechat.desktop
+      display_name: WeChat Desktop
+      platform: windows
+      interface: ui_automation
+      window_title: WeChat
+      capabilities:
+        - focus_window
+        - find_contact
+        - type_message
+        - click_send
+    workflow:
+      target_app: wechat.desktop
+      action: send_message
+      interface: ui_automation
+      data_transfer:
+        clipboard_text: message
+        restore_clipboard: true
+    input_schema:
+      type: object
+      properties:
+        contact:
+          type: string
+        message:
+          type: string
+        dry_run:
+          type: boolean
+      required:
+        - contact
+        - message
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        dry_run:
+          type: boolean
+        intent:
+          type: object
+    execution:
+      type: python
+      entry: handlers/intent.py
+      timeout_seconds: 5

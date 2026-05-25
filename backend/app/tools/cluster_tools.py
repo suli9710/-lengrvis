@@ -13,7 +13,8 @@ from app.indexer.ocr_service import IMAGE_EXTENSIONS
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
-_VALID_CLUSTER_BY = {"auto", "scene", "people", "time", "location"}
+_VALID_CLUSTER_BY = {"auto", "scene", "people", "objects", "time", "location", "tags"}
+_EXACT_GROUP_BY = {"scene", "people", "objects", "tags"}
 
 
 _GENERIC_CATEGORIES = {
@@ -81,9 +82,12 @@ def _row_from_path(path: Path) -> dict[str, Any]:
 
 def cluster_by_content(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     k = int(args.get("k") or 0) or None
+    group_by = str(args.get("group_by") or "").strip().lower()
     files = list(_iter_indexed_files(context))
     if not files:
         return {"ok": True, "clusters": [], "count": 0}
+    if group_by in {"category", "type", "extension"}:
+        return _cluster_files_by_metadata(files, group_by=group_by)
     labels = [f"{row.get('name', '')} {row.get('extension', '')}" for row in files]
     groups = cluster_texts(labels, k=k)
     cluster_payload = []
@@ -121,9 +125,11 @@ def cluster_images(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     from app.tools import vision_tools
 
     limit = _int_arg(args.get("limit"), default=500)
-    cluster_by = str(args.get("cluster_by") or "auto").strip().lower()
+    group_by_arg = args.get("group_by")
+    cluster_by = str(group_by_arg or args.get("cluster_by") or "auto").strip().lower()
     if cluster_by not in _VALID_CLUSTER_BY:
         cluster_by = "auto"
+    exact_grouping_requested = group_by_arg is not None and cluster_by in _EXACT_GROUP_BY
 
     image_paths = list(_iter_image_files(args, context))[:limit]
     if not image_paths:
@@ -149,6 +155,8 @@ def cluster_images(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
         return _time_based_clustering(args, profiles)
     if cluster_by == "location":
         return _location_based_clustering(args, profiles)
+    if exact_grouping_requested or cluster_by in {"objects", "tags"}:
+        return _label_based_clustering(args, profiles, group_by=cluster_by)
 
     label_texts = [vision_tools.image_label_text(profile) for profile in profiles]
     embedder = args.get("embedder") or context.get("embedder")
@@ -234,6 +242,37 @@ def _suggest_cluster_name(members: list[dict[str, Any]]) -> str:
         return "mixed"
     top_ext, _ = max(extensions.items(), key=lambda item: item[1])
     return _category_for_extension(top_ext)
+
+
+def _cluster_files_by_metadata(files: list[dict[str, Any]], *, group_by: str) -> dict[str, Any]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for row in files:
+        if group_by == "extension":
+            key = (row.get("extension") or "no_extension").lower()
+        else:
+            key = _category_for_extension(row.get("extension") or "")
+        buckets.setdefault(key, []).append(row)
+
+    clusters = []
+    for index, (key, members) in enumerate(sorted(buckets.items())):
+        clusters.append(
+            {
+                "cluster_id": index,
+                "size": len(members),
+                "preview": [member.get("path") for member in members[:3]],
+                "suggested_name": key,
+                "group_by": group_by,
+                "group_value": key,
+            }
+        )
+    clusters.sort(key=lambda c: (-c["size"], str(c["suggested_name"])))
+    return {
+        "ok": True,
+        "clusters": clusters,
+        "count": len(clusters),
+        "method": "metadata_grouping",
+        "group_by": group_by,
+    }
 
 
 def _category_from_app(app: dict[str, Any]) -> str:
@@ -400,6 +439,78 @@ def _image_cluster_member(profile: dict[str, Any]) -> dict[str, Any]:
         "structured_labels": profile.get("structured_labels") or {},
         "metadata": profile.get("metadata") or {},
     }
+
+
+def _label_based_clustering(
+    args: dict[str, Any], profiles: list[dict[str, Any]], *, group_by: str,
+) -> dict[str, Any]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for profile in profiles:
+        for key in _image_group_keys(profile, group_by=group_by):
+            buckets.setdefault(key, []).append(profile)
+
+    min_group_size = max(1, _int_arg(args.get("min_group_size"), default=1))
+    clusters = []
+    for index, (key, members) in enumerate(sorted(buckets.items())):
+        if len(members) < min_group_size:
+            continue
+        clusters.append(
+            {
+                "cluster_id": index,
+                "size": len(members),
+                "suggested_name": key,
+                "preview": [member.get("path") for member in members[:3]],
+                "images": [_image_cluster_member(member) for member in members],
+                "group_by": group_by,
+                "group_value": key,
+            }
+        )
+    clusters.sort(key=lambda cluster: (-cluster["size"], str(cluster["suggested_name"])))
+    return {
+        "ok": True,
+        "clusters": clusters,
+        "count": len(clusters),
+        "total": len(profiles),
+        "method": "structured_label_grouping",
+        "cluster_by": group_by,
+        "group_by": group_by,
+    }
+
+
+def _image_group_keys(profile: dict[str, Any], *, group_by: str) -> list[str]:
+    labels = profile.get("structured_labels") or {}
+    if group_by == "scene":
+        scene = str(labels.get("scene_type") or labels.get("scene") or "unknown").strip().lower()
+        return [scene or "unknown"]
+    if group_by == "people":
+        count = _safe_float(labels.get("people_count"))
+        if count is None:
+            return ["people_unknown"]
+        if count <= 0:
+            return ["no_people"]
+        if count == 1:
+            return ["one_person"]
+        return [f"{int(count)}_people"]
+    if group_by == "objects":
+        objects = labels.get("visible_objects") or labels.get("objects") or []
+        keys = _normalize_label_values(objects)
+        return keys or ["objects_unknown"]
+    if group_by == "tags":
+        keys = _normalize_label_values(profile.get("tags") or [])
+        return keys or ["image"]
+    return ["unknown"]
+
+
+def _normalize_label_values(values: Any) -> list[str]:
+    if values is None:
+        return []
+    raw_items = values if isinstance(values, (list, tuple, set)) else [values]
+    keys: list[str] = []
+    for item in raw_items:
+        key = str(item).strip().lower().replace(" ", "_")
+        if key and key not in keys:
+            keys.append(key)
+    return keys
 
 
 def _suggest_image_cluster_name(members: list[dict[str, Any]]) -> str:
@@ -707,15 +818,21 @@ def register(registry) -> None:
         "properties": {
             "cluster_by": {
                 "type": "string",
-                "enum": ["auto", "scene", "people", "time", "location"],
+                "enum": ["auto", "scene", "people", "objects", "tags", "time", "location"],
                 "description": (
                     "Clustering dimension. 'auto' uses combined semantic+metadata (default). "
                     "'scene' emphasises visual scene similarity. "
                     "'people' groups by number of people. "
+                    "'objects' and 'tags' group by structured image labels. "
                     "'time' groups by capture month/quarter. "
                     "'location' groups by GPS grid cells (~11km)."
                 ),
                 "default": "auto",
+            },
+            "group_by": {
+                "type": "string",
+                "enum": ["scene", "people", "objects", "tags", "time", "location"],
+                "description": "Optional exact grouping dimension. Alias for cluster_by, with label buckets for scene/people/objects/tags.",
             },
             "k": {
                 "type": "integer",

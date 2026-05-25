@@ -11,6 +11,7 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.agents.planner_agent import PlannerAgent
 from app.core import db
 from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.orchestration.task_phase import TaskPhase
 from app.policy.risk import RiskLevel
 from app.tools.registry import register_all_tools
 from app.tools.schemas import ToolDefinition
@@ -111,7 +112,7 @@ def test_dependency_scheduler_runs_ready_steps_in_parallel_then_dependents():
     starts = {event["label"]: event["time"] for event in events if event["phase"] == "start"}
     ends = {event["label"]: event["time"] for event in events if event["phase"] == "end"}
 
-    assert task.status == TaskStatus.COMPLETED
+    assert task.status == TaskPhase.COMPLETED
     assert {step.id: step.status for step in plan.steps} == {
         "A": StepStatus.SUCCEEDED,
         "B": StepStatus.SUCCEEDED,
@@ -193,5 +194,5 @@ def test_write_steps_for_same_directory_are_serialized(tmp_path: Path):
     starts = {event["label"]: event["time"] for event in events if event["phase"] == "start"}
     ends = {event["label"]: event["time"] for event in events if event["phase"] == "end"}
 
-    assert task.status == TaskStatus.COMPLETED
+    assert task.status == TaskPhase.COMPLETED
     assert starts["B"] >= ends["A"] or starts["A"] >= ends["B"]

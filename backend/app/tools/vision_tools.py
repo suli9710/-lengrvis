@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -263,11 +264,19 @@ def extract_image_metadata(image_path: Path) -> dict[str, Any]:
 
 def structure_image_labels(description: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     metadata = metadata or {}
+    parsed = _parse_structured_label_text(description)
     people_count = _coerce_int(metadata.get("people_count"))
     if people_count is None:
+        people_count = _coerce_int(parsed.get("people_count"))
+    if people_count is None:
         people_count = _infer_people_count(description)
-    scene_type = str(metadata.get("scene_type") or "").strip().lower() or _infer_scene_type(description)
+    scene_type = (
+        str(metadata.get("scene_type") or parsed.get("scene_type") or "").strip().lower()
+        or _infer_scene_type(description)
+    )
     visible_objects = list(metadata.get("visible_objects") or [])
+    if not visible_objects:
+        visible_objects = list(parsed.get("visible_objects") or [])
     if not visible_objects:
         visible_objects = _infer_visible_objects(description)
     label_metadata = {
@@ -279,6 +288,8 @@ def structure_image_labels(description: str, metadata: dict[str, Any] | None = N
         "people_count": people_count,
         "scene_type": scene_type,
         "visible_objects": visible_objects,
+        "scene": scene_type,
+        "objects": visible_objects,
         "metadata": label_metadata,
     }
 
@@ -383,8 +394,83 @@ def _split_metadata_list(value: str) -> list[str]:
     if not value:
         return []
     result = []
-    for item in re.split(r"[,;|]", value):
+    for item in re.split(r"[,;|，、]", value):
         normalized = item.strip().lower()
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return result
+
+
+def _parse_structured_label_text(description: str) -> dict[str, Any]:
+    text = (description or "").strip()
+    if not text:
+        return {}
+    parsed = _parse_json_label_text(text) or _parse_key_value_label_text(text)
+    if not parsed:
+        return {}
+    scene = _first_label_value(parsed, ("scene_type", "scene", "场景", "場景"))
+    people = _first_label_value(parsed, ("people_count", "person_count", "people", "persons", "人物数", "人数"))
+    objects = _first_label_value(parsed, ("visible_objects", "objects", "object", "可见物体", "可見物體", "物体", "物件"))
+    result: dict[str, Any] = {}
+    coerced_people = _coerce_int(people)
+    if coerced_people is not None:
+        result["people_count"] = coerced_people
+    if scene:
+        result["scene_type"] = str(scene).strip().lower()
+    visible_objects = _coerce_label_list(objects)
+    if visible_objects:
+        result["visible_objects"] = visible_objects
+    return result
+
+
+def _parse_json_label_text(text: str) -> dict[str, Any]:
+    candidates = [text]
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if match:
+        candidates.append(match.group(0))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _parse_key_value_label_text(text: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip().strip("-*• ")
+        if not line:
+            continue
+        match = re.match(r"([^:：=]+)\s*[:：=]\s*(.+)$", line)
+        if not match:
+            continue
+        key = match.group(1).strip().lower().replace(" ", "_")
+        parsed[key] = match.group(2).strip()
+    return parsed
+
+
+def _first_label_value(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    normalized = {str(key).strip().lower().replace(" ", "_"): value for key, value in mapping.items()}
+    for key in keys:
+        lookup = key.strip().lower().replace(" ", "_")
+        if lookup in normalized:
+            return normalized[lookup]
+    return None
+
+
+def _coerce_label_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = re.split(r"[,;|，、]", str(value))
+    result: list[str] = []
+    for item in raw_items:
+        normalized = str(item).strip().strip("\"'").lower()
         if normalized and normalized not in result:
             result.append(normalized)
     return result

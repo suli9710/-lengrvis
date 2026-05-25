@@ -134,9 +134,8 @@ async def _run_task_through_orchestrator(task: Task) -> Task:
     try:
         return await OrchestratorAgent().run_task(task)
     except Exception as exc:
-        task.status = TaskStatus.FAILED
         task.final_summary = f"任务执行失败：{exc}"
-        db.upsert_model("tasks", task)
+        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
         raise
 
@@ -152,9 +151,8 @@ async def _run_task_background(task: Task) -> None:
     try:
         await OrchestratorAgent().run_task(task)
     except Exception as exc:
-        task.status = TaskStatus.FAILED
         task.final_summary = f"任务执行失败：{exc}"
-        db.upsert_model("tasks", task)
+        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
 
 

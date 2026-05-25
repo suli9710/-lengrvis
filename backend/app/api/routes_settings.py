@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from pydantic import BaseModel as PydanticBaseModel
 
 from app.llm.local_provider import health_snapshot
 from app.llm.onnx_provider import health_snapshot as onnx_health_snapshot
@@ -56,3 +57,25 @@ async def ollama_install():
 async def ollama_pull(payload: dict = {}):
     model = payload.get("model")
     return await ollama_service.pull_model(model)
+
+
+class InstallLocalModelRequest(PydanticBaseModel):
+    model: str | None = None
+
+
+@router.post("/settings/install-local-model")
+async def install_local_model(payload: InstallLocalModelRequest = InstallLocalModelRequest()):
+    """Install Ollama (if needed) and pull a local model.
+    Returns final status. For streaming progress, use the WebSocket endpoint."""
+    results = []
+    async for progress in ollama_service.install_local_model(payload.model):
+        results.append(progress)
+
+    last = results[-1] if results else {"status": "error", "error": "No progress received"}
+    ok = last.get("status") not in ("error",)
+    return {
+        "ok": ok,
+        "model": payload.model or ollama_service.RECOMMENDED_MODEL,
+        "progress": results,
+        "final": last,
+    }

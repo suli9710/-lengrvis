@@ -88,6 +88,32 @@ class SkillExecution(BaseModel):
         return value.strip()
 
 
+class AppTargetSpec(BaseModel):
+    """Optional target metadata for app/UIAutomation skill tools."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    app_id: str = Field(default="", validation_alias=AliasChoices("app_id", "appId"))
+    display_name: str = Field(default="", validation_alias=AliasChoices("display_name", "displayName"))
+    platform: str = "windows"
+    interface: Literal["ui_automation", "com", "settings_uri", "shell", "http"] | str = "ui_automation"
+    automation_id: str = Field(default="", validation_alias=AliasChoices("automation_id", "automationId"))
+    window_title: str = Field(default="", validation_alias=AliasChoices("window_title", "windowTitle"))
+    class_name: str = Field(default="", validation_alias=AliasChoices("class_name", "className"))
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class WorkflowIntentSpec(BaseModel):
+    """Declarative workflow hint embedded in a skill manifest."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    target_app: str = Field(default="", validation_alias=AliasChoices("target_app", "targetApp"))
+    action: str = ""
+    data_transfer: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("data_transfer", "dataTransfer"))
+    interface: str = "ui_automation"
+
+
 class SkillToolSpec(BaseModel):
     """Tool declaration inside skill.yaml."""
 
@@ -111,6 +137,11 @@ class SkillToolSpec(BaseModel):
         default=False,
         validation_alias=AliasChoices("requires_authorized_path", "requiresAuthorizedPath"),
     )
+    app_target: AppTargetSpec | None = Field(
+        default=None,
+        validation_alias=AliasChoices("app_target", "appTarget"),
+    )
+    workflow: WorkflowIntentSpec | None = None
 
     @field_validator("risk", mode="before")
     @classmethod
