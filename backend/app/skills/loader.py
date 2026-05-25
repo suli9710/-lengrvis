@@ -130,6 +130,8 @@ def adapt_skill_to_tool_definitions(definition: SkillDefinition, root: str | Pat
                 supports_dry_run=tool.supports_dry_run,
                 requires_authorized_path=tool.requires_authorized_path,
                 execute=_build_executor(sandbox, tool),
+                app_target=tool.app_target.model_dump(mode="json") if tool.app_target else None,
+                workflow=tool.workflow.model_dump(mode="json") if tool.workflow else None,
             )
         )
     return tool_definitions

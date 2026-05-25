@@ -9,6 +9,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import Approval, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.llm.registry import get_effective_settings
+from app.orchestration.state_machine import safe_transition
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security.mobile_jwt import decode_mobile_token
@@ -166,7 +167,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     db.upsert_model("approvals", approval)
     publish_approval_created(approval)
     step.status = StepStatus.WAITING_USER_APPROVAL
-    task.status = TaskStatus.WAITING_USER_APPROVAL
+    safe_transition(task, TaskStatus.WAITING_USER_APPROVAL, actor=_REMOTE_ACTOR)
     db.upsert_model("tasks", task)
     db.upsert_model("plans", plan)
     record(

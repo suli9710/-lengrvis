@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import { IPC_CHANNELS } from "../shared/ipc";
-import type { ApiRequest, ApiResponse, MavrisDesktopBridge } from "../shared/types";
+import type { ApiRequest, ApiResponse, MavrisDesktopBridge, NotificationPayload } from "../shared/types";
 
 const bridge: MavrisDesktopBridge = {
   api: {
@@ -23,8 +23,19 @@ const bridge: MavrisDesktopBridge = {
     openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url)
   },
   notifications: {
-    show: (title: string, body: string): Promise<{ shown: boolean }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.showNotification, title, body)
+    show: (payload: NotificationPayload): Promise<{ shown: boolean; reason?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.showNotification, payload),
+    onOpenTask: (handler: (taskId: string) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, taskId: unknown) => {
+        if (typeof taskId === "string" && taskId.trim()) {
+          handler(taskId);
+        }
+      };
+      ipcRenderer.on(IPC_CHANNELS.openTaskFromNotification, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.openTaskFromNotification, listener);
+      };
+    }
   },
   platform: process.platform,
   versions: {

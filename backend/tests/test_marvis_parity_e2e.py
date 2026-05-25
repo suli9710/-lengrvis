@@ -33,7 +33,8 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.agents.planner_agent import PlannerAgent
 from app.config import AppSettings
 from app.core import db
-from app.core.schemas import Plan, PlanStep, TaskStatus
+from app.core.schemas import Plan, PlanStep
+from app.orchestration.task_phase import TaskPhase
 from app.mcp import MCPRegistry
 from app.policy.risk import RiskLevel
 from app.tools.registry import register_all_tools, registry as tool_registry
@@ -175,7 +176,7 @@ def test_scenario_1_memory_planner_reflect_consolidation(memory_seed_capture):
     orchestrator = OrchestratorAgent()
     task = asyncio.run(orchestrator.handle_user_goal("整理重复发票", "privacy"))
 
-    assert task.status == TaskStatus.COMPLETED, f"Task should complete, got {task.status}: {task.final_summary}"
+    assert task.status == TaskPhase.COMPLETED, f"Task should complete, got {task.status}: {task.final_summary}"
 
     # The planner spy was called with non-empty memory context (seed memory recalled).
     assert memory_seed_capture["calls"] == 1

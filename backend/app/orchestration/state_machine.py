@@ -3,158 +3,151 @@ from __future__ import annotations
 from app.core import db
 from app.core.audit import record
 from app.core.errors import StateTransitionError
-from app.core.schemas import Task, TaskStatus, now_iso
-from app.llm.registry import get_effective_settings
+from app.core.schemas import LEGACY_TASK_STATUS_MAP, Task, now_iso
+from app.orchestration.execution_stage import ExecutionStage, is_stage_transition_allowed
+from app.orchestration.task_phase import TaskPhase, is_phase_transition_allowed
 
 
-ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.CREATED: {TaskStatus.PLANNING, TaskStatus.CANCELLED, TaskStatus.DENIED},
-    TaskStatus.PLANNING: {TaskStatus.REVIEWING_PLAN, TaskStatus.AGENT_CONSULTATION, TaskStatus.DENIED, TaskStatus.FAILED},
-    TaskStatus.REVIEWING_PLAN: {
-        TaskStatus.AGENT_CONSULTATION,
-        TaskStatus.WAITING_USER_APPROVAL,
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.COMPLETED,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-    },
-    TaskStatus.AGENT_CONSULTATION: {
-        TaskStatus.REVIEWING_PLAN,
-        TaskStatus.PLAN_FINAL_REVIEW,
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-    },
-    TaskStatus.PLAN_FINAL_REVIEW: {
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.WAITING_USER_APPROVAL,
-        TaskStatus.COMPLETED,
-        TaskStatus.DENIED,
-        TaskStatus.CANCELLED,
-    },
-    TaskStatus.WAITING_USER_APPROVAL: {
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.COMPLETED,
-        TaskStatus.CANCELLED,
-        TaskStatus.DENIED,
-    },
-    TaskStatus.EXECUTING_STEP: {
-        TaskStatus.REVIEWING_TOOL_CALL,
-        TaskStatus.EXECUTING_TOOL,
-        TaskStatus.FINAL_REVIEW,
-        TaskStatus.WAITING_USER_APPROVAL,
-        TaskStatus.COMPLETED,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-    },
-    TaskStatus.REVIEWING_TOOL_CALL: {
-        TaskStatus.EXECUTING_TOOL,
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.WAITING_USER_APPROVAL,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-    },
-    TaskStatus.EXECUTING_TOOL: {
-        TaskStatus.RECORDING_OBSERVATION,
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.WAITING_USER_APPROVAL,
-        TaskStatus.COMPLETED,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-    },
-    TaskStatus.RECORDING_OBSERVATION: {
-        TaskStatus.AGENT_DISCUSSION,
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-    },
-    TaskStatus.AGENT_DISCUSSION: {
-        TaskStatus.REVIEWING_NEXT_STEP,
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-    },
-    TaskStatus.REVIEWING_NEXT_STEP: {
-        TaskStatus.EXECUTING_STEP,
-        TaskStatus.FINAL_REVIEW,
-        TaskStatus.DENIED,
-    },
-    TaskStatus.FINAL_REVIEW: {
-        TaskStatus.COMPLETED,
-        TaskStatus.DENIED,
-        TaskStatus.FAILED,
-        TaskStatus.CANCELLED,
-    },
-    TaskStatus.PAUSED: {TaskStatus.EXECUTING_STEP, TaskStatus.CANCELLED, TaskStatus.DENIED},
-    TaskStatus.COMPLETED: {TaskStatus.ROLLED_BACK},
-    TaskStatus.FAILED: {TaskStatus.ROLLED_BACK},
-    TaskStatus.DENIED: set(),
-    TaskStatus.CANCELLED: set(),
-    TaskStatus.ROLLED_BACK: set(),
+PHASE_MAP: dict[str | TaskPhase, tuple[TaskPhase, ExecutionStage]] = {
+    **LEGACY_TASK_STATUS_MAP,
+    TaskPhase.CREATED: (TaskPhase.CREATED, ExecutionStage.IDLE),
+    TaskPhase.GOAL_ANALYSIS: (TaskPhase.GOAL_ANALYSIS, ExecutionStage.IDLE),
+    TaskPhase.PLANNING: (TaskPhase.PLANNING, ExecutionStage.IDLE),
+    TaskPhase.CONSULTATION: (TaskPhase.CONSULTATION, ExecutionStage.IDLE),
+    TaskPhase.PLAN_REVIEW: (TaskPhase.PLAN_REVIEW, ExecutionStage.IDLE),
+    TaskPhase.EXECUTION: (TaskPhase.EXECUTION, ExecutionStage.STEP_RUNNING),
+    TaskPhase.FINAL_REVIEW: (TaskPhase.FINAL_REVIEW, ExecutionStage.IDLE),
+    TaskPhase.COMPLETED: (TaskPhase.COMPLETED, ExecutionStage.IDLE),
+    TaskPhase.FAILED: (TaskPhase.FAILED, ExecutionStage.IDLE),
+    TaskPhase.CANCELLED: (TaskPhase.CANCELLED, ExecutionStage.IDLE),
+}
+
+_STAGE_BY_LEGACY_STATUS: dict[str, ExecutionStage] = {
+    key: stage for key, (_phase, stage) in LEGACY_TASK_STATUS_MAP.items()
 }
 
 
-def is_transition_allowed(source: TaskStatus, target: TaskStatus, *, strict: bool = False) -> bool:
-    if target in ALLOWED_TRANSITIONS.get(source, set()):
-        return True
-    if strict:
-        return False
-    return source in {
-        TaskStatus.CREATED,
-        TaskStatus.FAILED,
-        TaskStatus.COMPLETED,
-        TaskStatus.CANCELLED,
-    }
+def _phase_of(value: str | TaskPhase) -> TaskPhase:
+    if value is None:
+        return TaskPhase.CREATED
+    if isinstance(value, TaskPhase):
+        return value
+    text = str(value.value if hasattr(value, "value") else value)
+    if text in LEGACY_TASK_STATUS_MAP:
+        return LEGACY_TASK_STATUS_MAP[text][0]
+    try:
+        return TaskPhase(text)
+    except ValueError as exc:
+        raise StateTransitionError(text, text) from exc
 
 
-def _invalid_transition_error(source: TaskStatus, target: TaskStatus) -> StateTransitionError:
+def _stage_for_target(target: str | TaskPhase, phase: TaskPhase) -> ExecutionStage:
+    text = str(target.value if hasattr(target, "value") else target)
+    if text in _STAGE_BY_LEGACY_STATUS:
+        return _STAGE_BY_LEGACY_STATUS[text]
+    if phase == TaskPhase.EXECUTION:
+        return ExecutionStage.STEP_RUNNING
+    return ExecutionStage.IDLE
+
+
+def _invalid_transition_error(source: TaskPhase, target: TaskPhase) -> StateTransitionError:
     return StateTransitionError(source.value, target.value)
 
 
-def transition(task: Task, target: TaskStatus, actor: str = "StateMachine") -> Task:
-    if not is_transition_allowed(task.status, target):
-        raise _invalid_transition_error(task.status, target)
-    old = task.status
-    task.status = target
+def is_transition_allowed(source: str | TaskPhase, target: str | TaskPhase, *, strict: bool = False) -> bool:
+    source_phase = _phase_of(source)
+    target_phase = _phase_of(target)
+    if source_phase == target_phase:
+        return True
+    return is_phase_transition_allowed(source_phase, target_phase)
+
+
+def transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine") -> Task:
+    source_phase = _phase_of(task.status)
+    target_phase = _phase_of(target)
+    target_stage = _stage_for_target(target, target_phase)
+    if source_phase == target_phase and task.phase != source_phase:
+        task.phase = source_phase
+
+    if source_phase != target_phase and not is_phase_transition_allowed(source_phase, target_phase):
+        raise _invalid_transition_error(source_phase, target_phase)
+    if source_phase == target_phase and task.execution_stage != target_stage:
+        if not _is_stage_update_allowed(task.execution_stage, target_stage):
+            raise StateTransitionError(task.execution_stage.value, target_stage.value)
+
+    old_phase = task.status
+    old_stage = task.execution_stage
+    task.status = target_phase
+    task.phase = target_phase
+    task.execution_stage = target_stage
     task.updated_at = now_iso()
     db.upsert_model("tasks", task)
-    record("task.status_changed", actor, {"from": old, "to": target}, task_id=task.id)
+    record(
+        "task.status_changed",
+        actor,
+        {
+            "from": old_phase,
+            "to": target_phase,
+            "execution_stage_from": old_stage,
+            "execution_stage_to": target_stage,
+        },
+        task_id=task.id,
+    )
     return task
 
 
-def ensure_transition_allowed(task: Task, target: TaskStatus) -> None:
-    if not is_transition_allowed(task.status, target, strict=True):
-        raise _invalid_transition_error(task.status, target)
+def ensure_transition_allowed(task: Task, target: str | TaskPhase) -> None:
+    source_phase = _phase_of(task.status)
+    target_phase = _phase_of(target)
+    target_stage = _stage_for_target(target, target_phase)
+    if source_phase != target_phase and not is_phase_transition_allowed(source_phase, target_phase):
+        raise _invalid_transition_error(source_phase, target_phase)
+    if source_phase == target_phase and task.execution_stage != target_stage:
+        if not _is_stage_update_allowed(task.execution_stage, target_stage):
+            raise StateTransitionError(task.execution_stage.value, target_stage.value)
 
 
-def safe_transition(task: Task, target: TaskStatus, actor: str = "StateMachine") -> Task:
-    """Same as transition but degrades gracefully on illegal transitions.
+def safe_transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine") -> Task:
+    """Transition using only the three-layer policy.
 
-    Records an audit entry, then forces the status anyway so the orchestrator can
-    keep moving. Designed for the orchestrator's main loop where we never want a
-    pedantic transition table to lose the user's task.
+    Unlike the legacy helper, this never forces invalid transitions.  The name is
+    kept so older call sites continue to compile while they migrate.
     """
-    old = task.status
-    if target == old:
-        task.updated_at = now_iso()
-        db.upsert_model("tasks", task)
-        return task
-    strict = get_effective_settings().strict_state_machine
-    if strict and not is_transition_allowed(old, target, strict=True):
-        raise _invalid_transition_error(old, target)
-    try:
-        return transition(task, target, actor=actor)
-    except StateTransitionError as exc:
-        if strict:
-            raise
-        record(
-            "task.invalid_transition",
-            actor,
-            {"from": old, "to": target, "error": str(exc)},
-            task_id=task.id,
-        )
-        task.status = target
-        task.updated_at = now_iso()
-        db.upsert_model("tasks", task)
-        record("task.status_changed", actor, {"from": old, "to": target, "forced": True}, task_id=task.id)
-        return task
+
+    return transition(task, target, actor=actor)
+
+
+def sync_phase(task: Task) -> Task:
+    phase = _phase_of(task.status)
+    if phase != task.phase:
+        task.phase = phase
+    if phase in {
+        TaskPhase.CREATED,
+        TaskPhase.GOAL_ANALYSIS,
+        TaskPhase.PLANNING,
+        TaskPhase.CONSULTATION,
+        TaskPhase.PLAN_REVIEW,
+        TaskPhase.FINAL_REVIEW,
+        TaskPhase.COMPLETED,
+        TaskPhase.FAILED,
+        TaskPhase.CANCELLED,
+    }:
+        task.execution_stage = ExecutionStage.IDLE
+    else:
+        status_text = str(task.status.value if hasattr(task.status, "value") else task.status)
+        legacy_stage = _STAGE_BY_LEGACY_STATUS.get(status_text)
+        if legacy_stage is not None:
+            task.execution_stage = legacy_stage
+        elif task.execution_stage == ExecutionStage.IDLE:
+            task.execution_stage = ExecutionStage.STEP_RUNNING
+        elif not isinstance(task.execution_stage, ExecutionStage):
+            task.execution_stage = ExecutionStage.STEP_RUNNING
+    return task
+
+
+def _is_stage_update_allowed(source: ExecutionStage, target: ExecutionStage) -> bool:
+    if source == target:
+        return True
+    if source == ExecutionStage.IDLE and target == ExecutionStage.PAUSED:
+        return True
+    return is_stage_transition_allowed(source, target)

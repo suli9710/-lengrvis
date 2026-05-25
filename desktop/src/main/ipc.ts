@@ -1,4 +1,4 @@
-import { BrowserWindow, Notification, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
+import { BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
 
 import { IPC_CHANNELS } from "../shared/ipc";
 import type { ApiRequest, ApiResponse } from "../shared/types";
@@ -40,11 +40,6 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     return proxyApiRequest(backend.getBaseUrl(), request);
   });
 
-  ipcMain.handle(IPC_CHANNELS.showNotification, (_event, title: string, body: string) => {
-    const notification = new Notification({ title, body });
-    notification.show();
-    return { shown: true };
-  });
 }
 
 async function proxyApiRequest<TData>(

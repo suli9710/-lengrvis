@@ -67,6 +67,8 @@ class PlannerAgent(BaseAgent):
         mode: str,
         tools: list[str],
         memory_context: list | None = None,
+        perception_context: dict[str, Any] | None = None,
+        goal_context: dict[str, Any] | str | None = None,
     ) -> Plan:
         deterministic_plan = self._deterministic_file_plan(task_id, goal, tools)
         if deterministic_plan:
@@ -86,6 +88,8 @@ class PlannerAgent(BaseAgent):
                     memory_lines.append(f"- {content[:200]}")
             if memory_lines:
                 memory_block = "Past relevant memories:\n" + "\n".join(memory_lines) + "\n\n"
+        goal_block = self._format_goal_context(goal_context)
+        perception_block = self._format_perception_context(perception_context)
 
         messages = [
             {
@@ -97,7 +101,7 @@ class PlannerAgent(BaseAgent):
                 "content": render_prompt(
                     "planner_user.md",
                     {
-                        "memory_block": memory_block,
+                        "memory_block": memory_block + goal_block + perception_block,
                         "mode": mode,
                         "tools": "\n".join(f"- {tool}" for tool in tools),
                         "goal": goal,
@@ -155,6 +159,65 @@ class PlannerAgent(BaseAgent):
 
         self._publish_plan(task_id, plan)
         return plan
+
+    def _format_goal_context(self, goal_context: dict[str, Any] | str | None) -> str:
+        if not goal_context:
+            return ""
+        if isinstance(goal_context, str):
+            text = goal_context.strip()
+            return f"Goal context:\n{text}\n\n" if text else ""
+
+        lines: list[str] = []
+        active_goal = goal_context.get("active_goal")
+        if isinstance(active_goal, dict):
+            description = str(active_goal.get("user_goal") or active_goal.get("description") or "").strip()
+            if description:
+                lines.append(f"- Active goal: {description[:240]}")
+
+        goal_stack = goal_context.get("goal_stack")
+        if isinstance(goal_stack, list):
+            for index, item in enumerate(goal_stack[-5:], start=1):
+                if not isinstance(item, dict):
+                    continue
+                description = str(item.get("user_goal") or item.get("description") or "").strip()
+                if description:
+                    lines.append(f"- Goal {index}: {description[:200]}")
+
+        scope = str(goal_context.get("scope") or "").strip()
+        if scope:
+            lines.append(f"- Scope: {scope[:120]}")
+
+        if not lines:
+            return ""
+        return "Goal context:\n" + "\n".join(lines) + "\n\n"
+
+    def _format_perception_context(self, perception_context: dict[str, Any] | None) -> str:
+        if not perception_context:
+            return ""
+        lines: list[str] = []
+        screen_state = perception_context.get("screen_state")
+        if screen_state is not None:
+            description = str(getattr(screen_state, "description", "") or "").strip()
+            if description:
+                lines.append(f"- Visible screen: {description[:240]}")
+            tags = list(getattr(screen_state, "tags", []) or [])
+            if tags:
+                lines.append(f"- Screen tags: {', '.join(str(tag) for tag in tags[:8])}")
+        app_context = perception_context.get("app_context")
+        if app_context is None and screen_state is not None:
+            app_context = getattr(screen_state, "app_context", None)
+        if app_context is not None:
+            title = str(getattr(app_context, "active_window_title", "") or "").strip()
+            process = str(getattr(app_context, "process_name", "") or "").strip()
+            focused = getattr(app_context, "focus_control", None)
+            focus_name = str(getattr(focused, "name", "") or getattr(focused, "text", "") or "").strip() if focused else ""
+            if title or process:
+                lines.append(f"- Active app: {process or 'unknown'} / {title or 'untitled'}")
+            if focus_name:
+                lines.append(f"- Focused control: {focus_name[:160]}")
+        if not lines:
+            return ""
+        return "Current perception context:\n" + "\n".join(lines) + "\n\n"
 
     def _publish_plan(self, task_id: str, plan: Plan) -> None:
         self.bus.publish_text(

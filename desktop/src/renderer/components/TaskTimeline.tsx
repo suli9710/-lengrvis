@@ -1,5 +1,5 @@
 import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Images, Pause, Play, RotateCcw, X, XCircle } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { TaskEvent, TaskState, TaskStepRecording } from "../../shared/types";
 import { MavrisApiClient } from "../lib/apiClient";
@@ -9,9 +9,11 @@ import { Badge, Panel } from "./Panel";
 interface TaskTimelineProps {
   tasks: TaskEvent[];
   api?: MavrisApiClient;
+  focusedTaskId?: string | null;
 }
 
-export function TaskTimeline({ tasks, api }: TaskTimelineProps) {
+export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
+  const focusedTaskRef = useRef<HTMLLIElement | null>(null);
   const [previewTaskId, setPreviewTaskId] = useState<string | null>(null);
   const [previewSteps, setPreviewSteps] = useState<unknown[]>([]);
   const [recordingPlayer, setRecordingPlayer] = useState<{
@@ -42,6 +44,11 @@ export function TaskTimeline({ tasks, api }: TaskTimelineProps) {
     }, 1200);
     return () => window.clearInterval(timer);
   }, [isPlaying, playerFrames.length]);
+
+  useEffect(() => {
+    if (!focusedTaskId || !focusedTaskRef.current) return;
+    focusedTaskRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusedTaskId, tasks]);
 
   const openPreview = async (taskId: string) => {
     if (!api) return;
@@ -99,7 +106,11 @@ export function TaskTimeline({ tasks, api }: TaskTimelineProps) {
     <Panel title="任务时间线" eyebrow="执行记录">
       <ol className="timeline">
         {tasks.map((task) => (
-          <li className="timeline__item" key={task.id}>
+          <li
+            className={task.id === focusedTaskId ? "timeline__item timeline__item--focused" : "timeline__item"}
+            key={task.id}
+            ref={task.id === focusedTaskId ? focusedTaskRef : undefined}
+          >
             <span className={`timeline__marker timeline__marker--${task.state}`}>{iconForState(task.state)}</span>
             <div className="timeline__content">
               <div className="row row--between">

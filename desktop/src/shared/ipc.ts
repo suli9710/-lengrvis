@@ -6,7 +6,8 @@ export const IPC_CHANNELS = {
   openExternal: "mavris:shell:open-external",
   chooseSkillDirectory: "mavris:dialog:choose-skill-directory",
   chooseSkillZip: "mavris:dialog:choose-skill-zip",
-  showNotification: "mavris:notification:show"
+  showNotification: "mavris:show-notification",
+  openTaskFromNotification: "mavris:notification:open-task"
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];

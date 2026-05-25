@@ -25,7 +25,8 @@ export interface ApiResponse<TData = unknown> {
 export interface NotificationPayload {
   title: string;
   body: string;
-  severity?: "info" | "warning" | "error";
+  taskId?: string;
+  severity: "info" | "warning" | "error";
 }
 
 export type BackendState = "not_configured" | "starting" | "running" | "stopped" | "error";
@@ -388,7 +389,8 @@ export interface MavrisDesktopBridge {
     openExternal: (url: string) => Promise<void>;
   };
   notifications: {
-    show: (title: string, body: string) => Promise<{ shown: boolean }>;
+    show: (payload: NotificationPayload) => Promise<{ shown: boolean; reason?: string }>;
+    onOpenTask: (handler: (taskId: string) => void) => () => void;
   };
   platform:
     | "aix"

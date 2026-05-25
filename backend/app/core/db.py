@@ -60,6 +60,21 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS goals (
+                id TEXT PRIMARY KEY,
+                scope TEXT NOT NULL,
+                parent_goal_id TEXT,
+                status TEXT NOT NULL,
+                depth INTEGER NOT NULL,
+                task_ids TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_goals_scope_status_depth
+                ON goals(scope, status, depth, created_at);
+            CREATE INDEX IF NOT EXISTS idx_goals_parent_goal_id
+                ON goals(parent_goal_id);
             CREATE TABLE IF NOT EXISTS agent_messages (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -231,6 +246,33 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
             conn.execute(
                 "INSERT OR REPLACE INTO plans (id, task_id, data, created_at) VALUES (?, ?, ?, ?)",
                 (data["id"], data["task_id"], _json(data), now),
+            )
+            return
+        if table == "goals":
+            conn.execute(
+                """
+                INSERT INTO goals (id, scope, parent_goal_id, status, depth, task_ids, data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    scope=excluded.scope,
+                    parent_goal_id=excluded.parent_goal_id,
+                    status=excluded.status,
+                    depth=excluded.depth,
+                    task_ids=excluded.task_ids,
+                    data=excluded.data,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    data["id"],
+                    data.get("scope", "default"),
+                    data.get("parent_goal_id") or None,
+                    data.get("status", "active"),
+                    int(data.get("depth") or 0),
+                    _json(data.get("related_task_ids") or data.get("task_ids") or []),
+                    _json(data),
+                    data.get("created_at", now),
+                    now,
+                ),
             )
             return
         if table == "agent_messages":

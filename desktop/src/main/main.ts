@@ -4,9 +4,14 @@ import { join } from "node:path";
 
 import { BackendProcessManager } from "./backendProcess";
 import { registerIpcHandlers } from "./ipc";
+import { NotificationBridge } from "./notifications";
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const backend = new BackendProcessManager();
+const notifications = new NotificationBridge({
+  backend,
+  getMainWindow: () => mainWindow
+});
 
 function getPackagedBackendName(): string {
   return process.platform === "win32" ? "backend.exe" : "backend";
@@ -55,11 +60,16 @@ function createMainWindow(): BrowserWindow {
 }
 
 app.setName("Mavris");
+if (process.platform === "win32") {
+  app.setAppUserModelId("Mavris");
+}
 
 app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   registerIpcHandlers(backend);
+  notifications.registerIpcHandlers();
   mainWindow = createMainWindow();
+  notifications.startBackendListener();
 
   if (!process.defaultApp || app.isPackaged || isPortableMode() || process.env.MAVRIS_BACKEND_AUTOSTART === "1") {
     await backend.start();
@@ -79,5 +89,6 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", async () => {
+  notifications.stopBackendListener();
   await backend.stop();
 });

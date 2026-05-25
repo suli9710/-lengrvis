@@ -1,0 +1,56 @@
+name: windows-settings-workflow
+version: "0.1.0"
+agent_owner: ComputerAgent
+risk: R3_DESTRUCTIVE_OR_SYSTEM
+tools:
+  - name: skill.windows_settings.workflow
+    description: Preview Windows Settings display or network adjustments using Settings URI plus UIAutomation.
+    risk: R3_DESTRUCTIVE_OR_SYSTEM
+    supports_dry_run: true
+    app_target:
+      app_id: windows.settings
+      display_name: Windows Settings
+      platform: windows
+      interface: ui_automation
+      window_title: Settings
+      capabilities:
+        - open_settings_uri
+        - inspect_display_settings
+        - inspect_network_settings
+        - apply_toggle_after_approval
+    workflow:
+      target_app: windows.settings
+      action: adjust_display_or_network
+      interface: ui_automation
+      data_transfer:
+        restore_clipboard: true
+    input_schema:
+      type: object
+      properties:
+        area:
+          type: string
+          enum:
+            - display
+            - network
+        action:
+          type: string
+        value:
+          type: string
+        dry_run:
+          type: boolean
+      required:
+        - area
+        - action
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        dry_run:
+          type: boolean
+        intent:
+          type: object
+    execution:
+      type: python
+      entry: handlers/intent.py
+      timeout_seconds: 5

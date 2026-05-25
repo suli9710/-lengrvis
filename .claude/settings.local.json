@@ -15,7 +15,11 @@
       "WebSearch",
       "Bash(python -m pytest backend/tests/test_notification_service.py backend/tests/test_file_watcher.py backend/tests/test_ollama_service.py backend/tests/test_clustering.py -v --no-header)",
       "Bash(python -m pytest backend/tests/ -v --no-header)",
-      "WebFetch(domain:www.aitop100.cn)"
+      "WebFetch(domain:www.aitop100.cn)",
+      "Bash(python -m pytest tests/test_dispatcher.py -v)",
+      "Bash(python -c \"from app.core.schemas import Task\")",
+      "Bash(python -m pytest tests/test_ollama_service.py -v)",
+      "Bash(python -m pytest test_three_layer_state.py -v)"
     ]
   }
 }

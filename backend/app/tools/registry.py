@@ -24,6 +24,39 @@ class ToolRegistry:
     def list(self) -> list[ToolDefinition]:
         return list(self._tools.values())
 
+    def list_for_planning(self) -> list[ToolDefinition]:
+        return [tool for tool in self.list() if not tool.defer_loading or tool.name == "tool.search"]
+
+    def search(self, query: str, *, max_results: int = 5, include_deferred: bool = True) -> list[ToolDefinition]:
+        terms = [term.casefold() for term in query.replace(".", " ").replace("_", " ").split() if term.strip()]
+        if not terms and not query.strip().startswith("select:"):
+            return []
+        direct = query.strip()
+        if direct.casefold().startswith("select:"):
+            name = direct.split(":", 1)[1].strip()
+            try:
+                return [self.get(name)]
+            except KeyError:
+                return []
+
+        scored: list[tuple[int, str, ToolDefinition]] = []
+        for tool in self.list():
+            if not include_deferred and tool.defer_loading:
+                continue
+            haystack = " ".join(
+                [
+                    tool.name,
+                    tool.description,
+                    tool.search_hint,
+                    tool.agent_owner,
+                ]
+            ).casefold()
+            score = sum(3 if term in tool.name.casefold() else 1 for term in terms if term in haystack)
+            if score:
+                scored.append((score, tool.name, tool))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [tool for _score, _name, tool in scored[: max(1, max_results)]]
+
 
 registry = ToolRegistry()
 
@@ -35,17 +68,34 @@ def register_all_tools(
     skill_directories: Iterable[str] | None = None,
     load_skills: bool = True,
 ) -> ToolRegistry:
-    from app.tools import app_excel, app_tools, browser_tools, cluster_tools, document_tools, file_tools, remote_tools, search_tools, system_tools, vision_tools
+    from app.tools import (
+        app_excel,
+        app_tools,
+        browser_tools,
+        cluster_tools,
+        document_tools,
+        file_tools,
+        remote_tools,
+        search_tools,
+        system_tools,
+        tool_search,
+        ui_automation_tools,
+        vision_tools,
+        workflow_tools,
+    )
 
     registry._tools.clear()
     file_tools.register(registry)
     document_tools.register(registry)
     system_tools.register(registry)
     remote_tools.register(registry)
+    ui_automation_tools.register(registry)
+    workflow_tools.register(registry)
     app_tools.register(registry)
     app_excel.register(registry)
     browser_tools.register(registry)
     search_tools.register(registry)
+    tool_search.register(registry)
     vision_tools.register(registry)
     cluster_tools.register(registry)
     for definition in extra_definitions or ():

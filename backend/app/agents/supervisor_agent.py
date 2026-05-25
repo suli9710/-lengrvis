@@ -9,6 +9,7 @@ from typing import Any
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.registry import get_provider
+from app.perception.context_store import latest_perception_context
 
 
 SUPERVISOR_SCHEMA: dict[str, Any] = {
@@ -153,6 +154,7 @@ class SupervisorAgent:
         return self._heuristic_decision(message)
 
     def _supervisor_messages(self, message: str, mode: str) -> list[dict[str, str]]:
+        perception_hint = self._format_perception_context(latest_perception_context())
         return [
             {
                 "role": "system",
@@ -160,10 +162,31 @@ class SupervisorAgent:
             },
             {
                 "role": "user",
-                "content": render_prompt("supervisor_user.md", {"mode": mode, "message": message}),
+                "content": render_prompt("supervisor_user.md", {"mode": mode, "message": f"{perception_hint}{message}"}),
             },
         ]
         return decision
+
+    def _format_perception_context(self, perception_context: dict[str, Any] | None) -> str:
+        if not perception_context:
+            return ""
+        lines: list[str] = []
+        screen_state = perception_context.get("screen_state")
+        app_context = perception_context.get("app_context")
+        if app_context is None and screen_state is not None:
+            app_context = getattr(screen_state, "app_context", None)
+        if app_context is not None:
+            title = str(getattr(app_context, "active_window_title", "") or "").strip()
+            process = str(getattr(app_context, "process_name", "") or "").strip()
+            if title or process:
+                lines.append(f"Active app: {process or 'unknown'} / {title or 'untitled'}")
+        if screen_state is not None:
+            description = str(getattr(screen_state, "description", "") or "").strip()
+            if description:
+                lines.append(f"Visible screen: {description[:200]}")
+        if not lines:
+            return ""
+        return "[Perception context]\n" + "\n".join(lines) + "\n\n"
 
     def _payload_to_decision(self, payload: dict[str, Any]) -> SupervisorDecision:
         return SupervisorDecision(

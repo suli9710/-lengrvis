@@ -4,9 +4,10 @@ from fastapi import APIRouter
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import Approval, now_iso
+from app.core.schemas import Approval
 from app.services.mobile_pairing_service import approve_approval as approve_mobile_approval
 from app.services.mobile_pairing_service import reject_approval as reject_mobile_approval
+from app.services.task_service import set_task_status
 
 
 router = APIRouter()
@@ -39,7 +40,6 @@ async def _execute_approved_step(approval: Approval) -> None:
         from app.core.schemas import Task, TaskStatus
 
         task = Task.model_validate(task_data)
-        task.status = TaskStatus.FAILED
         task.final_summary = "审批已收到，但继续执行时失败。请查看任务时间线或授权工作区设置。"
-        task.updated_at = now_iso()
         db.upsert_model("tasks", task)
+        set_task_status(task.id, TaskStatus.FAILED)
