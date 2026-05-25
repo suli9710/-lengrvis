@@ -14,7 +14,8 @@
       "Bash(echo \"exit=$?\")",
       "WebSearch",
       "Bash(python -m pytest backend/tests/test_notification_service.py backend/tests/test_file_watcher.py backend/tests/test_ollama_service.py backend/tests/test_clustering.py -v --no-header)",
-      "Bash(python -m pytest backend/tests/ -v --no-header)"
+      "Bash(python -m pytest backend/tests/ -v --no-header)",
+      "WebFetch(domain:www.aitop100.cn)"
     ]
   }
 }

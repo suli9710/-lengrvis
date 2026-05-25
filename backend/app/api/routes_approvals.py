@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, now_iso
-from app.services.approval_event_service import publish_approval_decided
+from app.core.schemas import Approval, now_iso
+from app.services.mobile_pairing_service import approve_approval as approve_mobile_approval
+from app.services.mobile_pairing_service import reject_approval as reject_mobile_approval
 
 
 router = APIRouter()
@@ -16,28 +17,16 @@ def pending():
     return db.fetch_many("approvals", "status = ?", ("pending",))
 
 
-def _decide(approval_id: str, status: ApprovalStatus):
-    data = db.fetch_one("approvals", approval_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Approval not found")
-    approval = Approval.model_validate(data)
-    approval.status = status
-    approval.decided_at = now_iso()
-    db.upsert_model("approvals", approval, status=status)
-    publish_approval_decided(approval)
-    return approval
-
-
 @router.post("/approvals/{approval_id}/approve")
 async def approve(approval_id: str):
-    approval = _decide(approval_id, ApprovalStatus.APPROVED)
+    approval = approve_mobile_approval(approval_id)
     await _execute_approved_step(approval)
     return approval
 
 
 @router.post("/approvals/{approval_id}/reject")
 def reject(approval_id: str):
-    return _decide(approval_id, ApprovalStatus.REJECTED)
+    return reject_mobile_approval(approval_id)
 
 
 async def _execute_approved_step(approval: Approval) -> None:

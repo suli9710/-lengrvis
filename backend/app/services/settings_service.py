@@ -30,7 +30,7 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         return []
     if key in {"browser_max_page_bytes", "document_max_chars_to_llm"}:
         return max(1, int(value))
-    if key in {"onnx_model_path", "onnx_execution_provider"}:
+    if key in {"onnx_model_path", "onnx_execution_provider", "jwt_secret"}:
         return str(value or "").strip()
     if key == "mode":
         candidate = str(value).strip().lower()
@@ -64,6 +64,7 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "requires_openai_auth",
         "disable_response_storage",
         "strict_state_machine",
+        "remote_desktop_enabled",
     }:
         if isinstance(value, bool):
             return value

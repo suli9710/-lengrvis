@@ -20,6 +20,7 @@ from app.api import (
     routes_schedules,
     routes_mobile,
     routes_pair,
+    routes_remote,
     routes_settings,
     routes_skills,
     routes_system,
@@ -33,6 +34,7 @@ from app.llm.local_provider import health_snapshot
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
 from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_mobile_lan_http_path
+from app.security.mobile_jwt import decode_mobile_token
 from app.services.scheduler_service import get_scheduler
 from app.tools.registry import register_all_tools
 from app.indexer.file_watcher import get_file_watcher
@@ -92,6 +94,22 @@ def create_app() -> FastAPI:
             content={"error": {"code": "lan_desktop_api_blocked", "message": "Remote LAN clients may only use mobile pairing and approval APIs."}},
         )
 
+    @app.middleware("http")
+    async def mobile_jwt_guard(request: Request, call_next):
+        if not request.url.path.startswith("/api/mobile/"):
+            return await call_next(request)
+        authorization = request.headers.get("authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return JSONResponse(status_code=401, content={"detail": "Missing mobile bearer token"})
+        try:
+            decode_mobile_token(token)
+        except Exception as exc:  # noqa: BLE001
+            status_code = getattr(exc, "status_code", 401)
+            detail = getattr(exc, "detail", "Invalid mobile token")
+            return JSONResponse(status_code=status_code, content={"detail": detail})
+        return await call_next(request)
+
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError):
         return JSONResponse(status_code=exc.status_code, content={"error": {"code": exc.code, "message": exc.message}})
@@ -128,6 +146,8 @@ def create_app() -> FastAPI:
     app.include_router(routes_chat.ws_router, prefix="/api")
     app.include_router(routes_mobile.ws_router)
     app.include_router(routes_mobile.ws_router, prefix="/api")
+    app.include_router(routes_remote.ws_router)
+    app.include_router(routes_remote.ws_router, prefix="/api")
 
     return app
 

@@ -118,8 +118,16 @@ function Ensure-PythonDependencies([string]$Python) {
         return
     }
 
-    & $Python -c "import fastapi, uvicorn, pydantic" *> $null
-    if ($LASTEXITCODE -eq 0) {
+    $dependenciesAvailable = $false
+    try {
+        & $Python -c "import fastapi, jwt, pydantic, uvicorn" *> $null
+        $dependenciesAvailable = $LASTEXITCODE -eq 0
+    }
+    catch {
+        $dependenciesAvailable = $false
+    }
+
+    if ($dependenciesAvailable) {
         return
     }
 

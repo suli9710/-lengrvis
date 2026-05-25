@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 137 147" role="img" aria-labelledby="title desc">
+  <title id="title">Running black calf-horse mascot recreation</title>
+  <desc id="desc">A compact recreation of the provided running black calf-horse image, including the grey platform, yellow scarf, spiky mane, stretched front leg, folded rear leg and raised tail.</desc>
+  <rect width="137" height="147" fill="#f3f3f2"/>
+
+  <g id="platform">
+    <path d="M13 110 H121 L128 116 V130 H4 V116 Z" fill="#d8dbd8"/>
+    <path d="M17 104 H114 L121 110 H13 Z" fill="#eef0ed"/>
+    <path d="M4 130 H128 V135 H4 Z" fill="#c8ccc8"/>
+    <path d="M0 137 H18 C19.5 137 20.5 139 19 140.5 L14 145 H0 Z" fill="#d1d4d1"/>
+    <path d="M102 137 H137 V145 H108 C104 145 101.5 142 102 137 Z" fill="#d1d4d1"/>
+    <path d="M17 104 H114" fill="none" stroke="#bfc3bf" stroke-width="1.2"/>
+  </g>
+
+  <g id="mascot" transform="translate(5 14) scale(0.76) rotate(-5 60 60)">
+    <path d="M31 18 L18 6 C32 7 42 13 48 27 C41 23 36 20 31 18 Z" fill="#050505"/>
+    <path d="M26 25 L6 36 L11 52 L38 51 L46 37 L37 21 Z" fill="#050505"/>
+
+    <path
+      d="M43 39
+         C54 29 69 25 86 29
+         C99 32 110 39 119 49
+         L126 40 L126 55 L136 50 L132 64 L145 64 L134 74 L148 78 L133 82
+         C132 95 123 105 107 110
+         C88 116 65 110 52 96
+         C42 85 39 70 43 55 Z"
+      fill="#050505"/>
+
+    <path d="M42 78 L60 98 L42 127 L24 127 L40 102 L18 89 Z" fill="#050505"/>
+    <path d="M63 97 L76 113 L65 139 L48 139 L56 118 L40 106 Z" fill="#050505"/>
+    <path d="M98 101 L113 90 L125 101 L113 118 L95 118 L106 103 Z" fill="#050505"/>
+    <path d="M113 92 L135 104 L130 123 L147 123 L154 95 L128 78 Z" fill="#050505"/>
+
+    <path d="M124 86 C137 81 147 72 152 59 C155 52 163 52 166 58 C160 74 148 88 131 97 Z" fill="#050505"/>
+
+    <ellipse cx="62" cy="39" rx="5.2" ry="7.4" fill="#f7f7f5" transform="rotate(5 62 39)"/>
+    <ellipse cx="76" cy="39" rx="5.1" ry="7.2" fill="#f7f7f5" transform="rotate(-7 76 39)"/>
+    <ellipse cx="63" cy="41" rx="1.7" ry="2.7" fill="#050505"/>
+    <ellipse cx="75" cy="41" rx="1.7" ry="2.7" fill="#050505"/>
+
+    <path
+      d="M40 54
+         C60 49 83 46 122 46
+         C126 52 126 59 121 66
+         C87 68 62 72 44 78 Z"
+      fill="#ffd21a"/>
+    <path
+      d="M44 78
+         C52 75 61 73 72 72
+         L69 91
+         C58 89 50 85 44 78 Z"
+      fill="#ffd21a"/>
+  </g>
+</svg>

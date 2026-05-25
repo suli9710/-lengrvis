@@ -31,6 +31,7 @@ privacy:
   allow_file_content_upload: false
   allow_browser_network: false
   strict_state_machine: false
+  jwt_secret: ""
   browser_max_page_bytes: 250000
   document_max_chars_to_llm: 30000
   browser_screenshot_dir: ""

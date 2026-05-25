@@ -297,8 +297,14 @@ export class MavrisApiClient {
 
   createMobilePairingCode(): Promise<ApiResponse<MobilePairingCode>> {
     return this.request<MobilePairingCode>({
-      endpoint: "/api/pair/code",
+      endpoint: "/api/pair/request",
       method: "POST"
+    });
+  }
+
+  listMobileDevices(): Promise<ApiResponse<MobileDeviceList>> {
+    return this.request<MobileDeviceList>({
+      endpoint: "/api/pair/devices"
     });
   }
 
@@ -348,6 +354,7 @@ export class MavrisApiClient {
         base_url: settings.apiBaseUrl,
         allowed_directories: settings.workspaceRoot ? [settings.workspaceRoot] : [],
         allow_browser_network: settings.allowBrowserNetwork,
+        remote_desktop_enabled: settings.remoteDesktopEnabled,
         app_allowlist: settings.appAllowlist,
         browser_max_page_bytes: settings.browserMaxPageBytes,
         browser_screenshot_dir: settings.browserScreenshotDir,
@@ -846,6 +853,7 @@ function mapSettings(settings: BackendSettings): AppSettings {
     theme: "system",
     workspaceRoot: settings.allowed_directories?.[0] ?? "",
     allowBrowserNetwork: Boolean(settings.allow_browser_network),
+    remoteDesktopEnabled: Boolean(settings.remote_desktop_enabled),
     appAllowlist: settings.app_allowlist ?? [],
     browserMaxPageBytes: settings.browser_max_page_bytes ?? 250000,
     browserScreenshotDir: settings.browser_screenshot_dir ?? "",
@@ -1218,6 +1226,17 @@ export interface MobilePairingCode {
   };
 }
 
+export interface MobileDevice {
+  device_id: string;
+  device_name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MobileDeviceList {
+  devices: MobileDevice[];
+}
+
 interface BackendFileSearchResponse {
   index_results?: Array<{ file_id?: string; path: string; snippet?: string }>;
   name_results?: Array<{ path: string; name?: string }>;
@@ -1241,6 +1260,7 @@ interface BackendSettings {
   base_url?: string;
   allowed_directories?: string[];
   allow_browser_network?: boolean;
+  remote_desktop_enabled?: boolean;
   app_allowlist?: string[];
   browser_max_page_bytes?: number;
   browser_screenshot_dir?: string;
