@@ -1,46 +1,64 @@
 from __future__ import annotations
 
-import atexit
-import logging
 import os
 import threading
-from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 from typing import Any, Mapping
 
-from app.indexer.file_watcher import DirectoryChangeWatcher
+from app.config import AppSettings, get_base_settings
 
 
-PROMPT_DIR = Path(__file__).resolve().parent
-_LOGGER = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class _CachedPrompt:
-    content: str
-    mtime_ns: int
-    size: int
-
-
-_CACHE: dict[Path, _CachedPrompt] = {}
+_DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent
+PROMPT_DIR = _DEFAULT_PROMPTS_DIR
+_PROMPTS_DIR = PROMPT_DIR
 _CACHE_LOCK = threading.RLock()
-_WATCHER_LOCK = threading.RLock()
-_PROMPT_WATCHER: DirectoryChangeWatcher | None = None
-_WATCHED_PROMPT_DIR: Path | None = None
+_cache: dict[str, tuple[str, float]] = {}
+_CACHE = _cache
+_DEV_MODE_CACHE: bool | None = None
 
 
-def load_prompt(file_name: str, variables: Mapping[str, Any] | None = None) -> str:
-    """Load a prompt markdown file, with mtime-based hot reload in development."""
-    path = prompt_path(file_name)
-    _ensure_prompt_watcher()
+def load_prompt(
+    name: str,
+    variables: Mapping[str, Any] | None = None,
+    *,
+    force_reload: bool = False,
+) -> str:
+    """Load a prompt markdown file, rechecking mtimes only in development."""
+    path = prompt_path(name)
+    cache_key = _cache_key(path)
+    dev = _dev_mode()
+
     try:
-        content = _load_prompt_text(path)
+        if dev or force_reload:
+            mtime = path.stat().st_mtime
+        else:
+            with _CACHE_LOCK:
+                cached = _cache.get(cache_key)
+            if cached:
+                content = cached[0]
+                return _render(content, variables) if variables else content
+            mtime = path.stat().st_mtime
     except OSError:
+        if dev or force_reload:
+            with _CACHE_LOCK:
+                _cache.pop(cache_key, None)
         return ""
-    if variables:
-        return _render(content, variables)
-    return content
+
+    with _CACHE_LOCK:
+        cached = _cache.get(cache_key)
+        if cached and not force_reload:
+            cached_content, cached_mtime = cached
+            if not dev or mtime == cached_mtime:
+                return _render(cached_content, variables) if variables else cached_content
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+        _cache[cache_key] = (content, mtime)
+
+    return _render(content, variables) if variables else content
 
 
 def render_prompt(file_name: str, variables: Mapping[str, Any]) -> str:
@@ -48,119 +66,98 @@ def render_prompt(file_name: str, variables: Mapping[str, Any]) -> str:
 
 
 def clear_prompt_cache() -> None:
+    _clear_dev_mode_cache()
     invalidate_prompt_cache()
 
 
 def invalidate_prompt_cache(path: str | Path | None = None) -> None:
-    """Clear all cached prompts, or one cached prompt resolved from a changed path."""
+    """Clear all cached prompts, or one cached prompt resolved from a path."""
     with _CACHE_LOCK:
         if path is None:
-            _CACHE.clear()
+            _cache.clear()
             return
+        _cache.pop(_cache_key(prompt_path(str(path)) if not Path(path).is_absolute() else Path(path)), None)
 
-        prompt_file = Path(path).expanduser().resolve(strict=False)
-        _CACHE.pop(prompt_file, None)
+
+def reload_prompt_cache() -> dict[str, int]:
+    """Clear and eagerly reload all prompt files."""
+    clear_prompt_cache()
+    count = 0
+    for path in sorted(_prompt_dir().glob("*.md")):
+        load_prompt(path.name, force_reload=True)
+        count += 1
+    return {"reloaded": count}
 
 
 def start_prompt_watcher() -> bool:
-    """Start watching prompt markdown files when hot reload is enabled."""
-    if not hot_reload_enabled():
-        return False
-
-    prompt_dir = PROMPT_DIR.resolve(strict=False)
-    if not prompt_dir.is_dir():
-        return False
-
-    global _PROMPT_WATCHER, _WATCHED_PROMPT_DIR
-    with _WATCHER_LOCK:
-        if _PROMPT_WATCHER is not None and _WATCHED_PROMPT_DIR == prompt_dir:
-            return True
-
-        _stop_prompt_watcher_locked()
-
-        watcher = DirectoryChangeWatcher(
-            lambda path, _action: invalidate_prompt_cache(path),
-            suffixes={".md"},
-        )
-        if not watcher.start([prompt_dir]):
-            return False
-        _PROMPT_WATCHER = watcher
-        _WATCHED_PROMPT_DIR = prompt_dir
-        return True
+    """Compatibility no-op: prompt hot reload now happens through mtime checks."""
+    return _dev_mode()
 
 
 def stop_prompt_watcher() -> None:
-    with _WATCHER_LOCK:
-        _stop_prompt_watcher_locked()
+    """Compatibility no-op for older tests and callers."""
 
 
 def prompt_path(file_name: str) -> Path:
     raw = Path(file_name)
-    if raw.is_absolute() or ".." in raw.parts:
-        raise ValueError(f"Prompt path must stay inside {PROMPT_DIR}: {file_name}")
-    path = PROMPT_DIR / raw
+    prompt_dir = _prompt_dir()
+    if raw.is_absolute() or raw.drive or ".." in raw.parts:
+        raise ValueError(f"Prompt path must stay inside {prompt_dir}: {file_name}")
+    path = prompt_dir / raw
     if not path.suffix:
         path = path.with_suffix(".md")
-    resolved = path.resolve(strict=False)
-    if not resolved.is_relative_to(PROMPT_DIR):
-        raise ValueError(f"Prompt path must stay inside {PROMPT_DIR}: {file_name}")
-    return resolved
+    return path
 
 
 def hot_reload_enabled() -> bool:
-    raw = os.environ.get("MARVIS_PROMPT_HOT_RELOAD") or os.environ.get("MAVRIS_PROMPT_HOT_RELOAD")
-    if raw is not None:
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-    env = (
-        os.environ.get("MARVIS_ENV")
-        or os.environ.get("MAVRIS_ENV")
-        or os.environ.get("APP_ENV")
-        or os.environ.get("ENVIRONMENT")
-        or ""
-    ).strip().lower()
-    if env in {"prod", "production"}:
-        return False
-    return True
+    return _dev_mode()
 
 
-def _load_prompt_text(path: Path) -> str:
-    with _CACHE_LOCK:
-        cached = _CACHE.get(path)
-        if cached is not None and not hot_reload_enabled():
-            return cached.content
+def _dev_mode(settings: AppSettings | None = None) -> bool:
+    if _truthy(os.environ.get("MAVRIS_DEV")) or _truthy(os.environ.get("MARVIS_DEV")):
+        return True
+    env_mode = os.environ.get("MARVIS_MODE") or os.environ.get("MAVRIS_MODE")
+    if env_mode is not None:
+        return env_mode.strip().lower() == "dev"
+    global _DEV_MODE_CACHE
+    if settings is None and _DEV_MODE_CACHE is not None:
+        return _DEV_MODE_CACHE
+    if settings is None:
+        try:
+            settings = get_base_settings()
+        except Exception:  # noqa: BLE001
+            settings = None
+    dev = (getattr(settings, "mode", "") or "").lower() == "dev"
+    if settings is not None:
+        _DEV_MODE_CACHE = dev
+    return dev
 
-        stat = path.stat()
-        if cached is not None and cached.mtime_ns == stat.st_mtime_ns and cached.size == stat.st_size:
-            return cached.content
 
-        content = path.read_text(encoding="utf-8").strip()
-        _CACHE[path] = _CachedPrompt(content=content, mtime_ns=stat.st_mtime_ns, size=stat.st_size)
-    return content
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _ensure_prompt_watcher() -> None:
-    if not hot_reload_enabled():
-        return
+def _clear_dev_mode_cache() -> None:
+    global _DEV_MODE_CACHE
+    _DEV_MODE_CACHE = None
+
+
+def _cache_key(path: Path) -> str:
     try:
-        start_prompt_watcher()
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.debug("Prompt hot reload watcher is unavailable: %s", exc)
+        return path.relative_to(_prompt_dir()).as_posix()
+    except ValueError:
+        return path.name
 
 
-def _stop_prompt_watcher_locked() -> None:
-    global _PROMPT_WATCHER, _WATCHED_PROMPT_DIR
-    if _PROMPT_WATCHER is None:
-        _WATCHED_PROMPT_DIR = None
-        return
-
-    watcher = _PROMPT_WATCHER
-    _PROMPT_WATCHER = None
-    _WATCHED_PROMPT_DIR = None
-    watcher.stop()
+def _prompt_dir() -> Path:
+    if PROMPT_DIR != _DEFAULT_PROMPTS_DIR:
+        return PROMPT_DIR
+    return _PROMPTS_DIR
 
 
-def _render(content: str, variables: Mapping[str, Any]) -> str:
+def _render(content: str, variables: Mapping[str, Any] | None) -> str:
+    if not variables:
+        return content
     values = {key: _stringify(value) for key, value in variables.items()}
     return Template(content).safe_substitute(values).strip()
 
@@ -171,6 +168,3 @@ def _stringify(value: Any) -> str:
     if isinstance(value, str):
         return value
     return str(value)
-
-
-atexit.register(stop_prompt_watcher)
