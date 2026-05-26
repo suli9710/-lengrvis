@@ -86,6 +86,33 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS runs (
+                id TEXT PRIMARY KEY,
+                task_id TEXT,
+                engine TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_runs_task_id
+                ON runs(task_id);
+            CREATE INDEX IF NOT EXISTS idx_runs_phase_updated
+                ON runs(phase, updated_at);
+            CREATE TABLE IF NOT EXISTS run_events (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_sequence
+                ON run_events(run_id, sequence);
+            CREATE INDEX IF NOT EXISTS idx_run_events_run_created
+                ON run_events(run_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_run_events_created
+                ON run_events(created_at);
             CREATE TABLE IF NOT EXISTS task_recordings (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -315,6 +342,45 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
                 (data["id"], data["task_id"], data.get("step_id"), _json(data), data.get("created_at", now)),
             )
             return
+        if table == "runs":
+            conn.execute(
+                """
+                INSERT INTO runs (id, task_id, engine, phase, data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    task_id=excluded.task_id,
+                    engine=excluded.engine,
+                    phase=excluded.phase,
+                    data=excluded.data,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    data["id"],
+                    data.get("task_id") or None,
+                    data.get("engine", "auto"),
+                    data.get("phase", "created"),
+                    _json(data),
+                    data.get("created_at", now),
+                    data.get("updated_at", now),
+                ),
+            )
+            return
+        if table == "run_events":
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO run_events (id, run_id, name, sequence, data, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["id"],
+                    data["run_id"],
+                    data["name"],
+                    int(data.get("sequence") or 0),
+                    _json(data),
+                    data.get("created_at", now),
+                ),
+            )
+            return
         if table == "safety_reviews":
             conn.execute(
                 "INSERT OR REPLACE INTO safety_reviews (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -434,6 +500,32 @@ def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: i
     with connect() as conn:
         rows = conn.execute(query, (*args, limit)).fetchall()
     return [json.loads(row["data"]) for row in rows]
+
+
+def next_run_event_sequence(run_id: str) -> int:
+    with connect() as conn:
+        row = conn.execute("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?", (run_id,)).fetchone()
+    return int(row["sequence"] or 0) + 1
+
+
+def fetch_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT data FROM run_events
+            WHERE run_id = ? AND sequence > ?
+            ORDER BY sequence ASC
+            LIMIT ?
+            """,
+            (run_id, after_sequence, limit),
+        ).fetchall()
+    return [json.loads(row["data"]) for row in rows]
+
+
+def delete_run_events_before(cutoff_iso: str) -> int:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM run_events WHERE created_at < ?", (cutoff_iso,))
+    return int(cursor.rowcount or 0)
 
 
 def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str, Any] | None:

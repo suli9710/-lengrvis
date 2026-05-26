@@ -146,6 +146,10 @@ class AppSettings:
     allow_mock_fallback: bool = True
     strict_state_machine: bool = False
     recovery_max_retries: int = 3
+    execution_engines: str = "dual"
+    default_engine: str = "auto"
+    agent_loop_max_turns: int = 30
+    run_event_retention_days: int = 30
     jwt_secret: str = field(default_factory=lambda: DEFAULT_JWT_SECRET)
 
     @classmethod
@@ -340,6 +344,17 @@ class AppSettings:
             allow_mock_fallback=flag("MARVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", True),
             strict_state_machine=flag("MARVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
             recovery_max_retries=int_value("MARVIS_RECOVERY_MAX_RETRIES", "recovery_max_retries", 3),
+            execution_engines=str(
+                value_any(("MARVIS_EXECUTION_ENGINES", "MAVRIS_EXECUTION_ENGINES"), "execution_engines", "dual")
+            ),
+            default_engine=str(value_any(("MARVIS_DEFAULT_ENGINE", "MAVRIS_DEFAULT_ENGINE"), "default_engine", "auto")),
+            agent_loop_max_turns=int_value("MARVIS_AGENT_LOOP_MAX_TURNS", "agent_loop_max_turns", 30, minimum=1),
+            run_event_retention_days=int_value(
+                "MARVIS_RUN_EVENT_RETENTION_DAYS",
+                "run_event_retention_days",
+                30,
+                minimum=0,
+            ),
             jwt_secret=str(
                 value_any(("MARVIS_JWT_SECRET", "MAVRIS_JWT_SECRET"), "jwt_secret", DEFAULT_JWT_SECRET)
             ),

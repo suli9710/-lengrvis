@@ -459,7 +459,10 @@ export function App() {
     };
 
     setMessages((current) => [...current, userMessage]);
-    const result = await api.sendChat({ content, mode });
+    let result = await api.startRun({ content, mode });
+    if (!result.ok) {
+      result = await api.sendChat({ content, mode });
+    }
 
     const response = result.data;
     if (result.ok && response) {
@@ -560,14 +563,19 @@ export function App() {
   };
 
   const refreshTaskSnapshot = useCallback(async () => {
-    const [tasksResult, planResult, agentsResult, safetyResult, approvalsResult] = await Promise.allSettled([
+    const [runsResult, legacyTasksResult, planResult, agentsResult, safetyResult, approvalsResult] = await Promise.allSettled([
+      api.listRuns(),
       api.listTaskTimeline(),
       api.getCurrentPlan(),
       api.listAgentConversations(),
       api.getSafetyReview(),
       api.listPendingApprovals()
     ]);
-    if (tasksResult.status === "fulfilled" && tasksResult.value.ok && tasksResult.value.data) setTasks(tasksResult.value.data);
+    if (runsResult.status === "fulfilled" && runsResult.value.ok && runsResult.value.data) {
+      setTasks(runsResult.value.data);
+    } else if (legacyTasksResult.status === "fulfilled" && legacyTasksResult.value.ok && legacyTasksResult.value.data) {
+      setTasks(legacyTasksResult.value.data);
+    }
     if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
     if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) setAgentConversations(agentsResult.value.data);
     if (safetyResult.status === "fulfilled" && safetyResult.value.ok && safetyResult.value.data) setSafetyReview(safetyResult.value.data);
@@ -588,10 +596,10 @@ export function App() {
   useEffect(() => {
     if (!latestTaskId) return;
 
-    const unsubscribe = api.subscribeTaskMessages(latestTaskId, {
+    const unsubscribe = api.subscribeRunEvents(latestTaskId, {
       onMessage: (event) => {
-        if (event.type !== "agent_message" || !event.message) return;
-        mergeStreamedAgentMessage(event.task_id, event.message, setAgentConversations);
+        if (event.type !== "run_event") return;
+        mergeStreamedRunEvent(latestTaskId, event, setAgentConversations);
         void refreshTaskSnapshot();
       }
     });
@@ -1499,10 +1507,69 @@ function mergeStreamedAgentMessage(
   });
 }
 
+function mergeStreamedRunEvent(
+  runId: string,
+  event: {
+    id: string;
+    event?: string;
+    name?: string;
+    payload?: Record<string, unknown>;
+    created_at: string;
+  },
+  setAgentConversations: Dispatch<SetStateAction<AgentConversation[]>>
+) {
+  setAgentConversations((current) => {
+    const conversationIndex = current.findIndex((conversation) => conversation.id === `${runId}-events`);
+    const conversation = current[conversationIndex] ?? {
+      id: `${runId}-events`,
+      title: "Run events",
+      status: "running" as const,
+      messages: []
+    };
+    if (conversation.messages.some((item) => item.id === event.id)) {
+      return current;
+    }
+
+    const payload = event.payload ?? {};
+    const eventName = String(event.event ?? event.name ?? "");
+    const agentName = String(payload.from_agent ?? "ExecutionEngine");
+    const content = String(payload.content ?? payload.transition_reason ?? eventName);
+    const nextConversation: AgentConversation = {
+      ...conversation,
+      status: eventName === "run.completed" ? "done" : eventName === "run.waiting_approval" ? "waiting" : "running",
+      messages: [
+        ...conversation.messages,
+        {
+          id: event.id,
+          role: "assistant",
+          name: agentName,
+          agent: agentName,
+          content,
+          createdAt: event.created_at,
+          metadata: { ...payload, event_type: eventName },
+          kind: mapStreamRunEventKind(eventName)
+        }
+      ]
+    };
+
+    if (conversationIndex < 0) {
+      return [nextConversation, ...current];
+    }
+    return current.map((item, index) => (index === conversationIndex ? nextConversation : item));
+  });
+}
+
 function mapStreamAgentKind(kind: string): NonNullable<AgentConversation["messages"][number]["kind"]> {
   if (kind === "observation") return "observation";
   if (kind === "review" || kind === "critique") return "handoff";
   if (kind === "final") return "result";
+  return "action";
+}
+
+function mapStreamRunEventKind(kind: string): NonNullable<AgentConversation["messages"][number]["kind"]> {
+  if (kind === "tool.result" || kind === "run.completed") return "result";
+  if (kind === "approval.needed" || kind === "run.waiting_approval") return "handoff";
+  if (kind === "tool.progress") return "observation";
   return "action";
 }
 

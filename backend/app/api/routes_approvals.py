@@ -35,6 +35,7 @@ def reject(approval_id: str):
 async def _execute_approved_step(approval: Approval) -> None:
     try:
         await OrchestratorAgent().execute_approved_step(approval)
+        _reconcile_runs(approval.task_id)
     except Exception:
         task_data = db.fetch_one("tasks", approval.task_id)
         if not task_data:
@@ -45,3 +46,13 @@ async def _execute_approved_step(approval: Approval) -> None:
         task.final_summary = "审批已收到，但继续执行时失败。请查看任务时间线或授权工作区设置。"
         db.upsert_model("tasks", task)
         set_task_status(task.id, TaskStatus.FAILED)
+        _reconcile_runs(approval.task_id)
+
+
+def _reconcile_runs(task_id: str) -> None:
+    try:
+        from app.services.run_service import reconcile_task_runs
+
+        reconcile_task_runs(task_id)
+    except Exception:
+        return

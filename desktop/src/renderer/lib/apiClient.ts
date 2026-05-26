@@ -31,6 +31,7 @@ import type {
   SystemInfo,
   SystemProcess,
   TaskEvent,
+  RunEventPayload,
   TaskExplain,
   TaskExplainChainItem,
   TaskExplainEvidence,
@@ -139,6 +140,52 @@ export class MavrisApiClient {
     return this.request<BackendIntentSuggestion[]>({ endpoint: "/api/chat/proactive-suggestions", timeoutMs: 2500 }).then(
       (response) => mapResponse(response, (suggestions) => suggestions.map(mapIntentSuggestion))
     );
+  }
+
+  startRun(body: ChatRequest): Promise<ApiResponse<ChatResponse>> {
+    return this.request<BackendRunCreateResponse, BackendRunCreateRequest>({
+      endpoint: "/api/runs",
+      method: "POST",
+      body: {
+        message: body.content,
+        mode: body.mode ?? "privacy",
+        engine: "auto"
+      }
+    }).then((response) =>
+      mapResponse(response, (data) => ({
+        runId: data.run_id,
+        engine: data.engine,
+        message: {
+          id: `${data.run_id}-run-started`,
+          role: "assistant" as const,
+          author: "Marvis",
+          content: `Run ${data.engine} started: ${zhBackendTaskStatus(data.phase)}.`,
+          createdAt: new Date().toISOString(),
+          status: "sent" as const
+        },
+        taskUpdates: [
+          {
+            id: data.run_id,
+            title: body.content,
+            description: `Run status: ${zhBackendTaskStatus(data.phase)}`,
+            state: mapTaskState(data.phase),
+            agent: data.engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }
+        ]
+      }))
+    );
+  }
+
+  listRuns(): Promise<ApiResponse<TaskEvent[]>> {
+    return this.request<BackendRunState[]>({ endpoint: "/api/runs" }).then((response) =>
+      mapResponse(response, (runs) => runs.map(mapRunTaskEvent))
+    );
+  }
+
+  getRunTimeline(runId: string): Promise<ApiResponse<BackendRunTimeline>> {
+    return this.request<BackendRunTimeline>({ endpoint: `/api/runs/${runId}/timeline`, timeoutMs: 10_000 });
   }
 
   async listTaskTimeline(): Promise<ApiResponse<TaskEvent[]>> {
@@ -582,6 +629,54 @@ export class MavrisApiClient {
     return this.request({ endpoint: `/api/tasks/${taskId}/rollback`, method: "POST" });
   }
 
+  subscribeRunEvents(
+    runId: string,
+    handlers: {
+      onMessage: (message: BackendRunStreamEvent) => void;
+      onError?: (error: Event) => void;
+      onOpen?: () => void;
+    }
+  ): () => void {
+    if (!runId || typeof WebSocket === "undefined") {
+      return () => undefined;
+    }
+
+    let socket: WebSocket | null = null;
+    let closedByCaller = false;
+    let retryId: number | undefined;
+
+    const connect = () => {
+      socket = new WebSocket(buildRunWebSocketUrl(getBackendBaseUrl(), runId));
+
+      socket.onopen = () => handlers.onOpen?.();
+      socket.onmessage = (event) => {
+        try {
+          handlers.onMessage(JSON.parse(String(event.data)) as BackendRunStreamEvent);
+        } catch {
+          // Ignore malformed stream events and keep the polling fallback alive.
+        }
+      };
+      socket.onerror = (event) => {
+        handlers.onError?.(event);
+      };
+      socket.onclose = () => {
+        socket = null;
+        if (!closedByCaller) {
+          retryId = window.setTimeout(connect, WS_RETRY_DELAY_MS);
+        }
+      };
+    };
+
+    connect();
+
+    return () => {
+      closedByCaller = true;
+      if (retryId !== undefined) window.clearTimeout(retryId);
+      socket?.close();
+      socket = null;
+    };
+  }
+
   getTaskExplain(taskId: string): Promise<ApiResponse<TaskExplain>> {
     return this.request<BackendTaskExplain>({
       endpoint: `/api/tasks/${taskId}/explain`,
@@ -755,6 +850,12 @@ function buildTaskWebSocketUrl(baseUrl: string, taskId: string): string {
   return url.toString();
 }
 
+function buildRunWebSocketUrl(baseUrl: string, runId: string): string {
+  const url = new URL(`/ws/runs/${encodeURIComponent(runId)}`, baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
 async function parseResponseBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
   if (response.status === 204) return undefined;
@@ -796,8 +897,78 @@ function mapResponse<TInput, TOutput>(
 function mapTaskState(status: string): TaskEvent["state"] {
   if (status === "completed") return "completed";
   if (status === "failed" || status === "denied" || status === "cancelled") return "failed";
-  if (status === "waiting_user_approval" || status === "paused") return "blocked";
+  if (status === "waiting_user_approval" || status === "awaiting_approval" || status === "paused") return "blocked";
   return "running";
+}
+
+function mapRunTaskEvent(run: BackendRunState): TaskEvent {
+  return {
+    id: run.run_id,
+    title: run.message || run.run_id,
+    description: run.error || `Run status: ${zhBackendTaskStatus(run.phase)} (${run.engine})`,
+    state: mapTaskState(run.phase),
+    agent: run.engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+    createdAt: run.created_at || new Date().toISOString(),
+    updatedAt: run.updated_at || run.created_at || new Date().toISOString(),
+    recordings: []
+  };
+}
+
+function mapRunPlan(run: BackendRunState, timeline: BackendRunTimeline): Plan {
+  const planEvent = [...(timeline.events ?? [])].reverse().find((event) => event.name === "plan.generated");
+  const planPayload = (planEvent?.payload?.plan ?? planEvent?.payload?.structured_payload) as BackendPlan | undefined;
+  if (!planPayload?.steps?.length) {
+    return {
+      ...emptyPlan(),
+      id: run.run_id,
+      title: run.message || run.run_id,
+      objective: run.error || `Run status: ${zhBackendTaskStatus(run.phase)}`,
+      updatedAt: run.updated_at
+    };
+  }
+  return {
+    id: planPayload.id || run.run_id,
+    title: planPayload.goal || run.message || run.run_id,
+    objective: planPayload.assumptions?.join(" ") || run.message,
+    updatedAt: run.updated_at,
+    steps: planPayload.steps.map((step) => ({
+      id: step.id,
+      title: zhToolName(step.tool_name),
+      detail: zhBackendText(step.description),
+      state: step.status === "succeeded" ? "done" : step.status === "waiting_user_approval" ? "blocked" : "pending",
+      owner: step.agent_name
+    }))
+  };
+}
+
+function mapRunConversation(run: BackendRunState, events: BackendRunEvent[]): AgentConversation {
+  return {
+    id: `${run.run_id}-events`,
+    title: run.message || run.run_id,
+    status: run.phase === "completed" ? "done" : run.phase === "awaiting_approval" ? "waiting" : "running",
+    messages: events.map((event) => {
+      const payload = event.payload ?? {};
+      const agent = String(payload.from_agent ?? (run.engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine"));
+      const content = String(payload.content ?? payload.transition_reason ?? event.name);
+      return {
+        id: event.id,
+        role: "assistant" as const,
+        name: agent,
+        agent,
+        content: zhBackendText(content),
+        createdAt: event.created_at,
+        metadata: { ...payload, event_type: event.name },
+        kind: mapRunEventKind(event.name)
+      };
+    })
+  };
+}
+
+function mapRunEventKind(name: string): NonNullable<AgentConversation["messages"][number]["kind"]> {
+  if (name === "tool.result" || name === "run.completed") return "result";
+  if (name === "approval.needed" || name === "run.waiting_approval") return "handoff";
+  if (name === "tool.progress") return "observation";
+  return "action";
 }
 
 function mapCommandInfo(command: BackendCommandInfo): CommandInfo {
@@ -1460,6 +1631,47 @@ interface BackendChatResponse {
   delegated?: boolean;
   agent?: string;
 }
+
+interface BackendRunCreateRequest {
+  message: string;
+  mode: string;
+  engine: "auto" | "os" | "developer";
+}
+
+interface BackendRunCreateResponse {
+  run_id: string;
+  engine: "os" | "developer";
+  phase: string;
+}
+
+interface BackendRunState {
+  run_id: string;
+  engine: "os" | "developer" | string;
+  phase: string;
+  task_id?: string | null;
+  message: string;
+  mode: string;
+  requested_engine: "auto" | "os" | "developer" | string;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface BackendRunEvent extends RunEventPayload {
+  name: string;
+}
+
+interface BackendRunTimeline {
+  run: BackendRunState;
+  events: BackendRunEvent[];
+  count: number;
+}
+
+export type BackendRunStreamEvent =
+  | { type: "connected"; run_id: string; engine?: string; phase?: string }
+  | { type: "replay.completed"; run_id: string; last_sequence: number }
+  | { type: "heartbeat"; run_id: string }
+  | (RunEventPayload & { type: "run_event"; event: string });
 
 interface BackendIntentSuggestion {
   id: string;
