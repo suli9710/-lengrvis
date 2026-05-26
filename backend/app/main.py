@@ -23,6 +23,7 @@ from app.api import (
     routes_mobile,
     routes_pair,
     routes_remote,
+    routes_runs,
     routes_settings,
     routes_skills,
     routes_system,
@@ -150,6 +151,7 @@ def create_app() -> FastAPI:
         routes_approvals.router,
         routes_files.router,
         routes_system.router,
+        routes_runs.router,
         routes_settings.router,
         routes_audit.router,
         routes_browser.router,
@@ -171,6 +173,8 @@ def create_app() -> FastAPI:
     app.include_router(routes_mobile.ws_router, prefix="/api")
     app.include_router(routes_remote.ws_router)
     app.include_router(routes_remote.ws_router, prefix="/api")
+    app.include_router(routes_runs.ws_router)
+    app.include_router(routes_runs.ws_router, prefix="/api")
 
     return app
 

@@ -44,6 +44,7 @@ from app.orchestration.handlers import (
 )
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.goal_stack import GoalStack
+from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.perception.context_store import handle_perception_event
@@ -81,6 +82,7 @@ class OrchestratorAgent:
         self.step_execution_handler = StepExecutionHandler(self)
         self.recovery_handler = RecoveryHandler(self, max_retries=max(0, get_effective_settings().recovery_max_retries))
         self.completion_handler = CompletionHandler(self)
+        self.os_execution_engine = OSExecutionEngine(self)
         self._register_handlers()
 
     def _register_handlers(self) -> None:
@@ -119,7 +121,7 @@ class OrchestratorAgent:
         return await self.planning_handler.run_task(task)
 
     async def _process_steps(self, task: Task, plan: Plan) -> None:
-        await self.step_scheduler_handler.process_steps(task, plan)
+        await self.os_execution_engine.process_plan(task, plan)
 
     async def _execute_step(
         self,

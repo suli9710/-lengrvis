@@ -152,6 +152,20 @@ export interface ChatRequest {
 export interface ChatResponse {
   message: ChatMessage;
   taskUpdates?: TaskEvent[];
+  runId?: string;
+  engine?: "auto" | "os" | "developer" | string;
+}
+
+export interface RunEventPayload {
+  id: string;
+  run_id: string;
+  name: string;
+  event?: string;
+  event_type?: string;
+  sequence: number;
+  payload: Record<string, unknown>;
+  created_at: string;
+  replay?: boolean;
 }
 
 export interface IntentSuggestion {

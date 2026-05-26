@@ -44,6 +44,10 @@ privacy:
 
 orchestration:
   recovery_max_retries: 3
+  execution_engines: dual
+  default_engine: auto
+  agent_loop_max_turns: 30
+  run_event_retention_days: 30
   context_auto_compact_enabled: true
   context_micro_compact_enabled: true
   context_history_snip_enabled: true

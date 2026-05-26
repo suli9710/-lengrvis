@@ -133,6 +133,78 @@ class ChatResponse(BaseModel):
     agent: str = "SupervisorAgent"
 
 
+class RunEngine(StrEnum):
+    AUTO = "auto"
+    OS = "os"
+    DEVELOPER = "developer"
+
+
+class RunPhase(StrEnum):
+    CREATED = "created"
+    PLANNING = "planning"
+    RUNNING = "running"
+    AWAITING_APPROVAL = "awaiting_approval"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DENIED = "denied"
+    CANCELLED = "cancelled"
+
+    @property
+    def event_name(self) -> str:
+        if self == RunPhase.AWAITING_APPROVAL:
+            return "run.waiting_approval"
+        return f"run.{self.value}"
+
+
+class Run(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("run"))
+    message: str
+    mode: str = "privacy"
+    requested_engine: RunEngine = RunEngine.AUTO
+    engine: RunEngine = RunEngine.AUTO
+    phase: RunPhase = RunPhase.CREATED
+    task_id: str | None = None
+    state: dict[str, Any] = Field(default_factory=dict)
+    error: str = ""
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
+class RunEvent(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("runevt"))
+    run_id: str
+    name: str
+    sequence: int = 0
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=now_iso)
+
+
+class RunCreateRequest(BaseModel):
+    message: str
+    mode: str = "privacy"
+    engine: RunEngine = RunEngine.AUTO
+
+
+class RunCreateResponse(BaseModel):
+    run_id: str
+    engine: RunEngine
+    phase: RunPhase
+
+
+class RunStateResponse(BaseModel):
+    run_id: str
+    engine: RunEngine
+    phase: RunPhase
+    task_id: str | None = None
+    message: str = ""
+    mode: str = "privacy"
+    requested_engine: RunEngine = RunEngine.AUTO
+    error: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class PlanStep(BaseModel):
     id: str = Field(default_factory=lambda: new_id("step"))
     task_id: str = ""
