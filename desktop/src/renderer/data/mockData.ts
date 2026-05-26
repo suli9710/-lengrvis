@@ -195,7 +195,7 @@ export const sampleSettings: AppSettings = {
   telemetryEnabled: false,
   compactMode: false,
   theme: "system",
-  providerName: "mock",
+  providerName: "openai_compatible",
   model: "gpt-4o-mini",
   reviewModel: "",
   wireApi: "chat_completions",
@@ -219,7 +219,7 @@ export const sampleSettings: AppSettings = {
   browserScreenshotDir: "C:\\Users\\Suli\\Desktop\\mavris\\.marvis_data\\browser_screenshots",
   onnxModelPath: "",
   onnxExecutionProvider: "",
-  mode: "privacy",
+  mode: "efficiency",
   allowCloudContext: false,
   allowFileContentUpload: false,
   mcpServers: []

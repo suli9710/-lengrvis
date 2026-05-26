@@ -135,6 +135,44 @@ def test_context_usage_route_estimates_payload():
     assert payload["used_tokens"] > 0
 
 
+def test_context_usage_reports_projection_phases_breakdown_and_claude_view():
+    messages = [
+        {"role": "user", "content": "run a tool"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "file.read", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "file output"},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}]},
+    ]
+
+    payload = context_usage_to_dict(
+        analyze_context_usage(
+            messages=messages,
+            tool_definitions=[],
+            session_context={},
+            settings=_settings(),
+            include_registered_tools=False,
+        )
+    )
+
+    assert payload["projection"]["enabled"] is True
+    assert payload["projection"]["projected_tokens"] > 0
+    assert {phase["id"] for phase in payload["phases"]} >= {"assemble", "projection", "reserve", "free_space"}
+    assert payload["breakdown"]["messages"]["toolCallTokens"] > 0
+    assert payload["breakdown"]["messages"]["toolResultTokens"] > 0
+    assert payload["breakdown"]["messages"]["attachmentTokens"] > 0
+    assert payload["claude_view"]["totalTokens"] == payload["used_tokens"]
+    assert payload["claude_view"]["messageBreakdown"]["toolCallsByType"][0]["name"] == "file.read"
+
+
 def test_context_usage_to_dict_is_api_ready():
     report = analyze_context_usage(
         messages=[],

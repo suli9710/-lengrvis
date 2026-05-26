@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.api.routes_approvals import approve as approve_desktop_approval
 from app.security.mobile_jwt import decode_mobile_token, require_mobile_token
 from app.services import mobile_pairing_service
+from app.api.routes_approvals import reject as reject_desktop_approval
 from app.services.approval_event_service import get_approval_event_bus
 
 
@@ -37,7 +38,7 @@ async def approve_mobile_approval(approval_id: str, _token: dict = Depends(requi
 
 @router.post("/mobile/approvals/{approval_id}/reject")
 def reject_mobile_approval(approval_id: str, _token: dict = Depends(require_mobile_token)) -> dict:
-    return mobile_pairing_service.safe_approval_payload(mobile_pairing_service.reject_approval(approval_id))
+    return reject_desktop_approval(approval_id)
 
 
 @router.post("/mobile/approvals/{approval_id}/decision")
@@ -48,7 +49,7 @@ async def decide_mobile_approval(
 ) -> dict:
     if request.decision == "approved":
         return await approve_desktop_approval(approval_id)
-    return mobile_pairing_service.safe_approval_payload(mobile_pairing_service.reject_approval(approval_id))
+    return reject_desktop_approval(approval_id)
 
 
 @router.get("/mobile/devices")

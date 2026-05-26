@@ -106,6 +106,25 @@ def test_bound_approval_executes_once_and_marks_consumed():
     assert refreshed.consumed_at
 
 
+def test_approved_step_cannot_execute_after_task_leaves_approval_state():
+    orchestrator, task, plan, _step, approval, calls = _setup_bound_approval()
+    task.status = TaskStatus.CANCELLED
+    task.phase = TaskStatus.CANCELLED
+    task.execution_stage = ExecutionStage.IDLE
+    db.upsert_model("tasks", task)
+
+    asyncio.run(orchestrator.execute_approved_step(approval))
+
+    assert calls == []
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+    assert refreshed_plan.steps[0].status == StepStatus.DENIED
+    events = db.fetch_many("audit_events", "task_id = ?", (task.id,), limit=10)
+    assert any(event["event_type"] == "approval.state_mismatch" for event in events)
+
+
 def test_bound_approval_keeps_task_running_when_ready_steps_remain():
     orchestrator, task, plan, step, approval, _calls = _setup_bound_approval()
     follow_up = PlanStep(

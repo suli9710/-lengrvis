@@ -25,9 +25,10 @@ RUN_EVENT_NAMES = {
     "run.completed",
     "run.failed",
     "run.denied",
+    "run.cancelled",
 }
 
-TASK_TERMINAL_EVENT_NAMES = {"run.completed", "run.failed", "run.denied", "run.waiting_approval"}
+TASK_TERMINAL_EVENT_NAMES = {"run.completed", "run.failed", "run.denied", "run.cancelled", "run.waiting_approval"}
 
 
 class RunEventBus:

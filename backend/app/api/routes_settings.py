@@ -65,7 +65,11 @@ def local_llm_health():
 
 @router.get("/settings/llm/health")
 def llm_health():
-    return {**get_llm_health(), "local": health_snapshot(get_effective_settings())}
+    settings = get_effective_settings()
+    payload = get_llm_health()
+    if (settings.mode or "efficiency").lower() in {"privacy", "hybrid"}:
+        payload["local"] = health_snapshot(settings)
+    return payload
 
 
 @router.get("/settings/llm/profile")

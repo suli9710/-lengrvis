@@ -1,21 +1,26 @@
-import { BrowserWindow, dialog, ipcMain, shell, type OpenDialogOptions } from "electron";
+import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 
 import { IPC_CHANNELS } from "../shared/ipc";
 import type { ApiRequest, ApiResponse } from "../shared/types";
 import type { BackendProcessManager } from "./backendProcess";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const ALLOWED_API_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["https:", "http:", "mailto:"]);
 
 export function registerIpcHandlers(backend: BackendProcessManager): void {
   ipcMain.handle(IPC_CHANNELS.backendStatus, () => backend.getStatus());
   ipcMain.handle(IPC_CHANNELS.backendStart, () => backend.start());
   ipcMain.handle(IPC_CHANNELS.backendStop, () => backend.stop());
 
-  ipcMain.handle(IPC_CHANNELS.openExternal, async (_event, url: string) => {
-    await shell.openExternal(url);
+  ipcMain.handle(IPC_CHANNELS.openExternal, async (event, url: string) => {
+    assertTrustedRenderer(event);
+    await openSafeExternalUrl(url);
   });
 
   ipcMain.handle(IPC_CHANNELS.chooseSkillDirectory, async (event) => {
+    assertTrustedRenderer(event);
     const window = BrowserWindow.fromWebContents(event.sender);
     const options: OpenDialogOptions = {
       title: "Select skill package directory",
@@ -26,6 +31,7 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
   });
 
   ipcMain.handle(IPC_CHANNELS.chooseSkillZip, async (event) => {
+    assertTrustedRenderer(event);
     const window = BrowserWindow.fromWebContents(event.sender);
     const options: OpenDialogOptions = {
       title: "Select skill zip package",
@@ -36,7 +42,8 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
-  ipcMain.handle(IPC_CHANNELS.apiRequest, async (_event, request: ApiRequest) => {
+  ipcMain.handle(IPC_CHANNELS.apiRequest, async (event, request: ApiRequest) => {
+    assertTrustedRenderer(event);
     return proxyApiRequest(backend.getBaseUrl(), request);
   });
 
@@ -104,15 +111,27 @@ async function proxyApiRequest<TData>(
   }
 }
 
-function buildRequestUrl(baseUrl: string, request: ApiRequest): URL {
-  if (/^https?:\/\//i.test(request.endpoint)) {
+export function buildRequestUrl(baseUrl: string, request: ApiRequest): URL {
+  if (!request || typeof request !== "object" || typeof request.endpoint !== "string") {
+    throw new Error("Renderer API request is malformed");
+  }
+  if (!ALLOWED_API_METHODS.has(request.method ?? "GET")) {
+    throw new Error("Renderer API request method is not allowed");
+  }
+  if (
+    !request.endpoint.startsWith("/") ||
+    request.endpoint.startsWith("//") ||
+    request.endpoint.includes("\\") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(request.endpoint)
+  ) {
     throw new Error("Renderer API requests must use backend-relative endpoints");
   }
 
-  const normalizedEndpoint = request.endpoint.startsWith("/")
-    ? request.endpoint
-    : `/${request.endpoint}`;
-  const url = new URL(normalizedEndpoint, baseUrl);
+  const backendOrigin = new URL(baseUrl).origin;
+  const url = new URL(request.endpoint, baseUrl);
+  if (url.origin !== backendOrigin) {
+    throw new Error("Renderer API request escaped the configured backend origin");
+  }
 
   for (const [key, value] of Object.entries(request.query ?? {})) {
     if (value !== null && value !== undefined) {
@@ -121,6 +140,47 @@ function buildRequestUrl(baseUrl: string, request: ApiRequest): URL {
   }
 
   return url;
+}
+
+async function openSafeExternalUrl(rawUrl: string): Promise<void> {
+  const parsed = new URL(rawUrl);
+  if (!ALLOWED_EXTERNAL_PROTOCOLS.has(parsed.protocol)) {
+    throw new Error("External URL protocol is not allowed");
+  }
+  await shell.openExternal(parsed.toString());
+}
+
+function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
+  const url = event.senderFrame?.url ?? "";
+  if (!isTrustedRendererUrl(url)) {
+    throw new Error("IPC request came from an untrusted renderer");
+  }
+}
+
+export function isTrustedRendererUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "file:") {
+      const rendererRoot = pathToFileURL(`${__dirname}/../renderer/`).toString();
+      return parsed.href.startsWith(rendererRoot);
+    }
+    const trustedOrigins = new Set(["http://127.0.0.1:5173", "http://localhost:5173", "app://local"]);
+    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+    if (devServerUrl) {
+      trustedOrigins.add(new URL(devServerUrl).origin);
+    }
+    return trustedOrigins.has(parsed.origin);
+  } catch {
+    return false;
+  }
+}
+
+export function isSafeExternalUrl(url: string): boolean {
+  try {
+    return ALLOWED_EXTERNAL_PROTOCOLS.has(new URL(url).protocol);
+  } catch {
+    return false;
+  }
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {

@@ -10,8 +10,9 @@ from fastapi.testclient import TestClient
 import app.agents.orchestrator_agent as orchestrator_module
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, Task, TaskStatus
+from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.main import create_app
+from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import set_step_status
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
@@ -192,6 +193,10 @@ def test_approved_step_records_approved_before_and_after(fake_capture):
     orchestrator.subagents["FileAgent"] = PassthroughAgent()
     orchestrator.registry.register(_tool("test.approved_recording", calls))
     task, plan, step = _task_and_plan("test.approved_recording")
+    task.execution_stage = ExecutionStage.AWAITING_APPROVAL
+    db.upsert_model("tasks", task)
+    set_step_status(step, StepStatus.WAITING_USER_APPROVAL, actor="Test")
+    db.upsert_model("plans", plan)
     runtime = orchestrator.step_execution_handler._runtime_context(task)
     preview: dict[str, Any] = {"ok": True}
     approval = Approval(

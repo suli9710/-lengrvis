@@ -25,7 +25,15 @@ interface ScreenFrame {
   originalHeight: number;
 }
 
-export function RemoteScreen({ session, onBack }: { session: PairingSession; onBack: () => void }) {
+export function RemoteScreen({
+  session,
+  onBack,
+  onSessionExpired,
+}: {
+  session: PairingSession;
+  onBack: () => void;
+  onSessionExpired: () => void;
+}) {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [frame, setFrame] = useState<ScreenFrame | null>(null);
   const [streamMeta, setStreamMeta] = useState({ fps: 0, quality: 0 });
@@ -80,10 +88,14 @@ export function RemoteScreen({ session, onBack }: { session: PairingSession; onB
       setError("Remote desktop stream failed. Check LAN access and remote desktop settings.");
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      if (event.code === 1008) {
+        onSessionExpired();
+        return;
+      }
       setConnection((current) => (current === "paused" ? current : "offline"));
     };
-  }, [closeSocket, session]);
+  }, [closeSocket, onSessionExpired, session]);
 
   useEffect(() => {
     connect();

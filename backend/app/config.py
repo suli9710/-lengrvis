@@ -93,7 +93,7 @@ def _external_data_dir(config_file: Path | None, env_file: Path | None) -> Path:
 
 @dataclass(slots=True)
 class AppSettings:
-    provider_name: str = "mock"
+    provider_name: str = "openai_compatible"
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
     model: str = "gpt-4o-mini"
@@ -130,7 +130,7 @@ class AppSettings:
     llm_api_retry_backoff_seconds: float = 0.25
     llm_api_circuit_failure_threshold: int = 5
     llm_api_circuit_cooldown_seconds: float = 30.0
-    mode: str = "privacy"
+    mode: str = "efficiency"
     allow_cloud_context: bool = False
     allow_file_content_upload: bool = False
     allow_browser_network: bool = False
@@ -239,7 +239,7 @@ class AppSettings:
             app_allowlist_items = ["notepad", "calculator", "calc"]
 
         return cls(
-            provider_name=str(value("MARVIS_PROVIDER_NAME", "provider_name", "mock")),
+            provider_name=str(value("MARVIS_PROVIDER_NAME", "provider_name", "openai_compatible")),
             base_url=str(value("MARVIS_BASE_URL", "base_url", "https://api.openai.com/v1")),
             api_key=str(value("MARVIS_API_KEY", "api_key", "")),
             model=str(value("MARVIS_MODEL", "model", "gpt-4o-mini")),
@@ -326,7 +326,7 @@ class AppSettings:
                 "llm_api_circuit_cooldown_seconds",
                 30.0,
             ),
-            mode=str(value("MARVIS_MODE", "mode", "privacy")),
+            mode=str(value("MARVIS_MODE", "mode", "efficiency")),
             allow_cloud_context=flag("MARVIS_ALLOW_CLOUD_CONTEXT", "allow_cloud_context", False),
             allow_file_content_upload=flag("MARVIS_ALLOW_FILE_CONTENT_UPLOAD", "allow_file_content_upload", False),
             allow_browser_network=flag("MARVIS_ALLOW_BROWSER_NETWORK", "allow_browser_network", False),

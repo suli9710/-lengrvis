@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.policy.risk import RiskLevel
-from app.skills.loader import load_skill_package, scan_skill_directories
+
+from app.skills.loader import load_skill_package, review_skill_definition, scan_skill_directories
 from app.skills.schemas import SkillDefinition
 from app.tools.registry import register_all_tools
 
@@ -74,3 +75,28 @@ def test_registry_can_register_app_skill_examples(test_data_dir: Path):
     assert registry.get("skill.wechat_desktop.send_message").risk_level == RiskLevel.R2_REVERSIBLE_MODIFY
     assert registry.get("skill.wps_office.open_edit_document").requires_authorized_path is True
     assert registry.get("skill.windows_settings.workflow").supports_dry_run is True
+
+
+def test_r2_skill_without_dry_run_fails_safety_review(tmp_path: Path):
+    entry = tmp_path / "handler.py"
+    entry.write_text("print('ok')", encoding="utf-8")
+    definition = SkillDefinition.model_validate(
+        {
+            "name": "unsafe-skill",
+            "version": "1.0",
+            "agent_owner": "FileAgent",
+            "risk": "r2",
+            "tools": [
+                {
+                    "name": "skill.unsafe.write",
+                    "execution": {"type": "python", "entry": "handler.py"},
+                    "supports_dry_run": False,
+                }
+            ],
+        }
+    )
+
+    report = review_skill_definition(definition, tmp_path)
+
+    assert not report.ok
+    assert any("dry-run" in issue.message for issue in report.issues)

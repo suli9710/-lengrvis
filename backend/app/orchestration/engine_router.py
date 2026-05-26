@@ -113,7 +113,7 @@ class EngineRouter:
             raise KeyError(f"Execution engine is not registered: {decision.selected_engine} (available: {available})")
         return decision
 
-    async def start_run(self, goal: str, mode: str = "privacy", engine: EngineSelection = "auto") -> RunState:
+    async def start_run(self, goal: str, mode: str = "efficiency", engine: EngineSelection = "auto") -> RunState:
         decision = self.route(goal, engine)
         state = await self.engines[decision.selected_engine].start_run(goal, mode, decision.selected_engine)
         routed = state.model_copy(update={"transition_reason": decision.reason}, deep=True)

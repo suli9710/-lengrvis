@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_app.ps1" -Detached
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_app.ps1" -Detached -Desktop
 set EXITCODE=%ERRORLEVEL%
 
 if not "%EXITCODE%"=="0" (

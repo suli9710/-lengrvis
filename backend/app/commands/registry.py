@@ -50,6 +50,7 @@ def _builtin_commands() -> list[CommandDefinition]:
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
+                    "session_id": {"type": "string"},
                     "messages": {"type": "array", "items": {"type": "object"}},
                     "custom_instructions": {"type": "string"},
                     "recent_message_limit": {"type": "integer", "minimum": 1},
@@ -87,12 +88,28 @@ def _builtin_commands() -> list[CommandDefinition]:
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "include_compacted_context": {"type": "boolean"},
                 },
-                "required": ["task_id"],
                 "additionalProperties": True,
             },
             related_routes=["POST /api/tasks/{task_id}/resume", "GET /api/tasks/{task_id}"],
-            next_action="Pass task_id to resume a paused task.",
+            next_action="Pass task_id to resume a paused task, or session_id to load compacted session context.",
+        ),
+        CommandDefinition(
+            name="/summary",
+            summary="Return persisted session summary, compact metadata, and compacted context for resume.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "messages": {"type": "array", "items": {"type": "object"}},
+                },
+                "additionalProperties": True,
+            },
+            related_routes=["POST /api/commands/execute"],
+            next_action="Use /resume with the same session_id to continue from compacted context.",
         ),
         CommandDefinition(
             name="/review",

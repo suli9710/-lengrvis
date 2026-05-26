@@ -18,6 +18,7 @@ from app.core.schemas import (
     now_iso,
 )
 from app.orchestration.events import ApprovalNeeded, SafetyReviewDone, SubagentResponded, ToolExecuted
+from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
@@ -236,6 +237,9 @@ class StepExecutionHandler:
             return task
         if approval.consumed_at:
             return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
+        state_error = self._approval_execution_state_error(task, step)
+        if state_error:
+            return self._expire_nonexecutable_step(task, plan, step, approval, state_error)
 
         tool = orchestrator.registry.get(step.tool_name)
         binding_error = self._approval_binding_error(approval, task, step, tool)
@@ -348,6 +352,27 @@ class StepExecutionHandler:
             return False
         pending = {step.id for step in plan.steps if step.status == StepStatus.PENDING}
         return bool(self.orchestrator._ready_steps(pending, by_id))
+
+    def _approval_execution_state_error(self, task: Task, step: PlanStep) -> str:
+        if task.execution_stage != ExecutionStage.AWAITING_APPROVAL:
+            return f"Task execution stage is {task.execution_stage}; expected awaiting_approval."
+        if step.status != StepStatus.WAITING_USER_APPROVAL:
+            return f"Step status is {step.status}; expected waiting_user_approval."
+        return ""
+
+    def _expire_nonexecutable_step(self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str) -> Task:
+        orchestrator = self.orchestrator
+        db.expire_approval_if_unconsumed(approval.id, now_iso(), reason)
+        if step.status == StepStatus.WAITING_USER_APPROVAL:
+            set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+            orchestrator._persist_plan_update(plan, "Approved step expired because task state no longer allows execution.")
+        record(
+            "approval.state_mismatch",
+            orchestrator.name,
+            {"approval_id": approval.id, "reason": reason, "tool_name": step.tool_name},
+            task_id=task.id,
+        )
+        return task
 
     def _deny_approved_step(self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str) -> Task:
         orchestrator = self.orchestrator

@@ -1,10 +1,11 @@
 import { app, BrowserWindow, Menu, Tray, nativeImage, shell, type MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { BackendStatus } from "../shared/types";
 import { BackendProcessManager } from "./backendProcess";
-import { registerIpcHandlers } from "./ipc";
+import { isSafeExternalUrl, registerIpcHandlers } from "./ipc";
 import { NotificationBridge } from "./notifications";
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -51,8 +52,22 @@ function createMainWindow(): BrowserWindow {
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (isSafeExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
     return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    if (isDev && url === process.env.VITE_DEV_SERVER_URL) {
+      return;
+    }
+    if (!isDev && url.startsWith(rendererFileUrl())) {
+      return;
+    }
+    event.preventDefault();
+    if (isSafeExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
   });
 
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
@@ -63,6 +78,10 @@ function createMainWindow(): BrowserWindow {
   }
 
   return window;
+}
+
+function rendererFileUrl(): string {
+  return pathToFileURL(join(__dirname, "../renderer/")).toString();
 }
 
 function createTray(): void {

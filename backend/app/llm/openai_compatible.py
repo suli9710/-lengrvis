@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 from app.config import AppSettings
-from app.context_management import PromptTooLongError, is_prompt_too_long_error
+from app.context_management import PromptTooLongError, is_prompt_too_long_error, prompt_too_long_error_from_exception
 from app.llm.base import LLMProvider
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.types import LLMResponse, LLMUsage
@@ -20,6 +21,10 @@ from app.llm.usage import estimate_usage
 
 class LLMApiCircuitOpen(RuntimeError):
     """Raised when repeated transient failures temporarily block provider calls."""
+
+
+class LLMApiResponseError(RuntimeError):
+    """Raised when a provider returns a syntactically successful but invalid body."""
 
 
 @dataclass
@@ -31,11 +36,23 @@ class _CircuitState:
 _CIRCUITS: dict[tuple[str, str, str, str], _CircuitState] = {}
 
 
+def normalize_openai_base_url(base_url: str) -> str:
+    """Treat a bare OpenAI-compatible origin as an API base rooted at /v1."""
+    raw = str(base_url or "").strip().rstrip("/")
+    if not raw:
+        return raw
+    split = urlsplit(raw)
+    path = split.path.rstrip("/")
+    if split.scheme and split.netloc and path in {"", "/"}:
+        return urlunsplit((split.scheme, split.netloc, "/v1", split.query, split.fragment)).rstrip("/")
+    return raw
+
+
 def circuit_snapshot(settings: AppSettings) -> dict[str, Any]:
     endpoint_kind = "responses" if (settings.wire_api or "").lower() == "responses" else "chat"
     key = (
         settings.provider_name.lower(),
-        settings.base_url.rstrip("/"),
+        normalize_openai_base_url(settings.base_url),
         endpoint_kind,
         settings.model,
     )
@@ -64,8 +81,11 @@ class OpenAICompatibleProvider(LLMProvider):
             headers["Authorization"] = f"Bearer {self.settings.api_key}"
         return headers
 
+    def _api_base_url(self) -> str:
+        return normalize_openai_base_url(self.settings.base_url)
+
     def _chat_endpoint(self) -> str:
-        base_url = self.settings.base_url.rstrip("/")
+        base_url = self._api_base_url()
         if self.settings.wire_api.lower() == "responses":
             return f"{base_url}/responses"
         return f"{base_url}/chat/completions"
@@ -73,7 +93,7 @@ class OpenAICompatibleProvider(LLMProvider):
     def _circuit_key(self, endpoint_kind: str, model: str) -> tuple[str, str, str, str]:
         return (
             self.settings.provider_name.lower(),
-            self.settings.base_url.rstrip("/"),
+            self._api_base_url(),
             endpoint_kind,
             model,
         )
@@ -93,12 +113,23 @@ class OpenAICompatibleProvider(LLMProvider):
                         json=payload,
                     )
                     response.raise_for_status()
+                    try:
+                        data = response.json()
+                    except ValueError as exc:
+                        content_type = response.headers.get("content-type", "")
+                        raise LLMApiResponseError(
+                            f"LLM provider returned non-JSON response with content-type {content_type or 'unknown'}."
+                        ) from exc
                 self._record_success(circuit_key)
-                return response.json()
+                return data
             except Exception as exc:
                 last_error = exc
                 if is_prompt_too_long_error(exc):
-                    raise PromptTooLongError(str(exc)) from exc
+                    raise prompt_too_long_error_from_exception(
+                        exc,
+                        provider=self.settings.provider_name,
+                        model=model,
+                    ) from exc
                 if not self._should_retry(exc) or attempt == attempts - 1:
                     self._record_failure(circuit_key, exc)
                     raise
@@ -198,23 +229,34 @@ class OpenAICompatibleProvider(LLMProvider):
             return await self._responses_chat_result(messages, model=model, temperature=temperature, tools=tools)
 
         target_model = model or self.settings.model
+        wire_messages = [_chat_message_payload(message) for message in messages]
         payload: dict[str, Any] = {
             "model": target_model,
-            "messages": messages,
+            "messages": wire_messages,
             "temperature": self.settings.temperature if temperature is None else temperature,
             "max_tokens": self.settings.max_tokens,
         }
         if tools:
             payload["tools"] = tools
         data = await self._post_json(self._chat_endpoint(), payload, endpoint_kind="chat", model=target_model)
+        self._raise_for_embedded_error(data)
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise LLMApiResponseError("LLM chat response did not include any choices.")
         choice = (data.get("choices") or [{}])[0]
+        if not isinstance(choice, dict):
+            raise LLMApiResponseError("LLM chat response choice was malformed.")
         message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            raise LLMApiResponseError("LLM chat response message was malformed.")
         content = message.get("content") or ""
+        if content == "" and not message.get("tool_calls"):
+            raise LLMApiResponseError("LLM chat response did not include content.")
         return LLMResponse(
             content=content,
             provider=self.name,
             model=target_model,
-            usage=self._usage_from_chat_completions(data, messages, content),
+            usage=self._usage_from_chat_completions(data, wire_messages, content),
             finish_reason=str(choice.get("finish_reason") or ""),
             metadata={
                 "wire_api": "chat_completions",
@@ -258,7 +300,14 @@ class OpenAICompatibleProvider(LLMProvider):
         if tools:
             payload["tools"] = tools
         data = await self._post_json(self._chat_endpoint(), payload, endpoint_kind="responses", model=target_model)
+        self._raise_for_embedded_error(data)
+        status = str(data.get("status") or "")
+        if status in {"failed", "cancelled", "incomplete"}:
+            detail = data.get("incomplete_details") or data.get("error") or status
+            raise LLMApiResponseError(f"LLM responses API returned terminal status: {detail}")
         content = self._extract_responses_text(data)
+        if not content:
+            raise LLMApiResponseError("LLM responses API did not include output text.")
         return LLMResponse(
             content=content,
             provider=self.name,
@@ -282,6 +331,15 @@ class OpenAICompatibleProvider(LLMProvider):
                 if isinstance(content.get("text"), str):
                     parts.append(content["text"])
         return "".join(parts)
+
+    def _raise_for_embedded_error(self, data: dict[str, Any]) -> None:
+        error = data.get("error")
+        if error:
+            if isinstance(error, dict):
+                message = error.get("message") or error.get("type") or "provider error"
+            else:
+                message = str(error)
+            raise LLMApiResponseError(f"LLM provider returned an error payload: {message}")
 
     def _usage_from_chat_completions(
         self,
@@ -342,7 +400,7 @@ class OpenAICompatibleProvider(LLMProvider):
         target_model = model or self.settings.embedding_model
         payload = {"model": target_model, "input": texts}
         data = await self._post_json(
-            f"{self.settings.base_url.rstrip('/')}/embeddings",
+            f"{self._api_base_url()}/embeddings",
             payload,
             endpoint_kind="embeddings",
             model=target_model,
@@ -383,7 +441,15 @@ class OpenAICompatibleProvider(LLMProvider):
                 endpoint_kind="responses_vision",
                 model=target_model,
             )
-            return self._extract_responses_text(data)
+            self._raise_for_embedded_error(data)
+            status = str(data.get("status") or "")
+            if status in {"failed", "cancelled", "incomplete"}:
+                detail = data.get("incomplete_details") or data.get("error") or status
+                raise LLMApiResponseError(f"LLM responses API returned terminal status: {detail}")
+            content = self._extract_responses_text(data)
+            if not content:
+                raise LLMApiResponseError("LLM responses API did not include output text.")
+            return content
         messages = [
             {
                 "role": "user",
@@ -400,12 +466,40 @@ class OpenAICompatibleProvider(LLMProvider):
             "max_tokens": self.settings.max_tokens,
         }
         data = await self._post_json(
-            f"{self.settings.base_url.rstrip('/')}/chat/completions",
+            f"{self._api_base_url()}/chat/completions",
             payload,
             endpoint_kind="vision",
             model=target_model,
         )
-        return data["choices"][0]["message"].get("content") or ""
+        self._raise_for_embedded_error(data)
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise LLMApiResponseError("LLM vision response did not include any choices.")
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise LLMApiResponseError("LLM vision response choice was malformed.")
+        message = choice.get("message") or {}
+        if not isinstance(message, dict):
+            raise LLMApiResponseError("LLM vision response message was malformed.")
+        content = message.get("content") or ""
+        if not content:
+            raise LLMApiResponseError("LLM vision response did not include content.")
+        return content
 
     async def ocr(self, image_path: str) -> str:
         return await self.vision(image_path, load_prompt("vision_ocr.md"))
+
+
+def _chat_message_payload(message: dict[str, Any]) -> dict[str, Any]:
+    role = str(message.get("role") or "user")
+    payload: dict[str, Any] = {
+        "role": role,
+        "content": message.get("content", ""),
+    }
+    if role != "tool" and message.get("name"):
+        payload["name"] = message.get("name")
+    if message.get("tool_calls"):
+        payload["tool_calls"] = message.get("tool_calls")
+    if role == "tool" and message.get("tool_call_id"):
+        payload["tool_call_id"] = message.get("tool_call_id")
+    return payload

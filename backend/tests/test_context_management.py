@@ -11,6 +11,8 @@ from app.context_management import (
     auto_compact_threshold,
     count_messages_tokens,
     effective_context_window,
+    parse_prompt_too_long_token_counts,
+    project_ledger_for_llm,
     project_messages_for_llm,
     recent_complete_tail_start,
     repair_tool_message_invariants,
@@ -51,6 +53,18 @@ def test_warning_state_uses_configured_auto_compact_limit():
     assert state.percent_left == 0
 
 
+def test_prompt_too_long_error_carries_token_gap():
+    error = PromptTooLongError(
+        "prompt is too long: 137500 tokens > 135000 maximum",
+        actual_tokens=137500,
+        limit_tokens=135000,
+    )
+
+    assert error.token_gap == 2500
+    assert error.to_dict()["actual_tokens"] == 137500
+    assert parse_prompt_too_long_token_counts(str(error)) == (137500, 135000)
+
+
 def test_project_messages_microcompacts_old_tool_results():
     messages = [
         {"role": "user", "content": "read a file"},
@@ -87,6 +101,112 @@ def test_project_messages_snips_long_history_without_deleting_recent_tail():
     assert len(projection.messages) < len(messages)
     assert projection.messages[-1]["content"] == "message 19"
     assert any("history snip" in message["content"].lower() for message in projection.messages)
+
+
+def test_project_ledger_for_llm_uses_latest_boundary_and_preserved_segment():
+    older_boundary = {
+        "id": "boundary_old",
+        "role": "system",
+        "content": "old compact summary",
+        "metadata": {"context_boundary": "manual_compact", "compact_boundary": True},
+    }
+    call_owner = {
+        "id": "call_owner",
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_preserved",
+                "type": "function",
+                "function": {"name": "system.get_info", "arguments": "{}"},
+            }
+        ],
+    }
+    call_result = {
+        "id": "call_result",
+        "role": "tool",
+        "tool_call_id": "call_preserved",
+        "content": "preserved tool output",
+    }
+    latest_boundary = {
+        "id": "boundary_new",
+        "role": "system",
+        "content": "new compact summary",
+        "metadata": {
+            "compact_metadata": {
+                "type": "manual_compact",
+                "preserved_segment": [call_result],
+                "preserved_message_ids": ["recent_before_boundary"],
+            }
+        },
+    }
+    ledger = [
+        {"id": "system_1", "role": "system", "content": "policy"},
+        older_boundary,
+        {"id": "old_history", "role": "user", "content": "hidden by latest boundary"},
+        call_owner,
+        {"id": "recent_before_boundary", "role": "user", "content": "keep me"},
+        latest_boundary,
+        {"id": "after_boundary", "role": "user", "content": "new work"},
+    ]
+
+    projection = project_ledger_for_llm(
+        ledger,
+        _settings(
+            context_history_snip_enabled=False,
+            context_micro_compact_enabled=False,
+            context_auto_compact_enabled=False,
+        ),
+        source="test-ledger",
+    )
+    contents = [message.get("content") for message in projection.messages]
+
+    assert "hidden by latest boundary" not in contents
+    assert "old compact summary" not in contents
+    assert projection.boundary_id == "boundary_new"
+    assert projection.compact_metadata["type"] == "manual_compact"
+    assert "keep me" in contents
+    assert any(
+        any(tool_call.get("id") == "call_preserved" for tool_call in message.get("tool_calls") or [])
+        for message in projection.messages
+    )
+    assert any(message.get("tool_call_id") == "call_preserved" for message in projection.messages)
+
+
+def test_project_ledger_filters_old_boundary_from_preserved_tail():
+    old_boundary = {
+        "id": "boundary_old",
+        "role": "system",
+        "content": "old compact summary",
+        "metadata": {"context_boundary": "manual_compact", "compact_boundary": True},
+    }
+    new_boundary = {
+        "id": "boundary_new",
+        "role": "system",
+        "content": "new compact summary",
+        "metadata": {
+            "compact_metadata": {
+                "type": "manual_compact",
+                "messages_to_keep_ids": ["boundary_old", "recent_tail"],
+                "preserved_segment": {"message_ids": ["recent_tail"]},
+            }
+        },
+    }
+    projection = project_ledger_for_llm(
+        [
+            {"id": "sys", "role": "system", "content": "policy"},
+            old_boundary,
+            {"id": "recent_tail", "role": "user", "content": "tail"},
+            new_boundary,
+            {"id": "after", "role": "user", "content": "after"},
+        ],
+        _settings(context_history_snip_enabled=False, context_micro_compact_enabled=False, context_auto_compact_enabled=False),
+        source="test-ledger",
+    )
+
+    assert projection.boundary_id == "boundary_new"
+    assert [message.get("id") for message in projection.messages].count("boundary_old") == 0
+    assert any(message.get("id") == "recent_tail" for message in projection.messages)
 
 
 def test_history_snip_keeps_tool_call_pair_when_tail_starts_on_tool_result():
@@ -143,6 +263,44 @@ def test_repair_tool_invariants_demotes_orphan_tool_result_without_dropping_cont
     assert repaired[0]["metadata"]["orphan_tool_result_compacted"] is True
     assert "tool_calls" not in repaired[1]
     assert repaired[1]["metadata"]["tool_calls_compacted"] is True
+
+
+def test_repair_tool_invariants_drops_malformed_tool_calls():
+    repaired = repair_tool_message_invariants(
+        [
+            {"role": "assistant", "content": "", "tool_calls": [{"type": "function", "function": {"name": "bad"}}]},
+        ]
+    )
+
+    assert "tool_calls" not in repaired[0]
+    assert repaired[0]["metadata"]["tool_calls_compacted"] is True
+
+
+def test_repair_tool_invariants_requires_contiguous_tool_pair():
+    repaired = repair_tool_message_invariants(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_late",
+                        "type": "function",
+                        "function": {"name": "system.get_info", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "interleaving message"},
+            {"role": "tool", "tool_call_id": "call_late", "content": "late result"},
+        ]
+    )
+
+    assert "tool_calls" not in repaired[0]
+    assert repaired[0]["metadata"]["tool_calls_compacted"] is True
+    assert repaired[1]["content"] == "interleaving message"
+    assert repaired[2]["role"] == "assistant"
+    assert repaired[2]["content"] == "late result"
+    assert repaired[2]["metadata"]["orphan_tool_result_compacted"] is True
 
 
 def test_project_messages_auto_compacts_when_over_threshold():

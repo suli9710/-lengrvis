@@ -21,6 +21,7 @@ class ContextUsageRequest(BaseModel):
     task_id: str | None = None
     include_registered_tools: bool = True
     include_session_memory: bool = True
+    include_projection: bool = True
 
 
 class ManualCompactRequest(BaseModel):
@@ -33,8 +34,8 @@ class ManualCompactRequest(BaseModel):
 
 
 @router.get("/context/usage")
-def current_context_usage(task_id: str | None = None) -> dict[str, Any]:
-    report = analyze_context_usage(task_id=task_id)
+def current_context_usage(task_id: str | None = None, include_projection: bool = True) -> dict[str, Any]:
+    report = analyze_context_usage(task_id=task_id, include_projection=include_projection)
     return context_usage_to_dict(report)
 
 
@@ -49,6 +50,7 @@ def estimate_context_usage(payload: ContextUsageRequest) -> dict[str, Any]:
         task_id=payload.task_id,
         include_registered_tools=payload.include_registered_tools,
         include_session_memory=payload.include_session_memory,
+        include_projection=payload.include_projection,
     )
     return context_usage_to_dict(report)
 

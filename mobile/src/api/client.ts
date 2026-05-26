@@ -83,6 +83,13 @@ export interface PairingSession {
   deviceId: string;
 }
 
+export class AuthExpiredError extends Error {
+  constructor(message = "Session expired. Pair this device again.") {
+    super(message);
+    this.name = "AuthExpiredError";
+  }
+}
+
 export async function pairWithBackend(baseUrl: string, code: string, deviceName: string): Promise<PairingSession> {
   const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   const response = await fetch(`${normalizedBaseUrl}/api/pair/confirm`, {
@@ -144,14 +151,27 @@ export function remoteScreenWebSocketUrl(session: PairingSession): string {
 
 export function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");
-  if (!trimmed) return "http://127.0.0.1:8000";
+  if (!trimmed) throw new Error("Enter the LAN address shown by Mavris desktop.");
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+}
+
+export function isLoopbackBaseUrl(value: string): boolean {
+  try {
+    const parsed = new URL(normalizeBaseUrl(value));
+    const host = parsed.hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => undefined);
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? String((data as { detail?: unknown }).detail) : "";
+    if (response.status === 401 || response.status === 403) {
+      throw new AuthExpiredError(detail || undefined);
+    }
     throw new Error(detail || `HTTP ${response.status}`);
   }
   return data as T;
