@@ -16,13 +16,27 @@ class DoneComputerAgent:
     name = "ComputerAgent"
 
     def consult(self, plan):  # noqa: ANN001, ANN201, ARG002
+        if any(step.agent_name == self.name for step in plan.steps):
+            self.bus.publish_text(
+                plan.task_id,
+                self.name,
+                f"{self.name} deterministic consultation.",
+                message_type=MessageType.CRITIQUE,
+            )
         return None
+
+    def __init__(self, bus=None):  # noqa: ANN001
+        self.bus = bus
 
     async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
         return None
 
     async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
         return "reflected"
+
+
+class DoneAppAgent(DoneComputerAgent):
+    name = "AppAgent"
 
 
 def test_runtime_supervision_allows_internal_payload_fields():
@@ -139,6 +153,7 @@ async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, t
         )
 
     orchestrator = OrchestratorAgent()
+    orchestrator.subagents["AppAgent"] = DoneAppAgent(orchestrator.bus)
     monkeypatch.setattr(orchestrator.planner, "create_plan", app_plan)
 
     task = await orchestrator.handle_user_goal("open notepad", "privacy")
@@ -159,7 +174,7 @@ async def test_tool_call_denial_keeps_task_denied(monkeypatch, tmp_path):
     db.init_db()
 
     orchestrator = OrchestratorAgent()
-    orchestrator.subagents["ComputerAgent"] = DoneComputerAgent()
+    orchestrator.subagents["ComputerAgent"] = DoneComputerAgent(orchestrator.bus)
     orchestrator.registry.register(
         ToolDefinition(
                 name="test.forbidden_runtime",
