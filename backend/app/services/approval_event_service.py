@@ -6,6 +6,7 @@ from collections import defaultdict
 
 from app.core.schemas import Approval
 from app.policy.approval_binding import redacted_preview
+from app.policy.redaction import redact_value
 
 
 class ApprovalEventBus:
@@ -64,5 +65,6 @@ def publish_approval_decided(approval: Approval) -> None:
 
 def _safe_approval(approval: Approval) -> dict:
     payload = approval.model_dump(mode="json")
+    payload["message"] = redact_value(payload.get("message") or "")
     payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
     return payload

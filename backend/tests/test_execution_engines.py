@@ -68,6 +68,7 @@ async def test_developer_engine_run_turn_uses_readonly_tools(tmp_path) -> None:
     assert {observation.source for observation in result.state.observations} == {
         "dev.git_status",
         "dev.diff_preview",
+        "dev.pytest_inventory",
         "dev.grep",
     }
 
@@ -115,6 +116,8 @@ def _runtime_tool(name: str, calls: list[dict], *, risk: RiskLevel = RiskLevel.R
         calls.append(dict(args))
         if not ok:
             return {"error": "planned failure"}
+        if args.get("dry_run") is True:
+            return {"ok": True, "dry_run": True, "label": args.get("label", name)}
         return {"ok": True, "label": args.get("label", name)}
 
     return ToolDefinition(
@@ -199,6 +202,25 @@ async def test_os_engine_waiting_approval_stays_inside_tool_runtime_safety_path(
     assert calls == [{"label": "primary", "dry_run": True}]
     assert approvals
     assert "approval.needed" in events
+
+
+@pytest.mark.asyncio
+async def test_os_engine_preserves_cancelled_task_phase(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    task = Task(user_goal="cancelled task", mode="efficiency", status=TaskStatus.CANCELLED)
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[])
+    db.upsert_model("tasks", task)
+    db.upsert_model("plans", plan)
+    events: list[str] = []
+    engine = OSExecutionEngine(store=InMemoryRunStore())
+
+    result = await engine.run_plan_turn(task, plan, event_hook=lambda name, payload: events.append(name))
+
+    assert result.finished is True
+    assert result.state.phase == RunPhase.CANCELLED
+    assert result.outputs["outcome"] == "cancelled"
+    assert "run.cancelled" in events
 
 
 @pytest.mark.asyncio

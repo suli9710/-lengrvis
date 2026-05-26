@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,7 @@ import { ArrowLeft, Check, X } from "lucide-react-native";
 import {
   getApprovalDetail,
   submitApprovalDecision,
+  AuthExpiredError,
   type ApprovalDetail as ApprovalDetailData,
   type BackendApproval,
   type PairingSession,
@@ -27,16 +28,19 @@ export function ApprovalDetail({
   approval,
   onBack,
   onUpdated,
+  onSessionExpired,
 }: {
   session: PairingSession;
   approval: BackendApproval;
   onBack: () => void;
   onUpdated: (approval: BackendApproval) => void;
+  onSessionExpired: () => void;
 }) {
   const [detail, setDetail] = useState<ApprovalDetailData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
+  const submitLockRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -49,7 +53,12 @@ export function ApprovalDetail({
         }
       })
       .catch((currentError: unknown) => {
-        if (active) setError(errorMessage(currentError));
+        if (!active) return;
+        if (currentError instanceof AuthExpiredError) {
+          onSessionExpired();
+          return;
+        }
+        setError(errorMessage(currentError));
       })
       .finally(() => {
         if (active) setIsLoading(false);
@@ -64,15 +73,29 @@ export function ApprovalDetail({
   const steps = useMemo(() => detail?.plan?.steps ?? [], [detail?.plan?.steps]);
 
   const handleDecision = async (decision: "approved" | "denied") => {
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
     setIsBusy(true);
     try {
+      const latest = await getApprovalDetail(session, currentApproval.id);
+      setDetail(latest);
+      if (latest.approval.status !== "pending") {
+        onUpdated(latest.approval);
+        Alert.alert("Approval already decided", `This approval is now ${approvalStatusLabel(latest.approval.status)}.`);
+        return;
+      }
       const updated = await submitApprovalDecision(session, currentApproval.id, decision);
       onUpdated(updated);
       onBack();
     } catch (currentError) {
+      if (currentError instanceof AuthExpiredError) {
+        onSessionExpired();
+        return;
+      }
       Alert.alert("Decision failed", errorMessage(currentError));
     } finally {
       setIsBusy(false);
+      submitLockRef.current = false;
     }
   };
 

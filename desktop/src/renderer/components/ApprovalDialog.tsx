@@ -8,11 +8,12 @@ import { Badge } from "./Panel";
 interface ApprovalDialogProps {
   approval: ApprovalRequest | null;
   isOpen: boolean;
+  error?: string | null;
   onClose: () => void;
   onDecision: (approvalId: string, decision: "approved" | "denied", note?: string) => Promise<void>;
 }
 
-export function ApprovalDialog({ approval, isOpen, onClose, onDecision }: ApprovalDialogProps) {
+export function ApprovalDialog({ approval, isOpen, error, onClose, onDecision }: ApprovalDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [note, setNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -29,9 +30,12 @@ export function ApprovalDialog({ approval, isOpen, onClose, onDecision }: Approv
 
   const decide = async (decision: "approved" | "denied") => {
     setIsSubmitting(true);
-    await onDecision(approval.id, decision, note.trim() || undefined);
-    setIsSubmitting(false);
-    setNote("");
+    try {
+      await onDecision(approval.id, decision, note.trim() || undefined);
+      setNote("");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -76,6 +80,7 @@ export function ApprovalDialog({ approval, isOpen, onClose, onDecision }: Approv
           <label className="field">
             <span>审批备注</span>
             <textarea value={note} onChange={(event) => setNote(event.target.value)} rows={4} />
+            {error ? <p className="field-error" role="alert">{error}</p> : null}
           </label>
         </div>
         <footer className="modal__footer">

@@ -105,7 +105,7 @@ export class MavrisApiClient {
       method: "POST",
       body: {
         message: body.content,
-        mode: body.mode ?? "privacy"
+        mode: body.mode ?? "efficiency"
       }
     }).then((response) =>
       mapResponse(response, (data) => ({
@@ -148,7 +148,7 @@ export class MavrisApiClient {
       method: "POST",
       body: {
         message: body.content,
-        mode: body.mode ?? "privacy",
+        mode: body.mode ?? "efficiency",
         engine: "auto"
       }
     }).then((response) =>
@@ -1272,7 +1272,7 @@ function mapApproval(approval: BackendApproval): ApprovalRequest {
 }
 
 function mapSettings(settings: BackendSettings): AppSettings {
-  const rawMode = (settings.mode ?? "privacy").toLowerCase();
+  const rawMode = (settings.mode ?? "efficiency").toLowerCase();
   const mode: AppSettings["mode"] = rawMode === "efficiency" || rawMode === "hybrid" ? rawMode : "privacy";
   const mcpServers = (settings.mcp_servers ?? [])
     .map((server) => ({
@@ -1287,7 +1287,7 @@ function mapSettings(settings: BackendSettings): AppSettings {
     telemetryEnabled: false,
     compactMode: false,
     theme: "system",
-    providerName: settings.provider_name ?? "mock",
+    providerName: settings.provider_name ?? "openai_compatible",
     model: settings.model ?? "gpt-4o-mini",
     reviewModel: settings.review_model ?? "",
     wireApi: settings.wire_api === "responses" ? "responses" : "chat_completions",

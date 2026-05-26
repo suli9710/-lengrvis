@@ -22,7 +22,7 @@ from app.policy.approval_binding import (
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
-from app.security.mobile_jwt import decode_mobile_token
+from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, REMOTE_VIEW_SCOPE, decode_mobile_token
 from app.services.approval_event_service import publish_approval_created
 from app.services.remote_desktop_service import (
     DEFAULT_CAPTURE_HEIGHT,
@@ -208,7 +208,8 @@ async def _authorize_remote_websocket(websocket: WebSocket, token: str) -> dict[
         await websocket.close(code=1008, reason="Remote desktop is disabled.")
         return None
     try:
-        return decode_mobile_token(token)
+        required_scope = REMOTE_INPUT_SCOPE if websocket.url.path.endswith("/input") else REMOTE_VIEW_SCOPE
+        return decode_mobile_token(token, allowed_scopes={required_scope})
     except HTTPException:
         await websocket.close(code=1008, reason="Unauthorized.")
         return None

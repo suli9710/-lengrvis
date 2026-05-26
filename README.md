@@ -32,9 +32,10 @@ test_data/               授权目录、策略和隐私测试数据
 - **34 个外部化 Prompt 文件**：所有 Agent system prompt 和 LLM 任务模板均存放在 `backend/app/llm/prompts/` 目录，可独立调整。
 
 ### LLM 与推理
-- OpenAI-compatible 真实 AI 接入：`base_url`、`api_key`、`model` 可配置。
-- 三模式 Provider 路由：隐私（本地）/ 效率（云端）/ 混合（按任务类型分流）。
-- 隐私模式会探测 Ollama、LM Studio、llama.cpp-compatible server；未检测到本地 LLM 时明确报错，不再静默回退 `MockProvider`。
+- OpenAI-compatible 真实 AI 接入：`base_url`、`api_key`、`model`、`wire_api` 可配置；支持 `chat/completions` 与 `responses` 两种 OpenAI 格式。
+- OpenAI-compatible `base_url` 可以填写裸域名或完整 `/v1` API base，例如 `https://api.example.com` 会自动归一化为 `https://api.example.com/v1`；已有 `/v1` 或自定义代理 path 不会重复改写。
+- 三模式 Provider 路由：默认效率（云端）/ 隐私（本地）/ 混合（按任务类型分流）。
+- 只有隐私模式或混合模式的本地任务会探测 Ollama、LM Studio、llama.cpp-compatible server；未检测到本地 LLM 时明确报错，不再静默回退 `MockProvider`。
 - `MockProvider` 仅用于开发、测试和非隐私路径的演示兜底。
 - ONNX Runtime Provider 框架（DirectML/NPU 路径预留）。
 - 上下文管理运行时：所有 `get_provider()` 返回的 LLM provider 都会先经过统一 ContextManager，按 `tool result budget -> history snip -> micro-compact -> session memory -> auto-compact -> LLM call -> prompt-too-long reactive retry` 控制模型可见上下文；原始 AgentBus/DB 历史不删除。
@@ -96,7 +97,22 @@ MARVIS_PROVIDER_NAME=openai_compatible
 MARVIS_BASE_URL=https://api.openai.com/v1
 MARVIS_API_KEY=your-key
 MARVIS_MODEL=gpt-4o-mini
+MARVIS_WIRE_API=chat_completions
 ```
+
+OpenAI-compatible 网关也可以写裸域名：
+
+```text
+MARVIS_BASE_URL=https://api.example.com
+```
+
+运行时会自动请求 `https://api.example.com/v1/chat/completions`。如果网关支持 OpenAI Responses API，可改为：
+
+```text
+MARVIS_WIRE_API=responses
+```
+
+`MARVIS_API_KEY`、`MARVIS_JWT_SECRET` 等敏感值应通过 `.env`、环境变量或外部配置提供，不要提交到仓库，也不要通过 Settings API 持久化。
 
 不配置 `MARVIS_API_KEY` 时，效率/混合模式可按 `MARVIS_ALLOW_MOCK_FALLBACK` 使用 `MockProvider` 做开发演示。隐私模式始终需要真实本地 LLM 后端。
 
@@ -125,9 +141,9 @@ npm --prefix desktop run dev
 当前验证结果：
 
 ```text
-22 passed, 1 skipped
-desktop typecheck passed
+backend: 855 passed, 1 skipped
 desktop build passed
+mobile typecheck passed
 ```
 
 跳过项是当前 Windows shell 没有创建符号链接权限。

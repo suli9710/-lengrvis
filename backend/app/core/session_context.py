@@ -14,6 +14,10 @@ DEFAULT_SESSION_ID = "session_current"
 
 class SessionContext(BaseModel):
     id: str = Field(default_factory=lambda: new_id("session"))
+    parent_session_id: str = ""
+    resumed_from_task_id: str = ""
+    resumed_from_boundary_id: str = ""
+    active_task_ids: list[str] = Field(default_factory=list)
     current_workflow_state: dict[str, Any] = Field(default_factory=dict)
     unfinished_task_ids: list[str] = Field(default_factory=list)
     learned_preferences: dict[str, Any] = Field(default_factory=dict)
@@ -26,6 +30,11 @@ class SessionContext(BaseModel):
 
     def context_for_planning(self) -> dict[str, Any]:
         return {
+            "session_id": self.id,
+            "parent_session_id": self.parent_session_id,
+            "resumed_from_task_id": self.resumed_from_task_id,
+            "resumed_from_boundary_id": self.resumed_from_boundary_id,
+            "active_task_ids": self.active_task_ids,
             "current_workflow_state": self.current_workflow_state,
             "unfinished_task_ids": self.unfinished_task_ids,
             "learned_preferences": self.learned_preferences,
@@ -44,12 +53,29 @@ class SessionContextStore:
         self._lock = threading.RLock()
         db.init_db()
 
+    def load(self, session_id: str | None = None) -> SessionContext:
+        with self._lock:
+            if session_id:
+                self.session_id = session_id
+            with db.connect() as conn:
+                row = conn.execute("SELECT data FROM session_contexts WHERE id = ?", (self.session_id,)).fetchone()
+            if row:
+                self.current = SessionContext.model_validate_json(row["data"])
+            else:
+                self.current = SessionContext(id=self.session_id)
+                self.save(self.current)
+            return self.current
+
     def load_latest(self) -> SessionContext:
+        return self.load()
+
+    def load_global_latest(self) -> SessionContext:
         with self._lock:
             with db.connect() as conn:
                 row = conn.execute("SELECT data FROM session_contexts ORDER BY updated_at DESC LIMIT 1").fetchone()
             if row:
                 self.current = SessionContext.model_validate_json(row["data"])
+                self.session_id = self.current.id
             else:
                 self.current = SessionContext(id=self.session_id)
                 self.save(self.current)
@@ -67,6 +93,8 @@ class SessionContextStore:
         with self._lock:
             if task_id and task_id not in self.current.unfinished_task_ids:
                 self.current.unfinished_task_ids.append(task_id)
+            if task_id and task_id not in self.current.active_task_ids:
+                self.current.active_task_ids.append(task_id)
             if workflow_state:
                 self.current.current_workflow_state.update(workflow_state)
             return self.save()
@@ -88,6 +116,9 @@ class SessionContextStore:
         *,
         last_message_id: str = "",
         token_stats: dict[str, Any] | None = None,
+        resumed_from_task_id: str = "",
+        resumed_from_boundary_id: str = "",
+        parent_session_id: str = "",
     ) -> SessionContext:
         with self._lock:
             text = summary.strip()
@@ -97,6 +128,12 @@ class SessionContextStore:
                 self.current.last_summarized_message_id = last_message_id
             if token_stats:
                 self.current.token_stats.update(token_stats)
+            if resumed_from_task_id:
+                self.current.resumed_from_task_id = resumed_from_task_id
+            if resumed_from_boundary_id:
+                self.current.resumed_from_boundary_id = resumed_from_boundary_id
+            if parent_session_id:
+                self.current.parent_session_id = parent_session_id
             return self.save()
 
     def planning_context(self) -> dict[str, Any]:

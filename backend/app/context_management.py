@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -28,9 +29,13 @@ PROMPT_TOO_LONG_MARKERS = (
     "context_window_exceeded",
     "maximum context",
     "model_context_window_exceeded",
+    "prompt is too long",
     "prompt too long",
     "prompt-too-long",
     "too many tokens",
+    "input is too long",
+    "request too large",
+    "maximum prompt length",
 )
 
 
@@ -57,6 +62,27 @@ class ContextProjection:
     history_snipped: bool = False
     session_summary_added: bool = False
     strategy: str = "none"
+    source: str = "llm"
+    boundary_id: str = ""
+    compact_metadata: dict[str, Any] | None = None
+    retained_tail_message_ids: list[str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "original_count": self.original_count,
+            "projected_count": self.projected_count,
+            "original_tokens": self.original_tokens,
+            "projected_tokens": self.projected_tokens,
+            "compacted": self.compacted,
+            "micro_compacted": self.micro_compacted,
+            "history_snipped": self.history_snipped,
+            "session_summary_added": self.session_summary_added,
+            "strategy": self.strategy,
+            "boundary_id": self.boundary_id,
+            "compact_metadata": redact_compact_metadata(self.compact_metadata or {}),
+            "retained_tail_message_ids": list(self.retained_tail_message_ids or []),
+        }
 
 
 COMPACT_BOUNDARY_TYPES = {"manual_compact", "auto_compact", "reactive_compact"}
@@ -139,8 +165,10 @@ def project_messages_for_llm(
     *,
     session_context: dict[str, Any] | None = None,
     source: str = "llm",
+    record_projection_event: bool = True,
 ) -> ContextProjection:
     original = compact_boundary_view(_normalize_messages(messages))
+    boundary = _latest_compact_boundary(original)
     original_tokens = count_messages_tokens(original)
     projected = copy.deepcopy(original)
     micro_compacted = False
@@ -181,8 +209,12 @@ def project_messages_for_llm(
         history_snipped=history_snipped,
         session_summary_added=session_summary_added,
         strategy=_strategy(micro_compacted, history_snipped, session_summary_added, compacted),
+        source=source,
+        boundary_id=str((boundary or {}).get("id") or ""),
+        compact_metadata=_compact_metadata(boundary or {}),
+        retained_tail_message_ids=sorted(_retained_tail_message_ids(boundary or {})),
     )
-    if projection.compacted:
+    if projection.compacted and record_projection_event:
         _record_event(
             "context.projected",
             "ContextManager",
@@ -196,6 +228,30 @@ def project_messages_for_llm(
             },
         )
     return projection
+
+
+def project_ledger_for_llm(
+    messages: list[dict[str, Any]],
+    settings: AppSettings,
+    *,
+    session_context: dict[str, Any] | None = None,
+    source: str = "agent_bus",
+    record_projection_event: bool = True,
+) -> ContextProjection:
+    """Project the durable message ledger into a provider-safe prompt view.
+
+    The ledger remains ``agent_messages``/OpenAI-like dicts. This adapter
+    carries Claude Code compact-boundary semantics through Mavris metadata
+    rather than importing the TypeScript session runtime.
+    """
+
+    return project_messages_for_llm(
+        messages,
+        settings,
+        session_context=session_context,
+        source=source,
+        record_projection_event=record_projection_event,
+    )
 
 
 def micro_compact_messages(messages: list[dict[str, Any]], settings: AppSettings) -> tuple[list[dict[str, Any]], bool]:
@@ -308,19 +364,36 @@ def compact_boundary_view(messages: list[dict[str, Any]]) -> list[dict[str, Any]
         return messages
     boundary = copy.deepcopy(messages[boundary_index])
     retained_tail_ids = _retained_tail_message_ids(boundary)
+    preserved_segment = _preserved_segment_with_tool_call_owners(
+        messages[:boundary_index],
+        _preserved_segment_messages(boundary),
+    )
+    retained_tail_ids = _expand_tool_pair_message_ids(
+        messages[:boundary_index],
+        retained_tail_ids,
+    )
     protected_head = [
         copy.deepcopy(message)
         for message in messages[:boundary_index]
         if message.get("role") in {"system", "developer"} and not _is_compact_boundary(message)
     ]
     tail_from_metadata: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     if retained_tail_ids:
-        seen_ids: set[str] = set()
         for message in messages[:boundary_index]:
             message_id = str(message.get("id") or "").strip()
-            if message_id in retained_tail_ids and message_id not in seen_ids:
+            if message_id in retained_tail_ids and message_id not in seen_ids and not _is_compact_boundary(message):
                 tail_from_metadata.append(copy.deepcopy(message))
                 seen_ids.add(message_id)
+    for message in preserved_segment:
+        if _is_compact_boundary(message):
+            continue
+        message_id = str(message.get("id") or "").strip()
+        if message_id and message_id in seen_ids:
+            continue
+        tail_from_metadata.append(copy.deepcopy(message))
+        if message_id:
+            seen_ids.add(message_id)
     tail_after_boundary = copy.deepcopy(messages[boundary_index + 1 :])
     if tail_after_boundary:
         after_ids = {str(message.get("id") or "").strip() for message in tail_after_boundary}
@@ -367,66 +440,64 @@ def select_recent_complete_tail(
 
 
 def repair_tool_message_invariants(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return a provider-safe view with no orphan tool-role messages.
+    """Return a provider-safe view with atomic assistant/tool message blocks.
 
-    If a compacted projection cannot include a complete assistant/tool pair,
-    it preserves the natural-language content and drops only the invalid
-    structured tool-call envelope. This keeps the next LLM request valid while
-    retaining as much recent context as possible.
+    Tool-call messages are only kept when their matching tool result is present
+    in the immediately following tool-result block. Otherwise the structured
+    envelope is removed and the readable content is preserved.
     """
 
     if not messages:
         return []
 
     repaired: list[dict[str, Any]] = []
-    open_tool_call_ids: set[str] = set()
-    seen_tool_result_ids: set[str] = set()
-    for message in messages:
-        item = copy.deepcopy(message)
+    index = 0
+    while index < len(messages):
+        item = copy.deepcopy(messages[index])
         role = str(item.get("role") or "")
         if role == "tool":
-            tool_call_id = str(item.get("tool_call_id") or "").strip()
-            if not tool_call_id or tool_call_id not in open_tool_call_ids:
-                item["role"] = "assistant"
-                item.pop("tool_call_id", None)
-                metadata = dict(item.get("metadata") or {})
-                metadata["orphan_tool_result_compacted"] = True
-                item["metadata"] = metadata
-                if not str(item.get("content") or "").strip():
-                    item["content"] = "[Tool result omitted during context compaction because its tool call is not in view.]"
-                repaired.append(item)
-                continue
-            seen_tool_result_ids.add(tool_call_id)
-            repaired.append(item)
+            repaired.append(_demote_orphan_tool_result(item))
+            index += 1
             continue
-        for tool_call_id in _tool_call_ids(item):
-            open_tool_call_ids.add(tool_call_id)
-        repaired.append(item)
 
-    if not open_tool_call_ids:
-        return repaired
+        tool_calls = _valid_tool_calls(item)
+        if not tool_calls:
+            repaired.append(_drop_tool_calls(item) if item.get("tool_calls") else item)
+            index += 1
+            continue
 
-    final: list[dict[str, Any]] = []
-    for message in repaired:
-        item = copy.deepcopy(message)
-        tool_calls = list(item.get("tool_calls") or [])
-        if tool_calls:
-            kept_tool_calls = [
-                tool_call
-                for tool_call in tool_calls
-                if str(tool_call.get("id") or "").strip() in seen_tool_result_ids
-            ]
-            if kept_tool_calls:
-                item["tool_calls"] = kept_tool_calls
-            else:
-                item.pop("tool_calls", None)
-                metadata = dict(item.get("metadata") or {})
-                metadata["tool_calls_compacted"] = True
-                item["metadata"] = metadata
-                if not str(item.get("content") or "").strip():
-                    item["content"] = "[Tool call omitted during context compaction because its result is not in view.]"
-        final.append(item)
-    return final
+        next_index = index + 1
+        contiguous_tool_results: list[dict[str, Any]] = []
+        while next_index < len(messages) and str(messages[next_index].get("role") or "") == "tool":
+            contiguous_tool_results.append(copy.deepcopy(messages[next_index]))
+            next_index += 1
+
+        result_ids = {
+            str(result.get("tool_call_id") or "").strip()
+            for result in contiguous_tool_results
+            if str(result.get("tool_call_id") or "").strip()
+        }
+        kept_tool_calls = [tool_call for tool_call in tool_calls if str(tool_call.get("id") or "").strip() in result_ids]
+        if kept_tool_calls:
+            kept_ids = {str(tool_call.get("id") or "").strip() for tool_call in kept_tool_calls}
+            item["tool_calls"] = kept_tool_calls
+            repaired.append(item)
+            emitted_result_ids: set[str] = set()
+            delayed_demotions: list[dict[str, Any]] = []
+            for result in contiguous_tool_results:
+                result_id = str(result.get("tool_call_id") or "").strip()
+                if result_id in kept_ids and result_id not in emitted_result_ids:
+                    repaired.append(result)
+                    emitted_result_ids.add(result_id)
+                else:
+                    delayed_demotions.append(_demote_orphan_tool_result(result))
+            repaired.extend(delayed_demotions)
+        else:
+            repaired.append(_drop_tool_calls(item))
+            repaired.extend(_demote_orphan_tool_result(result) for result in contiguous_tool_results)
+        index = next_index
+
+    return repaired
 
 
 def _protected_head_end(messages: list[dict[str, Any]]) -> int:
@@ -447,6 +518,37 @@ def _tool_call_ids(message: dict[str, Any]) -> set[str]:
         if tool_call_id:
             ids.add(tool_call_id)
     return ids
+
+
+def _valid_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        tool_call
+        for tool_call in message.get("tool_calls") or []
+        if isinstance(tool_call, dict) and str(tool_call.get("id") or "").strip()
+    ]
+
+
+def _demote_orphan_tool_result(message: dict[str, Any]) -> dict[str, Any]:
+    item = copy.deepcopy(message)
+    item["role"] = "assistant"
+    item.pop("tool_call_id", None)
+    metadata = dict(item.get("metadata") or {})
+    metadata["orphan_tool_result_compacted"] = True
+    item["metadata"] = metadata
+    if not str(item.get("content") or "").strip():
+        item["content"] = "[Tool result omitted during context compaction because its tool call is not in view.]"
+    return item
+
+
+def _drop_tool_calls(message: dict[str, Any]) -> dict[str, Any]:
+    item = copy.deepcopy(message)
+    item.pop("tool_calls", None)
+    metadata = dict(item.get("metadata") or {})
+    metadata["tool_calls_compacted"] = True
+    item["metadata"] = metadata
+    if not str(item.get("content") or "").strip():
+        item["content"] = "[Tool call omitted during context compaction because its result is not in view.]"
+    return item
 
 
 def _orphan_tool_result_ids(messages: list[dict[str, Any]]) -> set[str]:
@@ -507,25 +609,93 @@ def summarize_messages(messages: list[dict[str, Any]], settings: AppSettings) ->
 
 def agent_messages_to_openai(messages: list[AgentMessage], settings: AppSettings, *, source: str = "agent_bus") -> ContextProjection:
     raw = [_message_to_llm_dict(message) for message in messages]
-    return project_messages_for_llm(raw, settings, source=source)
+    return project_ledger_for_llm(raw, settings, source=source)
 
 
 def is_prompt_too_long_error(exc: BaseException) -> bool:
-    text = str(exc).lower()
+    if isinstance(exc, PromptTooLongError):
+        return True
+    text = _error_text(exc).lower()
     if any(marker in text for marker in PROMPT_TOO_LONG_MARKERS):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         if exc.response.status_code in {400, 413}:
-            try:
-                body = exc.response.text.lower()
-            except Exception:
-                body = ""
+            body = _response_error_text(exc.response).lower()
             return any(marker in body for marker in PROMPT_TOO_LONG_MARKERS)
     return False
 
 
 class PromptTooLongError(RuntimeError):
     """Raised for context-window errors that should trigger compaction, not circuit breaking."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        actual_tokens: int | None = None,
+        limit_tokens: int | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+        raw: Any | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.actual_tokens = actual_tokens
+        self.limit_tokens = limit_tokens
+        self.provider = provider
+        self.model = model
+        self.raw = raw
+
+    @property
+    def token_gap(self) -> int | None:
+        if self.actual_tokens is None or self.limit_tokens is None:
+            return None
+        gap = self.actual_tokens - self.limit_tokens
+        return gap if gap > 0 else None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "message": str(self),
+            "actual_tokens": self.actual_tokens,
+            "limit_tokens": self.limit_tokens,
+            "token_gap": self.token_gap,
+            "provider": self.provider,
+            "model": self.model,
+        }
+
+
+def prompt_too_long_error_from_exception(
+    exc: BaseException,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+) -> PromptTooLongError:
+    actual, limit = parse_prompt_too_long_token_counts(_error_text(exc))
+    return PromptTooLongError(
+        str(exc),
+        actual_tokens=actual,
+        limit_tokens=limit,
+        provider=provider,
+        model=model,
+        raw=exc,
+    )
+
+
+def parse_prompt_too_long_token_counts(raw_message: str) -> tuple[int | None, int | None]:
+    text = str(raw_message or "")
+    patterns = [
+        r"prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)",
+        r"(\d+)\s*tokens?\s*>\s*(\d+)\s*(?:maximum|max|limit)",
+        r"requested\s+(\d+)\s*tokens?.*?(?:maximum|limit).*?(\d+)",
+        r"input.*?(\d+)\s*tokens?.*?(?:maximum|limit).*?(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        first = int(match.group(1))
+        second = int(match.group(2))
+        return max(first, second), min(first, second)
+    return None, None
 
 
 class LLMCapabilityError(RuntimeError):
@@ -603,10 +773,8 @@ class ContextAwareProvider(LLMProvider):
             purpose="chat",
             profile=self.profile.to_dict(),
             projection={
-                "strategy": projection.strategy,
-                "original_tokens": projection.original_tokens,
-                "projected_tokens": projection.projected_tokens,
-                "compacted": projection.compacted,
+                **projection.to_dict(),
+                "context_usage": _safe_context_usage_snapshot(projection, self.settings),
             },
         )
         return response
@@ -616,7 +784,7 @@ class ContextAwareProvider(LLMProvider):
             raise LLMCapabilityError(f"Provider '{self.profile.provider_name}' does not support structured JSON.")
         projection = self.prepare(messages, purpose=f"{self.task}:structured")
         try:
-            return await self.provider.structured_chat(
+            payload = await self.provider.structured_chat(
                 projection.messages,  # type: ignore[arg-type]
                 output_schema,
             )
@@ -634,10 +802,32 @@ class ContextAwareProvider(LLMProvider):
                     "projected_tokens": retry_projection.projected_tokens,
                 },
             )
-            return await self.provider.structured_chat(
+            payload = await self.provider.structured_chat(
                 retry_projection.messages,  # type: ignore[arg-type]
                 output_schema,
             )
+            projection = retry_projection
+        structured_response = self._with_cost(
+            LLMResponse(
+                content=_json(payload),
+                provider=getattr(self.provider, "name", self.profile.provider_name),
+                model=self.profile.model,
+                usage=estimate_usage(projection.messages, _json(payload)),
+                metadata={"structured": True},
+            )
+        )
+        record_llm_response(
+            structured_response,
+            self.settings,
+            task=self.task,
+            purpose="structured_chat",
+            profile=self.profile.to_dict(),
+            projection={
+                **projection.to_dict(),
+                "context_usage": _safe_context_usage_snapshot(projection, self.settings),
+            },
+        )
+        return payload
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         if not self.profile.capabilities.embeddings:
@@ -664,12 +854,14 @@ class ContextAwareProvider(LLMProvider):
     def prepare(self, messages: list[dict[str, Any]], *, purpose: str) -> ContextProjection:
         if purpose.endswith(":compact") or purpose.endswith(":session_memory"):
             normalized = _normalize_messages(messages)
+            token_count = count_messages_tokens(normalized)
             return ContextProjection(
                 messages=normalized,
                 original_count=len(normalized),
                 projected_count=len(normalized),
-                original_tokens=count_messages_tokens(normalized),
-                projected_tokens=count_messages_tokens(normalized),
+                original_tokens=token_count,
+                projected_tokens=token_count,
+                source=purpose,
             )
         return project_messages_for_llm(
             messages,
@@ -730,6 +922,10 @@ def force_compact_for_retry(messages: list[dict[str, Any]], settings: AppSetting
         compacted=True,
         history_snipped=True,
         strategy="reactive_compact",
+        source="reactive_retry",
+        boundary_id=str((_latest_compact_boundary(compacted) or {}).get("id") or ""),
+        compact_metadata=_compact_metadata(_latest_compact_boundary(compacted) or {}),
+        retained_tail_message_ids=sorted(_retained_tail_message_ids(_latest_compact_boundary(compacted) or {})),
     )
 
 
@@ -760,22 +956,137 @@ def _latest_compact_boundary_index(messages: list[dict[str, Any]]) -> int | None
     return None
 
 
+def _latest_compact_boundary(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    index = _latest_compact_boundary_index(messages)
+    if index is None:
+        return None
+    return messages[index]
+
+
 def _is_compact_boundary(message: dict[str, Any]) -> bool:
     metadata = message.get("metadata") or {}
     if not isinstance(metadata, dict):
         return False
     boundary = str(metadata.get("context_boundary") or "")
-    return boundary in COMPACT_BOUNDARY_TYPES or bool(metadata.get("compact_boundary"))
+    compact_metadata = _compact_metadata(message)
+    compact_boundary = str(
+        compact_metadata.get("context_boundary")
+        or compact_metadata.get("boundary_type")
+        or compact_metadata.get("type")
+        or ""
+    )
+    return (
+        boundary in COMPACT_BOUNDARY_TYPES
+        or compact_boundary in COMPACT_BOUNDARY_TYPES
+        or bool(metadata.get("compact_boundary"))
+        or bool(compact_metadata.get("compact_boundary"))
+    )
 
 
 def _retained_tail_message_ids(boundary: dict[str, Any]) -> set[str]:
     metadata = boundary.get("metadata") or {}
     if not isinstance(metadata, dict):
         return set()
-    raw_ids = metadata.get("retained_tail_message_ids") or []
-    if not isinstance(raw_ids, list):
+    compact_metadata = metadata.get("compact_metadata") or metadata.get("compactMetadata") or {}
+    raw_values = [metadata.get("retained_tail_message_ids")]
+    if isinstance(compact_metadata, dict):
+        raw_values.extend(
+            [
+                compact_metadata.get("retained_tail_message_ids"),
+                compact_metadata.get("messages_to_keep_ids"),
+                compact_metadata.get("messagesToKeep"),
+                compact_metadata.get("preserved_message_ids"),
+                compact_metadata.get("preserved_segment_message_ids"),
+            ]
+        )
+        preserved = compact_metadata.get("preserved_segment") or compact_metadata.get("preservedSegment") or {}
+        if isinstance(preserved, dict):
+            raw_values.append(preserved.get("message_ids") or preserved.get("messageIds"))
+    message_ids: set[str] = set()
+    for raw_ids in raw_values:
+        if isinstance(raw_ids, list):
+            message_ids.update(str(item).strip() for item in raw_ids if str(item).strip())
+    return message_ids
+
+
+def _preserved_segment_with_tool_call_owners(
+    prior_messages: list[dict[str, Any]],
+    preserved_segment: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not preserved_segment:
+        return []
+    tool_call_owners: dict[str, dict[str, Any]] = {}
+    for message in prior_messages:
+        for tool_call_id in _tool_call_ids(message):
+            tool_call_owners[tool_call_id] = message
+
+    result: list[dict[str, Any]] = []
+    emitted_ids = {str(message.get("id") or "").strip() for message in preserved_segment if str(message.get("id") or "").strip()}
+    for message in preserved_segment:
+        tool_call_id = str(message.get("tool_call_id") or "").strip() if str(message.get("role") or "") == "tool" else ""
+        owner = tool_call_owners.get(tool_call_id)
+        owner_id = str((owner or {}).get("id") or "").strip()
+        if owner and owner_id not in emitted_ids:
+            result.append(copy.deepcopy(owner))
+            emitted_ids.add(owner_id)
+        result.append(copy.deepcopy(message))
+    return result
+
+
+def _compact_metadata(boundary: dict[str, Any]) -> dict[str, Any]:
+    metadata = boundary.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return {}
+    compact_metadata = metadata.get("compact_metadata") or metadata.get("compactMetadata") or {}
+    if isinstance(compact_metadata, dict):
+        return dict(compact_metadata)
+    return {}
+
+
+def redact_compact_metadata(compact_metadata: dict[str, Any]) -> dict[str, Any]:
+    """Return compact metadata safe for API responses and telemetry."""
+
+    redacted = copy.deepcopy(compact_metadata)
+    preserved = redacted.get("preserved_segment") or redacted.get("preservedSegment")
+    if isinstance(preserved, dict):
+        raw_messages = preserved.pop("messages", [])
+        if isinstance(raw_messages, list):
+            preserved["message_count"] = len([message for message in raw_messages if isinstance(message, dict)])
+        redacted["preserved_segment"] = preserved
+        redacted.pop("preservedSegment", None)
+    return redacted
+
+
+def _preserved_segment_messages(boundary: dict[str, Any]) -> list[dict[str, Any]]:
+    compact_metadata = _compact_metadata(boundary)
+    preserved = compact_metadata.get("preserved_segment") or compact_metadata.get("preservedSegment") or []
+    raw_messages = preserved.get("messages") if isinstance(preserved, dict) else preserved
+    if not isinstance(raw_messages, list):
+        return []
+    return [copy.deepcopy(message) for message in raw_messages if isinstance(message, dict)]
+
+
+def _expand_tool_pair_message_ids(messages: list[dict[str, Any]], ids: set[str]) -> set[str]:
+    if not ids:
         return set()
-    return {str(item).strip() for item in raw_ids if str(item).strip()}
+    expanded = set(ids)
+    id_by_tool_call: dict[str, str] = {}
+    tool_call_owner_ids: dict[str, str] = {}
+    for message in messages:
+        message_id = str(message.get("id") or "").strip()
+        for tool_call_id in _tool_call_ids(message):
+            tool_call_owner_ids[tool_call_id] = message_id
+        if str(message.get("role") or "") == "tool":
+            tool_call_id = str(message.get("tool_call_id") or "").strip()
+            if tool_call_id and message_id:
+                id_by_tool_call[tool_call_id] = message_id
+    for tool_call_id, owner_id in tool_call_owner_ids.items():
+        result_id = id_by_tool_call.get(tool_call_id, "")
+        if owner_id in expanded and result_id:
+            expanded.add(result_id)
+        if result_id in expanded and owner_id:
+            expanded.add(owner_id)
+    return expanded
 
 
 def _message_to_llm_dict(message: "AgentMessage") -> dict[str, Any]:
@@ -803,6 +1114,37 @@ def _record_event(event_type: str, actor: str, payload: dict[str, Any] | None = 
         record(event_type, actor, payload or {})
     except Exception:
         pass
+
+
+def _error_text(exc: BaseException) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{exc} {_response_error_text(exc.response)}"
+    return str(exc)
+
+
+def _response_error_text(response: httpx.Response) -> str:
+    try:
+        data = response.json()
+    except Exception:
+        return response.text
+    return _json(data)
+
+
+def _safe_context_usage_snapshot(projection: ContextProjection, settings: AppSettings) -> dict[str, Any]:
+    try:
+        from app.context_usage import analyze_context_usage, context_usage_to_dict
+
+        return context_usage_to_dict(
+            analyze_context_usage(
+                messages=projection.messages,
+                settings=settings,
+                include_registered_tools=False,
+                include_session_memory=False,
+                include_projection=True,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
 
 
 def _should_inject_session_context(

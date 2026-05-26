@@ -200,7 +200,7 @@ class ChatEndpointClient:
         self,
         base_url: str = "http://127.0.0.1:8000",
         *,
-        mode: str = "privacy",
+        mode: str = "efficiency",
         timeout: float = 30.0,
         chat_path: str = "/api/chat",
     ) -> None:

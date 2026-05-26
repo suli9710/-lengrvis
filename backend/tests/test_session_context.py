@@ -20,18 +20,21 @@ def _isolate_db(monkeypatch, tmp_path):
     reset_session_context_store()
 
 
-def test_session_context_persists_and_loads_latest():
+def test_session_context_persists_and_loads_by_session_id():
     store = SessionContextStore(session_id="session_a")
     store.load_latest()
     store.remember_task("task_1", workflow_state={"phase": "editing"})
     store.learn_preference("editor", "WPS")
 
-    reloaded = SessionContextStore(session_id="session_b").load_latest()
+    reloaded = SessionContextStore(session_id="session_a").load()
+    isolated = SessionContextStore(session_id="session_b").load()
 
     assert reloaded.id == "session_a"
     assert reloaded.unfinished_task_ids == ["task_1"]
     assert reloaded.current_workflow_state["phase"] == "editing"
     assert reloaded.learned_preferences["editor"] == "WPS"
+    assert isolated.id == "session_b"
+    assert isolated.unfinished_task_ids == []
 
 
 def test_session_context_persists_conversation_summary():
@@ -43,7 +46,7 @@ def test_session_context_persists_conversation_summary():
         token_stats={"projected_tokens": 42},
     )
 
-    reloaded = SessionContextStore(session_id="session_b").load_latest()
+    reloaded = SessionContextStore(session_id="session_a").load()
 
     assert reloaded.conversation_summary == "Earlier work summary."
     assert reloaded.last_summarized_message_id == "msg_1"
@@ -59,7 +62,7 @@ def test_session_context_complete_task_removes_unfinished_reference():
     assert store.current.unfinished_task_ids == []
 
 
-def test_session_context_load_latest_uses_updated_at():
+def test_session_context_load_latest_uses_configured_session_id():
     older_created_later = SessionContext(id="created_later", created_at="2026-01-02T00:00:00Z", updated_at="2026-01-02T00:00:00Z")
     newer_updated = SessionContext(
         id="updated_later",
@@ -75,8 +78,8 @@ def test_session_context_load_latest_uses_updated_at():
 
     loaded = SessionContextStore(session_id="session_c").load_latest()
 
-    assert loaded.id == "updated_later"
-    assert loaded.unfinished_task_ids == ["task_newer"]
+    assert loaded.id == "session_c"
+    assert loaded.unfinished_task_ids == []
 
 
 def test_planner_formats_session_context_for_prompt():

@@ -7,7 +7,14 @@ import pytest
 
 from app.config import AppSettings
 from app.context_management import PromptTooLongError
-from app.llm.openai_compatible import LLMApiCircuitOpen, OpenAICompatibleProvider, _CIRCUITS
+from app.llm.openai_compatible import (
+    LLMApiCircuitOpen,
+    LLMApiResponseError,
+    OpenAICompatibleProvider,
+    _CIRCUITS,
+    circuit_snapshot,
+    normalize_openai_base_url,
+)
 
 
 class FakeAsyncClient:
@@ -73,6 +80,69 @@ def _response_with_headers(status_code: int, payload: dict, headers: dict[str, s
     )
 
 
+def _text_response(status_code: int, text: str, headers: dict[str, str] | None = None) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        text=text,
+        headers=headers or {},
+        request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "normalized"),
+    [
+        ("https://api.example.test", "https://api.example.test/v1"),
+        ("https://api.example.test/", "https://api.example.test/v1"),
+        ("https://api.example.test/v1", "https://api.example.test/v1"),
+        ("https://api.example.test/custom/openai", "https://api.example.test/custom/openai"),
+    ],
+)
+def test_normalize_openai_base_url(raw, normalized):
+    assert normalize_openai_base_url(raw) == normalized
+
+
+def test_chat_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "ok"}}]})]
+    provider = OpenAICompatibleProvider(_settings(base_url="https://api.example.test"))
+
+    text = asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
+
+    assert text == "ok"
+    assert FakeAsyncClient.requests[0]["url"] == "https://api.example.test/v1/chat/completions"
+
+
+def test_responses_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(200, {"status": "completed", "output": [{"content": [{"text": "ok"}]}]})
+    ]
+    provider = OpenAICompatibleProvider(_settings(base_url="https://api.example.test", wire_api="responses"))
+
+    text = asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
+
+    assert text == "ok"
+    assert FakeAsyncClient.requests[0]["url"] == "https://api.example.test/v1/responses"
+
+
+def test_circuit_snapshot_uses_normalized_base_url(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(503, {"error": "down"})]
+    settings = _settings(
+        base_url="https://api.example.test/",
+        llm_api_max_retries=0,
+        llm_api_circuit_failure_threshold=1,
+    )
+    provider = OpenAICompatibleProvider(settings)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
+
+    assert circuit_snapshot(settings)["state"] == "open"
+    assert ("openai", "https://api.example.test/v1", "chat", "gpt-4o-mini") in _CIRCUITS
+
+
 def test_chat_retries_transient_http_error(monkeypatch):
     monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
     FakeAsyncClient.responses = [
@@ -85,6 +155,15 @@ def test_chat_retries_transient_http_error(monkeypatch):
 
     assert text == "ok"
     assert FakeAsyncClient.calls == 2
+
+
+def test_chat_rejects_non_json_success_payload(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [_text_response(200, "<html>not json</html>", {"content-type": "text/html"})]
+    provider = OpenAICompatibleProvider(_settings())
+
+    with pytest.raises(LLMApiResponseError, match="non-JSON"):
+        asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
 
 
 def test_circuit_opens_after_repeated_transient_failures(monkeypatch):
@@ -118,11 +197,28 @@ def test_prompt_too_long_does_not_retry_or_open_circuit(monkeypatch):
         _settings(llm_api_max_retries=2, llm_api_circuit_failure_threshold=1)
     )
 
-    with pytest.raises(PromptTooLongError):
+    with pytest.raises(PromptTooLongError) as exc_info:
         asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
 
     assert FakeAsyncClient.calls == 1
+    assert exc_info.value.provider == "openai"
     assert _CIRCUITS == {}
+
+
+def test_prompt_too_long_parses_reported_token_gap(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(413, {"error": {"message": "prompt is too long: 137500 tokens > 135000 maximum"}}),
+    ]
+    provider = OpenAICompatibleProvider(_settings(llm_api_max_retries=2, llm_api_circuit_failure_threshold=1))
+
+    with pytest.raises(PromptTooLongError) as exc_info:
+        asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
+
+    assert exc_info.value.actual_tokens == 137500
+    assert exc_info.value.limit_tokens == 135000
+    assert exc_info.value.token_gap == 2500
+    assert FakeAsyncClient.calls == 1
 
 
 def test_retry_after_header_controls_retry_sleep(monkeypatch):
@@ -165,6 +261,107 @@ def test_chat_result_parses_usage(monkeypatch):
     assert result.usage.completion_tokens == 3
     assert result.usage.estimated is False
     assert result.finish_reason == "stop"
+
+
+def test_chat_payload_strips_non_provider_message_fields(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(200, {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}),
+    ]
+    provider = OpenAICompatibleProvider(_settings())
+
+    asyncio.run(
+        provider.chat_result(
+            [
+                {
+                    "id": "msg_1",
+                    "role": "user",
+                    "content": "hello",
+                    "created_at": "now",
+                    "metadata": {"secret": "nope"},
+                }
+            ]
+        )
+    )
+
+    sent = FakeAsyncClient.requests[0]["json"]["messages"][0]
+    assert sent == {"role": "user", "content": "hello"}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"choices": []},
+        {"choices": [{"message": {}}]},
+        {"error": {"message": "provider said no"}},
+    ],
+)
+def test_chat_rejects_malformed_success_payload(monkeypatch, payload):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(200, payload)]
+    provider = OpenAICompatibleProvider(_settings())
+
+    with pytest.raises(LLMApiResponseError):
+        asyncio.run(provider.chat_result([{"role": "user", "content": "hello"}]))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "failed", "error": {"message": "failed"}},
+        {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}},
+        {"status": "completed", "output": []},
+        {"error": {"message": "provider said no"}},
+    ],
+)
+def test_responses_api_rejects_failed_or_empty_success_payload(monkeypatch, payload):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(200, payload)]
+    provider = OpenAICompatibleProvider(_settings(wire_api="responses"))
+
+    with pytest.raises(LLMApiResponseError):
+        asyncio.run(provider.chat_result([{"role": "user", "content": "hello"}]))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"choices": []},
+        {"choices": [{"message": {}}]},
+        {"error": {"message": "provider said no"}},
+    ],
+)
+def test_vision_rejects_malformed_success_payload(monkeypatch, tmp_path, payload):
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"not really an image but enough for base64")
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(200, payload)]
+    provider = OpenAICompatibleProvider(_settings())
+
+    with pytest.raises(LLMApiResponseError):
+        asyncio.run(provider.vision(str(image), "describe"))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "failed", "error": {"message": "failed"}},
+        {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}},
+        {"status": "completed", "output": []},
+        {"error": {"message": "provider said no"}},
+    ],
+)
+def test_responses_vision_rejects_failed_or_empty_success_payload(monkeypatch, tmp_path, payload):
+    image = tmp_path / "sample.png"
+    image.write_bytes(b"not really an image but enough for base64")
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [_response(200, payload)]
+    provider = OpenAICompatibleProvider(_settings(wire_api="responses"))
+
+    with pytest.raises(LLMApiResponseError):
+        asyncio.run(provider.vision(str(image), "describe"))
 
 
 def test_responses_api_rejects_tool_role_messages():

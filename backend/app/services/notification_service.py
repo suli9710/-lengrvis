@@ -62,4 +62,4 @@ def notify(
         {"title": title, "severity": severity, "task_id": effective_task_id},
         task_id=effective_task_id,
     )
-    return {"queued": True, "title": title, "body": body, "task_id": effective_task_id}
+    return {"queued": True, "title": title, "body": body, "task_id": effective_task_id, "severity": severity}

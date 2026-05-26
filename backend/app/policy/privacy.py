@@ -12,7 +12,7 @@ class PrivacyDecision:
 
 
 def can_upload_file_content(settings: AppSettings) -> PrivacyDecision:
-    if (settings.mode or "privacy").lower() == "privacy":
+    if (settings.mode or "efficiency").lower() == "privacy":
         return PrivacyDecision(False, "Privacy mode does not allow file content upload.")
     if not settings.allow_file_content_upload:
         return PrivacyDecision(False, "allow_file_content_upload is disabled.")
@@ -20,7 +20,7 @@ def can_upload_file_content(settings: AppSettings) -> PrivacyDecision:
 
 
 def can_use_browser_network(settings: AppSettings) -> PrivacyDecision:
-    if (settings.mode or "privacy").lower() == "privacy":
+    if (settings.mode or "efficiency").lower() == "privacy":
         return PrivacyDecision(False, "Privacy mode blocks all browser network access.")
     if not settings.allow_browser_network:
         return PrivacyDecision(False, "Browser network access is disabled.")
@@ -28,7 +28,7 @@ def can_use_browser_network(settings: AppSettings) -> PrivacyDecision:
 
 
 def can_use_cloud_model(settings: AppSettings, task: str = "default") -> PrivacyDecision:
-    mode = (settings.mode or "privacy").lower()
+    mode = (settings.mode or "efficiency").lower()
     if mode == "privacy":
         return PrivacyDecision(False, "Privacy mode runs every task on a local model.")
     if mode == "efficiency":
@@ -43,7 +43,7 @@ def can_use_cloud_model(settings: AppSettings, task: str = "default") -> Privacy
 
 
 def can_use_browser_writes(settings: AppSettings) -> PrivacyDecision:
-    mode = (settings.mode or "privacy").lower()
+    mode = (settings.mode or "efficiency").lower()
     if mode == "privacy":
         return PrivacyDecision(False, "Privacy mode forbids browser write or interaction actions.")
     if not settings.allow_browser_network:

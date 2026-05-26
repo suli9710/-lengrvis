@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import Approval
+from app.core.schemas import Approval, Plan, StepStatus, Task, TaskStatus
 from app.services.mobile_pairing_service import approve_approval as approve_mobile_approval
 from app.services.mobile_pairing_service import safe_approval_payload
 from app.services.mobile_pairing_service import list_pending_approvals
@@ -29,7 +29,10 @@ async def approve(approval_id: str):
 
 @router.post("/approvals/{approval_id}/reject")
 def reject(approval_id: str):
-    return safe_approval_payload(reject_mobile_approval(approval_id))
+    approval = reject_mobile_approval(approval_id)
+    _deny_rejected_step(approval)
+    _reconcile_runs(approval.task_id)
+    return safe_approval_payload(approval)
 
 
 async def _execute_approved_step(approval: Approval) -> None:
@@ -57,6 +60,24 @@ def _reconcile_runs(task_id: str) -> None:
         reconcile_task_runs(task_id)
     except Exception:
         return
+
+
+def _deny_rejected_step(approval: Approval) -> None:
+    task_data = db.fetch_one("tasks", approval.task_id)
+    if not task_data:
+        return
+    task = Task.model_validate(task_data)
+    plans = db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=1)
+    if plans:
+        plan = Plan.model_validate(plans[0])
+        for step in plan.steps:
+            if step.id == approval.step_id:
+                step.status = StepStatus.DENIED
+                break
+        db.upsert_model("plans", plan)
+    task.final_summary = "Approval was rejected by the user."
+    db.upsert_model("tasks", task)
+    set_task_status(task.id, TaskStatus.CANCELLED)
 
 
 def _resume_runs_after_approval(task_id: str) -> None:

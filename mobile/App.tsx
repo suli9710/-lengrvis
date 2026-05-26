@@ -6,7 +6,7 @@ import { ApprovalDetail } from "./src/screens/ApprovalDetail";
 import { ApprovalsScreen } from "./src/screens/ApprovalsScreen";
 import { PairScreen } from "./src/screens/PairScreen";
 import { RemoteScreen } from "./src/screens/RemoteScreen";
-import { loadSession } from "./src/store/auth";
+import { clearSession, loadSession } from "./src/store/auth";
 
 export default function App() {
   const [session, setSession] = useState<PairingSession | null>(null);
@@ -39,12 +39,19 @@ export default function App() {
     return () => subscription.remove();
   }, [session]);
 
+  const handleSessionExpired = () => {
+    void clearSession();
+    setSelectedApproval(null);
+    setShowRemoteScreen(false);
+    setSession(null);
+  };
+
   if (!session) {
     return <PairScreen onPaired={setSession} />;
   }
 
   if (showRemoteScreen) {
-    return <RemoteScreen onBack={() => setShowRemoteScreen(false)} session={session} />;
+    return <RemoteScreen onBack={() => setShowRemoteScreen(false)} onSessionExpired={handleSessionExpired} session={session} />;
   }
 
   if (selectedApproval) {
@@ -52,6 +59,7 @@ export default function App() {
       <ApprovalDetail
         approval={selectedApproval}
         onBack={() => setSelectedApproval(null)}
+        onSessionExpired={handleSessionExpired}
         onUpdated={setSelectedApproval}
         session={session}
       />

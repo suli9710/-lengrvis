@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
         record("mcp.startup_load_failed", "lifespan", {"error": str(exc)})
     register_all_tools(extra_definitions=mcp_definitions, settings=settings)
     session_store = get_session_context_store()
-    session_store.load_latest()
+    session_store.load_global_latest()
     scheduler = get_scheduler()
     await scheduler.start()
     watcher = get_file_watcher()
@@ -113,7 +113,12 @@ def create_app() -> FastAPI:
             return await call_next(request)
         return JSONResponse(
             status_code=403,
-            content={"error": {"code": "lan_desktop_api_blocked", "message": "Remote LAN clients may only use mobile pairing and approval APIs."}},
+            content={
+                "error": {
+                    "code": "lan_desktop_api_blocked",
+                    "message": "Remote LAN clients may only redeem mobile pairing codes and use mobile APIs.",
+                }
+            },
         )
 
     @app.middleware("http")
@@ -139,7 +144,11 @@ def create_app() -> FastAPI:
     @app.get("/health")
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "local_llm": health_snapshot(get_effective_settings(), timeout=0.25)}
+        settings = get_effective_settings()
+        payload = {"status": "ok", "mode": settings.mode}
+        if (settings.mode or "efficiency").lower() in {"privacy", "hybrid"}:
+            payload["local_llm"] = health_snapshot(settings, timeout=0.25)
+        return payload
 
     for router in [
         routes_chat.router,

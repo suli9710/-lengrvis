@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
+from app.orchestration.execution_stage import ExecutionStage
 from app.policy.approval_binding import redacted_preview
 from app.policy.redaction import redact_value
 from app.security.mobile_jwt import decode_mobile_token, issue_mobile_token, new_device_id
@@ -101,8 +102,8 @@ def get_approval_detail(approval_id: str) -> dict[str, Any]:
     approval_payload = _safe_approval_payload(approval.model_dump(mode="json"))
     return {
         "approval": approval_payload,
-        "task": task.model_dump(mode="json") if task else None,
-        "plan": plan,
+        "task": _safe_mobile_task(task) if task else None,
+        "plan": _safe_mobile_plan(plan),
         "preview": approval_payload.get("diff_preview", {}),
     }
 
@@ -200,23 +201,56 @@ def _upsert_mobile_device(*, device_id: str, device_name: str) -> None:
 
 
 def _decide_approval(approval_id: str, status: ApprovalStatus) -> Approval:
-    data = db.fetch_one("approvals", approval_id)
-    if not data:
+    existing = db.fetch_one("approvals", approval_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Approval not found")
-
-    approval = Approval.model_validate(data)
-    if approval.status != ApprovalStatus.PENDING:
-        raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}.")
-    if approval.consumed_at:
+    existing_approval = Approval.model_validate(existing)
+    if existing_approval.consumed_at:
         raise HTTPException(status_code=409, detail="Approval has already been consumed.")
-    approval.status = status
-    approval.decided_at = now_iso()
-    db.upsert_model("approvals", approval, status=status)
+    if existing_approval.status != ApprovalStatus.PENDING:
+        raise HTTPException(status_code=409, detail=f"Approval is already {existing_approval.status}.")
+
+    if status == ApprovalStatus.APPROVED:
+        state_error = _approval_state_error(approval_id)
+        if state_error:
+            expired = db.expire_approval_if_pending(approval_id, now_iso(), state_error)
+            if expired:
+                from app.services.approval_event_service import publish_approval_decided
+
+                publish_approval_decided(Approval.model_validate(expired))
+            raise HTTPException(status_code=409, detail="Approval is no longer executable.")
+    data = db.decide_approval_atomically(approval_id, status.value, now_iso())
+    if not data:
+        existing_approval = Approval.model_validate(db.fetch_one("approvals", approval_id) or existing)
+        raise HTTPException(status_code=409, detail=f"Approval is already {existing_approval.status}.")
 
     from app.services.approval_event_service import publish_approval_decided
 
+    approval = Approval.model_validate(data)
     publish_approval_decided(approval)
     return approval
+
+
+def _approval_state_error(approval_id: str) -> str:
+    data = db.fetch_one("approvals", approval_id)
+    if not data:
+        return ""
+    approval = Approval.model_validate(data)
+    task_data = db.fetch_one("tasks", approval.task_id)
+    if not task_data:
+        return f"Task not found: {approval.task_id}"
+    task = Task.model_validate(task_data)
+    if task.execution_stage != ExecutionStage.AWAITING_APPROVAL:
+        return f"Task execution stage is {task.execution_stage}; expected awaiting_approval."
+    plan = _latest_plan(task.id)
+    if not plan:
+        return f"Plan not found for task: {task.id}"
+    step = next((item for item in plan.get("steps", []) if item.get("id") == approval.step_id), None)
+    if not step:
+        return f"Step not found for approval: {approval.step_id}"
+    if step.get("status") != "waiting_user_approval":
+        return f"Step status is {step.get('status')}; expected waiting_user_approval."
+    return ""
 
 
 def _latest_plan(task_id: str) -> dict[str, Any] | None:
@@ -226,8 +260,42 @@ def _latest_plan(task_id: str) -> dict[str, Any] | None:
 
 def _safe_approval_payload(approval: dict[str, Any]) -> dict[str, Any]:
     payload = dict(approval)
+    payload["message"] = redact_value(payload.get("message") or "")
     payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
     return payload
+
+
+def _safe_mobile_task(task: Task) -> dict[str, Any]:
+    payload = task.model_dump(mode="json")
+    for key in ("user_goal", "final_summary"):
+        payload[key] = redact_value(payload.get(key) or "")
+    return payload
+
+
+def _safe_mobile_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not plan:
+        return None
+    safe = dict(plan)
+    safe["goal"] = redact_value(safe.get("goal") or "")
+    safe["assumptions"] = redact_value(safe.get("assumptions") or [])
+    safe_steps: list[dict[str, Any]] = []
+    for raw_step in safe.get("steps") or []:
+        if not isinstance(raw_step, dict):
+            continue
+        safe_steps.append(
+            {
+                "id": raw_step.get("id") or "",
+                "order": raw_step.get("order") or 0,
+                "agent_name": raw_step.get("agent_name") or "",
+                "tool_name": raw_step.get("tool_name") or "",
+                "description": redact_value(raw_step.get("description") or ""),
+                "status": raw_step.get("status") or "",
+                "requires_approval": bool(raw_step.get("requires_approval")),
+                "expected_observation": redact_value(raw_step.get("expected_observation") or ""),
+            }
+        )
+    safe["steps"] = safe_steps
+    return safe
 
 
 def safe_approval_payload(approval: Approval | dict[str, Any]) -> dict[str, Any]:

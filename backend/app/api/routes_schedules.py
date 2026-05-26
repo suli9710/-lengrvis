@@ -13,7 +13,7 @@ router = APIRouter()
 class CreateScheduleRequest(BaseModel):
     cron: str
     goal: str
-    mode: str = "privacy"
+    mode: str = "efficiency"
     note: str = ""
 
 

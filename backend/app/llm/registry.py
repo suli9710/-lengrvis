@@ -95,7 +95,7 @@ def _fallback_or_raise(settings: AppSettings, *, reason: str) -> LLMProvider:
 
 def get_provider_for_mode(settings: AppSettings | None = None, *, task: str = "default") -> LLMProvider:
     effective = settings or get_effective_settings()
-    mode = (effective.mode or "privacy").lower()
+    mode = (effective.mode or "efficiency").lower()
     normalized_task = task if task in KNOWN_TASKS else "default"
     if mode == "efficiency":
         return _build_cloud_provider(effective)
@@ -107,7 +107,7 @@ def get_provider_for_mode(settings: AppSettings | None = None, *, task: str = "d
         if normalized_task in {"vision", "ocr"} and effective.allow_cloud_context:
             return _build_cloud_provider(effective)
         return _build_local_provider(effective)
-    return _build_local_provider(effective)
+    return _build_cloud_provider(effective)
 
 
 def get_provider(settings: AppSettings | None = None, *, task: str = "default") -> LLMProvider:

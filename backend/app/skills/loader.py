@@ -163,6 +163,14 @@ def review_skill_definition(definition: SkillDefinition, root: str | Path) -> Sk
                     message="R4_FORBIDDEN_OR_HANDOFF skill tools cannot be installed for execution.",
                 )
             )
+        if risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM} and not tool.supports_dry_run:
+            issues.append(
+                SkillSafetyIssue(
+                    severity="error",
+                    location=f"{location}.supports_dry_run",
+                    message="R2/R3 skill tools must support dry-run previews.",
+                )
+            )
 
         execution = tool.execution
         if execution.type in {SkillExecutionType.PYTHON, SkillExecutionType.SHELL}:
