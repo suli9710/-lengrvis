@@ -436,6 +436,34 @@ def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: i
     return [json.loads(row["data"]) for row in rows]
 
 
+def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str, Any] | None:
+    """Atomically mark an approved approval as consumed before side effects run."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT data FROM approvals WHERE id = ? AND status = ?",
+            (approval_id, "approved"),
+        ).fetchone()
+        if not row:
+            return None
+        data = json.loads(row["data"])
+        if data.get("consumed_at"):
+            return None
+        data["consumed_at"] = consumed_at
+        cursor = conn.execute(
+            """
+            UPDATE approvals
+            SET data = ?
+            WHERE id = ?
+              AND status = ?
+              AND json_extract(data, '$.consumed_at') IS NULL
+            """,
+            (_json(data), approval_id, "approved"),
+        )
+        if cursor.rowcount != 1:
+            return None
+    return data
+
+
 def set_setting(key: str, value: Any) -> None:
     with connect() as conn:
         conn.execute(

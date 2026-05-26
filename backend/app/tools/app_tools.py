@@ -415,6 +415,57 @@ def reveal_in_explorer(args: dict[str, Any], context: dict[str, Any]) -> dict[st
     return {"ok": True, "path": str(path), "revealed": True}
 
 
+def _input_schema(name: str) -> dict[str, Any]:
+    schemas: dict[str, dict[str, Any]] = {
+        "app.list_installed": {"type": "object", "properties": {}, "additionalProperties": False},
+        "app.find_uninstall_entries": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        "app.uninstall_app": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "uninstall_string": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
+        "app.launch_allowlisted": {
+            "type": "object",
+            "properties": {"app": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["app"],
+            "additionalProperties": False,
+        },
+        "app.launch_installed": {
+            "type": "object",
+            "properties": {"app": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["app"],
+            "additionalProperties": False,
+        },
+        "app.open_file": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "app.open_folder": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "app.reveal_in_explorer": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    }
+    return schemas.get(name, {"type": "object", "properties": {}, "additionalProperties": False})
+
+
 def register(registry) -> None:
     defs = [
         ("app.list_installed", list_installed, RiskLevel.R0_READ_ONLY),
@@ -436,7 +487,7 @@ def register(registry) -> None:
             ToolDefinition(
                 name=name,
                 description=name.replace(".", " "),
-                input_schema={},
+                input_schema=_input_schema(name),
                 output_schema={},
                 risk_level=risk,
                 agent_owner="AppAgent",

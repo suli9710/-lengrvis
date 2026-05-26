@@ -116,6 +116,8 @@ def test_tool_runtime_persists_large_result_preview(tmp_path: Path):
             requires_authorized_path=False,
             execute=execute,
             max_result_size=100,
+            trust_tier="builtin",
+            effects=["read"],
         )
     )
     task, plan, step = _task_plan_step("test.large_result")
@@ -208,6 +210,8 @@ def test_runtime_blocks_requires_authorized_path_tool_outside_allowed_directorie
             supports_dry_run=False,
             requires_authorized_path=True,
             execute=execute,
+            trust_tier="builtin",
+            effects=["read"],
         )
     )
     task, plan, step = _task_plan_step("test.authorized_path_required", {"path": str(outside)})
@@ -240,6 +244,8 @@ def test_runtime_blocks_requires_authorized_path_tool_nested_outside_allowed_dir
             supports_dry_run=False,
             requires_authorized_path=True,
             execute=execute,
+            trust_tier="builtin",
+            effects=["read"],
         )
     )
     task, _plan, step = _task_plan_step(
@@ -275,6 +281,8 @@ def test_runtime_allows_requires_authorized_path_tool_inside_allowed_directories
             supports_dry_run=False,
             requires_authorized_path=True,
             execute=execute,
+            trust_tier="builtin",
+            effects=["read"],
         )
     )
     task, plan, step = _task_plan_step("test.authorized_path_allowed", {"path": str(inside)})
@@ -310,6 +318,8 @@ def test_write_locks_are_shared_across_runtime_instances(tmp_path: Path):
         supports_dry_run=True,
         requires_authorized_path=False,
         execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
         concurrency_key="shared-write",
     )
     first = OrchestratorAgent()
@@ -351,6 +361,8 @@ def test_runtime_safety_review_uses_context_for_dynamic_risk():
         supports_dry_run=False,
         requires_authorized_path=False,
         execute=execute,
+        trust_tier="builtin",
+        effects=["open"],
     )
     runtime = orchestrator.step_execution_handler._runtime_context(task)
     runtime.extra_context["timestamp"] = datetime(2026, 5, 26, 2, 30)

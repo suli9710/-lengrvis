@@ -27,6 +27,7 @@ from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
 from app.policy.approval_binding import (
     args_binding_hmac,
+    binding_preview,
     permission_policy_version,
     preview_hmac,
     redacted_preview,
@@ -34,6 +35,7 @@ from app.policy.approval_binding import (
 )
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
+from app.policy.redaction import redact_value
 from app.policy.risk import SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
 from app.tools.schemas import ToolDefinition
@@ -227,6 +229,8 @@ class ToolRuntime:
             dry_run=False,
         )
         db.upsert_model("tool_calls", call)
+        safe_args = self._redact_tool_args(args, tool)
+        safe_call_payload = call.model_copy(update={"args": safe_args}).model_dump()
         orchestrator.bus.publish_text(
             task.id,
             orchestrator.name,
@@ -239,11 +243,11 @@ class ToolRuntime:
                     "type": "function",
                     "function": {
                         "name": step.tool_name,
-                        "arguments": args,
+                        "arguments": safe_args,
                     },
                 }
             ],
-            structured_payload=call.model_dump(),
+            structured_payload=safe_call_payload,
             metadata={"approval_id": approval_id, "approved_by_user": bool(approval_id)} if approval_id else None,
         )
         stage = "approved_tool_call_proposed" if approval_id else "tool_call_proposed"
@@ -328,6 +332,14 @@ class ToolRuntime:
         await orchestrator._reflect_on_step(task, step, result)
         return RuntimeExecutionResult("succeeded" if result.ok else "failed", result)
 
+    def _redact_tool_args(self, args: dict[str, Any], tool: ToolDefinition) -> dict[str, Any]:
+        redacted = redact_value(args)
+        safe_args = dict(redacted) if isinstance(redacted, dict) else {"args": redacted}
+        for key in getattr(tool, "sensitive_arg_keys", []) or []:
+            if str(key) in safe_args:
+                safe_args[str(key)] = "***"
+        return safe_args
+
     async def _prepare_approval(
         self,
         task: Task,
@@ -397,7 +409,7 @@ class ToolRuntime:
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_preview_review.safe_alternative)
             return RuntimeExecutionResult("fatal_denied", preview_result)
 
-        safe_preview = redacted_preview(preview)
+        safe_preview = binding_preview(preview)
         approval = Approval(
             task_id=task.id,
             step_id=step.id,

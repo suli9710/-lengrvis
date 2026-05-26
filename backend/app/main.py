@@ -14,6 +14,7 @@ from app.api import (
     routes_audit,
     routes_browser,
     routes_chat,
+    routes_context,
     routes_files,
     routes_mcp,
     routes_memories,
@@ -154,6 +155,7 @@ def create_app() -> FastAPI:
         routes_schedules.router,
         routes_memories.router,
         routes_mcp.router,
+        routes_context.router,
         routes_skills.router,
     ]:
         app.include_router(router, prefix="/api")

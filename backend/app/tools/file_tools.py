@@ -148,7 +148,7 @@ def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     src = resolve_authorized(args["source"], _allowed(context))
     dst = resolve_authorized(args["destination"], _allowed(context))
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "copy", "from": str(src), "to": str(dst)}]}
+        return {"dry_run": True, "diff_preview": [{"action": "copy", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     return {"changed_paths": [str(dst)], "rollback_info": {"trash_created_file": str(dst)}}
@@ -158,7 +158,7 @@ def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     src = resolve_authorized(args["source"], _allowed(context))
     dst = resolve_authorized(args["destination"], _allowed(context))
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "move", "from": str(src), "to": str(dst)}]}
+        return {"dry_run": True, "diff_preview": [{"action": "move", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dst))
     return {"changed_paths": [str(dst)], "rollback_info": {"move_back": {"from": str(dst), "to": str(src)}}}
@@ -169,7 +169,7 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
     dst = src.with_name(str(args["new_name"]))
     dst = resolve_authorized(dst, _allowed(context))
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "rename", "from": str(src), "to": str(dst)}]}
+        return {"dry_run": True, "diff_preview": [{"action": "rename", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
     src.rename(dst)
     return {"changed_paths": [str(dst)], "rollback_info": {"rename_back": {"from": str(dst), "to": str(src)}}}
 
@@ -177,7 +177,7 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = _resolve_trash_target(args["path"], context)
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "trash", "path": str(path)}]}
+        return {"dry_run": True, "diff_preview": [{"action": "trash", "path": str(path)}], "_resource_state": _resource_states(path)}
     if send2trash is None:
         raise RuntimeError("send2trash is not installed; permanent deletion is forbidden.")
     send2trash(str(path))
@@ -208,7 +208,7 @@ def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = str(args.get("text", ""))
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "write_text", "path": str(path), "bytes": len(text)}]}
+        return {"dry_run": True, "diff_preview": [{"action": "write_text", "path": str(path), "bytes": len(text)}], "_resource_state": _resource_states(path)}
     backup = None
     if path.exists():
         backup = str(path.with_suffix(path.suffix + ".bak"))
@@ -224,9 +224,142 @@ def generate_markdown_report(args: dict[str, Any], context: dict[str, Any]) -> d
     body = args.get("body", "")
     text = f"# {title}\n\n{body}\n"
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "generate_markdown_report", "path": str(path)}]}
+        return {"dry_run": True, "diff_preview": [{"action": "generate_markdown_report", "path": str(path)}], "_resource_state": _resource_states(path)}
     path.write_text(text, encoding="utf-8")
     return {"changed_paths": [str(path)], "rollback_info": {"trash_created_file": str(path)}}
+
+
+def _resource_states(*paths: Path) -> list[dict[str, Any]]:
+    return [_resource_state(path) for path in paths]
+
+
+def _resource_state(path: Path) -> dict[str, Any]:
+    resolved = path.resolve(strict=False)
+    state: dict[str, Any] = {"path": str(resolved), "exists": resolved.exists()}
+    if not resolved.exists():
+        return state
+    stat = resolved.stat()
+    state.update(
+        {
+            "is_file": resolved.is_file(),
+            "is_dir": resolved.is_dir(),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "inode": getattr(stat, "st_ino", 0),
+            "sha256": sha256_file(resolved) if resolved.is_file() else "",
+        }
+    )
+    return state
+
+
+def _input_schema(name: str) -> dict[str, Any]:
+    schemas: dict[str, dict[str, Any]] = {
+        "file.search_by_name": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        "file.search_full_text": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "file.semantic_search": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        "file.list_directory": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "file.get_metadata": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "file.hash_file": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "file.find_duplicates": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        "file.preview_batch_operation": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "operation": {"type": "string"},
+                "target_folder": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "file.create_folder": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "file.copy": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string"},
+                "destination": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+            },
+            "required": ["source", "destination"],
+            "additionalProperties": False,
+        },
+        "file.move": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string"},
+                "destination": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+            },
+            "required": ["source", "destination"],
+            "additionalProperties": False,
+        },
+        "file.rename": {
+            "type": "object",
+            "properties": {"source": {"type": "string"}, "new_name": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["source", "new_name"],
+            "additionalProperties": False,
+        },
+        "file.trash": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+        "file.write_text": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "text": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "required": ["path", "text"],
+            "additionalProperties": False,
+        },
+        "file.generate_markdown_report": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    }
+    return schemas.get(name, {"type": "object", "properties": {}, "additionalProperties": False})
 
 
 def register(registry) -> None:
@@ -253,7 +386,7 @@ def register(registry) -> None:
             ToolDefinition(
                 name=name,
                 description=name.replace(".", " "),
-                input_schema={},
+                input_schema=_input_schema(name),
                 output_schema={},
                 risk_level=risk,
                 agent_owner="FileAgent",

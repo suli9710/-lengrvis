@@ -56,6 +56,7 @@ class TaskStatus:
     REVIEWING_PLAN = TaskPhase.PLAN_REVIEW
     AGENT_CONSULTATION = TaskPhase.CONSULTATION
     PLAN_FINAL_REVIEW = TaskPhase.PLAN_REVIEW
+    EXECUTION = TaskPhase.EXECUTION
     WAITING_USER_APPROVAL = "waiting_user_approval"
     EXECUTING_STEP = "executing_step"
     REVIEWING_TOOL_CALL = "reviewing_tool_call"

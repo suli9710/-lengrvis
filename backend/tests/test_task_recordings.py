@@ -89,6 +89,10 @@ def _tool(name: str, calls: list[dict[str, Any]], *, risk: RiskLevel = RiskLevel
         supports_dry_run=risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM},
         requires_authorized_path=False,
         execute=execute,
+        effects=["read"],
+        resource_kinds=["test"],
+        fast_path_eligible=True,
+        trust_tier="builtin",
     )
 
 

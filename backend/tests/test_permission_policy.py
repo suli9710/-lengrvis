@@ -103,3 +103,23 @@ def test_policy_engine_blocks_weekend_delete_from_persisted_permission_policy():
     assert review.risk_level == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
     assert "weekend_delete" in review.reasons[0]
     assert "Weekend file deletion is blocked" in review.reasons[0]
+
+
+def test_policy_engine_fails_closed_when_permission_store_errors(monkeypatch: pytest.MonkeyPatch):
+    engine = PolicyEngine()
+
+    def broken_evaluate(**kwargs):  # noqa: ANN003, ANN202, ARG001
+        raise RuntimeError("policy store unavailable")
+
+    monkeypatch.setattr(engine.permission_store, "evaluate", broken_evaluate)
+
+    review = engine.review_tool_call(
+        "task_permissions",
+        "step_read",
+        "system.get_info",
+        {},
+        RiskLevel.R0_READ_ONLY,
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    assert "fail-closed" in review.reasons[0].lower()

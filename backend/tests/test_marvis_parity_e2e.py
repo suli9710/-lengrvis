@@ -226,7 +226,8 @@ def test_scenario_2_mcp_tools_visible_via_tool_registry(mock_mcp_server):
 
     echo_tool = tool_registry.get("mcp.demo.echo")
     assert echo_tool.agent_owner == "SearchAgent"
-    assert echo_tool.risk_level == RiskLevel.R0_READ_ONLY
+    assert echo_tool.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+    assert echo_tool.trust_tier == "third_party"
 
 
 # ---------------------------------------------------------------------------

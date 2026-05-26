@@ -17,7 +17,9 @@ from app.agents.search_agent import SearchAgent
 from app.core import db
 from app.core.schemas import AgentAction, PlanStep, ToolResult
 from app.llm.mock_provider import MockProvider
+from app.policy.risk import RiskLevel
 from app.tools.registry import register_all_tools
+from app.tools.schemas import ToolDefinition
 
 
 @pytest.fixture(autouse=True)
@@ -93,6 +95,35 @@ def test_act_uses_deterministic_fast_path_without_provider_for_clear_steps():
     assert "deterministic fast path" in action.rationale
 
 
+def test_app_agent_fast_path_uses_declared_schema_without_provider():
+    class FailingProvider(MockProvider):
+        async def structured_chat(self, messages, output_schema):  # noqa: ARG002
+            raise AssertionError("app fast path should not call provider")
+
+    registry = register_all_tools()
+    agent = AppAgent()
+    step = PlanStep(
+        task_id="task-1",
+        order=0,
+        agent_name="AppAgent",
+        tool_name="app.launch_installed",
+        description="Open notepad",
+        args={"app": "notepad", "dry_run": True},
+    )
+
+    action = asyncio.run(
+        agent.act(
+            step,
+            AgentContext(task_id="task-1", mode="privacy", allowed_directories=[], registry=registry),
+            provider=FailingProvider(),
+        )
+    )
+
+    assert action.kind == "propose_tool"
+    assert action.tool_name == "app.launch_installed"
+    assert action.args == {"app": "notepad", "dry_run": True}
+
+
 def test_act_requests_revision_when_fast_path_detects_missing_required_args():
     registry = register_all_tools()
     agent = SearchAgent()
@@ -126,12 +157,27 @@ def test_act_falls_back_to_provider_when_schema_is_not_explicit_enough_for_fast_
             }
 
     provider = RecordingProvider()
+    registry = register_all_tools()
+    registry.register(
+        ToolDefinition(
+            name="test.implicit_schema",
+            description="implicit schema",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=False,
+            execute=lambda args, context: {"ok": True},  # noqa: ARG005
+            fast_path_eligible=True,
+        )
+    )
     agent = FileAgent()
     step = PlanStep(
         task_id="task-1",
         order=0,
         agent_name="FileAgent",
-        tool_name="file.list_directory",
+        tool_name="test.implicit_schema",
         description="List a directory",
         args={},
     )
@@ -139,7 +185,7 @@ def test_act_falls_back_to_provider_when_schema_is_not_explicit_enough_for_fast_
     action = asyncio.run(
         agent.act(
             step,
-            AgentContext(task_id="task-1", mode="privacy", allowed_directories=[]),
+            AgentContext(task_id="task-1", mode="privacy", allowed_directories=[], registry=registry),
             provider=provider,
         )
     )

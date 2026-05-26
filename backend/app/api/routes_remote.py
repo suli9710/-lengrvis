@@ -13,6 +13,7 @@ from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.policy.approval_binding import (
     args_binding_hmac,
+    binding_preview,
     permission_policy_version,
     preview_hmac,
     redacted_preview,
@@ -166,7 +167,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     registry = register_all_tools(settings=settings)
     tool = registry.get(tool_name)
     preview = tool.execute({**args, "dry_run": True}, {"settings": settings, "allowed_directories": settings.allowed_directories})
-    safe_preview = redacted_preview(preview)
+    safe_preview = binding_preview(preview)
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
@@ -198,7 +199,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         "task_id": task.id,
         "approval_id": approval.id,
         "review": review.model_dump(mode="json"),
-        "preview": safe_preview,
+        "preview": redacted_preview(safe_preview),
     }
 
 
