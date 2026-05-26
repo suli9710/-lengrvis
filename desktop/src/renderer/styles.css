@@ -1149,7 +1149,7 @@ button:disabled {
 
 .office-inspector {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto 1fr auto;
   gap: 14px;
   min-width: 0;
   padding-top: 4px;
@@ -1269,6 +1269,84 @@ button:disabled {
 .token-card--saved .token-card__chip {
   background: var(--green-soft);
   color: var(--green);
+}
+
+.context-health {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.context-health--ok .token-card__chip {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.context-health--warning .token-card__chip {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.context-health--error .token-card__chip {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.context-health__main {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.context-health__main strong {
+  font-size: 24px;
+  font-weight: 900;
+  line-height: 1;
+  color: var(--text);
+}
+
+.context-health__main span,
+.context-health p,
+.context-health__meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.context-health p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.context-health__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.context-health__bar {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  overflow: hidden;
+}
+
+.context-health__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--context-used, 0%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--green), var(--brand));
+}
+
+.context-health--warning .context-health__bar::after {
+  background: linear-gradient(90deg, var(--amber), var(--brand));
+}
+
+.context-health--error .context-health__bar::after {
+  background: linear-gradient(90deg, var(--red), var(--amber));
 }
 
 .metric-row {

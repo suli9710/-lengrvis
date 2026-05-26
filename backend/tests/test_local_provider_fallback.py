@@ -190,7 +190,27 @@ def test_settings_local_llm_health_route_reports_selected_backend(monkeypatch):
     assert payload["selected_backend"]["model"] == "qwen"
 
 
-def test_root_health_includes_local_llm_snapshot(monkeypatch):
+def test_root_health_omits_local_llm_snapshot_by_default(monkeypatch):
+    def fail_local_probe(**kwargs):
+        raise AssertionError("default health check should not probe local LLM backends")
+
+    monkeypatch.setattr("app.llm.local_provider.detect_onnx_backend", lambda settings=None: None)
+    monkeypatch.setattr("app.llm.local_provider.onnx_health_snapshot", lambda settings=None: {"available": False})
+    monkeypatch.setattr("app.llm.local_provider.detect_local_backend", fail_local_probe)
+
+    from app.main import create_app
+
+    response = TestClient(create_app()).get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["mode"] == "efficiency"
+    assert "local_llm" not in payload
+
+
+def test_root_health_includes_local_llm_snapshot_for_privacy_mode(monkeypatch):
+    monkeypatch.setenv("MARVIS_MODE", "privacy")
     monkeypatch.setattr("app.llm.local_provider.detect_onnx_backend", lambda settings=None: None)
     monkeypatch.setattr("app.llm.local_provider.onnx_health_snapshot", lambda settings=None: {"available": False})
     monkeypatch.setattr("app.llm.local_provider.detect_local_backend", lambda **kwargs: None)
