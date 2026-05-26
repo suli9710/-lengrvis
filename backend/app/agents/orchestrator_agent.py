@@ -29,7 +29,8 @@ from app.core.schemas import (
     ToolResult,
     now_iso,
 )
-from app.llm.registry import get_effective_settings, get_provider
+from app.core.session_context import get_session_context_store
+from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.dispatcher import EventDispatcher
 from app.orchestration.handlers import (
@@ -43,6 +44,7 @@ from app.orchestration.handlers import (
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.goal_stack import GoalStack
 from app.orchestration.state_machine import safe_transition
+from app.orchestration.step_phase import set_step_status
 from app.perception.context_store import handle_perception_event
 from app.policy.risk import SafetyVerdict
 from app.services.task_recording_service import capture_step_screenshot, recording_enabled
@@ -58,6 +60,7 @@ class OrchestratorAgent:
         self.planner = PlannerAgent(self.bus)
         self.safety = SafetyReviewAgent(self.bus)
         self.memory = MemoryAgent(self.bus)
+        self.session_context_store = get_session_context_store()
         self.goal_stack = GoalStack(scope="default")
         self.subagents: dict[str, BaseAgent] = {
             "FileAgent": FileAgent(self.bus),
@@ -74,7 +77,7 @@ class OrchestratorAgent:
         self.consultation_handler = ConsultationHandler(self)
         self.step_scheduler_handler = StepSchedulerHandler(self)
         self.step_execution_handler = StepExecutionHandler(self)
-        self.recovery_handler = RecoveryHandler(self)
+        self.recovery_handler = RecoveryHandler(self, max_retries=max(0, get_effective_settings().recovery_max_retries))
         self.completion_handler = CompletionHandler(self)
         self._register_handlers()
 
@@ -292,7 +295,7 @@ class OrchestratorAgent:
         return merged
 
     def _handle_subagent_revision_request(self, task: Task, step: PlanStep, action: AgentAction) -> None:
-        step.status = StepStatus.SKIPPED
+        set_step_status(step, StepStatus.SKIPPED, actor=self.name)
         question = action.follow_up_question or action.rationale or "Subagent requested a plan revision."
         try:
             tool = self.registry.get(step.tool_name) if step.tool_name else None
@@ -429,14 +432,10 @@ class OrchestratorAgent:
             task_id=task.id,
             mode=task.mode,
             allowed_directories=list(self._tool_context().get("allowed_directories") or []),
+            registry=self.registry,
         )
         try:
-            provider = get_provider(task="subagent")
-        except Exception as exc:
-            record("subagent.provider_failed", agent.name, {"step": step.id, "error": str(exc)}, task_id=task.id)
-            return None
-        try:
-            action = await agent.act(step, context, observation=observation, provider=provider)
+            action = await agent.act(step, context, observation=observation)
         except Exception as exc:
             record("subagent.act_failed", agent.name, {"step": step.id, "error": str(exc)}, task_id=task.id)
             return None

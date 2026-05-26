@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from app.llm.base import LLMProvider
+from app.llm.types import LLMResponse
+from app.llm.usage import estimate_usage
 
 
 class MockProvider(LLMProvider):
@@ -19,6 +21,22 @@ class MockProvider(LLMProvider):
     ) -> str:
         user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
         return f"Mock response for: {user[:160]}"
+
+    async def chat_result(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        content = await self.chat(messages, model=model, temperature=temperature, tools=tools)
+        return LLMResponse(
+            content=content,
+            provider=self.name,
+            model=model or "mock",
+            usage=estimate_usage(messages, content),
+            metadata={"degraded": True, "mock": True},
+        )
 
     async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:
         raw_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")

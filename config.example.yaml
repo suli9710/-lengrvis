@@ -3,6 +3,8 @@ llm:
   base_url: https://api.openai.com/v1
   api_key: ""
   model: gpt-4o-mini
+  model_context_window: 128000
+  model_auto_compact_token_limit: 96000
   # Privacy mode automatically prefers an ONNX GenAI model bundle when present.
   # Set onnx_model_path or MARVIS_ONNX_MODEL_PATH to a Qwen2.5-3B ONNX GenAI directory/config,
   # or place the bundle under ./.marvis_data/models. onnx_execution_provider may be DirectML,
@@ -13,6 +15,10 @@ llm:
   temperature: 0.2
   max_tokens: 1600
   timeout: 30
+  llm_api_max_retries: 2
+  llm_api_retry_backoff_seconds: 0.25
+  llm_api_circuit_failure_threshold: 5
+  llm_api_circuit_cooldown_seconds: 30.0
 
 paths:
   data_dir: ./.marvis_data
@@ -35,3 +41,19 @@ privacy:
   browser_max_page_bytes: 250000
   document_max_chars_to_llm: 30000
   browser_screenshot_dir: ""
+
+orchestration:
+  recovery_max_retries: 3
+  context_auto_compact_enabled: true
+  context_micro_compact_enabled: true
+  context_history_snip_enabled: true
+  context_session_memory_enabled: true
+  context_warning_buffer_tokens: 20000
+  context_error_buffer_tokens: 20000
+  context_manual_compact_buffer_tokens: 3000
+  context_recent_message_limit: 24
+  context_micro_compact_age: 8
+  context_micro_compact_tool_result_chars: 1200
+  context_history_snip_threshold: 160
+  context_history_snip_keep_recent: 80
+  context_session_summary_limit: 12000

@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { ChevronRight, RefreshCcw, ShieldCheck, Unlink } from "lucide-react-native";
+import { ChevronRight, Monitor, RefreshCcw, ShieldCheck, Unlink } from "lucide-react-native";
 import type { ReactNode } from "react";
 
 import {
@@ -26,10 +26,12 @@ import { clearSession } from "../store/auth";
 export function ApprovalsScreen({
   session,
   onSelectApproval,
+  onOpenRemote,
   onUnpair,
 }: {
   session: PairingSession;
   onSelectApproval: (approval: BackendApproval) => void;
+  onOpenRemote: () => void;
   onUnpair: () => void;
 }) {
   const [approvals, setApprovals] = useState<BackendApproval[]>([]);
@@ -137,6 +139,8 @@ export function ApprovalsScreen({
       {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
 
       <FlatList
+        ListHeaderComponent={<RemoteDesktopCard onPress={onOpenRemote} />}
+        ListHeaderComponentStyle={styles.listHeader}
         contentContainerStyle={approvals.length ? styles.list : styles.emptyList}
         data={approvals}
         keyExtractor={(approval) => approval.id}
@@ -150,6 +154,21 @@ export function ApprovalsScreen({
         renderItem={({ item }) => <ApprovalCard approval={item} onPress={() => onSelectApproval(item)} />}
       />
     </SafeAreaView>
+  );
+}
+
+function RemoteDesktopCard({ onPress }: { onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.remoteCard, pressed && styles.pressed]}>
+      <View style={styles.remoteIcon}>
+        <Monitor size={22} color="#f7faf8" />
+      </View>
+      <View style={styles.remoteBody}>
+        <Text style={styles.remoteTitle}>Remote desktop view</Text>
+        <Text style={styles.remoteText}>View the paired Windows desktop in real time.</Text>
+      </View>
+      <ChevronRight size={18} color="#65717c" />
+    </Pressable>
   );
 }
 
@@ -252,12 +271,15 @@ const styles = StyleSheet.create({
   },
   emptyList: {
     flexGrow: 1,
-    justifyContent: "center",
-    padding: 24,
+    padding: 20,
+  },
+  listHeader: {
+    marginBottom: 14,
   },
   emptyState: {
     alignItems: "center",
     gap: 10,
+    paddingTop: 90,
   },
   emptyTitle: {
     color: "#1f2933",
@@ -276,6 +298,39 @@ const styles = StyleSheet.create({
     borderColor: "#d7dedf",
     padding: 16,
     gap: 12,
+  },
+  remoteCard: {
+    minHeight: 82,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  remoteIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 8,
+    backgroundColor: "#17222b",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  remoteBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  remoteTitle: {
+    color: "#1f2933",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  remoteText: {
+    color: "#5f6b76",
+    lineHeight: 20,
+    marginTop: 2,
   },
   cardHeader: {
     flexDirection: "row",

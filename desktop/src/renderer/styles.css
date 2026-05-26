@@ -1843,6 +1843,40 @@ button:disabled {
   font-size: 13px;
 }
 
+.intent-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.intent-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(100%, 360px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.18s var(--ease-out), transform 0.18s var(--ease-out);
+}
+
+.intent-suggestion:hover {
+  border-color: var(--brand);
+  transform: translateY(-1px);
+}
+
+.intent-suggestion span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -2083,6 +2117,94 @@ button:disabled {
 
 .modal--wide {
   width: min(980px, 100%);
+}
+
+.explain-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) auto minmax(180px, 0.8fr);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+
+.explain-summary div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.explain-summary strong,
+.explain-summary span {
+  overflow-wrap: anywhere;
+}
+
+.explain-chain,
+.explain-steps {
+  display: grid;
+  gap: 10px;
+}
+
+.explain-chain__item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+.explain-chain__marker {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.explain-chain__item p,
+.explain-step p,
+.explain-evidence p {
+  margin: 4px 0 0;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+.explain-evidence {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.explain-evidence li {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  border-radius: var(--r-sm);
+  background: var(--surface-soft);
+}
+
+.explain-evidence span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.explain-step {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface);
 }
 
 .recording-player__header-actions {

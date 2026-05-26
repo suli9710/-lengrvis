@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,10 +9,13 @@ import pytest
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import Approval, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.runtime_context import TaskRuntimeContext
+from app.orchestration.step_phase import StepPhase, set_step_status
 from app.orchestration.tool_runtime import ToolRuntime
-from app.policy.risk import RiskLevel
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore, PermissionTimeWindow
+from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools.registry import register_all_tools
 from app.tools.schemas import ToolDefinition
 
@@ -150,9 +154,24 @@ def test_approved_tool_runtime_persists_large_result_preview(tmp_path: Path):
         )
     )
     task, plan, step = _task_plan_step("test.approved_large_result")
-    step.status = StepStatus.WAITING_USER_APPROVAL
+    set_step_status(step, StepStatus.WAITING_USER_APPROVAL, actor="Test")
     db.upsert_model("plans", plan)
-    approval = Approval(task_id=task.id, step_id=step.id, message="Approve large result")
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    approval_preview: dict[str, Any] = {}
+    approval = Approval(
+        task_id=task.id,
+        step_id=step.id,
+        message="Approve large result",
+        diff_preview=approval_preview,
+        tool_name=step.tool_name,
+        risk_level=RiskLevel.R0_READ_ONLY.value,
+        args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
+        preview_hmac=preview_hmac(approval_preview),
+        settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        status=ApprovalStatus.APPROVED,
+    )
     db.upsert_model("approvals", approval)
 
     asyncio.run(orchestrator.execute_approved_step(approval))
@@ -165,6 +184,106 @@ def test_approved_tool_runtime_persists_large_result_preview(tmp_path: Path):
     assert output["original_size"] > 120
     refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
     assert refreshed_plan.steps[0].status == StepStatus.SUCCEEDED
+    assert refreshed_plan.steps[0].step_phase == StepPhase.SUCCEEDED
+
+
+def test_runtime_blocks_requires_authorized_path_tool_outside_allowed_directories(tmp_path: Path):
+    calls: list[dict[str, Any]] = []
+    outside = tmp_path / "outside" / "blocked.txt"
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="test.authorized_path_required",
+            description="authorized path required",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=True,
+            execute=execute,
+        )
+    )
+    task, plan, step = _task_plan_step("test.authorized_path_required", {"path": str(outside)})
+
+    asyncio.run(orchestrator._process_steps(task, plan))
+
+    assert calls == []
+    assert step.status == StepStatus.DENIED
+    assert task.status == TaskStatus.DENIED
+
+
+def test_runtime_blocks_requires_authorized_path_tool_nested_outside_allowed_directories(tmp_path: Path):
+    calls: list[dict[str, Any]] = []
+    outside = tmp_path / "outside" / "nested.txt"
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="test.authorized_path_required_nested",
+            description="authorized path required nested",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=True,
+            execute=execute,
+        )
+    )
+    task, _plan, step = _task_plan_step(
+        "test.authorized_path_required_nested",
+        {"batch": [{"file_path": str(outside)}]},
+    )
+
+    asyncio.run(orchestrator._process_steps(task, _plan))
+
+    assert calls == []
+    assert step.status == StepStatus.DENIED
+    assert task.status == TaskStatus.DENIED
+
+
+def test_runtime_allows_requires_authorized_path_tool_inside_allowed_directories(tmp_path: Path):
+    calls: list[dict[str, Any]] = []
+    inside = tmp_path / "workspace" / "allowed.txt"
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="test.authorized_path_allowed",
+            description="authorized path allowed",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=True,
+            execute=execute,
+        )
+    )
+    task, plan, step = _task_plan_step("test.authorized_path_allowed", {"path": str(inside)})
+
+    asyncio.run(orchestrator._process_steps(task, plan))
+
+    assert calls == [{"path": str(inside)}]
+    assert step.status == StepStatus.SUCCEEDED
+    assert task.status == TaskStatus.COMPLETED
 
 
 def test_write_locks_are_shared_across_runtime_instances(tmp_path: Path):
@@ -211,3 +330,99 @@ def test_write_locks_are_shared_across_runtime_instances(tmp_path: Path):
     starts = {label: timestamp for label, phase, timestamp in events if phase == "start"}
     ends = {label: timestamp for label, phase, timestamp in events if phase == "end"}
     assert starts["B"] >= ends["A"] or starts["A"] >= ends["B"]
+
+
+def test_runtime_safety_review_uses_context_for_dynamic_risk():
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"preview": True, "dry_run": args.get("dry_run")}
+
+    orchestrator = OrchestratorAgent()
+    task, _plan, step = _task_plan_step("test.context_dynamic_risk", {"url": "https://example.com"})
+    tool = ToolDefinition(
+        name=step.tool_name,
+        description="context sensitive open",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R1_OPEN_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    runtime.extra_context["timestamp"] = datetime(2026, 5, 26, 2, 30)
+
+    outcome = asyncio.run(
+        ToolRuntime(orchestrator).review_and_maybe_prepare_approval(
+            task,
+            step,
+            tool,
+            runtime,
+        )
+    )
+
+    reviews = db.fetch_many("safety_reviews", "task_id = ? AND step_id = ?", (task.id, step.id), limit=20)
+    tool_call_review = next(review for review in reviews if review["target_type"] == "tool_call")
+    assert outcome.kind == "waiting_user_approval"
+    assert tool_call_review["verdict"] == SafetyVerdict.NEEDS_USER_APPROVAL
+    assert tool_call_review["risk_level"] == RiskLevel.R2_REVERSIBLE_MODIFY
+    assert "Deep-night operation increases review risk" in " ".join(tool_call_review["reasons"])
+    assert calls == [{"url": "https://example.com", "dry_run": True}]
+
+
+def test_runtime_safety_review_uses_context_for_permission_policy():
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    PermissionStore().save_policy(
+        PermissionPolicy(
+            rules=[
+                PermissionRule(
+                    id="context_time_block",
+                    effect="deny",
+                    tools=["test.context_permission_policy"],
+                    time_windows=[PermissionTimeWindow(days=[1], start="02:00", end="02:59")],
+                    reason="Context timestamp window blocks this tool.",
+                )
+            ]
+        )
+    )
+    orchestrator = OrchestratorAgent()
+    task, _plan, step = _task_plan_step("test.context_permission_policy")
+    tool = ToolDefinition(
+        name=step.tool_name,
+        description="context permission policy",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    runtime.extra_context["timestamp"] = datetime(2026, 5, 26, 2, 30)
+
+    outcome = asyncio.run(
+        ToolRuntime(orchestrator).review_and_maybe_prepare_approval(
+            task,
+            step,
+            tool,
+            runtime,
+        )
+    )
+
+    reviews = db.fetch_many("safety_reviews", "task_id = ? AND step_id = ?", (task.id, step.id), limit=20)
+    tool_call_review = next(review for review in reviews if review["target_type"] == "tool_call")
+    assert outcome.kind == "step_denied"
+    assert step.status == StepStatus.DENIED
+    assert tool_call_review["verdict"] == SafetyVerdict.DENY
+    assert "context_time_block" in tool_call_review["reasons"][0]
+    assert "Context timestamp window blocks this tool" in tool_call_review["reasons"][0]
+    assert calls == []

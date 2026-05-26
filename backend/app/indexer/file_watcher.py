@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -15,6 +16,7 @@ from app.core.paths import resolve_authorized
 
 _DEBOUNCE_SECONDS = 2.0
 FileChangeCallback = Callable[[str, str], None]
+AsyncFileChangeCallback = Callable[[str, str], Awaitable[None] | None]
 
 # File name patterns to skip
 _SKIP_PREFIXES = (".", "~$")
@@ -138,6 +140,14 @@ class FileWatcher:
         self._consumer_task: asyncio.Task[None] | None = None
         self._allowed_directories: list[str] = []
         self._debounce_seconds = debounce_seconds
+        self._change_callbacks: list[AsyncFileChangeCallback] = []
+
+    def subscribe_changes(self, callback: AsyncFileChangeCallback) -> None:
+        if callback not in self._change_callbacks:
+            self._change_callbacks.append(callback)
+
+    def unsubscribe_changes(self, callback: AsyncFileChangeCallback) -> None:
+        self._change_callbacks = [item for item in self._change_callbacks if item is not callback]
 
     async def start(self, allowed_directories: list[str]) -> None:
         """Start watching all allowed directories for file changes."""
@@ -238,6 +248,25 @@ class FileWatcher:
                         "FileWatcher",
                         {"path": path, "action": action, "error": str(exc)},
                     )
+                await self._notify_change(path, action)
+
+    async def _notify_change(self, path: str, action: str) -> None:
+        for callback in list(self._change_callbacks):
+            try:
+                result = callback(path, action)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:  # noqa: BLE001
+                record(
+                    "file_watcher.change_callback_error",
+                    "FileWatcher",
+                    {
+                        "path": path,
+                        "action": action,
+                        "callback": repr(callback),
+                        "error": str(exc),
+                    },
+                )
 
 
 _instance: FileWatcher | None = None

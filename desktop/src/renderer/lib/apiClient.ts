@@ -15,6 +15,10 @@ import type {
   FileSearchResult,
   InstalledApp,
   InstalledSkill,
+  IntentSuggestion,
+  LLMCostSummary,
+  LLMHealthStatus,
+  LLMProfile,
   LocalLLMHealth,
   Plan,
   SafetyReview,
@@ -24,7 +28,13 @@ import type {
   SystemDiagnostic,
   SystemInfo,
   SystemProcess,
-  TaskEvent
+  TaskEvent,
+  TaskExplain,
+  TaskExplainChainItem,
+  TaskExplainEvidence,
+  TaskExplainMessage,
+  TaskExplainReview,
+  TaskExplainStep
 } from "../../shared/types";
 import {
   zhApprovalType,
@@ -120,6 +130,12 @@ export class MavrisApiClient {
             ]
           : []
       }))
+    );
+  }
+
+  listIntentSuggestions(): Promise<ApiResponse<IntentSuggestion[]>> {
+    return this.request<BackendIntentSuggestion[]>({ endpoint: "/api/chat/proactive-suggestions", timeoutMs: 2500 }).then(
+      (response) => mapResponse(response, (suggestions) => suggestions.map(mapIntentSuggestion))
     );
   }
 
@@ -346,12 +362,49 @@ export class MavrisApiClient {
     }).then((response) => mapResponse(response, mapLocalLlmHealth));
   }
 
+  getLlmHealth(): Promise<ApiResponse<LLMHealthStatus>> {
+    return this.request<BackendLlmHealth>({
+      endpoint: "/api/settings/llm/health",
+      timeoutMs: 2500
+    }).then((response) => mapResponse(response, mapLlmHealth));
+  }
+
+  getLlmProfile(): Promise<ApiResponse<LLMProfile>> {
+    return this.request<BackendLlmProfileResponse>({
+      endpoint: "/api/settings/llm/profile",
+      timeoutMs: 2500
+    }).then((response) => mapResponse(response, (data) => mapLlmProfile(data.profile)));
+  }
+
+  getLlmCostSummary(): Promise<ApiResponse<LLMCostSummary>> {
+    return this.request<BackendLlmCostSummary>({
+      endpoint: "/api/settings/llm/cost-summary",
+      timeoutMs: 2500
+    }).then((response) => mapResponse(response, mapLlmCostSummary));
+  }
+
   saveSettings(settings: AppSettings): Promise<ApiResponse<AppSettings>> {
     return this.request<BackendSettings, Partial<BackendSettings>>({
       endpoint: "/api/settings",
       method: "POST",
       body: {
+        provider_name: settings.providerName,
         base_url: settings.apiBaseUrl,
+        model: settings.model,
+        review_model: settings.reviewModel,
+        wire_api: settings.wireApi,
+        requires_openai_auth: settings.requiresOpenAiAuth,
+        model_reasoning_effort: settings.modelReasoningEffort,
+        disable_response_storage: settings.disableResponseStorage,
+        temperature: settings.temperature,
+        max_tokens: settings.maxTokens,
+        timeout: settings.timeout,
+        llm_api_max_retries: settings.llmApiMaxRetries,
+        llm_api_retry_backoff_seconds: settings.llmApiRetryBackoffSeconds,
+        llm_api_circuit_failure_threshold: settings.llmApiCircuitFailureThreshold,
+        llm_api_circuit_cooldown_seconds: settings.llmApiCircuitCooldownSeconds,
+        model_context_window: settings.modelContextWindow,
+        model_auto_compact_token_limit: settings.modelAutoCompactTokenLimit,
         allowed_directories: settings.workspaceRoot ? [settings.workspaceRoot] : [],
         allow_browser_network: settings.allowBrowserNetwork,
         remote_desktop_enabled: settings.remoteDesktopEnabled,
@@ -511,6 +564,13 @@ export class MavrisApiClient {
 
   executeRollback(taskId: string): Promise<ApiResponse<{ executed: unknown[]; count: number }>> {
     return this.request({ endpoint: `/api/tasks/${taskId}/rollback`, method: "POST" });
+  }
+
+  getTaskExplain(taskId: string): Promise<ApiResponse<TaskExplain>> {
+    return this.request<BackendTaskExplain>({
+      endpoint: `/api/tasks/${taskId}/explain`,
+      timeoutMs: 10_000
+    }).then((response) => mapResponse(response, mapTaskExplain));
   }
 
   private async mapTaskEventWithRecordings(task: BackendTask): Promise<TaskEvent> {
@@ -769,6 +829,128 @@ function mapTaskRecordings(timeline: BackendTimeline): NonNullable<TaskEvent["re
   }));
 }
 
+function mapTaskExplain(data: BackendTaskExplain): TaskExplain {
+  return {
+    taskId: String(data.task_id ?? ""),
+    userGoal: zhBackendText(String(data.user_goal ?? "")),
+    status: String(data.status ?? ""),
+    mode: String(data.mode ?? ""),
+    generatedAt: String(data.generated_at ?? ""),
+    complete: Boolean(data.complete),
+    missingSections: (data.missing_sections ?? []).map(String),
+    dataSources: Object.fromEntries(Object.entries(data.data_sources ?? {}).map(([key, value]) => [key, Number(value ?? 0)])),
+    userGoalRecord: {
+      text: zhBackendText(String(data.user_goal_record?.text ?? "")),
+      evidence: (data.user_goal_record?.evidence ?? []).map(mapExplainEvidence)
+    },
+    supervisorJudgment: {
+      summary: zhBackendText(String(data.supervisor_judgment?.summary ?? "")),
+      delegate: Boolean(data.supervisor_judgment?.delegate),
+      agentHint: String(data.supervisor_judgment?.agent_hint ?? ""),
+      inferred: Boolean(data.supervisor_judgment?.inferred),
+      evidence: (data.supervisor_judgment?.evidence ?? []).map(mapExplainEvidence)
+    },
+    plannerReasoning: {
+      summary: zhBackendText(String(data.planner_reasoning?.summary ?? "")),
+      planId: String(data.planner_reasoning?.plan_id ?? ""),
+      goal: zhBackendText(String(data.planner_reasoning?.goal ?? "")),
+      assumptions: (data.planner_reasoning?.assumptions ?? []).map((item) => zhBackendText(String(item))),
+      stepCount: Number(data.planner_reasoning?.step_count ?? 0),
+      globalRiskLevel: String(data.planner_reasoning?.global_risk_level ?? ""),
+      requiresUserApproval: Boolean(data.planner_reasoning?.requires_user_approval),
+      evidence: (data.planner_reasoning?.evidence ?? []).map(mapExplainEvidence)
+    },
+    globalSafetyReviews: (data.global_safety_reviews ?? []).map(mapExplainReview),
+    steps: (data.steps ?? []).map(mapExplainStep),
+    subagentSuggestions: (data.subagent_suggestions ?? []).map(mapExplainMessage),
+    finalResult: {
+      status: String(data.final_result?.status ?? ""),
+      summary: zhBackendText(String(data.final_result?.summary ?? "")),
+      safetyReviews: (data.final_result?.safety_reviews ?? []).map(mapExplainReview),
+      evidence: (data.final_result?.evidence ?? []).map(mapExplainEvidence)
+    },
+    chain: (data.chain ?? []).map(mapExplainChainItem)
+  };
+}
+
+function mapExplainStep(step: BackendTaskExplainStep): TaskExplainStep {
+  return {
+    id: String(step.id ?? step.step_id ?? ""),
+    stepId: String(step.step_id ?? step.id ?? ""),
+    order: Number(step.order ?? 0),
+    agentName: String(step.agent_name ?? ""),
+    toolName: String(step.tool_name ?? ""),
+    description: zhBackendText(String(step.description ?? "")),
+    status: String(step.status ?? ""),
+    riskLevel: String(step.risk_level ?? ""),
+    requiresApproval: Boolean(step.requires_approval),
+    expectedObservation: zhBackendText(String(step.expected_observation ?? "")),
+    rollbackStrategy: zhBackendText(String(step.rollback_strategy ?? "")),
+    plannerReason: zhBackendText(String(step.planner_reason ?? "")),
+    safetyReviews: (step.safety_reviews ?? []).map(mapExplainReview),
+    subagentSuggestions: (step.subagent_suggestions ?? []).map(mapExplainMessage),
+    observations: (step.observations ?? []).map(mapExplainMessage)
+  };
+}
+
+function mapExplainReview(review: BackendTaskExplainReview): TaskExplainReview {
+  return {
+    id: String(review.id ?? ""),
+    stepId: review.step_id === undefined ? undefined : review.step_id,
+    targetType: String(review.target_type ?? ""),
+    verdict: String(review.verdict ?? ""),
+    riskLevel: String(review.risk_level ?? ""),
+    reasons: (review.reasons ?? []).map((item) => zhBackendText(String(item))),
+    requiredChanges: (review.required_changes ?? []).map((item) => zhBackendText(String(item))),
+    userConfirmationMessage: zhBackendText(String(review.user_confirmation_message ?? "")),
+    safeAlternative: zhBackendText(String(review.safe_alternative ?? "")),
+    createdAt: String(review.created_at ?? ""),
+    evidence: (review.evidence ?? []).map(mapExplainEvidence)
+  };
+}
+
+function mapExplainMessage(message: BackendTaskExplainMessage): TaskExplainMessage {
+  return {
+    id: String(message.id ?? ""),
+    stepId: message.step_id === undefined ? undefined : message.step_id,
+    fromAgent: String(message.from_agent ?? ""),
+    toAgent: message.to_agent === undefined ? undefined : message.to_agent,
+    messageType: String(message.message_type ?? ""),
+    content: zhBackendText(String(message.content ?? "")),
+    createdAt: String(message.created_at ?? ""),
+    evidence: (message.evidence ?? []).map(mapExplainEvidence),
+    action: message.action
+      ? {
+          kind: String(message.action.kind ?? ""),
+          toolName: String(message.action.tool_name ?? ""),
+          rationale: zhBackendText(String(message.action.rationale ?? "")),
+          followUpQuestion: zhBackendText(String(message.action.follow_up_question ?? ""))
+        }
+      : undefined
+  };
+}
+
+function mapExplainChainItem(item: BackendTaskExplainChainItem): TaskExplainChainItem {
+  return {
+    stage: String(item.stage ?? ""),
+    title: String(item.title ?? ""),
+    summary: zhBackendText(String(item.summary ?? "")),
+    evidence: (item.evidence ?? []).map(mapExplainEvidence)
+  };
+}
+
+function mapExplainEvidence(item: BackendTaskExplainEvidence): TaskExplainEvidence {
+  return {
+    source: String(item.source ?? ""),
+    id: String(item.id ?? ""),
+    createdAt: item.created_at ? String(item.created_at) : undefined,
+    actor: item.actor ? String(item.actor) : undefined,
+    eventType: item.event_type ? String(item.event_type) : undefined,
+    stepId: item.step_id ? String(item.step_id) : undefined,
+    summary: zhBackendText(String(item.summary ?? ""))
+  };
+}
+
 function mergeRecording(
   target: Map<string, NonNullable<TaskEvent["recordings"]>[number]>,
   stepId: string,
@@ -866,6 +1048,22 @@ function mapSettings(settings: BackendSettings): AppSettings {
     telemetryEnabled: false,
     compactMode: false,
     theme: "system",
+    providerName: settings.provider_name ?? "mock",
+    model: settings.model ?? "gpt-4o-mini",
+    reviewModel: settings.review_model ?? "",
+    wireApi: settings.wire_api === "responses" ? "responses" : "chat_completions",
+    requiresOpenAiAuth: settings.requires_openai_auth !== false,
+    modelReasoningEffort: settings.model_reasoning_effort ?? "medium",
+    disableResponseStorage: Boolean(settings.disable_response_storage),
+    temperature: Number(settings.temperature ?? 0.2),
+    maxTokens: Number(settings.max_tokens ?? 1600),
+    timeout: Number(settings.timeout ?? 30),
+    llmApiMaxRetries: Number(settings.llm_api_max_retries ?? 2),
+    llmApiRetryBackoffSeconds: Number(settings.llm_api_retry_backoff_seconds ?? 0.25),
+    llmApiCircuitFailureThreshold: Number(settings.llm_api_circuit_failure_threshold ?? 5),
+    llmApiCircuitCooldownSeconds: Number(settings.llm_api_circuit_cooldown_seconds ?? 30),
+    modelContextWindow: Number(settings.model_context_window ?? 128000),
+    modelAutoCompactTokenLimit: Number(settings.model_auto_compact_token_limit ?? 96000),
     workspaceRoot: settings.allowed_directories?.[0] ?? "",
     allowBrowserNetwork: Boolean(settings.allow_browser_network),
     remoteDesktopEnabled: Boolean(settings.remote_desktop_enabled),
@@ -878,6 +1076,85 @@ function mapSettings(settings: BackendSettings): AppSettings {
     allowCloudContext: Boolean(settings.allow_cloud_context),
     allowFileContentUpload: Boolean(settings.allow_file_content_upload),
     mcpServers
+  };
+}
+
+function mapLlmHealth(health: BackendLlmHealth): LLMHealthStatus {
+  return {
+    active: {
+      available: Boolean(health.active?.available),
+      degraded: Boolean(health.active?.degraded),
+      provider: String(health.active?.provider ?? ""),
+      model: String(health.active?.model ?? ""),
+      profile: mapLlmProfile(health.active?.profile),
+      error: String(health.active?.error ?? "")
+    },
+    retry: {
+      maxRetries: Number(health.retry?.max_retries ?? 0),
+      backoffSeconds: Number(health.retry?.backoff_seconds ?? 0),
+      circuitFailureThreshold: Number(health.retry?.circuit_failure_threshold ?? 0),
+      circuitCooldownSeconds: Number(health.retry?.circuit_cooldown_seconds ?? 0),
+      circuit: {
+        state: String(health.retry?.circuit?.state ?? "closed"),
+        failures: Number(health.retry?.circuit?.failures ?? 0),
+        retryAfterSeconds: Number(health.retry?.circuit?.retry_after_seconds ?? 0)
+      }
+    }
+  };
+}
+
+function mapLlmProfile(profile?: BackendLlmProfile): LLMProfile {
+  const caps = profile?.capabilities ?? {};
+  const modelProfile = profile?.model_profile ?? {};
+  return {
+    providerName: String(profile?.provider_name ?? ""),
+    model: String(profile?.model ?? modelProfile.model ?? ""),
+    baseUrl: String(profile?.base_url ?? ""),
+    wireApi: String(profile?.wire_api ?? "chat_completions"),
+    location: String(profile?.location ?? ""),
+    activeBackend: String(profile?.active_backend ?? profile?.provider_name ?? ""),
+    capabilities: {
+      tools: Boolean(caps.tools),
+      structuredJson: caps.structured_json !== false,
+      vision: Boolean(caps.vision),
+      embeddings: Boolean(caps.embeddings),
+      promptCache: Boolean(caps.prompt_cache),
+      responsesApi: Boolean(caps.responses_api),
+      reasoningEffort: Boolean(caps.reasoning_effort),
+      usageBreakdown: Boolean(caps.usage_breakdown),
+      local: Boolean(caps.local),
+      cloud: Boolean(caps.cloud)
+    },
+    modelProfile: {
+      model: String(modelProfile.model ?? profile?.model ?? ""),
+      contextWindow: Number(modelProfile.context_window ?? 0),
+      maxOutputTokens: Number(modelProfile.max_output_tokens ?? 0),
+      known: Boolean(modelProfile.known),
+      family: String(modelProfile.family ?? "")
+    }
+  };
+}
+
+function mapLlmCostSummary(summary: BackendLlmCostSummary): LLMCostSummary {
+  return {
+    windowHours: Number(summary.window_hours ?? 24),
+    calls: Number(summary.calls ?? 0),
+    promptTokens: Number(summary.prompt_tokens ?? 0),
+    completionTokens: Number(summary.completion_tokens ?? 0),
+    totalTokens: Number(summary.total_tokens ?? 0),
+    totalCostUsd: typeof summary.total_cost_usd === "number" ? summary.total_cost_usd : null,
+    estimated: Boolean(summary.estimated),
+    lastEventAt: String(summary.last_event_at ?? ""),
+    byModel: (summary.by_model ?? []).map((item) => ({
+      provider: String(item.provider ?? ""),
+      model: String(item.model ?? ""),
+      calls: Number(item.calls ?? 0),
+      promptTokens: Number(item.prompt_tokens ?? 0),
+      completionTokens: Number(item.completion_tokens ?? 0),
+      totalTokens: Number(item.total_tokens ?? 0),
+      totalCostUsd: Number(item.total_cost_usd ?? 0),
+      estimated: Boolean(item.estimated)
+    }))
   };
 }
 
@@ -993,6 +1270,17 @@ function mapChatMessage(message: BackendChatMessage): ChatMessage {
     content: zhBackendText(message.content),
     createdAt: message.created_at,
     status: message.status === "failed" ? "failed" : "sent"
+  };
+}
+
+function mapIntentSuggestion(suggestion: BackendIntentSuggestion): IntentSuggestion {
+  return {
+    id: suggestion.id,
+    title: suggestion.title,
+    prompt: zhBackendText(suggestion.prompt),
+    confidence: Number(suggestion.confidence ?? 0),
+    agentHint: suggestion.agent_hint,
+    reason: suggestion.reason ? zhBackendText(suggestion.reason) : undefined
   };
 }
 
@@ -1135,6 +1423,15 @@ interface BackendChatResponse {
   agent?: string;
 }
 
+interface BackendIntentSuggestion {
+  id: string;
+  title: string;
+  prompt: string;
+  confidence?: number;
+  agent_hint?: string;
+  reason?: string;
+}
+
 interface BackendTask {
   id: string;
   user_goal: string;
@@ -1222,6 +1519,114 @@ interface BackendSafetyReview {
   created_at: string;
 }
 
+interface BackendTaskExplainEvidence {
+  source?: string;
+  id?: string;
+  created_at?: string;
+  actor?: string;
+  event_type?: string;
+  step_id?: string;
+  summary?: string;
+}
+
+interface BackendTaskExplainReview {
+  id?: string;
+  step_id?: string | null;
+  target_type?: string;
+  verdict?: string;
+  risk_level?: string;
+  reasons?: string[];
+  required_changes?: string[];
+  user_confirmation_message?: string;
+  safe_alternative?: string;
+  created_at?: string;
+  evidence?: BackendTaskExplainEvidence[];
+}
+
+interface BackendTaskExplainMessage {
+  id?: string;
+  step_id?: string | null;
+  from_agent?: string;
+  to_agent?: string | null;
+  message_type?: string;
+  content?: string;
+  created_at?: string;
+  evidence?: BackendTaskExplainEvidence[];
+  action?: {
+    kind?: string;
+    tool_name?: string;
+    rationale?: string;
+    follow_up_question?: string;
+  };
+}
+
+interface BackendTaskExplainStep {
+  id?: string;
+  step_id?: string;
+  order?: number;
+  agent_name?: string;
+  tool_name?: string;
+  description?: string;
+  status?: string;
+  risk_level?: string;
+  requires_approval?: boolean;
+  expected_observation?: string;
+  rollback_strategy?: string;
+  planner_reason?: string;
+  safety_reviews?: BackendTaskExplainReview[];
+  subagent_suggestions?: BackendTaskExplainMessage[];
+  observations?: BackendTaskExplainMessage[];
+}
+
+interface BackendTaskExplainChainItem {
+  stage?: string;
+  title?: string;
+  summary?: string;
+  evidence?: BackendTaskExplainEvidence[];
+}
+
+interface BackendTaskExplain {
+  task_id?: string;
+  user_goal?: string;
+  status?: string;
+  mode?: string;
+  generated_at?: string;
+  complete?: boolean;
+  missing_sections?: string[];
+  data_sources?: Record<string, number>;
+  user_goal_record?: {
+    text?: string;
+    evidence?: BackendTaskExplainEvidence[];
+  };
+  supervisor_judgment?: {
+    summary?: string;
+    delegate?: boolean;
+    agent_hint?: string;
+    inferred?: boolean;
+    evidence?: BackendTaskExplainEvidence[];
+  };
+  planner_reasoning?: {
+    summary?: string;
+    plan_id?: string;
+    goal?: string;
+    assumptions?: string[];
+    step_count?: number;
+    global_risk_level?: string;
+    requires_user_approval?: boolean;
+    evidence?: BackendTaskExplainEvidence[];
+  };
+  global_safety_reviews?: BackendTaskExplainReview[];
+  steps?: BackendTaskExplainStep[];
+  subagent_suggestions?: BackendTaskExplainMessage[];
+  final_result?: {
+    status?: string;
+    summary?: string;
+    safety_reviews?: BackendTaskExplainReview[];
+    evidence?: BackendTaskExplainEvidence[];
+  };
+  chain?: BackendTaskExplainChainItem[];
+}
+
 interface BackendApproval {
   id: string;
   approval_type: string;
@@ -1304,7 +1709,23 @@ interface BackendClusterRequest {
 }
 
 interface BackendSettings {
+  provider_name?: string;
   base_url?: string;
+  model?: string;
+  review_model?: string;
+  wire_api?: string;
+  requires_openai_auth?: boolean;
+  model_reasoning_effort?: string;
+  disable_response_storage?: boolean;
+  temperature?: number;
+  max_tokens?: number;
+  timeout?: number;
+  llm_api_max_retries?: number;
+  llm_api_retry_backoff_seconds?: number;
+  llm_api_circuit_failure_threshold?: number;
+  llm_api_circuit_cooldown_seconds?: number;
+  model_context_window?: number;
+  model_auto_compact_token_limit?: number;
   allowed_directories?: string[];
   allow_browser_network?: boolean;
   remote_desktop_enabled?: boolean;
@@ -1317,6 +1738,87 @@ interface BackendSettings {
   allow_cloud_context?: boolean;
   allow_file_content_upload?: boolean;
   mcp_servers?: Array<{ name?: string; url?: string; enabled?: boolean; transport?: string }>;
+}
+
+interface BackendLlmCapabilities {
+  tools?: boolean;
+  structured_json?: boolean;
+  vision?: boolean;
+  embeddings?: boolean;
+  prompt_cache?: boolean;
+  responses_api?: boolean;
+  reasoning_effort?: boolean;
+  usage_breakdown?: boolean;
+  local?: boolean;
+  cloud?: boolean;
+}
+
+interface BackendLlmProfile {
+  provider_name?: string;
+  model?: string;
+  base_url?: string;
+  wire_api?: string;
+  location?: string;
+  active_backend?: string;
+  capabilities?: BackendLlmCapabilities;
+  model_profile?: {
+    model?: string;
+    context_window?: number;
+    max_output_tokens?: number;
+    known?: boolean;
+    family?: string;
+  };
+}
+
+interface BackendLlmProfileResponse {
+  mode?: string;
+  task?: string;
+  profile?: BackendLlmProfile;
+  degraded?: boolean;
+  error?: string;
+}
+
+interface BackendLlmHealth {
+  active?: {
+    available?: boolean;
+    degraded?: boolean;
+    provider?: string;
+    model?: string;
+    profile?: BackendLlmProfile;
+    error?: string;
+  };
+  retry?: {
+    max_retries?: number;
+    backoff_seconds?: number;
+    circuit_failure_threshold?: number;
+    circuit_cooldown_seconds?: number;
+    circuit?: {
+      state?: string;
+      failures?: number;
+      retry_after_seconds?: number;
+    };
+  };
+}
+
+interface BackendLlmCostSummary {
+  window_hours?: number;
+  calls?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  total_cost_usd?: number | null;
+  estimated?: boolean;
+  last_event_at?: string;
+  by_model?: Array<{
+    provider?: string;
+    model?: string;
+    calls?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    total_cost_usd?: number;
+    estimated?: boolean;
+  }>;
 }
 
 interface BackendLocalLlmBackend {

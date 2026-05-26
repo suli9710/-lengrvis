@@ -20,6 +20,11 @@ class WorkerTaskStatus(StrEnum):
     STOPPED = "stopped"
 
 
+class WorkerRole(StrEnum):
+    COORDINATOR = "coordinator"
+    WORKER = "worker"
+
+
 @dataclass(slots=True)
 class WorkerTaskSpec:
     goal: str
@@ -31,14 +36,23 @@ class WorkerTaskSpec:
     id: str = field(default_factory=lambda: f"worker_{uuid4().hex}")
     status: WorkerTaskStatus = WorkerTaskStatus.CREATED
     result: str = ""
+    role: WorkerRole = WorkerRole.WORKER
 
     def self_contained_prompt(self) -> str:
         sections = [
+            f"Role: {self.role.value}",
             f"Goal: {self.goal}",
             f"Task kind: {self.kind.value}",
             "Prompt:",
             self.prompt,
         ]
+        if self.role == WorkerRole.WORKER:
+            sections.append(
+                "Responsibility boundary:\n"
+                "- Execute only this assigned task.\n"
+                "- Do not coordinate, split, reprioritize, or delegate other tasks.\n"
+                "- Report completion, blockers, and concrete outputs."
+            )
         if self.owned_paths:
             sections.append("Owned paths:\n" + "\n".join(f"- {path}" for path in self.owned_paths))
         if self.completion_criteria:
@@ -54,6 +68,16 @@ class WorkerTaskSpec:
 
 class CoordinatorWorkerPolicy:
     """Small deterministic policy for safe worker fan-out decisions."""
+
+    WORKER_FORBIDDEN_TERMS = (
+        "coordinate",
+        "coordinator",
+        "delegate",
+        "fan out",
+        "prioritize workers",
+        "replan",
+        "split tasks",
+    )
 
     def can_run_together(self, left: WorkerTaskSpec, right: WorkerTaskSpec) -> bool:
         if not left.is_write_task and not right.is_write_task:
@@ -81,6 +105,12 @@ class CoordinatorWorkerPolicy:
             findings.append("implementation workers must declare owned_paths")
         if not task.completion_criteria:
             findings.append("worker task must declare completion criteria")
+        if task.role == WorkerRole.WORKER:
+            lowered_prompt = task.prompt.casefold()
+            for term in self.WORKER_FORBIDDEN_TERMS:
+                if term in lowered_prompt:
+                    findings.append("worker prompt must not assign coordinator responsibilities")
+                    break
         return findings
 
     def _overlaps(self, left: list[str], right: list[str]) -> bool:

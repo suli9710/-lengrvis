@@ -60,7 +60,7 @@
 | 28 | **Skill 包加载 + 安全审查 + 沙盒** | `skills/loader.py` + `sandbox.py` + `schemas.py` | **完整**：YAML manifest / R4 阻断 / 路径逃逸 / 敏感 header 检测 / 动态注册 |
 | 29 | **WebSocket 实时任务流** | `routes_chat.py:27` `/ws/tasks/{task_id}` | **完整**：`agent_bus.subscribe()` + asyncio.Queue |
 | 30 | **离线 OCR** | `ocr_service.py` | **完整**：本地 Tesseract → 元数据 OCR → 云 vision fallback；PDF 图片自动 OCR |
-| 31 | **严格状态机模式** | `state_machine.py:97` | **完整**：`is_transition_allowed(strict=True)` + `StateTransitionError` |
+| 31 | **状态机审计/严格模式** | `state_machine.py` | **完整**：默认审计并同步状态；`strict_state_machine=true` 时 `StateTransitionError` fail-fast |
 | 32 | **SafetyReview 批量审查** | `safety_review_agent.py:16` `BatchMessageReview` | **完整**：fast_path_count / slow_review_count / short_circuited |
 | 33 | 三模式 Provider 路由（efficiency / privacy / hybrid） | `llm/registry.py` | 完整 |
 | 34 | OpenAI 兼容 LLM 双 API（chat/completions + responses） | `openai_compatible.py` | 完整 |
@@ -134,7 +134,7 @@
 | Step 并行 | 多 Agent 并行 | 拓扑 + asyncio.gather | 相当 | — |
 | WebSocket 推送 | 手机端介入 | `/ws/tasks/{task_id}` | 相当 | — |
 | 离线 OCR | 端侧模型 | Tesseract + PDF fallback | 相当 | — |
-| 状态机严格模式 | 未公开 | strict + StateTransitionError | 相当 | — |
+| 状态机严格模式 | 未公开 | 默认审计迁移 + strict fail-fast | 相当 | — |
 | 跨端 Mac | 推进中 | electron-builder 配置在，缺 backend binary | 中 | P1 |
 | **跨端 Android/iOS** | Android 已发布 | 完全无 | **大** | **P2** |
 | **手机接管 PC** | 已支持 | placeholder | **大** | **P2** |

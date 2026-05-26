@@ -10,8 +10,11 @@ from fastapi.testclient import TestClient
 import app.agents.orchestrator_agent as orchestrator_module
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import AgentAction, Approval, Plan, PlanStep, Task, TaskStatus
+from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, Task, TaskStatus
 from app.main import create_app
+from app.orchestration.step_phase import set_step_status
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.services import task_recording_service
 from app.services.task_recording_service import list_recording_frames, persist_recording_frame, read_recording_image
@@ -185,7 +188,22 @@ def test_approved_step_records_approved_before_and_after(fake_capture):
     orchestrator.subagents["FileAgent"] = PassthroughAgent()
     orchestrator.registry.register(_tool("test.approved_recording", calls))
     task, plan, step = _task_and_plan("test.approved_recording")
-    approval = Approval(task_id=task.id, step_id=step.id, message="Approve")
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    preview: dict[str, Any] = {"ok": True}
+    approval = Approval(
+        task_id=task.id,
+        step_id=step.id,
+        message="Approve",
+        diff_preview=preview,
+        tool_name=step.tool_name,
+        risk_level=RiskLevel.R0_READ_ONLY.value,
+        args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        status=ApprovalStatus.APPROVED,
+    )
     db.upsert_model("approvals", approval)
 
     asyncio.run(orchestrator.execute_approved_step(approval))

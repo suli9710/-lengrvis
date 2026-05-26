@@ -49,7 +49,7 @@ def test_file_agent_allowed_tools_filters_by_owner():
     assert "authorized" in agent.system_prompt().lower()
 
 
-def test_act_returns_propose_tool_with_mock_provider():
+def test_act_returns_propose_tool_for_clear_registered_step():
     provider = MockProvider()
     agent = FileAgent()
     step = _plan_step()
@@ -63,6 +63,92 @@ def test_act_returns_propose_tool_with_mock_provider():
     assert "rationale" in action.model_dump()
 
 
+def test_act_uses_deterministic_fast_path_without_provider_for_clear_steps():
+    class FailingProvider(MockProvider):
+        async def structured_chat(self, messages, output_schema):  # noqa: ARG002
+            raise AssertionError("deterministic fast path should not call provider")
+
+    registry = register_all_tools()
+    tool = registry.get("file.find_duplicates")
+    tool.fast_path_eligible = True
+    tool.input_schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    }
+    agent = FileAgent()
+    step = _plan_step()
+
+    action = asyncio.run(
+        agent.act(
+            step,
+            AgentContext(task_id="task-1", mode="privacy", allowed_directories=[], registry=registry),
+            provider=FailingProvider(),
+        )
+    )
+
+    assert action.kind == "propose_tool"
+    assert action.tool_name == "file.find_duplicates"
+    assert action.args == {"path": "C:/Downloads"}
+    assert "deterministic fast path" in action.rationale
+
+
+def test_act_requests_revision_when_fast_path_detects_missing_required_args():
+    registry = register_all_tools()
+    agent = SearchAgent()
+    step = PlanStep(
+        task_id="task-1",
+        order=0,
+        agent_name="SearchAgent",
+        tool_name="tool.search",
+        description="Find a deferred tool for calendars",
+        args={},
+        expected_observation="tool matches",
+    )
+
+    action = asyncio.run(agent.act(step, AgentContext(task_id="task-1", mode="privacy", allowed_directories=[], registry=registry)))
+
+    assert action.kind == "request_revision"
+    assert "query" in action.rationale
+
+
+def test_act_falls_back_to_provider_when_schema_is_not_explicit_enough_for_fast_path():
+    class RecordingProvider(MockProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured_chat(self, messages, output_schema):  # noqa: ARG002
+            self.calls += 1
+            return {
+                "kind": "request_revision",
+                "rationale": "path is missing",
+                "follow_up_question": "Which directory should be listed?",
+            }
+
+    provider = RecordingProvider()
+    agent = FileAgent()
+    step = PlanStep(
+        task_id="task-1",
+        order=0,
+        agent_name="FileAgent",
+        tool_name="file.list_directory",
+        description="List a directory",
+        args={},
+    )
+
+    action = asyncio.run(
+        agent.act(
+            step,
+            AgentContext(task_id="task-1", mode="privacy", allowed_directories=[]),
+            provider=provider,
+        )
+    )
+
+    assert provider.calls == 1
+    assert action.kind == "request_revision"
+    assert "directory" in action.follow_up_question.lower()
+
+
 def test_act_returns_request_revision_on_provider_failure():
     class BrokenProvider(MockProvider):
         async def structured_chat(self, messages, output_schema):
@@ -70,8 +156,19 @@ def test_act_returns_request_revision_on_provider_failure():
 
     agent = ComputerAgent()
     step = _plan_step(tool_name="system.get_info", agent="ComputerAgent")
+    failed_observation = ToolResult(
+        tool_call_id="call-1",
+        ok=False,
+        error="previous system probe failed",
+        observation="system.get_info failed",
+    )
     action = asyncio.run(
-        agent.act(step, AgentContext(task_id="t", mode="privacy", allowed_directories=[]), provider=BrokenProvider())
+        agent.act(
+            step,
+            AgentContext(task_id="t", mode="privacy", allowed_directories=[]),
+            observation=failed_observation,
+            provider=BrokenProvider(),
+        )
     )
     assert action.kind == "request_revision"
     assert "failed" in action.rationale.lower()

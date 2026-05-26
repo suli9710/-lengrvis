@@ -125,6 +125,42 @@ def test_skill_yaml_loads_declared_schema_and_tool_definition(tmp_path: Path):
     assert echo_tool.risk_level == RiskLevel.R0_READ_ONLY
     assert echo_tool.agent_owner == "FileAgent"
     assert echo_tool.input_schema["required"] == ["text"]
+    assert echo_tool.defer_loading is True
+    assert "Echo text" in echo_tool.search_hint
+
+
+def test_loader_preserves_skill_authorized_path_requirement(tmp_path: Path):
+    skill_root = tmp_path / "path_skill"
+    skill_root.mkdir()
+    (skill_root / "skill.yaml").write_text(
+        """
+name: path-skill
+version: "1.0"
+agent_owner: FileAgent
+tools:
+  - name: skill.path.touch
+    requires_authorized_path: true
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+      required:
+        - path
+    execution:
+      type: python
+      entry: handler.py
+""".strip(),
+        encoding="utf-8",
+    )
+    (skill_root / "handler.py").write_text(
+        "import json\nprint(json.dumps({'ok': True}))\n",
+        encoding="utf-8",
+    )
+
+    package = load_skill_package(skill_root)
+
+    assert package.tool_definitions[0].requires_authorized_path is True
 
 
 def test_loader_scans_skill_directory_and_runtime_registers_tool(tmp_path: Path):
@@ -146,6 +182,20 @@ def test_loader_scans_skill_directory_and_runtime_registers_tool(tmp_path: Path)
     assert result["ok"] is True
     assert result["echo"] == "hello skill"
     assert result["context"]["allowed_directories"] == [str(tmp_path)]
+    assert "skill.demo.echo" not in {tool.name for tool in registry.list_for_planning()}
+    matches = [tool.name for tool in registry.search("echo text")]
+    assert matches[0] == "skill.demo.echo"
+    assert "skill.demo.echo" in matches
+    search_tool = registry.get("tool.search")
+    discovery = search_tool.execute({"query": "echo text"}, {"registry": registry})
+    selection = search_tool.execute({"query": "select:skill.demo.echo"}, {"registry": registry})
+
+    assert discovery["selected"] is False
+    assert discovery["matches"][0]["name"] == "skill.demo.echo"
+    assert "input_schema" not in discovery["matches"][0]
+    assert selection["selected"] is True
+    assert selection["matches"][0]["name"] == "skill.demo.echo"
+    assert selection["matches"][0]["input_schema"]["required"] == ["text"]
 
 
 def test_shell_handler_runs_in_bounded_child_process(tmp_path: Path):

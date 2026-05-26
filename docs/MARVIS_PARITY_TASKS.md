@@ -17,7 +17,7 @@
 | T04 | 文档 AI 摘要/问答/报告 | `document_service.py` map-reduce + QA + report 全接 LLM | ✅ 已完成 |
 | T05 | 运行时监督批量化 | `safety_review_agent.py:16` `BatchMessageReview` | ✅ 已完成 |
 | T06 | 向量索引与语义搜索 | `vector_index.py` FTS5 + embedding rerank + cosine | ✅ 已完成 |
-| T07 | 严格状态机模式 | `state_machine.py:97` `strict` 参数 + `StateTransitionError` | ✅ 已完成 |
+| T07 | 状态机审计/严格模式 | `state_machine.py` 默认审计同步，`strict_state_machine=true` 时 `StateTransitionError` | ✅ 已完成 |
 | T08 | 离线 OCR 与 PDF OCR | `ocr_service.py` Tesseract + 元数据 + PDF 图片 OCR | ✅ 已完成 |
 | T09 | Skill 包加载器与沙盒 | `skills/loader.py` + `sandbox.py` + `schemas.py` | ✅ 已完成 |
 | T10 | WebSocket 实时任务流 | `routes_chat.py:27` `/ws/tasks/{task_id}` + `agent_bus.subscribe()` | ✅ 已完成 |

@@ -57,6 +57,81 @@ export interface LocalLLMHealth {
   error?: string;
 }
 
+export interface LLMCapabilities {
+  tools: boolean;
+  structuredJson: boolean;
+  vision: boolean;
+  embeddings: boolean;
+  promptCache: boolean;
+  responsesApi: boolean;
+  reasoningEffort: boolean;
+  usageBreakdown: boolean;
+  local: boolean;
+  cloud: boolean;
+}
+
+export interface LLMProfile {
+  providerName: string;
+  model: string;
+  baseUrl: string;
+  wireApi: string;
+  location: "local" | "cloud" | string;
+  activeBackend: string;
+  capabilities: LLMCapabilities;
+  modelProfile: {
+    model: string;
+    contextWindow: number;
+    maxOutputTokens: number;
+    known: boolean;
+    family: string;
+  };
+}
+
+export interface LLMRetryStatus {
+  maxRetries: number;
+  backoffSeconds: number;
+  circuitFailureThreshold: number;
+  circuitCooldownSeconds: number;
+  circuit: {
+    state: "open" | "closed" | string;
+    failures: number;
+    retryAfterSeconds: number;
+  };
+}
+
+export interface LLMHealthStatus {
+  active: {
+    available: boolean;
+    degraded: boolean;
+    provider: string;
+    model: string;
+    profile: LLMProfile;
+    error: string;
+  };
+  retry: LLMRetryStatus;
+}
+
+export interface LLMCostSummary {
+  windowHours: number;
+  calls: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  totalCostUsd: number | null;
+  estimated: boolean;
+  lastEventAt: string;
+  byModel: Array<{
+    provider: string;
+    model: string;
+    calls: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    totalCostUsd: number;
+    estimated: boolean;
+  }>;
+}
+
 export type ChatRole = "system" | "developer" | "user" | "assistant" | "tool";
 
 export interface ChatMessage {
@@ -77,6 +152,15 @@ export interface ChatRequest {
 export interface ChatResponse {
   message: ChatMessage;
   taskUpdates?: TaskEvent[];
+}
+
+export interface IntentSuggestion {
+  id: string;
+  title: string;
+  prompt: string;
+  confidence: number;
+  agentHint?: string;
+  reason?: string;
 }
 
 export type TaskState = "queued" | "running" | "blocked" | "completed" | "failed";
@@ -107,6 +191,114 @@ export interface TaskStepRecording {
   toolName: string;
   agent: string;
   frames: TaskStepRecordingFrame[];
+}
+
+export interface TaskExplainEvidence {
+  source: string;
+  id: string;
+  createdAt?: string;
+  actor?: string;
+  eventType?: string;
+  stepId?: string;
+  summary: string;
+}
+
+export interface TaskExplainReview {
+  id: string;
+  stepId?: string | null;
+  targetType: string;
+  verdict: string;
+  riskLevel: string;
+  reasons: string[];
+  requiredChanges: string[];
+  userConfirmationMessage: string;
+  safeAlternative: string;
+  createdAt: string;
+  evidence: TaskExplainEvidence[];
+}
+
+export interface TaskExplainMessage {
+  id: string;
+  stepId?: string | null;
+  fromAgent: string;
+  toAgent?: string | null;
+  messageType: string;
+  content: string;
+  createdAt: string;
+  evidence: TaskExplainEvidence[];
+  action?: {
+    kind: string;
+    toolName: string;
+    rationale: string;
+    followUpQuestion: string;
+  };
+}
+
+export interface TaskExplainStep {
+  id: string;
+  stepId: string;
+  order: number;
+  agentName: string;
+  toolName: string;
+  description: string;
+  status: string;
+  riskLevel: string;
+  requiresApproval: boolean;
+  expectedObservation: string;
+  rollbackStrategy: string;
+  plannerReason: string;
+  safetyReviews: TaskExplainReview[];
+  subagentSuggestions: TaskExplainMessage[];
+  observations: TaskExplainMessage[];
+}
+
+export interface TaskExplainChainItem {
+  stage: string;
+  title: string;
+  summary: string;
+  evidence: TaskExplainEvidence[];
+}
+
+export interface TaskExplain {
+  taskId: string;
+  userGoal: string;
+  status: string;
+  mode: string;
+  generatedAt: string;
+  complete: boolean;
+  missingSections: string[];
+  dataSources: Record<string, number>;
+  userGoalRecord: {
+    text: string;
+    evidence: TaskExplainEvidence[];
+  };
+  supervisorJudgment: {
+    summary: string;
+    delegate: boolean;
+    agentHint: string;
+    inferred: boolean;
+    evidence: TaskExplainEvidence[];
+  };
+  plannerReasoning: {
+    summary: string;
+    planId: string;
+    goal: string;
+    assumptions: string[];
+    stepCount: number;
+    globalRiskLevel: string;
+    requiresUserApproval: boolean;
+    evidence: TaskExplainEvidence[];
+  };
+  globalSafetyReviews: TaskExplainReview[];
+  steps: TaskExplainStep[];
+  subagentSuggestions: TaskExplainMessage[];
+  finalResult: {
+    status: string;
+    summary: string;
+    safetyReviews: TaskExplainReview[];
+    evidence: TaskExplainEvidence[];
+  };
+  chain: TaskExplainChainItem[];
 }
 
 export type PlanStepState = "pending" | "active" | "done" | "blocked";
@@ -332,6 +524,22 @@ export interface AppSettings {
   telemetryEnabled: boolean;
   compactMode: boolean;
   theme: "system" | "light" | "dark";
+  providerName: string;
+  model: string;
+  reviewModel: string;
+  wireApi: "chat_completions" | "responses";
+  requiresOpenAiAuth: boolean;
+  modelReasoningEffort: string;
+  disableResponseStorage: boolean;
+  temperature: number;
+  maxTokens: number;
+  timeout: number;
+  llmApiMaxRetries: number;
+  llmApiRetryBackoffSeconds: number;
+  llmApiCircuitFailureThreshold: number;
+  llmApiCircuitCooldownSeconds: number;
+  modelContextWindow: number;
+  modelAutoCompactTokenLimit: number;
   workspaceRoot: string;
   allowBrowserNetwork: boolean;
   remoteDesktopEnabled: boolean;

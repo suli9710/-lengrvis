@@ -1,13 +1,55 @@
 from __future__ import annotations
 
 import json
+import random
+import time
+from dataclasses import dataclass
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
 
 from app.config import AppSettings
+from app.context_management import PromptTooLongError, is_prompt_too_long_error
 from app.llm.base import LLMProvider
 from app.llm.prompts import load_prompt, render_prompt
+from app.llm.types import LLMResponse, LLMUsage
+from app.llm.usage import estimate_usage
+
+
+class LLMApiCircuitOpen(RuntimeError):
+    """Raised when repeated transient failures temporarily block provider calls."""
+
+
+@dataclass
+class _CircuitState:
+    failures: int = 0
+    opened_at: float | None = None
+
+
+_CIRCUITS: dict[tuple[str, str, str, str], _CircuitState] = {}
+
+
+def circuit_snapshot(settings: AppSettings) -> dict[str, Any]:
+    endpoint_kind = "responses" if (settings.wire_api or "").lower() == "responses" else "chat"
+    key = (
+        settings.provider_name.lower(),
+        settings.base_url.rstrip("/"),
+        endpoint_kind,
+        settings.model,
+    )
+    state = _CIRCUITS.get(key)
+    if state is None:
+        return {"state": "closed", "failures": 0, "retry_after_seconds": 0.0}
+    retry_after = 0.0
+    if state.opened_at is not None:
+        retry_after = max(0.0, settings.llm_api_circuit_cooldown_seconds - (time.monotonic() - state.opened_at))
+    return {
+        "state": "open" if state.opened_at is not None and retry_after > 0 else "closed",
+        "failures": state.failures,
+        "retry_after_seconds": round(retry_after, 3),
+    }
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -28,6 +70,114 @@ class OpenAICompatibleProvider(LLMProvider):
             return f"{base_url}/responses"
         return f"{base_url}/chat/completions"
 
+    def _circuit_key(self, endpoint_kind: str, model: str) -> tuple[str, str, str, str]:
+        return (
+            self.settings.provider_name.lower(),
+            self.settings.base_url.rstrip("/"),
+            endpoint_kind,
+            model,
+        )
+
+    async def _post_json(self, endpoint: str, payload: dict[str, Any], *, endpoint_kind: str, model: str) -> dict[str, Any]:
+        circuit_key = self._circuit_key(endpoint_kind, model)
+        self._ensure_circuit_allows_request(circuit_key)
+        attempts = max(0, self.settings.llm_api_max_retries) + 1
+        last_error: Exception | None = None
+
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
+                    response = await client.post(
+                        endpoint,
+                        headers=self._headers(),
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                self._record_success(circuit_key)
+                return response.json()
+            except Exception as exc:
+                last_error = exc
+                if is_prompt_too_long_error(exc):
+                    raise PromptTooLongError(str(exc)) from exc
+                if not self._should_retry(exc) or attempt == attempts - 1:
+                    self._record_failure(circuit_key, exc)
+                    raise
+                await self._sleep_before_retry(attempt, last_error)
+
+        raise last_error or RuntimeError("LLM API request failed.")
+
+    def _ensure_circuit_allows_request(self, circuit_key: tuple[str, str, str, str]) -> None:
+        state = _CIRCUITS.get(circuit_key)
+        if state is None or state.opened_at is None:
+            return
+        cooldown = self.settings.llm_api_circuit_cooldown_seconds
+        elapsed = time.monotonic() - state.opened_at
+        if elapsed < cooldown:
+            raise LLMApiCircuitOpen(
+                f"LLM API circuit is open for {self.settings.provider_name}; retry after {cooldown - elapsed:.1f}s."
+            )
+        state.failures = 0
+        state.opened_at = None
+
+    def _record_success(self, circuit_key: tuple[str, str, str, str]) -> None:
+        _CIRCUITS.pop(circuit_key, None)
+
+    def _record_failure(self, circuit_key: tuple[str, str, str, str], exc: Exception) -> None:
+        if not self._should_count_for_circuit(exc):
+            return
+        state = _CIRCUITS.setdefault(circuit_key, _CircuitState())
+        state.failures += 1
+        if state.failures >= max(1, self.settings.llm_api_circuit_failure_threshold):
+            state.opened_at = time.monotonic()
+
+    def _should_retry(self, exc: Exception) -> bool:
+        if isinstance(exc, LLMApiCircuitOpen):
+            return False
+        if isinstance(exc, PromptTooLongError) or is_prompt_too_long_error(exc):
+            return False
+        if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code
+            return status_code == 429 or 500 <= status_code < 600
+        return False
+
+    def _should_count_for_circuit(self, exc: Exception) -> bool:
+        if isinstance(exc, LLMApiCircuitOpen):
+            return False
+        if isinstance(exc, PromptTooLongError) or is_prompt_too_long_error(exc):
+            return False
+        return self._should_retry(exc)
+
+    async def _sleep_before_retry(self, attempt: int, exc: Exception | None = None) -> None:
+        delay = self._retry_after_seconds(exc)
+        if delay is None:
+            base_delay = self.settings.llm_api_retry_backoff_seconds * (2**attempt)
+            jitter = random.uniform(0, base_delay * 0.1) if base_delay > 0 else 0
+            delay = base_delay + jitter
+        if delay <= 0:
+            return
+        import asyncio
+
+        await asyncio.sleep(delay)
+
+    def _retry_after_seconds(self, exc: Exception | None) -> float | None:
+        if not isinstance(exc, httpx.HTTPStatusError):
+            return None
+        raw = exc.response.headers.get("Retry-After")
+        if not raw:
+            return None
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(raw)
+            except (TypeError, ValueError):
+                return None
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return max(0.0, parsed.timestamp() - time.time())
+
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -35,26 +185,42 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
-        if self.settings.wire_api.lower() == "responses":
-            return await self._responses_chat(messages, model=model, temperature=temperature, tools=tools)
+        return (await self.chat_result(messages, model=model, temperature=temperature, tools=tools)).content
 
+    async def chat_result(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        if self.settings.wire_api.lower() == "responses":
+            return await self._responses_chat_result(messages, model=model, temperature=temperature, tools=tools)
+
+        target_model = model or self.settings.model
         payload: dict[str, Any] = {
-            "model": model or self.settings.model,
+            "model": target_model,
             "messages": messages,
             "temperature": self.settings.temperature if temperature is None else temperature,
             "max_tokens": self.settings.max_tokens,
         }
         if tools:
             payload["tools"] = tools
-        async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
-            response = await client.post(
-                self._chat_endpoint(),
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"].get("content") or ""
+        data = await self._post_json(self._chat_endpoint(), payload, endpoint_kind="chat", model=target_model)
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        content = message.get("content") or ""
+        return LLMResponse(
+            content=content,
+            provider=self.name,
+            model=target_model,
+            usage=self._usage_from_chat_completions(data, messages, content),
+            finish_reason=str(choice.get("finish_reason") or ""),
+            metadata={
+                "wire_api": "chat_completions",
+                "tool_calls": message.get("tool_calls") or [],
+            },
+        )
 
     async def _responses_chat(
         self,
@@ -63,13 +229,25 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
+        return (await self._responses_chat_result(messages, model=model, temperature=temperature, tools=tools)).content
+
+    async def _responses_chat_result(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        if any(message.get("role") == "tool" for message in messages):
+            raise NotImplementedError("Responses API transport does not yet map tool-role messages safely.")
         input_items = [
             {"role": message["role"], "content": message.get("content", "")}
             for message in messages
             if message.get("role") in {"developer", "system", "user", "assistant"}
         ]
+        target_model = model or self.settings.model
         payload: dict[str, Any] = {
-            "model": model or self.settings.model,
+            "model": target_model,
             "input": input_items,
             "temperature": self.settings.temperature if temperature is None else temperature,
             "max_output_tokens": self.settings.max_tokens,
@@ -79,14 +257,16 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["reasoning"] = {"effort": self.settings.model_reasoning_effort}
         if tools:
             payload["tools"] = tools
-        async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
-            response = await client.post(
-                self._chat_endpoint(),
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-        return self._extract_responses_text(response.json())
+        data = await self._post_json(self._chat_endpoint(), payload, endpoint_kind="responses", model=target_model)
+        content = self._extract_responses_text(data)
+        return LLMResponse(
+            content=content,
+            provider=self.name,
+            model=target_model,
+            usage=self._usage_from_responses(data, messages, content),
+            finish_reason=str(data.get("status") or ""),
+            metadata={"wire_api": "responses", "response_id": data.get("id")},
+        )
 
     def _extract_responses_text(self, data: dict[str, Any]) -> str:
         if isinstance(data.get("output_text"), str):
@@ -102,6 +282,46 @@ class OpenAICompatibleProvider(LLMProvider):
                 if isinstance(content.get("text"), str):
                     parts.append(content["text"])
         return "".join(parts)
+
+    def _usage_from_chat_completions(
+        self,
+        data: dict[str, Any],
+        messages: list[dict[str, Any]],
+        content: str,
+    ) -> LLMUsage:
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return estimate_usage(messages, content)
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+        return LLMUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated=False,
+            details={key: value for key, value in usage.items() if str(key).endswith("_details")},
+        )
+
+    def _usage_from_responses(
+        self,
+        data: dict[str, Any],
+        messages: list[dict[str, Any]],
+        content: str,
+    ) -> LLMUsage:
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return estimate_usage(messages, content)
+        prompt_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+        return LLMUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            estimated=False,
+            details={key: value for key, value in usage.items() if str(key).endswith("_details")},
+        )
 
     async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:
         schema_prompt = {
@@ -119,15 +339,14 @@ class OpenAICompatibleProvider(LLMProvider):
             raise
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
-        payload = {"model": model or self.settings.embedding_model, "input": texts}
-        async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
-            response = await client.post(
-                f"{self.settings.base_url.rstrip('/')}/embeddings",
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-        data = response.json()
+        target_model = model or self.settings.embedding_model
+        payload = {"model": target_model, "input": texts}
+        data = await self._post_json(
+            f"{self.settings.base_url.rstrip('/')}/embeddings",
+            payload,
+            endpoint_kind="embeddings",
+            model=target_model,
+        )
         return [item["embedding"] for item in data["data"]]
 
     async def vision(self, image_path: str, prompt: str, model: str | None = None) -> str:
@@ -141,6 +360,30 @@ class OpenAICompatibleProvider(LLMProvider):
         suffix = path.suffix.lstrip(".").lower() or "png"
         mime = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
         data_url = f"data:{mime};base64,{encoded}"
+        target_model = model or self.settings.vision_model or self.settings.model
+        if self.settings.wire_api.lower() == "responses":
+            payload: dict[str, Any] = {
+                "model": target_model,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {"type": "input_image", "image_url": data_url},
+                        ],
+                    }
+                ],
+                "temperature": self.settings.temperature,
+                "max_output_tokens": self.settings.max_tokens,
+                "store": not self.settings.disable_response_storage,
+            }
+            data = await self._post_json(
+                self._chat_endpoint(),
+                payload,
+                endpoint_kind="responses_vision",
+                model=target_model,
+            )
+            return self._extract_responses_text(data)
         messages = [
             {
                 "role": "user",
@@ -150,21 +393,18 @@ class OpenAICompatibleProvider(LLMProvider):
                 ],
             }
         ]
-        target_model = model or self.settings.vision_model or self.settings.model
         payload: dict[str, Any] = {
             "model": target_model,
             "messages": messages,
             "temperature": self.settings.temperature,
             "max_tokens": self.settings.max_tokens,
         }
-        async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
-            response = await client.post(
-                f"{self.settings.base_url.rstrip('/')}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-        data = response.json()
+        data = await self._post_json(
+            f"{self.settings.base_url.rstrip('/')}/chat/completions",
+            payload,
+            endpoint_kind="vision",
+            model=target_model,
+        )
         return data["choices"][0]["message"].get("content") or ""
 
     async def ocr(self, image_path: str) -> str:

@@ -10,6 +10,15 @@ from app.core.audit import record
 from app.core.schemas import Approval, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.llm.registry import get_effective_settings
 from app.orchestration.state_machine import safe_transition
+from app.orchestration.step_phase import set_step_status
+from app.policy.approval_binding import (
+    args_binding_hmac,
+    permission_policy_version,
+    preview_hmac,
+    redacted_preview,
+    settings_fingerprint,
+)
+from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security.mobile_jwt import decode_mobile_token
@@ -157,16 +166,24 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     registry = register_all_tools(settings=settings)
     tool = registry.get(tool_name)
     preview = tool.execute({**args, "dry_run": True}, {"settings": settings, "allowed_directories": settings.allowed_directories})
+    safe_preview = redacted_preview(preview)
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
         approval_type="remote_input",
         message=review.user_confirmation_message or f"Approve remote desktop input {tool_name}?",
-        diff_preview=preview,
+        diff_preview=safe_preview,
+        tool_name=tool_name,
+        risk_level=tool.risk_level.value,
+        args_binding_hmac=args_binding_hmac(tool_name, args, task_id=task.id, step_id=step.id),
+        preview_hmac=preview_hmac(safe_preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version=getattr(tool, "tool_version", "1"),
     )
     db.upsert_model("approvals", approval)
     publish_approval_created(approval)
-    step.status = StepStatus.WAITING_USER_APPROVAL
+    set_step_status(step, StepStatus.WAITING_USER_APPROVAL, actor=_REMOTE_ACTOR)
     safe_transition(task, TaskStatus.WAITING_USER_APPROVAL, actor=_REMOTE_ACTOR)
     db.upsert_model("tasks", task)
     db.upsert_model("plans", plan)
@@ -181,7 +198,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         "task_id": task.id,
         "approval_id": approval.id,
         "review": review.model_dump(mode="json"),
-        "preview": preview,
+        "preview": safe_preview,
     }
 
 

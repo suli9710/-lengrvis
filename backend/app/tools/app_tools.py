@@ -427,6 +427,11 @@ def register(registry) -> None:
         ("app.reveal_in_explorer", reveal_in_explorer, RiskLevel.R1_OPEN_ONLY),
     ]
     for name, fn, risk in defs:
+        effects = ["read", "inspect"] if risk == RiskLevel.R0_READ_ONLY else ["open"]
+        if name in {"app.launch_allowlisted", "app.launch_installed"}:
+            effects = ["launch"]
+        elif name == "app.reveal_in_explorer":
+            effects = ["reveal"]
         registry.register(
             ToolDefinition(
                 name=name,
@@ -438,5 +443,10 @@ def register(registry) -> None:
                 supports_dry_run=True,
                 requires_authorized_path=False,
                 execute=fn,
+                capabilities=["application"],
+                effects=effects,
+                resource_kinds=["application", "file"],
+                fast_path_eligible=risk in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY},
+                trust_tier="builtin",
             )
         )

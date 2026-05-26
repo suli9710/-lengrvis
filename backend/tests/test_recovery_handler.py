@@ -36,7 +36,9 @@ class OrchestratorStub:
 
     async def _execute_step(self, task, plan, step, context, observation, *, threaded_tools=False):  # noqa: ARG002
         self.executed_recovery_steps.append(step)
-        step.status = StepStatus.SUCCEEDED
+        from app.orchestration.step_phase import set_step_status
+
+        set_step_status(step, StepStatus.SUCCEEDED, actor="Test")
         return StepExecutionOutcome(
             "succeeded",
             ToolResult(tool_call_id=f"{step.id}_call", ok=True, observation="recovered"),
@@ -117,7 +119,9 @@ def test_recovery_handler_retry_limit_applies_to_recovery_chain(monkeypatch):
     class AlwaysFailingRecoveryOrchestrator(OrchestratorStub):
         async def _execute_step(self, task, plan, step, context, observation, *, threaded_tools=False):  # noqa: ARG002
             self.executed_recovery_steps.append(step)
-            step.status = StepStatus.FAILED
+            from app.orchestration.step_phase import set_step_status
+
+            set_step_status(step, StepStatus.FAILED, actor="Test")
             return StepExecutionOutcome(
                 "failed",
                 ToolResult(tool_call_id=f"{step.id}_call", ok=False, error="recovery failed"),
@@ -138,4 +142,65 @@ def test_recovery_handler_retry_limit_applies_to_recovery_chain(monkeypatch):
     assert outcome.kind == "fatal_failed"
     assert len(orchestrator.executed_recovery_steps) == 1
     assert len(plan.steps) == 2
+    assert rollback_calls == [task.id]
+
+
+def test_recovery_handler_default_allows_multiple_recovery_attempts(monkeypatch):
+    rollback_calls: list[str] = []
+
+    def fake_rollback(task_id: str):
+        rollback_calls.append(task_id)
+        return {"task_id": task_id, "executed": [], "count": 0}
+
+    class AlwaysFailingRecoveryOrchestrator(OrchestratorStub):
+        async def _execute_step(self, task, plan, step, context, observation, *, threaded_tools=False):  # noqa: ARG002
+            self.executed_recovery_steps.append(step)
+            from app.orchestration.step_phase import set_step_status
+
+            set_step_status(step, StepStatus.FAILED, actor="Test")
+            return StepExecutionOutcome(
+                "failed",
+                ToolResult(tool_call_id=f"{step.id}_call", ok=False, error="recovery failed"),
+            )
+
+    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    orchestrator = AlwaysFailingRecoveryOrchestrator(
+        AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="try fallback")
+    )
+    handler = RecoveryHandler(orchestrator)
+    task = Task(id="task_1", user_goal="read file")
+    step = PlanStep(task_id=task.id, agent_name="FileAgent", tool_name="file.read", description="read")
+    plan = Plan(id="plan_1", task_id=task.id, goal=task.user_goal, steps=[step])
+    failed = ToolResult(tool_call_id="call_1", ok=False, error="missing file")
+
+    outcome = asyncio.run(handler.recover_failed_step(task, plan, step, failed, {}, None))
+
+    assert outcome.kind == "fatal_failed"
+    assert len(orchestrator.executed_recovery_steps) == 3
+    assert len(plan.steps) == 4
+    assert rollback_calls == [task.id]
+
+
+def test_recovery_handler_zero_retries_rolls_back_without_consulting(monkeypatch):
+    rollback_calls: list[str] = []
+
+    def fake_rollback(task_id: str):
+        rollback_calls.append(task_id)
+        return {"task_id": task_id, "executed": [], "count": 0}
+
+    monkeypatch.setattr("app.orchestration.handlers.recovery_handler.rollback_tools.execute_rollback", fake_rollback)
+    orchestrator = OrchestratorStub(
+        AgentAction(kind="propose_tool", tool_name="file.read", args={"path": "fallback"}, rationale="try fallback")
+    )
+    handler = RecoveryHandler(orchestrator, max_retries=0)
+    task = Task(id="task_1", user_goal="read file")
+    step = PlanStep(task_id=task.id, agent_name="FileAgent", tool_name="file.read", description="read")
+    plan = Plan(id="plan_1", task_id=task.id, goal=task.user_goal, steps=[step])
+    failed = ToolResult(tool_call_id="call_1", ok=False, error="missing file")
+
+    outcome = asyncio.run(handler.recover_failed_step(task, plan, step, failed, {}, None))
+
+    assert outcome.kind == "fatal_failed"
+    assert orchestrator.executed_recovery_steps == []
+    assert len(plan.steps) == 1
     assert rollback_calls == [task.id]

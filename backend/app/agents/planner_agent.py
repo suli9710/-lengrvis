@@ -69,6 +69,7 @@ class PlannerAgent(BaseAgent):
         memory_context: list | None = None,
         perception_context: dict[str, Any] | None = None,
         goal_context: dict[str, Any] | str | None = None,
+        session_context: dict[str, Any] | str | None = None,
     ) -> Plan:
         deterministic_plan = self._deterministic_file_plan(task_id, goal, tools)
         if deterministic_plan:
@@ -90,6 +91,7 @@ class PlannerAgent(BaseAgent):
                 memory_block = "Past relevant memories:\n" + "\n".join(memory_lines) + "\n\n"
         goal_block = self._format_goal_context(goal_context)
         perception_block = self._format_perception_context(perception_context)
+        session_block = self._format_session_context(session_context)
 
         messages = [
             {
@@ -101,7 +103,7 @@ class PlannerAgent(BaseAgent):
                 "content": render_prompt(
                     "planner_user.md",
                     {
-                        "memory_block": memory_block + goal_block + perception_block,
+                        "memory_block": memory_block + goal_block + perception_block + session_block,
                         "mode": mode,
                         "tools": "\n".join(f"- {tool}" for tool in tools),
                         "goal": goal,
@@ -159,6 +161,35 @@ class PlannerAgent(BaseAgent):
 
         self._publish_plan(task_id, plan)
         return plan
+
+    def _format_session_context(self, session_context: dict[str, Any] | str | None) -> str:
+        if not session_context:
+            return ""
+        if isinstance(session_context, str):
+            text = session_context.strip()
+            return f"Session continuity context:\n{text}\n\n" if text else ""
+
+        lines: list[str] = []
+        workflow = session_context.get("current_workflow_state") or {}
+        if workflow:
+            lines.append(f"- Current workflow state: {str(workflow)[:240]}")
+        unfinished = list(session_context.get("unfinished_task_ids") or [])
+        if unfinished:
+            lines.append(f"- Unfinished tasks: {', '.join(str(item) for item in unfinished[:6])}")
+        preferences = session_context.get("learned_preferences") or {}
+        if preferences:
+            lines.append(f"- Session preferences: {str(preferences)[:240]}")
+        notes = list(session_context.get("notes") or [])
+        for note in notes[-5:]:
+            text = str(note).strip()
+            if text:
+                lines.append(f"- Note: {text[:180]}")
+        conversation_summary = str(session_context.get("conversation_summary") or "").strip()
+        if conversation_summary:
+            lines.append(f"- Conversation summary: {conversation_summary[:360]}")
+        if not lines:
+            return ""
+        return "Session continuity context:\n" + "\n".join(lines) + "\n\n"
 
     def _format_goal_context(self, goal_context: dict[str, Any] | str | None) -> str:
         if not goal_context:

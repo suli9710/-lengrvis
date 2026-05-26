@@ -9,7 +9,10 @@ from typing import Any
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.registry import get_provider
+from app.core.session_context import SessionContext, get_session_context_store
 from app.perception.context_store import latest_perception_context
+from app.perception.intent_predictor import IntentPredictor, IntentSuggestion
+from app.perception.schemas import AppContext, ScreenState
 
 
 SUPERVISOR_SCHEMA: dict[str, Any] = {
@@ -150,6 +153,37 @@ class SupervisorAgent:
             agent_hint = heuristic.agent_hint
         return SupervisorDecision(True, decision.reply, agent_hint)
 
+    def proactive_suggestions(
+        self,
+        *,
+        screen_state: ScreenState | None = None,
+        app_context: AppContext | None = None,
+        history: SessionContext | dict[str, Any] | list[Any] | None = None,
+        predictor: IntentPredictor | None = None,
+    ) -> list[IntentSuggestion]:
+        if screen_state is None or app_context is None:
+            perception_context = latest_perception_context()
+            screen_state = screen_state or _typed_context(perception_context.get("screen_state"), ScreenState)
+            app_context = app_context or _typed_context(perception_context.get("app_context"), AppContext)
+            if app_context is None and screen_state is not None:
+                app_context = screen_state.app_context
+        if history is None:
+            try:
+                history = get_session_context_store().load_latest()
+            except Exception:
+                history = None
+        return (predictor or IntentPredictor()).predict(
+            screen_state=screen_state,
+            app_context=app_context,
+            history=history,
+        )
+
+    def proactive_reply(self, suggestions: list[IntentSuggestion]) -> str:
+        prompts = [item.prompt for item in suggestions if item.confidence > 0.8]
+        if not prompts:
+            return ""
+        return "I can help with this next: " + " / ".join(prompts[:3])
+
     def quick_decision(self, message: str) -> SupervisorDecision:
         return self._heuristic_decision(message)
 
@@ -272,6 +306,10 @@ class SupervisorAgent:
             "AppAgent",
             "DocumentAgent",
         }
+
+
+def _typed_context(value: Any, expected_type: type[ScreenState] | type[AppContext]) -> Any:
+    return value if isinstance(value, expected_type) else None
 
 
 def coerce_supervisor_json(text: str) -> dict[str, Any]:

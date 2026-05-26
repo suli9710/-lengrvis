@@ -130,6 +130,10 @@ def adapt_skill_to_tool_definitions(definition: SkillDefinition, root: str | Pat
                 supports_dry_run=tool.supports_dry_run,
                 requires_authorized_path=tool.requires_authorized_path,
                 execute=_build_executor(sandbox, tool),
+                search_hint=_skill_search_hint(definition, tool),
+                defer_loading=True,
+                trust_tier="skill",
+                fast_path_eligible=False,
                 app_target=tool.app_target.model_dump(mode="json") if tool.app_target else None,
                 workflow=tool.workflow.model_dump(mode="json") if tool.workflow else None,
             )
@@ -213,6 +217,28 @@ def _build_executor(sandbox: SkillSandbox, tool: SkillToolSpec):
         return sandbox.execute(tool.execution, args, context)
 
     return execute
+
+
+def _skill_search_hint(definition: SkillDefinition, tool: SkillToolSpec) -> str:
+    parts = [
+        definition.name,
+        tool.name,
+        tool.description,
+        definition.effective_agent_owner(tool),
+        tool.execution.type.value,
+    ]
+    if tool.app_target:
+        parts.extend(
+            [
+                tool.app_target.display_name,
+                tool.app_target.app_id,
+                tool.app_target.interface,
+                " ".join(tool.app_target.capabilities),
+            ]
+        )
+    if tool.workflow:
+        parts.extend([tool.workflow.target_app, tool.workflow.action, tool.workflow.interface])
+    return " ".join(str(part).strip() for part in parts if str(part).strip())
 
 
 def _find_manifests(directory: Path) -> list[Path]:

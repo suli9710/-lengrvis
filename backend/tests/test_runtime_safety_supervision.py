@@ -12,6 +12,19 @@ from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 
+class DoneComputerAgent:
+    name = "ComputerAgent"
+
+    def consult(self, plan):  # noqa: ANN001, ANN201, ARG002
+        return None
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
+        return None
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "reflected"
+
+
 def test_runtime_supervision_allows_internal_payload_fields():
     message = AgentMessage(
         task_id="task_supervision",
@@ -38,6 +51,39 @@ def test_runtime_supervision_blocks_sensitive_agent_message():
 
     assert review.verdict == "deny"
     assert review.risk_level == "R4_FORBIDDEN_OR_HANDOFF"
+
+
+def test_safety_review_agent_accepts_tool_definition_metadata(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="system.get_info",
+        description="system get info",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="ComputerAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=lambda args, context: {"ok": True},
+        effects=["read"],
+        resource_kinds=["system"],
+        fast_path_eligible=True,
+        trust_tier="builtin",
+    )
+
+    review = orchestrator.safety.review_tool_call(
+        "task_fast_agent",
+        "step_fast_agent",
+        tool.name,
+        {},
+        tool.risk_level,
+        tool_definition=tool,
+    )
+
+    assert review.verdict == "allow"
+    assert "fast path" in " ".join(review.reasons).lower()
 
 
 @pytest.mark.anyio
@@ -113,19 +159,21 @@ async def test_tool_call_denial_keeps_task_denied(monkeypatch, tmp_path):
     db.init_db()
 
     orchestrator = OrchestratorAgent()
+    orchestrator.subagents["ComputerAgent"] = DoneComputerAgent()
     orchestrator.registry.register(
         ToolDefinition(
-            name="test.forbidden_runtime",
-            description="forbidden runtime tool",
-            input_schema={},
-            output_schema={},
-            risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-            agent_owner="ComputerAgent",
-            supports_dry_run=False,
-            requires_authorized_path=False,
-            execute=lambda args, context: {"ok": True},  # noqa: ARG005
+                name="test.forbidden_runtime",
+                description="forbidden runtime tool",
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+                output_schema={},
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                agent_owner="ComputerAgent",
+                supports_dry_run=False,
+                requires_authorized_path=False,
+                execute=lambda args, context: {"ok": True},  # noqa: ARG005
+                fast_path_eligible=True,
+            )
         )
-    )
 
     async def forbidden_plan(*args, **kwargs):  # noqa: ANN002, ANN003, ARG001
         task_id = args[0]

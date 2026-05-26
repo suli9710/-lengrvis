@@ -25,23 +25,34 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def list_for_planning(self) -> list[ToolDefinition]:
-        return [tool for tool in self.list() if not tool.defer_loading or tool.name == "tool.search"]
+        return [tool for tool in self.list() if self._is_planning_visible(tool)]
 
-    def search(self, query: str, *, max_results: int = 5, include_deferred: bool = True) -> list[ToolDefinition]:
-        terms = [term.casefold() for term in query.replace(".", " ").replace("_", " ").split() if term.strip()]
-        if not terms and not query.strip().startswith("select:"):
+    def search(
+        self,
+        query: str,
+        *,
+        max_results: int = 5,
+        include_deferred: bool = True,
+        deferred_only: bool = False,
+    ) -> list[ToolDefinition]:
+        query_text = query.strip()
+        terms = [term.casefold() for term in query_text.replace(".", " ").replace("_", " ").split() if term.strip()]
+        if not terms and not query_text.casefold().startswith("select:"):
             return []
-        direct = query.strip()
+        direct = query_text
         if direct.casefold().startswith("select:"):
             name = direct.split(":", 1)[1].strip()
             try:
-                return [self.get(name)]
+                tool = self.get(name)
             except KeyError:
                 return []
+            if not self._tool_in_search_scope(tool, include_deferred=include_deferred, deferred_only=deferred_only):
+                return []
+            return [tool]
 
         scored: list[tuple[int, str, ToolDefinition]] = []
         for tool in self.list():
-            if not include_deferred and tool.defer_loading:
+            if not self._tool_in_search_scope(tool, include_deferred=include_deferred, deferred_only=deferred_only):
                 continue
             haystack = " ".join(
                 [
@@ -55,7 +66,21 @@ class ToolRegistry:
             if score:
                 scored.append((score, tool.name, tool))
         scored.sort(key=lambda item: (-item[0], item[1]))
+        if include_deferred and not deferred_only:
+            deferred_matches = [item for item in scored if item[2].defer_loading]
+            if deferred_matches:
+                scored = deferred_matches
         return [tool for _score, _name, tool in scored[: max(1, max_results)]]
+
+    def _is_planning_visible(self, tool: ToolDefinition) -> bool:
+        return tool.name == "tool.search" or not tool.defer_loading
+
+    def _tool_in_search_scope(self, tool: ToolDefinition, *, include_deferred: bool, deferred_only: bool) -> bool:
+        if deferred_only:
+            return tool.defer_loading
+        if include_deferred:
+            return True
+        return not tool.defer_loading
 
 
 registry = ToolRegistry()
@@ -83,6 +108,7 @@ def register_all_tools(
         vision_tools,
         workflow_tools,
     )
+    from app.adapters import tools as adapter_tools
 
     registry._tools.clear()
     file_tools.register(registry)
@@ -98,6 +124,7 @@ def register_all_tools(
     tool_search.register(registry)
     vision_tools.register(registry)
     cluster_tools.register(registry)
+    adapter_tools.register(registry)
     for definition in extra_definitions or ():
         registry.register(definition)
     if load_skills:

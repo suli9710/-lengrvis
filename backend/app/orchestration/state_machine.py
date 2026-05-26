@@ -62,7 +62,7 @@ def is_transition_allowed(source: str | TaskPhase, target: str | TaskPhase, *, s
     return is_phase_transition_allowed(source_phase, target_phase)
 
 
-def transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine") -> Task:
+def transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine", *, strict: bool = True) -> Task:
     source_phase = _phase_of(task.status)
     target_phase = _phase_of(target)
     target_stage = _stage_for_target(target, target_phase)
@@ -70,10 +70,14 @@ def transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine")
         task.phase = source_phase
 
     if source_phase != target_phase and not is_phase_transition_allowed(source_phase, target_phase):
-        raise _invalid_transition_error(source_phase, target_phase)
+        if strict:
+            raise _invalid_transition_error(source_phase, target_phase)
+        _record_invalid_transition(task, actor, source_phase.value, target_phase.value)
     if source_phase == target_phase and task.execution_stage != target_stage:
         if not _is_stage_update_allowed(task.execution_stage, target_stage):
-            raise StateTransitionError(task.execution_stage.value, target_stage.value)
+            if strict:
+                raise StateTransitionError(task.execution_stage.value, target_stage.value)
+            _record_invalid_transition(task, actor, task.execution_stage.value, target_stage.value)
 
     old_phase = task.status
     old_stage = task.execution_stage
@@ -96,25 +100,41 @@ def transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine")
     return task
 
 
-def ensure_transition_allowed(task: Task, target: str | TaskPhase) -> None:
+def ensure_transition_allowed(task: Task, target: str | TaskPhase, *, strict: bool = True) -> None:
     source_phase = _phase_of(task.status)
     target_phase = _phase_of(target)
     target_stage = _stage_for_target(target, target_phase)
     if source_phase != target_phase and not is_phase_transition_allowed(source_phase, target_phase):
-        raise _invalid_transition_error(source_phase, target_phase)
+        if strict:
+            raise _invalid_transition_error(source_phase, target_phase)
+        return
     if source_phase == target_phase and task.execution_stage != target_stage:
         if not _is_stage_update_allowed(task.execution_stage, target_stage):
-            raise StateTransitionError(task.execution_stage.value, target_stage.value)
+            if strict:
+                raise StateTransitionError(task.execution_stage.value, target_stage.value)
 
 
-def safe_transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine") -> Task:
-    """Transition using only the three-layer policy.
+def safe_transition(
+    task: Task,
+    target: str | TaskPhase,
+    actor: str = "StateMachine",
+    *,
+    strict: bool | None = None,
+) -> Task:
+    """Transition using configured strictness.
 
-    Unlike the legacy helper, this never forces invalid transitions.  The name is
-    kept so older call sites continue to compile while they migrate.
+    Default mode audits invalid transitions and still syncs explicit phase fields;
+    strict mode raises StateTransitionError for fail-fast callers and APIs.
     """
 
-    return transition(task, target, actor=actor)
+    if strict is None:
+        try:
+            from app.llm.registry import get_effective_settings
+
+            strict = bool(get_effective_settings().strict_state_machine)
+        except Exception:
+            strict = False
+    return transition(task, target, actor=actor, strict=strict)
 
 
 def sync_phase(task: Task) -> Task:
@@ -151,3 +171,17 @@ def _is_stage_update_allowed(source: ExecutionStage, target: ExecutionStage) -> 
     if source == ExecutionStage.IDLE and target == ExecutionStage.PAUSED:
         return True
     return is_stage_transition_allowed(source, target)
+
+
+def _record_invalid_transition(
+    task: Task,
+    actor: str,
+    source: str,
+    target: str,
+) -> None:
+    record(
+        "task.invalid_transition_audited",
+        actor,
+        {"from": source, "to": target, "mode": "non_strict"},
+        task_id=task.id,
+    )

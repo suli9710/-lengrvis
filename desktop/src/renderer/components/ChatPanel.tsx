@@ -1,7 +1,7 @@
-import { Send } from "lucide-react";
+import { Sparkles, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import type { ChatMessage } from "../../shared/types";
+import type { ChatMessage, IntentSuggestion } from "../../shared/types";
 import { zhConnectionState } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 
@@ -11,9 +11,17 @@ interface ChatPanelProps {
   onSend: (content: string) => Promise<void>;
   initialDraft?: string;
   autoFocus?: boolean;
+  suggestions?: IntentSuggestion[];
 }
 
-export function ChatPanel({ messages, connectionState, onSend, initialDraft = "", autoFocus = false }: ChatPanelProps) {
+export function ChatPanel({
+  messages,
+  connectionState,
+  onSend,
+  initialDraft = "",
+  autoFocus = false,
+  suggestions = []
+}: ChatPanelProps) {
   const [draft, setDraft] = useState(initialDraft);
   const [isSending, setIsSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -62,6 +70,22 @@ export function ChatPanel({ messages, connectionState, onSend, initialDraft = ""
           </article>
         ))}
       </div>
+      {suggestions.length ? (
+        <div className="intent-suggestions" aria-label="Proactive suggestions">
+          {suggestions.slice(0, 3).map((suggestion) => (
+            <button
+              className="intent-suggestion"
+              key={suggestion.id}
+              type="button"
+              onClick={() => setDraft(suggestion.prompt)}
+              title={suggestion.reason}
+            >
+              <Sparkles size={14} aria-hidden="true" />
+              <span>{suggestion.prompt}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="composer">
         <textarea
           ref={inputRef}
