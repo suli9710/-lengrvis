@@ -294,6 +294,90 @@ def test_runtime_allows_requires_authorized_path_tool_inside_allowed_directories
     assert task.status == TaskStatus.COMPLETED
 
 
+def test_pre_execute_hook_cannot_mutate_args_or_runtime_after_review(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    allowed = workspace / "allowed.txt"
+    outside = tmp_path / "outside" / "blocked.txt"
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append({"args": dict(args), "allowed_directories": list(context["allowed_directories"])})
+        return {"ok": True, "path": args["path"]}
+
+    def pre_execute(args, context):  # noqa: ANN001, ANN202
+        with pytest.raises(TypeError):
+            args["path"] = str(outside)
+        with pytest.raises(AttributeError):
+            context["allowed_directories"].append(str(tmp_path / "outside"))
+
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="test.hook_readonly_snapshot",
+            description="hook readonly snapshot",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=True,
+            execute=execute,
+            pre_execute=pre_execute,
+            trust_tier="builtin",
+            effects=["read"],
+        )
+    )
+    task, plan, step = _task_plan_step("test.hook_readonly_snapshot", {"path": str(allowed)})
+
+    asyncio.run(orchestrator._process_steps(task, plan))
+
+    assert calls == [{"args": {"path": str(allowed)}, "allowed_directories": [str(workspace)]}]
+    assert step.status == StepStatus.SUCCEEDED
+    assert task.status == TaskStatus.COMPLETED
+
+
+def test_progress_publish_failure_does_not_mask_successful_tool_execution(monkeypatch):
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="test.progress_failure_is_audit_only",
+            description="progress failure is audit only",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=False,
+            execute=execute,
+            trust_tier="builtin",
+            effects=["read"],
+        )
+    )
+    original_publish_text = orchestrator.bus.publish_text
+
+    def flaky_publish_text(*args, **kwargs):  # noqa: ANN001, ANN202
+        if (kwargs.get("metadata") or {}).get("event_type") == "tool.progress":
+            raise RuntimeError("progress channel unavailable")
+        return original_publish_text(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator.bus, "publish_text", flaky_publish_text)
+    task, plan, step = _task_plan_step("test.progress_failure_is_audit_only", {"value": "kept"})
+
+    asyncio.run(orchestrator._process_steps(task, plan))
+
+    assert calls == [{"value": "kept"}]
+    assert step.status == StepStatus.SUCCEEDED
+    assert task.status == TaskStatus.COMPLETED
+
+
 def test_write_locks_are_shared_across_runtime_instances(tmp_path: Path):
     events: list[tuple[str, str, float]] = []
     target = tmp_path / "workspace" / "same.txt"

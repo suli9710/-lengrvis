@@ -40,6 +40,16 @@ class PassthroughAgent:
         return "ok"
 
 
+class MutatingAgent:
+    name = "FileAgent"
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
+        return AgentAction(kind="propose_tool", tool_name="test.serial_only", args={"label": step.id})
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "ok"
+
+
 def _recording_tool(
     name: str,
     events: list[dict[str, Any]],
@@ -200,3 +210,35 @@ def test_write_steps_for_same_directory_are_serialized(tmp_path: Path):
 
     assert task.status == TaskPhase.COMPLETED
     assert starts["B"] >= ends["A"] or starts["A"] >= ends["B"]
+
+
+def test_parallel_step_tool_mutation_requests_revision_instead_of_threaded_execution():
+    events: list[dict[str, Any]] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = MutatingAgent()
+    orchestrator.registry.register(_recording_tool("test.parallel_original", events, sleep_seconds=0.01))
+    serial_tool = _recording_tool("test.serial_only", events, sleep_seconds=0.01)
+    serial_tool.concurrency_safe = False
+    orchestrator.registry.register(serial_tool)
+    task, plan = _task_and_plan(
+        [
+            _step("A", "test.parallel_original", args={"label": "A"}),
+            _step("B", "test.parallel_original", args={"label": "B"}),
+        ]
+    )
+
+    asyncio.run(orchestrator._process_steps(task, plan))
+
+    assert events == []
+    assert task.status == TaskPhase.EXECUTION
+    assert task.execution_stage == "paused"
+    assert {step.id: step.status for step in plan.steps} == {
+        "A": StepStatus.SKIPPED,
+        "B": StepStatus.SKIPPED,
+    }
+    messages = orchestrator.bus.get_messages(task.id)
+    assert any(
+        message.message_type.value == "review"
+        and (message.structured_payload or {}).get("loop_guard") == "single_step_pause"
+        for message in messages
+    )

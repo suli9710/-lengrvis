@@ -28,11 +28,17 @@ class MCPRegistry:
                 url=str(entry.get("url") or ""),
                 transport=str(entry.get("transport", "http")),
                 enabled=bool(entry.get("enabled", True)),
+                command=str(entry.get("command") or ""),
+                args=list(entry.get("args") or []),
+                auth=dict(entry.get("auth") or {}),
             )
-            if not config.url:
+            if not config.url and not config.command:
                 continue
             self.clients[config.name] = MCPClient(config)
         record("mcp.registry_loaded", "MCPRegistry", {"servers": list(self.clients.keys())})
+
+    def list_servers(self) -> list[dict[str, Any]]:
+        return [client.status() for client in self.clients.values()]
 
     async def list_all_tools(self) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []
@@ -43,8 +49,20 @@ class MCPRegistry:
                 record("mcp.list_failed", "MCPRegistry", {"server": server_name, "error": str(exc)})
                 continue
             for tool in discovered:
-                tools.append({"server": server_name, **tool})
+                tools.append({"server": server_name, "transport": client.config.transport, **tool})
         return tools
+
+    async def list_all_resources(self) -> list[dict[str, Any]]:
+        resources: list[dict[str, Any]] = []
+        for server_name, client in self.clients.items():
+            try:
+                discovered = await client.list_resources()
+            except Exception as exc:  # noqa: BLE001
+                record("mcp.resources_failed", "MCPRegistry", {"server": server_name, "error": str(exc)})
+                continue
+            for resource in discovered:
+                resources.append({"server": server_name, "transport": client.config.transport, **resource})
+        return resources
 
     async def adapt_to_tool_definitions(self) -> list[ToolDefinition]:
         adapted: list[ToolDefinition] = []

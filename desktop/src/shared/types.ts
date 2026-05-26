@@ -518,6 +518,24 @@ export interface SkillImportResult {
   };
 }
 
+export interface CommandInfo {
+  name: string;
+  title: string;
+  description: string;
+  category: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface CommandExecutionResult {
+  ok: boolean;
+  command: string;
+  title?: string;
+  result?: unknown;
+  diagnostics?: string[];
+  error?: string;
+  nextAction?: string;
+}
+
 export interface AppSettings {
   apiBaseUrl: string;
   autoStartBackend: boolean;

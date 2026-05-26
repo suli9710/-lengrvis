@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 
 from app.agents.supervisor_agent import SupervisorAgent, SupervisorDecision
 from app.agents.orchestrator_agent import OrchestratorAgent
@@ -189,3 +190,54 @@ def get_task(task_id: str) -> Task:
 def set_task_status(task_id: str, status: TaskStatus) -> Task:
     task = get_task(task_id)
     return safe_transition(task, status, actor="TaskService")
+
+
+def resume_task(task_id: str) -> Task:
+    task = set_task_status(task_id, TaskStatus.EXECUTING_STEP)
+    pool = get_pool()
+    try:
+        loop = asyncio.get_running_loop()
+        if loop.is_running():
+            asyncio.create_task(pool.submit(task, _resume_task_through_orchestrator))
+        else:
+            _start_resume_thread(task)
+    except RuntimeError:
+        _start_resume_thread(task)
+    record("task.resume_requested", "TaskService", {"task_id": task.id}, task_id=task.id)
+    return task
+
+
+async def _resume_task_through_orchestrator(task: Task) -> Task:
+    try:
+        await _run_existing_plan(task)
+        return task
+    except Exception as exc:
+        task.final_summary = f"Task resume failed: {exc}"
+        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
+        record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
+        raise
+
+
+async def _resume_task_background(task: Task) -> None:
+    try:
+        await _run_existing_plan(task)
+    except Exception as exc:
+        task.final_summary = f"Task resume failed: {exc}"
+        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
+        record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
+
+
+def _start_resume_thread(task: Task) -> None:
+    thread = threading.Thread(
+        target=lambda: asyncio.run(_resume_task_background(task)),
+        name=f"task-resume-{task.id}",
+        daemon=True,
+    )
+    thread.start()
+
+
+async def _run_existing_plan(task: Task) -> None:
+    orchestrator = OrchestratorAgent()
+    plan = orchestrator._latest_plan_for_task(task.id)
+    await orchestrator._process_steps(task, plan)
+    await orchestrator.completion_handler.finalize(task, plan)
