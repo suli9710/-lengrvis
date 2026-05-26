@@ -8,6 +8,8 @@ import pytest
 
 from app.config import AppSettings
 from app.core import db
+from app.policy.policy_engine import BROWSER_WRITE_TOOLS, PolicyEngine
+from app.policy.risk import RiskLevel
 from app.tools import browser_tools
 
 
@@ -51,12 +53,39 @@ def test_click_dry_run_in_efficiency_mode_returns_preview():
     assert any(item["action"] == "click" for item in result["diff_preview"])
 
 
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        (browser_tools.click_element, {"url": "https://example.com", "selector": "#go"}),
+        (browser_tools.fill_form, {"url": "https://example.com", "fields": {"#name": "Alice"}}),
+        (browser_tools.submit_form, {"url": "https://example.com", "selector": "form#contact"}),
+    ],
+)
+def test_browser_writes_require_approval_for_live_execution(tool, args):
+    context = _context(mode="efficiency")
+    result = tool({**args, "dry_run": False}, context)
+
+    assert result["ok"] is False
+    assert "approval_id" in result["error"]
+
+
 def test_click_blocks_sensitive_selector():
     context = _context(mode="efficiency")
     result = browser_tools.click_element(
         {"url": "https://example.com", "selector": "#password", "dry_run": True},
         context,
     )
+    assert result["ok"] is False
+    assert "sensitive" in result["error"].lower()
+
+
+def test_click_blocks_delete_selector():
+    context = _context(mode="efficiency")
+    result = browser_tools.click_element(
+        {"url": "https://example.com", "selector": "#delete-account", "dry_run": True},
+        context,
+    )
+
     assert result["ok"] is False
     assert "sensitive" in result["error"].lower()
 
@@ -72,6 +101,21 @@ def test_fill_form_blocks_password_field():
         context,
     )
     assert result["ok"] is False
+
+
+def test_fill_form_blocks_sensitive_value():
+    context = _context(mode="efficiency")
+    result = browser_tools.fill_form(
+        {
+            "url": "https://example.com/profile",
+            "fields": {"#notes": "temporary token abc1234567890"},
+            "dry_run": True,
+        },
+        context,
+    )
+
+    assert result["ok"] is False
+    assert "sensitive" in result["error"].lower()
 
 
 def test_fill_form_redacts_values_in_dry_run():
@@ -106,6 +150,20 @@ def test_submit_form_dry_run_in_efficiency_mode():
     )
     assert result["ok"] is True
     assert any(item["action"] == "submit" for item in result["diff_preview"])
+
+
+def test_navigate_is_open_only_not_browser_write_gated():
+    context = _context(mode="hybrid", allow_cloud_context=False)
+    result = browser_tools.navigate(
+        {"url": "https://example.com/dashboard?token=secret-token", "dry_run": True},
+        context,
+    )
+
+    assert result["ok"] is True
+    assert "browser.navigate" not in BROWSER_WRITE_TOOLS
+    assert PolicyEngine().classify_tool_name("browser.navigate") == RiskLevel.R1_OPEN_ONLY
+    assert PolicyEngine().review_browser_write_call("task_nav", "step_nav", "browser.navigate", {}) is None
+    assert "secret-token" not in str(result)
 
 
 def test_hybrid_with_cloud_context_unlocks_writes():

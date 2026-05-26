@@ -19,7 +19,8 @@
       "Bash(python -m pytest tests/test_dispatcher.py -v)",
       "Bash(python -c \"from app.core.schemas import Task\")",
       "Bash(python -m pytest tests/test_ollama_service.py -v)",
-      "Bash(python -m pytest test_three_layer_state.py -v)"
+      "Bash(python -m pytest test_three_layer_state.py -v)",
+      "WebFetch(domain:deepwiki.com)"
     ]
   }
 }

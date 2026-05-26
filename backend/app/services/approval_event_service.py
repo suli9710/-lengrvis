@@ -5,6 +5,7 @@ import threading
 from collections import defaultdict
 
 from app.core.schemas import Approval
+from app.policy.redaction import redact_value
 
 
 class ApprovalEventBus:
@@ -54,8 +55,14 @@ def get_approval_event_bus() -> ApprovalEventBus:
 
 
 def publish_approval_created(approval: Approval) -> None:
-    _bus.publish({"type": "approval_created", "approval": approval.model_dump(mode="json")})
+    _bus.publish({"type": "approval_created", "approval": _safe_approval(approval)})
 
 
 def publish_approval_decided(approval: Approval) -> None:
-    _bus.publish({"type": "approval_decided", "approval": approval.model_dump(mode="json")})
+    _bus.publish({"type": "approval_decided", "approval": _safe_approval(approval)})
+
+
+def _safe_approval(approval: Approval) -> dict:
+    payload = approval.model_dump(mode="json")
+    payload["diff_preview"] = redact_value(payload.get("diff_preview") or {})
+    return payload

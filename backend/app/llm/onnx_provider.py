@@ -15,6 +15,8 @@ from typing import Any, Iterable
 from app.config import PROJECT_ROOT, AppSettings
 from app.llm.base import LLMProvider
 from app.llm.prompts import render_prompt
+from app.llm.types import LLMResponse
+from app.llm.usage import estimate_usage
 
 
 _PREFERRED_EXECUTION_PROVIDERS = [
@@ -72,6 +74,25 @@ class OnnxProvider(LLMProvider):
         return self._generate_text(
             prompt,
             temperature=self.settings.temperature if temperature is None else temperature,
+        )
+
+    async def chat_result(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        content = await self.chat(messages, model=model, temperature=temperature, tools=tools)
+        return LLMResponse(
+            content=content,
+            provider=self.name,
+            model=model or self.settings.model or self.backend.model_family or self.backend.kind,
+            usage=estimate_usage(messages, content),
+            metadata={
+                "backend": self.backend.kind,
+                "execution_provider": self.backend.execution_provider,
+            },
         )
 
     async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:

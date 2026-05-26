@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
+from urllib.parse import urlparse
 
 from app.config import AppSettings, get_base_settings
+from app.context_management import ContextAwareProvider
 from app.core import db
+from app.llm.profiles import profile_for_provider
 from app.llm.base import LLMProvider
 from app.llm.local_provider import LocalBackendUnavailable, detect_local_backend, unavailable_message
 from app.llm.mock_provider import MockProvider
@@ -22,8 +26,17 @@ def get_effective_settings() -> AppSettings:
 
 
 def _is_local_base_url(base_url: str) -> bool:
-    base = (base_url or "").lower()
-    return any(token in base for token in ("127.0.0.1", "localhost", "0.0.0.0", "://local", "://lan"))
+    parsed = urlparse(base_url or "")
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in {"localhost"} or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
 
 
 def _build_cloud_provider(settings: AppSettings) -> LLMProvider:
@@ -42,8 +55,12 @@ def _build_local_provider(settings: AppSettings) -> LLMProvider:
     if onnx_backend is not None:
         return OnnxProvider(settings, onnx_backend)
     # Honour explicitly-configured local providers first.
-    if settings.provider_name.lower() in LOCAL_PROVIDERS and settings.base_url:
+    if settings.provider_name.lower() in LOCAL_PROVIDERS and settings.base_url and _is_local_base_url(settings.base_url):
         return OpenAICompatibleProvider(_local_settings(settings))
+    if settings.provider_name.lower() in LOCAL_PROVIDERS and settings.base_url:
+        raise LocalBackendUnavailable(
+            f"Configured local provider '{settings.provider_name}' has a non-local base_url and was blocked."
+        )
     if _is_local_base_url(settings.base_url):
         return OpenAICompatibleProvider(_local_settings(settings))
     # Auto-detect Ollama / LM Studio / llama.cpp on the local machine.
@@ -94,4 +111,6 @@ def get_provider_for_mode(settings: AppSettings | None = None, *, task: str = "d
 
 
 def get_provider(settings: AppSettings | None = None, *, task: str = "default") -> LLMProvider:
-    return get_provider_for_mode(settings, task=task)
+    effective = settings or get_effective_settings()
+    provider = get_provider_for_mode(effective, task=task)
+    return ContextAwareProvider(provider, effective, task=task, profile=profile_for_provider(provider, effective))

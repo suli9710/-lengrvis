@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 from app.core.audit import record
 from app.core.schemas import Plan, Task, TaskStatus
+from app.context_management import summarize_messages
+from app.llm.registry import get_effective_settings
 from app.policy.risk import SafetyVerdict
 
 if TYPE_CHECKING:
@@ -32,6 +34,8 @@ class CompletionHandler:
             final_review = orchestrator.safety.final_review(plan, task.status, task.final_summary)
             if final_review.verdict == SafetyVerdict.DENY:
                 orchestrator._set_status(task, TaskStatus.DENIED, final_summary=final_review.safe_alternative)
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.DENIED, TaskStatus.FAILED, TaskStatus.CANCELLED}:
+            self._mark_session_task_complete(task)
         if task.status == TaskStatus.COMPLETED:
             self._mark_goal_complete(task)
             await self.consolidate_memory(task, plan)
@@ -93,3 +97,31 @@ class CompletionHandler:
                 goal_stack.pop()
         except Exception as exc:
             record("goal_stack.complete_failed", self.orchestrator.name, {"task_id": task.id, "error": str(exc)}, task_id=task.id)
+
+    def _mark_session_task_complete(self, task: Task) -> None:
+        store = getattr(self.orchestrator, "session_context_store", None)
+        if store is None:
+            return
+        try:
+            self._update_session_summary(task)
+            store.complete_task(task.id)
+        except Exception as exc:
+            record("session_context.complete_failed", self.orchestrator.name, {"task_id": task.id, "error": str(exc)}, task_id=task.id)
+
+    def _update_session_summary(self, task: Task) -> None:
+        store = getattr(self.orchestrator, "session_context_store", None)
+        if store is None:
+            return
+        messages = self.orchestrator.bus.get_messages(task.id)
+        if not messages:
+            return
+        settings = get_effective_settings()
+        llm_messages = [message.to_openai_dict(include_legacy=False) for message in messages[-80:]]
+        summary = summarize_messages(llm_messages, settings)
+        if not summary:
+            return
+        store.remember_summary(
+            summary,
+            last_message_id=messages[-1].id,
+            token_stats={"last_task_id": task.id, "summarized_message_count": len(messages[-80:])},
+        )

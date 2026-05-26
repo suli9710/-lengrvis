@@ -14,7 +14,7 @@ import pytest
 
 from app.core import db
 from app.core.errors import StateTransitionError
-from app.core.schemas import LEGACY_TASK_STATUS_MAP, PlanStep, Task, TaskStatus
+from app.core.schemas import LEGACY_TASK_STATUS_MAP, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.execution_stage import (
     EXECUTION_STAGE_TRANSITIONS,
     ExecutionStage,
@@ -31,6 +31,8 @@ from app.orchestration.step_phase import (
     STEP_PHASE_TRANSITIONS,
     StepPhase,
     is_step_transition_allowed,
+    set_step_status,
+    step_phase_for_status,
     step_phase_transition,
 )
 from app.orchestration.task_phase import (
@@ -214,6 +216,32 @@ class TestStepPhaseTransitions:
     def test_terminal_step_phases_have_no_transitions(self):
         for terminal in (StepPhase.SUCCEEDED, StepPhase.FAILED):
             assert STEP_PHASE_TRANSITIONS[terminal] == set()
+
+    @pytest.mark.parametrize(
+        "status,phase",
+        [
+            (StepStatus.PENDING, StepPhase.PENDING),
+            (StepStatus.PROPOSED, StepPhase.READY),
+            (StepStatus.REVIEWED, StepPhase.RUNNING),
+            (StepStatus.APPROVED, StepPhase.TOOL_EXECUTING),
+            (StepStatus.RUNNING, StepPhase.TOOL_EXECUTING),
+            (StepStatus.WAITING_USER_APPROVAL, StepPhase.TOOL_REVIEW),
+            (StepStatus.SUCCEEDED, StepPhase.SUCCEEDED),
+            (StepStatus.SKIPPED, StepPhase.SUCCEEDED),
+            (StepStatus.FAILED, StepPhase.FAILED),
+            (StepStatus.DENIED, StepPhase.FAILED),
+        ],
+    )
+    def test_step_status_maps_to_runtime_phase(self, status: StepStatus, phase: StepPhase):
+        assert step_phase_for_status(status) == phase
+
+    def test_set_step_status_syncs_phase_in_non_strict_mode(self):
+        step = PlanStep(agent_name="TestAgent", tool_name="test_tool", description="test")
+
+        set_step_status(step, StepStatus.FAILED, actor="UnitTest")
+
+        assert step.status == StepStatus.FAILED
+        assert step.step_phase == StepPhase.FAILED
 
 
 # ===========================================================================

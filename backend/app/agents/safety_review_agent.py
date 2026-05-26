@@ -76,10 +76,20 @@ class SafetyReviewAgent(BaseAgent):
         task_id: str,
         step_id: str | None,
         tool_name: str,
-        args: dict,
+        args: dict[str, Any],
         risk_level: RiskLevel,
+        context: dict[str, Any] | None = None,
+        tool_definition: Any | None = None,
     ) -> SafetyReview:
-        review = self.policy.review_tool_call(task_id, step_id, tool_name, args, risk_level)
+        review = self.policy.review_tool_call(
+            task_id,
+            step_id,
+            tool_name,
+            args,
+            risk_level,
+            context=context,
+            tool_definition=tool_definition,
+        )
         return self._record_review(review, f"{tool_name}: {review.verdict} ({review.risk_level})")
 
     def review_browser_write(

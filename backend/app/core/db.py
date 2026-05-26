@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from pydantic import BaseModel
 
 from app.config import get_base_settings
-from app.core.schemas import now_iso
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def db_path() -> Path:
@@ -153,9 +157,33 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS llm_usage_events (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                task TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd REAL,
+                estimated INTEGER NOT NULL DEFAULT 1,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created_at
+                ON llm_usage_events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_provider_model
+                ON llm_usage_events(provider, model, created_at);
             CREATE TABLE IF NOT EXISTS app_settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS permission_policies (
+                id TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS indexed_files (
@@ -211,6 +239,12 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 last_used_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS session_contexts (
+                id TEXT PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         try:
@@ -224,7 +258,7 @@ def init_db() -> None:
 
 def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, status: str | None = None) -> None:
     data = json.loads(model.model_dump_json())
-    now = data.get("updated_at") or data.get("created_at") or now_iso()
+    now = data.get("updated_at") or data.get("created_at") or _now_iso()
     with connect() as conn:
         if table == "tasks":
             conn.execute(
@@ -373,6 +407,16 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
                 ),
             )
             return
+        if table == "session_contexts":
+            conn.execute(
+                """
+                INSERT INTO session_contexts (id, data, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
+                """,
+                (data["id"], _json(data), data.get("created_at", now), now),
+            )
+            return
     raise ValueError(f"Unsupported table: {table}")
 
 
@@ -400,7 +444,7 @@ def set_setting(key: str, value: Any) -> None:
             VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
             """,
-            (key, _json(value), now_iso()),
+            (key, _json(value), _now_iso()),
         )
 
 
@@ -430,7 +474,7 @@ def upsert_memory(payload: dict[str, Any]) -> None:
         "use_count": int(payload.get("use_count") or 0),
         "last_used_at": payload.get("last_used_at") or "",
         "embedding_dim": int(payload.get("embedding_dim") or len(embedding)),
-        "created_at": payload.get("created_at") or now_iso(),
+        "created_at": payload.get("created_at") or _now_iso(),
         "embedding": list(embedding),
     }
     with connect() as conn:

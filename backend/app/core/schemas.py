@@ -342,9 +342,17 @@ class Approval(BaseModel):
     approval_type: str = "tool_call"
     message: str
     diff_preview: dict[str, Any] = Field(default_factory=dict)
+    tool_name: str = ""
+    risk_level: str = ""
+    args_binding_hmac: str = ""
+    preview_hmac: str = ""
+    settings_fingerprint: str = ""
+    permission_policy_version: str = ""
+    tool_version: str = ""
     status: ApprovalStatus = ApprovalStatus.PENDING
     created_at: str = Field(default_factory=now_iso)
     decided_at: str | None = None
+    consumed_at: str | None = None
 
 
 class AuditEvent(BaseModel):

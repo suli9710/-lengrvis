@@ -7,6 +7,7 @@ from app.core import db
 from app.core.audit import record
 from app.core.schemas import (
     Approval,
+    ApprovalStatus,
     MessageType,
     Plan,
     PlanStep,
@@ -14,11 +15,15 @@ from app.core.schemas import (
     Task,
     TaskStatus,
     ToolResult,
+    now_iso,
 )
 from app.orchestration.events import ApprovalNeeded, SafetyReviewDone, SubagentResponded, ToolExecuted
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.runtime_context import TaskRuntimeContext
+from app.orchestration.step_phase import set_step_status
 from app.orchestration.tool_runtime import ToolRuntime
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -83,15 +88,30 @@ class StepExecutionHandler:
         try:
             tool = orchestrator.registry.get(step.tool_name)
         except KeyError as exc:
-            step.status = StepStatus.FAILED
+            set_step_status(step, StepStatus.FAILED, actor="StepExecutionHandler")
             orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(exc)))
             return StepExecutionOutcome("fatal_failed")
 
         risk = tool.risk_level
+        runtime = self._runtime_context(task, context)
+        safety_outcome = await self.tool_runtime.review_and_maybe_prepare_approval(
+            task,
+            step,
+            tool,
+            runtime,
+            threaded_tools=threaded_tools,
+        )
+        if safety_outcome.kind in {"step_denied", "fatal_denied"}:
+            return StepExecutionOutcome(safety_outcome.kind, safety_outcome.result)
+        if safety_outcome.kind == "waiting_user_approval":
+            return StepExecutionOutcome(safety_outcome.kind, safety_outcome.result)
+        if safety_outcome.kind not in {"allowed"}:
+            return StepExecutionOutcome(safety_outcome.kind, safety_outcome.result)
+
         action = await orchestrator._consult_subagent(task, step, observation=observation)
         await self._yield_if_parallel(threaded_tools)
         if action and action.kind == "done":
-            step.status = StepStatus.SKIPPED
+            set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             result = ToolResult(
                 tool_call_id=f"{step.id}_subagent_done",
                 ok=True,
@@ -115,7 +135,7 @@ class StepExecutionHandler:
                 observation=action.follow_up_question or action.rationale or "Subagent requested plan revision.",
             )
             if not orchestrator._supervise_new_agent_messages(task.id, "subagent_revision_request"):
-                step.status = StepStatus.DENIED
+                set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
                 orchestrator._set_status(
                     task,
                     TaskStatus.DENIED,
@@ -124,10 +144,12 @@ class StepExecutionHandler:
                 return StepExecutionOutcome("fatal_denied", result)
             return StepExecutionOutcome("revision_requested", result)
         if action and action.kind == "propose_tool":
+            original_tool_name = step.tool_name
+            original_args = dict(step.args or {})
             try:
                 tool = orchestrator._apply_subagent_tool_proposal(task, step, action)
             except KeyError as exc:
-                step.status = StepStatus.FAILED
+                set_step_status(step, StepStatus.FAILED, actor="StepExecutionHandler")
                 orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(exc)))
                 orchestrator.bus.publish_text(
                     task.id,
@@ -141,7 +163,7 @@ class StepExecutionHandler:
                 return StepExecutionOutcome("fatal_failed")
             risk = tool.risk_level
             if not orchestrator._supervise_new_agent_messages(task.id, "subagent_proposal_applied"):
-                step.status = StepStatus.DENIED
+                set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
                 orchestrator._set_status(
                     task,
                     TaskStatus.DENIED,
@@ -150,17 +172,17 @@ class StepExecutionHandler:
                 return StepExecutionOutcome("fatal_denied")
             orchestrator._persist_plan_update(plan, "Plan step updated from subagent tool proposal.")
             await self._yield_if_parallel(threaded_tools)
-        runtime = self._runtime_context(task, context)
-        review_outcome = await self.tool_runtime.review_and_maybe_prepare_approval(
-            task,
-            step,
-            tool,
-            runtime,
-            threaded_tools=threaded_tools,
-        )
-        if review_outcome.kind != "allowed":
-            return StepExecutionOutcome(review_outcome.kind, review_outcome.result)
-
+            if step.tool_name != original_tool_name or dict(step.args or {}) != original_args:
+                runtime = self._runtime_context(task, context)
+                review_outcome = await self.tool_runtime.review_and_maybe_prepare_approval(
+                    task,
+                    step,
+                    tool,
+                    runtime,
+                    threaded_tools=threaded_tools,
+                )
+                if review_outcome.kind != "allowed":
+                    return StepExecutionOutcome(review_outcome.kind, review_outcome.result)
         await self._yield_if_parallel(threaded_tools)
         execution = await self.tool_runtime.execute_allowed(
             task,
@@ -173,6 +195,9 @@ class StepExecutionHandler:
 
     async def execute_approved_step(self, approval: Approval) -> Task:
         orchestrator = self.orchestrator
+        latest_approval_data = db.fetch_one("approvals", approval.id)
+        if latest_approval_data:
+            approval = Approval.model_validate(latest_approval_data)
         task_data = db.fetch_one("tasks", approval.task_id)
         if not task_data:
             raise KeyError(f"Task not found: {approval.task_id}")
@@ -186,15 +211,32 @@ class StepExecutionHandler:
             return task
 
         tool = orchestrator.registry.get(step.tool_name)
+        binding_error = self._approval_binding_error(approval, task, step, tool)
+        if binding_error:
+            set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+            orchestrator._persist_plan_update(plan, "Approved step denied because approval binding no longer matches.")
+            orchestrator._set_status(
+                task,
+                TaskStatus.PAUSED,
+                final_summary="Approval is stale or no longer matches the reviewed dry-run preview. Please run a fresh preview.",
+            )
+            record(
+                "approval.binding_mismatch",
+                orchestrator.name,
+                {"approval_id": approval.id, "reason": binding_error, "tool_name": step.tool_name},
+                task_id=task.id,
+            )
+            return task
+
         action = None if approval.approval_type == "remote_input" else await orchestrator._consult_subagent(task, step, observation=None)
         if action and action.kind == "done":
-            step.status = StepStatus.SKIPPED
+            set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             orchestrator._persist_plan_update(plan, "Approved step skipped after subagent marked it done.")
             orchestrator._set_status(task, TaskStatus.COMPLETED, final_summary="Approved step was already complete.")
             return task
         if action and action.kind == "request_revision":
             orchestrator._handle_subagent_revision_request(task, step, action)
-            step.status = StepStatus.SKIPPED
+            set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             orchestrator._persist_plan_update(plan, "Approved step paused after subagent requested plan revision.")
             orchestrator._set_status(
                 task,
@@ -207,7 +249,7 @@ class StepExecutionHandler:
             merged_args = {**dict(step.args or {}), **dict(action.args or {})}
             if proposed_tool_name != step.tool_name or merged_args != step.args:
                 orchestrator._handle_subagent_revision_request(task, step, action)
-                step.status = StepStatus.SKIPPED
+                set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
                 orchestrator._persist_plan_update(plan, "Approved step paused because subagent proposed a different tool call.")
                 orchestrator._set_status(
                     task,
@@ -233,6 +275,8 @@ class StepExecutionHandler:
             return task
 
         if result and result.ok:
+            approval.consumed_at = now_iso()
+            db.upsert_model("approvals", approval, status=approval.status)
             pending_approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task.id, "pending"), limit=100)
             target_status = TaskStatus.WAITING_USER_APPROVAL if pending_approvals else TaskStatus.COMPLETED
             summary = (
@@ -252,3 +296,46 @@ class StepExecutionHandler:
             task_id=task.id,
         )
         return task
+
+    def _approval_binding_error(self, approval: Approval, task: Task, step: PlanStep, tool) -> str:
+        if approval.status != ApprovalStatus.APPROVED:
+            return f"Approval status is {approval.status}; expected approved."
+        if approval.consumed_at:
+            return "Approval has already been consumed."
+        if not all(
+            [
+                approval.tool_name,
+                approval.args_binding_hmac,
+                approval.preview_hmac,
+                approval.settings_fingerprint,
+                approval.permission_policy_version,
+                approval.tool_version,
+            ]
+        ):
+            return "Approval lacks binding metadata."
+        runtime = self._runtime_context(task)
+        if approval.tool_name != step.tool_name:
+            return "Approved tool name does not match current plan step."
+        if approval.risk_level and approval.risk_level != tool.risk_level.value:
+            return "Approved risk level does not match current tool risk."
+        if approval.tool_version != getattr(tool, "tool_version", "1"):
+            return "Approved tool version does not match current tool definition."
+        expected_args = args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id)
+        if not hmac_compare(approval.args_binding_hmac, expected_args):
+            return "Approved arguments do not match current plan step."
+        expected_preview = preview_hmac(approval.diff_preview)
+        if not hmac_compare(approval.preview_hmac, expected_preview):
+            return "Approval preview was modified after review."
+        expected_settings = settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories)
+        if not hmac_compare(approval.settings_fingerprint, expected_settings):
+            return "Runtime settings changed after approval preview."
+        expected_policy = permission_policy_version(PermissionStore().updated_at())
+        if not hmac_compare(approval.permission_policy_version, expected_policy):
+            return "Permission policy changed after approval preview."
+        return ""
+
+
+def hmac_compare(left: str, right: str) -> bool:
+    import hmac
+
+    return hmac.compare_digest(str(left or ""), str(right or ""))

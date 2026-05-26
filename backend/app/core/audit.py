@@ -1,27 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core import db
-from app.core.schemas import AuditEvent
+from app.policy.redaction import redact_value
 
-
-SENSITIVE_KEYS = {"api_key", "password", "token", "cookie", "authorization"}
+if TYPE_CHECKING:
+    from app.core.schemas import AuditEvent
 
 
 def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    sanitized: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key.lower() in SENSITIVE_KEYS:
-            sanitized[key] = "***"
-        elif isinstance(value, dict):
-            sanitized[key] = sanitize_payload(value)
-        else:
-            sanitized[key] = value
-    return sanitized
+    redacted = redact_value(payload)
+    return redacted if isinstance(redacted, dict) else {}
 
 
-def record(event_type: str, actor: str, payload: dict[str, Any] | None = None, task_id: str | None = None) -> AuditEvent:
+def record(event_type: str, actor: str, payload: dict[str, Any] | None = None, task_id: str | None = None) -> "AuditEvent":
+    from app.core.schemas import AuditEvent
+
     event = AuditEvent(
         task_id=task_id,
         event_type=event_type,
@@ -30,4 +25,3 @@ def record(event_type: str, actor: str, payload: dict[str, Any] | None = None, t
     )
     db.upsert_model("audit_events", event)
     return event
-

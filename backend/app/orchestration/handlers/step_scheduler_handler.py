@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from app.core.audit import record
 from app.core.schemas import MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
+from app.orchestration.step_phase import set_step_status
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -29,7 +30,7 @@ class StepSchedulerHandler:
         except ValueError as exc:
             for step in plan.steps:
                 if step.status == StepStatus.PENDING:
-                    step.status = StepStatus.FAILED
+                    set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
             orchestrator._set_status(task, TaskStatus.FAILED, final_summary=str(exc))
             record("task.step_graph_invalid", orchestrator.name, {"error": str(exc)}, task_id=task.id)
             return
@@ -105,7 +106,7 @@ class StepSchedulerHandler:
             for work, outcome in zip(done, outcomes):
                 step = running.pop(work)
                 if isinstance(outcome, Exception):
-                    step.status = StepStatus.FAILED
+                    set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
                     orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(outcome)))
                     record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
                     stop_requested = True
@@ -140,7 +141,7 @@ class StepSchedulerHandler:
                 for work, outcome in zip(remaining, outcomes):
                     step = running.pop(work)
                     if isinstance(outcome, Exception):
-                        step.status = StepStatus.FAILED
+                        set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
                         record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
                         continue
                     if outcome.result is not None:
@@ -257,7 +258,7 @@ class StepSchedulerHandler:
                 if by_id[dependency].status in {StepStatus.FAILED, StepStatus.DENIED, StepStatus.WAITING_USER_APPROVAL}
             ]
             if blocked:
-                step.status = StepStatus.SKIPPED
+                set_step_status(step, StepStatus.SKIPPED, actor="StepSchedulerHandler")
                 pending.remove(step_id)
                 orchestrator.bus.publish_text(
                     step.task_id,

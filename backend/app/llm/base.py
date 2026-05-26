@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from app.llm.prompts import load_prompt, render_prompt
+from app.llm.types import LLMResponse
 
 
 class LLMProvider(ABC):
@@ -18,6 +19,20 @@ class LLMProvider(ABC):
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
         raise NotImplementedError
+
+    async def chat_result(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
+        content = await self.chat(messages, model=model, temperature=temperature, tools=tools)
+        return LLMResponse(
+            content=content,
+            provider=getattr(self, "name", "unknown"),
+            model=model or "",
+        )
 
     @abstractmethod
     async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:

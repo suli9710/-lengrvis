@@ -12,11 +12,26 @@ from bs4 import BeautifulSoup
 
 from app.core.audit import record
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
+from app.policy.redaction import redact_text
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 
 SENSITIVE_SELECTOR_TOKENS = {"password", "pwd", "passwd", "credit", "card", "cvv", "cvc", "ssn", "支付", "密码"}
+
+EXTRA_SENSITIVE_SELECTOR_TOKENS = {
+    "payment",
+    "pay",
+    "order",
+    "delete",
+    "token",
+    "cookie",
+    "otp",
+    "2fa",
+    "passcode",
+    "auth",
+    "credential",
+}
 
 
 def _validate_url(url: str) -> str:
@@ -162,16 +177,30 @@ def _check_write_permission(context: dict[str, Any]) -> tuple[bool, str]:
 
 def _sensitive_selector(selector: str) -> bool:
     lowered = (selector or "").lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS)
+    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS)
+
+
+def _sensitive_value(value: Any) -> bool:
+    lowered = str(value or "").lower()
+    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS)
+
+
+def _has_approval(args: dict[str, Any]) -> bool:
+    return bool(args.get("approved") and args.get("approval_id"))
+
+
+def _approval_error(action: str) -> dict[str, Any]:
+    return {"ok": False, "error": f"browser.{action} requires an approved approval_id after dry-run preview."}
 
 
 def navigate(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    allowed, reason = _check_write_permission(context)
+    allowed, reason = _network_allowed(context)
     if not allowed:
         return {"ok": False, "error": reason}
     url = _validate_url(str(args.get("url", "")))
     if args.get("dry_run", True):
-        return {"ok": True, "dry_run": True, "url": url, "diff_preview": [{"action": "navigate", "url": url}]}
+        safe_url = redact_text(url)
+        return {"ok": True, "dry_run": True, "url": safe_url, "diff_preview": [{"action": "navigate", "url": safe_url}]}
     try:
         from playwright.sync_api import sync_playwright
 
@@ -184,8 +213,8 @@ def navigate(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             browser.close()
     except Exception as exc:
         return {"ok": False, "error": f"navigate failed: {exc}"}
-    record("browser.navigate", "BrowserAgent", {"url": url})
-    return {"ok": True, "url": final_url, "title": title}
+    record("browser.navigate", "BrowserAgent", {"url": final_url})
+    return {"ok": True, "url": redact_text(final_url), "title": title}
 
 
 def click_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -199,11 +228,14 @@ def click_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     if _sensitive_selector(selector):
         return {"ok": False, "error": f"selector '{selector}' looks sensitive; user must click manually."}
     if args.get("dry_run", True):
+        safe_url = redact_text(url)
         return {
             "ok": True,
             "dry_run": True,
-            "diff_preview": [{"action": "click", "selector": selector, "url": url}],
+            "diff_preview": [{"action": "click", "selector": selector, "url": safe_url}],
         }
+    if not _has_approval(args):
+        return _approval_error("click_element")
     try:
         from playwright.sync_api import sync_playwright
 
@@ -238,9 +270,15 @@ def fill_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     for name in fields.keys():
         if _sensitive_selector(name):
             return {"ok": False, "error": f"field '{name}' is sensitive; user must fill manually."}
+    for value in fields.values():
+        if _sensitive_value(value):
+            return {"ok": False, "error": "field value looks sensitive; user must fill manually."}
     if args.get("dry_run", True):
+        safe_url = redact_text(url)
         preview = [{"action": "fill", "field_name": key, "value": "***"} for key in fields.keys()]
-        return {"ok": True, "dry_run": True, "diff_preview": preview, "url": url}
+        return {"ok": True, "dry_run": True, "diff_preview": preview, "url": safe_url}
+    if not _has_approval(args):
+        return _approval_error("fill_form")
     try:
         from playwright.sync_api import sync_playwright
 
@@ -267,7 +305,10 @@ def submit_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
     if _sensitive_selector(selector):
         return {"ok": False, "error": f"selector '{selector}' looks sensitive; user must submit manually."}
     if args.get("dry_run", True):
-        return {"ok": True, "dry_run": True, "diff_preview": [{"action": "submit", "selector": selector, "url": url}]}
+        safe_url = redact_text(url)
+        return {"ok": True, "dry_run": True, "diff_preview": [{"action": "submit", "selector": selector, "url": safe_url}]}
+    if not _has_approval(args):
+        return _approval_error("submit_form")
     try:
         from playwright.sync_api import sync_playwright
 
@@ -323,6 +364,8 @@ def register(registry) -> None:
         ("browser.submit_form", submit_form, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, True),
     ]
     for name, fn, risk, dry_run in defs:
+        browser_write = name in {"browser.click_element", "browser.fill_form", "browser.submit_form"}
+        read_like = risk in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY} and not browser_write
         registry.register(
             ToolDefinition(
                 name=name,
@@ -334,5 +377,12 @@ def register(registry) -> None:
                 supports_dry_run=dry_run,
                 requires_authorized_path=False,
                 execute=fn,
+                capabilities=["browser"],
+                effects=["navigate"] if name == "browser.navigate" else (["open"] if name == "browser.open_url" else (["read", "observe"] if read_like else ["browser_write"])),
+                resource_kinds=["url", "web_page"],
+                fast_path_eligible=False,
+                trust_tier="builtin",
+                external_network=True,
+                sensitive_arg_keys=["selector", "fields", "value"],
             )
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,8 @@ from weakref import WeakKeyDictionary
 
 from app.core import db
 from app.core.audit import record
+from app.core.errors import SecurityError
+from app.core.paths import resolve_authorized
 from app.core.schemas import (
     Approval,
     MessageType,
@@ -21,6 +24,15 @@ from app.core.schemas import (
 )
 from app.orchestration.result_budget import apply_result_budget
 from app.orchestration.runtime_context import TaskRuntimeContext
+from app.orchestration.step_phase import set_step_status
+from app.policy.approval_binding import (
+    args_binding_hmac,
+    permission_policy_version,
+    preview_hmac,
+    redacted_preview,
+    settings_fingerprint,
+)
+from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
 from app.policy.risk import SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
@@ -34,6 +46,47 @@ class RuntimeExecutionResult:
 
 
 _SHARED_PATH_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
+AUTHORIZED_PATH_ARG_KEYS = {
+    "path",
+    "paths",
+    "source",
+    "sources",
+    "source_path",
+    "source_paths",
+    "destination",
+    "destinations",
+    "destination_path",
+    "destination_paths",
+    "dest",
+    "dst",
+    "target",
+    "targets",
+    "target_path",
+    "target_paths",
+    "target_folder",
+    "target_folders",
+    "folder",
+    "folders",
+    "directory",
+    "directories",
+    "dir",
+    "dirs",
+    "file",
+    "files",
+    "file_path",
+    "file_paths",
+    "input_path",
+    "input_paths",
+    "output_file",
+    "output_files",
+    "output_path",
+    "output_paths",
+    "output_zip",
+    "root",
+    "roots",
+    "workspace_path",
+    "working_directory",
+}
 
 
 class ToolRuntime:
@@ -55,7 +108,7 @@ class ToolRuntime:
         orchestrator._set_status(task, TaskStatus.REVIEWING_TOOL_CALL)
         validation_error = self._validate_input(tool, step.args, runtime)
         if validation_error:
-            step.status = StepStatus.FAILED
+            set_step_status(step, StepStatus.FAILED, actor="ToolRuntime")
             result = ToolResult(
                 tool_call_id=f"{step.id}_validation",
                 ok=False,
@@ -66,7 +119,7 @@ class ToolRuntime:
 
         permission_error = self._check_permission(tool, step.args, runtime)
         if permission_error:
-            step.status = StepStatus.DENIED
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator.bus.publish_text(
                 task.id,
                 orchestrator.name,
@@ -79,7 +132,7 @@ class ToolRuntime:
         if step.tool_name in BROWSER_WRITE_TOOLS:
             browser_review = orchestrator.safety.review_browser_write(task.id, step.id, step.tool_name, step.args)
             if browser_review and browser_review.verdict == SafetyVerdict.DENY:
-                step.status = StepStatus.DENIED
+                set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
                 orchestrator.bus.publish_text(
                     task.id,
                     orchestrator.name,
@@ -89,9 +142,20 @@ class ToolRuntime:
                 orchestrator._supervise_new_agent_messages(task.id, "browser_write_denied")
                 return RuntimeExecutionResult("step_denied")
 
-        review = orchestrator.safety.review_tool_call(task.id, step.id, step.tool_name, step.args, tool.risk_level)
+        review_context = runtime.tool_context()
+        review_context.update({"task_id": task.id, "step_id": step.id})
+        review = self._review_tool_call(
+            orchestrator.safety,
+            task.id,
+            step.id,
+            step.tool_name,
+            step.args,
+            tool.risk_level,
+            context=review_context,
+            tool_definition=tool,
+        )
         if review.verdict == SafetyVerdict.DENY:
-            step.status = StepStatus.DENIED
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator.bus.publish_text(task.id, orchestrator.name, f"Denied step: {step.description}", step_id=step.id)
             orchestrator._supervise_new_agent_messages(task.id, "tool_call_denied")
             return RuntimeExecutionResult("step_denied")
@@ -106,6 +170,40 @@ class ToolRuntime:
                 threaded_tools=threaded_tools,
             )
         return RuntimeExecutionResult("allowed")
+
+    def _review_tool_call(
+        self,
+        safety: Any,
+        task_id: str,
+        step_id: str | None,
+        tool_name: str,
+        args: dict[str, Any],
+        risk_level: Any,
+        *,
+        context: dict[str, Any],
+        tool_definition: ToolDefinition,
+    ):
+        review_tool_call = safety.review_tool_call
+        kwargs: dict[str, Any] = {}
+        accepted_keywords = self._accepted_review_tool_call_keywords(review_tool_call)
+        if accepted_keywords is None or "context" in accepted_keywords:
+            kwargs["context"] = context
+        if accepted_keywords is None or "tool_definition" in accepted_keywords:
+            kwargs["tool_definition"] = tool_definition
+        return review_tool_call(task_id, step_id, tool_name, args, risk_level, **kwargs)
+
+    def _accepted_review_tool_call_keywords(self, review_tool_call: Any) -> set[str] | None:
+        try:
+            signature = inspect.signature(review_tool_call)
+        except (TypeError, ValueError):
+            return None
+        accepted: set[str] = set()
+        for parameter in signature.parameters.values():
+            if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+                return None
+            if parameter.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}:
+                accepted.add(parameter.name)
+        return accepted
 
     async def execute_allowed(
         self,
@@ -150,7 +248,7 @@ class ToolRuntime:
         )
         stage = "approved_tool_call_proposed" if approval_id else "tool_call_proposed"
         if not orchestrator._supervise_new_agent_messages(task.id, stage):
-            step.status = StepStatus.DENIED
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(
                 task,
                 TaskStatus.DENIED,
@@ -162,7 +260,7 @@ class ToolRuntime:
         after_phase = "after_approved" if approval_id else "after"
         before_frame = await orchestrator._capture_step_frame(task, step, before_phase)
         try:
-            step.status = StepStatus.RUNNING
+            set_step_status(step, StepStatus.RUNNING, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.EXECUTING_TOOL)
             output = await self.execute_tool_with_locks(
                 tool,
@@ -202,7 +300,7 @@ class ToolRuntime:
         db.upsert_model("tool_results", result)
         post_tool_review = orchestrator.safety.review_tool_result(task.id, step.id, step.tool_name, result, tool.risk_level)
         if post_tool_review.verdict == SafetyVerdict.DENY:
-            step.status = StepStatus.DENIED
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
             return RuntimeExecutionResult("fatal_denied", result)
 
@@ -218,7 +316,7 @@ class ToolRuntime:
         )
         stage = "approved_tool_observation" if approval_id else "tool_observation"
         if not orchestrator._supervise_new_agent_messages(task.id, stage):
-            step.status = StepStatus.DENIED
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(
                 task,
                 TaskStatus.DENIED,
@@ -226,7 +324,7 @@ class ToolRuntime:
             )
             return RuntimeExecutionResult("fatal_denied", result)
 
-        step.status = StepStatus.SUCCEEDED if result.ok else StepStatus.FAILED
+        set_step_status(step, StepStatus.SUCCEEDED if result.ok else StepStatus.FAILED, actor="ToolRuntime")
         await orchestrator._reflect_on_step(task, step, result)
         return RuntimeExecutionResult("succeeded" if result.ok else "failed", result)
 
@@ -270,7 +368,7 @@ class ToolRuntime:
             observation=f"{step.tool_name} dry-run preview generated.",
         )
         if not preview_result.ok:
-            step.status = StepStatus.FAILED
+            set_step_status(step, StepStatus.FAILED, actor="ToolRuntime")
             orchestrator._set_status(
                 task,
                 TaskStatus.FAILED,
@@ -295,19 +393,27 @@ class ToolRuntime:
             tool.risk_level,
         )
         if post_preview_review.verdict == SafetyVerdict.DENY:
-            step.status = StepStatus.DENIED
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_preview_review.safe_alternative)
             return RuntimeExecutionResult("fatal_denied", preview_result)
 
+        safe_preview = redacted_preview(preview)
         approval = Approval(
             task_id=task.id,
             step_id=step.id,
             message=confirmation_message or step.description,
-            diff_preview=preview,
+            diff_preview=safe_preview,
+            tool_name=step.tool_name,
+            risk_level=tool.risk_level.value,
+            args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
+            preview_hmac=preview_hmac(safe_preview),
+            settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
+            permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+            tool_version=getattr(tool, "tool_version", "1"),
         )
         db.upsert_model("approvals", approval)
         publish_approval_created(approval)
-        step.status = StepStatus.WAITING_USER_APPROVAL
+        set_step_status(step, StepStatus.WAITING_USER_APPROVAL, actor="ToolRuntime")
         orchestrator.bus.publish_text(
             task.id,
             "HumanGateAgent",
@@ -329,6 +435,9 @@ class ToolRuntime:
         return ""
 
     def _check_permission(self, tool: ToolDefinition, args: dict[str, Any], runtime: TaskRuntimeContext) -> str:
+        path_error = self._authorized_path_error(tool, args, runtime.tool_context())
+        if path_error:
+            return path_error
         if not tool.permission_policy:
             return ""
         try:
@@ -348,6 +457,89 @@ class ToolRuntime:
                 pass
         return step.expected_observation or f"{step.tool_name} completed."
 
+    def _authorized_path_error(self, tool: ToolDefinition, args: dict[str, Any], context: dict[str, Any]) -> str:
+        try:
+            self._ensure_authorized_paths(tool, args, context)
+        except SecurityError as exc:
+            record("tool.path_authorization_failed", "ToolRuntime", {"tool": tool.name, "error": str(exc)})
+            return str(exc)
+        return ""
+
+    def _ensure_authorized_paths(self, tool: ToolDefinition, args: dict[str, Any], context: dict[str, Any]) -> None:
+        if not tool.requires_authorized_path:
+            return
+        allowed_directories = [str(path) for path in context.get("allowed_directories") or []]
+        if tool.name == "file.trash" and not allowed_directories:
+            return
+        for arg_name, value in self._candidate_authorized_paths(args):
+            try:
+                resolve_authorized(value, allowed_directories)
+            except SecurityError as exc:
+                raise SecurityError(f"{tool.name} path argument '{arg_name}' is not authorized: {exc}") from exc
+            except OSError as exc:
+                raise SecurityError(f"{tool.name} path argument '{arg_name}' could not be resolved: {exc}") from exc
+
+    def _candidate_authorized_paths(self, args: dict[str, Any]) -> list[tuple[str, str | Path]]:
+        candidates: list[tuple[str, str | Path]] = []
+        self._collect_candidate_authorized_paths(args, "", candidates, top_level=True)
+        return candidates
+
+    def _collect_candidate_authorized_paths(
+        self,
+        value: Any,
+        arg_name: str,
+        candidates: list[tuple[str, str | Path]],
+        *,
+        top_level: bool,
+    ) -> None:
+        if isinstance(value, dict):
+            for raw_key, child in value.items():
+                key = str(raw_key)
+                child_name = f"{arg_name}.{key}" if arg_name else key
+                if self._is_authorized_path_arg_key(key, top_level=top_level):
+                    self._append_authorized_path_values(child, child_name, candidates)
+                elif isinstance(child, (dict, list, tuple, set)):
+                    self._collect_candidate_authorized_paths(child, child_name, candidates, top_level=False)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for index, child in enumerate(value):
+                child_name = f"{arg_name}[{index}]" if arg_name else f"[{index}]"
+                self._collect_candidate_authorized_paths(child, child_name, candidates, top_level=False)
+
+    def _append_authorized_path_values(
+        self,
+        value: Any,
+        arg_name: str,
+        candidates: list[tuple[str, str | Path]],
+    ) -> None:
+        if isinstance(value, (str, Path)) and str(value).strip():
+            candidates.append((arg_name, value))
+            return
+        if isinstance(value, (list, tuple, set)):
+            for index, child in enumerate(value):
+                child_name = f"{arg_name}[{index}]"
+                self._append_authorized_path_values(child, child_name, candidates)
+            return
+        if isinstance(value, dict):
+            self._collect_candidate_authorized_paths(value, arg_name, candidates, top_level=False)
+
+    def _is_authorized_path_arg_key(self, key: str, *, top_level: bool) -> bool:
+        normalized = key.replace("-", "_").casefold()
+        return (
+            normalized in AUTHORIZED_PATH_ARG_KEYS
+            or normalized.endswith("_path")
+            or normalized.endswith("_paths")
+            or normalized.endswith("_directory")
+            or normalized.endswith("_directories")
+            or normalized.endswith("_folder")
+            or normalized.endswith("_folders")
+            or normalized.endswith("_dir")
+            or normalized.endswith("_dirs")
+            or normalized.endswith("_file")
+            or normalized.endswith("_files")
+            or (top_level and normalized in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"})
+        )
+
     async def execute_tool_with_locks(
         self,
         tool: ToolDefinition,
@@ -357,6 +549,7 @@ class ToolRuntime:
         *,
         threaded: bool = False,
     ) -> dict[str, Any]:
+        self._ensure_authorized_paths(tool, args, context)
         lock_keys = self._write_lock_keys(tool, args)
         if not lock_keys:
             if threaded:

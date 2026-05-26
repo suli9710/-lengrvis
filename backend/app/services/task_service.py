@@ -105,6 +105,18 @@ def _is_uninstall_request(message: str) -> bool:
 def _delegate_task(message: str, mode: str, decision: SupervisorDecision) -> ChatResponse:
     orchestrator = OrchestratorAgent()
     task = orchestrator.create_task_shell(message, mode)
+    record(
+        "supervisor.decision",
+        "SupervisorAgent",
+        {
+            "delegate": True,
+            "reply": decision.reply,
+            "agent_hint": decision.agent_hint or "OrchestratorAgent",
+            "mode": mode,
+            "goal": message,
+        },
+        task_id=task.id,
+    )
     pool = get_pool()
     try:
         loop = asyncio.get_event_loop()

@@ -9,6 +9,7 @@ from app.core.schemas import AgentMessage, Task, TaskStatus
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.services import task_recording_service
+from app.services.task_explain_service import build_task_explain
 from app.services.task_service import get_task, list_tasks, set_task_status
 from app.tools import rollback_tools
 
@@ -117,6 +118,14 @@ def timeline(task_id: str):
     }
 
 
+@router.get("/tasks/{task_id}/explain")
+def explain(task_id: str):
+    try:
+        return build_task_explain(task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+
+
 @router.get("/tasks/{task_id}/recordings/{file_name}")
 def recording(task_id: str, file_name: str):
     try:
@@ -168,7 +177,7 @@ def rollback(task_id: str):
     if task.status not in {TaskPhase.COMPLETED, TaskPhase.FAILED}:
         raise StateTransitionError(task.status.value, TaskStatus.ROLLED_BACK.value)
     outcome = rollback_tools.execute_rollback(task_id)
-    safe_transition(task, TaskStatus.ROLLED_BACK, actor="TaskService")
+    safe_transition(task, TaskStatus.ROLLED_BACK, actor="TaskService", strict=True)
     return outcome
 
 

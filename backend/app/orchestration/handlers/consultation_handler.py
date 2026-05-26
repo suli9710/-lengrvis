@@ -29,7 +29,9 @@ class ConsultationHandler:
         orchestrator = self.orchestrator
         orchestrator._set_status(task, TaskStatus.AGENT_CONSULTATION)
         for agent in orchestrator.subagents.values():
-            agent.consult(plan)
+            consult = getattr(agent, "consult", None)
+            if callable(consult):
+                consult(plan)
             if not orchestrator._supervise_new_agent_messages(task.id, f"{agent.name}_consultation"):
                 orchestrator._set_status(
                     task,

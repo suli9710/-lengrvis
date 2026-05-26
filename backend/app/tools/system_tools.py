@@ -301,16 +301,22 @@ def register(registry) -> None:
         ("system.diagnostics", diagnostics, RiskLevel.R0_READ_ONLY),
     ]
     for name, fn, risk in defs:
+        read_only = risk == RiskLevel.R0_READ_ONLY
         registry.register(
             ToolDefinition(
                 name=name,
                 description=name.replace(".", " "),
-                input_schema={},
+                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
                 output_schema={},
                 risk_level=risk,
                 agent_owner="ComputerAgent",
                 supports_dry_run=risk != RiskLevel.R0_READ_ONLY,
                 requires_authorized_path=False,
                 execute=fn,
+                capabilities=["system"],
+                effects=["read", "inspect"] if read_only else ["open"],
+                resource_kinds=["system"],
+                fast_path_eligible=True,
+                trust_tier="builtin",
             )
         )

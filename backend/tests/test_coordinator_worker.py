@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.orchestration.coordinator_worker import CoordinatorWorkerPolicy, WorkerTaskKind, WorkerTaskSpec
+from app.orchestration.coordinator_worker import CoordinatorWorkerPolicy, WorkerRole, WorkerTaskKind, WorkerTaskSpec
 
 
 def test_worker_specs_render_self_contained_prompt():
@@ -15,6 +15,8 @@ def test_worker_specs_render_self_contained_prompt():
 
     prompt = spec.self_contained_prompt()
 
+    assert "Role: worker" in prompt
+    assert "Do not coordinate" in prompt
     assert "Goal: Implement runtime" in prompt
     assert "Owned paths:" in prompt
     assert "pytest passes" in prompt
@@ -60,3 +62,29 @@ def test_policy_requires_owned_paths_for_implementation_workers():
     )
 
     assert "implementation workers must declare owned_paths" in policy.review_spec(spec)
+
+
+def test_policy_rejects_worker_specs_with_coordinator_responsibilities():
+    policy = CoordinatorWorkerPolicy()
+    spec = WorkerTaskSpec(
+        goal="Run assigned verification",
+        kind=WorkerTaskKind.VERIFICATION,
+        prompt="Coordinate the worker pool and split tasks before running tests.",
+        completion_criteria=["Report test result"],
+    )
+
+    assert "worker prompt must not assign coordinator responsibilities" in policy.review_spec(spec)
+
+
+def test_coordinator_role_can_describe_coordination_work():
+    policy = CoordinatorWorkerPolicy()
+    spec = WorkerTaskSpec(
+        goal="Plan worker fan-out",
+        kind=WorkerTaskKind.RESEARCH,
+        role=WorkerRole.COORDINATOR,
+        prompt="Coordinate worker batches and split tasks by owned path.",
+        completion_criteria=["Return worker specs"],
+    )
+
+    assert "worker prompt must not assign coordinator responsibilities" not in policy.review_spec(spec)
+    assert "Role: coordinator" in spec.self_contained_prompt()

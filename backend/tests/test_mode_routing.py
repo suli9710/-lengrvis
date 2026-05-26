@@ -70,6 +70,20 @@ def test_privacy_mode_without_local_backend_fails(monkeypatch):
         get_provider_for_mode(settings, task="planner")
 
 
+def test_privacy_mode_blocks_local_provider_with_remote_url():
+    settings = _local_settings(base_url="https://example.com/v1")
+
+    with pytest.raises(LocalBackendUnavailable):
+        get_provider_for_mode(settings, task="planner")
+
+
+def test_privacy_mode_blocks_url_that_only_contains_localhost_text():
+    settings = _local_settings(base_url="https://example.com/localhost/v1")
+
+    with pytest.raises(LocalBackendUnavailable):
+        get_provider_for_mode(settings, task="planner")
+
+
 def test_efficiency_mode_routes_every_task_to_cloud():
     settings = _cloud_settings()
     for task in ("planner", "supervisor", "subagent", "embed", "vision", "ocr"):

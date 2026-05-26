@@ -6,6 +6,7 @@ from app.core.audit import record
 from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.orchestration.events import StepEvent, ToolFailed
 from app.orchestration.handlers.context import StepExecutionOutcome
+from app.orchestration.step_phase import set_step_status
 from app.tools import rollback_tools
 
 if TYPE_CHECKING:
@@ -13,10 +14,13 @@ if TYPE_CHECKING:
     from app.orchestration.dispatcher import EventDispatcher
 
 
+DEFAULT_RECOVERY_MAX_RETRIES = 3
+
+
 class RecoveryHandler:
     """Recover from tool failures without pushing fallback logic into the scheduler."""
 
-    def __init__(self, orchestrator: OrchestratorAgent, *, max_retries: int = 1) -> None:
+    def __init__(self, orchestrator: OrchestratorAgent, *, max_retries: int = DEFAULT_RECOVERY_MAX_RETRIES) -> None:
         self.orchestrator = orchestrator
         self.max_retries = max_retries
         self._retry_counts: dict[tuple[str, str], int] = {}
@@ -95,7 +99,7 @@ class RecoveryHandler:
             threaded_tools=threaded_tools,
         )
         if outcome.kind in {"succeeded", "skipped"}:
-            step.status = StepStatus.SKIPPED
+            set_step_status(step, StepStatus.SKIPPED, actor="RecoveryHandler")
             return StepExecutionOutcome("recovered", outcome.result or result)
         if outcome.kind == "failed":
             return await self.recover_failed_step(
@@ -121,7 +125,7 @@ class RecoveryHandler:
     ) -> StepExecutionOutcome:
         orchestrator = self.orchestrator
         rollback = rollback_tools.execute_rollback(task.id)
-        step.status = StepStatus.FAILED
+        set_step_status(step, StepStatus.FAILED, actor="RecoveryHandler")
         orchestrator._set_status(
             task,
             TaskStatus.FAILED,

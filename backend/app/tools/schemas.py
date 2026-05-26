@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.policy.risk import RiskLevel
@@ -35,6 +35,14 @@ class ToolDefinition:
     result_summary: ToolResultSummarizer | None = None
     app_target: dict[str, Any] | None = None
     workflow: dict[str, Any] | None = None
+    capabilities: list[str] = field(default_factory=list)
+    effects: list[str] = field(default_factory=list)
+    resource_kinds: list[str] = field(default_factory=list)
+    fast_path_eligible: bool = False
+    trust_tier: str = "unknown"
+    sensitive_arg_keys: list[str] = field(default_factory=list)
+    external_network: bool = False
+    tool_version: str = "1"
 
     def is_read_only(self) -> bool:
         if self.read_only is not None:

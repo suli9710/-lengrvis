@@ -248,6 +248,7 @@ def register(registry) -> None:
         ("file.generate_markdown_report", generate_markdown_report, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
     ]
     for name, fn, risk, dry_run, auth in defs:
+        read_only = risk == RiskLevel.R0_READ_ONLY and not dry_run
         registry.register(
             ToolDefinition(
                 name=name,
@@ -259,5 +260,11 @@ def register(registry) -> None:
                 supports_dry_run=dry_run,
                 requires_authorized_path=auth,
                 execute=fn,
+                capabilities=["filesystem"] if auth else ["filesystem_preview"],
+                effects=["read", "list", "search"] if read_only else ["write"],
+                resource_kinds=["file", "directory"],
+                fast_path_eligible=read_only,
+                trust_tier="builtin",
+                sensitive_arg_keys=["text"] if name == "file.write_text" else [],
             )
         )

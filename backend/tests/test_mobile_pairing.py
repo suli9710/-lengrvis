@@ -131,6 +131,50 @@ def test_mobile_can_list_and_decide_pending_approvals(monkeypatch, tmp_path):
     assert decision_response.json()["status"] == "rejected"
 
 
+def test_mobile_approval_payload_redacts_sensitive_preview(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    approval = Approval(
+        task_id="task_mobile_secret",
+        step_id="step_1",
+        message="Approve mobile secret test",
+        diff_preview={
+            "ok": True,
+            "diff_preview": [
+                {
+                    "action": "fill",
+                    "field_name": "#notes",
+                    "value": "token abcdef1234567890",
+                    "url": "https://example.com/form?token=secret-query-token",
+                }
+            ],
+        },
+    )
+    db.upsert_model("approvals", approval)
+    publish_approval_created(approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    detail_response = client.get(
+        f"/api/mobile/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert pending_response.status_code == 200
+    assert detail_response.status_code == 200
+    payload_text = json.dumps(
+        {"pending": pending_response.json(), "detail": detail_response.json()},
+        ensure_ascii=False,
+    )
+    assert "abcdef1234567890" not in payload_text
+    assert "secret-query-token" not in payload_text
+    assert "[REDACTED" in payload_text or "***" in payload_text
+
+
 def test_mobile_approval_websocket_receives_created_event(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -149,6 +193,32 @@ def test_mobile_approval_websocket_receives_created_event(monkeypatch, tmp_path)
 
     assert event["type"] == "approval_created"
     assert event["approval"]["id"] == approval.id
+
+
+def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+
+    with client.websocket_connect(f"/ws/mobile/approvals?token={token}") as websocket:
+        connected = websocket.receive_json()
+        assert connected["type"] == "connected"
+
+        approval = Approval(
+            task_id="task_ws_mobile_secret",
+            step_id="step_1",
+            message="Approve from phone",
+            diff_preview={"value": "Authorization Bearer secret-token-1234567890"},
+        )
+        db.upsert_model("approvals", approval)
+        publish_approval_created(approval)
+
+        event = websocket.receive_json()
+
+    event_text = json.dumps(event, ensure_ascii=False)
+    assert event["type"] == "approval_created"
+    assert "secret-token-1234567890" not in event_text
 
 
 def _paired_token(client: TestClient) -> str:

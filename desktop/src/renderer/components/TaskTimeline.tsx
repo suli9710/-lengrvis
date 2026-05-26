@@ -1,9 +1,29 @@
-import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Images, Pause, Play, RotateCcw, X, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  HelpCircle,
+  Images,
+  Pause,
+  Play,
+  RotateCcw,
+  X,
+  XCircle
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { TaskEvent, TaskState, TaskStepRecording } from "../../shared/types";
+import type { TaskEvent, TaskExplain, TaskExplainEvidence, TaskState, TaskStepRecording } from "../../shared/types";
 import { MavrisApiClient } from "../lib/apiClient";
-import { zhAgentName, zhRelativeTime, zhTaskState } from "../lib/zh";
+import {
+  zhAgentName,
+  zhBackendTaskStatus,
+  zhRelativeTime,
+  zhRiskLevel,
+  zhSafetyVerdict,
+  zhTaskState,
+  zhToolName
+} from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 
 interface TaskTimelineProps {
@@ -21,6 +41,8 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
     recording: TaskStepRecording;
     frameIndex: number;
   } | null>(null);
+  const [explainTaskId, setExplainTaskId] = useState<string | null>(null);
+  const [explain, setExplain] = useState<TaskExplain | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isWorking, setIsWorking] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -60,7 +82,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
       setPreviewTaskId(taskId);
       setPreviewSteps(response.data.steps ?? []);
     } else {
-      setFeedback(response.error?.message ?? "预览失败");
+      setFeedback(response.error?.message ?? "Rollback preview failed");
     }
   };
 
@@ -70,12 +92,31 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
     const response = await api.executeRollback(previewTaskId);
     setIsWorking(false);
     if (response.ok && response.data) {
-      setFeedback(`已回滚 ${response.data.count ?? 0} 个动作`);
+      setFeedback(`Rolled back ${response.data.count ?? 0} action(s).`);
       setPreviewTaskId(null);
       setPreviewSteps([]);
     } else {
-      setFeedback(response.error?.message ?? "回滚失败");
+      setFeedback(response.error?.message ?? "Rollback failed");
     }
+  };
+
+  const openExplain = async (taskId: string) => {
+    if (!api) return;
+    setIsWorking(true);
+    setFeedback(null);
+    const response = await api.getTaskExplain(taskId);
+    setIsWorking(false);
+    if (response.ok && response.data) {
+      setExplainTaskId(taskId);
+      setExplain(response.data);
+    } else {
+      setFeedback(response.error?.message ?? "Explain failed");
+    }
+  };
+
+  const closeExplain = () => {
+    setExplain(null);
+    setExplainTaskId(null);
   };
 
   const openRecordingPlayer = (taskTitle: string, recording: TaskStepRecording, frameIndex = 0) => {
@@ -160,6 +201,10 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
               <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
               {task.state === "completed" && api ? (
                 <div className="row" style={{ marginTop: 8 }}>
+                  <button className="button button--ghost" onClick={() => void openExplain(task.id)} disabled={isWorking}>
+                    <HelpCircle size={14} aria-hidden="true" />
+                    为什么？
+                  </button>
                   <button className="button button--ghost" onClick={() => void openPreview(task.id)} disabled={isWorking}>
                     <RotateCcw size={14} aria-hidden="true" />
                     回滚此任务
@@ -181,7 +226,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
               <Badge tone="warning">{previewSteps.length} 个动作</Badge>
             </header>
             <div className="modal__body">
-              <p className="muted">将按倒序逆向执行以下动作。需要用户手动恢复（如回收站）的动作会标记。</p>
+              <p className="muted">将按倒序执行以下逆向动作。需要用户手动恢复的动作会标记出来。</p>
               <ol className="rollback-preview-list">
                 {previewSteps.map((entry, index) => (
                   <li key={index}>
@@ -202,6 +247,8 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
           </div>
         </div>
       ) : null}
+
+      {explain ? <ExplainDialog explain={explain} taskId={explainTaskId} onClose={closeExplain} /> : null}
 
       {recordingPlayer && activeFrame ? (
         <div className="modal-backdrop" role="presentation">
@@ -304,6 +351,128 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
       ) : null}
     </Panel>
   );
+}
+
+function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; taskId: string | null; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="explain-title">
+        <header className="modal__header">
+          <div>
+            <span className="panel__eyebrow">Explain API</span>
+            <h2 id="explain-title">为什么这样执行？</h2>
+          </div>
+          <div className="recording-player__header-actions">
+            <Badge tone={explain.complete ? "success" : "warning"}>{explain.complete ? "完整链路" : "部分记录"}</Badge>
+            <button className="icon-button" onClick={onClose} title="关闭" aria-label="关闭">
+              <X size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+        <div className="modal__body">
+          <div className="explain-summary">
+            <div>
+              <span className="muted">目标</span>
+              <strong>{explain.userGoal}</strong>
+            </div>
+            <div>
+              <span className="muted">状态</span>
+              <Badge tone={explain.status === "completed" ? "success" : "info"}>{zhBackendTaskStatus(explain.status)}</Badge>
+            </div>
+            <div>
+              <span className="muted">数据来源</span>
+              <span>{formatSources(explain.dataSources)}</span>
+            </div>
+          </div>
+
+          <div className="explain-chain">
+            {explain.chain.map((item) => (
+              <article className="explain-chain__item" key={item.stage}>
+                <span className="explain-chain__marker">{stageNumber(item.stage)}</span>
+                <div>
+                  <div className="row row--between">
+                    <strong>{stageTitle(item.stage, item.title)}</strong>
+                    <span className="muted">{item.evidence.length} 条证据</span>
+                  </div>
+                  <p>{item.summary}</p>
+                  {item.evidence.length ? <EvidenceList evidence={item.evidence.slice(0, 3)} /> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+
+          {explain.steps.length ? (
+            <div className="explain-steps">
+              <strong>步骤审查</strong>
+              {explain.steps.map((step) => (
+                <article className="explain-step" key={step.stepId}>
+                  <div className="row row--between">
+                    <span>{step.order}. {zhToolName(step.toolName)}</span>
+                    <Badge tone={step.requiresApproval ? "warning" : "neutral"}>{zhRiskLevel(step.riskLevel)}</Badge>
+                  </div>
+                  <p>{step.plannerReason || step.description}</p>
+                  {step.subagentSuggestions.map((message) => (
+                    <p className="muted" key={message.id}>
+                      {zhAgentName(message.fromAgent)}：{message.action?.rationale || message.content}
+                    </p>
+                  ))}
+                  {step.safetyReviews.map((review) => (
+                    <p className="muted" key={review.id}>
+                      安全审查 {zhSafetyVerdict(review.verdict)}：{review.reasons.join(" ")}
+                    </p>
+                  ))}
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <footer className="modal__footer">
+          <span className="muted">{taskId}</span>
+          <button className="button button--ghost" onClick={onClose}>
+            <X size={14} aria-hidden="true" />
+            关闭
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function EvidenceList({ evidence }: { evidence: TaskExplainEvidence[] }) {
+  return (
+    <ul className="explain-evidence">
+      {evidence.map((item) => (
+        <li key={`${item.source}-${item.id}`}>
+          <span>{item.source}</span>
+          <p>{item.actor ? `${zhAgentName(item.actor)}：` : ""}{item.summary}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function stageTitle(stage: string, fallback: string) {
+  const labels: Record<string, string> = {
+    user_goal: "用户目标",
+    supervisor_judgment: "主管判断",
+    planner_reasoning: "规划理由",
+    step_safety_reviews: "每步安全审查",
+    subagent_suggestions: "子 Agent 建议",
+    final_result: "最终结果"
+  };
+  return labels[stage] ?? fallback;
+}
+
+function stageNumber(stage: string) {
+  const order = ["user_goal", "supervisor_judgment", "planner_reasoning", "step_safety_reviews", "subagent_suggestions", "final_result"];
+  const index = order.indexOf(stage);
+  return index >= 0 ? index + 1 : "·";
+}
+
+function formatSources(sources: Record<string, number>) {
+  return Object.entries(sources)
+    .map(([name, count]) => `${name}: ${count}`)
+    .join(" / ");
 }
 
 function phaseLabel(phase: string) {

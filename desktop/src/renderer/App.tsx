@@ -45,6 +45,9 @@ import type {
   BackendStatus,
   ChatMessage,
   FileSearchResult,
+  IntentSuggestion,
+  LLMCostSummary,
+  LLMHealthStatus,
   LocalLLMHealth,
   Plan,
   SafetyReview,
@@ -339,8 +342,11 @@ export function App() {
   const [settings, setSettings] = useState<AppSettings>(sampleSettings);
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>(sampleAuditLogs);
   const [systemInfo, setSystemInfo] = useState<SystemInfo>(sampleSystemInfo);
+  const [intentSuggestions, setIntentSuggestions] = useState<IntentSuggestion[]>([]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus>(disconnectedStatus);
   const [localLlmHealth, setLocalLlmHealth] = useState<LocalLLMHealth | null>(null);
+  const [llmHealth, setLlmHealth] = useState<LLMHealthStatus | null>(null);
+  const [llmCostSummary, setLlmCostSummary] = useState<LLMCostSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isApprovalOpen, setIsApprovalOpen] = useState(false);
@@ -375,8 +381,11 @@ export function App() {
       approvalsResult,
       settingsResult,
       localLlmResult,
+      llmHealthResult,
+      llmCostResult,
       auditResult,
-      systemResult
+      systemResult,
+      suggestionsResult
     ] = await Promise.allSettled([
       api.listChatMessages(),
       api.listTaskTimeline(),
@@ -386,8 +395,11 @@ export function App() {
       api.listPendingApprovals(),
       api.getSettings(),
       api.getLocalLlmHealth(),
+      api.getLlmHealth(),
+      api.getLlmCostSummary(),
       api.listAuditLogs(),
-      api.getSystemInfo()
+      api.getSystemInfo(),
+      api.listIntentSuggestions()
     ]);
 
     if (chatResult.status === "fulfilled" && chatResult.value.ok && chatResult.value.data) setMessages(chatResult.value.data);
@@ -410,8 +422,17 @@ export function App() {
         error: localLlmResult.value.error?.message ?? "无法读取本地 LLM 健康状态。"
       });
     }
+    if (llmHealthResult.status === "fulfilled" && llmHealthResult.value.ok && llmHealthResult.value.data) {
+      setLlmHealth(llmHealthResult.value.data);
+    }
+    if (llmCostResult.status === "fulfilled" && llmCostResult.value.ok && llmCostResult.value.data) {
+      setLlmCostSummary(llmCostResult.value.data);
+    }
     if (auditResult.status === "fulfilled" && auditResult.value.ok && auditResult.value.data) setAuditEntries(auditResult.value.data);
     if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
+    if (suggestionsResult.status === "fulfilled" && suggestionsResult.value.ok && suggestionsResult.value.data) {
+      setIntentSuggestions(suggestionsResult.value.data);
+    }
 
     setIsLoading(false);
   }, [api]);
@@ -492,6 +513,10 @@ export function App() {
       setMode(result.data.mode);
       const health = await api.getLocalLlmHealth();
       if (health.ok && health.data) setLocalLlmHealth(health.data);
+      const llm = await api.getLlmHealth();
+      if (llm.ok && llm.data) setLlmHealth(llm.data);
+      const cost = await api.getLlmCostSummary();
+      if (cost.ok && cost.data) setLlmCostSummary(cost.data);
     }
   };
 
@@ -514,14 +539,22 @@ export function App() {
   };
 
   const refreshSystemInfo = async () => {
-    const [statusResult, localLlmResult, systemResult] = await Promise.allSettled([
+    const [statusResult, localLlmResult, llmHealthResult, llmCostResult, systemResult] = await Promise.allSettled([
       api.getBackendStatus(),
       api.getLocalLlmHealth(),
+      api.getLlmHealth(),
+      api.getLlmCostSummary(),
       api.getSystemInfo()
     ]);
     if (statusResult.status === "fulfilled") setBackendStatus(statusResult.value);
     if (localLlmResult.status === "fulfilled" && localLlmResult.value.ok && localLlmResult.value.data) {
       setLocalLlmHealth(localLlmResult.value.data);
+    }
+    if (llmHealthResult.status === "fulfilled" && llmHealthResult.value.ok && llmHealthResult.value.data) {
+      setLlmHealth(llmHealthResult.value.data);
+    }
+    if (llmCostResult.status === "fulfilled" && llmCostResult.value.ok && llmCostResult.value.data) {
+      setLlmCostSummary(llmCostResult.value.data);
     }
     if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
   };
@@ -704,6 +737,8 @@ export function App() {
               onSubmitPrompt={submitHeroPrompt}
               onModeChange={setMode}
               localLlmHealth={localLlmHealth}
+              llmHealth={llmHealth}
+              llmCostSummary={llmCostSummary}
               onAgentSelect={(prompt) => setDraft(prompt)}
               activeAgentId={activeOfficeAgentId}
               recentTasks={tasks}
@@ -722,6 +757,7 @@ export function App() {
               connectionState={connectionState}
               onSend={sendMessage}
               initialDraft={chatDraftSeed}
+              suggestions={intentSuggestions}
               autoFocus
             />
             <div className="conversation-side">
@@ -773,6 +809,8 @@ export function App() {
               settings={settings}
               backendStatus={backendStatus}
               localLlmHealth={localLlmHealth}
+              llmHealth={llmHealth}
+              llmCostSummary={llmCostSummary}
               onSave={saveSettings}
               onStartBackend={async () => setBackendStatus(await api.startBackend())}
               onStopBackend={async () => setBackendStatus(await api.stopBackend())}
@@ -812,6 +850,8 @@ function OfficeScene({
   onSubmitPrompt,
   onModeChange,
   localLlmHealth,
+  llmHealth,
+  llmCostSummary,
   onAgentSelect,
   onQuickSkill,
   safetyAlert
@@ -828,6 +868,8 @@ function OfficeScene({
   onSubmitPrompt: () => void;
   onModeChange: (mode: AssistantMode) => void;
   localLlmHealth: LocalLLMHealth | null;
+  llmHealth: LLMHealthStatus | null;
+  llmCostSummary: LLMCostSummary | null;
   onAgentSelect: (prompt: string) => void;
   onQuickSkill: (prompt: string) => void;
   safetyAlert: boolean;
@@ -903,11 +945,17 @@ function OfficeScene({
   const runningTaskCount = recentTasks.filter((task) => task.state === "running" || task.state === "queued").length;
   const blockedTaskCount = recentTasks.filter((task) => task.state === "blocked").length;
   const displayedTasks = recentTasks.slice(0, 3);
-  const tokenUsed = mode === "privacy" ? 0 : 221000;
-  const tokenSaved = mode === "privacy" ? 0 : 48236;
-  const tokenLimit = 10_000_000;
-  const tokenUsedLabel = tokenUsed === 0 ? "0" : tokenUsed >= 10000 ? `${(tokenUsed / 10000).toFixed(1)}万` : tokenUsed.toLocaleString();
-  const tokenSavedLabel = tokenSaved === 0 ? "0" : tokenSaved.toLocaleString();
+  const tokenUsed = llmCostSummary?.totalTokens ?? null;
+  const tokenLimit = llmHealth?.active.profile.modelProfile.contextWindow ?? 0;
+  const tokenUsedLabel = tokenUsed === null ? "N/A" : formatTokenCount(tokenUsed);
+  const tokenLimitLabel = tokenLimit > 0 ? formatTokenCount(tokenLimit) : "N/A";
+  const costLabel = llmCostSummary?.totalCostUsd === null || llmCostSummary?.totalCostUsd === undefined
+    ? "N/A"
+    : `$${llmCostSummary.totalCostUsd.toFixed(4)}`;
+  const activeProfile = llmHealth?.active.profile;
+  const activeProviderLabel = activeProfile
+    ? `${activeProfile.activeBackend || activeProfile.providerName} ? ${activeProfile.model || "model"}`
+    : "N/A";
   const activeAgent = agents.find((agent) => agent.id === workingAgentId) ?? agents[0];
   const isOfficeMapReady = officeMapSize.width > 0 && officeMapSize.height > 0;
 
@@ -999,18 +1047,18 @@ function OfficeScene({
         </div>
       </div>
 
-      <aside className="office-inspector" aria-label="办公室任务统计">
+      <aside className="office-inspector" aria-label="Office status">
         <div className="inspector-card token-card">
           <div className="inspector-card__head">
-            <strong>今日消耗 Token</strong>
-            <span className="token-card__chip">·9.6%</span>
+            <strong>Today Token Usage</strong>
+            <span className="token-card__chip">{llmCostSummary ? `${llmCostSummary.calls} calls` : "N/A"}</span>
           </div>
           <div className="token-card__value">
             <strong>
               {tokenUsedLabel}
-              <small>/ {tokenLimit / 10000}万</small>
+              <small>/ {tokenLimitLabel}</small>
             </strong>
-            <em>{mode === "privacy" ? "隐私模式需要可用的本地 LLM" : "端云协同模式"}</em>
+            <em>{activeProviderLabel}</em>
           </div>
           {mode === "privacy" && localLlmHealth ? (
             <div
@@ -1035,10 +1083,10 @@ function OfficeScene({
                 aria-hidden="true"
               />
               {localLlmHealth.available
-                ? `本地推理已就绪 · ${localLlmHealth.selectedBackend?.kind ?? "local"}${
-                    localLlmHealth.selectedBackend?.model ? ` · ${localLlmHealth.selectedBackend.model}` : ""
+                ? `Local inference ready - ${localLlmHealth.selectedBackend?.kind ?? "local"}${
+                    localLlmHealth.selectedBackend?.model ? ` - ${localLlmHealth.selectedBackend.model}` : ""
                   }`
-                : "未检测到本地 LLM；隐私模式会明确失败"}
+                : "No local LLM detected; privacy mode fails closed"}
             </div>
           ) : null}
           <div className="token-card__bar" />
@@ -1046,15 +1094,15 @@ function OfficeScene({
 
         <div className="inspector-card token-card token-card--saved">
           <div className="inspector-card__head">
-            <strong>今日节省 Token</strong>
-            <span className="token-card__chip">{localLlmHealth?.available ? "本地模型" : "待检测"}</span>
+            <strong>Today LLM Cost</strong>
+            <span className="token-card__chip">{llmCostSummary?.estimated ? "Estimated" : llmCostSummary ? "Actual" : "N/A"}</span>
           </div>
           <div className="token-card__value">
             <strong>
-              {tokenSavedLabel}
-              <small>条上下文</small>
+              {costLabel}
+              <small>{llmCostSummary ? `${llmCostSummary.windowHours}h` : ""}</small>
             </strong>
-            <em>{localLlmHealth?.available ? "本地模型用于隐私模式推理" : "启动 Ollama、LM Studio 或 llama.cpp 后可用"}</em>
+            <em>{llmCostSummary?.lastEventAt ? `Last call ${new Date(llmCostSummary.lastEventAt).toLocaleTimeString()}` : "No usage telemetry yet"}</em>
           </div>
           <div className="token-card__bar" />
         </div>
@@ -1495,6 +1543,12 @@ function projectOfficePoint(x: number, y: number, mapSize: OfficeMapSize) {
     x: offsetX + x * scale,
     y: offsetY + y * scale
   };
+}
+
+function formatTokenCount(value: number): string {
+  if (value <= 0) return "0";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return value.toLocaleString();
 }
 
 function SideButton({

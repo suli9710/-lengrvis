@@ -6,8 +6,17 @@ from pydantic import BaseModel as PydanticBaseModel
 from app.llm.local_provider import health_snapshot
 from app.llm.onnx_provider import health_snapshot as onnx_health_snapshot
 from app.llm.registry import get_effective_settings
+from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
 from app.services import ollama_service
-from app.services.settings_service import get_settings, test_llm_provider, update_settings
+from app.services.settings_service import (
+    get_llm_cost_summary,
+    get_llm_health,
+    get_llm_profile,
+    get_llm_usage,
+    get_settings,
+    test_llm_provider,
+    update_settings,
+)
 
 
 router = APIRouter()
@@ -28,6 +37,27 @@ async def test_provider():
     return await test_llm_provider()
 
 
+@router.get("/settings/permission-policy")
+def permission_policy():
+    return PermissionStore().get_policy().model_dump(mode="json")
+
+
+@router.put("/settings/permission-policy")
+def update_permission_policy(payload: PermissionPolicy):
+    return PermissionStore().save_policy(payload).model_dump(mode="json")
+
+
+@router.post("/settings/permission-policy/rules")
+def upsert_permission_rule(payload: PermissionRule):
+    return PermissionStore().add_rule(payload).model_dump(mode="json")
+
+
+@router.delete("/settings/permission-policy/rules/{rule_id}")
+def delete_permission_rule(rule_id: str):
+    policy, deleted = PermissionStore().delete_rule(rule_id)
+    return {"ok": deleted, "policy": policy.model_dump(mode="json")}
+
+
 @router.get("/settings/local-llm/health")
 def local_llm_health():
     return health_snapshot(get_effective_settings())
@@ -35,7 +65,22 @@ def local_llm_health():
 
 @router.get("/settings/llm/health")
 def llm_health():
-    return {"local": health_snapshot(get_effective_settings())}
+    return {**get_llm_health(), "local": health_snapshot(get_effective_settings())}
+
+
+@router.get("/settings/llm/profile")
+def llm_profile():
+    return get_llm_profile()
+
+
+@router.get("/settings/llm/usage")
+def llm_usage(limit: int = 100):
+    return get_llm_usage(limit=limit)
+
+
+@router.get("/settings/llm/cost-summary")
+def llm_cost_summary(hours: int = 24):
+    return get_llm_cost_summary(hours=hours)
 
 
 @router.get("/settings/onnx/status")

@@ -105,6 +105,20 @@ class AppSettings:
     network_access: str = "disabled"
     model_context_window: int = 128000
     model_auto_compact_token_limit: int = 96000
+    context_warning_buffer_tokens: int = 20000
+    context_error_buffer_tokens: int = 20000
+    context_manual_compact_buffer_tokens: int = 3000
+    context_auto_compact_enabled: bool = True
+    context_micro_compact_enabled: bool = True
+    context_history_snip_enabled: bool = True
+    context_session_memory_enabled: bool = True
+    context_session_summary_limit: int = 12000
+    context_recent_message_limit: int = 24
+    context_micro_compact_age: int = 8
+    context_micro_compact_tool_result_chars: int = 1200
+    context_history_snip_threshold: int = 160
+    context_history_snip_keep_recent: int = 80
+    context_min_summary_chars: int = 1200
     embedding_model: str = "text-embedding-3-small"
     vision_model: str = ""
     onnx_model_path: str = ""
@@ -112,6 +126,10 @@ class AppSettings:
     temperature: float = 0.2
     max_tokens: int = 1600
     timeout: int = 30
+    llm_api_max_retries: int = 2
+    llm_api_retry_backoff_seconds: float = 0.25
+    llm_api_circuit_failure_threshold: int = 5
+    llm_api_circuit_cooldown_seconds: float = 30.0
     mode: str = "privacy"
     allow_cloud_context: bool = False
     allow_file_content_upload: bool = False
@@ -127,6 +145,7 @@ class AppSettings:
     mcp_servers: list[dict] = field(default_factory=list)
     allow_mock_fallback: bool = True
     strict_state_machine: bool = False
+    recovery_max_retries: int = 3
     jwt_secret: str = field(default_factory=lambda: DEFAULT_JWT_SECRET)
 
     @classmethod
@@ -143,34 +162,53 @@ class AppSettings:
         paths = config.get("paths", {}) if isinstance(config.get("paths"), dict) else {}
         orchestration = config.get("orchestration", {}) if isinstance(config.get("orchestration"), dict) else {}
 
+        def _configured(raw: Any) -> bool:
+            return raw is not None and not (isinstance(raw, str) and raw == "")
+
+        def _section_value(section: dict[str, Any], yaml_key: str) -> tuple[bool, Any]:
+            if yaml_key not in section:
+                return False, None
+            raw = section.get(yaml_key)
+            return _configured(raw), raw
+
         def value(env_key: str, yaml_key: str, default: Any) -> Any:
-            return (
-                env.get(env_key)
-                or llm.get(yaml_key)
-                or privacy.get(yaml_key)
-                or paths.get(yaml_key)
-                or orchestration.get(yaml_key)
-                or default
-            )
+            raw_env = env.get(env_key)
+            if _configured(raw_env):
+                return raw_env
+            for section in (llm, privacy, paths, orchestration):
+                found, raw = _section_value(section, yaml_key)
+                if found:
+                    return raw
+            return default
 
         def value_any(env_keys: tuple[str, ...], yaml_key: str, default: Any) -> Any:
             for env_key in env_keys:
                 raw = env.get(env_key)
-                if raw:
+                if _configured(raw):
                     return raw
-            return (
-                llm.get(yaml_key)
-                or privacy.get(yaml_key)
-                or paths.get(yaml_key)
-                or orchestration.get(yaml_key)
-                or default
-            )
+            for section in (llm, privacy, paths, orchestration):
+                found, raw = _section_value(section, yaml_key)
+                if found:
+                    return raw
+            return default
 
         def flag(env_key: str, yaml_key: str, default: bool) -> bool:
             raw = value(env_key, yaml_key, str(default).lower())
             if isinstance(raw, bool):
                 return raw
             return str(raw).lower() in {"1", "true", "yes", "on"}
+
+        def int_value(env_key: str, yaml_key: str, default: int, *, minimum: int = 0) -> int:
+            try:
+                return max(minimum, int(value(env_key, yaml_key, default)))
+            except (TypeError, ValueError):
+                return default
+
+        def float_value(env_key: str, yaml_key: str, default: float, *, minimum: float = 0.0) -> float:
+            try:
+                return max(minimum, float(value(env_key, yaml_key, default)))
+            except (TypeError, ValueError):
+                return default
 
         allowed = value("MARVIS_ALLOWED_DIRECTORIES", "allowed_directories", [])
         if isinstance(allowed, str):
@@ -207,9 +245,51 @@ class AppSettings:
             model_reasoning_effort=str(value("MARVIS_MODEL_REASONING_EFFORT", "model_reasoning_effort", "medium")),
             disable_response_storage=flag("MARVIS_DISABLE_RESPONSE_STORAGE", "disable_response_storage", False),
             network_access=str(value("MARVIS_NETWORK_ACCESS", "network_access", "disabled")),
-            model_context_window=int(value("MARVIS_MODEL_CONTEXT_WINDOW", "model_context_window", 128000)),
-            model_auto_compact_token_limit=int(
-                value("MARVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT", "model_auto_compact_token_limit", 96000)
+            model_context_window=int_value("MARVIS_MODEL_CONTEXT_WINDOW", "model_context_window", 128000, minimum=1),
+            model_auto_compact_token_limit=int_value(
+                "MARVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT", "model_auto_compact_token_limit", 96000
+            ),
+            context_warning_buffer_tokens=int_value(
+                "MARVIS_CONTEXT_WARNING_BUFFER_TOKENS", "context_warning_buffer_tokens", 20000
+            ),
+            context_error_buffer_tokens=int_value(
+                "MARVIS_CONTEXT_ERROR_BUFFER_TOKENS", "context_error_buffer_tokens", 20000
+            ),
+            context_manual_compact_buffer_tokens=int_value(
+                "MARVIS_CONTEXT_MANUAL_COMPACT_BUFFER_TOKENS", "context_manual_compact_buffer_tokens", 3000
+            ),
+            context_auto_compact_enabled=flag(
+                "MARVIS_CONTEXT_AUTO_COMPACT_ENABLED", "context_auto_compact_enabled", True
+            ),
+            context_micro_compact_enabled=flag(
+                "MARVIS_CONTEXT_MICRO_COMPACT_ENABLED", "context_micro_compact_enabled", True
+            ),
+            context_history_snip_enabled=flag(
+                "MARVIS_CONTEXT_HISTORY_SNIP_ENABLED", "context_history_snip_enabled", True
+            ),
+            context_session_memory_enabled=flag(
+                "MARVIS_CONTEXT_SESSION_MEMORY_ENABLED", "context_session_memory_enabled", True
+            ),
+            context_session_summary_limit=int_value(
+                "MARVIS_CONTEXT_SESSION_SUMMARY_LIMIT", "context_session_summary_limit", 12000
+            ),
+            context_recent_message_limit=int_value(
+                "MARVIS_CONTEXT_RECENT_MESSAGE_LIMIT", "context_recent_message_limit", 24, minimum=1
+            ),
+            context_micro_compact_age=int_value(
+                "MARVIS_CONTEXT_MICRO_COMPACT_AGE", "context_micro_compact_age", 8
+            ),
+            context_micro_compact_tool_result_chars=int_value(
+                "MARVIS_CONTEXT_MICRO_COMPACT_TOOL_RESULT_CHARS", "context_micro_compact_tool_result_chars", 1200
+            ),
+            context_history_snip_threshold=int_value(
+                "MARVIS_CONTEXT_HISTORY_SNIP_THRESHOLD", "context_history_snip_threshold", 160
+            ),
+            context_history_snip_keep_recent=int_value(
+                "MARVIS_CONTEXT_HISTORY_SNIP_KEEP_RECENT", "context_history_snip_keep_recent", 80, minimum=1
+            ),
+            context_min_summary_chars=int_value(
+                "MARVIS_CONTEXT_MIN_SUMMARY_CHARS", "context_min_summary_chars", 1200
             ),
             embedding_model=str(value("MARVIS_EMBEDDING_MODEL", "embedding_model", "text-embedding-3-small")),
             vision_model=str(value("MARVIS_VISION_MODEL", "vision_model", "")),
@@ -226,6 +306,22 @@ class AppSettings:
             temperature=float(value("MARVIS_TEMPERATURE", "temperature", 0.2)),
             max_tokens=int(value("MARVIS_MAX_TOKENS", "max_tokens", 1600)),
             timeout=int(value("MARVIS_TIMEOUT", "timeout", 30)),
+            llm_api_max_retries=int_value("MARVIS_LLM_API_MAX_RETRIES", "llm_api_max_retries", 2),
+            llm_api_retry_backoff_seconds=float_value(
+                "MARVIS_LLM_API_RETRY_BACKOFF_SECONDS",
+                "llm_api_retry_backoff_seconds",
+                0.25,
+            ),
+            llm_api_circuit_failure_threshold=int_value(
+                "MARVIS_LLM_API_CIRCUIT_FAILURE_THRESHOLD",
+                "llm_api_circuit_failure_threshold",
+                5,
+            ),
+            llm_api_circuit_cooldown_seconds=float_value(
+                "MARVIS_LLM_API_CIRCUIT_COOLDOWN_SECONDS",
+                "llm_api_circuit_cooldown_seconds",
+                30.0,
+            ),
             mode=str(value("MARVIS_MODE", "mode", "privacy")),
             allow_cloud_context=flag("MARVIS_ALLOW_CLOUD_CONTEXT", "allow_cloud_context", False),
             allow_file_content_upload=flag("MARVIS_ALLOW_FILE_CONTENT_UPLOAD", "allow_file_content_upload", False),
@@ -243,6 +339,7 @@ class AppSettings:
             mcp_servers=_normalize_mcp_servers(value("MARVIS_MCP_SERVERS", "mcp_servers", [])),
             allow_mock_fallback=flag("MARVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", True),
             strict_state_machine=flag("MARVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
+            recovery_max_retries=int_value("MARVIS_RECOVERY_MAX_RETRIES", "recovery_max_retries", 3),
             jwt_secret=str(
                 value_any(("MARVIS_JWT_SECRET", "MAVRIS_JWT_SECRET"), "jwt_secret", DEFAULT_JWT_SECRET)
             ),

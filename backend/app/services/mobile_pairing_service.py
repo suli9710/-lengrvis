@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
+from app.policy.redaction import redact_value
 from app.security.mobile_jwt import decode_mobile_token, issue_mobile_token, new_device_id
 
 PAIR_CODE_TTL_SECONDS = 300
@@ -84,7 +85,7 @@ def confirm_pairing(*, code: str, device_name: str) -> dict[str, Any]:
 
 
 def list_pending_approvals() -> list[dict[str, Any]]:
-    return db.fetch_many("approvals", "status = ?", ("pending",))
+    return [_safe_approval_payload(row) for row in db.fetch_many("approvals", "status = ?", ("pending",))]
 
 
 def get_approval_detail(approval_id: str) -> dict[str, Any]:
@@ -96,11 +97,12 @@ def get_approval_detail(approval_id: str) -> dict[str, Any]:
     task_data = db.fetch_one("tasks", approval.task_id)
     task = Task.model_validate(task_data) if task_data else None
     plan = _latest_plan(task.id if task else approval.task_id)
+    approval_payload = _safe_approval_payload(approval.model_dump(mode="json"))
     return {
-        "approval": approval.model_dump(mode="json"),
+        "approval": approval_payload,
         "task": task.model_dump(mode="json") if task else None,
         "plan": plan,
-        "preview": approval.diff_preview,
+        "preview": approval_payload.get("diff_preview", {}),
     }
 
 
@@ -202,6 +204,10 @@ def _decide_approval(approval_id: str, status: ApprovalStatus) -> Approval:
         raise HTTPException(status_code=404, detail="Approval not found")
 
     approval = Approval.model_validate(data)
+    if approval.status != ApprovalStatus.PENDING:
+        raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}.")
+    if approval.consumed_at:
+        raise HTTPException(status_code=409, detail="Approval has already been consumed.")
     approval.status = status
     approval.decided_at = now_iso()
     db.upsert_model("approvals", approval, status=status)
@@ -215,6 +221,12 @@ def _decide_approval(approval_id: str, status: ApprovalStatus) -> Approval:
 def _latest_plan(task_id: str) -> dict[str, Any] | None:
     plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
     return plans[0] if plans else None
+
+
+def _safe_approval_payload(approval: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(approval)
+    payload["diff_preview"] = redact_value(payload.get("diff_preview") or {})
+    return payload
 
 
 def _unique_code() -> str:

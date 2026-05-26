@@ -30,6 +30,7 @@ from app.config import AppSettings
 from app.core import db
 from app.core.audit import record
 from app.core.errors import AppError
+from app.core.session_context import get_session_context_store
 from app.llm.local_provider import health_snapshot
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
@@ -38,6 +39,9 @@ from app.security.mobile_jwt import decode_mobile_token
 from app.services.scheduler_service import get_scheduler
 from app.tools.registry import register_all_tools
 from app.indexer.file_watcher import get_file_watcher
+from app.orchestration.agent_bus import AgentBus
+from app.orchestration.dispatcher import EventDispatcher
+from app.perception.environment_stream import get_environment_stream
 
 
 def _dev_api_enabled(settings: AppSettings) -> bool:
@@ -61,14 +65,29 @@ async def lifespan(app: FastAPI):
         mcp_definitions = []
         record("mcp.startup_load_failed", "lifespan", {"error": str(exc)})
     register_all_tools(extra_definitions=mcp_definitions, settings=settings)
+    session_store = get_session_context_store()
+    session_store.load_latest()
     scheduler = get_scheduler()
     await scheduler.start()
     watcher = get_file_watcher()
+    environment_bus = AgentBus()
+    environment_stream = get_environment_stream(
+        dispatcher=EventDispatcher(environment_bus),
+        bus=environment_bus,
+        settings=settings,
+        reset=True,
+    )
+    file_environment_sink = environment_stream.file_change_sink()
+    watcher.subscribe_changes(file_environment_sink)
+    await environment_stream.start()
     await watcher.start(settings.allowed_directories)
     try:
         yield
     finally:
+        session_store.save()
         await watcher.stop()
+        watcher.unsubscribe_changes(file_environment_sink)
+        await environment_stream.stop()
         await scheduler.stop()
 
 

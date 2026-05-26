@@ -64,6 +64,19 @@ export type ApprovalEvent =
   | { type: "approval_created"; approval: BackendApproval }
   | { type: "approval_decided"; approval: BackendApproval };
 
+export type RemoteScreenEvent =
+  | { type: "connected"; fps: number; quality: number }
+  | {
+      type: "frame";
+      image: string;
+      timestamp: string;
+      width: number;
+      height: number;
+      original_width: number;
+      original_height: number;
+    }
+  | { type: "error"; message: string };
+
 export interface PairingSession {
   baseUrl: string;
   token: string;
@@ -116,7 +129,14 @@ export async function submitApprovalDecision(
 }
 
 export function approvalWebSocketUrl(session: PairingSession): string {
-  const url = new URL("/ws/mobile/notifications", session.baseUrl);
+  const url = new URL("/ws/mobile/approvals", session.baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("token", session.token);
+  return url.toString();
+}
+
+export function remoteScreenWebSocketUrl(session: PairingSession): string {
+  const url = new URL("/ws/remote/screen", session.baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("token", session.token);
   return url.toString();

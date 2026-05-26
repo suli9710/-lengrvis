@@ -9,13 +9,16 @@ from typing import Any
 import pytest
 
 from app.agents.base import AgentContext
+from app.agents.file_agent import FileAgent
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import AgentAction, Approval, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import AgentAction, Approval, ApprovalStatus, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
-from app.tools.registry import register_all_tools
+from app.tools.registry import ToolRegistry, register_all_tools
 from app.tools.schemas import ToolDefinition
 
 
@@ -101,6 +104,31 @@ def test_file_owned_step_calls_file_agent_act_before_tool_execute():
 
     assert len(agent.calls) == 1
     assert calls == [{"tool": "test.file_probe", "args": {"path": "a.txt"}}]
+
+
+def test_real_subagent_fast_path_uses_orchestrator_registry():
+    calls: list[dict[str, Any]] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.registry = ToolRegistry()
+    tool = _schema_tool(
+        "test.local_only",
+        calls,
+        {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    )
+    tool.fast_path_eligible = True
+    orchestrator.registry.register(tool)
+    orchestrator.subagents["FileAgent"] = FileAgent(orchestrator.bus)
+    task, plan, step = _task_and_plan("test.local_only", args={"query": "invoice"})
+
+    asyncio.run(orchestrator._process_steps(task, plan))
+
+    assert calls == [{"tool": "test.local_only", "args": {"query": "invoice"}}]
+    assert step.status == StepStatus.SUCCEEDED
+    assert not any(
+        message.message_type == MessageType.REVISION
+        and (message.structured_payload or {}).get("revision_requested")
+        for message in orchestrator.bus.get_messages(task.id)
+    )
 
 
 def test_propose_tool_can_correct_final_tool_and_args_before_safety_and_execute():
@@ -237,7 +265,22 @@ def test_approved_step_pauses_when_subagent_changes_approved_tool_call():
     task, plan, step = _task_and_plan("test.file_probe", args={"path": "approved.txt"})
     step.status = StepStatus.WAITING_USER_APPROVAL
     db.upsert_model("plans", plan)
-    approval = Approval(task_id=task.id, step_id=step.id, message="Approve test.file_probe")
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    preview: dict[str, Any] = {"ok": True}
+    approval = Approval(
+        task_id=task.id,
+        step_id=step.id,
+        message="Approve test.file_probe",
+        diff_preview=preview,
+        tool_name=step.tool_name,
+        risk_level=RiskLevel.R0_READ_ONLY.value,
+        args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        status=ApprovalStatus.APPROVED,
+    )
     db.upsert_model("approvals", approval)
 
     updated = asyncio.run(orchestrator.execute_approved_step(approval))
@@ -246,4 +289,7 @@ def test_approved_step_pauses_when_subagent_changes_approved_tool_call():
     assert updated.status == TaskPhase.EXECUTION
     assert updated.execution_stage == ExecutionStage.PAUSED
     messages = orchestrator.bus.get_messages(task.id)
-    assert any(m.message_type == MessageType.REVISION and m.to_agent == "PlannerAgent" for m in messages)
+    assert any(
+        m.message_type == MessageType.REVIEW and m.to_agent == "PlannerAgent"
+        for m in messages
+    )
