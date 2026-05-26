@@ -61,7 +61,7 @@ def _builtin_commands() -> list[CommandDefinition]:
             },
             related_routes=["POST /api/context/compact"],
             requires_approval=False,
-            next_action="Pass task_id or messages to execute compaction; omit both for diagnostics only.",
+            next_action="Pass task_id or messages to execute compaction; omit both for session lineage diagnostics only.",
         ),
         CommandDefinition(
             name="/mcp",
@@ -82,28 +82,32 @@ def _builtin_commands() -> list[CommandDefinition]:
         ),
         CommandDefinition(
             name="/resume",
-            summary="Resume a paused task via the existing task route when task_id is supplied.",
+            summary="Resume a paused task, or load compacted context by explicit session_id or boundary_id.",
             kind="action",
             input_schema={
                 "type": "object",
                 "properties": {
                     "task_id": {"type": "string"},
                     "session_id": {"type": "string"},
+                    "boundary_id": {"type": "string"},
+                    "resumed_from_boundary_id": {"type": "string"},
                     "include_compacted_context": {"type": "boolean"},
                 },
                 "additionalProperties": True,
             },
             related_routes=["POST /api/tasks/{task_id}/resume", "GET /api/tasks/{task_id}"],
-            next_action="Pass task_id to resume a paused task, or session_id to load compacted session context.",
+            next_action="Pass task_id to resume a paused task, or explicit session_id/boundary_id to load compacted session context.",
         ),
         CommandDefinition(
             name="/summary",
-            summary="Return persisted session summary, compact metadata, and compacted context for resume.",
+            summary="Return persisted session summary, compact metadata, compacted context, and lineage diagnostics for resume.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "session_id": {"type": "string"},
                     "task_id": {"type": "string"},
+                    "boundary_id": {"type": "string"},
+                    "resumed_from_boundary_id": {"type": "string"},
                     "messages": {"type": "array", "items": {"type": "object"}},
                 },
                 "additionalProperties": True,

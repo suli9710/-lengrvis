@@ -148,16 +148,40 @@ def test_summary_command_returns_session_compact_metadata() -> None:
     assert payload["result"]["summary"] == "Earlier compacted work."
     assert payload["result"]["compact_metadata"]["compaction_strategy"] == "manual_compact"
     assert payload["result"]["compacted_context"]["metadata"]["last_summarized_message_id"] == "msg_42"
+    assert payload["result"]["parent_session_id"] == ""
+    assert payload["result"]["resumed_from_task_id"] == ""
+    assert payload["result"]["resumed_from_boundary_id"] == ""
+    assert payload["result"]["active_task_ids"] == []
+    assert payload["result"]["summary_anchor"] == "msg_42"
+    assert payload["result"]["lineage"]["session_id"] == "session_summary_command"
+    assert payload["result"]["lineage"]["summary_anchor"] == "msg_42"
 
 
 def test_resume_command_loads_compacted_context_by_session_id() -> None:
     client = TestClient(create_app())
     store = SessionContextStore(session_id="session_resume_command")
     store.load()
+    store.remember_task("task_active")
     store.remember_summary(
         "Resume from this compacted context.",
         last_message_id="msg_99",
-        token_stats={"compact_metadata": {"summary_chars": 35}},
+        token_stats={
+            "compact_metadata": {
+                "summary_chars": 35,
+                "messages_summarized": 4,
+                "retained_tail_messages": 2,
+                "preserved_segment": {
+                    "message_ids": ["tail_a", "tail_b"],
+                    "messages": [
+                        {"id": "tail_a", "role": "user", "content": "tail a"},
+                        {"id": "tail_b", "role": "assistant", "content": "tail b"},
+                    ],
+                },
+            }
+        },
+        resumed_from_task_id="task_resume",
+        resumed_from_boundary_id="boundary_resume",
+        parent_session_id="session_parent",
     )
 
     response = client.post(
@@ -173,6 +197,60 @@ def test_resume_command_loads_compacted_context_by_session_id() -> None:
     assert payload["result"]["has_compacted_context"] is True
     assert payload["result"]["compacted_context"]["content"] == "Resume from this compacted context."
     assert payload["result"]["compacted_context"]["metadata"]["compact_metadata"]["summary_chars"] == 35
+    assert payload["result"]["parent_session_id"] == "session_parent"
+    assert payload["result"]["resumed_from_task_id"] == "task_resume"
+    assert payload["result"]["resumed_from_boundary_id"] == "boundary_resume"
+    assert payload["result"]["active_task_ids"] == ["task_active"]
+    assert payload["result"]["summary_anchor"] == "msg_99"
+    assert payload["result"]["lineage"]["latest_boundary_id"] == "boundary_resume"
+    assert payload["result"]["lineage"]["preserved_tail_message_count"] == 2
+    assert payload["result"]["lineage"]["preserved_tail_message_ids"] == ["tail_a", "tail_b"]
+    assert len(payload["result"]["compacted_context"]["messages"]) == 3
+
+
+def test_resume_command_include_compacted_context_uses_default_session_not_global_latest() -> None:
+    client = TestClient(create_app())
+    default_store = SessionContextStore(session_id="session_current")
+    default_store.load()
+    default_store.remember_summary("Default session summary.", last_message_id="msg_default")
+    other_store = SessionContextStore(session_id="newer_global_session")
+    other_store.load()
+    other_store.remember_summary("Newer global summary.", last_message_id="msg_newer")
+
+    response = client.post(
+        "/api/commands/execute",
+        json={"command": "/resume", "args": {"include_compacted_context": True}, "surface": "desktop"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"]["session_id"] == "session_current"
+    assert payload["result"]["compacted_context"]["content"] == "Default session summary."
+    assert payload["result"]["lineage"]["summary_anchor"] == "msg_default"
+    assert any("global latest session was not used" in item for item in payload["diagnostics"])
+
+
+def test_resume_command_loads_compacted_context_by_boundary_id() -> None:
+    client = TestClient(create_app())
+    older_store = SessionContextStore(session_id="older_boundary_session")
+    older_store.load()
+    older_store.remember_summary("Older boundary summary.", last_message_id="msg_old", resumed_from_boundary_id="boundary_old")
+    newer_store = SessionContextStore(session_id="newer_boundary_session")
+    newer_store.load()
+    newer_store.remember_summary("Newer boundary summary.", last_message_id="msg_new", resumed_from_boundary_id="boundary_new")
+
+    response = client.post(
+        "/api/commands/execute",
+        json={"command": "/resume", "args": {"boundary_id": "boundary_old"}, "surface": "desktop"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"]["session_id"] == "older_boundary_session"
+    assert payload["result"]["compacted_context"]["content"] == "Older boundary summary."
+    assert payload["result"]["lineage"]["latest_boundary_id"] == "boundary_old"
 
 
 def test_resume_command_without_args_still_lists_resumable_tasks() -> None:
@@ -190,6 +268,7 @@ def test_resume_command_without_args_still_lists_resumable_tasks() -> None:
     assert payload["ok"] is True
     assert payload["result"]["count"] >= 1
     assert any(item["id"] == task.id for item in payload["result"]["resumable_tasks"])
+    assert "session_id" not in payload["result"]
 
 
 def test_summary_command_updates_without_erasing_session_memory() -> None:
@@ -217,3 +296,24 @@ def test_summary_command_updates_without_erasing_session_memory() -> None:
     assert reloaded.learned_preferences["editor"] == "WPS"
     assert reloaded.active_task_ids == ["task_existing"]
     assert reloaded.last_summarized_message_id == "msg_new"
+
+
+def test_compact_command_diagnostics_include_lineage_without_running_compaction() -> None:
+    client = TestClient(create_app())
+    store = SessionContextStore(session_id="session_compact_diag")
+    store.load()
+    store.remember_task("task_active")
+    store.remember_summary("Compact diag summary.", last_message_id="msg_diag", resumed_from_boundary_id="boundary_diag")
+
+    response = client.post(
+        "/api/commands/execute",
+        json={"command": "/compact", "args": {"session_id": "session_compact_diag"}, "surface": "desktop"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["result"]["lineage"]["session_id"] == "session_compact_diag"
+    assert payload["result"]["lineage"]["active_task_ids"] == ["task_active"]
+    assert payload["result"]["lineage"]["summary_anchor"] == "msg_diag"
+    assert payload["result"]["lineage"]["latest_boundary_id"] == "boundary_diag"

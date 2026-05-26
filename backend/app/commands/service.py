@@ -15,7 +15,7 @@ from app.context_compaction import (
 from app.context_management import summarize_messages
 from app.core import db
 from app.core.errors import AppError
-from app.core.session_context import SessionContextStore, get_session_context_store
+from app.core.session_context import DEFAULT_SESSION_ID, SessionContext, SessionContextStore, lineage_diagnostics_from_metadata
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
 from app.perception.voice_input import DeterministicFallbackTranscriber
@@ -111,6 +111,7 @@ async def _mcp(args: dict[str, Any]) -> CommandResult:  # noqa: ARG001
 def _compact(args: dict[str, Any]) -> CommandResult:
     task_id = str(args.get("task_id") or "").strip()
     session_id = str(args.get("session_id") or "").strip()
+    effective_session_id = session_id or DEFAULT_SESSION_ID
     messages = args.get("messages")
     custom_instructions = str(args.get("custom_instructions") or "")
     recent_limit = _optional_int(args.get("recent_message_limit"))
@@ -122,7 +123,7 @@ def _compact(args: dict[str, Any]) -> CommandResult:
             task_id,
             custom_instructions=custom_instructions,
             recent_message_limit=recent_limit,
-            session_id=session_id or None,
+            session_id=effective_session_id,
             persist_session_context=persist_session,
             persist_agent_boundary=persist_boundary,
         )
@@ -133,7 +134,7 @@ def _compact(args: dict[str, Any]) -> CommandResult:
                 [item for item in messages if isinstance(item, dict)],
                 custom_instructions=custom_instructions,
                 recent_message_limit=recent_limit,
-                session_id=session_id or None,
+                session_id=effective_session_id,
             )
         else:
             result = manual_compact_messages(
@@ -143,20 +144,32 @@ def _compact(args: dict[str, Any]) -> CommandResult:
             )
         next_action = "Use the returned compacted messages as the new conversation payload."
     else:
+        diagnostics_context = _load_session_context(session_id or None)
         return CommandResult(
             command="/compact",
             result={
-                "accepted_args": ["task_id", "messages", "custom_instructions", "recent_message_limit"],
+                "accepted_args": [
+                    "task_id",
+                    "session_id",
+                    "messages",
+                    "custom_instructions",
+                    "recent_message_limit",
+                    "persist_session_context",
+                    "persist_agent_boundary",
+                ],
                 "route": "POST /api/context/compact",
+                "lineage": _lineage_payload(diagnostics_context),
             },
             diagnostics=["No task_id or messages were supplied, so compaction was not executed."],
             next_action="Pass task_id to compact stored task context, or messages to compact an ad hoc conversation.",
             delegated_to="context_compaction",
         )
 
+    payload = manual_compact_result_to_dict(result)
+    payload["lineage"] = _compact_result_lineage(payload, session_id=effective_session_id)
     return CommandResult(
         command="/compact",
-        result=manual_compact_result_to_dict(result),
+        result=payload,
         next_action=next_action,
         delegated_to="context_compaction",
     )
@@ -166,18 +179,27 @@ def _resume(args: dict[str, Any]) -> CommandResult:
     task_id = str(args.get("task_id") or "").strip()
     if not task_id:
         session_id = str(args.get("session_id") or "").strip()
-        if session_id or _bool_arg(args, "include_compacted_context", False):
-            context = _load_session_context(session_id or None)
+        boundary_id = str(args.get("boundary_id") or args.get("resumed_from_boundary_id") or "").strip()
+        if session_id or boundary_id or _bool_arg(args, "include_compacted_context", False):
+            context, diagnostics = _resolve_session_context(session_id=session_id or None, boundary_id=boundary_id or None)
+            if context is None:
+                return _session_context_not_found_result("/resume", session_id=session_id, boundary_id=boundary_id, diagnostics=diagnostics)
             compacted_context = _compacted_context_payload(context)
             return CommandResult(
                 command="/resume",
                 result={
                     "session_id": context.id,
+                    "parent_session_id": context.parent_session_id,
+                    "resumed_from_task_id": context.resumed_from_task_id,
+                    "resumed_from_boundary_id": context.resumed_from_boundary_id,
+                    "active_task_ids": list(context.active_task_ids),
+                    "summary_anchor": context.last_summarized_message_id,
+                    "lineage": _lineage_payload(context),
                     "session_context": context.context_for_planning(),
                     "compacted_context": compacted_context,
                     "has_compacted_context": bool(compacted_context.get("content")),
                 },
-                diagnostics=["No task_id supplied; task state was not changed."],
+                diagnostics=diagnostics,
                 next_action="Use compacted_context as the continuity payload, or pass task_id to resume a paused task.",
                 delegated_to="SessionContextStore",
             )
@@ -190,10 +212,34 @@ def _resume(args: dict[str, Any]) -> CommandResult:
             next_action="Pass task_id to call the existing task resume path.",
             delegated_to="TaskService",
         )
+    context, diagnostics = _resolve_session_context(
+        session_id=str(args.get("session_id") or "").strip() or None,
+        boundary_id=str(args.get("boundary_id") or args.get("resumed_from_boundary_id") or "").strip() or None,
+    )
+    if context is None:
+        return _session_context_not_found_result(
+            "/resume",
+            session_id=str(args.get("session_id") or "").strip(),
+            boundary_id=str(args.get("boundary_id") or args.get("resumed_from_boundary_id") or "").strip(),
+            diagnostics=diagnostics,
+        )
     task = resume_task(task_id)
+    lineage = _lineage_payload(context)
+    if not lineage.get("resumed_from_task_id"):
+        lineage["resumed_from_task_id"] = task_id
     return CommandResult(
         command="/resume",
-        result={"task": task.model_dump(mode="json")},
+        result={
+            "task": task.model_dump(mode="json"),
+            "session_id": context.id,
+            "parent_session_id": context.parent_session_id,
+            "resumed_from_task_id": lineage.get("resumed_from_task_id", ""),
+            "resumed_from_boundary_id": context.resumed_from_boundary_id,
+            "active_task_ids": list(context.active_task_ids),
+            "summary_anchor": context.last_summarized_message_id,
+            "lineage": lineage,
+        },
+        diagnostics=diagnostics,
         next_action=f"Watch /api/tasks/{task_id}/timeline or the task websocket for progress.",
         delegated_to="TaskService",
     )
@@ -202,8 +248,11 @@ def _resume(args: dict[str, Any]) -> CommandResult:
 def _summary(args: dict[str, Any]) -> CommandResult:
     session_id = str(args.get("session_id") or "").strip()
     task_id = str(args.get("task_id") or "").strip()
+    boundary_id = str(args.get("boundary_id") or args.get("resumed_from_boundary_id") or "").strip()
     messages = args.get("messages")
-    context = _load_session_context(session_id or None)
+    context, diagnostics = _resolve_session_context(session_id=session_id or None, boundary_id=boundary_id or None)
+    if context is None:
+        return _session_context_not_found_result("/summary", session_id=session_id, boundary_id=boundary_id, diagnostics=diagnostics)
     updated = False
     if task_id or isinstance(messages, list):
         raw_messages = load_task_messages(task_id) if task_id else [item for item in messages or [] if isinstance(item, dict)]
@@ -227,19 +276,29 @@ def _summary(args: dict[str, Any]) -> CommandResult:
                     resumed_from_task_id=task_id,
                 )
                 updated = True
+        elif summary_messages:
+            diagnostics.append("Summary update skipped because messages contain an unclosed tool call.")
     planning_context = context.context_for_planning()
+    lineage = _lineage_payload(context)
     return CommandResult(
         command="/summary",
         result={
             "session_id": context.id,
+            "parent_session_id": context.parent_session_id,
+            "resumed_from_task_id": context.resumed_from_task_id,
+            "resumed_from_boundary_id": context.resumed_from_boundary_id,
+            "active_task_ids": list(context.active_task_ids),
             "updated": updated,
             "summary": context.conversation_summary,
+            "summary_anchor": context.last_summarized_message_id,
             "last_summarized_message_id": context.last_summarized_message_id,
             "token_stats": context.token_stats,
             "compact_metadata": context.token_stats.get("compact_metadata") or {},
+            "lineage": lineage,
             "session_context": planning_context,
             "compacted_context": _compacted_context_payload(context),
         },
+        diagnostics=diagnostics,
         next_action="Use /resume with the same session_id to continue from compacted context.",
         delegated_to="SessionContextStore",
     )
@@ -373,18 +432,67 @@ def _bool_arg(args: dict[str, Any], key: str, default: bool) -> bool:
 
 
 def _load_session_context(session_id: str | None = None):
+    return SessionContextStore(session_id=session_id or DEFAULT_SESSION_ID).load()
+
+
+def _resolve_session_context(*, session_id: str | None = None, boundary_id: str | None = None) -> tuple[SessionContext | None, list[str]]:
+    diagnostics: list[str] = []
     if session_id:
-        return SessionContextStore(session_id=session_id).load()
-    return get_session_context_store().load()
+        context = SessionContextStore(session_id=session_id).load()
+        if boundary_id and not context.matches_boundary_id(boundary_id):
+            diagnostics.append(f"Requested boundary_id {boundary_id} was not found on session {context.id}; no global session fallback was used.")
+            return None, diagnostics
+        diagnostics.append(f"Loaded session context by explicit session_id {context.id}.")
+        return context, diagnostics
+    if boundary_id:
+        store = SessionContextStore()
+        context = store.load_by_boundary_id(boundary_id)
+        if context:
+            diagnostics.append(f"Loaded session context by explicit boundary_id {boundary_id}.")
+            return context, diagnostics
+        diagnostics.append(f"Requested boundary_id {boundary_id} was not found; no session context was loaded and no global latest fallback was used.")
+        return None, diagnostics
+    context = _load_session_context(None)
+    diagnostics.append(f"Loaded default session context {context.id}; global latest session was not used.")
+    return context, diagnostics
+
+
+def _session_context_not_found_result(command: str, *, session_id: str, boundary_id: str, diagnostics: list[str]) -> CommandResult:
+    return CommandResult(
+        ok=False,
+        command=command,
+        result={
+            "session_id": session_id,
+            "boundary_id": boundary_id,
+            "has_compacted_context": False,
+            "lineage": {
+                "session_id": session_id,
+                "parent_session_id": "",
+                "resumed_from_task_id": "",
+                "resumed_from_boundary_id": boundary_id,
+                "active_task_ids": [],
+                "summary_anchor": "",
+                "summary_anchor_message_id": "",
+                "latest_boundary_id": boundary_id,
+                "latest_boundary_count": 0,
+                "preserved_tail_message_count": 0,
+                "preserved_tail_message_ids": [],
+                "summarized_message_count": 0,
+                "summary_chars": 0,
+            },
+        },
+        diagnostics=diagnostics,
+        error="session_context_not_found",
+        next_action="Pass a known session_id or boundary_id from /summary or /compact diagnostics.",
+        delegated_to="SessionContextStore",
+    )
 
 
 def _compacted_context_payload(context) -> dict[str, Any]:  # noqa: ANN001
     summary = str(context.conversation_summary or "").strip()
     compact_metadata = context.token_stats.get("compact_metadata") or {}
-    preserved_segment = compact_metadata.get("preserved_segment") if isinstance(compact_metadata, dict) else {}
-    preserved_messages = preserved_segment.get("messages") if isinstance(preserved_segment, dict) else []
-    if not isinstance(preserved_messages, list):
-        preserved_messages = []
+    lineage = _lineage_payload(context)
+    preserved_messages = _preserved_segment_messages(compact_metadata if isinstance(compact_metadata, dict) else {})
     return {
         "role": "system",
         "summary": summary,
@@ -398,6 +506,7 @@ def _compacted_context_payload(context) -> dict[str, Any]:  # noqa: ANN001
                     "compact_boundary": bool(summary),
                     "session_id": context.id,
                     "last_summarized_message_id": context.last_summarized_message_id,
+                    "lineage": lineage,
                 },
             },
             *[dict(message) for message in preserved_messages if isinstance(message, dict)],
@@ -412,8 +521,58 @@ def _compacted_context_payload(context) -> dict[str, Any]:  # noqa: ANN001
             "last_summarized_message_id": context.last_summarized_message_id,
             "token_stats": context.token_stats,
             "compact_metadata": compact_metadata,
+            "lineage": lineage,
         },
     }
+
+
+def _lineage_payload(context: SessionContext) -> dict[str, Any]:
+    return context.lineage_diagnostics()
+
+
+def _compact_result_lineage(payload: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+    compact_metadata = payload.get("compact_metadata") if isinstance(payload.get("compact_metadata"), dict) else {}
+    session_context = payload.get("session_context")
+    if isinstance(session_context, dict):
+        lineage = session_context.get("lineage")
+        if isinstance(lineage, dict):
+            result = dict(lineage)
+            if not result.get("session_id"):
+                result["session_id"] = session_id
+            if not result.get("resumed_from_task_id") and payload.get("task_id"):
+                result["resumed_from_task_id"] = str(payload.get("task_id") or "")
+            return result
+        return lineage_diagnostics_from_metadata(
+            session_id=str(session_context.get("session_id") or session_id or ""),
+            parent_session_id=str(session_context.get("parent_session_id") or ""),
+            resumed_from_task_id=str(session_context.get("resumed_from_task_id") or payload.get("task_id") or ""),
+            resumed_from_boundary_id=str(session_context.get("resumed_from_boundary_id") or ""),
+            active_task_ids=list(session_context.get("active_task_ids") or []),
+            summary_anchor=str(session_context.get("last_summarized_message_id") or ""),
+            compact_metadata=compact_metadata,
+            summary=str(payload.get("summary") or ""),
+            updated_at=str(session_context.get("updated_at") or ""),
+        )
+    boundary = payload.get("boundary_message") if isinstance(payload.get("boundary_message"), dict) else {}
+    boundary_id = str(boundary.get("id") or payload.get("persisted_message_id") or "")
+    return lineage_diagnostics_from_metadata(
+        session_id=session_id,
+        resumed_from_task_id=str(payload.get("task_id") or ""),
+        resumed_from_boundary_id=boundary_id,
+        summary_anchor=str(compact_metadata.get("last_pre_compact_id") or ""),
+        compact_metadata=compact_metadata,
+        summary=str(payload.get("summary") or ""),
+    )
+
+
+def _preserved_segment_messages(compact_metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    preserved_segment = compact_metadata.get("preserved_segment") or compact_metadata.get("preservedSegment")
+    if isinstance(preserved_segment, dict):
+        messages = preserved_segment.get("messages")
+        return [dict(message) for message in messages if isinstance(message, dict)] if isinstance(messages, list) else []
+    if isinstance(preserved_segment, list):
+        return [dict(message) for message in preserved_segment if isinstance(message, dict)]
+    return []
 
 
 def _messages_after_summary_anchor(messages: list[dict[str, Any]], anchor_id: str) -> list[dict[str, Any]]:
