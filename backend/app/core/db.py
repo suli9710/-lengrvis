@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -366,20 +367,8 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
             )
             return
         if table == "run_events":
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO run_events (id, run_id, name, sequence, data, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data["id"],
-                    data["run_id"],
-                    data["name"],
-                    int(data.get("sequence") or 0),
-                    _json(data),
-                    data.get("created_at", now),
-                ),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            _insert_run_event_locked(conn, data)
             return
         if table == "safety_reviews":
             conn.execute(
@@ -506,6 +495,43 @@ def next_run_event_sequence(run_id: str) -> int:
     with connect() as conn:
         row = conn.execute("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?", (run_id,)).fetchone()
     return int(row["sequence"] or 0) + 1
+
+
+def insert_run_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
+    data = json.loads(model.model_dump_json()) if isinstance(model, BaseModel) else dict(model)
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        return _insert_run_event_locked(conn, data)
+
+
+def _insert_run_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+    now = data.get("created_at") or _now_iso()
+    stored = dict(data)
+    stored.setdefault("id", f"runevt_{uuid4().hex}")
+    stored["created_at"] = now
+    sequence = int(stored.get("sequence") or 0)
+    if sequence <= 0:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?",
+            (stored["run_id"],),
+        ).fetchone()
+        sequence = int(row["sequence"] or 0) + 1
+        stored["sequence"] = sequence
+    conn.execute(
+        """
+        INSERT INTO run_events (id, run_id, name, sequence, data, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            stored["id"],
+            stored["run_id"],
+            stored["name"],
+            sequence,
+            _json(stored),
+            now,
+        ),
+    )
+    return stored
 
 
 def fetch_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.core import db
 from app.core.audit import record
-from app.core.schemas import MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
+from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
 from app.orchestration.execution_models import (
     EngineSelection,
@@ -252,7 +252,7 @@ class OSExecutionEngine(ExecutionEngine):
                 hook,
                 phase=RunPhase.AWAITING_APPROVAL,
                 outcome=stop_outcome,
-                message="Plan is waiting for approval on a modifying step.",
+                message="Plan generated and waiting for approval on modifying steps.",
                 finished=True,
             )
         if stop_outcome == "paused":
@@ -264,7 +264,7 @@ class OSExecutionEngine(ExecutionEngine):
                 hook,
                 phase=RunPhase.PAUSED,
                 outcome=stop_outcome,
-                message="A subagent requested plan revision; execution is paused.",
+                message="A subagent requested plan revision; automatic replanning was not repeated for this step.",
                 finished=True,
             )
         if stop_outcome in {"denied", "failed"}:
@@ -403,7 +403,7 @@ class OSExecutionEngine(ExecutionEngine):
                 hook,
                 phase=RunPhase.AWAITING_APPROVAL,
                 outcome="waiting_approval",
-                message="Plan is waiting for approval on a modifying step.",
+                message="Plan generated and waiting for approval on modifying steps.",
                 finished=True,
             )
         if any(step.status == StepStatus.DENIED for step in plan.steps):
@@ -499,6 +499,19 @@ class OSExecutionEngine(ExecutionEngine):
                 "phase": stored.phase.value,
             },
         )
+        if outcome == "waiting_approval":
+            await self._emit(
+                outputs,
+                hook,
+                "approval.needed",
+                {
+                    "task_id": task.id,
+                    "plan_id": plan.id,
+                    "waiting_step_ids": [
+                        step.id for step in plan.steps if step.status == StepStatus.WAITING_USER_APPROVAL
+                    ],
+                },
+            )
         event_name = self._event_name_for_outcome(outcome)
         if event_name:
             await self._emit(
@@ -809,4 +822,3 @@ class OSExecutionEngine(ExecutionEngine):
         maybe_awaitable = hook(event_name, payload)
         if inspect.isawaitable(maybe_awaitable):
             await maybe_awaitable
-

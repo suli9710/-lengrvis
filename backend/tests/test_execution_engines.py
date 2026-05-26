@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import pytest
 
+from app.agents.orchestrator_agent import OrchestratorAgent
 from app.config import AppSettings
+from app.core import db
+from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.developer_engine import DeveloperExecutionEngine, readonly_developer_tool_names
 from app.orchestration.engine_router import EngineRouter, configured_default_engine, configured_max_turns, route_engine
 from app.orchestration.execution_engine import InMemoryRunStore
 from app.orchestration.execution_models import RunPhase
+from app.orchestration.os_execution_engine import OSExecutionEngine
+from app.policy.risk import RiskLevel
+from app.tools.schemas import ToolDefinition
 
 
 def test_route_engine_auto_selects_developer_for_repo_goals() -> None:
@@ -80,3 +86,142 @@ async def test_engine_router_resumes_and_cancels_by_run_id(tmp_path) -> None:
 
     assert resumed.run_id == state.run_id
     assert cancelled.phase == RunPhase.CANCELLED
+
+
+class PassthroughAgent:
+    name = "FileAgent"
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
+        return AgentAction(kind="propose_tool", tool_name=step.tool_name, args=dict(step.args))
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "ok"
+
+
+class RecoveryAgent:
+    name = "FileAgent"
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
+        if observation and not observation.ok:
+            return AgentAction(kind="propose_tool", tool_name="test.recovery_ok", args={"label": "recovery"})
+        return AgentAction(kind="propose_tool", tool_name=step.tool_name, args=dict(step.args))
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "ok"
+
+
+def _runtime_tool(name: str, calls: list[dict], *, risk: RiskLevel = RiskLevel.R0_READ_ONLY, ok: bool = True) -> ToolDefinition:
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        if not ok:
+            return {"error": "planned failure"}
+        return {"ok": True, "label": args.get("label", name)}
+
+    return ToolDefinition(
+        name=name,
+        description=name,
+        input_schema={},
+        output_schema={},
+        risk_level=risk,
+        agent_owner="FileAgent",
+        supports_dry_run=risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM},
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"] if risk == RiskLevel.R0_READ_ONLY else ["write"],
+        resource_kinds=["test"],
+        fast_path_eligible=True,
+    )
+
+
+def _task_plan(tool_name: str, *, risk: RiskLevel = RiskLevel.R0_READ_ONLY):
+    task = Task(user_goal="os engine", mode="efficiency", status=TaskStatus.REVIEWING_PLAN)
+    db.upsert_model("tasks", task)
+    step = PlanStep(
+        task_id=task.id,
+        order=1,
+        agent_name="FileAgent",
+        tool_name=tool_name,
+        description="Run OS engine test step",
+        args={"label": "primary"},
+        risk_level=risk,
+    )
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[step])
+    db.upsert_model("plans", plan)
+    return task, plan, step
+
+
+@pytest.mark.asyncio
+async def test_os_engine_turn_emits_structured_outputs_and_uses_tool_runtime(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+    calls: list[dict] = []
+    events: list[tuple[str, dict]] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = PassthroughAgent()
+    orchestrator.registry.register(_runtime_tool("test.os_turn", calls))
+    task, plan, step = _task_plan("test.os_turn")
+    engine = OSExecutionEngine(orchestrator, store=InMemoryRunStore())
+
+    result = await engine.run_plan_turn(task, plan, event_hook=lambda name, payload: events.append((name, payload)))
+
+    assert result.finished is True
+    assert result.state.phase == RunPhase.COMPLETED
+    assert step.status == StepStatus.SUCCEEDED
+    assert calls == [{"label": "primary"}]
+    assert result.outputs["selected_step_ids"] == [step.id]
+    assert any(name == "step.selected" for name, _payload in events)
+    assert any(observation.payload["step_id"] == step.id for observation in result.state.observations)
+
+
+@pytest.mark.asyncio
+async def test_os_engine_waiting_approval_stays_inside_tool_runtime_safety_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+    calls: list[dict] = []
+    events: list[str] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = PassthroughAgent()
+    orchestrator.registry.register(_runtime_tool("test.os_write", calls, risk=RiskLevel.R2_REVERSIBLE_MODIFY))
+    task, plan, step = _task_plan("test.os_write", risk=RiskLevel.R2_REVERSIBLE_MODIFY)
+    engine = OSExecutionEngine(orchestrator, store=InMemoryRunStore())
+
+    result = await engine.run_plan_turn(task, plan, event_hook=lambda name, payload: events.append(name))
+
+    approvals = db.fetch_many("approvals", "task_id = ? AND step_id = ?", (task.id, step.id), limit=10)
+    assert result.finished is True
+    assert result.state.phase == RunPhase.AWAITING_APPROVAL
+    assert step.status == StepStatus.WAITING_USER_APPROVAL
+    assert calls == [{"label": "primary", "dry_run": True}]
+    assert approvals
+    assert "approval.needed" in events
+
+
+@pytest.mark.asyncio
+async def test_os_engine_recovery_step_runs_through_same_runtime_safety_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+    calls: list[dict] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = RecoveryAgent()
+    orchestrator.registry.register(_runtime_tool("test.primary_fail", calls, ok=False))
+    orchestrator.registry.register(_runtime_tool("test.recovery_ok", calls))
+    task, plan, step = _task_plan("test.primary_fail")
+    engine = OSExecutionEngine(orchestrator, store=InMemoryRunStore())
+
+    result = await engine.run_plan_turn(task, plan)
+
+    reviews = db.fetch_many("safety_reviews", "task_id = ?", (task.id,), limit=50)
+    reviewed_step_ids = {review["step_id"] for review in reviews if review["target_type"] == "tool_call"}
+    recovery_step = next(item for item in plan.steps if item.id != step.id)
+    assert result.state.phase == RunPhase.COMPLETED
+    assert step.status == StepStatus.SKIPPED
+    assert recovery_step.status == StepStatus.SUCCEEDED
+    assert calls == [{"label": "primary"}, {"label": "recovery"}]
+    assert {step.id, recovery_step.id}.issubset(reviewed_step_ids)

@@ -106,6 +106,30 @@ def test_bound_approval_executes_once_and_marks_consumed():
     assert refreshed.consumed_at
 
 
+def test_bound_approval_keeps_task_running_when_ready_steps_remain():
+    orchestrator, task, plan, step, approval, _calls = _setup_bound_approval()
+    follow_up = PlanStep(
+        id="follow_up",
+        task_id=task.id,
+        order=2,
+        agent_name="FileAgent",
+        tool_name="test.bound_write",
+        description="follow-up read-only check",
+        args={"path": "a.txt"},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        depends_on=[step.id],
+    )
+    plan.steps.append(follow_up)
+    db.upsert_model("plans", plan)
+
+    asyncio.run(orchestrator.execute_approved_step(approval))
+    refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
+
+    assert refreshed.status == TaskStatus.EXECUTION
+    assert refreshed.execution_stage == ExecutionStage.STEP_RUNNING
+    assert "continuing remaining plan steps" in refreshed.final_summary.lower()
+
+
 def test_consumed_approval_cannot_execute_twice():
     orchestrator, task, _plan, _step, approval, calls = _setup_bound_approval()
 
