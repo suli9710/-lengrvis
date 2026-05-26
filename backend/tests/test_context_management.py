@@ -12,6 +12,8 @@ from app.context_management import (
     count_messages_tokens,
     effective_context_window,
     project_messages_for_llm,
+    recent_complete_tail_start,
+    repair_tool_message_invariants,
     warning_state,
 )
 from app.llm.base import LLMProvider
@@ -52,6 +54,17 @@ def test_warning_state_uses_configured_auto_compact_limit():
 def test_project_messages_microcompacts_old_tool_results():
     messages = [
         {"role": "user", "content": "read a file"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tool_1",
+                    "type": "function",
+                    "function": {"name": "file.read", "arguments": "{}"},
+                }
+            ],
+        },
         {"role": "tool", "content": "x" * 200, "tool_call_id": "tool_1"},
         {"role": "assistant", "content": "recent assistant"},
         {"role": "user", "content": "recent user"},
@@ -60,8 +73,9 @@ def test_project_messages_microcompacts_old_tool_results():
     projection = project_messages_for_llm(messages, _settings(), source="test")
 
     assert projection.micro_compacted is True
-    assert projection.messages[1]["metadata"]["micro_compacted"] is True
-    assert len(projection.messages[1]["content"]) < 200
+    tool_message = next(message for message in projection.messages if message.get("role") == "tool")
+    assert tool_message["metadata"]["micro_compacted"] is True
+    assert len(tool_message["content"]) < 200
 
 
 def test_project_messages_snips_long_history_without_deleting_recent_tail():
@@ -73,6 +87,62 @@ def test_project_messages_snips_long_history_without_deleting_recent_tail():
     assert len(projection.messages) < len(messages)
     assert projection.messages[-1]["content"] == "message 19"
     assert any("history snip" in message["content"].lower() for message in projection.messages)
+
+
+def test_history_snip_keeps_tool_call_pair_when_tail_starts_on_tool_result():
+    messages = [{"role": "user", "content": f"old {index}"} for index in range(10)]
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "system.get_info", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool output"},
+            {"role": "assistant", "content": "done"},
+        ]
+    )
+
+    projection = project_messages_for_llm(
+        messages,
+        _settings(context_history_snip_threshold=8, context_history_snip_keep_recent=2, context_auto_compact_enabled=False),
+        source="test",
+    )
+
+    assert recent_complete_tail_start(messages, 2) == len(messages) - 3
+    assert any(message.get("tool_calls") for message in projection.messages)
+    assert any(message.get("tool_call_id") == "call_1" for message in projection.messages)
+
+
+def test_repair_tool_invariants_demotes_orphan_tool_result_without_dropping_content():
+    repaired = repair_tool_message_invariants(
+        [
+            {"role": "tool", "tool_call_id": "missing_call", "content": "important observation"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "no_result",
+                        "type": "function",
+                        "function": {"name": "file.read", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
+    )
+
+    assert repaired[0]["role"] == "assistant"
+    assert repaired[0]["content"] == "important observation"
+    assert repaired[0]["metadata"]["orphan_tool_result_compacted"] is True
+    assert "tool_calls" not in repaired[1]
+    assert repaired[1]["metadata"]["tool_calls_compacted"] is True
 
 
 def test_project_messages_auto_compacts_when_over_threshold():
@@ -88,6 +158,44 @@ def test_project_messages_auto_compacts_when_over_threshold():
     assert projection.compacted is True
     assert projection.projected_tokens < projection.original_tokens
     assert any("auto-compaction" in message["content"].lower() for message in projection.messages)
+
+
+def test_auto_compact_keeps_tool_call_pair_when_tail_starts_on_tool_result():
+    messages = [{"role": "user", "content": "x" * 1000} for _ in range(6)]
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_auto",
+                        "type": "function",
+                        "function": {"name": "system.get_info", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_auto", "content": "auto tool output"},
+            {"role": "assistant", "content": "after auto tool"},
+        ]
+    )
+
+    projection = project_messages_for_llm(
+        messages,
+        _settings(
+            context_history_snip_enabled=False,
+            context_micro_compact_enabled=False,
+            context_recent_message_limit=2,
+        ),
+        source="test",
+    )
+
+    assert projection.compacted is True
+    assert any(
+        any(tool_call.get("id") == "call_auto" for tool_call in message.get("tool_calls") or [])
+        for message in projection.messages
+    )
+    assert any(message.get("tool_call_id") == "call_auto" for message in projection.messages)
 
 
 def test_context_aware_provider_compacts_before_chat():
@@ -141,3 +249,60 @@ def test_context_aware_provider_reactive_compacts_after_prompt_too_long():
     assert asyncio.run(wrapped.chat([{"role": "user", "content": "x" * 1000} for _ in range(10)])) == "ok"
     assert provider.calls == 2
     assert any("reactive" in message["content"].lower() or "auto-compaction" in message["content"].lower() for message in provider.messages)
+
+
+def test_reactive_compact_keeps_tool_call_pair_when_tail_starts_on_tool_result():
+    class FailingProvider(LLMProvider):
+        name = "reactive_tail"
+
+        def __init__(self):
+            self.calls = 0
+            self.messages = []
+
+        async def chat(self, messages, model=None, temperature=None, tools=None):  # noqa: ANN001, ARG002
+            self.calls += 1
+            self.messages = messages
+            if self.calls == 1:
+                raise PromptTooLongError("prompt too long")
+            return "ok"
+
+        async def structured_chat(self, messages, output_schema):  # noqa: ANN001, ARG002
+            return {"ok": True}
+
+    provider = FailingProvider()
+    wrapped = ContextAwareProvider(
+        provider,
+        _settings(
+            model_auto_compact_token_limit=100000,
+            context_history_snip_enabled=False,
+            context_micro_compact_enabled=False,
+            context_recent_message_limit=4,
+        ),
+    )
+    messages = [{"role": "user", "content": f"old {index}"} for index in range(8)]
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_reactive",
+                        "type": "function",
+                        "function": {"name": "system.get_info", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_reactive", "content": "reactive tool output"},
+            {"role": "assistant", "content": "after reactive tool"},
+        ]
+    )
+
+    assert asyncio.run(wrapped.chat(messages)) == "ok"
+
+    assert provider.calls == 2
+    assert any(
+        any(tool_call.get("id") == "call_reactive" for tool_call in message.get("tool_calls") or [])
+        for message in provider.messages
+    )
+    assert any(message.get("tool_call_id") == "call_reactive" for message in provider.messages)

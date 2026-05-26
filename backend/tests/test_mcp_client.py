@@ -16,6 +16,7 @@ import pytest
 
 from app.config import AppSettings
 from app.mcp import MCPClient, MCPServerConfig, MCPRegistry
+from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 
@@ -121,6 +122,9 @@ def test_mcp_registry_adapts_to_tool_definitions(mcp_server):
     for definition in definitions:
         assert isinstance(definition, ToolDefinition)
         assert definition.agent_owner == "SearchAgent"
+        assert definition.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+        assert definition.trust_tier == "third_party"
+        assert definition.fast_path_eligible is False
 
 
 def test_mcp_registry_skips_disabled_servers():

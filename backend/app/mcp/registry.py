@@ -58,11 +58,19 @@ class MCPRegistry:
                     description=tool.get("description") or name,
                     input_schema=tool.get("input_schema") or {},
                     output_schema={"type": "object"},
-                    risk_level=RiskLevel.R0_READ_ONLY,
+                    risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
                     agent_owner="SearchAgent",
                     supports_dry_run=False,
                     requires_authorized_path=False,
                     execute=_build_executor(self, server, tool["name"]),
+                    search_hint="third-party MCP tool; requires explicit local trust configuration before execution",
+                    capabilities=["mcp", "third_party"],
+                    effects=["external_call"],
+                    resource_kinds=["external_service"],
+                    fast_path_eligible=False,
+                    trust_tier="third_party",
+                    sensitive_arg_keys=["authorization", "cookie", "password", "secret", "token"],
+                    external_network=True,
                 )
             )
         return adapted

@@ -5,7 +5,7 @@ import threading
 from collections import defaultdict
 
 from app.core.schemas import Approval
-from app.policy.redaction import redact_value
+from app.policy.approval_binding import redacted_preview
 
 
 class ApprovalEventBus:
@@ -64,5 +64,5 @@ def publish_approval_decided(approval: Approval) -> None:
 
 def _safe_approval(approval: Approval) -> dict:
     payload = approval.model_dump(mode="json")
-    payload["diff_preview"] = redact_value(payload.get("diff_preview") or {})
+    payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
     return payload

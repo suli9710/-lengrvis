@@ -59,6 +59,9 @@ class ContextProjection:
     strategy: str = "none"
 
 
+COMPACT_BOUNDARY_TYPES = {"manual_compact", "auto_compact", "reactive_compact"}
+
+
 def rough_token_count(content: Any, *, bytes_per_token: int = CHARS_PER_TOKEN) -> int:
     if content is None:
         return 0
@@ -137,7 +140,7 @@ def project_messages_for_llm(
     session_context: dict[str, Any] | None = None,
     source: str = "llm",
 ) -> ContextProjection:
-    original = _normalize_messages(messages)
+    original = compact_boundary_view(_normalize_messages(messages))
     original_tokens = count_messages_tokens(original)
     projected = copy.deepcopy(original)
     micro_compacted = False
@@ -163,6 +166,9 @@ def project_messages_for_llm(
         projected, auto_compacted = auto_compact_messages(projected, settings, session_context=session_context)
         compacted = compacted or auto_compacted
         projected_tokens = count_messages_tokens(projected)
+
+    projected = repair_tool_message_invariants(projected)
+    projected_tokens = count_messages_tokens(projected)
 
     projection = ContextProjection(
         messages=projected,
@@ -224,16 +230,18 @@ def snip_history_if_needed(messages: list[dict[str, Any]], settings: AppSettings
     keep_recent = max(1, int(settings.context_history_snip_keep_recent))
     if threshold <= 0 or len(messages) <= threshold:
         return messages, False
-    protected_head = [message for message in messages[:2] if message.get("role") in {"system", "developer"}]
-    tail = messages[-keep_recent:]
-    removed = max(0, len(messages) - len(protected_head) - len(tail))
+    head_end = _protected_head_end(messages)
+    protected_head = copy.deepcopy(messages[:head_end])
+    tail_start = recent_complete_tail_start(messages, keep_recent, min_start_index=head_end)
+    tail = copy.deepcopy(messages[tail_start:])
+    removed = max(0, tail_start - head_end)
     if removed <= 0:
         return messages, False
     boundary = _system_context_message(
         render_prompt("context_history_snip.md", {"removed": removed}),
         {"context_boundary": "history_snip", "removed_messages": removed},
     )
-    return [*protected_head, boundary, *tail], True
+    return repair_tool_message_invariants([*protected_head, boundary, *tail]), True
 
 
 def inject_session_summary(
@@ -262,9 +270,11 @@ def auto_compact_messages(
         return messages, False
 
     recent_limit = max(4, int(settings.context_recent_message_limit))
-    recent = copy.deepcopy(messages[-recent_limit:])
-    head = [message for message in messages[:2] if message.get("role") in {"system", "developer"}]
-    middle = messages[len(head) : max(len(head), len(messages) - recent_limit)]
+    head_end = _protected_head_end(messages)
+    tail_start = recent_complete_tail_start(messages, recent_limit, min_start_index=head_end)
+    recent = copy.deepcopy(messages[tail_start:])
+    head = copy.deepcopy(messages[:head_end])
+    middle = messages[head_end:tail_start]
     summary_text = summarize_messages(middle, settings)
     if session_context:
         session_summary = _session_summary_text(session_context, limit=2000)
@@ -280,8 +290,196 @@ def auto_compact_messages(
             "pre_compact_tokens": count_messages_tokens(messages),
         },
     )
-    compacted = [*head, boundary, *recent]
+    compacted = repair_tool_message_invariants([*head, boundary, *recent])
     return compacted, count_messages_tokens(compacted) < count_messages_tokens(messages)
+
+
+def compact_boundary_view(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the LLM-visible view after the newest compact boundary.
+
+    Manual compaction persists a boundary/summary message plus a recent tail.
+    If callers later pass a longer transcript that still contains older items,
+    this keeps stable system/developer instructions and starts history at the
+    latest compact boundary.
+    """
+
+    boundary_index = _latest_compact_boundary_index(messages)
+    if boundary_index is None:
+        return messages
+    boundary = copy.deepcopy(messages[boundary_index])
+    retained_tail_ids = _retained_tail_message_ids(boundary)
+    protected_head = [
+        copy.deepcopy(message)
+        for message in messages[:boundary_index]
+        if message.get("role") in {"system", "developer"} and not _is_compact_boundary(message)
+    ]
+    tail_from_metadata: list[dict[str, Any]] = []
+    if retained_tail_ids:
+        seen_ids: set[str] = set()
+        for message in messages[:boundary_index]:
+            message_id = str(message.get("id") or "").strip()
+            if message_id in retained_tail_ids and message_id not in seen_ids:
+                tail_from_metadata.append(copy.deepcopy(message))
+                seen_ids.add(message_id)
+    tail_after_boundary = copy.deepcopy(messages[boundary_index + 1 :])
+    if tail_after_boundary:
+        after_ids = {str(message.get("id") or "").strip() for message in tail_after_boundary}
+        tail_from_metadata = [message for message in tail_from_metadata if str(message.get("id") or "").strip() not in after_ids]
+    return [*protected_head, boundary, *tail_from_metadata, *tail_after_boundary]
+
+
+def recent_complete_tail_start(messages: list[dict[str, Any]], keep_recent: int, *, min_start_index: int = 0) -> int:
+    """Return a recent-tail start index that does not orphan tool results.
+
+    OpenAI-compatible chat history is sensitive to assistant ``tool_calls`` and
+    subsequent ``tool`` messages staying together. A plain ``messages[-N:]`` can
+    start on a tool result and leave its assistant call behind, so compaction
+    expands the tail backward until visible tool results have their call site.
+    """
+
+    if not messages:
+        return 0
+    floor = max(0, min(len(messages), int(min_start_index or 0)))
+    start = max(floor, len(messages) - max(1, int(keep_recent or 1)))
+    while start > floor:
+        missing = _orphan_tool_result_ids(messages[start:])
+        if not missing and str(messages[start].get("role") or "") != "tool":
+            break
+        previous = _nearest_prior_tool_call_index(messages, start, missing)
+        if previous is None:
+            if str(messages[start].get("role") or "") == "tool":
+                start -= 1
+                continue
+            break
+        if previous < floor:
+            break
+        start = previous
+    return start
+
+
+def select_recent_complete_tail(
+    messages: list[dict[str, Any]],
+    keep_recent: int,
+    *,
+    min_start_index: int = 0,
+) -> list[dict[str, Any]]:
+    return copy.deepcopy(messages[recent_complete_tail_start(messages, keep_recent, min_start_index=min_start_index) :])
+
+
+def repair_tool_message_invariants(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a provider-safe view with no orphan tool-role messages.
+
+    If a compacted projection cannot include a complete assistant/tool pair,
+    it preserves the natural-language content and drops only the invalid
+    structured tool-call envelope. This keeps the next LLM request valid while
+    retaining as much recent context as possible.
+    """
+
+    if not messages:
+        return []
+
+    repaired: list[dict[str, Any]] = []
+    open_tool_call_ids: set[str] = set()
+    seen_tool_result_ids: set[str] = set()
+    for message in messages:
+        item = copy.deepcopy(message)
+        role = str(item.get("role") or "")
+        if role == "tool":
+            tool_call_id = str(item.get("tool_call_id") or "").strip()
+            if not tool_call_id or tool_call_id not in open_tool_call_ids:
+                item["role"] = "assistant"
+                item.pop("tool_call_id", None)
+                metadata = dict(item.get("metadata") or {})
+                metadata["orphan_tool_result_compacted"] = True
+                item["metadata"] = metadata
+                if not str(item.get("content") or "").strip():
+                    item["content"] = "[Tool result omitted during context compaction because its tool call is not in view.]"
+                repaired.append(item)
+                continue
+            seen_tool_result_ids.add(tool_call_id)
+            repaired.append(item)
+            continue
+        for tool_call_id in _tool_call_ids(item):
+            open_tool_call_ids.add(tool_call_id)
+        repaired.append(item)
+
+    if not open_tool_call_ids:
+        return repaired
+
+    final: list[dict[str, Any]] = []
+    for message in repaired:
+        item = copy.deepcopy(message)
+        tool_calls = list(item.get("tool_calls") or [])
+        if tool_calls:
+            kept_tool_calls = [
+                tool_call
+                for tool_call in tool_calls
+                if str(tool_call.get("id") or "").strip() in seen_tool_result_ids
+            ]
+            if kept_tool_calls:
+                item["tool_calls"] = kept_tool_calls
+            else:
+                item.pop("tool_calls", None)
+                metadata = dict(item.get("metadata") or {})
+                metadata["tool_calls_compacted"] = True
+                item["metadata"] = metadata
+                if not str(item.get("content") or "").strip():
+                    item["content"] = "[Tool call omitted during context compaction because its result is not in view.]"
+        final.append(item)
+    return final
+
+
+def _protected_head_end(messages: list[dict[str, Any]]) -> int:
+    index = 0
+    while index < len(messages) and messages[index].get("role") in {"system", "developer"}:
+        if _is_compact_boundary(messages[index]):
+            break
+        index += 1
+    return index
+
+
+def _tool_call_ids(message: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for tool_call in message.get("tool_calls") or []:
+        if not isinstance(tool_call, dict):
+            continue
+        tool_call_id = str(tool_call.get("id") or "").strip()
+        if tool_call_id:
+            ids.add(tool_call_id)
+    return ids
+
+
+def _orphan_tool_result_ids(messages: list[dict[str, Any]]) -> set[str]:
+    open_tool_call_ids: set[str] = set()
+    missing: set[str] = set()
+    for message in messages:
+        role = str(message.get("role") or "")
+        if role == "tool":
+            tool_call_id = str(message.get("tool_call_id") or "").strip()
+            if tool_call_id and tool_call_id not in open_tool_call_ids:
+                missing.add(tool_call_id)
+            continue
+        open_tool_call_ids.update(_tool_call_ids(message))
+    return missing
+
+
+def _nearest_prior_tool_call_index(
+    messages: list[dict[str, Any]],
+    start: int,
+    wanted_ids: set[str],
+) -> int | None:
+    wanted = set(wanted_ids)
+    if not wanted and 0 <= start < len(messages) and str(messages[start].get("role") or "") == "tool":
+        wanted.add(str(messages[start].get("tool_call_id") or "").strip())
+        wanted.discard("")
+    for index in range(start - 1, -1, -1):
+        ids = _tool_call_ids(messages[index])
+        if wanted:
+            if ids & wanted:
+                return index
+        elif ids:
+            return index
+    return None
 
 
 def summarize_messages(messages: list[dict[str, Any]], settings: AppSettings) -> str:
@@ -514,13 +712,15 @@ def force_compact_for_retry(messages: list[dict[str, Any]], settings: AppSetting
         keep_recent = max(2, int(settings.context_recent_message_limit // 2 or 2))
         compacted, _ = snip_history_if_needed(normalized, settings)
         if compacted == normalized and len(normalized) > keep_recent:
+            tail = select_recent_complete_tail(normalized, keep_recent)
             compacted = [
                 _system_context_message(
                     load_prompt("context_reactive_compaction.md"),
                     {"context_boundary": "reactive_compact"},
                 ),
-                *normalized[-keep_recent:],
+                *tail,
             ]
+    compacted = repair_tool_message_invariants(compacted)
     return ContextProjection(
         messages=compacted,
         original_count=len(normalized),
@@ -551,6 +751,31 @@ def _system_context_message(content: str, metadata: dict[str, Any]) -> dict[str,
         "content": content,
         "metadata": metadata,
     }
+
+
+def _latest_compact_boundary_index(messages: list[dict[str, Any]]) -> int | None:
+    for index in range(len(messages) - 1, -1, -1):
+        if _is_compact_boundary(messages[index]):
+            return index
+    return None
+
+
+def _is_compact_boundary(message: dict[str, Any]) -> bool:
+    metadata = message.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return False
+    boundary = str(metadata.get("context_boundary") or "")
+    return boundary in COMPACT_BOUNDARY_TYPES or bool(metadata.get("compact_boundary"))
+
+
+def _retained_tail_message_ids(boundary: dict[str, Any]) -> set[str]:
+    metadata = boundary.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return set()
+    raw_ids = metadata.get("retained_tail_message_ids") or []
+    if not isinstance(raw_ids, list):
+        return set()
+    return {str(item).strip() for item in raw_ids if str(item).strip()}
 
 
 def _message_to_llm_dict(message: "AgentMessage") -> dict[str, Any]:

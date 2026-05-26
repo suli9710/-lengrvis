@@ -22,7 +22,7 @@ from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
 from app.orchestration.tool_runtime import ToolRuntime
-from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.approval_binding import args_binding_hmac, binding_preview, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
 
 if TYPE_CHECKING:
@@ -209,24 +209,13 @@ class StepExecutionHandler:
             raise KeyError(f"Step not found for approval: {approval.step_id}")
         if step.status == StepStatus.SUCCEEDED:
             return task
+        if approval.consumed_at:
+            return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
 
         tool = orchestrator.registry.get(step.tool_name)
         binding_error = self._approval_binding_error(approval, task, step, tool)
         if binding_error:
-            set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
-            orchestrator._persist_plan_update(plan, "Approved step denied because approval binding no longer matches.")
-            orchestrator._set_status(
-                task,
-                TaskStatus.PAUSED,
-                final_summary="Approval is stale or no longer matches the reviewed dry-run preview. Please run a fresh preview.",
-            )
-            record(
-                "approval.binding_mismatch",
-                orchestrator.name,
-                {"approval_id": approval.id, "reason": binding_error, "tool_name": step.tool_name},
-                task_id=task.id,
-            )
-            return task
+            return self._deny_approved_step(task, plan, step, approval, binding_error)
 
         action = None if approval.approval_type == "remote_input" else await orchestrator._consult_subagent(task, step, observation=None)
         if action and action.kind == "done":
@@ -259,6 +248,28 @@ class StepExecutionHandler:
                 return task
 
         runtime = self._runtime_context(task)
+        resource_error = await self._approval_resource_state_error(approval, step, tool, runtime)
+        if resource_error:
+            set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+            orchestrator._persist_plan_update(plan, "Approved step denied because the reviewed resource state changed.")
+            orchestrator._set_status(
+                task,
+                TaskStatus.PAUSED,
+                final_summary="The reviewed file state changed after approval. Please run a fresh preview.",
+            )
+            record(
+                "approval.resource_state_mismatch",
+                orchestrator.name,
+                {"approval_id": approval.id, "reason": resource_error, "tool_name": step.tool_name},
+                task_id=task.id,
+            )
+            return task
+
+        claimed = db.claim_approval_for_execution(approval.id, now_iso())
+        if not claimed:
+            return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
+        approval = Approval.model_validate(claimed)
+
         approved_args = {**step.args, "dry_run": False, "approved": True, "approval_id": approval.id}
         orchestrator._persist_plan_update(plan, "Plan status updated after user approval.")
         execution = await self.tool_runtime.execute_allowed(
@@ -275,7 +286,6 @@ class StepExecutionHandler:
             return task
 
         if result and result.ok:
-            approval.consumed_at = now_iso()
             db.upsert_model("approvals", approval, status=approval.status)
             pending_approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task.id, "pending"), limit=100)
             target_status = TaskStatus.WAITING_USER_APPROVAL if pending_approvals else TaskStatus.COMPLETED
@@ -293,6 +303,31 @@ class StepExecutionHandler:
             "task.approved_step_executed",
             orchestrator.name,
             {"approval_id": approval.id, "ok": bool(result and result.ok), "runtime_kind": execution.kind},
+            task_id=task.id,
+        )
+        return task
+
+    def _deny_approved_step(self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str) -> Task:
+        orchestrator = self.orchestrator
+        replay = "already been consumed" in reason.casefold()
+        set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+        orchestrator._persist_plan_update(
+            plan,
+            "Approved step denied because approval was already consumed."
+            if replay
+            else "Approved step denied because approval binding no longer matches.",
+        )
+        orchestrator._set_status(
+            task,
+            TaskStatus.PAUSED,
+            final_summary="Approval has already been consumed. Please run a fresh preview before retrying."
+            if replay
+            else "Approval is stale or no longer matches the reviewed dry-run preview. Please run a fresh preview.",
+        )
+        record(
+            "approval.replay_blocked" if replay else "approval.binding_mismatch",
+            orchestrator.name,
+            {"approval_id": approval.id, "reason": reason, "tool_name": step.tool_name},
             task_id=task.id,
         )
         return task
@@ -332,6 +367,25 @@ class StepExecutionHandler:
         expected_policy = permission_policy_version(PermissionStore().updated_at())
         if not hmac_compare(approval.permission_policy_version, expected_policy):
             return "Permission policy changed after approval preview."
+        return ""
+
+    async def _approval_resource_state_error(self, approval: Approval, step: PlanStep, tool, runtime) -> str:
+        approved_state = (approval.diff_preview or {}).get("_resource_state")
+        if not approved_state:
+            return ""
+        try:
+            current_preview = await self.tool_runtime.execute_tool_with_locks(
+                tool,
+                step,
+                {**step.args, "dry_run": True},
+                runtime.tool_context(),
+                threaded=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"Could not refresh approved resource state: {exc}"
+        current_state = binding_preview(current_preview).get("_resource_state")
+        if current_state != approved_state:
+            return "Approved resource state no longer matches current dry-run preview."
         return ""
 
 

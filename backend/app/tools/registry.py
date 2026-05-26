@@ -4,6 +4,7 @@ from typing import Iterable
 
 from app.config import AppSettings
 from app.core.audit import record
+from app.policy.risk import RiskLevel
 from app.skills.loader import register_skills
 from app.skills.schemas import SkillLoadError
 from app.tools.schemas import ToolDefinition
@@ -124,6 +125,7 @@ def register_all_tools(
     tool_search.register(registry)
     vision_tools.register(registry)
     cluster_tools.register(registry)
+    _mark_builtin_tools_authoritative()
     adapter_tools.register(registry)
     for definition in extra_definitions or ():
         registry.register(definition)
@@ -140,3 +142,11 @@ def register_all_tools(
             record("skills.load_failed", "ToolRegistry", {"error": str(exc)})
             raise SkillLoadError(f"Could not load configured skills: {exc}") from exc
     return registry
+
+
+def _mark_builtin_tools_authoritative() -> None:
+    for tool in registry.list():
+        if tool.trust_tier == "unknown":
+            tool.trust_tier = "builtin"
+        if tool.risk_level in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY} and not tool.effects:
+            tool.effects = ["read"] if tool.risk_level == RiskLevel.R0_READ_ONLY else ["open"]

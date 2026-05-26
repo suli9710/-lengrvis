@@ -229,6 +229,10 @@ class PolicyEngine:
             tool_decision_cache.put_review(tool_name, args, fast_review, context=cache_context)
             return fast_review
 
+        trust_review = self._review_tool_metadata_trust(task_id, step_id, tool_name, static_risk, tool_definition)
+        if trust_review is not None:
+            return trust_review
+
         dynamic = self.dynamic_risk.assess(
             tool_name=tool_name,
             args=args,
@@ -293,6 +297,39 @@ class PolicyEngine:
         )
         tool_decision_cache.put_review(tool_name, args, review, context=cache_context)
         return review
+
+    def _review_tool_metadata_trust(
+        self,
+        task_id: str,
+        step_id: str | None,
+        tool_name: str,
+        static_risk: RiskLevel,
+        tool_definition: Any | None,
+    ) -> SafetyReview | None:
+        if static_risk not in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
+            return None
+        if tool_definition is None:
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=[f"Unknown low-risk tool {tool_name} lacks authoritative metadata; fail-closed."],
+                safe_alternative="Use a built-in trusted tool or explicitly configure a permission rule.",
+            )
+        trust_tier = str(getattr(tool_definition, "trust_tier", "unknown") or "unknown").casefold()
+        if trust_tier not in FAST_PATH_TRUST_TIERS:
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=[f"Low-risk execution for {tool_name} requires authoritative metadata; trust tier is {trust_tier}."],
+                safe_alternative="Review and approve the tool through an explicit trusted adapter or built-in tool definition.",
+            )
+        return None
 
     def review_agent_message(self, message: AgentMessage, stage: str) -> SafetyReview:
         inspected_text = self._inspectable_text(message.content, message.structured_payload, message.metadata)
@@ -377,6 +414,8 @@ class PolicyEngine:
         )
 
     def classify_tool_name(self, tool_name: str) -> RiskLevel:
+        if tool_name.startswith("mcp."):
+            return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if any(term in tool_name for term in ["password", "cookie", "token", "shell"]):
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if tool_name.startswith("app.excel."):
@@ -646,8 +685,8 @@ class PolicyEngine:
             try:
                 now = self.now_provider() if self.now_provider else None
                 return self.permission_store.evaluate(tool_name=tool_name, args=args, context=context, now=now)
-            except Exception:
-                return _PermissionCheckAllowed()
+            except Exception as exc:  # noqa: BLE001
+                return _PermissionCheckDenied(str(exc))
         now = self.now_provider() if self.now_provider else None
         from app.policy.permissions import evaluate_permission_policy
 
@@ -658,6 +697,16 @@ class _PermissionCheckAllowed:
     allowed = True
     matched_rule_id = ""
     reason = "Permission policy unavailable; falling back to built-in risk checks."
+
+
+class _PermissionCheckDenied:
+    allowed = False
+    matched_rule_id = "permission_policy_unavailable"
+
+    def __init__(self, error: str = "") -> None:
+        self.reason = "Permission policy unavailable; fail-closed."
+        if error:
+            self.reason = f"{self.reason} {error}"
 
 
 def _contains_sensitive_arg(value: Any, sensitive_keys: set[str]) -> bool:

@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel, Field
 
 from app.api.routes_approvals import approve as approve_desktop_approval
-from app.core.schemas import Approval
 from app.security.mobile_jwt import decode_mobile_token, require_mobile_token
 from app.services import mobile_pairing_service
 from app.services.approval_event_service import get_approval_event_bus
@@ -32,13 +31,13 @@ def mobile_approval_detail(approval_id: str, _token: dict = Depends(require_mobi
 
 
 @router.post("/mobile/approvals/{approval_id}/approve")
-async def approve_mobile_approval(approval_id: str, _token: dict = Depends(require_mobile_token)) -> Approval:
+async def approve_mobile_approval(approval_id: str, _token: dict = Depends(require_mobile_token)) -> dict:
     return await approve_desktop_approval(approval_id)
 
 
 @router.post("/mobile/approvals/{approval_id}/reject")
-def reject_mobile_approval(approval_id: str, _token: dict = Depends(require_mobile_token)) -> Approval:
-    return mobile_pairing_service.reject_approval(approval_id)
+def reject_mobile_approval(approval_id: str, _token: dict = Depends(require_mobile_token)) -> dict:
+    return mobile_pairing_service.safe_approval_payload(mobile_pairing_service.reject_approval(approval_id))
 
 
 @router.post("/mobile/approvals/{approval_id}/decision")
@@ -46,10 +45,10 @@ async def decide_mobile_approval(
     approval_id: str,
     request: MobileApprovalDecision,
     _token: dict = Depends(require_mobile_token),
-) -> Approval:
+) -> dict:
     if request.decision == "approved":
         return await approve_desktop_approval(approval_id)
-    return mobile_pairing_service.reject_approval(approval_id)
+    return mobile_pairing_service.safe_approval_payload(mobile_pairing_service.reject_approval(approval_id))
 
 
 @router.get("/mobile/devices")

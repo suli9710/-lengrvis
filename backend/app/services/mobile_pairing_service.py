@@ -11,6 +11,7 @@ from fastapi import HTTPException
 
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
+from app.policy.approval_binding import redacted_preview
 from app.policy.redaction import redact_value
 from app.security.mobile_jwt import decode_mobile_token, issue_mobile_token, new_device_id
 
@@ -225,8 +226,13 @@ def _latest_plan(task_id: str) -> dict[str, Any] | None:
 
 def _safe_approval_payload(approval: dict[str, Any]) -> dict[str, Any]:
     payload = dict(approval)
-    payload["diff_preview"] = redact_value(payload.get("diff_preview") or {})
+    payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
     return payload
+
+
+def safe_approval_payload(approval: Approval | dict[str, Any]) -> dict[str, Any]:
+    payload = approval.model_dump(mode="json") if isinstance(approval, Approval) else dict(approval)
+    return _safe_approval_payload(payload)
 
 
 def _unique_code() -> str:

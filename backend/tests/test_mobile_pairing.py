@@ -175,6 +175,69 @@ def test_mobile_approval_payload_redacts_sensitive_preview(monkeypatch, tmp_path
     assert "[REDACTED" in payload_text or "***" in payload_text
 
 
+def test_desktop_approval_payload_hides_binding_resource_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    approval = Approval(
+        task_id="task_desktop_binding",
+        step_id="step_1",
+        message="Approve desktop resource state test",
+        diff_preview={
+            "ok": True,
+            "diff_preview": [{"action": "write", "path": "a.txt"}],
+            "_resource_state": [
+                {
+                    "path": "a.txt",
+                    "sha256": "internal-sha",
+                    "mtime_ns": 123,
+                    "inode": 456,
+                    "size": 7,
+                }
+            ],
+        },
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.get("/api/approvals/pending")
+
+    assert response.status_code == 200
+    payload_text = json.dumps(response.json(), ensure_ascii=False)
+    assert "_resource_state" not in payload_text
+    assert "internal-sha" not in payload_text
+    assert response.json()[0]["diff_preview"]["diff_preview"][0]["path"] == "a.txt"
+
+
+def test_mobile_decision_response_hides_binding_resource_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    approval = Approval(
+        task_id="task_mobile_binding",
+        step_id="step_1",
+        message="Approve mobile binding test",
+        diff_preview={
+            "ok": True,
+            "diff_preview": [{"action": "write", "path": "a.txt"}],
+            "_resource_state": [{"path": "a.txt", "sha256": "internal-sha"}],
+        },
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "rejected"},
+    )
+
+    assert response.status_code == 200
+    payload_text = json.dumps(response.json(), ensure_ascii=False)
+    assert "_resource_state" not in payload_text
+    assert "internal-sha" not in payload_text
+    assert response.json()["diff_preview"]["diff_preview"][0]["path"] == "a.txt"
+
+
 def test_mobile_approval_websocket_receives_created_event(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
     db.init_db()

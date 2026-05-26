@@ -21,6 +21,8 @@ workspace/
 *.sqlite
 *.sqlite3
 logs/
+.marvis_data/approval_hmac.secret
+approval_hmac.secret
 
 # OS/editor
 .DS_Store

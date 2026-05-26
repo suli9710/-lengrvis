@@ -61,8 +61,21 @@ def test_default_tool_definition_metadata_is_not_fast_pathable():
 
     assert tool.fast_path_eligible is False
     assert tool.trust_tier == "unknown"
-    assert review.verdict == SafetyVerdict.ALLOW
+    assert review.verdict == SafetyVerdict.DENY
     assert "fast path" not in " ".join(review.reasons).lower()
+
+
+def test_unknown_low_risk_tool_fails_closed_without_metadata():
+    review = PolicyEngine().review_tool_call(
+        "task_unknown",
+        "step_unknown",
+        "third.party.read",
+        {},
+        RiskLevel.R0_READ_ONLY,
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
 
 
 def test_r0_registry_tool_can_use_deterministic_fast_path():
@@ -142,7 +155,7 @@ def test_skill_advisory_metadata_does_not_fast_path():
         tool_definition=_tool("skill.safe_read", trust="skill"),
     )
 
-    assert review.verdict == SafetyVerdict.ALLOW
+    assert review.verdict == SafetyVerdict.DENY
     assert "fast path" not in " ".join(review.reasons).lower()
 
 

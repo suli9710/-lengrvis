@@ -6,6 +6,8 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.schemas import Approval
 from app.services.mobile_pairing_service import approve_approval as approve_mobile_approval
+from app.services.mobile_pairing_service import safe_approval_payload
+from app.services.mobile_pairing_service import list_pending_approvals
 from app.services.mobile_pairing_service import reject_approval as reject_mobile_approval
 from app.services.task_service import set_task_status
 
@@ -15,19 +17,19 @@ router = APIRouter()
 
 @router.get("/approvals/pending")
 def pending():
-    return db.fetch_many("approvals", "status = ?", ("pending",))
+    return list_pending_approvals()
 
 
 @router.post("/approvals/{approval_id}/approve")
 async def approve(approval_id: str):
     approval = approve_mobile_approval(approval_id)
     await _execute_approved_step(approval)
-    return approval
+    return safe_approval_payload(approval)
 
 
 @router.post("/approvals/{approval_id}/reject")
 def reject(approval_id: str):
-    return reject_mobile_approval(approval_id)
+    return safe_approval_payload(reject_mobile_approval(approval_id))
 
 
 async def _execute_approved_step(approval: Approval) -> None:

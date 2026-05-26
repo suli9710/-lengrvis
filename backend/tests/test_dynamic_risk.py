@@ -7,6 +7,25 @@ import pytest
 from app.policy.dynamic_risk import DynamicRiskAssessor
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RISK_ORDER, RiskLevel, SafetyVerdict
+from app.tools.schemas import ToolDefinition
+
+
+def _builtin_file_tool(name: str, risk: RiskLevel) -> ToolDefinition:
+    return ToolDefinition(
+        name=name,
+        description=name,
+        input_schema={},
+        output_schema={},
+        risk_level=risk,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=True,
+        execute=lambda args, context: {"ok": True},
+        effects=["read"] if risk == RiskLevel.R0_READ_ONLY else ["delete"],
+        resource_kinds=["file"],
+        trust_tier="builtin",
+        fast_path_eligible=risk == RiskLevel.R0_READ_ONLY,
+    )
 
 
 def test_same_tool_has_different_risk_for_user_document_and_system_path():
@@ -18,6 +37,7 @@ def test_same_tool_has_different_risk_for_user_document_and_system_path():
         "file.list_directory",
         {"path": r"C:\Users\Suli\Documents\notes", "dry_run": True},
         RiskLevel.R0_READ_ONLY,
+        tool_definition=_builtin_file_tool("file.list_directory", RiskLevel.R0_READ_ONLY),
     )
     system_review = policy.review_tool_call(
         "task_dynamic",
@@ -25,6 +45,7 @@ def test_same_tool_has_different_risk_for_user_document_and_system_path():
         "file.list_directory",
         {"path": r"C:\Windows\System32", "dry_run": True},
         RiskLevel.R0_READ_ONLY,
+        tool_definition=_builtin_file_tool("file.list_directory", RiskLevel.R0_READ_ONLY),
     )
 
     assert user_doc_review.risk_level == RiskLevel.R0_READ_ONLY
@@ -40,6 +61,7 @@ def test_policy_engine_applies_static_tool_risk_before_dynamic_adjustments():
         "file.trash",
         {"path": r"C:\Users\Suli\Documents\old.txt", "dry_run": True},
         RiskLevel.R0_READ_ONLY,
+        tool_definition=_builtin_file_tool("file.trash", RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM),
     )
 
     assert review.risk_level == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
