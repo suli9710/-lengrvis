@@ -405,7 +405,9 @@ export function App() {
     if (chatResult.status === "fulfilled" && chatResult.value.ok && chatResult.value.data) setMessages(chatResult.value.data);
     if (tasksResult.status === "fulfilled" && tasksResult.value.ok && tasksResult.value.data) setTasks(tasksResult.value.data);
     if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
-    if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) setAgentConversations(agentsResult.value.data);
+    if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) {
+      setAgentConversations((current) => preserveStreamedRunConversations(current, agentsResult.value.data ?? []));
+    }
     if (safetyResult.status === "fulfilled" && safetyResult.value.ok && safetyResult.value.data) setSafetyReview(safetyResult.value.data);
     if (approvalsResult.status === "fulfilled" && approvalsResult.value.ok && approvalsResult.value.data) setApprovalRequests(approvalsResult.value.data);
     if (settingsResult.status === "fulfilled" && settingsResult.value.ok && settingsResult.value.data) {
@@ -577,7 +579,9 @@ export function App() {
       setTasks(legacyTasksResult.value.data);
     }
     if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
-    if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) setAgentConversations(agentsResult.value.data);
+    if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) {
+      setAgentConversations((current) => preserveStreamedRunConversations(current, agentsResult.value.data ?? []));
+    }
     if (safetyResult.status === "fulfilled" && safetyResult.value.ok && safetyResult.value.data) setSafetyReview(safetyResult.value.data);
     if (approvalsResult.status === "fulfilled" && approvalsResult.value.ok && approvalsResult.value.data) setApprovalRequests(approvalsResult.value.data);
   }, [api]);
@@ -1449,6 +1453,32 @@ function latestStreamableTaskId(tasks: TaskEvent[]): string | null {
   const candidates = tasks.filter((task) => task.state === "running" || task.state === "queued" || task.state === "blocked");
   const task = candidates[0] ?? tasks[0];
   return task?.id ?? null;
+}
+
+function preserveStreamedRunConversations(
+  current: AgentConversation[],
+  incoming: AgentConversation[]
+): AgentConversation[] {
+  const byId = new Map(incoming.map((conversation) => [conversation.id, conversation]));
+  for (const conversation of current) {
+    if (!conversation.id.endsWith("-events") || conversation.messages.length === 0) continue;
+    const snapshot = byId.get(conversation.id);
+    if (!snapshot) {
+      byId.set(conversation.id, conversation);
+      continue;
+    }
+    const messageIds = new Set(snapshot.messages.map((message) => message.id));
+    const streamedMessages = conversation.messages.filter((message) => !messageIds.has(message.id));
+    if (streamedMessages.length) {
+      byId.set(conversation.id, {
+        ...snapshot,
+        messages: [...snapshot.messages, ...streamedMessages].sort(
+          (left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)
+        )
+      });
+    }
+  }
+  return Array.from(byId.values());
 }
 
 function mergeStreamedAgentMessage(

@@ -202,7 +202,16 @@ export class MavrisApiClient {
     };
   }
 
-  getCurrentPlan(): Promise<ApiResponse<Plan>> {
+  async getCurrentPlan(): Promise<ApiResponse<Plan>> {
+    const runsResponse = await this.request<BackendRunState[]>({ endpoint: "/api/runs" });
+    const latestRun = runsResponse.ok && runsResponse.data?.length ? latestRunState(runsResponse.data) : null;
+    if (latestRun) {
+      const timeline = await this.getRunTimeline(latestRun.run_id);
+      if (timeline.ok && timeline.data && hasRunTimelineEvents(timeline.data)) {
+        return mapResponse(timeline, (data) => mapRunPlan(latestRun, data));
+      }
+    }
+
     return this.request<BackendTask[]>({ endpoint: "/api/tasks" }).then(async (tasksResponse) => {
       if (!tasksResponse.ok || !tasksResponse.data?.[0]) {
         return mapResponse(tasksResponse, () => emptyPlan());
@@ -239,7 +248,16 @@ export class MavrisApiClient {
     });
   }
 
-  listAgentConversations(): Promise<ApiResponse<AgentConversation[]>> {
+  async listAgentConversations(): Promise<ApiResponse<AgentConversation[]>> {
+    const runsResponse = await this.request<BackendRunState[]>({ endpoint: "/api/runs" });
+    const latestRun = runsResponse.ok && runsResponse.data?.length ? latestRunState(runsResponse.data) : null;
+    if (latestRun) {
+      const timeline = await this.getRunTimeline(latestRun.run_id);
+      if (timeline.ok && timeline.data && hasRunTimelineEvents(timeline.data)) {
+        return mapResponse(timeline, (data) => [mapRunConversation(latestRun, data.events)]);
+      }
+    }
+
     return this.request<BackendTask[]>({ endpoint: "/api/tasks" }).then(async (tasksResponse) => {
       if (!tasksResponse.ok || !tasksResponse.data?.[0]) {
         return mapResponse(tasksResponse, () => []);
@@ -912,6 +930,18 @@ function mapRunTaskEvent(run: BackendRunState): TaskEvent {
     updatedAt: run.updated_at || run.created_at || new Date().toISOString(),
     recordings: []
   };
+}
+
+function latestRunState(runs: BackendRunState[]): BackendRunState | null {
+  return [...runs].sort((left, right) => {
+    const leftTime = Date.parse(left.updated_at || left.created_at || "");
+    const rightTime = Date.parse(right.updated_at || right.created_at || "");
+    return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+  })[0] ?? null;
+}
+
+function hasRunTimelineEvents(timeline: BackendRunTimeline): boolean {
+  return Boolean(timeline.events?.length);
 }
 
 function mapRunPlan(run: BackendRunState, timeline: BackendRunTimeline): Plan {

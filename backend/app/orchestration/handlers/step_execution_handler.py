@@ -313,8 +313,17 @@ class StepExecutionHandler:
         if result and result.ok:
             db.upsert_model("approvals", approval, status=approval.status)
             pending_approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task.id, "pending"), limit=100)
-            target_status = TaskStatus.WAITING_USER_APPROVAL if pending_approvals else TaskStatus.COMPLETED
+            target_status = (
+                TaskStatus.WAITING_USER_APPROVAL
+                if pending_approvals
+                else TaskStatus.EXECUTING_STEP
+                if self._has_pending_ready_steps(plan)
+                else TaskStatus.COMPLETED
+            )
             summary = (
+                "Approved modifying operation completed; continuing remaining plan steps."
+                if target_status == TaskStatus.EXECUTING_STEP
+                else
                 "Approved file trash operation completed."
                 if step.tool_name == "file.trash"
                 else "Approved modifying operation completed."
@@ -331,6 +340,14 @@ class StepExecutionHandler:
             task_id=task.id,
         )
         return task
+
+    def _has_pending_ready_steps(self, plan: Plan) -> bool:
+        try:
+            by_id, _dependents = self.orchestrator._build_step_graph(plan)
+        except ValueError:
+            return False
+        pending = {step.id for step in plan.steps if step.status == StepStatus.PENDING}
+        return bool(self.orchestrator._ready_steps(pending, by_id))
 
     def _deny_approved_step(self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str) -> Task:
         orchestrator = self.orchestrator

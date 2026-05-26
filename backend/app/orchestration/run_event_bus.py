@@ -48,24 +48,21 @@ class RunEventBus:
         event_payload = {
             "run_id": run_id,
             "name": name,
-            "sequence": sequence or db.next_run_event_sequence(run_id),
+            "sequence": sequence or 0,
             "payload": dict(payload or {}),
             "created_at": created_at or now_iso(),
         }
         if event_id:
             event_payload["id"] = event_id
-        event = RunEvent.model_validate(event_payload)
-        db.upsert_model("run_events", event)
+        event = RunEvent.model_validate(db.insert_run_event(event_payload))
         self._publish_to_subscribers(event)
         return event
 
     def publish_event(self, event: RunEvent) -> RunEvent:
         db.init_db()
-        if not event.sequence:
-            event.sequence = db.next_run_event_sequence(event.run_id)
-        db.upsert_model("run_events", event)
-        self._publish_to_subscribers(event)
-        return event
+        stored = RunEvent.model_validate(db.insert_run_event(event))
+        self._publish_to_subscribers(stored)
+        return stored
 
     def subscribe(self, run_id: str, *, max_queue_size: int = 100) -> asyncio.Queue[RunEvent]:
         queue: asyncio.Queue[RunEvent] = asyncio.Queue(maxsize=max_queue_size)

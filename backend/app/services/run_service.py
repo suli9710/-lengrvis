@@ -127,6 +127,24 @@ def resume_run(run_id: str) -> Run:
     run = get_run(run_id)
     if run.phase in TERMINAL_PHASES or run.phase == RunPhase.AWAITING_APPROVAL:
         return run
+    return _schedule_resume(run)
+
+
+def resume_runs_for_task(task_id: str, *, include_approval_continuations: bool = False) -> list[Run]:
+    runs = [Run.model_validate(item) for item in db.fetch_many("runs", "task_id = ?", (task_id,), limit=100)]
+    resumed: list[Run] = []
+    for run in runs:
+        if run.phase in TERMINAL_PHASES:
+            resumed.append(run)
+            continue
+        if run.phase in {RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED} or (
+            include_approval_continuations and _is_approval_continuation(run)
+        ):
+            resumed.append(_schedule_resume(run))
+    return resumed
+
+
+def _schedule_resume(run: Run) -> Run:
     settings = get_effective_settings()
     router = _engine_router(settings)
     try:
@@ -143,10 +161,7 @@ def resume_run(run_id: str) -> Run:
 
 def cancel_run(run_id: str) -> Run:
     run = get_run(run_id)
-    try:
-        _schedule_background(_engine_router(get_effective_settings()).cancel_run(run.id))
-    except Exception:
-        pass
+    _cancel_persisted_state(run)
     if run.task_id:
         try:
             set_task_status(run.task_id, TaskPhase.CANCELLED)
@@ -205,24 +220,36 @@ async def _run_engine_loop(
         current = state
         max_turns = max(1, int(router.max_turns))
         while current.turn_count < max_turns:
+            if _run_cancelled(run_id):
+                return
             run_event_bus.publish(
                 run_id,
                 "turn.started",
                 {"turn": current.turn_count + 1, "engine": current.engine, "phase": current.phase.value},
             )
             result = await router.run_turn(current)
+            if _run_cancelled(run_id):
+                return
             _publish_turn_result(run_id, result)
             current = result.state
             run = get_run(run_id)
+            if run.phase == RunPhase.CANCELLED:
+                return
             _update_run_from_state(run, current)
             if result.finished or current.phase in ENGINE_TERMINAL_PHASES:
+                if _run_cancelled(run_id):
+                    return
                 _publish_terminal_event(run_id, current, result)
                 return
         run = get_run(run_id)
+        if run.phase == RunPhase.CANCELLED:
+            return
         _update_run(run, phase=RunPhase.FAILED, error=f"max turns reached ({max_turns})")
         run_event_bus.publish(run_id, "run.failed", {"reason": run.error, "max_turns": max_turns})
     except Exception as exc:  # noqa: BLE001
         run = get_run(run_id)
+        if run.phase == RunPhase.CANCELLED:
+            return
         _update_run(run, phase=RunPhase.FAILED, error=str(exc))
         run_event_bus.publish(run_id, "run.failed", {"error": str(exc)})
     finally:
@@ -402,6 +429,23 @@ def _state_from_run(run: Run) -> RunState:
     return default_run_store.put(state)
 
 
+def _run_cancelled(run_id: str) -> bool:
+    try:
+        return get_run(run_id).phase == RunPhase.CANCELLED
+    except KeyError:
+        return False
+
+
+def _is_approval_continuation(run: Run) -> bool:
+    if run.phase != RunPhase.RUNNING:
+        return False
+    try:
+        state = RunState.model_validate(run.state or {})
+    except Exception:
+        return False
+    return "continuing remaining plan steps" in state.transition_reason.casefold()
+
+
 def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> None:
     if not run.state:
         return
@@ -414,6 +458,19 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
             "phase": EngineRunPhase(phase.value),
             "transition_reason": reason or state.transition_reason,
         },
+        deep=True,
+    )
+    run.state = state.model_dump(mode="json")
+    default_run_store.put(state)
+
+
+def _cancel_persisted_state(run: Run) -> None:
+    try:
+        state = _state_from_run(run)
+    except Exception:
+        return
+    state = state.model_copy(
+        update={"phase": EngineRunPhase.CANCELLED, "transition_reason": "cancel_requested"},
         deep=True,
     )
     run.state = state.model_dump(mode="json")
