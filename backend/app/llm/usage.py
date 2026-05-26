@@ -11,6 +11,14 @@ from app.core.schemas import now_iso
 from app.llm.types import LLMCost, LLMResponse, LLMUsage
 
 
+CLAUDE_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
 def estimate_usage(messages: list[dict[str, Any]], content: str) -> LLMUsage:
     prompt_tokens = _count_messages(messages)
     completion_tokens = _rough_tokens(content)
@@ -20,6 +28,40 @@ def estimate_usage(messages: list[dict[str, Any]], content: str) -> LLMUsage:
         total_tokens=prompt_tokens + completion_tokens,
         estimated=True,
     )
+
+
+def usage_breakdown(usage: LLMUsage) -> dict[str, Any]:
+    details = usage.details or {}
+    prompt_details = details.get("prompt_tokens_details") if isinstance(details.get("prompt_tokens_details"), dict) else {}
+    completion_details = (
+        details.get("completion_tokens_details") if isinstance(details.get("completion_tokens_details"), dict) else {}
+    )
+    cache_read = _int_token(
+        details.get("cache_read_input_tokens"),
+        details.get("cached_input_tokens"),
+        prompt_details.get("cached_tokens"),
+    )
+    cache_creation = _int_token(
+        details.get("cache_creation_input_tokens"),
+        details.get("cache_write_input_tokens"),
+        details.get("uncached_input_tokens"),
+    )
+    input_tokens = max(0, int(usage.prompt_tokens or 0) - cache_read - cache_creation)
+    output_tokens = max(0, int(usage.completion_tokens or 0))
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
+        "reasoning_output_tokens": _int_token(details.get("reasoning_output_tokens"), completion_details.get("reasoning_tokens")),
+        "estimated": bool(usage.estimated),
+        "total_tokens": int(usage.total_tokens or (usage.prompt_tokens + usage.completion_tokens)),
+    }
+
+
+def claude_usage_view(usage: LLMUsage) -> dict[str, int]:
+    breakdown = usage_breakdown(usage)
+    return {key: int(breakdown.get(key) or 0) for key in CLAUDE_USAGE_KEYS}
 
 
 def record_llm_response(
@@ -42,6 +84,8 @@ def record_llm_response(
             "task": task,
             "purpose": purpose,
             "usage": response.usage.to_dict(),
+            "usage_breakdown": usage_breakdown(response.usage),
+            "claude_usage": claude_usage_view(response.usage),
             "cost": cost.to_dict(),
             "finish_reason": response.finish_reason,
             "metadata": response.metadata,
@@ -101,7 +145,7 @@ def usage_summary(*, hours: int = 24) -> dict[str, Any]:
         rows = conn.execute(
             """
             SELECT provider, model, prompt_tokens, completion_tokens, total_tokens,
-                   total_cost_usd, estimated, created_at
+                   total_cost_usd, estimated, data, created_at
             FROM llm_usage_events
             WHERE created_at >= ?
             ORDER BY created_at DESC
@@ -114,6 +158,7 @@ def usage_summary(*, hours: int = 24) -> dict[str, Any]:
     total_cost = 0.0
     cost_known = False
     estimated = False
+    claude_totals = {key: 0 for key in CLAUDE_USAGE_KEYS}
     by_model: dict[str, dict[str, Any]] = {}
     last_event_at = ""
     for row in rows:
@@ -150,6 +195,17 @@ def usage_summary(*, hours: int = 24) -> dict[str, Any]:
         total_completion += completion
         total_tokens += tokens
         last_event_at = max(last_event_at, str(row["created_at"] or ""))
+        try:
+            data = json.loads(row["data"])
+        except (TypeError, json.JSONDecodeError):
+            data = {}
+        claude_usage = data.get("claude_usage") if isinstance(data, dict) else {}
+        if isinstance(claude_usage, dict):
+            for key in CLAUDE_USAGE_KEYS:
+                value = int(claude_usage.get(key) or 0)
+                claude_totals[key] += value
+                item.setdefault("claude_usage", {usage_key: 0 for usage_key in CLAUDE_USAGE_KEYS})
+                item["claude_usage"][key] += value
     return {
         "window_hours": max(1, int(hours)),
         "calls": len(rows),
@@ -159,6 +215,7 @@ def usage_summary(*, hours: int = 24) -> dict[str, Any]:
         "total_cost_usd": round(total_cost, 8) if cost_known else None,
         "estimated": estimated or not cost_known,
         "last_event_at": last_event_at,
+        "claude_usage": claude_totals,
         "by_model": list(by_model.values()),
     }
 
@@ -177,3 +234,14 @@ def _rough_tokens(value: Any) -> int:
     if isinstance(value, dict):
         return max(1, round(len(json.dumps(value, ensure_ascii=False, default=str)) / 2))
     return max(0, round(len(str(value)) / 4))
+
+
+def _int_token(*values: Any) -> int:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0

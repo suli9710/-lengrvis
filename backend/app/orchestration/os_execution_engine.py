@@ -21,6 +21,7 @@ from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.observations import summarize_result
 from app.orchestration.step_phase import set_step_status
+from app.policy.risk import RiskLevel
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -112,8 +113,8 @@ class OSExecutionEngine(ExecutionEngine):
         orchestrator = self._orchestrator_for_state(state)
         task = await self._task_for_state(orchestrator, state)
         plan = await self._plan_for_state(orchestrator, task, state)
-        if task.status in {TaskStatus.DENIED, TaskStatus.FAILED}:
-            updated = self._state_from_task_plan(state, task, plan, phase=self._phase_for_task(task), reason=task.final_summary)
+        if task.status in {TaskStatus.CANCELLED, TaskStatus.DENIED, TaskStatus.FAILED}:
+            updated = self._state_from_task_plan(state, task, plan, phase=self._phase_for_task_plan(task, plan), reason=task.final_summary)
             return EngineTurnResult(state=self.store.put(updated), finished=True, message=task.final_summary)
         return await self.run_plan_turn(task, plan, state=state)
 
@@ -380,9 +381,9 @@ class OSExecutionEngine(ExecutionEngine):
                 orchestrator._mark_blocked_steps(pending, by_id)
                 pending = self._pending_step_ids(plan)
 
-        if task.status in {TaskStatus.DENIED, TaskStatus.FAILED}:
-            phase = self._phase_for_task(task)
-            outcome = "denied" if phase == RunPhase.DENIED else "failed"
+        if task.status in {TaskStatus.CANCELLED, TaskStatus.DENIED, TaskStatus.FAILED}:
+            phase = self._phase_for_task_plan(task, plan)
+            outcome = "cancelled" if phase == RunPhase.CANCELLED else "denied" if phase == RunPhase.DENIED else "failed"
             return await self._finish_turn(
                 state,
                 task,
@@ -771,16 +772,34 @@ class OSExecutionEngine(ExecutionEngine):
             return RunPhase.PAUSED
         if task.status == TaskStatus.FAILED:
             return RunPhase.FAILED
+        if task.status == TaskStatus.CANCELLED:
+            return RunPhase.CANCELLED
         if task.status == TaskStatus.DENIED:
             return RunPhase.DENIED
         if task.status == TaskStatus.COMPLETED:
             return RunPhase.COMPLETED
-        if task.status == TaskStatus.CANCELLED:
-            return RunPhase.CANCELLED
         return RunPhase.RUNNING
+
+    def _phase_for_task_plan(self, task: Task, plan: Plan) -> RunPhase:
+        phase = self._phase_for_task(task)
+        if phase != RunPhase.CANCELLED:
+            return phase
+        summary = (task.final_summary or "").casefold()
+        if "cancel" in summary or "rejected" in summary:
+            return RunPhase.CANCELLED
+        if "deny" in summary or "denied" in summary or "forbidden" in summary or "safety" in summary:
+            return RunPhase.DENIED
+        if plan.global_risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
+            return RunPhase.DENIED
+        if any(step.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF for step in plan.steps):
+            return RunPhase.DENIED
+        if any(step.status == StepStatus.DENIED for step in plan.steps):
+            return RunPhase.DENIED
+        return RunPhase.CANCELLED
 
     def _event_name_for_outcome(self, outcome: str) -> str:
         return {
+            "cancelled": "run.cancelled",
             "waiting_approval": "run.waiting_approval",
             "completed": "run.completed",
             "failed": "run.failed",

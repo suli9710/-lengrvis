@@ -433,7 +433,7 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
                     data["id"],
                     data["cron"],
                     data["goal"],
-                    data.get("mode", "privacy"),
+                    data.get("mode", "efficiency"),
                     1 if data.get("enabled", True) else 0,
                     data.get("next_run_at") or None,
                     data.get("last_run_at") or None,
@@ -576,6 +576,121 @@ def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str
               AND json_extract(data, '$.consumed_at') IS NULL
             """,
             (_json(data), approval_id, "approved"),
+        )
+        if cursor.rowcount != 1:
+            return None
+    return data
+
+
+def expire_approval_if_pending(approval_id: str, expired_at: str, reason: str = "") -> dict[str, Any] | None:
+    """Atomically expire one pending, unconsumed approval."""
+    return expire_approval_if_unconsumed(approval_id, expired_at, reason, statuses={"pending"})
+
+
+def expire_approval_if_unconsumed(
+    approval_id: str,
+    expired_at: str,
+    reason: str = "",
+    *,
+    statuses: set[str] | None = None,
+) -> dict[str, Any] | None:
+    """Atomically expire one unconsumed approval in an allowed status."""
+    allowed_statuses = statuses or {"pending", "approved"}
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT data FROM approvals WHERE id = ?",
+            (approval_id,),
+        ).fetchone()
+        if not row:
+            return None
+        data = json.loads(row["data"])
+        current_status = str(data.get("status") or "")
+        if current_status not in allowed_statuses or data.get("consumed_at"):
+            return None
+        data["status"] = "expired"
+        data["decided_at"] = expired_at
+        if reason:
+            data["expired_reason"] = reason
+        placeholders = ",".join("?" for _ in allowed_statuses)
+        cursor = conn.execute(
+            f"""
+            UPDATE approvals
+            SET data = ?,
+                status = ?
+            WHERE id = ?
+              AND status IN ({placeholders})
+              AND json_extract(data, '$.consumed_at') IS NULL
+            """,
+            (_json(data), "expired", approval_id, *sorted(allowed_statuses)),
+        )
+        if cursor.rowcount != 1:
+            return None
+    return data
+
+
+def expire_pending_approvals_for_task(task_id: str, expired_at: str, reason: str = "") -> list[dict[str, Any]]:
+    """Atomically expire all pending, unconsumed approvals for a task."""
+    expired: list[dict[str, Any]] = []
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT id, data FROM approvals WHERE task_id = ? AND status = ?",
+            (task_id, "pending"),
+        ).fetchall()
+        for row in rows:
+            data = json.loads(row["data"])
+            if data.get("status") != "pending" or data.get("consumed_at"):
+                continue
+            data["status"] = "expired"
+            data["decided_at"] = expired_at
+            if reason:
+                data["expired_reason"] = reason
+            cursor = conn.execute(
+                """
+                UPDATE approvals
+                SET data = ?,
+                    status = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND json_extract(data, '$.status') = ?
+                  AND json_extract(data, '$.consumed_at') IS NULL
+                """,
+                (_json(data), "expired", row["id"], "pending", "pending"),
+            )
+            if cursor.rowcount == 1:
+                expired.append(data)
+    return expired
+
+
+def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -> dict[str, Any] | None:
+    """Atomically move a pending, unconsumed approval to a terminal decision."""
+    if status not in {"approved", "rejected"}:
+        raise ValueError(f"Unsupported approval decision status: {status}")
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT data FROM approvals WHERE id = ?",
+            (approval_id,),
+        ).fetchone()
+        if not row:
+            return None
+        data = json.loads(row["data"])
+        if data.get("status") != "pending" or data.get("consumed_at"):
+            return None
+        data["status"] = status
+        data["decided_at"] = decided_at
+        cursor = conn.execute(
+            """
+            UPDATE approvals
+            SET data = ?,
+                status = ?
+            WHERE id = ?
+              AND status = ?
+              AND json_extract(data, '$.status') = ?
+              AND json_extract(data, '$.consumed_at') IS NULL
+            """,
+            (_json(data), status, approval_id, "pending", "pending"),
         )
         if cursor.rowcount != 1:
             return None

@@ -350,7 +350,8 @@ export function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isApprovalOpen, setIsApprovalOpen] = useState(false);
-  const [mode, setMode] = useState<AssistantMode>("privacy");
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [mode, setMode] = useState<AssistantMode>("efficiency");
   const [activeView, setActiveView] = useState<ViewKey>("home");
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -380,7 +381,6 @@ export function App() {
       safetyResult,
       approvalsResult,
       settingsResult,
-      localLlmResult,
       llmHealthResult,
       llmCostResult,
       auditResult,
@@ -394,7 +394,6 @@ export function App() {
       api.getSafetyReview(),
       api.listPendingApprovals(),
       api.getSettings(),
-      api.getLocalLlmHealth(),
       api.getLlmHealth(),
       api.getLlmCostSummary(),
       api.listAuditLogs(),
@@ -414,16 +413,6 @@ export function App() {
       setSettings(settingsResult.value.data);
       setMode(settingsResult.value.data.mode);
     }
-    if (localLlmResult.status === "fulfilled" && localLlmResult.value.ok && localLlmResult.value.data) {
-      setLocalLlmHealth(localLlmResult.value.data);
-    } else if (localLlmResult.status === "fulfilled" && !localLlmResult.value.ok) {
-      setLocalLlmHealth({
-        available: false,
-        selectedBackend: null,
-        probeOrder: ["ollama", "lmstudio", "llamacpp"],
-        error: localLlmResult.value.error?.message ?? "无法读取本地 LLM 健康状态。"
-      });
-    }
     if (llmHealthResult.status === "fulfilled" && llmHealthResult.value.ok && llmHealthResult.value.data) {
       setLlmHealth(llmHealthResult.value.data);
     }
@@ -434,6 +423,26 @@ export function App() {
     if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
     if (suggestionsResult.status === "fulfilled" && suggestionsResult.value.ok && suggestionsResult.value.data) {
       setIntentSuggestions(suggestionsResult.value.data);
+    }
+
+    const currentMode =
+      settingsResult.status === "fulfilled" && settingsResult.value.ok && settingsResult.value.data
+        ? settingsResult.value.data.mode
+        : mode;
+    if (requiresLocalLlmHealth(currentMode)) {
+      const localLlmResult = await api.getLocalLlmHealth();
+      if (localLlmResult.ok && localLlmResult.data) {
+        setLocalLlmHealth(localLlmResult.data);
+      } else {
+        setLocalLlmHealth({
+          available: false,
+          selectedBackend: null,
+          probeOrder: ["ollama", "lmstudio", "llamacpp"],
+          error: localLlmResult.error?.message ?? "无法读取本地 LLM 健康状态。"
+        });
+      }
+    } else {
+      setLocalLlmHealth(null);
     }
 
     setIsLoading(false);
@@ -516,8 +525,12 @@ export function App() {
     if (result.ok && result.data) {
       setSettings(result.data);
       setMode(result.data.mode);
-      const health = await api.getLocalLlmHealth();
-      if (health.ok && health.data) setLocalLlmHealth(health.data);
+      if (requiresLocalLlmHealth(result.data.mode)) {
+        const health = await api.getLocalLlmHealth();
+        if (health.ok && health.data) setLocalLlmHealth(health.data);
+      } else {
+        setLocalLlmHealth(null);
+      }
       const llm = await api.getLlmHealth();
       if (llm.ok && llm.data) setLlmHealth(llm.data);
       const cost = await api.getLlmCostSummary();
@@ -544,17 +557,13 @@ export function App() {
   };
 
   const refreshSystemInfo = async () => {
-    const [statusResult, localLlmResult, llmHealthResult, llmCostResult, systemResult] = await Promise.allSettled([
+    const [statusResult, llmHealthResult, llmCostResult, systemResult] = await Promise.allSettled([
       api.getBackendStatus(),
-      api.getLocalLlmHealth(),
       api.getLlmHealth(),
       api.getLlmCostSummary(),
       api.getSystemInfo()
     ]);
     if (statusResult.status === "fulfilled") setBackendStatus(statusResult.value);
-    if (localLlmResult.status === "fulfilled" && localLlmResult.value.ok && localLlmResult.value.data) {
-      setLocalLlmHealth(localLlmResult.value.data);
-    }
     if (llmHealthResult.status === "fulfilled" && llmHealthResult.value.ok && llmHealthResult.value.data) {
       setLlmHealth(llmHealthResult.value.data);
     }
@@ -562,6 +571,12 @@ export function App() {
       setLlmCostSummary(llmCostResult.value.data);
     }
     if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
+    if (requiresLocalLlmHealth(mode)) {
+      const localLlmResult = await api.getLocalLlmHealth();
+      if (localLlmResult.ok && localLlmResult.data) setLocalLlmHealth(localLlmResult.data);
+    } else {
+      setLocalLlmHealth(null);
+    }
   };
 
   const refreshTaskSnapshot = useCallback(async () => {
@@ -631,15 +646,19 @@ export function App() {
     note?: string
   ) => {
     const result = await api.submitApprovalDecision({ approvalId, decision, note });
-    setApprovalRequests((current) =>
-      current.map((approval) => (approval.id === approvalId ? { ...approval, status: decision } : approval))
-    );
     if (result.ok && result.data) {
       setApprovalRequests((current) =>
         current.map((approval) => (approval.id === approvalId ? result.data as ApprovalRequest : approval))
       );
+      setApprovalError(null);
+      setIsApprovalOpen(false);
+      return;
     }
-    setIsApprovalOpen(false);
+    setApprovalError(result.error?.message ?? "审批提交失败，请刷新后重试。");
+    const approvalsResult = await api.listPendingApprovals();
+    if (approvalsResult.ok && approvalsResult.data) {
+      setApprovalRequests(approvalsResult.data);
+    }
   };
 
   const viewMeta = viewTitles[activeView];
@@ -842,7 +861,11 @@ export function App() {
       <ApprovalDialog
         approval={pendingApproval}
         isOpen={isApprovalOpen}
-        onClose={() => setIsApprovalOpen(false)}
+        error={approvalError}
+        onClose={() => {
+          setApprovalError(null);
+          setIsApprovalOpen(false);
+        }}
         onDecision={submitApprovalDecision}
       />
     </div>
@@ -1646,6 +1669,10 @@ function formatTokenCount(value: number): string {
   if (value <= 0) return "0";
   if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
   return value.toLocaleString();
+}
+
+function requiresLocalLlmHealth(mode: AssistantMode): boolean {
+  return mode === "privacy" || mode === "hybrid";
 }
 
 function SideButton({

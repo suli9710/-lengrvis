@@ -49,6 +49,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
                 "steps": [
                     {"id": "repo_status", "tool": "dev.git_status", "status": "pending"},
                     {"id": "diff_preview", "tool": "dev.diff_preview", "status": "pending"},
+                    {"id": "test_inventory", "tool": "dev.pytest_inventory", "status": "pending"},
                     {"id": "goal_search", "tool": "dev.grep", "status": "pending"},
                 ],
                 "writes_enabled": False,
@@ -136,6 +137,11 @@ class DeveloperExecutionEngine(ExecutionEngine):
         tasks = {
             "dev.git_status": asyncio.to_thread(developer_tools.git_status, {"cwd": cwd}, context),
             "dev.diff_preview": asyncio.to_thread(developer_tools.diff_preview, {"cwd": cwd, "pathspec": "."}, context),
+            "dev.pytest_inventory": asyncio.to_thread(
+                developer_tools.pytest_inventory,
+                {"path": cwd, "pattern": "test_*.py", "limit": 50},
+                context,
+            ),
             "dev.grep": asyncio.to_thread(
                 developer_tools.grep_files,
                 {"path": cwd, "query": query, "pattern": "*.py", "limit": 25},
@@ -154,7 +160,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
 
 
 def readonly_developer_tool_names() -> tuple[str, ...]:
-    return ("dev.glob", "dev.grep", "dev.git_status", "dev.diff_preview", "dev.shell_readonly")
+    return ("dev.glob", "dev.grep", "dev.git_status", "dev.diff_preview", "dev.shell_readonly", "dev.pytest_inventory")
 
 
 def _default_workspace(settings: AppSettings) -> str:
@@ -174,11 +180,16 @@ def _query_from_goal(goal: str) -> str:
 def _summarize_tool_payload(source: str, payload: dict[str, Any]) -> str:
     if not payload.get("ok", False):
         return f"{source} failed: {payload.get('error') or payload.get('stderr') or 'unknown error'}"
+    summary = payload.get("summary")
+    if isinstance(summary, str) and summary:
+        return summary
     if source == "dev.git_status":
         return "Captured git status."
     if source == "dev.diff_preview":
         diff = str(payload.get("diff") or "")
         return f"Captured diff preview ({len(diff)} chars)."
+    if source == "dev.pytest_inventory":
+        return f"Captured pytest inventory ({payload.get('test_count', 0)} tests)."
     if source == "dev.grep":
         return f"Captured grep results ({payload.get('count', 0)} matches)."
     return f"Captured {source} output."

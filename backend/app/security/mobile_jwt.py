@@ -12,9 +12,17 @@ from app.llm.registry import get_effective_settings
 TOKEN_AUDIENCE = "mavris-mobile"
 TOKEN_ISSUER = "mavris-backend"
 TOKEN_SCOPE = "mobile:approval"
+REMOTE_VIEW_SCOPE = "remote:view"
+REMOTE_INPUT_SCOPE = "remote:input"
 
 
-def issue_mobile_token(*, device_id: str, device_name: str, expires_in_seconds: int = 60 * 60 * 24 * 30) -> str:
+def issue_mobile_token(
+    *,
+    device_id: str,
+    device_name: str,
+    expires_in_seconds: int = 60 * 60 * 24 * 30,
+    scope: str = TOKEN_SCOPE,
+) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "aud": TOKEN_AUDIENCE,
@@ -23,13 +31,13 @@ def issue_mobile_token(*, device_id: str, device_name: str, expires_in_seconds: 
         "exp": now + timedelta(seconds=expires_in_seconds),
         "iat": now,
         "iss": TOKEN_ISSUER,
-        "scope": TOKEN_SCOPE,
+        "scope": scope,
         "sub": f"mobile:{device_id}",
     }
     return jwt.encode(payload, _secret(), algorithm="HS256")
 
 
-def decode_mobile_token(token: str) -> dict[str, Any]:
+def decode_mobile_token(token: str, *, allowed_scopes: set[str] | None = None) -> dict[str, Any]:
     try:
         payload = jwt.decode(
             token,
@@ -43,7 +51,8 @@ def decode_mobile_token(token: str) -> dict[str, Any]:
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid mobile token") from None
 
-    if payload.get("scope") != TOKEN_SCOPE:
+    accepted_scopes = allowed_scopes or {TOKEN_SCOPE}
+    if payload.get("scope") not in accepted_scopes:
         raise HTTPException(status_code=403, detail="Mobile token scope is not allowed")
     if not payload.get("device_id"):
         raise HTTPException(status_code=401, detail="Invalid mobile token") from None

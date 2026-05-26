@@ -47,12 +47,18 @@ def test_manual_compact_creates_boundary_summary_and_tail():
     )
 
     assert result.boundary_message["metadata"]["context_boundary"] == MANUAL_COMPACT_BOUNDARY
+    assert result.boundary_message["metadata"]["compaction_strategy"] == MANUAL_COMPACT_BOUNDARY
+    assert result.boundary_message["metadata"]["compacted_at"]
     assert result.boundary_message["metadata"]["custom_instructions"] == "Preserve open decisions."
     assert result.messages[0]["role"] == "system"
     assert result.messages[1] == result.boundary_message
     assert [message["id"] for message in result.messages[-2:]] == ["msg_6", "msg_7"]
     assert result.pre_compact_tokens > result.post_compact_tokens
     assert "Preserve open decisions." in result.summary
+    assert result.compact_metadata
+    assert result.compact_metadata["original_messages"] == result.original_count
+    assert result.compact_metadata["compacted_count"] == result.compacted_count
+    assert result.compact_metadata["summary_chars"] == len(result.summary)
 
 
 def test_manual_compact_keeps_tool_call_pair_when_tail_starts_on_tool_result():
@@ -105,8 +111,10 @@ def test_manual_compact_updates_session_context_summary_and_token_stats():
     assert "Remember the implementation plan." in session["conversation_summary"]
     assert session["last_summarized_message_id"] == "msg_7"
     assert session["token_stats"]["strategy"] == MANUAL_COMPACT_BOUNDARY
+    assert session["token_stats"]["session_id"] == "session_manual_compact_test"
     assert session["token_stats"]["pre_compact_tokens"] == result.pre_compact_tokens
     assert session["token_stats"]["post_compact_tokens"] == result.post_compact_tokens
+    assert session["token_stats"]["compact_metadata"]["compaction_strategy"] == MANUAL_COMPACT_BOUNDARY
 
 
 def test_projection_uses_latest_compact_boundary_view():

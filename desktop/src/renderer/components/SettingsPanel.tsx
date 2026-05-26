@@ -320,11 +320,15 @@ export function SettingsPanel({
               </label>
             ))}
           </div>
-          <LocalLlmHealthNotice health={localLlmHealth} />
+          {draft.mode === "privacy" || draft.mode === "hybrid" ? (
+            <LocalLlmHealthNotice health={localLlmHealth} />
+          ) : null}
         </label>
-        <div style={{ gridColumn: "1 / -1" }}>
-          <LocalModelInstaller api={api} apiBaseUrl={draft.apiBaseUrl} />
-        </div>
+        {draft.mode === "privacy" || draft.mode === "hybrid" ? (
+          <div style={{ gridColumn: "1 / -1" }}>
+            <LocalModelInstaller api={api} apiBaseUrl={draft.apiBaseUrl} />
+          </div>
+        ) : null}
         <label className="field">
           <span>授权工作区</span>
           <input

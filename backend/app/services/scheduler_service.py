@@ -79,7 +79,7 @@ class Scheduler:
                 self._task.cancel()
         self._task = None
 
-    def schedule(self, cron: str, goal: str, mode: str = "privacy", *, note: str = "") -> ScheduledTask:
+    def schedule(self, cron: str, goal: str, mode: str = "efficiency", *, note: str = "") -> ScheduledTask:
         if not _CRONITER_AVAILABLE:
             raise RuntimeError("croniter is not installed; scheduling is disabled.")
         if not _Croniter.is_valid(cron):

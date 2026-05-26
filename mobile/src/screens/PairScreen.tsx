@@ -15,13 +15,11 @@ import {
 import * as Device from "expo-device";
 import { Link2, Smartphone } from "lucide-react-native";
 
-import { pairWithBackend, type PairingSession } from "../api/client";
+import { isLoopbackBaseUrl, pairWithBackend, type PairingSession } from "../api/client";
 import { saveSession } from "../store/auth";
 
-const defaultBaseUrl = "http://127.0.0.1:8000";
-
 export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) => void }) {
-  const [baseUrl, setBaseUrl] = useState(defaultBaseUrl);
+  const [baseUrl, setBaseUrl] = useState("");
   const [pairCode, setPairCode] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
@@ -32,10 +30,18 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       Alert.alert("Pairing code", "Enter the 6 character code from Mavris desktop.");
       return;
     }
+    if (!baseUrl.trim()) {
+      Alert.alert("Server IP", "Enter the LAN address shown by Mavris desktop, for example http://192.168.1.20:8000.");
+      return;
+    }
+    if (isLoopbackBaseUrl(baseUrl)) {
+      Alert.alert("Server IP", "Use the desktop LAN address, not localhost or 127.0.0.1.");
+      return;
+    }
     setIsBusy(true);
     setError("");
     try {
-      const nextSession = await pairWithBackend(baseUrl, code, Device.deviceName ?? "Android device");
+      const nextSession = await pairWithBackend(baseUrl.trim(), code, Device.deviceName ?? "Android device");
       await saveSession(nextSession);
       setPairCode("");
       onPaired(nextSession);

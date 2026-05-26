@@ -11,7 +11,7 @@ from app.context_management import (
     repair_tool_message_invariants,
     summarize_messages,
 )
-from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole, new_id
+from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole, new_id, now_iso
 from app.core.session_context import SessionContextStore, get_session_context_store
 from app.llm.prompts import render_prompt
 from app.llm.registry import get_effective_settings
@@ -32,6 +32,7 @@ class ManualCompactResult:
     retained_tail_messages: int
     original_count: int
     compacted_count: int
+    compact_metadata: dict[str, Any] | None = None
     session_context: dict[str, Any] | None = None
     task_id: str = ""
     persisted_message_id: str = ""
@@ -55,6 +56,15 @@ def manual_compact_messages(
     tail_start = recent_complete_tail_start(visible, recent_limit, min_start_index=head_end)
     tail = [dict(message) for message in visible[tail_start:]]
     compacted = visible[head_end:tail_start]
+    tail_ids = _message_ids(tail)
+    compact_metadata = build_compact_metadata(
+        visible,
+        compacted,
+        tail,
+        trigger=MANUAL_COMPACT_BOUNDARY,
+        pre_compact_tokens=pre_tokens,
+        logical_parent_id=_latest_boundary_id(visible),
+    )
     summary = _manual_summary(compacted, resolved_settings, custom_instructions=custom_instructions)
     if session_context:
         session_summary = _session_summary(session_context)
@@ -65,11 +75,33 @@ def manual_compact_messages(
         custom_instructions=custom_instructions,
         compacted_messages=len(compacted),
         pre_compact_tokens=pre_tokens,
-        retained_tail_message_ids=[str(message.get("id") or "") for message in tail if str(message.get("id") or "")],
+        retained_tail_message_ids=tail_ids,
+        compact_metadata=compact_metadata,
     )
     result_messages = repair_tool_message_invariants([*protected_head, boundary, *tail])
     post_tokens = count_messages_tokens(result_messages)
     boundary["metadata"]["post_compact_tokens"] = post_tokens
+    boundary["metadata"]["retained_tail_messages"] = len(tail)
+    boundary["metadata"]["original_messages"] = len(visible)
+    boundary["metadata"]["compacted_count"] = len(result_messages)
+    boundary["metadata"]["summary_chars"] = len(summary)
+    compact_metadata.update(
+        {
+            "context_boundary": boundary["metadata"].get("context_boundary"),
+            "compact_boundary": boundary["metadata"].get("compact_boundary"),
+            "compaction_strategy": boundary["metadata"].get("compaction_strategy"),
+            "compacted_at": boundary["metadata"].get("compacted_at"),
+            "custom_instructions": boundary["metadata"].get("custom_instructions"),
+            "compacted_messages": len(compacted),
+            "retained_tail_messages": len(tail),
+            "retained_tail_message_ids": tail_ids,
+            "original_messages": len(visible),
+            "compacted_count": len(result_messages),
+            "summary_chars": len(summary),
+            "post_compact_tokens": post_tokens,
+        }
+    )
+    boundary["metadata"]["compact_metadata"] = compact_metadata
     boundary_index = _boundary_index(result_messages)
     if boundary_index is not None:
         result_messages[boundary_index] = boundary
@@ -83,6 +115,7 @@ def manual_compact_messages(
         retained_tail_messages=len(tail),
         original_count=len(visible),
         compacted_count=len(result_messages),
+        compact_metadata=compact_metadata,
     )
 
 
@@ -93,8 +126,11 @@ def compact_session_context(
     custom_instructions: str = "",
     recent_message_limit: int | None = None,
     session_store: SessionContextStore | None = None,
+    session_id: str | None = None,
 ) -> ManualCompactResult:
     store = session_store or get_session_context_store()
+    if session_id:
+        store.load(session_id)
     session_context = store.planning_context()
     result = manual_compact_messages(
         messages,
@@ -108,11 +144,16 @@ def compact_session_context(
         last_message_id=str(_last_message_id(messages) or ""),
         token_stats={
             "strategy": MANUAL_COMPACT_BOUNDARY,
+            "session_id": store.current.id,
             "pre_compact_tokens": result.pre_compact_tokens,
             "post_compact_tokens": result.post_compact_tokens,
             "compacted_messages": result.compacted_messages,
             "retained_tail_messages": result.retained_tail_messages,
+            "original_messages": result.original_count,
+            "compacted_count": result.compacted_count,
+            "compact_metadata": result.compact_metadata or {},
         },
+        resumed_from_boundary_id=str(result.boundary_message.get("id") or ""),
     )
     return ManualCompactResult(
         messages=result.messages,
@@ -124,6 +165,7 @@ def compact_session_context(
         retained_tail_messages=result.retained_tail_messages,
         original_count=result.original_count,
         compacted_count=result.compacted_count,
+        compact_metadata=result.compact_metadata,
         session_context=store.planning_context(),
     )
 
@@ -135,6 +177,7 @@ def compact_task_context(
     custom_instructions: str = "",
     recent_message_limit: int | None = None,
     session_store: SessionContextStore | None = None,
+    session_id: str | None = None,
     bus: AgentBus | None = None,
     persist_session_context: bool = True,
     persist_agent_boundary: bool = True,
@@ -147,6 +190,7 @@ def compact_task_context(
             custom_instructions=custom_instructions,
             recent_message_limit=recent_message_limit,
             session_store=session_store,
+            session_id=session_id,
         )
     else:
         result = manual_compact_messages(
@@ -176,6 +220,7 @@ def compact_task_context(
         retained_tail_messages=result.retained_tail_messages,
         original_count=result.original_count,
         compacted_count=result.compacted_count,
+        compact_metadata=result.compact_metadata,
         session_context=result.session_context,
         task_id=task_id,
         persisted_message_id=boundary.id,
@@ -215,7 +260,13 @@ def persist_compact_boundary(
                 "pre_compact_tokens": metadata.get("pre_compact_tokens"),
                 "post_compact_tokens": metadata.get("post_compact_tokens"),
                 "compacted_messages": metadata.get("compacted_messages"),
+                "retained_tail_messages": metadata.get("retained_tail_messages"),
+                "original_messages": metadata.get("original_messages"),
+                "compacted_count": metadata.get("compacted_count"),
+                "summary_chars": metadata.get("summary_chars"),
+                "compacted_at": metadata.get("compacted_at"),
                 "retained_tail_message_ids": metadata.get("retained_tail_message_ids") or [],
+                "compact_metadata": metadata.get("compact_metadata") or {},
             },
         )
     )
@@ -232,6 +283,7 @@ def manual_compact_result_to_dict(result: ManualCompactResult) -> dict[str, Any]
         "retained_tail_messages": result.retained_tail_messages,
         "original_count": result.original_count,
         "compacted_count": result.compacted_count,
+        "compact_metadata": result.compact_metadata or {},
         "session_context": result.session_context,
         "task_id": result.task_id,
         "persisted_message_id": result.persisted_message_id,
@@ -245,11 +297,15 @@ def make_manual_compact_boundary(
     compacted_messages: int = 0,
     pre_compact_tokens: int = 0,
     retained_tail_message_ids: list[str] | None = None,
+    compact_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     body = render_prompt("context_auto_compaction.md", {"summary_text": summary})
     instructions = custom_instructions.strip()
     if instructions:
         body = f"{body}\n\nManual compact instructions:\n{instructions}"
+    compact_meta = dict(compact_metadata or {})
+    compact_meta.setdefault("trigger", MANUAL_COMPACT_BOUNDARY)
+    compact_meta.setdefault("messages_to_keep_ids", list(retained_tail_message_ids or []))
     return {
         "id": new_id("msg"),
         "role": "system",
@@ -257,11 +313,15 @@ def make_manual_compact_boundary(
         "metadata": {
             "context_boundary": MANUAL_COMPACT_BOUNDARY,
             "compact_boundary": True,
+            "trigger": compact_meta.get("trigger", MANUAL_COMPACT_BOUNDARY),
+            "compaction_strategy": MANUAL_COMPACT_BOUNDARY,
+            "compacted_at": now_iso(),
             "summary": summary,
             "custom_instructions": instructions,
             "compacted_messages": max(0, int(compacted_messages or 0)),
             "pre_compact_tokens": max(0, int(pre_compact_tokens or 0)),
             "retained_tail_message_ids": list(retained_tail_message_ids or []),
+            "compact_metadata": compact_meta,
         },
     }
 
@@ -321,6 +381,80 @@ def _boundary_index(messages: list[dict[str, Any]]) -> int | None:
     return None
 
 
+def build_compact_metadata(
+    visible: list[dict[str, Any]],
+    summarized: list[dict[str, Any]],
+    tail: list[dict[str, Any]],
+    *,
+    trigger: str,
+    pre_compact_tokens: int,
+    logical_parent_id: str = "",
+) -> dict[str, Any]:
+    tail_ids = _message_ids(tail)
+    summarized_ids = _message_ids(summarized)
+    return {
+        "trigger": trigger,
+        "last_pre_compact_id": _last_message_id(visible),
+        "messages_to_summarize_ids": summarized_ids,
+        "messages_to_keep_ids": tail_ids,
+        "messages_summarized": len(summarized),
+        "messages_kept": len(tail),
+        "logical_parent_id": logical_parent_id,
+        "pre_compact_tokens": max(0, int(pre_compact_tokens or 0)),
+        "preserved_segment": {
+            "head_id": tail_ids[0] if tail_ids else "",
+            "anchor_id": _anchor_message_id(summarized, tail),
+            "tail_id": tail_ids[-1] if tail_ids else "",
+            "message_ids": tail_ids,
+            "messages": [dict(message) for message in tail],
+        },
+    }
+
+
+def _compact_metadata_from_boundary(boundary: dict[str, Any]) -> dict[str, Any]:
+    metadata = boundary.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return {}
+    compact_metadata = metadata.get("compact_metadata")
+    if isinstance(compact_metadata, dict):
+        return dict(compact_metadata)
+    keys = {
+        "context_boundary",
+        "compact_boundary",
+        "compaction_strategy",
+        "compacted_at",
+        "pre_compact_tokens",
+        "post_compact_tokens",
+        "compacted_messages",
+        "retained_tail_messages",
+        "retained_tail_message_ids",
+        "original_messages",
+        "compacted_count",
+        "summary_chars",
+        "custom_instructions",
+    }
+    return {key: metadata.get(key) for key in keys if key in metadata}
+
+
+def _message_ids(messages: list[dict[str, Any]]) -> list[str]:
+    return [message_id for message_id in (str(message.get("id") or "").strip() for message in messages) if message_id]
+
+
+def _anchor_message_id(summarized: list[dict[str, Any]], tail: list[dict[str, Any]]) -> str:
+    if summarized:
+        return str(summarized[-1].get("id") or "").strip()
+    if tail:
+        return str(tail[0].get("id") or "").strip()
+    return ""
+
+
+def _latest_boundary_id(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if _is_boundary(message):
+            return str(message.get("id") or "").strip()
+    return ""
+
+
 def _copy_result(
     result: ManualCompactResult,
     *,
@@ -337,6 +471,7 @@ def _copy_result(
         retained_tail_messages=result.retained_tail_messages,
         original_count=result.original_count,
         compacted_count=result.compacted_count,
+        compact_metadata=result.compact_metadata,
         session_context=result.session_context,
         task_id=task_id or result.task_id,
         persisted_message_id=persisted_message_id or result.persisted_message_id,

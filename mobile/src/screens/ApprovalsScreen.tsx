@@ -13,6 +13,7 @@ import { ChevronRight, Monitor, RefreshCcw, ShieldCheck, Unlink } from "lucide-r
 import type { ReactNode } from "react";
 
 import {
+  AuthExpiredError,
   approvalWebSocketUrl,
   listPendingApprovals,
   type ApprovalEvent,
@@ -51,10 +52,31 @@ export function ApprovalsScreen({
     });
   }, []);
 
+  const handleAuthExpired = useCallback(() => {
+    socketRef.current?.close();
+    socketRef.current = null;
+    void clearSession().finally(onUnpair);
+  }, [onUnpair]);
+
+  const mergePendingApprovals = useCallback((pending: BackendApproval[]) => {
+    setApprovals((current) => {
+      const pendingIds = new Set(pending.map((approval) => approval.id));
+      const decided = current.filter((approval) => approval.status !== "pending");
+      const pendingWithoutStaleDecided = pending.filter(
+        (approval) => !decided.some((decidedApproval) => decidedApproval.id === approval.id),
+      );
+      const decidedWithoutPending = decided.filter((approval) => !pendingIds.has(approval.id));
+      const decidedWinningOverStalePending = decided.filter((approval) => pendingIds.has(approval.id));
+      return [...pendingWithoutStaleDecided, ...decidedWinningOverStalePending, ...decidedWithoutPending].sort(
+        (left, right) => right.created_at.localeCompare(left.created_at),
+      );
+    });
+  }, []);
+
   const refreshApprovals = useCallback(async () => {
     const pending = await listPendingApprovals(session);
-    setApprovals(pending);
-  }, [session]);
+    mergePendingApprovals(pending);
+  }, [mergePendingApprovals, session]);
 
   useEffect(() => {
     void requestNotificationPermission();
@@ -63,7 +85,13 @@ export function ApprovalsScreen({
   useEffect(() => {
     let closedByEffect = false;
     setConnection("connecting");
-    void refreshApprovals().catch((currentError: unknown) => setError(errorMessage(currentError)));
+    void refreshApprovals().catch((currentError: unknown) => {
+      if (currentError instanceof AuthExpiredError) {
+        handleAuthExpired();
+        return;
+      }
+      setError(errorMessage(currentError));
+    });
 
     const socket = new WebSocket(approvalWebSocketUrl(session));
     socketRef.current = socket;
@@ -77,7 +105,7 @@ export function ApprovalsScreen({
       try {
         const payload = JSON.parse(String(event.data)) as ApprovalEvent;
         if (payload.type === "connected") {
-          setApprovals(payload.pending);
+          mergePendingApprovals(payload.pending);
           return;
         }
         if (payload.type === "approval_notification" || payload.type === "approval_created") {
@@ -105,7 +133,7 @@ export function ApprovalsScreen({
       closedByEffect = true;
       socket.close();
     };
-  }, [refreshApprovals, session, upsertApproval]);
+  }, [handleAuthExpired, mergePendingApprovals, refreshApprovals, session, upsertApproval]);
 
   const handleUnpair = async () => {
     socketRef.current?.close();
@@ -115,7 +143,13 @@ export function ApprovalsScreen({
   };
 
   const handleRefresh = () => {
-    void refreshApprovals().catch((currentError: unknown) => Alert.alert("Refresh failed", errorMessage(currentError)));
+    void refreshApprovals().catch((currentError: unknown) => {
+      if (currentError instanceof AuthExpiredError) {
+        handleAuthExpired();
+        return;
+      }
+      Alert.alert("Refresh failed", errorMessage(currentError));
+    });
   };
 
   return (

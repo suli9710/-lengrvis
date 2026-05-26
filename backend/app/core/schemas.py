@@ -113,7 +113,7 @@ class ApprovalStatus(StrEnum):
 
 class ChatRequest(BaseModel):
     message: str
-    mode: str = "privacy"
+    mode: str = "efficiency"
 
 
 class ChatMessage(BaseModel):
@@ -154,13 +154,15 @@ class RunPhase(StrEnum):
     def event_name(self) -> str:
         if self == RunPhase.AWAITING_APPROVAL:
             return "run.waiting_approval"
+        if self == RunPhase.CANCELLED:
+            return "run.cancelled"
         return f"run.{self.value}"
 
 
 class Run(BaseModel):
     id: str = Field(default_factory=lambda: new_id("run"))
     message: str
-    mode: str = "privacy"
+    mode: str = "efficiency"
     requested_engine: RunEngine = RunEngine.AUTO
     engine: RunEngine = RunEngine.AUTO
     phase: RunPhase = RunPhase.CREATED
@@ -182,7 +184,7 @@ class RunEvent(BaseModel):
 
 class RunCreateRequest(BaseModel):
     message: str
-    mode: str = "privacy"
+    mode: str = "efficiency"
     engine: RunEngine = RunEngine.AUTO
 
 
@@ -198,7 +200,7 @@ class RunStateResponse(BaseModel):
     phase: RunPhase
     task_id: str | None = None
     message: str = ""
-    mode: str = "privacy"
+    mode: str = "efficiency"
     requested_engine: RunEngine = RunEngine.AUTO
     error: str = ""
     created_at: str = ""
@@ -241,7 +243,7 @@ class Task(BaseModel):
     status: TaskPhase = TaskPhase.CREATED
     phase: TaskPhase = TaskPhase.CREATED
     execution_stage: ExecutionStage = ExecutionStage.IDLE
-    mode: str = "privacy"
+    mode: str = "efficiency"
     final_summary: str = ""
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
@@ -468,7 +470,7 @@ class ScheduledTask(BaseModel):
     id: str = Field(default_factory=lambda: new_id("schedule"))
     cron: str
     goal: str
-    mode: str = "privacy"
+    mode: str = "efficiency"
     enabled: bool = True
     last_run_at: str = ""
     next_run_at: str = ""

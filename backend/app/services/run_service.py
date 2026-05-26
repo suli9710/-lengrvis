@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from typing import Any
 
 from app.config import AppSettings
 from app.core import db
-from app.core.schemas import Run, RunEngine, RunEvent, RunPhase, now_iso
+from app.core.schemas import Approval, Run, RunEngine, RunEvent, RunPhase, now_iso
 from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.engine_router import EngineRouter
@@ -25,6 +26,8 @@ ENGINE_TERMINAL_PHASES = {
     EngineRunPhase.DENIED,
     EngineRunPhase.CANCELLED,
 }
+_ACTIVE_RUN_TASKS: dict[str, asyncio.Future | concurrent.futures.Future] = {}
+_ACTIVE_RUN_TASKS_LOCK = threading.RLock()
 
 
 async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Run:
@@ -69,7 +72,8 @@ async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Ru
         stop_event = asyncio.Event()
         queue = AgentBus().subscribe(run.task_id)
         bridge_task = _schedule_background(_bridge_task_messages(run.id, run.task_id, queue, stop_event))
-    _schedule_background(_run_engine_loop(run.id, router, state, stop_event=stop_event, bridge_task=bridge_task))
+    task = _schedule_background(_run_engine_loop(run.id, router, state, stop_event=stop_event, bridge_task=bridge_task))
+    _track_active_run(run.id, task)
     return run
 
 
@@ -114,6 +118,7 @@ def list_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) 
 def pause_run(run_id: str) -> Run:
     run = get_run(run_id)
     if run.task_id:
+        _expire_pending_approvals(run.task_id, "pause_requested")
         try:
             set_task_status(run.task_id, "paused")
         except Exception:
@@ -126,6 +131,8 @@ def pause_run(run_id: str) -> Run:
 def resume_run(run_id: str) -> Run:
     run = get_run(run_id)
     if run.phase in TERMINAL_PHASES or run.phase == RunPhase.AWAITING_APPROVAL:
+        return run
+    if _run_active(run.id):
         return run
     return _schedule_resume(run)
 
@@ -153,9 +160,12 @@ def _schedule_resume(run: Run) -> Run:
         _update_run(run, phase=RunPhase.FAILED, error=str(exc))
         run_event_bus.publish(run.id, "run.failed", {"error": str(exc), "task_id": run.task_id})
         return run
+    if run.phase == RunPhase.RUNNING and _run_active(run.id):
+        return run
     _update_run(run, phase=RunPhase.RUNNING)
     run_event_bus.publish(run.id, "turn.started", {"reason": "resume_requested", "task_id": run.task_id})
-    _schedule_background(_resume_engine_loop(run.id, router, state))
+    task = _schedule_background(_resume_engine_loop(run.id, router, state))
+    _track_active_run(run.id, task)
     return run
 
 
@@ -163,13 +173,30 @@ def cancel_run(run_id: str) -> Run:
     run = get_run(run_id)
     _cancel_persisted_state(run)
     if run.task_id:
+        _expire_pending_approvals(run.task_id, "cancel_requested")
         try:
             set_task_status(run.task_id, TaskPhase.CANCELLED)
         except Exception:
             pass
     _update_run(run, phase=RunPhase.CANCELLED)
-    run_event_bus.publish(run.id, "run.denied", {"task_id": run.task_id, "reason": "cancel_requested"})
+    run_event_bus.publish(run.id, "run.cancelled", {"task_id": run.task_id, "reason": "cancel_requested"})
     return run
+
+
+def _expire_pending_approvals(task_id: str, reason: str) -> None:
+    try:
+        expired = db.expire_pending_approvals_for_task(task_id, now_iso(), reason)
+    except Exception:
+        return
+    if not expired:
+        return
+    try:
+        from app.services.approval_event_service import publish_approval_decided
+
+        for item in expired:
+            publish_approval_decided(Approval.model_validate(item))
+    except Exception:
+        return
 
 
 def reconcile_task_runs(task_id: str) -> list[Run]:
@@ -190,8 +217,8 @@ def reconcile_task_runs(task_id: str) -> list[Run]:
         _update_run(run, phase=phase)
         if phase != previous_phase:
             run_event_bus.publish(run.id, "turn.completed", {"task_id": task.id, "task_status": task.status.value})
-            event_name = "run.denied" if phase == RunPhase.CANCELLED else phase.event_name
-            if event_name in {"run.completed", "run.failed", "run.denied", "run.waiting_approval"}:
+            event_name = phase.event_name
+            if event_name in {"run.completed", "run.failed", "run.denied", "run.cancelled", "run.waiting_approval"}:
                 run_event_bus.publish(
                     run.id,
                     event_name,
@@ -228,12 +255,12 @@ async def _run_engine_loop(
                 {"turn": current.turn_count + 1, "engine": current.engine, "phase": current.phase.value},
             )
             result = await router.run_turn(current)
-            if _run_cancelled(run_id):
+            if _run_cancelled(run_id) or _run_paused(run_id):
                 return
             _publish_turn_result(run_id, result)
             current = result.state
             run = get_run(run_id)
-            if run.phase == RunPhase.CANCELLED:
+            if run.phase in {RunPhase.CANCELLED, RunPhase.PAUSED}:
                 return
             _update_run_from_state(run, current)
             if result.finished or current.phase in ENGINE_TERMINAL_PHASES:
@@ -242,7 +269,7 @@ async def _run_engine_loop(
                 _publish_terminal_event(run_id, current, result)
                 return
         run = get_run(run_id)
-        if run.phase == RunPhase.CANCELLED:
+        if run.phase in {RunPhase.CANCELLED, RunPhase.PAUSED}:
             return
         _update_run(run, phase=RunPhase.FAILED, error=f"max turns reached ({max_turns})")
         run_event_bus.publish(run_id, "run.failed", {"reason": run.error, "max_turns": max_turns})
@@ -262,6 +289,7 @@ async def _run_engine_loop(
                 bridge_task.cancel()
             except Exception:
                 pass
+        _untrack_active_run(run_id)
 
 
 async def _monitor_task_to_terminal(
@@ -282,7 +310,7 @@ async def _monitor_task_to_terminal(
             run_event_bus.publish(run_id, "turn.completed", {"task_id": task.id, "task_status": task.status.value})
             run_event_bus.publish(
                 run_id,
-                phase.event_name if phase != RunPhase.CANCELLED else "run.denied",
+                phase.event_name,
                 {"task_id": task.id, "final_summary": task.final_summary, "phase": phase.value},
             )
             return
@@ -298,7 +326,7 @@ async def _monitor_task_to_terminal(
 
 async def _resume_engine_loop(run_id: str, router: EngineRouter, state: RunState) -> None:
     try:
-        resumed = await router.resume_run(state.run_id)
+        resumed = await router.engines[state.engine].resume_run(state.run_id)
     except Exception:
         resumed = state
     stop_event: asyncio.Event | None = None
@@ -436,6 +464,13 @@ def _run_cancelled(run_id: str) -> bool:
         return False
 
 
+def _run_paused(run_id: str) -> bool:
+    try:
+        return get_run(run_id).phase == RunPhase.PAUSED
+    except KeyError:
+        return False
+
+
 def _is_approval_continuation(run: Run) -> bool:
     if run.phase != RunPhase.RUNNING:
         return False
@@ -538,7 +573,7 @@ def _publish_terminal_event(run_id: str, state: RunState, result: EngineTurnResu
     if phase == RunPhase.AWAITING_APPROVAL:
         event_name = "run.waiting_approval"
     elif phase == RunPhase.CANCELLED:
-        event_name = "run.denied"
+        event_name = "run.cancelled"
     elif phase in {RunPhase.COMPLETED, RunPhase.FAILED, RunPhase.DENIED}:
         event_name = phase.event_name
     else:
@@ -564,7 +599,7 @@ def _phase_for_task(task: Any) -> RunPhase:
     if task.status == TaskPhase.FAILED:
         return RunPhase.FAILED
     if task.status == TaskPhase.CANCELLED:
-        return RunPhase.DENIED
+        return RunPhase.CANCELLED
     if task.execution_stage.value == "paused":
         return RunPhase.PAUSED
     return RunPhase.RUNNING
@@ -574,7 +609,7 @@ def _schedule_background(coro) -> asyncio.Future:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        future: asyncio.Future = asyncio.Future()
+        future: concurrent.futures.Future = concurrent.futures.Future()
 
         def runner() -> None:
             try:
@@ -587,3 +622,21 @@ def _schedule_background(coro) -> asyncio.Future:
         threading.Thread(target=runner, name="run-service-background", daemon=True).start()
         return future
     return loop.create_task(coro)
+
+
+def _track_active_run(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> None:
+    with _ACTIVE_RUN_TASKS_LOCK:
+        _ACTIVE_RUN_TASKS[run_id] = task
+
+
+def _untrack_active_run(run_id: str) -> None:
+    with _ACTIVE_RUN_TASKS_LOCK:
+        _ACTIVE_RUN_TASKS.pop(run_id, None)
+
+
+def _run_active(run_id: str) -> bool:
+    with _ACTIVE_RUN_TASKS_LOCK:
+        task = _ACTIVE_RUN_TASKS.get(run_id)
+    if task is None:
+        return False
+    return not task.done()

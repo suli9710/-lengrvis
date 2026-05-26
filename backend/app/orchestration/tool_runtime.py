@@ -166,6 +166,8 @@ class ToolRuntime:
             return RuntimeExecutionResult("step_denied")
 
         if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+            if not tool.supports_dry_run:
+                return self._deny_approval_without_dry_run(task, step, tool)
             return await self._prepare_approval(
                 task,
                 step,
@@ -490,6 +492,23 @@ class ToolRuntime:
                 structured_payload=preview_result.model_dump(),
             )
             return RuntimeExecutionResult("fatal_failed", preview_result)
+        preview_contract_error = self._dry_run_preview_contract_error(preview)
+        if preview_contract_error:
+            preview_result.ok = False
+            preview_result.error = preview_contract_error
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            orchestrator._set_status(
+                task,
+                TaskStatus.DENIED,
+                final_summary="Tool dry-run preview did not satisfy the approval safety contract.",
+            )
+            record(
+                "tool.dry_run_contract_failed",
+                "ToolRuntime",
+                {"tool": tool.name, "reason": preview_contract_error, "step_id": step.id},
+                task_id=task.id,
+            )
+            return RuntimeExecutionResult("fatal_denied", preview_result)
 
         post_preview_review = orchestrator.safety.review_tool_result(
             task.id,
@@ -529,6 +548,34 @@ class ToolRuntime:
         )
         orchestrator._supervise_new_agent_messages(task.id, "approval_gate")
         return RuntimeExecutionResult("waiting_user_approval", preview_result)
+
+    def _deny_approval_without_dry_run(self, task: Task, step: PlanStep, tool: ToolDefinition) -> RuntimeExecutionResult:
+        set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+        self.orchestrator._set_status(
+            task,
+            TaskStatus.DENIED,
+            final_summary="Tool requires approval but does not support a safe dry-run preview.",
+        )
+        record(
+            "tool.approval_requires_dry_run",
+            "ToolRuntime",
+            {"tool": tool.name, "step_id": step.id, "risk_level": tool.risk_level.value},
+            task_id=task.id,
+        )
+        result = ToolResult(
+            tool_call_id=f"{step.id}_dry_run_required",
+            ok=False,
+            error="Tool requires approval but does not support dry-run.",
+            observation=f"{step.tool_name} cannot be approved without dry-run support.",
+        )
+        return RuntimeExecutionResult("fatal_denied", result)
+
+    def _dry_run_preview_contract_error(self, preview: dict[str, Any]) -> str:
+        if preview.get("dry_run") is not True:
+            return "Dry-run preview must declare dry_run=True."
+        if preview.get("changed_paths"):
+            return "Dry-run preview must not report changed_paths."
+        return ""
 
     def _validate_input(self, tool: ToolDefinition, args: dict[str, Any], runtime: TaskRuntimeContext) -> str:
         if not tool.validate_input:

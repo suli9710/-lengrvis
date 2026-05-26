@@ -10,6 +10,7 @@ import pytest
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import StepPhase, set_step_status
 from app.orchestration.tool_runtime import ToolRuntime
@@ -157,6 +158,8 @@ def test_approved_tool_runtime_persists_large_result_preview(tmp_path: Path):
     )
     task, plan, step = _task_plan_step("test.approved_large_result")
     set_step_status(step, StepStatus.WAITING_USER_APPROVAL, actor="Test")
+    task.execution_stage = ExecutionStage.AWAITING_APPROVAL
+    db.upsert_model("tasks", task)
     db.upsert_model("plans", plan)
     runtime = orchestrator.step_execution_handler._runtime_context(task)
     approval_preview: dict[str, Any] = {}
@@ -442,7 +445,7 @@ def test_runtime_safety_review_uses_context_for_dynamic_risk():
         output_schema={},
         risk_level=RiskLevel.R1_OPEN_ONLY,
         agent_owner="FileAgent",
-        supports_dry_run=False,
+        supports_dry_run=True,
         requires_authorized_path=False,
         execute=execute,
         trust_tier="builtin",
@@ -467,6 +470,72 @@ def test_runtime_safety_review_uses_context_for_dynamic_risk():
     assert tool_call_review["risk_level"] == RiskLevel.R2_REVERSIBLE_MODIFY
     assert "Deep-night operation increases review risk" in " ".join(tool_call_review["reasons"])
     assert calls == [{"url": "https://example.com", "dry_run": True}]
+
+
+def test_runtime_denies_approval_when_tool_lacks_dry_run_after_dynamic_risk():
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    orchestrator = OrchestratorAgent()
+    task, _plan, step = _task_plan_step("test.context_dynamic_risk_no_dry_run", {"url": "https://example.com"})
+    tool = ToolDefinition(
+        name=step.tool_name,
+        description="context sensitive open without dry-run",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R1_OPEN_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["open"],
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    runtime.extra_context["timestamp"] = datetime(2026, 5, 26, 2, 30)
+
+    outcome = asyncio.run(ToolRuntime(orchestrator).review_and_maybe_prepare_approval(task, step, tool, runtime))
+
+    assert outcome.kind == "fatal_denied"
+    assert calls == []
+    assert step.status == StepStatus.DENIED
+    refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert refreshed.status == TaskStatus.CANCELLED
+    events = db.fetch_many("audit_events", "task_id = ?", (task.id,), limit=10)
+    assert any(event["event_type"] == "tool.approval_requires_dry_run" for event in events)
+
+
+def test_runtime_denies_dry_run_preview_that_does_not_declare_dry_run():
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True, "diff_preview": [{"action": "write"}]}
+
+    orchestrator = OrchestratorAgent()
+    task, _plan, step = _task_plan_step("test.bad_dry_run_contract", {"path": "a.txt"})
+    tool = ToolDefinition(
+        name=step.tool_name,
+        description="bad dry-run contract",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=execute,
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+
+    outcome = asyncio.run(ToolRuntime(orchestrator).review_and_maybe_prepare_approval(task, step, tool, runtime))
+
+    assert outcome.kind == "fatal_denied"
+    assert calls == [{"path": "a.txt", "dry_run": True}]
+    assert step.status == StepStatus.DENIED
+    assert db.fetch_many("approvals", "task_id = ?", (task.id,), limit=10) == []
 
 
 def test_runtime_safety_review_uses_context_for_permission_policy():

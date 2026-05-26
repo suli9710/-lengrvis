@@ -1,5 +1,5 @@
 llm:
-  provider_name: mock
+  provider_name: openai_compatible
   base_url: https://api.openai.com/v1
   api_key: ""
   model: gpt-4o-mini
@@ -32,7 +32,7 @@ paths:
     - calc
 
 privacy:
-  mode: privacy
+  mode: efficiency
   allow_cloud_context: false
   allow_file_content_upload: false
   allow_browser_network: false

@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Any
 
 from app.config import AppSettings
-from app.context_management import agent_messages_to_openai
+from app.context_management import project_ledger_for_llm
 from app.core import db
 from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole
 
@@ -212,7 +212,8 @@ class AgentBus:
         messages = sorted(self.get_messages(task_id), key=lambda message: (message.created_at, message.id))
         if limit > 0:
             messages = messages[-limit:]
-        return agent_messages_to_openai(messages, settings, source=f"agent_bus:{task_id}").messages
+        ledger = [message.to_openai_dict(include_legacy=False) for message in messages]
+        return project_ledger_for_llm(ledger, settings, source=f"agent_bus:{task_id}").messages
 
     def broadcast_to_relevant_agents(self, task_id: str, content: str) -> None:
         for agent in ["FileAgent", "DocumentAgent", "ComputerAgent", "BrowserAgent", "SearchAgent"]:

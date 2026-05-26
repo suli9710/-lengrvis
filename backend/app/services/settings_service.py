@@ -10,7 +10,11 @@ from app.llm.openai_compatible import circuit_snapshot
 from app.llm.profiles import profile_for_provider, profile_for_settings
 from app.llm.prompts import load_prompt
 from app.llm.registry import _is_local_base_url, get_effective_settings, get_provider, get_provider_for_mode
+from app.policy.redaction import redact_text
 from app.llm.usage import list_usage_events, usage_summary
+
+
+SENSITIVE_SETTINGS = {"api_key", "jwt_secret"}
 
 
 def get_settings() -> dict[str, Any]:
@@ -18,6 +22,14 @@ def get_settings() -> dict[str, Any]:
 
 
 def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    rejected_secrets = sorted(SENSITIVE_SETTINGS.intersection(payload))
+    if rejected_secrets:
+        names = ", ".join(rejected_secrets)
+        raise AppError(
+            "secret_settings_must_use_external_config",
+            f"Sensitive settings ({names}) must be configured through environment variables or external config.",
+            status_code=400,
+        )
     allowed = {field.name for field in fields(get_effective_settings())}
     coerced: dict[str, Any] = {}
     for key, value in payload.items():
@@ -39,7 +51,7 @@ def get_llm_profile() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         profile = profile_for_settings(settings)
         degraded = True
-        error = str(exc)
+        error = _safe_error(exc)
     return {
         "mode": settings.mode,
         "task": "default",
@@ -71,7 +83,7 @@ def get_llm_health() -> dict[str, Any]:
             "provider": profile.provider_name,
             "model": profile.model,
             "profile": profile.to_dict(),
-            "error": str(exc),
+            "error": _safe_error(exc),
         }
     return {
         "active": active,
@@ -208,6 +220,10 @@ async def test_llm_provider() -> dict[str, Any]:
         degraded = provider.name == "mock"
         return {"ok": not degraded, "provider": provider.name, "message": text, "degraded": degraded}
     except LocalBackendUnavailable as exc:
-        return {"ok": False, "provider": "local", "error": str(exc)}
+        return {"ok": False, "provider": "local", "error": _safe_error(exc)}
     except Exception as exc:
-        return {"ok": False, "provider": getattr(provider, "name", "unknown"), "error": str(exc)}
+        return {"ok": False, "provider": getattr(provider, "name", "unknown"), "error": _safe_error(exc)}
+
+
+def _safe_error(exc: Exception) -> str:
+    return redact_text(str(exc) or exc.__class__.__name__)
