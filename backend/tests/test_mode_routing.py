@@ -92,6 +92,22 @@ def test_efficiency_mode_routes_every_task_to_cloud():
         assert provider.settings.api_key == "sk-test-token"
 
 
+def test_default_settings_are_cloud_first(monkeypatch):
+    def fail_local_probe():
+        raise AssertionError("default settings must not probe local LLM backends")
+
+    monkeypatch.setattr("app.llm.registry.detect_local_backend", fail_local_probe)
+    monkeypatch.setattr("app.llm.registry.detect_onnx_backend", lambda settings: None)
+
+    settings = AppSettings(api_key="sk-test-token")
+    provider = get_provider_for_mode(settings, task="planner")
+
+    assert settings.mode == "efficiency"
+    assert settings.provider_name == "openai_compatible"
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.settings.api_key == "sk-test-token"
+
+
 def test_efficiency_without_api_key_drops_to_mock():
     settings = _cloud_settings(api_key="")
     provider = get_provider_for_mode(settings, task="planner")

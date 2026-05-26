@@ -132,6 +132,75 @@ export interface LLMCostSummary {
   }>;
 }
 
+export interface ContextUsageHealth {
+  status: "healthy" | "managed" | "watch" | "critical" | "blocked" | "unknown";
+  severity: "ok" | "warning" | "error" | "unknown";
+  reason: string;
+  usedPercent: number;
+  freePercent: number;
+  freeTokens: number;
+  projectedTokens: number;
+  projectedPercent: number;
+  projectedFreeTokens: number;
+  isHealthy: boolean;
+}
+
+export interface ContextProjectionSummary {
+  enabled: boolean;
+  strategy: string;
+  compacted: boolean;
+  originalTokens: number;
+  projectedTokens: number;
+  tokensSaved: number;
+  messagesRemoved: number;
+  adjustments: string[];
+  description: string;
+}
+
+export interface ContextUsageLineage {
+  taskId: string;
+  historySource: string;
+  messageCount: number;
+  systemMessageCount: number;
+  agentMessageCount: number;
+  messageRoles: Record<string, number>;
+  localToolCount: number;
+  mcpToolCount: number;
+  sessionMemoryItemCount: number;
+  includeRegisteredTools: boolean;
+  includeSessionMemory: boolean;
+  includeProjection: boolean;
+  projection: {
+    source: string;
+    strategy: string;
+    boundaryId: string;
+    retainedTailCount: number;
+  };
+}
+
+export interface ContextUsage {
+  totalTokens: number;
+  usedTokens: number;
+  freeTokens: number;
+  effectiveContextWindow: number;
+  modelContextWindow: number;
+  autoCompactThreshold: number;
+  manualCompactLimit: number;
+  reservedOutputTokens: number;
+  warning: {
+    tokenCount: number;
+    threshold: number;
+    percentLeft: number;
+    isAboveWarningThreshold: boolean;
+    isAboveErrorThreshold: boolean;
+    isAboveAutoCompactThreshold: boolean;
+    isAtBlockingLimit: boolean;
+  };
+  health: ContextUsageHealth;
+  projection: ContextProjectionSummary;
+  lineage: ContextUsageLineage;
+}
+
 export type ChatRole = "system" | "developer" | "user" | "assistant" | "tool";
 
 export interface ChatMessage {

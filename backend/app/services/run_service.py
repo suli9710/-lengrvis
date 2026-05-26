@@ -172,6 +172,13 @@ def _schedule_resume(run: Run) -> Run:
 def cancel_run(run_id: str) -> Run:
     run = get_run(run_id)
     _cancel_persisted_state(run)
+    if run.engine == RunEngine.DEVELOPER:
+        try:
+            from app.orchestration.claude_code_runner import cancel_claude_code_run
+
+            _schedule_background(cancel_claude_code_run(run.id))
+        except Exception:
+            pass
     if run.task_id:
         _expire_pending_approvals(run.task_id, "cancel_requested")
         try:
@@ -256,6 +263,8 @@ async def _run_engine_loop(
             )
             result = await router.run_turn(current)
             if _run_cancelled(run_id) or _run_paused(run_id):
+                if result.outputs:
+                    _publish_turn_result(run_id, result)
                 return
             _publish_turn_result(run_id, result)
             current = result.state
@@ -555,6 +564,18 @@ def _publish_turn_result(run_id: str, result: EngineTurnResult) -> None:
             "tool.result",
             {"tool_name": source, "output": payload, "engine": state.engine, "turn": state.turn_count},
         )
+        if isinstance(payload, dict):
+            for event in payload.get("mavris_events") or []:
+                if not isinstance(event, dict):
+                    continue
+                name = event.get("name")
+                event_payload = event.get("payload")
+                if isinstance(name, str) and isinstance(event_payload, dict):
+                    run_event_bus.publish(
+                        run_id,
+                        name,
+                        {**event_payload, "engine": state.engine, "turn": state.turn_count, "source": source},
+                    )
     run_event_bus.publish(
         run_id,
         "turn.completed",

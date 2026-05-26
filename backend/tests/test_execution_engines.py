@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus
-from app.orchestration.developer_engine import DeveloperExecutionEngine, readonly_developer_tool_names
+from app.orchestration.claude_code_config import ClaudeCodeConfig, default_allowed_tools
+from app.orchestration.developer_engine import DeveloperExecutionEngine
 from app.orchestration.engine_router import EngineRouter, configured_default_engine, configured_max_turns, route_engine
 from app.orchestration.execution_engine import InMemoryRunStore
 from app.orchestration.execution_models import RunPhase
@@ -50,27 +53,42 @@ def test_default_engine_env_keeps_legacy_agent_loop_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_developer_engine_run_turn_uses_readonly_tools(tmp_path) -> None:
-    (tmp_path / "sample.py").write_text("def sample():\n    return 'goal-token'\n", encoding="utf-8")
+async def test_developer_engine_run_turn_uses_claude_code_adapter(tmp_path) -> None:
+    fake_cli = tmp_path / "fake_claude.py"
+    fake_cli.write_text(
+        """
+from __future__ import annotations
+
+import json
+
+print(json.dumps({"type": "system", "subtype": "init", "tools": ["Read"]}), flush=True)
+print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Working"}, {"type": "tool_use", "name": "Read", "input": {"file_path": "sample.py"}}]}}), flush=True)
+print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Fake developer result"}), flush=True)
+""".lstrip(),
+        encoding="utf-8",
+    )
     store = InMemoryRunStore()
     engine = DeveloperExecutionEngine(
-        settings=AppSettings(allowed_directories=[str(tmp_path)]),
+        settings=AppSettings(
+            allowed_directories=[str(tmp_path)],
+            api_key="test-api-key",
+            model="openai/gpt-5",
+        ),
         store=store,
+        claude_code_config=ClaudeCodeConfig(command=(sys.executable, "-u", str(fake_cli)), max_turns=2),
+        use_claude_code=True,
     )
 
-    state = await engine.start_run("inspect goal-token implementation", "privacy", "developer")
+    state = await engine.start_run("inspect goal-token implementation", "efficiency", "developer")
     result = await engine.run_turn(state)
 
     assert result.finished is True
     assert result.state.phase == RunPhase.COMPLETED
-    assert result.state.current_plan["writes_enabled"] is False
-    assert result.state.current_plan["allowed_tools"] == list(readonly_developer_tool_names())
-    assert {observation.source for observation in result.state.observations} == {
-        "dev.git_status",
-        "dev.diff_preview",
-        "dev.pytest_inventory",
-        "dev.grep",
-    }
+    assert result.state.current_plan["writes_enabled"] is True
+    assert result.state.current_plan["allowed_tools"] == list(default_allowed_tools())
+    assert result.outputs["claude_code"]["ok"] is True
+    assert result.outputs["claude_code"]["tool_events"][0]["name"] == "Read"
+    assert result.state.observations[0].source == "claude_code.stream_json"
 
 
 @pytest.mark.asyncio

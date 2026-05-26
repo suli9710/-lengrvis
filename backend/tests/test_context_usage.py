@@ -164,11 +164,18 @@ def test_context_usage_reports_projection_phases_breakdown_and_claude_view():
     )
 
     assert payload["projection"]["enabled"] is True
+    assert payload["projection"]["summary"]["enabled"] is True
+    assert payload["projection"]["summary"]["projected_tokens"] == payload["projection"]["projected_tokens"]
     assert payload["projection"]["projected_tokens"] > 0
     assert {phase["id"] for phase in payload["phases"]} >= {"assemble", "projection", "reserve", "free_space"}
     assert payload["breakdown"]["messages"]["toolCallTokens"] > 0
     assert payload["breakdown"]["messages"]["toolResultTokens"] > 0
     assert payload["breakdown"]["messages"]["attachmentTokens"] > 0
+    assert payload["health"]["status"] in {"healthy", "managed", "watch", "critical", "blocked"}
+    assert payload["health"]["projected_tokens"] == payload["projection"]["projected_tokens"]
+    assert payload["lineage"]["history_source"] == "request_payload"
+    assert payload["lineage"]["message_count"] == len(messages)
+    assert payload["lineage"]["projection"]["strategy"] == payload["projection"]["strategy"]
     assert payload["claude_view"]["totalTokens"] == payload["used_tokens"]
     assert payload["claude_view"]["messageBreakdown"]["toolCallsByType"][0]["name"] == "file.read"
 
@@ -186,3 +193,5 @@ def test_context_usage_to_dict_is_api_ready():
 
     assert payload["warning"]["is_above_auto_compact_threshold"] is False
     assert isinstance(payload["categories"][0]["percent"], float)
+    assert "health" in payload
+    assert "lineage" in payload

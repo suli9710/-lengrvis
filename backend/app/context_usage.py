@@ -57,6 +57,8 @@ class ContextUsageReport:
     phases: list[dict[str, Any]] = field(default_factory=list)
     breakdown: dict[str, Any] = field(default_factory=dict)
     claude_view: dict[str, Any] = field(default_factory=dict)
+    health: dict[str, Any] = field(default_factory=dict)
+    lineage: dict[str, Any] = field(default_factory=dict)
     reserved_output_tokens: int = 0
 
 
@@ -83,6 +85,7 @@ def analyze_context_usage(
     resolved_settings = settings or get_effective_settings()
     explicit_messages = list(messages or [])
     system_messages = list(system_context_messages or [])
+    loaded_history_from_task = bool(task_id and not explicit_messages)
     if task_id and not explicit_messages:
         explicit_messages = load_agent_history(task_id)
     explicit_messages = repair_tool_message_invariants(compact_boundary_view(explicit_messages))
@@ -194,6 +197,38 @@ def analyze_context_usage(
             "deferred_count": _count_tool_attr(local_tools, "defer_loading", True),
         },
     }
+    warning = {
+        "token_count": state.token_count,
+        "threshold": state.threshold,
+        "percent_left": state.percent_left,
+        "is_above_warning_threshold": state.is_above_warning_threshold,
+        "is_above_error_threshold": state.is_above_error_threshold,
+        "is_above_auto_compact_threshold": state.is_above_auto_compact_threshold,
+        "is_at_blocking_limit": state.is_at_blocking_limit,
+    }
+    health = _health_summary(
+        used_tokens=used_tokens,
+        free_tokens=free_tokens,
+        effective_window=effective_window,
+        warning=warning,
+        projection=projection,
+    )
+    lineage = _lineage_summary(
+        task_id=task_id,
+        explicit_messages=explicit_messages,
+        all_system_messages=all_system_messages,
+        agent_history=agent_history,
+        local_tools=local_tools,
+        mcp_tools=all_mcp_tools,
+        session_context=session_context,
+        include_registered_tools=include_registered_tools,
+        include_session_memory=include_session_memory,
+        include_projection=include_projection,
+        loaded_history_from_task=loaded_history_from_task,
+        base_rows=base_rows,
+        projection=projection,
+    )
+
     return ContextUsageReport(
         total_tokens=sum(item.tokens for item in categories),
         used_tokens=used_tokens,
@@ -202,19 +237,13 @@ def analyze_context_usage(
         model_context_window=max(1, int(resolved_settings.model_context_window or 1)),
         auto_compact_threshold=auto_threshold,
         manual_compact_limit=manual_limit,
-        warning={
-            "token_count": state.token_count,
-            "threshold": state.threshold,
-            "percent_left": state.percent_left,
-            "is_above_warning_threshold": state.is_above_warning_threshold,
-            "is_above_error_threshold": state.is_above_error_threshold,
-            "is_above_auto_compact_threshold": state.is_above_auto_compact_threshold,
-            "is_at_blocking_limit": state.is_at_blocking_limit,
-        },
+        warning=warning,
         categories=categories,
         projection=projection,
         phases=phases,
         breakdown=breakdown,
+        health=health,
+        lineage=lineage,
         reserved_output_tokens=max(0, max(1, int(resolved_settings.model_context_window or 1)) - effective_window),
         claude_view=_claude_view(
             categories=categories,
@@ -244,6 +273,8 @@ def context_usage_to_dict(report: ContextUsageReport) -> dict[str, Any]:
         "phases": report.phases,
         "breakdown": report.breakdown,
         "claude_view": report.claude_view,
+        "health": report.health,
+        "lineage": report.lineage,
         "categories": [
             {
                 "id": category.id,
@@ -273,7 +304,7 @@ def _projection_summary(
 ) -> dict[str, Any]:
     if not include_projection:
         token_count = count_messages_tokens(messages)
-        return {
+        projection = {
             "enabled": False,
             "original_count": len(messages),
             "projected_count": len(messages),
@@ -282,6 +313,7 @@ def _projection_summary(
             "compacted": False,
             "strategy": "none",
         }
+        return {**projection, "summary": _projection_brief(projection)}
     projection = project_messages_for_llm(
         messages,
         settings,
@@ -289,7 +321,146 @@ def _projection_summary(
         source="context_usage",
         record_projection_event=False,
     )
-    return {"enabled": True, **projection.to_dict()}
+    payload = {"enabled": True, **projection.to_dict()}
+    return {**payload, "summary": _projection_brief(payload)}
+
+
+def _projection_brief(projection: dict[str, Any]) -> dict[str, Any]:
+    original_tokens = _int_value(projection.get("original_tokens"))
+    projected_tokens = _int_value(projection.get("projected_tokens"))
+    original_count = _int_value(projection.get("original_count"))
+    projected_count = _int_value(projection.get("projected_count"))
+    compacted = bool(projection.get("compacted"))
+    adjustments: list[str] = []
+    if projection.get("micro_compacted"):
+        adjustments.append("micro_compacted")
+    if projection.get("history_snipped"):
+        adjustments.append("history_snipped")
+    if projection.get("session_summary_added"):
+        adjustments.append("session_summary_added")
+    if compacted and not adjustments:
+        adjustments.append("compacted")
+
+    tokens_saved = max(0, original_tokens - projected_tokens)
+    messages_removed = max(0, original_count - projected_count)
+    strategy = str(projection.get("strategy") or "none")
+    description = "Projection keeps the prompt unchanged."
+    if not bool(projection.get("enabled")):
+        description = "Projection is disabled for this usage estimate."
+    elif compacted:
+        description = "Projection trims context before the provider call."
+    elif projection.get("session_summary_added"):
+        description = "Projection adds session continuity context."
+
+    return {
+        "enabled": bool(projection.get("enabled")),
+        "strategy": strategy,
+        "compacted": compacted,
+        "original_tokens": original_tokens,
+        "projected_tokens": projected_tokens,
+        "tokens_saved": tokens_saved,
+        "messages_removed": messages_removed,
+        "adjustments": adjustments,
+        "description": description,
+    }
+
+
+def _health_summary(
+    *,
+    used_tokens: int,
+    free_tokens: int,
+    effective_window: int,
+    warning: dict[str, Any],
+    projection: dict[str, Any],
+) -> dict[str, Any]:
+    projected_tokens = _int_value(projection.get("projected_tokens"), used_tokens)
+    projected_free_tokens = max(0, effective_window - projected_tokens)
+    used_percent = round((max(0, used_tokens) / max(1, effective_window)) * 100, 2)
+    projected_percent = round((max(0, projected_tokens) / max(1, effective_window)) * 100, 2)
+
+    status = "healthy"
+    severity = "ok"
+    reason = "Context has comfortable room."
+    if bool(warning.get("is_at_blocking_limit")):
+        status = "blocked"
+        severity = "error"
+        reason = "Context is at the manual compaction limit."
+    elif bool(warning.get("is_above_error_threshold")):
+        status = "critical"
+        severity = "error"
+        reason = "Context is very close to the compact threshold."
+    elif bool(warning.get("is_above_warning_threshold")):
+        status = "watch"
+        severity = "warning"
+        reason = "Context is getting close to compaction."
+    elif bool(projection.get("compacted")):
+        status = "managed"
+        severity = "ok"
+        reason = "Projection already trimmed context before the provider call."
+
+    return {
+        "status": status,
+        "severity": severity,
+        "reason": reason,
+        "used_percent": used_percent,
+        "free_percent": max(0, round(100 - used_percent, 2)),
+        "free_tokens": max(0, free_tokens),
+        "projected_tokens": projected_tokens,
+        "projected_percent": projected_percent,
+        "projected_free_tokens": projected_free_tokens,
+        "is_healthy": severity == "ok",
+    }
+
+
+def _lineage_summary(
+    *,
+    task_id: str | None,
+    explicit_messages: list[dict[str, Any]],
+    all_system_messages: list[dict[str, Any]],
+    agent_history: list[dict[str, Any]],
+    local_tools: list[Any],
+    mcp_tools: list[Any],
+    session_context: dict[str, Any] | None,
+    include_registered_tools: bool,
+    include_session_memory: bool,
+    include_projection: bool,
+    loaded_history_from_task: bool,
+    base_rows: list[ContextUsageCategory],
+    projection: dict[str, Any],
+) -> dict[str, Any]:
+    categories = {
+        row.id: {
+            "tokens": row.tokens,
+            "item_count": row.item_count,
+        }
+        for row in base_rows
+    }
+    message_roles: dict[str, int] = {}
+    for message in explicit_messages:
+        role = str(message.get("role") or "unknown")
+        message_roles[role] = message_roles.get(role, 0) + 1
+
+    return {
+        "task_id": task_id or "",
+        "history_source": "task_history" if loaded_history_from_task else "request_payload",
+        "message_count": len(explicit_messages),
+        "system_message_count": len(all_system_messages),
+        "agent_message_count": len(agent_history),
+        "message_roles": message_roles,
+        "local_tool_count": len(local_tools),
+        "mcp_tool_count": len(mcp_tools),
+        "session_memory_item_count": _session_item_count(session_context),
+        "include_registered_tools": bool(include_registered_tools),
+        "include_session_memory": bool(include_session_memory),
+        "include_projection": bool(include_projection),
+        "categories": categories,
+        "projection": {
+            "source": str(projection.get("source") or "context_usage"),
+            "strategy": str(projection.get("strategy") or "none"),
+            "boundary_id": str(projection.get("boundary_id") or ""),
+            "retained_tail_count": len(list(projection.get("retained_tail_message_ids") or [])),
+        },
+    }
 
 
 def _message_breakdown(messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -508,6 +679,13 @@ def _split_tool_definitions(tools: Iterable[Any]) -> tuple[list[Any], list[Any]]
 
 def _count_tools_tokens(tools: Iterable[Any]) -> int:
     return rough_token_count([_tool_payload(tool) for tool in tools])
+
+
+def _int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _tool_payload(tool: Any) -> dict[str, Any]:

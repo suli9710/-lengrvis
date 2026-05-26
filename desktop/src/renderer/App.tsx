@@ -44,6 +44,7 @@ import type {
   AuditLogEntry,
   BackendStatus,
   ChatMessage,
+  ContextUsage,
   FileSearchResult,
   IntentSuggestion,
   LLMCostSummary,
@@ -347,6 +348,7 @@ export function App() {
   const [localLlmHealth, setLocalLlmHealth] = useState<LocalLLMHealth | null>(null);
   const [llmHealth, setLlmHealth] = useState<LLMHealthStatus | null>(null);
   const [llmCostSummary, setLlmCostSummary] = useState<LLMCostSummary | null>(null);
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isApprovalOpen, setIsApprovalOpen] = useState(false);
@@ -383,6 +385,7 @@ export function App() {
       settingsResult,
       llmHealthResult,
       llmCostResult,
+      contextUsageResult,
       auditResult,
       systemResult,
       suggestionsResult
@@ -396,6 +399,7 @@ export function App() {
       api.getSettings(),
       api.getLlmHealth(),
       api.getLlmCostSummary(),
+      api.getContextUsage(),
       api.listAuditLogs(),
       api.getSystemInfo(),
       api.listIntentSuggestions()
@@ -418,6 +422,9 @@ export function App() {
     }
     if (llmCostResult.status === "fulfilled" && llmCostResult.value.ok && llmCostResult.value.data) {
       setLlmCostSummary(llmCostResult.value.data);
+    }
+    if (contextUsageResult.status === "fulfilled" && contextUsageResult.value.ok && contextUsageResult.value.data) {
+      setContextUsage(contextUsageResult.value.data);
     }
     if (auditResult.status === "fulfilled" && auditResult.value.ok && auditResult.value.data) setAuditEntries(auditResult.value.data);
     if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
@@ -770,6 +777,7 @@ export function App() {
               localLlmHealth={localLlmHealth}
               llmHealth={llmHealth}
               llmCostSummary={llmCostSummary}
+              contextUsage={contextUsage}
               onAgentSelect={(prompt) => setDraft(prompt)}
               activeAgentId={activeOfficeAgentId}
               recentTasks={tasks}
@@ -887,6 +895,7 @@ function OfficeScene({
   localLlmHealth,
   llmHealth,
   llmCostSummary,
+  contextUsage,
   onAgentSelect,
   onQuickSkill,
   safetyAlert
@@ -905,6 +914,7 @@ function OfficeScene({
   localLlmHealth: LocalLLMHealth | null;
   llmHealth: LLMHealthStatus | null;
   llmCostSummary: LLMCostSummary | null;
+  contextUsage: ContextUsage | null;
   onAgentSelect: (prompt: string) => void;
   onQuickSkill: (prompt: string) => void;
   safetyAlert: boolean;
@@ -984,6 +994,16 @@ function OfficeScene({
   const tokenLimit = llmHealth?.active.profile.modelProfile.contextWindow ?? 0;
   const tokenUsedLabel = tokenUsed === null ? "N/A" : formatTokenCount(tokenUsed);
   const tokenLimitLabel = tokenLimit > 0 ? formatTokenCount(tokenLimit) : "N/A";
+  const contextHealthLabel = contextUsage ? contextHealthText(contextUsage.health.status) : "未知";
+  const contextHealthTone = contextUsage ? contextHealthToneClass(contextUsage.health.severity) : "unknown";
+  const contextWindowLabel = contextUsage?.effectiveContextWindow
+    ? formatTokenCount(contextUsage.effectiveContextWindow)
+    : tokenLimitLabel;
+  const projectedTokensLabel = contextUsage ? formatTokenCount(contextUsage.projection.projectedTokens) : "N/A";
+  const contextFreeLabel = contextUsage ? formatTokenCount(contextUsage.health.projectedFreeTokens) : "N/A";
+  const contextBarStyle = {
+    "--context-used": `${Math.min(100, Math.max(0, contextUsage?.health.projectedPercent ?? 0))}%`
+  } as CSSProperties;
   const costLabel = llmCostSummary?.totalCostUsd === null || llmCostSummary?.totalCostUsd === undefined
     ? "N/A"
     : `$${llmCostSummary.totalCostUsd.toFixed(4)}`;
@@ -1063,7 +1083,7 @@ function OfficeScene({
           />
           <div className="command-footer">
             <div className="mode-tabs">
-              {(["privacy", "hybrid", "efficiency"] as AssistantMode[]).map((item) => (
+              {(["efficiency", "hybrid", "privacy"] as AssistantMode[]).map((item) => (
                 <button
                   key={item}
                   className={item === mode ? "mode-pill mode-pill--active" : "mode-pill"}
@@ -1125,6 +1145,23 @@ function OfficeScene({
             </div>
           ) : null}
           <div className="token-card__bar" />
+        </div>
+
+        <div className={`inspector-card context-health context-health--${contextHealthTone}`} style={contextBarStyle}>
+          <div className="inspector-card__head">
+            <strong>上下文健康</strong>
+            <span className="token-card__chip">{contextHealthLabel}</span>
+          </div>
+          <div className="context-health__main">
+            <strong>{projectedTokensLabel}</strong>
+            <span>/ {contextWindowLabel}</span>
+          </div>
+          <p>{contextUsage?.projection.description ?? "等待上下文用量数据。"}</p>
+          <div className="context-health__meta">
+            <span>余量 {contextFreeLabel}</span>
+            <span>{contextUsage?.projection.compacted ? "已整理" : "未压缩"}</span>
+          </div>
+          <div className="context-health__bar" />
         </div>
 
         <div className="inspector-card token-card token-card--saved">
@@ -1669,6 +1706,21 @@ function formatTokenCount(value: number): string {
   if (value <= 0) return "0";
   if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
   return value.toLocaleString();
+}
+
+function contextHealthText(status: ContextUsage["health"]["status"]): string {
+  if (status === "managed") return "已整理";
+  if (status === "watch") return "留意";
+  if (status === "critical" || status === "blocked") return "紧张";
+  if (status === "healthy") return "舒适";
+  return "未知";
+}
+
+function contextHealthToneClass(severity: ContextUsage["health"]["severity"]): string {
+  if (severity === "error") return "error";
+  if (severity === "warning") return "warning";
+  if (severity === "ok") return "ok";
+  return "unknown";
 }
 
 function requiresLocalLlmHealth(mode: AssistantMode): boolean {

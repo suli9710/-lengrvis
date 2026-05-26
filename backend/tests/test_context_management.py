@@ -92,6 +92,71 @@ def test_project_messages_microcompacts_old_tool_results():
     assert len(tool_message["content"]) < 200
 
 
+def test_microcompact_records_boundary_metadata_and_tool_summary():
+    messages = [
+        {"id": "u1", "role": "user", "content": "run a search"},
+        {
+            "id": "a1",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "tool_search",
+                    "type": "function",
+                    "function": {"name": "search.query", "arguments": {"query": "mavris context compaction"}},
+                }
+            ],
+        },
+        {"id": "t1", "role": "tool", "content": "result row\n" * 80, "tool_call_id": "tool_search"},
+        {"id": "recent", "role": "user", "content": "recent"},
+    ]
+
+    projection = project_messages_for_llm(
+        messages,
+        _settings(
+            context_micro_compact_age=1,
+            context_micro_compact_tool_result_chars=240,
+            context_history_snip_enabled=False,
+            context_auto_compact_enabled=False,
+        ),
+        source="test",
+    )
+
+    assert projection.micro_compacted is True
+    assert projection.compact_metadata["tokens_saved"] > 0
+    assert projection.compact_metadata["compacted_tool_ids"] == ["tool_search"]
+    assert projection.compact_metadata["micro_compact"]["collapsed_tool_results"][0]["kind"] == "search"
+    tool_message = next(message for message in projection.messages if message.get("role") == "tool")
+    assert "Tool result collapsed for projection" in tool_message["content"]
+    assert "query: mavris context compaction" in tool_message["content"]
+
+
+def test_microcompact_clears_attachment_blocks_in_projection_only():
+    messages = [
+        {"id": "u1", "role": "user", "content": "see image"},
+        {
+            "id": "u2",
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect"},
+                {"type": "image_url", "id": "att_1", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        },
+        {"id": "recent", "role": "assistant", "content": "ok"},
+    ]
+
+    projection = project_messages_for_llm(
+        messages,
+        _settings(context_micro_compact_age=1, context_history_snip_enabled=False, context_auto_compact_enabled=False),
+        source="test",
+    )
+
+    assert projection.compact_metadata["cleared_attachment_ids"] == ["att_1"]
+    assert messages[1]["content"][1]["type"] == "image_url"
+    projected = next(message for message in projection.messages if message.get("id") == "u2")
+    assert projected["content"][1]["type"] == "text"
+
+
 def test_project_messages_snips_long_history_without_deleting_recent_tail():
     messages = [{"role": "user", "content": f"message {index}"} for index in range(20)]
 
@@ -464,3 +529,72 @@ def test_reactive_compact_keeps_tool_call_pair_when_tail_starts_on_tool_result()
         for message in provider.messages
     )
     assert any(message.get("tool_call_id") == "call_reactive" for message in provider.messages)
+
+
+def test_prompt_too_long_retry_fallback_trims_oldest_and_preserves_boundary_and_tool_pair():
+    class FailingTwiceProvider(LLMProvider):
+        name = "failing_twice"
+
+        def __init__(self):
+            self.calls = 0
+            self.messages = []
+
+        async def chat(self, messages, model=None, temperature=None, tools=None):  # noqa: ANN001, ARG002
+            self.calls += 1
+            self.messages = messages
+            if self.calls <= 2:
+                raise PromptTooLongError("prompt too long")
+            return "ok"
+
+        async def structured_chat(self, messages, output_schema):  # noqa: ANN001, ARG002
+            return {"ok": True}
+
+    provider = FailingTwiceProvider()
+    wrapped = ContextAwareProvider(
+        provider,
+        _settings(
+            model_context_window=120,
+            max_tokens=20,
+            context_manual_compact_buffer_tokens=10,
+            model_auto_compact_token_limit=100000,
+            context_history_snip_enabled=False,
+            context_micro_compact_enabled=False,
+            context_recent_message_limit=20,
+        ),
+    )
+    messages = [
+        {"id": "sys", "role": "system", "content": "policy"},
+        {"id": "old", "role": "user", "content": "old " * 120},
+        {
+            "id": "boundary",
+            "role": "system",
+            "content": "latest compact summary",
+            "metadata": {"context_boundary": "manual_compact", "compact_boundary": True},
+        },
+        {"id": "middle", "role": "user", "content": "middle " * 120},
+        {
+            "id": "call_owner",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_keep",
+                    "type": "function",
+                    "function": {"name": "system.get_info", "arguments": "{}"},
+                }
+            ],
+        },
+        {"id": "call_result", "role": "tool", "tool_call_id": "call_keep", "content": "tool output"},
+        {"id": "latest", "role": "user", "content": "latest request"},
+    ]
+
+    assert asyncio.run(wrapped.chat(messages)) == "ok"
+
+    ids = [message.get("id") for message in provider.messages]
+    assert provider.calls == 3
+    assert "sys" in ids
+    assert "boundary" in ids
+    assert "old" not in ids
+    assert "call_owner" in ids
+    assert "call_result" in ids
+    assert "latest" in ids

@@ -307,7 +307,7 @@ export function SettingsPanel({
         <label className="field">
           <span>运行模式</span>
           <div className="mode-radio-row">
-            {(["privacy", "efficiency", "hybrid"] as const).map((value) => (
+            {(["efficiency", "hybrid", "privacy"] as const).map((value) => (
               <label key={value} className="mode-radio">
                 <input
                   type="radio"

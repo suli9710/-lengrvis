@@ -53,6 +53,62 @@ def test_session_context_persists_conversation_summary():
     assert reloaded.token_stats["projected_tokens"] == 42
 
 
+def test_session_context_lineage_diagnostics_include_summary_and_tail_counts():
+    store = SessionContextStore(session_id="session_lineage")
+    store.load()
+    store.remember_task("task_active")
+    store.remember_summary(
+        "Earlier work summary.",
+        last_message_id="msg_anchor",
+        token_stats={
+            "compact_metadata": {
+                "messages_summarized": 3,
+                "retained_tail_messages": 2,
+                "preserved_segment": {
+                    "message_ids": ["tail_1", "tail_2"],
+                    "messages": [
+                        {"id": "tail_1", "role": "user", "content": "tail one"},
+                        {"id": "tail_2", "role": "assistant", "content": "tail two"},
+                    ],
+                },
+            }
+        },
+        resumed_from_task_id="task_resume",
+        resumed_from_boundary_id="boundary_1",
+        parent_session_id="session_parent",
+    )
+
+    diagnostics = SessionContextStore(session_id="session_lineage").load().lineage_diagnostics()
+
+    assert diagnostics["session_id"] == "session_lineage"
+    assert diagnostics["parent_session_id"] == "session_parent"
+    assert diagnostics["resumed_from_task_id"] == "task_resume"
+    assert diagnostics["resumed_from_boundary_id"] == "boundary_1"
+    assert diagnostics["active_task_ids"] == ["task_active"]
+    assert diagnostics["summary_anchor"] == "msg_anchor"
+    assert diagnostics["latest_boundary_id"] == "boundary_1"
+    assert diagnostics["latest_boundary_count"] == 1
+    assert diagnostics["preserved_tail_message_count"] == 2
+    assert diagnostics["preserved_tail_message_ids"] == ["tail_1", "tail_2"]
+    assert diagnostics["summarized_message_count"] == 3
+
+
+def test_session_context_load_by_boundary_id_is_explicit():
+    matching = SessionContextStore(session_id="session_matching")
+    matching.load()
+    matching.remember_summary("Matching summary.", resumed_from_boundary_id="boundary_match")
+    other = SessionContextStore(session_id="session_other")
+    other.load()
+    other.remember_summary("Other summary.", resumed_from_boundary_id="boundary_other")
+
+    loaded = SessionContextStore().load_by_boundary_id("boundary_match")
+    missing = SessionContextStore().load_by_boundary_id("missing_boundary")
+
+    assert loaded is not None
+    assert loaded.id == "session_matching"
+    assert missing is None
+
+
 def test_session_context_complete_task_removes_unfinished_reference():
     store = SessionContextStore(session_id="session_a")
     store.load_latest()

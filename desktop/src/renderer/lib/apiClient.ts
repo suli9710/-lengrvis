@@ -14,6 +14,7 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  ContextUsage,
   FileSearchResult,
   InstalledApp,
   InstalledSkill,
@@ -462,6 +463,14 @@ export class MavrisApiClient {
       endpoint: "/api/settings/llm/cost-summary",
       timeoutMs: 2500
     }).then((response) => mapResponse(response, mapLlmCostSummary));
+  }
+
+  getContextUsage(taskId?: string): Promise<ApiResponse<ContextUsage>> {
+    return this.request<BackendContextUsage>({
+      endpoint: "/api/context/usage",
+      query: taskId ? { task_id: taskId } : undefined,
+      timeoutMs: 2500
+    }).then((response) => mapResponse(response, mapContextUsage));
   }
 
   saveSettings(settings: AppSettings): Promise<ApiResponse<AppSettings>> {
@@ -1397,6 +1406,130 @@ function mapLlmCostSummary(summary: BackendLlmCostSummary): LLMCostSummary {
   };
 }
 
+function mapContextUsage(usage: BackendContextUsage): ContextUsage {
+  const warning = usage.warning ?? {};
+  const projection = usage.projection ?? {};
+  const projectionSummary = projection.summary ?? {};
+  const effectiveContextWindow = Number(usage.effective_context_window ?? usage.model_context_window ?? 0);
+  const usedTokens = Number(usage.used_tokens ?? warning.token_count ?? 0);
+  const projectedTokens = Number(projectionSummary.projected_tokens ?? projection.projected_tokens ?? usedTokens);
+  const freeTokens = Number(usage.free_tokens ?? Math.max(0, effectiveContextWindow - usedTokens));
+  const usedPercent = effectiveContextWindow > 0 ? Math.round((usedTokens / effectiveContextWindow) * 10000) / 100 : 0;
+  const projectedPercent =
+    effectiveContextWindow > 0 ? Math.round((projectedTokens / effectiveContextWindow) * 10000) / 100 : usedPercent;
+  const fallbackSeverity = warning.is_at_blocking_limit || warning.is_above_error_threshold
+    ? "error"
+    : warning.is_above_warning_threshold
+      ? "warning"
+      : "ok";
+  const fallbackStatus = fallbackSeverity === "error" ? "critical" : fallbackSeverity === "warning" ? "watch" : "healthy";
+  const health = usage.health ?? {};
+  const lineage = usage.lineage ?? {};
+  const lineageProjection = lineage.projection ?? {};
+
+  return {
+    totalTokens: Number(usage.total_tokens ?? usedTokens + freeTokens),
+    usedTokens,
+    freeTokens,
+    effectiveContextWindow,
+    modelContextWindow: Number(usage.model_context_window ?? effectiveContextWindow),
+    autoCompactThreshold: Number(usage.auto_compact_threshold ?? warning.threshold ?? 0),
+    manualCompactLimit: Number(usage.manual_compact_limit ?? 0),
+    reservedOutputTokens: Number(usage.reserved_output_tokens ?? 0),
+    warning: {
+      tokenCount: Number(warning.token_count ?? usedTokens),
+      threshold: Number(warning.threshold ?? 0),
+      percentLeft: Number(warning.percent_left ?? Math.max(0, 100 - usedPercent)),
+      isAboveWarningThreshold: Boolean(warning.is_above_warning_threshold),
+      isAboveErrorThreshold: Boolean(warning.is_above_error_threshold),
+      isAboveAutoCompactThreshold: Boolean(warning.is_above_auto_compact_threshold),
+      isAtBlockingLimit: Boolean(warning.is_at_blocking_limit)
+    },
+    health: {
+      status: contextHealthStatus(health.status, fallbackStatus),
+      severity: contextHealthSeverity(health.severity, fallbackSeverity),
+      reason: String(health.reason ?? contextHealthFallbackReason(fallbackSeverity)),
+      usedPercent: Number(health.used_percent ?? usedPercent),
+      freePercent: Number(health.free_percent ?? Math.max(0, 100 - usedPercent)),
+      freeTokens: Number(health.free_tokens ?? freeTokens),
+      projectedTokens: Number(health.projected_tokens ?? projectedTokens),
+      projectedPercent: Number(health.projected_percent ?? projectedPercent),
+      projectedFreeTokens: Number(health.projected_free_tokens ?? Math.max(0, effectiveContextWindow - projectedTokens)),
+      isHealthy: health.is_healthy === undefined ? fallbackSeverity === "ok" : Boolean(health.is_healthy)
+    },
+    projection: {
+      enabled: Boolean(projectionSummary.enabled ?? projection.enabled),
+      strategy: String(projectionSummary.strategy ?? projection.strategy ?? "none"),
+      compacted: Boolean(projectionSummary.compacted ?? projection.compacted),
+      originalTokens: Number(projectionSummary.original_tokens ?? projection.original_tokens ?? usedTokens),
+      projectedTokens,
+      tokensSaved: Number(
+        projectionSummary.tokens_saved ??
+          Math.max(0, Number(projection.original_tokens ?? usedTokens) - Number(projection.projected_tokens ?? usedTokens))
+      ),
+      messagesRemoved: Number(
+        projectionSummary.messages_removed ??
+          Math.max(0, Number(projection.original_count ?? 0) - Number(projection.projected_count ?? 0))
+      ),
+      adjustments: Array.isArray(projectionSummary.adjustments)
+        ? projectionSummary.adjustments.map((item) => String(item))
+        : [],
+      description: String(projectionSummary.description ?? "Projection summary is unavailable.")
+    },
+    lineage: {
+      taskId: String(lineage.task_id ?? ""),
+      historySource: String(lineage.history_source ?? "unknown"),
+      messageCount: Number(lineage.message_count ?? 0),
+      systemMessageCount: Number(lineage.system_message_count ?? 0),
+      agentMessageCount: Number(lineage.agent_message_count ?? 0),
+      messageRoles: objectRecord(lineage.message_roles),
+      localToolCount: Number(lineage.local_tool_count ?? 0),
+      mcpToolCount: Number(lineage.mcp_tool_count ?? 0),
+      sessionMemoryItemCount: Number(lineage.session_memory_item_count ?? 0),
+      includeRegisteredTools: lineage.include_registered_tools !== false,
+      includeSessionMemory: lineage.include_session_memory !== false,
+      includeProjection: lineage.include_projection !== false,
+      projection: {
+        source: String(lineageProjection.source ?? "context_usage"),
+        strategy: String(lineageProjection.strategy ?? projection.strategy ?? "none"),
+        boundaryId: String(lineageProjection.boundary_id ?? projection.boundary_id ?? ""),
+        retainedTailCount: Number(
+          lineageProjection.retained_tail_count ??
+            (Array.isArray(projection.retained_tail_message_ids) ? projection.retained_tail_message_ids.length : 0)
+        )
+      }
+    }
+  };
+}
+
+function contextHealthStatus(value: unknown, fallback: ContextUsage["health"]["status"]): ContextUsage["health"]["status"] {
+  if (value === "healthy" || value === "managed" || value === "watch" || value === "critical" || value === "blocked") {
+    return value;
+  }
+  return fallback;
+}
+
+function contextHealthSeverity(
+  value: unknown,
+  fallback: ContextUsage["health"]["severity"]
+): ContextUsage["health"]["severity"] {
+  if (value === "ok" || value === "warning" || value === "error") return value;
+  return fallback;
+}
+
+function contextHealthFallbackReason(severity: ContextUsage["health"]["severity"]): string {
+  if (severity === "error") return "Context is close to its limit.";
+  if (severity === "warning") return "Context is getting busy.";
+  return "Context has room for the next step.";
+}
+
+function objectRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, Number(item ?? 0)])
+  );
+}
+
 function mapLocalLlmHealth(health: BackendLocalLlmHealth): LocalLLMHealth {
   const fallbackBackend =
     health.available && health.kind
@@ -2099,6 +2232,94 @@ interface BackendLlmCostSummary {
     total_cost_usd?: number;
     estimated?: boolean;
   }>;
+}
+
+interface BackendContextUsageWarning {
+  token_count?: number;
+  threshold?: number;
+  percent_left?: number;
+  is_above_warning_threshold?: boolean;
+  is_above_error_threshold?: boolean;
+  is_above_auto_compact_threshold?: boolean;
+  is_at_blocking_limit?: boolean;
+}
+
+interface BackendContextProjectionSummary {
+  enabled?: boolean;
+  strategy?: string;
+  compacted?: boolean;
+  original_tokens?: number;
+  projected_tokens?: number;
+  tokens_saved?: number;
+  messages_removed?: number;
+  adjustments?: unknown[];
+  description?: string;
+}
+
+interface BackendContextUsageProjection {
+  enabled?: boolean;
+  original_count?: number;
+  projected_count?: number;
+  original_tokens?: number;
+  projected_tokens?: number;
+  compacted?: boolean;
+  micro_compacted?: boolean;
+  history_snipped?: boolean;
+  session_summary_added?: boolean;
+  strategy?: string;
+  source?: string;
+  boundary_id?: string;
+  retained_tail_message_ids?: string[];
+  summary?: BackendContextProjectionSummary;
+}
+
+interface BackendContextUsageHealth {
+  status?: string;
+  severity?: string;
+  reason?: string;
+  used_percent?: number;
+  free_percent?: number;
+  free_tokens?: number;
+  projected_tokens?: number;
+  projected_percent?: number;
+  projected_free_tokens?: number;
+  is_healthy?: boolean;
+}
+
+interface BackendContextUsageLineage {
+  task_id?: string;
+  history_source?: string;
+  message_count?: number;
+  system_message_count?: number;
+  agent_message_count?: number;
+  message_roles?: Record<string, unknown>;
+  local_tool_count?: number;
+  mcp_tool_count?: number;
+  session_memory_item_count?: number;
+  include_registered_tools?: boolean;
+  include_session_memory?: boolean;
+  include_projection?: boolean;
+  projection?: {
+    source?: string;
+    strategy?: string;
+    boundary_id?: string;
+    retained_tail_count?: number;
+  };
+}
+
+interface BackendContextUsage {
+  total_tokens?: number;
+  used_tokens?: number;
+  free_tokens?: number;
+  effective_context_window?: number;
+  model_context_window?: number;
+  auto_compact_threshold?: number;
+  manual_compact_limit?: number;
+  reserved_output_tokens?: number;
+  warning?: BackendContextUsageWarning;
+  projection?: BackendContextUsageProjection;
+  health?: BackendContextUsageHealth;
+  lineage?: BackendContextUsageLineage;
 }
 
 interface BackendLocalLlmBackend {
