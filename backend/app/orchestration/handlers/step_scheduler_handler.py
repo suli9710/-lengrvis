@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from app.core.audit import record
 from app.core.schemas import MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.orchestration.step_phase import set_step_status
+from app.policy.risk import SafetyVerdict
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -57,7 +58,11 @@ class StepSchedulerHandler:
         while pending or running:
             if not stop_requested:
                 ready = self._ready_steps(pending, by_id)
-                threaded_tools = len(ready) > 1
+                threaded_tools = self._parallel_batch_allowed(task, ready)
+                if running and not threaded_tools:
+                    ready = []
+                elif len(ready) > 1 and not threaded_tools:
+                    ready = ready[:1]
                 if len(ready) == 1 and not running:
                     step = ready[0]
                     pending.remove(step.id)
@@ -268,3 +273,24 @@ class StepSchedulerHandler:
                     step_id=step.id,
                     structured_payload={"blocked_by": blocked},
                 )
+
+    def _parallel_batch_allowed(self, task: Task, ready: list[PlanStep]) -> bool:
+        if len(ready) <= 1:
+            return False
+        reviewer = getattr(self.orchestrator, "parallel_review", self.orchestrator.safety)
+        review = reviewer.review_parallel_batch(task.id, ready, self.orchestrator.registry)
+        if review.verdict == SafetyVerdict.ALLOW:
+            record(
+                "task.parallel_batch_allowed",
+                "ParallelReviewAgent",
+                {"step_ids": [step.id for step in ready], "count": len(ready)},
+                task_id=task.id,
+            )
+            return True
+        record(
+            "task.parallel_batch_serialized",
+            "ParallelReviewAgent",
+            {"step_ids": [step.id for step in ready], "reasons": review.reasons},
+            task_id=task.id,
+        )
+        return False

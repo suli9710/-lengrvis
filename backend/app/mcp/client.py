@@ -27,6 +27,9 @@ class MCPServerConfig:
     url: str
     transport: str = "http"
     enabled: bool = True
+    command: str = ""
+    args: list[str] | None = None
+    auth: dict[str, Any] | None = None
 
 
 class MCPClient:
@@ -37,6 +40,9 @@ class MCPClient:
         self._lock = asyncio.Lock()
 
     async def list_tools(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
+        unsupported = self._unsupported_transport_error()
+        if unsupported:
+            return []
         if self._tools_cache is not None and not force_refresh:
             return self._tools_cache
         async with self._lock:
@@ -63,6 +69,9 @@ class MCPClient:
             return normalized
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        unsupported = self._unsupported_transport_error()
+        if unsupported:
+            return {"ok": False, "error": unsupported, "server": self.config.name}
         payload = {
             "jsonrpc": JSONRPC_VERSION,
             "id": f"call-{tool_name}",
@@ -79,6 +88,8 @@ class MCPClient:
         return {"ok": True, "result": result, "server": self.config.name}
 
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._auth_required():
+            return {"error": {"message": "authentication required", "type": "auth_required"}}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 response = await client.post(self.config.url, json=payload, headers={"Content-Type": "application/json"})
@@ -88,3 +99,48 @@ class MCPClient:
                 return {"error": {"message": f"transport error: {exc}", "type": "transport"}}
             except json.JSONDecodeError as exc:
                 return {"error": {"message": f"invalid response: {exc}", "type": "decode"}}
+
+    def status(self) -> dict[str, Any]:
+        unsupported = self._unsupported_transport_error()
+        if self._auth_required():
+            state = "needs_auth"
+        elif unsupported:
+            state = "unsupported_transport"
+        else:
+            state = "configured"
+        return {
+            "name": self.config.name,
+            "transport": self.config.transport,
+            "url": self.config.url,
+            "command": self.config.command,
+            "enabled": self.config.enabled,
+            "state": state,
+            "error": unsupported,
+            "auth_required": self._auth_required(),
+            "tool_count": len(self._tools_cache or []),
+        }
+
+    async def list_resources(self) -> list[dict[str, Any]]:
+        if self._unsupported_transport_error() or self._auth_required():
+            return []
+        payload = {
+            "jsonrpc": JSONRPC_VERSION,
+            "id": "resources-list",
+            "method": "resources/list",
+            "params": {},
+        }
+        data = await self._post(payload)
+        resources = data.get("result", {}).get("resources", []) or []
+        return [resource for resource in resources if isinstance(resource, dict)]
+
+    def _unsupported_transport_error(self) -> str:
+        transport = (self.config.transport or "http").casefold()
+        if transport in {"http", "https"}:
+            return "" if self.config.url else "http transport requires url"
+        if transport in {"sse", "stdio"}:
+            return f"{transport} transport is configured but not connected by the lightweight backend client yet"
+        return f"unsupported MCP transport: {self.config.transport}"
+
+    def _auth_required(self) -> bool:
+        auth = self.config.auth or {}
+        return bool(auth.get("required")) and not auth.get("token")

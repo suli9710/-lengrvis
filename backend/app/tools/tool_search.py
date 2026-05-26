@@ -68,30 +68,4 @@ def _is_select_query(query: str) -> bool:
 
 
 def _serialize_match(tool: ToolDefinition, *, include_schema: bool) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "name": tool.name,
-        "description": tool.description,
-        "agent_owner": tool.agent_owner,
-        "risk_level": tool.risk_level.value,
-        "search_hint": tool.search_hint,
-        "defer_loading": tool.defer_loading,
-        "capabilities": tool.capabilities,
-        "effects": tool.effects,
-        "resource_kinds": tool.resource_kinds,
-        "fast_path_eligible": tool.fast_path_eligible,
-        "trust_tier": tool.trust_tier,
-        "external_network": tool.external_network,
-        "tool_version": tool.tool_version,
-    }
-    if include_schema:
-        payload.update(
-            {
-                "input_schema": tool.input_schema,
-                "output_schema": tool.output_schema,
-                "supports_dry_run": tool.supports_dry_run,
-                "requires_authorized_path": tool.requires_authorized_path,
-                "read_only": tool.is_read_only(),
-                "sensitive_arg_keys": tool.sensitive_arg_keys,
-            }
-        )
-    return payload
+    return tool.to_public_dict(include_schema=include_schema)

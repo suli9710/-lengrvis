@@ -10,6 +10,7 @@ from app.agents.computer_agent import ComputerAgent
 from app.agents.document_agent import DocumentAgent
 from app.agents.file_agent import FileAgent
 from app.agents.memory_agent import MemoryAgent
+from app.agents.parallel_review_agent import ParallelReviewAgent
 from app.agents.planner_agent import PlannerAgent
 from app.agents.safety_review_agent import SafetyReviewAgent
 from app.agents.search_agent import SearchAgent
@@ -59,6 +60,7 @@ class OrchestratorAgent:
         self.dispatcher = EventDispatcher(self.bus)
         self.planner = PlannerAgent(self.bus)
         self.safety = SafetyReviewAgent(self.bus)
+        self.parallel_review = ParallelReviewAgent(self.bus)
         self.memory = MemoryAgent(self.bus)
         self.session_context_store = get_session_context_store()
         self.goal_stack = GoalStack(scope="default")

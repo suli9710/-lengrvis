@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from weakref import WeakKeyDictionary
 
@@ -263,15 +266,28 @@ class ToolRuntime:
         before_phase = "before_approved" if approval_id else "before"
         after_phase = "after_approved" if approval_id else "after"
         before_frame = await orchestrator._capture_step_frame(task, step, before_phase)
+        tool_context = runtime.tool_context()
+        self._publish_tool_progress(task, step, tool, call.id, "started", detail=f"Starting {step.tool_name}.")
         try:
             set_step_status(step, StepStatus.RUNNING, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.EXECUTING_TOOL)
+            self._run_lifecycle_hook(tool.pre_execute, tool, args, tool_context, task_id=task.id, step_id=step.id)
             output = await self.execute_tool_with_locks(
                 tool,
                 step,
                 args,
-                runtime.tool_context(),
+                tool_context,
                 threaded=threaded_tools,
+            )
+            self._run_lifecycle_hook(tool.post_execute, tool, args, tool_context, task_id=task.id, step_id=step.id)
+            self._publish_tool_progress(
+                task,
+                step,
+                tool,
+                call.id,
+                "completed",
+                detail=f"Completed {step.tool_name}.",
+                payload={"ok": not bool(output.get("error"))},
             )
             result = ToolResult(
                 tool_call_id=call.id,
@@ -283,6 +299,15 @@ class ToolRuntime:
                 observation=self._observation(step, tool, output),
             )
         except Exception as exc:  # noqa: BLE001
+            self._publish_tool_progress(
+                task,
+                step,
+                tool,
+                call.id,
+                "failed",
+                detail=f"{step.tool_name} failed.",
+                payload={"error": str(exc)},
+            )
             result = ToolResult(tool_call_id=call.id, ok=False, error=str(exc), observation=f"{step.tool_name} failed.")
         finally:
             after_frame = await orchestrator._capture_step_frame(task, step, after_phase)
@@ -339,6 +364,75 @@ class ToolRuntime:
             if str(key) in safe_args:
                 safe_args[str(key)] = "***"
         return safe_args
+
+    def _publish_tool_progress(
+        self,
+        task: Task,
+        step: PlanStep,
+        tool: ToolDefinition,
+        tool_call_id: str,
+        status: str,
+        *,
+        detail: str = "",
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            self.orchestrator.bus.publish_text(
+                task.id,
+                "ToolRuntime",
+                detail or f"{tool.name} {status}.",
+                message_type=MessageType.NOTIFICATION,
+                step_id=step.id,
+                tool_call_id=tool_call_id,
+                structured_payload=tool.progress_event(
+                    status,
+                    task_id=task.id,
+                    step_id=step.id,
+                    tool_call_id=tool_call_id,
+                    detail=detail,
+                    payload=payload,
+                ),
+                metadata={"event_type": "tool.progress", "tool_name": tool.name, "tool_status": status},
+            )
+        except Exception as exc:  # noqa: BLE001
+            record(
+                "tool.progress_publish_failed",
+                "ToolRuntime",
+                {"tool": tool.name, "status": status, "error": str(exc), "step_id": step.id},
+                task_id=task.id,
+            )
+
+    def _run_lifecycle_hook(
+        self,
+        hook: Any,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        context: dict[str, Any],
+        *,
+        task_id: str,
+        step_id: str | None,
+    ) -> None:
+        if hook is None:
+            return
+        try:
+            hook(self._hook_snapshot(args), self._hook_snapshot(context))  # type: ignore[arg-type]
+        except Exception as exc:  # noqa: BLE001
+            record(
+                "tool.lifecycle_hook_failed",
+                "ToolRuntime",
+                {"tool": tool.name, "error": str(exc), "step_id": step_id},
+                task_id=task_id,
+            )
+
+    def _hook_snapshot(self, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return MappingProxyType({key: self._hook_snapshot(child) for key, child in value.items()})
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return tuple(self._hook_snapshot(child) for child in value)
+        try:
+            return copy.deepcopy(value)
+        except Exception:  # noqa: BLE001
+            return repr(value)
 
     async def _prepare_approval(
         self,

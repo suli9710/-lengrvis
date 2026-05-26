@@ -99,6 +99,7 @@ def register_all_tools(
         app_tools,
         browser_tools,
         cluster_tools,
+        developer_tools,
         document_tools,
         file_tools,
         remote_tools,
@@ -113,6 +114,7 @@ def register_all_tools(
 
     registry._tools.clear()
     file_tools.register(registry)
+    developer_tools.register(registry)
     document_tools.register(registry)
     system_tools.register(registry)
     remote_tools.register(registry)

@@ -9,6 +9,8 @@ import type {
   BackendStatus,
   BrowserLinkResult,
   BrowserPageSnapshot,
+  CommandExecutionResult,
+  CommandInfo,
   ChatMessage,
   ChatRequest,
   ChatResponse,
@@ -309,6 +311,20 @@ export class MavrisApiClient {
       endpoint: `/api/approvals/${decision.approvalId}/${action}`,
       method: "POST"
     }).then((response) => mapResponse(response, mapApproval));
+  }
+
+  listCommands(): Promise<ApiResponse<CommandInfo[]>> {
+    return this.request<BackendCommandsResponse>({ endpoint: "/api/commands" }).then((response) =>
+      mapResponse(response, (data) => (data.commands ?? []).map(mapCommandInfo))
+    );
+  }
+
+  executeCommand(name: string, args: Record<string, unknown> = {}): Promise<ApiResponse<CommandExecutionResult>> {
+    return this.request<BackendCommandExecutionResult, { name: string; args: Record<string, unknown> }>({
+      endpoint: "/api/commands/execute",
+      method: "POST",
+      body: { name, args }
+    }).then((response) => mapResponse(response, mapCommandExecutionResult));
   }
 
   createMobilePairingCode(): Promise<ApiResponse<MobilePairingCode>> {
@@ -782,6 +798,28 @@ function mapTaskState(status: string): TaskEvent["state"] {
   if (status === "failed" || status === "denied" || status === "cancelled") return "failed";
   if (status === "waiting_user_approval" || status === "paused") return "blocked";
   return "running";
+}
+
+function mapCommandInfo(command: BackendCommandInfo): CommandInfo {
+  return {
+    name: String(command.name ?? ""),
+    title: String(command.title ?? command.name ?? ""),
+    description: String(command.description ?? ""),
+    category: String(command.category ?? ""),
+    inputSchema: (command.input_schema && typeof command.input_schema === "object" ? command.input_schema : {}) as Record<string, unknown>
+  };
+}
+
+function mapCommandExecutionResult(result: BackendCommandExecutionResult): CommandExecutionResult {
+  return {
+    ok: Boolean(result.ok),
+    command: String(result.command ?? ""),
+    title: result.title ? String(result.title) : undefined,
+    result: result.result,
+    diagnostics: Array.isArray(result.diagnostics) ? result.diagnostics.map(String) : undefined,
+    error: result.error ? String(result.error) : undefined,
+    nextAction: result.next_action ? String(result.next_action) : undefined
+  };
 }
 
 function mapTaskEvent(task: BackendTask): TaskEvent {
@@ -1985,4 +2023,27 @@ interface BackendSkillRefresh {
   ok?: boolean;
   tool_count?: number;
   skill_count?: number;
+}
+
+interface BackendCommandInfo {
+  name?: string;
+  title?: string;
+  description?: string;
+  category?: string;
+  input_schema?: unknown;
+}
+
+interface BackendCommandsResponse {
+  commands?: BackendCommandInfo[];
+  count?: number;
+}
+
+interface BackendCommandExecutionResult {
+  ok?: boolean;
+  command?: string;
+  title?: string;
+  result?: unknown;
+  diagnostics?: unknown[];
+  error?: string;
+  next_action?: string;
 }

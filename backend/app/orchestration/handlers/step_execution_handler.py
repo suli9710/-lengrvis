@@ -146,6 +146,31 @@ class StepExecutionHandler:
         if action and action.kind == "propose_tool":
             original_tool_name = step.tool_name
             original_args = dict(step.args or {})
+            proposed_tool_name = action.tool_name or step.tool_name
+            proposed_args = {**original_args, **dict(action.args or {})} if proposed_tool_name == step.tool_name else dict(action.args or {})
+            if threaded_tools and (proposed_tool_name != original_tool_name or proposed_args != original_args):
+                action.kind = "request_revision"
+                action.rationale = action.rationale or (
+                    "Subagent proposed a different tool call while this step was in a parallel batch."
+                )
+                action.follow_up_question = action.follow_up_question or (
+                    "Run this step serially so the revised tool call can receive a fresh parallel-safety review."
+                )
+                orchestrator._handle_subagent_revision_request(task, step, action)
+                result = ToolResult(
+                    tool_call_id=f"{step.id}_parallel_mutation_blocked",
+                    ok=True,
+                    observation=action.follow_up_question or action.rationale,
+                )
+                if not orchestrator._supervise_new_agent_messages(task.id, "subagent_parallel_mutation_blocked"):
+                    set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
+                    orchestrator._set_status(
+                        task,
+                        TaskStatus.DENIED,
+                        final_summary="SafetyReviewAgent stopped the task after a parallel tool mutation was blocked.",
+                    )
+                    return StepExecutionOutcome("fatal_denied", result)
+                return StepExecutionOutcome("revision_requested", result)
             try:
                 tool = orchestrator._apply_subagent_tool_proposal(task, step, action)
             except KeyError as exc:

@@ -10,7 +10,7 @@ from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.services import task_recording_service
 from app.services.task_explain_service import build_task_explain
-from app.services.task_service import get_task, list_tasks, set_task_status
+from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
 from app.tools import rollback_tools
 
 
@@ -118,6 +118,53 @@ def timeline(task_id: str):
     }
 
 
+@router.get("/tasks/{task_id}/replay")
+def replay(task_id: str):
+    try:
+        task = get_task(task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    messages = sorted(_openai_agent_messages(task_id), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
+    tool_calls = sorted(db.fetch_many("tool_calls", "task_id = ?", (task_id,), limit=1000), key=lambda item: item.get("created_at") or "")
+    results_by_call = {
+        result.get("tool_call_id"): result
+        for result in db.fetch_many("tool_results", limit=1000)
+        if result.get("tool_call_id")
+    }
+    return {
+        "task": task.model_dump(mode="json"),
+        "events": messages,
+        "tool_calls": tool_calls,
+        "tool_results": [results_by_call[call["id"]] for call in tool_calls if call.get("id") in results_by_call],
+        "recordings": _step_recordings(task_id),
+    }
+
+
+@router.get("/tasks/{task_id}/progress")
+def progress(task_id: str):
+    try:
+        task = get_task(task_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
+    messages = db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=1000)
+    progress_events = []
+    for message in messages:
+        payload = message.get("structured_payload") or (message.get("metadata") or {}).get("structured_payload") or {}
+        metadata = message.get("metadata") or {}
+        if isinstance(payload, dict) and (payload.get("kind") == "tool_progress" or metadata.get("event_type") == "tool.progress"):
+            progress_events.append(
+                {
+                    "id": message.get("id"),
+                    "created_at": message.get("created_at"),
+                    "step_id": message.get("step_id"),
+                    "tool_call_id": message.get("tool_call_id"),
+                    "payload": payload,
+                }
+            )
+    progress_events.sort(key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
+    return {"task_id": task.id, "status": task.status, "progress": progress_events, "count": len(progress_events)}
+
+
 @router.get("/tasks/{task_id}/explain")
 def explain(task_id: str):
     try:
@@ -160,7 +207,7 @@ def pause(task_id: str):
 
 @router.post("/tasks/{task_id}/resume")
 def resume(task_id: str):
-    return set_task_status(task_id, TaskStatus.EXECUTING_STEP)
+    return resume_task(task_id)
 
 
 @router.post("/tasks/{task_id}/cancel")

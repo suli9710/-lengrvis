@@ -381,13 +381,16 @@ def _normalize_mcp_servers(value: Any) -> list[dict]:
     if isinstance(value, list):
         result: list[dict] = []
         for item in value:
-            if isinstance(item, dict) and item.get("url"):
+            if isinstance(item, dict) and (item.get("url") or item.get("command")):
                 result.append(
                     {
                         "name": str(item.get("name") or item.get("id") or "mcp"),
-                        "url": str(item["url"]),
+                        "url": str(item.get("url") or ""),
+                        "command": str(item.get("command") or ""),
+                        "args": list(item.get("args") or []),
                         "transport": str(item.get("transport", "http")),
                         "enabled": bool(item.get("enabled", True)),
+                        "auth": dict(item.get("auth") or {}),
                     }
                 )
         return result
