@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import base64
 import sys
@@ -42,9 +43,19 @@ def _wait_for_phase(client: TestClient, run_id: str, *phases: str) -> dict:
         assert response.status_code == 200
         payload = response.json()
         if payload["phase"] in phases:
+            if payload["phase"] in {"completed", "failed", "denied", "cancelled"}:
+                _wait_for_run_inactive(run_id)
             return payload
         time.sleep(0.05)
     raise AssertionError(f"Run {run_id} did not reach {phases}")
+
+
+def _wait_for_run_inactive(run_id: str) -> None:
+    for _ in range(80):
+        if run_id not in run_service.active_run_ids():
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"Run {run_id} was still active after reaching a terminal/waiting phase")
 
 
 def test_run_api_routes_developer_engine_and_replays_events(monkeypatch, tmp_path):
@@ -115,6 +126,19 @@ def test_auto_routing_selects_developer_for_code_goal(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
+    scheduled = []
+
+    def schedule_spy(coro, *, data_dir=None):  # noqa: ANN001, ANN202, ARG001
+        scheduled.append(coro)
+        coro.close()
+
+        class Done:
+            def done(self) -> bool:
+                return True
+
+        return Done()
+
+    monkeypatch.setattr(run_service, "_schedule_background", schedule_spy)
 
     with TestClient(_test_app()) as client:
         created = client.post(
@@ -123,6 +147,7 @@ def test_auto_routing_selects_developer_for_code_goal(monkeypatch, tmp_path):
         )
         assert created.status_code == 200
         assert created.json()["engine"] == "developer"
+    assert len(scheduled) == 1
 
 
 def test_os_run_keeps_r2_dry_run_approval(monkeypatch, tmp_path):
@@ -312,6 +337,37 @@ def test_run_state_runtime_metadata_does_not_break_resume(monkeypatch, tmp_path)
     assert run_service._state_from_run(updated).phase == EngineRunPhase.RUNNING
 
 
+def test_pause_updates_persisted_run_state_phase(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    task = Task(user_goal="pause persisted state", mode="efficiency", status=TaskPhase.EXECUTION)
+    db.upsert_model("tasks", task)
+    run = run_service.Run(
+        id="osrun_pause_state",
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        task_id=task.id,
+        state={
+            "run_id": "osrun_pause_state",
+            "engine": "os",
+            "phase": "running",
+            "goal": task.user_goal,
+            "mode": task.mode,
+            "task_id": task.id,
+        },
+    )
+    db.upsert_model("runs", run)
+
+    paused = run_service.pause_run(run.id)
+
+    assert paused.phase == run_service.RunPhase.PAUSED
+    assert paused.state["phase"] == "paused"
+    assert run_service._state_from_run(paused).phase == EngineRunPhase.PAUSED
+
+
 def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
@@ -341,6 +397,45 @@ def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
 
     assert synced.phase == run_service.RunPhase.AWAITING_APPROVAL
     assert synced.state["phase"] == "awaiting_approval"
+
+
+def test_active_running_run_is_not_synced_back_to_paused_task_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    task = Task(user_goal="resume should stay running", mode="efficiency", status=TaskPhase.EXECUTION)
+    task.execution_stage = ExecutionStage.PAUSED
+    db.upsert_model("tasks", task)
+    run = run_service.Run(
+        id="osrun_active_resume_not_paused",
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        task_id=task.id,
+        state={
+            "run_id": "osrun_active_resume_not_paused",
+            "engine": "os",
+            "phase": "running",
+            "goal": task.user_goal,
+            "mode": task.mode,
+            "task_id": task.id,
+        },
+    )
+    db.upsert_model("runs", run)
+
+    class ActiveFuture:
+        def done(self) -> bool:
+            return False
+
+    run_service._track_active_run(run.id, ActiveFuture())
+    try:
+        synced = run_service.get_run(run.id)
+    finally:
+        run_service._untrack_active_run(run.id)
+
+    assert synced.phase == run_service.RunPhase.RUNNING
+    assert synced.state["phase"] == "running"
 
 
 def test_resume_does_not_bypass_waiting_approval(monkeypatch, tmp_path):
@@ -486,6 +581,43 @@ def test_cancel_run_expires_pending_approval_and_blocks_late_approve(monkeypatch
         refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
         assert refreshed.status == ApprovalStatus.EXPIRED
         assert refreshed.consumed_at is None
+
+
+def test_pause_and_cancel_are_noops_for_terminal_runs(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    run = run_service.Run(
+        id="run_terminal_idempotent",
+        message="already done",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.DEVELOPER,
+        engine=run_service.RunEngine.DEVELOPER,
+        phase=run_service.RunPhase.COMPLETED,
+        state={
+            "run_id": "run_terminal_idempotent",
+            "engine": "developer",
+            "phase": "completed",
+            "goal": "already done",
+            "mode": "efficiency",
+        },
+    )
+    db.upsert_model("runs", run)
+    scheduled = []
+
+    def schedule_spy(coro, *, data_dir=None):  # noqa: ANN001, ANN202, ARG001
+        scheduled.append(coro)
+        coro.close()
+        raise AssertionError("terminal run cancellation must not schedule background cleanup")
+
+    monkeypatch.setattr(run_service, "_schedule_background", schedule_spy)
+
+    paused = run_service.pause_run(run.id)
+    cancelled = run_service.cancel_run(run.id)
+
+    assert paused.phase == run_service.RunPhase.COMPLETED
+    assert cancelled.phase == run_service.RunPhase.COMPLETED
+    assert scheduled == []
+    assert run_service.get_run(run.id).phase == run_service.RunPhase.COMPLETED
 
 
 def test_sync_resume_schedules_background_without_event_loop(monkeypatch, tmp_path):
@@ -740,7 +872,7 @@ def test_cancelled_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, 
 
         async def run_turn(self, state):  # noqa: ANN001, ANN202
             started.set()
-            assert release.wait(timeout=5)
+            assert await asyncio.to_thread(release.wait, timeout=5)
             finished = state.model_copy(
                 update={
                     "phase": EngineRunPhase.COMPLETED,
@@ -866,7 +998,7 @@ def test_paused_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, tmp
 
         async def run_turn(self, state):  # noqa: ANN001, ANN202
             started.set()
-            assert release.wait(timeout=5)
+            assert await asyncio.to_thread(release.wait, timeout=5)
             finished = state.model_copy(
                 update={
                     "phase": EngineRunPhase.COMPLETED,

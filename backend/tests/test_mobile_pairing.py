@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app.core import db
 from app.core.schemas import Approval, Plan, PlanStep, Task
 from app.main import app
-from app.security.mobile_jwt import decode_mobile_token
+from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, decode_mobile_token
 from app.services import mobile_pairing_service
 from app.services.approval_event_service import publish_approval_created
 
@@ -397,6 +397,21 @@ def test_mobile_approval_websocket_receives_created_event(monkeypatch, tmp_path)
 
     assert event["type"] == "approval_created"
     assert event["approval"]["id"] == approval.id
+
+
+def test_mobile_approval_websocket_accepts_token_subprotocol(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        connected = websocket.receive_json()
+
+    assert connected["type"] == "connected"
 
 
 def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):

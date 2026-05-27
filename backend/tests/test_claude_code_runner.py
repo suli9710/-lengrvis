@@ -8,6 +8,7 @@ import pytest
 from app.config import AppSettings
 from app.orchestration.claude_code_config import ClaudeCodeConfig
 from app.orchestration.claude_code_runner import (
+    ClaudeCodeProcessRegistry,
     classify_claude_code_error,
     claude_code_summary_to_turn_result,
     parse_claude_code_ndjson_lines,
@@ -187,6 +188,30 @@ async def test_cancel_terminates_fake_claude_code_process(tmp_path, fake_claude_
     assert result.outputs["claude_code"]["cancelled"] is True
     assert result.outputs["claude_code"]["error_classification"] == "cancelled"
     assert any(event["name"] == "run.cancelled" for event in result.outputs["claude_code"]["mavris_events"])
+
+
+@pytest.mark.asyncio
+async def test_cancel_falls_back_when_registered_owner_loop_is_closed() -> None:
+    registry = ClaudeCodeProcessRegistry()
+    loop = asyncio.new_event_loop()
+
+    class Process:
+        returncode = None
+        terminated = False
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    process = Process()
+    with registry._lock:  # noqa: SLF001 - regression test for cross-loop cancellation fallback.
+        registry._processes["run_closed_loop"] = (process, loop)  # noqa: SLF001
+    loop.close()
+
+    cancelled = await registry.cancel("run_closed_loop")
+
+    assert cancelled is True
+    assert process.terminated is True
+    assert registry.active_run_ids() == []
 
 
 @pytest.mark.asyncio

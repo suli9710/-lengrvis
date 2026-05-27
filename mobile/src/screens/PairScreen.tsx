@@ -27,21 +27,21 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const handlePair = async () => {
     const code = pairCode.replace(/[^a-z0-9]/gi, "").toLowerCase();
     if (code.length !== 6) {
-      Alert.alert("Pairing code", "Enter the 6-character code shown in Mavris on your computer.");
+      Alert.alert("配对码", "请输入电脑端 Mavris 显示的 6 位配对码。");
       return;
     }
     if (!baseUrl.trim()) {
-      Alert.alert("Computer address", "Enter the computer address shown in Mavris, for example http://192.168.1.20:8000.");
+      Alert.alert("电脑地址", "请输入电脑端 Mavris 显示的地址，例如 http://192.168.1.20:8000。");
       return;
     }
     if (isLoopbackBaseUrl(baseUrl)) {
-      Alert.alert("Computer address", "That address points back to this phone. Use the computer address shown in Mavris.");
+      Alert.alert("电脑地址", "这个地址指向手机本机，请使用电脑端 Mavris 显示的地址。");
       return;
     }
     setIsBusy(true);
     setError("");
     try {
-      const nextSession = await pairWithBackend(baseUrl.trim(), code, Device.deviceName ?? "Android device");
+      const nextSession = await pairWithBackend(baseUrl.trim(), code, Device.deviceName ?? "安卓设备");
       await saveSession(nextSession);
       setPairCode("");
       onPaired(nextSession);
@@ -59,11 +59,11 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
         <View style={styles.pairIcon}>
           <Smartphone size={34} color="#1f2933" />
         </View>
-        <Text style={styles.title}>Connect to Mavris</Text>
-        <Text style={styles.subtitle}>Use the address and 6-character code shown on your computer.</Text>
+        <Text style={styles.title}>连接 Mavris</Text>
+        <Text style={styles.subtitle}>使用电脑端显示的地址和 6 位配对码。</Text>
 
         <View style={styles.form}>
-          <Text style={styles.label}>Computer address</Text>
+          <Text style={styles.label}>电脑地址</Text>
           <TextInput
             autoCapitalize="none"
             autoCorrect={false}
@@ -73,20 +73,19 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
             style={styles.input}
             value={baseUrl}
           />
-          <Text style={styles.label}>Pairing code</Text>
+          <Text style={styles.label}>配对码</Text>
           <TextInput
             autoCapitalize="none"
             autoCorrect={false}
-            maxLength={6}
             onChangeText={(value) => setPairCode(value.replace(/[^a-z0-9]/gi, "").toLowerCase())}
-            placeholder="6 letters or numbers"
+            placeholder="6 位字母或数字"
             style={[styles.input, styles.codeInput]}
             value={pairCode}
           />
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           <Pressable disabled={isBusy} onPress={handlePair} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
             {isBusy ? <ActivityIndicator color="#ffffff" /> : <Link2 size={18} color="#ffffff" />}
-            <Text style={styles.primaryButtonText}>Connect phone</Text>
+            <Text style={styles.primaryButtonText}>连接手机</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -95,15 +94,15 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
 }
 
 function errorMessage(error: unknown): string {
-  if (!(error instanceof Error)) return "Could not connect. Check the address and code, then try again.";
+  if (!(error instanceof Error)) return "无法连接。请检查地址和配对码后重试。";
   const message = error.message.toLowerCase();
   if (message.includes("fetch") || message.includes("network")) {
-    return "Could not reach your computer. Make sure Mavris is open and the address is correct.";
+    return "无法连接到电脑。请确认 Mavris 已打开，且地址正确。";
   }
   if (message.includes("code") || message.includes("invalid") || message.includes("expired")) {
-    return "The code did not work. Check the code shown in Mavris and try again.";
+    return "配对码无效。请检查 Mavris 中显示的配对码后重试。";
   }
-  return "Could not connect. Check the address and code, then try again.";
+  return "无法连接。请检查地址和配对码后重试。";
 }
 
 const styles = StyleSheet.create({

@@ -161,7 +161,7 @@ export function BrowserActivityPanel({
       });
       applyHostResult(result, onHostSnapshotChange, onActiveSessionChange, onErrorChange);
     } catch (error) {
-      onErrorChange(readableError(error, "Open browser session failed"));
+      onErrorChange(readableError(error, "打开浏览器会话失败"));
     } finally {
       setIsWorking(false);
     }
@@ -211,10 +211,10 @@ export function BrowserActivityPanel({
         const observedEvent = backendResult.data;
         onEventsChange((current) => mergeBrowserEvents(current, [observedEvent]));
       } else if (!activeSessionHasHost && !backendResult.ok) {
-        onErrorChange(backendResult.error?.message ?? "Observe failed");
+        onErrorChange(backendResult.error?.message ?? "观察失败");
       }
     } catch (error) {
-      onErrorChange(readableError(error, "Observe failed"));
+      onErrorChange(readableError(error, "观察失败"));
     } finally {
       setIsWorking(false);
     }
@@ -230,12 +230,12 @@ export function BrowserActivityPanel({
       if (result.ok && result.data) {
         setExportResult(formatReplayExport(result.data));
       } else if (result.status === 404) {
-        setExportResult("Replay export endpoint is not available yet.");
+        setExportResult("回放导出接口暂不可用。");
       } else {
-        onErrorChange(result.error?.message ?? "Replay export failed");
+        onErrorChange(result.error?.message ?? "回放导出失败");
       }
     } catch (error) {
-      onErrorChange(readableError(error, "Replay export failed"));
+      onErrorChange(readableError(error, "回放导出失败"));
     } finally {
       setIsWorking(false);
     }
@@ -255,27 +255,27 @@ export function BrowserActivityPanel({
       const result = await api.showBrowserHost(sessionId);
       applyHostResult(result, onHostSnapshotChange, onActiveSessionChange, onErrorChange);
     } catch (error) {
-      onErrorChange(readableError(error, "Show browser session failed"));
+      onErrorChange(readableError(error, "显示浏览器会话失败"));
     }
   };
 
   return (
     <Panel
-      title="Watch Mode"
-      eyebrow="Browser Activity"
+      title="浏览器监看"
+      eyebrow="浏览器活动"
       className="panel--browser-activity"
       action={
-        <button className="icon-button" onClick={() => void refreshBrowserState()} title="Refresh" aria-label="Refresh" type="button">
+        <button className="icon-button" onClick={() => void refreshBrowserState()} title="刷新" aria-label="刷新" type="button">
           <RotateCcw size={15} aria-hidden="true" />
         </button>
       }
     >
       <div className="browser-watch">
-        <aside className="browser-watch__sessions" aria-label="Browser sessions">
+        <aside className="browser-watch__sessions" aria-label="浏览器会话">
           <div className="browser-watch__urlbar">
             <Globe2 size={15} aria-hidden="true" />
             <input value={urlDraft} onChange={(event) => setUrlDraft(event.currentTarget.value)} placeholder="https://example.com" />
-            <button className="icon-button" onClick={() => void openSession()} disabled={isWorking} title="Open URL" aria-label="Open URL" type="button">
+            <button className="icon-button" onClick={() => void openSession()} disabled={isWorking} title="打开网址" aria-label="打开网址" type="button">
               {isWorking ? <Loader2 size={15} aria-hidden="true" className="spin-icon" /> : <ArrowDownToLine size={15} aria-hidden="true" />}
             </button>
           </div>
@@ -289,19 +289,19 @@ export function BrowserActivityPanel({
                   onClick={() => void showActiveSession(session.id)}
                   type="button"
                 >
-                  <span className="browser-session__title">{session.title || "Untitled page"}</span>
-                  <span className="browser-session__url">{session.current_url || "No page loaded"}</span>
+                  <span className="browser-session__title">{session.title || "未命名页面"}</span>
+                  <span className="browser-session__url">{session.current_url || "尚未加载页面"}</span>
                   <span className="browser-session__meta">
                     <Badge tone={toneForSession(session)}>{labelForSession(session)}</Badge>
-                    {session.takeover ? <Badge tone="warning">Takeover</Badge> : null}
+                    {session.takeover ? <Badge tone="warning">已接管</Badge> : null}
                   </span>
                 </button>
               ))
             ) : (
               <div className="browser-empty">
                 <Globe2 size={20} aria-hidden="true" />
-                <strong>No browser sessions</strong>
-                <span>Open a URL or wait for the backend browser host to connect.</span>
+                <strong>暂无浏览器会话</strong>
+                <span>打开一个网址，或等待后端浏览器宿主连接。</span>
               </div>
             )}
           </div>
@@ -312,10 +312,10 @@ export function BrowserActivityPanel({
             {sensitiveState ? <ShieldAlert size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
             <span>
               {sensitiveState
-                ? "Sensitive or pending approval state is active."
+                ? "当前存在敏感操作或待审批状态。"
                 : activeSession
-                  ? "Watching embedded browser activity."
-                  : "No active browser to display."}
+                  ? "正在查看内嵌浏览器活动。"
+                  : "暂无可显示的活动浏览器。"}
             </span>
           </div>
 
@@ -323,26 +323,26 @@ export function BrowserActivityPanel({
             {activeSession ? (
               <>
                 <div className="browser-stage__chrome">
-                  <span>{activeSession.title || "Embedded browser"}</span>
+                  <span>{activeSession.title || "内嵌浏览器"}</span>
                   <small>{activeSession.current_url}</small>
                 </div>
                 {activeSessionHasHost && !hostSnapshot?.visible ? (
                   <button className="button button--secondary" onClick={() => void api.showBrowserHost(activeSession.id)} type="button">
                     <Eye size={14} aria-hidden="true" />
-                    Show embedded browser
+                    显示内嵌浏览器
                   </button>
                 ) : null}
-                {!activeSession.takeover ? <div className="browser-stage__shield">Watch-only</div> : null}
+                {!activeSession.takeover ? <div className="browser-stage__shield">仅查看</div> : null}
               </>
             ) : (
               <div className="browser-stage__empty">
                 <Globe2 size={24} aria-hidden="true" />
-                <span>Embedded browser preview appears here.</span>
+                <span>内嵌浏览器预览会显示在这里。</span>
               </div>
             )}
           </div>
 
-          <div className="browser-controls" aria-label="Browser controls">
+          <div className="browser-controls" aria-label="浏览器控制">
             <button
               className="button button--secondary"
               onClick={() => void runSessionCommand("Pause", api.pauseBrowserHost.bind(api), api.pauseBrowserSession.bind(api))}
@@ -350,7 +350,7 @@ export function BrowserActivityPanel({
               type="button"
             >
               <Pause size={14} aria-hidden="true" />
-              Pause
+              暂停
             </button>
             <button
               className="button button--secondary"
@@ -359,7 +359,7 @@ export function BrowserActivityPanel({
               type="button"
             >
               <Play size={14} aria-hidden="true" />
-              Resume
+              继续
             </button>
             <button
               className="button button--primary"
@@ -368,7 +368,7 @@ export function BrowserActivityPanel({
               type="button"
             >
               <Hand size={14} aria-hidden="true" />
-              Take Over
+              接管
             </button>
             <button
               className="button button--secondary"
@@ -377,15 +377,15 @@ export function BrowserActivityPanel({
               type="button"
             >
               <Bot size={14} aria-hidden="true" />
-              Return Control
+              交还控制
             </button>
             <button className="button button--secondary" onClick={() => void observeSession()} disabled={!activeSession || isWorking} type="button">
               <Eye size={14} aria-hidden="true" />
-              Observe
+              观察
             </button>
             <button className="button button--secondary" onClick={() => void exportReplay()} disabled={!activeSession || isWorking} type="button">
               <Download size={14} aria-hidden="true" />
-              Export Replay
+              导出回放
             </button>
             <button
               className="button button--danger"
@@ -394,18 +394,18 @@ export function BrowserActivityPanel({
               type="button"
             >
               <Square size={14} aria-hidden="true" />
-              Stop
+              停止
             </button>
             <button className="button button--ghost" onClick={() => void api.hideBrowserHost()} disabled={isWorking || !hostSnapshot?.visible} type="button">
               <X size={14} aria-hidden="true" />
-              Hide
+              隐藏
             </button>
           </div>
         </section>
 
-        <aside className="browser-watch__events" aria-label="Browser events">
+        <aside className="browser-watch__events" aria-label="浏览器事件">
           <div className="browser-events__head">
-            <strong>Event queue</strong>
+            <strong>事件队列</strong>
             <Badge tone={activeEvents.some(isSensitiveEvent) ? "warning" : "neutral"}>{activeEvents.length}</Badge>
           </div>
           <ol className="browser-event-list">
@@ -416,9 +416,9 @@ export function BrowserActivityPanel({
                   <div>
                     <div className="row row--between">
                       <strong>{event.type}</strong>
-                      <Badge tone={toneForEvent(event)}>{event.ok ? "ok" : "error"}</Badge>
+                      <Badge tone={toneForEvent(event)}>{event.ok ? "正常" : "错误"}</Badge>
                     </div>
-                    <p>{event.action ? describeAction(event.action.kind, event.url) : event.url || event.title || event.error || "Session update"}</p>
+                    <p>{event.action ? describeAction(event.action.kind, event.url) : event.url || event.title || event.error || "会话更新"}</p>
                     <span className="muted">{new Date(event.created_at).toLocaleTimeString()}</span>
                   </div>
                 </li>
@@ -426,7 +426,7 @@ export function BrowserActivityPanel({
             ) : (
               <li className="browser-empty browser-empty--events">
                 <Clock size={18} aria-hidden="true" />
-                <span>No browser events yet.</span>
+                <span>暂无浏览器事件。</span>
               </li>
             )}
           </ol>
@@ -474,7 +474,7 @@ function applyHostResult(
   if (result.session) {
     onActiveSessionChange(result.session.id);
   }
-  onErrorChange(result.ok ? null : result.error ?? "Browser host action failed");
+  onErrorChange(result.ok ? null : result.error ?? "浏览器宿主操作失败");
 }
 
 function mergeBrowserSessions(primary: BrowserSession[], secondary: BrowserSession[]): BrowserSession[] {
@@ -568,9 +568,16 @@ function toneForSession(session: BrowserSession): "neutral" | "success" | "warni
 }
 
 function labelForSession(session: BrowserSession): string {
-  if (session.takeover) return "manual";
-  if (session.paused) return "paused";
-  return session.status || "idle";
+  if (session.takeover) return "手动";
+  if (session.paused) return "已暂停";
+  const labels: Record<string, string> = {
+    idle: "空闲",
+    loading: "加载中",
+    running: "运行中",
+    awaiting_approval: "待审批",
+    error: "错误"
+  };
+  return labels[session.status] ?? session.status ?? "空闲";
 }
 
 function toneForEvent(event: BrowserActivityEvent): "neutral" | "success" | "warning" | "danger" | "info" {
@@ -586,12 +593,21 @@ function iconForEvent(event: BrowserActivityEvent) {
 }
 
 function describeAction(kind: string, url?: string): string {
-  return url ? `${kind} ${url}` : kind;
+  const labels: Record<string, string> = {
+    observe: "观察",
+    screenshot: "截图",
+    open: "打开",
+    navigate: "跳转",
+    click: "点击",
+    type: "输入"
+  };
+  const label = labels[kind] ?? kind;
+  return url ? `${label} ${url}` : label;
 }
 
 function formatReplayExport(result: BrowserReplayExport): string {
-  if (result.url) return `Replay exported: ${result.url}`;
-  if (result.path) return `Replay exported: ${result.path}`;
-  if (result.events) return `Replay export contains ${result.events.length} events.`;
-  return "Replay export is ready.";
+  if (result.url) return `回放已导出：${result.url}`;
+  if (result.path) return `回放已导出：${result.path}`;
+  if (result.events) return `回放导出包含 ${result.events.length} 条事件。`;
+  return "回放已准备好。";
 }

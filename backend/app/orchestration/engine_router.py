@@ -10,8 +10,10 @@ from app.orchestration.execution_models import (
     EngineRouteDecision,
     EngineSelection,
     EngineTurnResult,
+    NON_EXECUTABLE_RUN_PHASES,
     RunPhase,
     RunState,
+    TERMINAL_RUN_PHASES,
 )
 
 
@@ -133,12 +135,11 @@ class EngineRouter:
         return state
 
     async def run_turn(self, state: RunState) -> EngineTurnResult:
-        if state.turn_count >= self.max_turns and state.phase not in {
-            RunPhase.COMPLETED,
-            RunPhase.FAILED,
-            RunPhase.DENIED,
-            RunPhase.CANCELLED,
-        }:
+        if state.phase in NON_EXECUTABLE_RUN_PHASES:
+            result = await self.engines[state.engine].run_turn(state)
+            self._run_engines[result.state.run_id] = result.state.engine
+            return result
+        if state.turn_count >= self.max_turns and state.phase not in TERMINAL_RUN_PHASES:
             stopped = state.model_copy(
                 update={
                     "phase": RunPhase.FAILED,

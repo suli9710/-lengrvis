@@ -290,12 +290,12 @@ export function OfficeScene({
   const officeMapStyle = { "--office-scale": officeScale } as CSSProperties;
 
   return (
-    <div className="office-workspace" aria-label="Marvis office">
+    <div className="office-workspace" aria-label="Mavris 办公室">
       <div className="office-stage">
         <div className="office-headline">
           <div className="office-headline__title">
-            <h1>Ask Mavris</h1>
-            <p>Get help with files, documents, apps, and this computer.</p>
+            <h1>问问 Mavris</h1>
+            <p>帮你处理文件、文档、应用和这台电脑上的事务。</p>
           </div>
           <div className="office-headline__legend">
             <span
@@ -306,19 +306,19 @@ export function OfficeScene({
                 background: activeAgent.accent
               }}
             />
-            Ready to help · <strong>{activeHelper.name}</strong>
+            随时待命 · <strong>{activeHelper.name}</strong>
           </div>
         </div>
 
         <div className="office-map" ref={officeMapRef} style={officeMapStyle}>
           <OfficeLayout workingAgentIds={workingAgentIds} />
 
-          <span className="office-zone-label office-zone-label--pantry">Break area</span>
-          <span className="office-zone-label office-zone-label--gym">Focus area</span>
-          <span className="office-zone-label office-zone-label--lounge">Rest area</span>
-          <span className="office-zone-label office-zone-label--restroom">Private area</span>
-          <span className="office-zone-label office-zone-label--workstations">Desk area</span>
-          <span className="office-zone-label office-zone-label--meeting">Planning board</span>
+          <span className="office-zone-label office-zone-label--pantry">茶水区</span>
+          <span className="office-zone-label office-zone-label--gym">专注区</span>
+          <span className="office-zone-label office-zone-label--lounge">休息区</span>
+          <span className="office-zone-label office-zone-label--restroom">隐私区</span>
+          <span className="office-zone-label office-zone-label--workstations">工位区</span>
+          <span className="office-zone-label office-zone-label--meeting">计划板</span>
           <div className={`office-patrol-scan ${safetyAlert ? "office-patrol-scan--active" : ""}`} />
 
           <div className={`office-agents ${isOfficeMapReady ? "office-agents--ready" : ""}`}>
@@ -341,9 +341,9 @@ export function OfficeScene({
 
         <div className="office-command-dock">
           <div className="office-command-dock__hint">
-            <span>What would you like help with?</span>
+            <span>你想让 Mavris 帮你做什么？</span>
             <span>·</span>
-            <span><CornerDownLeft size={11} aria-hidden="true" /> Ctrl + Enter to send</span>
+            <span><CornerDownLeft size={11} aria-hidden="true" /> Ctrl + Enter 发送</span>
           </div>
           <textarea
             value={draft}
@@ -354,22 +354,22 @@ export function OfficeScene({
                 onSubmitPrompt();
               }
             }}
-            placeholder="Ask Mavris to find a file, summarize a document, or check this computer."
+            placeholder="例如：帮我找一个文件、总结一份文档，或检查这台电脑。"
           />
           <div className="command-footer">
-            <span className="command-footer__note">Mavris will ask before making important changes.</span>
+            <span className="command-footer__note">涉及重要修改前，Mavris 会先征得你的确认。</span>
             <button className="button button--primary command-footer__send" onClick={() => onSubmitPrompt()} type="button">
               <CornerDownLeft size={16} aria-hidden="true" />
-              Send
+              发送
             </button>
           </div>
         </div>
       </div>
 
-      <aside className="office-inspector office-inspector--simple" aria-label="Home suggestions and recent work">
+      <aside className="office-inspector office-inspector--simple" aria-label="首页建议和最近任务">
         <div className="inspector-card home-examples-card">
           <div className="inspector-card__head">
-            <strong>Try one of these</strong>
+            <strong>可以这样开始</strong>
           </div>
           <div className="office-quick-actions">
             {quickSkills.slice(0, 3).map((skill) => (
@@ -383,16 +383,16 @@ export function OfficeScene({
 
         <div className="inspector-card task-list-card">
           <div className="inspector-card__head">
-            <strong>Recent work</strong>
+            <strong>最近任务</strong>
           </div>
           <div className="metric-row">
             <div>
               <strong>{runningTaskCount}</strong>
-              <span>In progress</span>
+              <span>进行中</span>
             </div>
             <div>
               <strong>{displayedTasks.length}</strong>
-              <span>Shown here</span>
+              <span>已显示</span>
             </div>
           </div>
 
@@ -419,10 +419,10 @@ export function OfficeScene({
                 </button>
               ))
             ) : (
-              <p className="empty-note">Your recent work will appear here.</p>
+              <p className="empty-note">最近任务会显示在这里。</p>
             )}
             {blockedTaskCount > 0 ? (
-              <span className="task-list-card__approval">{blockedTaskCount} item needs your review</span>
+              <span className="task-list-card__approval">{blockedTaskCount} 项需要你审批</span>
             ) : null}
           </div>
         </div>
@@ -457,7 +457,7 @@ function OfficeAgent({
   const targetPose: OfficeAgentPose = isWorking ? "working" : runtime.pose;
   const pose: OfficeAgentPose = isMoving ? "wander" : targetPose;
   const helper = getFriendlyAgentCopy(agent);
-  const activity = isMoving ? "Moving" : isWorking ? "Helping now" : "Available";
+  const activity = isMoving ? "移动中" : isWorking ? "正在帮忙" : "可用";
   const isLead = agent.scale === "lead" && isWorking;
   const screenPosition = projectOfficePoint(runtime.x, runtime.y, mapSize);
   const visualMetrics = getXiaomaVisualMetrics(pose, isLead, agentScale);
@@ -665,27 +665,27 @@ function Workstation({ slot, active }: { slot: OfficeSlot; active: boolean }) {
 function getFriendlyAgentCopy(agent: OfficeAgentDefinition | undefined) {
   switch (agent?.id) {
     case "file":
-      return { name: "Files", role: "Finds documents" };
+      return { name: "文件", role: "查找文档" };
     case "computer":
-      return { name: "Computer", role: "Checks this device" };
+      return { name: "电脑", role: "检查设备" };
     case "app":
-      return { name: "Apps", role: "Opens tools" };
+      return { name: "应用", role: "打开工具" };
     case "browser":
-      return { name: "Web", role: "Looks things up" };
+      return { name: "网页", role: "查询资料" };
     case "search":
-      return { name: "Search", role: "Finds answers" };
+      return { name: "搜索", role: "寻找答案" };
     case "safety":
-      return { name: "Review", role: "Asks before changes" };
+      return { name: "审批", role: "修改前确认" };
     case "pm":
     default:
-      return { name: "Mavris", role: "Ready to help" };
+      return { name: "Mavris", role: "随时待命" };
   }
 }
 
 function friendlyTaskState(state: TaskEvent["state"]): string {
-  if (state === "completed") return "Done";
-  if (state === "running") return "Working";
-  if (state === "blocked") return "Needs review";
-  if (state === "failed") return "Could not finish";
-  return "Waiting";
+  if (state === "completed") return "已完成";
+  if (state === "running") return "进行中";
+  if (state === "blocked") return "待审批";
+  if (state === "failed") return "未完成";
+  return "等待中";
 }

@@ -22,7 +22,7 @@ export function SkillsView({ api }: SkillsViewProps) {
     const response = await api.listSkills();
     setIsLoading(false);
     if (!response.ok || !response.data) {
-      setError(response.error?.message ?? "Failed to load skills.");
+      setError(response.error?.message ?? "技能加载失败。");
       return;
     }
     setCatalog(response.data);
@@ -39,10 +39,10 @@ export function SkillsView({ api }: SkillsViewProps) {
     const response = await api.refreshSkills();
     setIsLoading(false);
     if (!response.ok || !response.data) {
-      setError(response.error?.message ?? "Skill registry refresh failed.");
+      setError(response.error?.message ?? "技能注册表刷新失败。");
       return;
     }
-    setStatus(`Registry refreshed: ${response.data.skillCount} skills, ${response.data.toolCount} tools.`);
+    setStatus(`注册表已刷新：${response.data.skillCount} 个技能，${response.data.toolCount} 个工具。`);
     await refresh();
   };
 
@@ -54,11 +54,11 @@ export function SkillsView({ api }: SkillsViewProps) {
     const response = await api.importSkill(path);
     setIsImporting(false);
     if (!response.ok || !response.data) {
-      setError(response.error?.message ?? "Skill import failed.");
+      setError(response.error?.message ?? "技能导入失败。");
       await refresh();
       return;
     }
-    setStatus(`Installed ${response.data.skill.name} and refreshed ${response.data.refresh.toolCount} tools.`);
+    setStatus(`已安装 ${response.data.skill.name}，并刷新 ${response.data.refresh.toolCount} 个工具。`);
     await refresh();
   };
 
@@ -77,28 +77,28 @@ export function SkillsView({ api }: SkillsViewProps) {
 
   return (
     <Panel
-      title="Skills"
-      eyebrow="Local packages"
+      title="技能"
+      eyebrow="本地扩展包"
       className="panel--skills"
-      action={<Badge tone={skills.some((skill) => skill.status === "error") ? "warning" : "info"}>{readyCount}/{skills.length} ready</Badge>}
+      action={<Badge tone={skills.some((skill) => skill.status === "error") ? "warning" : "info"}>{readyCount}/{skills.length} 可用</Badge>}
     >
       <div className="skills-toolbar">
         <div className="skills-toolbar__meta">
-          <span>Install directory</span>
-          <code>{catalog?.installDirectory || "Not loaded"}</code>
+          <span>安装目录</span>
+          <code>{catalog?.installDirectory || "未加载"}</code>
         </div>
         <div className="skills-toolbar__actions">
           <button className="button button--secondary" type="button" disabled={isLoading || isImporting} onClick={() => void refreshRegistry()}>
             <RefreshCw size={15} aria-hidden="true" />
-            Refresh
+            刷新
           </button>
           <button className="button button--secondary" type="button" disabled={isImporting} onClick={() => void importDirectory()}>
             <FolderPlus size={15} aria-hidden="true" />
-            Directory
+            目录
           </button>
           <button className="button button--primary" type="button" disabled={isImporting} onClick={() => void importZip()}>
             <PackagePlus size={15} aria-hidden="true" />
-            Zip
+            Zip 包
           </button>
         </div>
       </div>
@@ -123,11 +123,11 @@ export function SkillsView({ api }: SkillsViewProps) {
         {!isLoading && skills.length === 0 ? (
           <div className="skill-empty">
             <Wrench size={18} aria-hidden="true" />
-            <strong>No skills installed</strong>
-            <span>Import a local skill directory or a .zip package.</span>
+            <strong>尚未安装技能</strong>
+            <span>导入本地技能目录或 .zip 包。</span>
           </div>
         ) : null}
-        {isLoading ? <p className="muted">Loading skills...</p> : null}
+        {isLoading ? <p className="muted">正在加载技能...</p> : null}
       </div>
     </Panel>
   );
@@ -142,22 +142,22 @@ function SkillRow({ skill }: { skill: InstalledSkill }) {
           {ok ? <ShieldCheck size={16} aria-hidden="true" /> : <AlertTriangle size={16} aria-hidden="true" />}
           <div>
             <strong>{skill.name}</strong>
-            <span>{skill.version || "unknown version"}</span>
+            <span>{skill.version || "未知版本"}</span>
           </div>
         </div>
         <div className="skill-row__badges">
-          <Badge tone={ok ? "success" : "danger"}>{skill.status}</Badge>
-          <Badge tone={riskTone(skill.risk)}>{skill.risk || "risk unknown"}</Badge>
+          <Badge tone={ok ? "success" : "danger"}>{skill.status === "ready" ? "可用" : skill.status}</Badge>
+          <Badge tone={riskTone(skill.risk)}>{skill.risk || "未知风险"}</Badge>
         </div>
       </header>
 
       <dl className="skill-meta">
         <div>
-          <dt>Owner</dt>
-          <dd>{skill.agentOwner || "Unknown"}</dd>
+          <dt>归属</dt>
+          <dd>{skill.agentOwner || "未知"}</dd>
         </div>
         <div>
-          <dt>Root</dt>
+          <dt>根目录</dt>
           <dd title={skill.root}>{skill.root}</dd>
         </div>
       </dl>

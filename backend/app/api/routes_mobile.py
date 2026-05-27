@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel, Field
 
 from app.api.routes_approvals import approve as approve_desktop_approval
-from app.security.mobile_jwt import decode_mobile_token, require_mobile_token
+from app.security.mobile_jwt import decode_mobile_token, mobile_token_from_websocket, require_mobile_token
 from app.services import mobile_pairing_service
 from app.api.routes_approvals import reject as reject_desktop_approval
 from app.services.approval_event_service import get_approval_event_bus
@@ -69,7 +69,7 @@ async def mobile_approval_events_legacy(websocket: WebSocket, token: str = ""):
 
 async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notification_alias: bool = False):
     try:
-        claims = decode_mobile_token(token)
+        claims = decode_mobile_token(mobile_token_from_websocket(websocket, token))
     except HTTPException:
         await websocket.close(code=1008)
         return

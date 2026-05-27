@@ -81,7 +81,7 @@ export function ApprovalDetail({
       setDetail(latest);
       if (latest.approval.status !== "pending") {
         onUpdated(latest.approval);
-        Alert.alert("Approval already decided", `This approval is now ${approvalStatusLabel(latest.approval.status)}.`);
+        Alert.alert("审批已处理", `此审批当前状态为：${approvalStatusLabel(latest.approval.status)}。`);
         return;
       }
       const updated = await submitApprovalDecision(session, currentApproval.id, decision);
@@ -92,7 +92,7 @@ export function ApprovalDetail({
         onSessionExpired();
         return;
       }
-      Alert.alert("Decision failed", errorMessage(currentError));
+      Alert.alert("提交失败", errorMessage(currentError));
     } finally {
       setIsBusy(false);
       submitLockRef.current = false;
@@ -121,18 +121,18 @@ export function ApprovalDetail({
           {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Task</Text>
+            <Text style={styles.sectionTitle}>任务</Text>
             <Text style={styles.body}>{detail?.task?.user_goal ?? currentApproval.message}</Text>
-            <Text style={styles.meta}>Created {shortDate(currentApproval.created_at)}</Text>
+            <Text style={styles.meta}>创建于 {shortDate(currentApproval.created_at)}</Text>
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Request</Text>
+            <Text style={styles.sectionTitle}>请求</Text>
             <Text style={styles.body}>{currentApproval.message}</Text>
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Plan Steps</Text>
+            <Text style={styles.sectionTitle}>计划步骤</Text>
             {steps.length ? (
               steps.map((step, index) => (
                 <View key={step.id || index} style={styles.stepRow}>
@@ -145,12 +145,12 @@ export function ApprovalDetail({
                 </View>
               ))
             ) : (
-              <Text style={styles.muted}>No plan steps available yet.</Text>
+              <Text style={styles.muted}>暂无计划步骤。</Text>
             )}
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Dry-run Preview</Text>
+            <Text style={styles.sectionTitle}>试运行预览</Text>
             <Text style={styles.preview}>{formatPreview(detail?.preview ?? currentApproval.diff_preview)}</Text>
           </View>
         </ScrollView>
@@ -160,11 +160,11 @@ export function ApprovalDetail({
         <View style={styles.decisionRow}>
           <Pressable disabled={isBusy} onPress={() => void handleDecision("denied")} style={({ pressed }) => [styles.denyButton, pressed && styles.pressed]}>
             <X size={18} color="#8c2f39" />
-            <Text style={styles.denyText}>Deny</Text>
+            <Text style={styles.denyText}>拒绝</Text>
           </Pressable>
           <Pressable disabled={isBusy} onPress={() => void handleDecision("approved")} style={({ pressed }) => [styles.approveButton, pressed && styles.pressed]}>
             {isBusy ? <ActivityIndicator color="#ffffff" /> : <Check size={18} color="#ffffff" />}
-            <Text style={styles.approveText}>Approve</Text>
+            <Text style={styles.approveText}>批准</Text>
           </Pressable>
         </View>
       ) : null}
@@ -173,7 +173,7 @@ export function ApprovalDetail({
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
+  return error instanceof Error ? error.message : "请求失败";
 }
 
 const styles = StyleSheet.create({

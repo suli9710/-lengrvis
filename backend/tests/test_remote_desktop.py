@@ -13,7 +13,7 @@ from app.api import routes_remote
 from app.core import db
 from app.llm.registry import get_effective_settings
 from app.policy.risk import RiskLevel
-from app.security.mobile_jwt import REMOTE_VIEW_SCOPE, issue_mobile_token
+from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_VIEW_SCOPE, issue_mobile_token
 from app.services import remote_desktop_service
 from app.services.settings_service import update_settings
 from app.tools.registry import register_all_tools
@@ -94,6 +94,20 @@ def test_remote_view_scope_can_open_remote_screen(monkeypatch: pytest.MonkeyPatc
     token = issue_mobile_token(device_id="mobile_test", device_name="Test Phone", scope=REMOTE_VIEW_SCOPE)
 
     with client.websocket_connect(f"/ws/remote/screen?token={token}") as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        assert websocket.receive_json()["type"] == "frame"
+
+
+def test_remote_view_scope_can_open_remote_screen_with_token_subprotocol(monkeypatch: pytest.MonkeyPatch):
+    update_settings({"remote_desktop_enabled": True})
+    monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (100, 100), "blue"))
+    client = TestClient(_test_app())
+    token = issue_mobile_token(device_id="mobile_test", device_name="Test Phone", scope=REMOTE_VIEW_SCOPE)
+
+    with client.websocket_connect(
+        "/ws/remote/screen",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
         assert websocket.receive_json()["type"] == "connected"
         assert websocket.receive_json()["type"] == "frame"
 

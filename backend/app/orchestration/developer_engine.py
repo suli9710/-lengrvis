@@ -11,7 +11,13 @@ from app.orchestration.claude_code_runner import (
     run_claude_code,
 )
 from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
-from app.orchestration.execution_models import EngineSelection, EngineTurnResult, RunPhase, RunState
+from app.orchestration.execution_models import (
+    NON_EXECUTABLE_RUN_PHASES,
+    EngineSelection,
+    EngineTurnResult,
+    RunPhase,
+    RunState,
+)
 
 
 class DeveloperExecutionEngine(ExecutionEngine):
@@ -75,7 +81,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
         return self.store.put(updated)
 
     async def run_turn(self, state: RunState) -> EngineTurnResult:
-        if state.phase in {RunPhase.COMPLETED, RunPhase.FAILED, RunPhase.CANCELLED}:
+        if state.phase in NON_EXECUTABLE_RUN_PHASES:
             return EngineTurnResult(state=state, finished=True, message=f"Run is already {state.phase.value}.")
         if not self.use_claude_code:
             disabled = state.model_copy(

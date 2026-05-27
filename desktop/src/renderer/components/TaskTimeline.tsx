@@ -82,7 +82,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
       setPreviewTaskId(taskId);
       setPreviewSteps(response.data.steps ?? []);
     } else {
-      setFeedback(response.error?.message ?? "Rollback preview failed");
+      setFeedback(response.error?.message ?? "回滚预览失败");
     }
   };
 
@@ -92,11 +92,11 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
     const response = await api.executeRollback(previewTaskId);
     setIsWorking(false);
     if (response.ok && response.data) {
-      setFeedback(`Rolled back ${response.data.count ?? 0} action(s).`);
+      setFeedback(`已回滚 ${response.data.count ?? 0} 个动作。`);
       setPreviewTaskId(null);
       setPreviewSteps([]);
     } else {
-      setFeedback(response.error?.message ?? "Rollback failed");
+      setFeedback(response.error?.message ?? "回滚失败");
     }
   };
 
@@ -110,7 +110,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
       setExplainTaskId(taskId);
       setExplain(response.data);
     } else {
-      setFeedback(response.error?.message ?? "Explain failed");
+      setFeedback(response.error?.message ?? "解释失败");
     }
   };
 
@@ -256,7 +256,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
           <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="recording-title">
             <header className="modal__header">
               <div>
-                <span className="panel__eyebrow">Step 录屏</span>
+                <span className="panel__eyebrow">步骤录屏</span>
                 <h2 id="recording-title">{recordingPlayer.recording.toolName}</h2>
               </div>
               <div className="recording-player__header-actions">
@@ -392,7 +392,7 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
       <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="explain-title">
         <header className="modal__header">
           <div>
-            <span className="panel__eyebrow">Explain API</span>
+            <span className="panel__eyebrow">执行解释</span>
             <h2 id="explain-title">为什么这样执行？</h2>
           </div>
           <div className="recording-player__header-actions">

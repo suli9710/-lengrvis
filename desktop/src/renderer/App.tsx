@@ -56,9 +56,9 @@ import { MavrisApiClient } from "./lib/apiClient";
 import { useMavrisStore, type AssistantMode, type ViewKey } from "./store";
 
 const quickSkills: OfficeQuickSkill[] = [
-  { icon: FileSearch, title: "Find large files", prompt: "Find the largest files on this computer and suggest what I can safely clean up." },
-  { icon: BookOpenText, title: "Summarize a document", prompt: "Summarize the main points from sample_contract.txt." },
-  { icon: Laptop, title: "Check this computer", prompt: "Check this computer and tell me anything that needs attention." }
+  { icon: FileSearch, title: "查找大文件", prompt: "找出这台电脑上最大的文件，并建议哪些可以安全清理。" },
+  { icon: BookOpenText, title: "总结文档", prompt: "总结 sample_contract.txt 的主要内容。" },
+  { icon: Laptop, title: "检查电脑", prompt: "检查这台电脑，并告诉我有哪些需要注意的地方。" }
 ];
 
 export function App() {
@@ -240,7 +240,7 @@ export function App() {
     const userMessage: ChatMessage = {
       id: `local-${crypto.randomUUID()}`,
       role: "user",
-      author: "You",
+      author: "你",
       content,
       createdAt: new Date().toISOString(),
       status: "sent"
@@ -267,8 +267,8 @@ export function App() {
       {
         id: `local-${crypto.randomUUID()}`,
         role: "assistant",
-        author: "Marvis",
-        content: result.error?.message ?? "Mavris is not available right now. Try again in a moment.",
+        author: "Mavris",
+        content: result.error?.message ?? "Mavris 暂时不可用，请稍后再试。",
         createdAt: new Date().toISOString(),
         status: "failed"
       }
@@ -279,7 +279,7 @@ export function App() {
     const userMessage: ChatMessage = {
       id: `local-${crypto.randomUUID()}`,
       role: "user",
-      author: "You",
+      author: "你",
       content: suggestion.prompt,
       createdAt: new Date().toISOString(),
       status: "sent"
@@ -309,8 +309,8 @@ export function App() {
       {
         id: `local-${crypto.randomUUID()}`,
         role: "assistant",
-        author: "Marvis",
-        content: result.error?.message ?? "Suggestion launch failed. Try again in a moment.",
+        author: "Mavris",
+        content: result.error?.message ?? "建议任务启动失败，请稍后再试。",
         createdAt: new Date().toISOString(),
         status: "failed"
       }
@@ -346,7 +346,7 @@ export function App() {
     if (!result.ok) {
       setSettings(previousSettings);
       setMode(previousMode);
-      throw new Error(result.error?.message ?? "Unable to save settings");
+      throw new Error(result.error?.message ?? "无法保存设置");
     }
     if (result.ok && result.data) {
       setSettings(result.data);
@@ -482,7 +482,7 @@ export function App() {
       setIsApprovalOpen(false);
       return;
     }
-    setApprovalError(result.error?.message ?? "Approval submit failed; refresh and try again");
+    setApprovalError(result.error?.message ?? "审批提交失败，请刷新后重试");
     const approvalsResult = await api.listPendingApprovals();
     if (approvalsResult.ok && approvalsResult.data) {
       setApprovalRequests(approvalsResult.data);

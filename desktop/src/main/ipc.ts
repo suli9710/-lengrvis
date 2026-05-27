@@ -10,11 +10,26 @@ const ALLOWED_API_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["https:", "http:", "mailto:"]);
 
 export function registerIpcHandlers(backend: BackendProcessManager): void {
-  ipcMain.handle(IPC_CHANNELS.backendStatus, () => backend.getStatus());
-  ipcMain.handle(IPC_CHANNELS.backendStart, () => backend.start());
-  ipcMain.handle(IPC_CHANNELS.backendStop, () => backend.stop());
-  ipcMain.handle(IPC_CHANNELS.backendForeground, () => backend.enterForeground());
-  ipcMain.handle(IPC_CHANNELS.backendBackground, () => backend.enterBackground());
+  ipcMain.handle(IPC_CHANNELS.backendStatus, (event) => {
+    assertTrustedRenderer(event);
+    return backend.getStatus();
+  });
+  ipcMain.handle(IPC_CHANNELS.backendStart, (event) => {
+    assertTrustedRenderer(event);
+    return backend.start();
+  });
+  ipcMain.handle(IPC_CHANNELS.backendStop, (event) => {
+    assertTrustedRenderer(event);
+    return backend.stop();
+  });
+  ipcMain.handle(IPC_CHANNELS.backendForeground, (event) => {
+    assertTrustedRenderer(event);
+    return backend.enterForeground();
+  });
+  ipcMain.handle(IPC_CHANNELS.backendBackground, (event) => {
+    assertTrustedRenderer(event);
+    return backend.enterBackground();
+  });
 
   ipcMain.handle(IPC_CHANNELS.openExternal, async (event, url: string) => {
     assertTrustedRenderer(event);
@@ -56,11 +71,12 @@ async function proxyApiRequest<TData>(
   request: ApiRequest
 ): Promise<ApiResponse<TData>> {
   const receivedAt = new Date().toISOString();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
 
   try {
     const url = buildRequestUrl(baseUrl, request);
     const controller = new AbortController();
-    const timeout = setTimeout(
+    timeout = setTimeout(
       () => controller.abort(),
       request.timeoutMs ?? DEFAULT_TIMEOUT_MS
     );
@@ -74,8 +90,6 @@ async function proxyApiRequest<TData>(
       body: request.body ? JSON.stringify(request.body) : undefined,
       signal: controller.signal
     });
-
-    clearTimeout(timeout);
 
     const data = await parseResponseBody(response);
 
@@ -110,6 +124,10 @@ async function proxyApiRequest<TData>(
       },
       receivedAt
     };
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 
@@ -152,9 +170,9 @@ async function openSafeExternalUrl(rawUrl: string): Promise<void> {
   await shell.openExternal(parsed.toString());
 }
 
-function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
+export function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
   const url = event.senderFrame?.url ?? "";
-  if (!isTrustedRendererUrl(url)) {
+  if (!BrowserWindow.fromWebContents(event.sender) || !isTrustedRendererUrl(url)) {
     throw new Error("IPC request came from an untrusted renderer");
   }
 }
@@ -166,7 +184,10 @@ export function isTrustedRendererUrl(url: string): boolean {
       const rendererRoot = pathToFileURL(`${__dirname}/../renderer/`).toString();
       return parsed.href.startsWith(rendererRoot);
     }
-    const trustedOrigins = new Set(["http://127.0.0.1:5173", "http://localhost:5173", "app://local"]);
+    if (parsed.protocol === "app:" && parsed.hostname === "local") {
+      return true;
+    }
+    const trustedOrigins = new Set(["http://127.0.0.1:5173", "http://localhost:5173"]);
     const devServerUrl = process.env.VITE_DEV_SERVER_URL;
     if (devServerUrl) {
       trustedOrigins.add(new URL(devServerUrl).origin);

@@ -31,23 +31,23 @@ export interface ViewTitle {
 }
 
 export const primaryNavItems: NavItem[] = [
-  { icon: Home, label: "Home", view: "home" },
-  { icon: MessageSquarePlus, label: "Chat", view: "chat" },
-  { icon: BookOpenText, label: "Files", view: "files" },
-  { icon: Laptop, label: "Computer", view: "computer" },
-  { icon: Settings, label: "Settings", view: "settings" }
+  { icon: Home, label: "首页", view: "home" },
+  { icon: MessageSquarePlus, label: "对话", view: "chat" },
+  { icon: BookOpenText, label: "文件", view: "files" },
+  { icon: Laptop, label: "电脑", view: "computer" },
+  { icon: Settings, label: "设置", view: "settings" }
 ];
 
 export const viewTitles: Record<ViewKey, ViewTitle> = {
-  browser: { title: "Watch Mode", subtitle: "Embedded browser activity and takeover controls" },
-  home: { title: "Home", subtitle: "Ask Mavris for help with your computer" },
-  chat: { title: "Chat", subtitle: "Keep working with Mavris" },
-  files: { title: "Files", subtitle: "Find and organize your documents" },
-  computer: { title: "Computer", subtitle: "Check this device and open common tools" },
-  agents: { title: "Progress", subtitle: "Work currently in progress" },
-  memories: { title: "Saved details", subtitle: "Things Mavris can remember for later" },
-  safety: { title: "Review", subtitle: "Items waiting for your permission" },
-  settings: { title: "Settings", subtitle: "Preferences and permissions" }
+  browser: { title: "浏览器监看", subtitle: "查看浏览器活动，并在需要时接管控制" },
+  home: { title: "首页", subtitle: "让 Mavris 帮你处理电脑上的事务" },
+  chat: { title: "对话", subtitle: "继续和 Mavris 协作" },
+  files: { title: "文件", subtitle: "查找、整理和分析你的文档" },
+  computer: { title: "电脑", subtitle: "检查这台设备并打开常用工具" },
+  agents: { title: "进度", subtitle: "当前正在处理的工作" },
+  memories: { title: "记忆", subtitle: "Mavris 后续可使用的本地信息" },
+  safety: { title: "审批", subtitle: "等待你确认的项目" },
+  settings: { title: "设置", subtitle: "偏好、安全权限和运行配置" }
 };
 
 export function ShellFrame({
@@ -106,11 +106,11 @@ function Sidebar({
         <XiaoMaAvatar className="sidebar-brand__logo" />
         <span className="sidebar-brand__text">
           <strong>Mavris</strong>
-          <small>Computer helper</small>
+          <small>电脑助手</small>
         </span>
       </div>
 
-      <nav className="primary-nav" aria-label="Main navigation">
+      <nav className="primary-nav" aria-label="主导航">
         {primaryNavItems.map((item) => (
           <SideButton
             key={item.view}
@@ -126,7 +126,7 @@ function Sidebar({
         <XiaoMaAvatar className="mini-avatar" />
         <span className="sidebar-user__meta">
           <strong>Mavris</strong>
-          <em>Computer helper</em>
+          <em>电脑助手</em>
         </span>
       </div>
     </aside>
@@ -168,10 +168,10 @@ function WindowBar({
         {connectionState !== "online" ? (
           <span className={`connection-pill connection-pill--${connectionState}`}>
             <span className="connection-pill__dot" />
-            {connectionState === "checking" ? "Checking connection" : "Offline"}
+            {connectionState === "checking" ? "正在检查连接" : "离线"}
           </span>
         ) : null}
-        <button className="icon-button" aria-label="Refresh" onClick={onRefresh} disabled={isLoading} type="button">
+        <button className="icon-button" aria-label="刷新" onClick={onRefresh} disabled={isLoading} type="button">
           {isLoading ? (
             <Loader2 size={15} aria-hidden="true" style={{ animation: "dot-spin 1s linear infinite" }} />
           ) : (
@@ -179,7 +179,7 @@ function WindowBar({
           )}
         </button>
         {hasPendingApproval ? (
-          <button className="icon-button" aria-label="Review needed" onClick={onOpenApprovals} type="button">
+          <button className="icon-button" aria-label="有待审批项目" onClick={onOpenApprovals} type="button">
             <Bell size={15} aria-hidden="true" />
           </button>
         ) : null}

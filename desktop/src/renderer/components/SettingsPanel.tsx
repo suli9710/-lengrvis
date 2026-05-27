@@ -22,22 +22,22 @@ function zhMode(mode: AppSettings["mode"]): string {
 }
 
 function displayMode(mode: AppSettings["mode"]): string {
-  if (mode === "efficiency") return "Fast";
-  if (mode === "hybrid") return "Balanced";
-  return "Private";
+  if (mode === "efficiency") return "高效";
+  if (mode === "hybrid") return "均衡";
+  return "隐私";
 }
 
 function modeDescription(mode: AppSettings["mode"]): string {
-  if (mode === "efficiency") return "Uses cloud assistance for the quickest responses.";
-  if (mode === "hybrid") return "Balances cloud help with local privacy controls.";
-  return "Keeps AI work local when possible.";
+  if (mode === "efficiency") return "优先使用云端能力，响应最快。";
+  if (mode === "hybrid") return "兼顾云端能力与本地隐私控制。";
+  return "尽量把 AI 工作留在本机完成。";
 }
 
 function appStatusLabel(state: BackendStatus["state"]): string {
-  if (state === "running") return "Ready";
-  if (state === "starting") return "Starting";
-  if (state === "error") return "Needs attention";
-  return "Unavailable";
+  if (state === "running") return "就绪";
+  if (state === "starting") return "启动中";
+  if (state === "error") return "需要处理";
+  return "不可用";
 }
 
 const LOCAL_MODEL_OPTIONS = [
@@ -109,7 +109,7 @@ const DEFAULT_PERMISSION_RULE_DRAFT = {
   start: "00:00",
   end: "23:59",
   timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-  reason: "Weekend file deletion is blocked."
+  reason: "周末禁止删除文件。"
 };
 
 interface InstallModelRequest {
@@ -202,7 +202,7 @@ export function SettingsPanel({
           available: false,
           selectedBackend: null,
           probeOrder: ["onnx", "ollama", "lmstudio", "llamacpp"],
-          error: response.error?.message ?? "Unable to check local AI."
+          error: response.error?.message ?? "无法检查本地 AI。"
         });
       }
     }).finally(() => {
@@ -229,9 +229,9 @@ export function SettingsPanel({
           executionProvider: "",
           availableProviders: [],
           generationRuntime: "",
-          error: response.error?.message ?? "Unable to check hardware acceleration."
+          error: response.error?.message ?? "无法检查硬件加速。"
         });
-        setHardwareStatusError(response.error?.message ?? "Unable to check hardware acceleration.");
+        setHardwareStatusError(response.error?.message ?? "无法检查硬件加速。");
       }
     }).finally(() => {
       if (!cancelled) setIsCheckingHardware(false);
@@ -247,7 +247,7 @@ export function SettingsPanel({
     try {
       await onSave(draft);
     } catch (error) {
-      setSaveError(readableError(error, "Unable to save settings"));
+      setSaveError(readableError(error, "无法保存设置"));
     } finally {
       setIsSaving(false);
     }
@@ -262,10 +262,10 @@ export function SettingsPanel({
         setPairing(response.data);
         void refreshPairedDevices();
       } else {
-        setPairingError(response.error?.message ?? "Unable to create pairing code");
+        setPairingError(response.error?.message ?? "无法生成配对码");
       }
     } catch (error) {
-      setPairingError(readableError(error, "Unable to create pairing code"));
+      setPairingError(readableError(error, "无法生成配对码"));
     } finally {
       setIsPairing(false);
     }
@@ -284,7 +284,7 @@ export function SettingsPanel({
       setPermissionPolicy(mapPermissionPolicy(response.data));
       setPermissionStatus("");
     } else {
-      setPermissionStatus(response.error?.message ?? "Unable to load permission policy");
+      setPermissionStatus(response.error?.message ?? "无法加载权限策略");
     }
   }, [api]);
 
@@ -307,12 +307,12 @@ export function SettingsPanel({
       });
       if (response.ok && response.data) {
         setPermissionPolicy(mapPermissionPolicy(response.data));
-        setPermissionStatus("Permission rule saved.");
+        setPermissionStatus("权限规则已保存。");
       } else {
-        setPermissionStatus(response.error?.message ?? "Unable to save permission rule");
+        setPermissionStatus(response.error?.message ?? "无法保存权限规则");
       }
     } catch (error) {
-      setPermissionStatus(readableError(error, "Unable to save permission rule"));
+      setPermissionStatus(readableError(error, "无法保存权限规则"));
     } finally {
       setIsPermissionSaving(false);
     }
@@ -326,42 +326,42 @@ export function SettingsPanel({
     });
     if (response.ok && response.data) {
       setPermissionPolicy(mapPermissionPolicy(response.data.policy));
-      setPermissionStatus("Permission rule removed.");
+      setPermissionStatus("权限规则已删除。");
     } else {
-      setPermissionStatus(response.error?.message ?? "Unable to remove permission rule");
+      setPermissionStatus(response.error?.message ?? "无法删除权限规则");
     }
   };
 
   const aiStatus = llmHealth
     ? llmHealth.active.available
       ? llmHealth.active.degraded
-        ? "Fallback active"
-        : "Ready"
-      : "Needs setup"
-    : "Checking";
+        ? "兜底模式已启用"
+        : "就绪"
+      : "需要配置"
+    : "检查中";
   const localAiStatus = draft.mode === "efficiency"
-    ? "Off"
+    ? "关闭"
     : isCheckingLocalLlm
-      ? "Checking"
+      ? "检查中"
       : detectedLocalLlmHealth
         ? detectedLocalLlmHealth.available
-        ? "Ready"
-        : "Needs setup"
-      : "Checking";
+        ? "就绪"
+        : "需要配置"
+      : "检查中";
   const effectiveLocalLlmHealth = draft.mode === "efficiency" ? null : detectedLocalLlmHealth;
   const hardwareRuntime = providerToRuntime(draft.onnxExecutionProvider);
   return (
     <Panel
-      title="Settings"
-      eyebrow="Preferences"
+      title="设置"
+      eyebrow="偏好"
       action={<Badge tone={backendStatus.state === "running" ? "success" : "warning"}>{appStatusLabel(backendStatus.state)}</Badge>}
     >
       <div className="settings-grid">
         <fieldset className="mcp-servers settings-grid__full">
-          <legend>Basics</legend>
+          <legend>基础设置</legend>
           <div className="settings-grid settings-grid--balanced">
             <label className="field settings-grid__full">
-              <span>Mode</span>
+              <span>模式</span>
               <div className="mode-radio-row">
                 {(["efficiency", "hybrid", "privacy"] as const).map((value) => (
                   <label key={value} className="mode-radio">
@@ -384,14 +384,14 @@ export function SettingsPanel({
               ) : null}
             </label>
             <label className="field">
-              <span>Workspace folder</span>
+              <span>工作区文件夹</span>
               <input
                 value={draft.workspaceRoot}
                 onChange={(event) => setDraft((current) => updateWorkspaceRoot(current, event.target.value))}
               />
               {(draft.allowedDirectories?.length ?? 0) > 1 ? (
                 <small className="muted">
-                  Preserving {Number(draft.allowedDirectories?.length ?? 1) - 1} additional authorized folder(s).
+                  已保留 {Number(draft.allowedDirectories?.length ?? 1) - 1} 个额外授权文件夹。
                 </small>
               ) : null}
             </label>
@@ -405,7 +405,7 @@ export function SettingsPanel({
                   setDraft((current) => ({ ...current, allowBrowserNetwork: event.target.checked }))
                 }
               />
-              <span>Allow web access</span>
+              <span>允许访问网络</span>
             </label>
             <label>
               <input
@@ -415,7 +415,7 @@ export function SettingsPanel({
                   setDraft((current) => ({ ...current, allowCloudContext: event.target.checked }))
                 }
               />
-              <span>Allow cloud assistance</span>
+              <span>允许云端辅助</span>
             </label>
             <label>
               <input
@@ -425,7 +425,7 @@ export function SettingsPanel({
                   setDraft((current) => ({ ...current, allowFileContentUpload: event.target.checked }))
                 }
               />
-              <span>Allow file contents when needed</span>
+              <span>必要时允许读取文件内容</span>
             </label>
             <label>
               <input
@@ -435,12 +435,12 @@ export function SettingsPanel({
                   setDraft((current) => ({ ...current, remoteDesktopEnabled: event.target.checked }))
                 }
               />
-              <span>Allow phone screen viewing</span>
+              <span>允许手机查看电脑屏幕</span>
             </label>
           </div>
           <div className="settings-status-grid">
             <p className="muted">Mavris: {aiStatus}</p>
-            <p className="muted">Local AI: {localAiStatus}</p>
+            <p className="muted">本地 AI: {localAiStatus}</p>
           </div>
         </fieldset>
         {draft.mode === "privacy" || draft.mode === "hybrid" ? (
@@ -450,35 +450,35 @@ export function SettingsPanel({
         ) : null}
 
         <details className="mcp-servers settings-grid__full">
-          <summary>Advanced settings</summary>
+          <summary>高级设置</summary>
           <fieldset className="mcp-servers">
-            <legend>AI connection</legend>
+            <legend>AI 连接</legend>
             <div className="settings-grid settings-grid--balanced">
               <label className="field">
-                <span>Provider</span>
+                <span>服务商</span>
                 <input value={draft.providerName} onChange={(event) => setDraft((current) => ({ ...current, providerName: event.target.value }))} />
               </label>
               <label className="field">
-                <span>Model</span>
+                <span>模型</span>
                 <input value={draft.model} onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))} />
               </label>
               <label className="field">
-                <span>Review Model</span>
+                <span>审核模型</span>
                 <input value={draft.reviewModel} onChange={(event) => setDraft((current) => ({ ...current, reviewModel: event.target.value }))} />
               </label>
               <label className="field">
-                <span>Wire API</span>
+                <span>接口类型</span>
                 <select value={draft.wireApi} onChange={(event) => setDraft((current) => ({ ...current, wireApi: event.target.value as AppSettings["wireApi"] }))}>
                   <option value="chat_completions">chat_completions</option>
                   <option value="responses">responses</option>
                 </select>
               </label>
               <label className="field">
-                <span>Reasoning Effort</span>
+                <span>推理强度</span>
                 <input value={draft.modelReasoningEffort} onChange={(event) => setDraft((current) => ({ ...current, modelReasoningEffort: event.target.value }))} />
               </label>
               <label className="field">
-                <span>Provider Base URL</span>
+                <span>服务商 Base URL</span>
                 <input value={draft.apiBaseUrl} onChange={(event) => setDraft((current) => ({ ...current, apiBaseUrl: event.target.value }))} />
               </label>
               <label className="mcp-servers__toggle">
@@ -489,7 +489,7 @@ export function SettingsPanel({
                     setDraft((current) => ({ ...current, requiresOpenAiAuth: event.target.checked }))
                   }
                 />
-                <span>Requires OpenAI auth</span>
+                <span>需要 OpenAI 认证</span>
               </label>
               <label className="mcp-servers__toggle">
                 <input
@@ -499,66 +499,66 @@ export function SettingsPanel({
                     setDraft((current) => ({ ...current, disableResponseStorage: event.target.checked }))
                   }
                 />
-                <span>Disable response storage</span>
+                <span>禁用响应存储</span>
               </label>
             </div>
             <div className="settings-status-grid">
-              <p className="muted">Active: {llmHealth?.active.provider ?? "N/A"} / {llmHealth?.active.model ?? "N/A"} / {llmHealth?.active.profile.activeBackend ?? "N/A"}</p>
-              <p className="muted">Cost: {llmCostSummary ? `${llmCostSummary.calls} calls, ${llmCostSummary.totalTokens} tokens, ${llmCostSummary.totalCostUsd === null ? "N/A" : `$${llmCostSummary.totalCostUsd.toFixed(4)}`}` : "N/A"}</p>
-              <p className="muted">Runtime: {zhBackendState(backendStatus.state)}</p>
+              <p className="muted">当前：{llmHealth?.active.provider ?? "N/A"} / {llmHealth?.active.model ?? "N/A"} / {llmHealth?.active.profile.activeBackend ?? "N/A"}</p>
+              <p className="muted">成本：{llmCostSummary ? `${llmCostSummary.calls} 次调用，${llmCostSummary.totalTokens} tokens，${llmCostSummary.totalCostUsd === null ? "N/A" : `$${llmCostSummary.totalCostUsd.toFixed(4)}`}` : "N/A"}</p>
+              <p className="muted">运行状态：{zhBackendState(backendStatus.state)}</p>
             </div>
           </fieldset>
 
           <fieldset className="mcp-servers">
-            <legend>Generation and reliability</legend>
+            <legend>生成与稳定性</legend>
             <div className="settings-grid settings-grid--balanced">
               <label className="field">
-                <span>Temperature</span>
+                <span>温度</span>
                 <input type="number" min={0} max={2} step={0.05} value={draft.temperature} onChange={(event) => setDraft((current) => ({ ...current, temperature: Number(event.target.value) || 0 }))} />
               </label>
               <label className="field">
-                <span>Max Tokens</span>
+                <span>最大 Tokens</span>
                 <input type="number" min={1} step={1} value={draft.maxTokens} onChange={(event) => setDraft((current) => ({ ...current, maxTokens: Math.max(1, Number(event.target.value) || 1) }))} />
               </label>
               <label className="field">
-                <span>Timeout</span>
+                <span>超时</span>
                 <input type="number" min={1} step={1} value={draft.timeout} onChange={(event) => setDraft((current) => ({ ...current, timeout: Math.max(1, Number(event.target.value) || 1) }))} />
               </label>
               <label className="field">
-                <span>Retry Count</span>
+                <span>重试次数</span>
                 <input type="number" min={0} step={1} value={draft.llmApiMaxRetries} onChange={(event) => setDraft((current) => ({ ...current, llmApiMaxRetries: Math.max(0, Number(event.target.value) || 0) }))} />
               </label>
               <label className="field">
-                <span>Retry Backoff</span>
+                <span>重试退避</span>
                 <input type="number" min={0} step={0.05} value={draft.llmApiRetryBackoffSeconds} onChange={(event) => setDraft((current) => ({ ...current, llmApiRetryBackoffSeconds: Math.max(0, Number(event.target.value) || 0) }))} />
               </label>
               <label className="field">
-                <span>Circuit Threshold</span>
+                <span>熔断阈值</span>
                 <input type="number" min={1} step={1} value={draft.llmApiCircuitFailureThreshold} onChange={(event) => setDraft((current) => ({ ...current, llmApiCircuitFailureThreshold: Math.max(1, Number(event.target.value) || 1) }))} />
               </label>
               <label className="field">
-                <span>Circuit Cooldown</span>
+                <span>熔断冷却</span>
                 <input type="number" min={0} step={1} value={draft.llmApiCircuitCooldownSeconds} onChange={(event) => setDraft((current) => ({ ...current, llmApiCircuitCooldownSeconds: Math.max(0, Number(event.target.value) || 0) }))} />
               </label>
               <label className="field">
-                <span>Context Window</span>
+                <span>上下文窗口</span>
                 <input type="number" min={1} step={1} value={draft.modelContextWindow} onChange={(event) => setDraft((current) => ({ ...current, modelContextWindow: Math.max(1, Number(event.target.value) || 1) }))} />
               </label>
               <label className="field">
-                <span>Auto Compact Limit</span>
+                <span>自动压缩上限</span>
                 <input type="number" min={1} step={1} value={draft.modelAutoCompactTokenLimit} onChange={(event) => setDraft((current) => ({ ...current, modelAutoCompactTokenLimit: Math.max(1, Number(event.target.value) || 1) }))} />
               </label>
             </div>
             <div className="settings-status-grid">
-              <p className="muted">Retry: {llmHealth?.retry.maxRetries ?? "N/A"} retries, {llmHealth?.retry.backoffSeconds ?? "N/A"}s backoff, circuit {llmHealth?.retry.circuit.state ?? "N/A"}</p>
+              <p className="muted">重试：{llmHealth?.retry.maxRetries ?? "N/A"} 次，退避 {llmHealth?.retry.backoffSeconds ?? "N/A"} 秒，熔断状态 {llmHealth?.retry.circuit.state ?? "N/A"}</p>
             </div>
           </fieldset>
 
           <fieldset className="mcp-servers">
-            <legend>Desktop internals</legend>
+            <legend>桌面端内部设置</legend>
             <div className="settings-grid settings-grid--balanced">
               <label className="field">
-                <span>Allowed apps</span>
+                <span>允许的应用</span>
                 <textarea
                   value={draft.appAllowlist.join("; ")}
                   onChange={(event) =>
@@ -570,21 +570,21 @@ export function SettingsPanel({
                 />
               </label>
               <label className="field">
-                <span>Browser screenshot directory</span>
+                <span>浏览器截图目录</span>
                 <input
                   value={draft.browserScreenshotDir}
                   onChange={(event) => setDraft((current) => ({ ...current, browserScreenshotDir: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>ONNX model path</span>
+                <span>ONNX 模型路径</span>
                 <input
                   value={draft.onnxModelPath}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxModelPath: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>ONNX provider</span>
+                <span>ONNX 运行提供方</span>
                 <select
                   value={draft.onnxExecutionProvider}
                   onChange={(event) =>
@@ -594,7 +594,7 @@ export function SettingsPanel({
                     }))
                   }
                 >
-                  <option value="">Auto</option>
+                  <option value="">自动</option>
                   <option value="WinML">WinML</option>
                   <option value="DirectML">DirectML</option>
                   <option value="OpenVINO">OpenVINO</option>
@@ -602,87 +602,87 @@ export function SettingsPanel({
                 </select>
               </label>
               <label className="field">
-                <span>ONNX provider preference</span>
+                <span>ONNX 提供方优先级</span>
                 <input
                   value={draft.onnxProviderPreference}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxProviderPreference: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>WinML / DirectML device id</span>
+                <span>WinML / DirectML 设备 ID</span>
                 <input
                   value={draft.onnxDirectmlDeviceId}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxDirectmlDeviceId: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>OpenVINO device</span>
+                <span>OpenVINO 设备</span>
                 <input
                   value={draft.onnxOpenvinoDevice}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxOpenvinoDevice: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>OpenVINO cache dir</span>
+                <span>OpenVINO 缓存目录</span>
                 <input
                   value={draft.onnxOpenvinoCacheDir}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxOpenvinoCacheDir: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>Warm on startup</span>
+                <span>启动时预热</span>
                 <select
                   value={draft.onnxWarmOnStartup ? "yes" : "no"}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxWarmOnStartup: event.target.value === "yes" }))}
                 >
-                  <option value="no">No</option>
-                  <option value="yes">Yes</option>
+                  <option value="no">否</option>
+                  <option value="yes">是</option>
                 </select>
               </label>
               <label className="field">
-                <span>Model family</span>
+                <span>模型家族</span>
                 <input
                   value={draft.onnxModelFamily}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxModelFamily: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>Embedding backend</span>
+                <span>文本向量后端</span>
                 <input
                   value={draft.onnxEmbeddingBackend}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxEmbeddingBackend: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>Embedding model path</span>
+                <span>文本向量模型路径</span>
                 <input
                   value={draft.onnxEmbeddingModelPath}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxEmbeddingModelPath: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>Embedding EP</span>
+                <span>文本向量 EP</span>
                 <input
                   value={draft.onnxEmbeddingExecutionProvider}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxEmbeddingExecutionProvider: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>Image embedding backend</span>
+                <span>图像向量后端</span>
                 <input
                   value={draft.imageEmbeddingBackend}
                   onChange={(event) => setDraft((current) => ({ ...current, imageEmbeddingBackend: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>Image embedding model path</span>
+                <span>图像向量模型路径</span>
                 <input
                   value={draft.onnxImageEmbeddingModelPath}
                   onChange={(event) => setDraft((current) => ({ ...current, onnxImageEmbeddingModelPath: event.target.value }))}
                 />
               </label>
               <label className="field">
-                <span>OCR backend</span>
+                <span>OCR 后端</span>
                 <input
                   value={draft.ocrBackend}
                   onChange={(event) => setDraft((current) => ({ ...current, ocrBackend: event.target.value }))}
@@ -696,7 +696,7 @@ export function SettingsPanel({
                 />
               </label>
               <label className="field">
-                <span>Web page read limit</span>
+                <span>网页读取上限</span>
                 <input
                   type="number"
                   min={1000}
@@ -732,15 +732,15 @@ export function SettingsPanel({
           </fieldset>
 
           <fieldset className="mcp-servers">
-            <legend>Tool connections</legend>
+            <legend>工具连接</legend>
             {draft.mcpServers.length === 0 ? (
-              <p className="muted">No tool connections configured.</p>
+              <p className="muted">尚未配置工具连接。</p>
             ) : null}
             <ul className="mcp-servers__list">
               {draft.mcpServers.map((server, index) => (
                 <li className="mcp-servers__row mcp-servers__row--server" key={index}>
                   <input
-                    placeholder="Name"
+                    placeholder="名称"
                     value={server.name}
                     onChange={(event) => updateMcpServer(setDraft, index, { name: event.target.value })}
                   />
@@ -750,17 +750,17 @@ export function SettingsPanel({
                     onChange={(event) => updateMcpServer(setDraft, index, { url: event.target.value })}
                   />
                   <input
-                    placeholder="Command"
+                    placeholder="命令"
                     value={server.command ?? ""}
                     onChange={(event) => updateMcpServer(setDraft, index, { command: event.target.value })}
                   />
                   <input
-                    placeholder="Args"
+                    placeholder="参数"
                     value={server.args?.join("; ") ?? ""}
                     onChange={(event) => updateMcpServer(setDraft, index, { args: splitSettingList(event.target.value) })}
                   />
                   <input
-                    placeholder="Transport"
+                    placeholder="传输方式"
                     value={server.transport ?? ""}
                     onChange={(event) => updateMcpServer(setDraft, index, { transport: event.target.value })}
                   />
@@ -770,13 +770,13 @@ export function SettingsPanel({
                       checked={server.enabled}
                       onChange={(event) => updateMcpServer(setDraft, index, { enabled: event.target.checked })}
                     />
-                    <span>Enabled</span>
+                    <span>启用</span>
                   </label>
                   <button
                     type="button"
                     className="button button--ghost"
                     onClick={() => removeMcpServer(setDraft, index)}
-                    aria-label="Remove tool connection"
+                    aria-label="删除工具连接"
                   >
                     <Trash2 size={14} aria-hidden="true" />
                   </button>
@@ -785,7 +785,7 @@ export function SettingsPanel({
             </ul>
             <button type="button" className="button button--ghost" onClick={() => addMcpServer(setDraft)}>
               <Plus size={14} aria-hidden="true" />
-              Add tool connection
+              添加工具连接
             </button>
           </fieldset>
 
@@ -800,39 +800,39 @@ export function SettingsPanel({
           />
 
           <fieldset className="mcp-servers">
-            <legend>Runtime controls</legend>
+            <legend>运行控制</legend>
             <div className="button-row">
               <button className="button button--secondary" onClick={() => void onStartBackend()}>
                 <Play size={16} aria-hidden="true" />
-                Start
+                启动
               </button>
               <button className="button button--secondary" onClick={() => void onStopBackend()}>
                 <Square size={16} aria-hidden="true" />
-                Stop
+                停止
               </button>
             </div>
           </fieldset>
 
           <div className="mobile-pairing">
             <div className="mobile-pairing__copy">
-              <strong>Phone pairing</strong>
-              <span>Enter the server address and one-time pairing code in the Android companion app.</span>
+              <strong>手机配对</strong>
+              <span>在 Android 伴侣应用中输入服务器地址和一次性配对码。</span>
               {pairing ? (
                 <small>
-                  Server: http://{pairing.server.host}:{pairing.server.port} · expires {new Date(pairing.expires_at).toLocaleTimeString()}
+                  服务器：http://{pairing.server.host}:{pairing.server.port} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
                 </small>
               ) : null}
               {pairedDevices.length ? (
-                <small>Paired: {pairedDevices.map((device) => device.device_name || device.device_id).join(", ")}</small>
+                <small>已配对：{pairedDevices.map((device) => device.device_name || device.device_id).join(", ")}</small>
               ) : (
-                <small>No paired devices.</small>
+                <small>暂无已配对设备。</small>
               )}
               {pairingError ? <small className="mobile-pairing__error">{pairingError}</small> : null}
             </div>
             <PairingVisualCode code={pairing?.code} />
             <button className="button button--secondary" onClick={() => void createPairingCode()} disabled={isPairing} type="button">
               {isPairing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <KeyRound size={16} aria-hidden="true" />}
-              Generate pairing code
+              生成配对码
             </button>
           </div>
         </details>
@@ -840,7 +840,7 @@ export function SettingsPanel({
         <div className="button-row settings-grid__full">
           <button className="button button--primary" onClick={() => void save()} disabled={isSaving}>
             <Save size={16} aria-hidden="true" />
-            {isSaving ? "Saving" : "Save settings"}
+            {isSaving ? "保存中" : "保存设置"}
           </button>
           {saveError ? <span className="field-error" role="alert">{saveError}</span> : null}
         </div>
@@ -1043,9 +1043,9 @@ function LocalModelInstaller({
     <div className="local-model-installer">
       <div className="local-model-installer__head">
         <div className="local-model-installer__copy">
-          <strong>Local AI setup</strong>
+          <strong>本地 AI 设置</strong>
           <span>
-            Mavris checks this computer first, then installs Ollama and a local model when it is ready.
+            Mavris 会先检查这台电脑，条件满足后安装 Ollama 和本地模型。
           </span>
         </div>
         <Badge tone={tone}>{zhInstallModelStatus(status, socketStatus)}</Badge>
@@ -1121,7 +1121,7 @@ function LocalModelReadinessView({ readiness }: { readiness: LocalModelReadiness
         {readiness.checks.map((check) => (
           <span key={check.key} className={check.ok ? "local-model-readiness__check local-model-readiness__check--ok" : "local-model-readiness__check local-model-readiness__check--blocked"}>
             <strong>{check.label}</strong>
-            {check.actual} / needs {check.required}
+            {check.actual} / 需要 {check.required}
           </span>
         ))}
       </div>
@@ -1278,7 +1278,7 @@ function LocalLlmHealthNotice({ health }: { health: LocalLLMHealth | null }) {
   const detail = backend
     ? `${backend.kind}${backend.model ? ` · ${backend.model}` : ""}`
     : health?.error || "正在检查本地 AI。";
-  const probes = health?.probeOrder.length ? `Checked: ${health.probeOrder.join(" -> ")}` : "Checked: Ollama -> LM Studio -> llama.cpp";
+  const probesText = health?.probeOrder.length ? `已检查：${health.probeOrder.join(" -> ")}` : "已检查：Ollama -> LM Studio -> llama.cpp";
 
   return (
     <div
@@ -1289,9 +1289,9 @@ function LocalLlmHealthNotice({ health }: { health: LocalLLMHealth | null }) {
     >
       <span className="local-llm-status__dot" aria-hidden="true" />
       <span>
-        <strong>{health?.available ? "Local AI is ready" : health ? "Local AI needs setup" : "Checking local AI"}</strong>
-        <small>{health?.available ? detail : `${detail} Private mode will wait until local AI is available.`}</small>
-        <small>{probes}</small>
+        <strong>{health?.available ? "本地 AI 已就绪" : health ? "本地 AI 需要配置" : "正在检查本地 AI"}</strong>
+        <small>{health?.available ? detail : `${detail} 隐私模式会等待本地 AI 可用后再继续。`}</small>
+        <small>{probesText}</small>
       </span>
       {health && !health.available ? <OllamaSetup /> : null}
     </div>
@@ -1339,22 +1339,22 @@ function HardwareAccelerationCard({
   const runSmoke = useCallback(async (operation: HardwareAccelerationSmokePayload["operation"]) => {
     setRunningOperation(operation);
     setSmokeError("");
-    onSmokeStatusChange(`Running ${hardwareSmokeLabel(operation)}...`);
+    onSmokeStatusChange(`正在运行 ${hardwareSmokeLabel(operation)}...`);
     const response = await api.runHardwareAccelerationSmoke({
       operation,
-      prompt: "Say hello from Mavris hardware acceleration.",
+      prompt: "用中文说一句来自 Mavris 硬件加速的问候。",
       maxTokens: 16,
-      texts: ["Mavris local embedding smoke test."],
+      texts: ["Mavris 本地向量模型冒烟测试。"],
       modelPath: status?.modelPath
     });
     if (response.ok && response.data) {
       onSmokeChange(response.data);
-      onSmokeStatusChange(response.data.ok ? `${hardwareSmokeLabel(operation)} ready.` : response.data.error ?? "Smoke unavailable.");
+      onSmokeStatusChange(response.data.ok ? `${hardwareSmokeLabel(operation)} 就绪。` : response.data.error ?? "冒烟测试不可用。");
       if (response.data.error) {
         setSmokeError(response.data.error);
       }
     } else {
-      const message = response.error?.message ?? "Hardware smoke failed.";
+      const message = response.error?.message ?? "硬件冒烟测试失败。";
       setSmokeError(message);
       onSmokeStatusChange(message);
     }
@@ -1368,19 +1368,19 @@ function HardwareAccelerationCard({
     <div className="hardware-acceleration">
       <div className="hardware-acceleration__head">
         <div className="hardware-acceleration__copy">
-          <strong>Hardware acceleration</strong>
-          <span>WinML, DirectML, OpenVINO, OCR, embeddings, and ONNX GenAI status.</span>
+          <strong>硬件加速</strong>
+          <span>WinML、DirectML、OpenVINO、OCR、向量模型和 ONNX GenAI 状态。</span>
         </div>
-        <Badge tone={statusTone}>{status?.available ? "Ready" : error ? "Error" : loading ? "Checking" : "Missing"}</Badge>
+        <Badge tone={statusTone}>{status?.available ? "就绪" : error ? "错误" : loading ? "检查中" : "缺失"}</Badge>
       </div>
       <div className="settings-grid settings-grid--balanced">
         <label className="field">
-          <span>Runtime selector</span>
+          <span>运行时选择</span>
           <select
             value={runtime}
             onChange={(event) => onRuntimeChange(providerToRuntime(event.target.value))}
           >
-            <option value="auto">Auto</option>
+            <option value="auto">自动</option>
             <option value="winml">WinML</option>
             <option value="directml">DirectML</option>
             <option value="openvino">OpenVINO</option>
@@ -1388,15 +1388,15 @@ function HardwareAccelerationCard({
           </select>
         </label>
         <label className="field">
-          <span>Configured provider</span>
+          <span>已配置提供方</span>
           <input value={status?.configuredProvider ?? status?.executionProvider ?? ""} readOnly />
         </label>
         <label className="field">
-          <span>Model path</span>
+          <span>模型路径</span>
           <input value={status?.modelPath ?? ""} readOnly />
         </label>
         <label className="field">
-          <span>Runtime package</span>
+          <span>运行时包</span>
           <input value={status?.runtimePackage ?? status?.generationRuntime ?? ""} readOnly />
         </label>
       </div>
@@ -1404,15 +1404,15 @@ function HardwareAccelerationCard({
         {checks.map((check) => (
           <span key={check.key} className={`hardware-check hardware-check--${check.status}`}>
             <strong>{check.label}</strong>
-            <small>{check.details ?? check.actual ?? check.required ?? "Unavailable"}</small>
+            <small>{check.details ?? check.actual ?? check.required ?? "不可用"}</small>
           </span>
         ))}
       </div>
       {status?.errors?.length || smokeError || smokeStatus ? (
         <div className="settings-status-grid">
-          {status?.errors?.length ? <p className="muted">Status: {status.errors.join(" | ")}</p> : null}
-          {smokeStatus ? <p className="muted">Smoke: {smokeStatus}</p> : null}
-          {smoke?.dim ? <p className="muted">Vector dim: {smoke.dim}</p> : null}
+          {status?.errors?.length ? <p className="muted">状态：{status.errors.join(" | ")}</p> : null}
+          {smokeStatus ? <p className="muted">冒烟测试：{smokeStatus}</p> : null}
+          {smoke?.dim ? <p className="muted">向量维度：{smoke.dim}</p> : null}
           {smokeError ? <p className="muted settings-status--error">{smokeError}</p> : null}
         </div>
       ) : null}
@@ -1449,7 +1449,7 @@ function buildHardwareChecks(
       key: "winml",
       label: "WinML",
       status: status?.winml?.available ? "ready" : status?.available ? "missing" : "missing",
-      details: status?.winml?.providerAvailable ? "Provider available" : "Provider missing",
+      details: status?.winml?.providerAvailable ? "提供方可用" : "提供方缺失",
       actual: status?.winml?.packages?.join(", "),
       required: "onnxruntime_genai_winml"
     },
@@ -1457,19 +1457,19 @@ function buildHardwareChecks(
       key: "llm",
       label: "LLM",
       status: baseStatus,
-      details: provider ? `${status?.kind ?? "onnx"} / ${provider}` : "Not ready",
+      details: provider ? `${status?.kind ?? "onnx"} / ${provider}` : "未就绪",
       actual: provider,
-      required: status?.configuredProvider ?? "Auto"
+      required: status?.configuredProvider ?? "自动"
     },
     {
       key: "text-embedding",
-      label: "Text embedding",
+      label: "文本向量",
       status: textEmbeddingStatus,
       details: status?.textEmbedding?.selectedProvider || status?.textEmbedding?.error || settings.onnxEmbeddingModelId
     },
     {
       key: "image-embedding",
-      label: "Image embedding",
+      label: "图像向量",
       status: imageEmbeddingStatus,
       details: status?.imageEmbedding?.selectedProvider || status?.imageEmbedding?.error || settings.onnxImageEmbeddingModelId
     },
@@ -1477,7 +1477,7 @@ function buildHardwareChecks(
       key: "ocr",
       label: "OCR",
       status: status?.ocr?.error ? ocrStatus : status?.errors?.length ? "error" : ocrStatus,
-      details: status?.ocr?.selectedProvider || status?.ocr?.error || error || settings.ocrLang || "Not checked"
+      details: status?.ocr?.selectedProvider || status?.ocr?.error || error || settings.ocrLang || "未检查"
     }
   ];
 }
@@ -1492,11 +1492,11 @@ function componentStatus(
 }
 
 function hardwareSmokeLabel(operation: HardwareAccelerationSmokePayload["operation"]): string {
-  if (operation === "test_generate") return "Test LLM";
-  if (operation === "test_embedding") return "Test text";
-  if (operation === "test_ocr") return "Test OCR";
-  if (operation === "test_image_embedding") return "Test image";
-  return "Warm up";
+  if (operation === "test_generate") return "测试 LLM";
+  if (operation === "test_embedding") return "测试文本";
+  if (operation === "test_ocr") return "测试 OCR";
+  if (operation === "test_image_embedding") return "测试图像";
+  return "预热";
 }
 
 function OllamaSetup() {
@@ -1600,7 +1600,7 @@ function OllamaSetup() {
           <strong>Ollama 未安装</strong>
         </div>
         <p>
-          Private mode needs a local AI app. Use the button below to install Ollama automatically.
+          隐私模式需要本地 AI 应用。可使用下方按钮自动安装 Ollama。
         </p>
         {error ? <p className="ollama-setup__error">{error}</p> : null}
         <button
@@ -1674,7 +1674,7 @@ function OllamaSetup() {
     <div className="ollama-setup ollama-setup--ready">
       <div className="ollama-setup__head">
         <CheckCircle2 className="ollama-setup__icon ollama-setup__icon--success" size={14} />
-        <strong>Local AI is ready</strong>
+        <strong>本地 AI 已就绪</strong>
       </div>
       <p className="ollama-setup__meta">
         已安装模型：{ollamaStatus.models.join("、")}
@@ -1734,22 +1734,22 @@ function PermissionPolicyEditor({
 }: PermissionPolicyEditorProps) {
   return (
     <fieldset className="mcp-servers">
-      <legend>Permission Policy</legend>
+      <legend>权限策略</legend>
       <div className="settings-grid settings-grid--balanced">
         <label className="field">
-          <span>Effect</span>
+          <span>规则效果</span>
           <select
             value={draft.effect}
             onChange={(event) =>
               onDraftChange((current) => ({ ...current, effect: event.target.value as PermissionEffect }))
             }
           >
-            <option value="deny">Deny</option>
-            <option value="allow">Allow</option>
+            <option value="deny">拒绝</option>
+            <option value="allow">允许</option>
           </select>
         </label>
         <label className="field">
-          <span>Tool</span>
+          <span>工具</span>
           <input
             value={draft.tool}
             onChange={(event) => onDraftChange((current) => ({ ...current, tool: event.target.value }))}
@@ -1757,7 +1757,7 @@ function PermissionPolicyEditor({
           />
         </label>
         <label className="field">
-          <span>Path pattern</span>
+          <span>路径模式</span>
           <input
             value={draft.pathPattern}
             onChange={(event) => onDraftChange((current) => ({ ...current, pathPattern: event.target.value }))}
@@ -1765,15 +1765,15 @@ function PermissionPolicyEditor({
           />
         </label>
         <label className="field">
-          <span>Days</span>
+          <span>日期</span>
           <input
             value={draft.days}
             onChange={(event) => onDraftChange((current) => ({ ...current, days: event.target.value }))}
-            placeholder="weekend"
+            placeholder="weekend 或 0,1,2"
           />
         </label>
         <label className="field">
-          <span>Start</span>
+          <span>开始时间</span>
           <input
             type="time"
             value={draft.start}
@@ -1781,7 +1781,7 @@ function PermissionPolicyEditor({
           />
         </label>
         <label className="field">
-          <span>End</span>
+          <span>结束时间</span>
           <input
             type="time"
             value={draft.end}
@@ -1789,7 +1789,7 @@ function PermissionPolicyEditor({
           />
         </label>
         <label className="field">
-          <span>Timezone</span>
+          <span>时区</span>
           <input
             value={draft.timezone}
             onChange={(event) => onDraftChange((current) => ({ ...current, timezone: event.target.value }))}
@@ -1797,7 +1797,7 @@ function PermissionPolicyEditor({
           />
         </label>
         <label className="field">
-          <span>Reason</span>
+          <span>原因</span>
           <input
             value={draft.reason}
             onChange={(event) => onDraftChange((current) => ({ ...current, reason: event.target.value }))}
@@ -1807,26 +1807,26 @@ function PermissionPolicyEditor({
       <div className="button-row">
         <button className="button button--primary" onClick={onSave} disabled={isSaving} type="button">
           <ShieldCheck size={16} aria-hidden="true" />
-          {isSaving ? "Saving" : "Save Rule"}
+          {isSaving ? "保存中" : "保存规则"}
         </button>
         {status ? <span className="muted">{status}</span> : null}
       </div>
       {policy.rules.length === 0 ? (
-        <p className="muted">No permission rules configured.</p>
+        <p className="muted">尚未配置权限规则。</p>
       ) : (
         <ul className="mcp-servers__list">
           {policy.rules.map((rule) => (
             <li className="mcp-servers__row" key={rule.id}>
               <span>
-                {rule.enabled ? "" : "[disabled] "}
-                {rule.effect.toUpperCase()} {rule.tools.join(", ") || "*"} on {rule.pathPatterns.join(", ") || "*"}
-                {rule.timeWindows.length ? ` during ${rule.timeWindows.map(formatTimeWindow).join("; ")}` : ""}
+                {rule.enabled ? "" : "[已禁用] "}
+                {rule.effect === "allow" ? "允许" : "拒绝"} {rule.tools.join(", ") || "*"} 作用于 {rule.pathPatterns.join(", ") || "*"}
+                {rule.timeWindows.length ? `，时间：${rule.timeWindows.map(formatTimeWindow).join("; ")}` : ""}
               </span>
               <button
                 type="button"
                 className="button button--ghost"
                 onClick={() => onDelete(rule.id)}
-                aria-label={`Remove permission rule ${rule.id}`}
+                aria-label={`删除权限规则 ${rule.id}`}
               >
                 <Trash2 size={14} aria-hidden="true" />
               </button>
@@ -1919,7 +1919,7 @@ const PERMISSION_DAY_NAMES: Record<string, number> = {
 };
 
 function formatTimeWindow(window: PermissionTimeWindow): string {
-  const days = window.days.length ? window.days.join(",") : "all days";
+  const days = window.days.length ? window.days.join(",") : "每天";
   return `${days} ${window.start}-${window.end}${window.timezone ? ` ${window.timezone}` : ""}`;
 }
 

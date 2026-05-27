@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { ArrowLeft, Monitor, Pause, Play, RefreshCcw, Wifi, WifiOff } from "lucide-react-native";
 
-import { remoteScreenWebSocketUrl, type PairingSession, type RemoteScreenEvent } from "../api/client";
+import { mobileAuthWebSocketProtocols, remoteScreenWebSocketUrl, type PairingSession, type RemoteScreenEvent } from "../api/client";
 import { shortDate } from "../format";
 
 type ConnectionState = "offline" | "connecting" | "online" | "paused";
@@ -31,7 +31,6 @@ export function RemoteScreen({
 }: {
   session: PairingSession;
   onBack: () => void;
-  onSessionExpired: () => void;
 }) {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [frame, setFrame] = useState<ScreenFrame | null>(null);
@@ -49,7 +48,7 @@ export function RemoteScreen({
     setConnection("connecting");
     setError("");
 
-    const socket = new WebSocket(remoteScreenWebSocketUrl(session));
+    const socket = new WebSocket(remoteScreenWebSocketUrl(session), mobileAuthWebSocketProtocols(session));
     socketRef.current = socket;
 
     socket.onopen = () => {
@@ -79,17 +78,17 @@ export function RemoteScreen({
           setError(readableStreamError(payload.message));
         }
       } catch {
-        setError("The screen view sent something this phone could not read. Tap retry to reconnect.");
+        setError("屏幕画面数据无法读取。请点击重试重新连接。");
       }
     };
 
     socket.onerror = () => {
-      setError("Can't show the screen right now. Make sure Mavris is open, then tap retry.");
+      setError("暂时无法显示屏幕。请确认 Mavris 已打开，然后点重试。");
     };
 
     socket.onclose = (event) => {
       if (event.code === 1008) {
-        setError("This screen view stopped working. Your phone is still connected for approvals.");
+        setError("此手机暂不可查看屏幕。审批配对仍保持连接。");
         setConnection("offline");
         return;
       }
@@ -124,8 +123,8 @@ export function RemoteScreen({
           <ArrowLeft size={20} color="#f7faf8" />
         </Pressable>
         <View style={styles.headerText}>
-          <Text style={styles.kicker}>View only</Text>
-          <Text style={styles.headerTitle}>Computer screen</Text>
+          <Text style={styles.kicker}>仅查看</Text>
+          <Text style={styles.headerTitle}>电脑屏幕</Text>
         </View>
         <Pressable onPress={handleToggleStream} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
           {online || connection === "connecting" ? <Pause size={20} color="#f7faf8" /> : <Play size={20} color="#f7faf8" />}
@@ -135,7 +134,7 @@ export function RemoteScreen({
       <View style={styles.statusRow}>
         {online ? <Wifi size={16} color="#75d39a" /> : <WifiOff size={16} color="#ffcf72" />}
         <Text style={styles.statusText}>{statusText(connection)}</Text>
-        {streamMeta.fps ? <Text style={styles.statusMeta}>Low-bandwidth view</Text> : null}
+        {streamMeta.fps ? <Text style={styles.statusMeta}>低带宽模式</Text> : null}
       </View>
 
       <View style={styles.viewer}>
@@ -144,8 +143,8 @@ export function RemoteScreen({
         ) : (
           <View style={styles.emptyFrame}>
             {showLoading ? <ActivityIndicator color="#75d39a" /> : <Monitor size={42} color="#93a2ad" />}
-            <Text style={styles.emptyTitle}>{showLoading ? "Connecting to your computer" : "Waiting for the screen"}</Text>
-            <Text style={styles.emptyText}>You can see the computer here when screen sharing is available.</Text>
+            <Text style={styles.emptyTitle}>{showLoading ? "正在连接电脑" : "等待屏幕画面"}</Text>
+            <Text style={styles.emptyText}>屏幕共享可用时，你可以在这里查看电脑画面。</Text>
           </View>
         )}
       </View>
@@ -155,13 +154,13 @@ export function RemoteScreen({
         {canRetry ? (
           <Pressable onPress={connect} style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
             <RefreshCcw size={16} color="#17222b" />
-            <Text style={styles.retryButtonText}>Retry screen view</Text>
+            <Text style={styles.retryButtonText}>重试屏幕查看</Text>
           </Pressable>
         ) : null}
         <Text style={styles.footerText}>
           {frame
-            ? `Last updated ${shortDate(frame.timestamp)}. View only.`
-            : "View only. You can't control the computer from this screen."}
+            ? `最后更新于 ${shortDate(frame.timestamp)}。仅查看。`
+            : "当前仅查看，不能从此页面控制电脑。"}
         </Text>
       </View>
     </SafeAreaView>
@@ -169,15 +168,15 @@ export function RemoteScreen({
 }
 
 function statusText(connection: ConnectionState): string {
-  if (connection === "online") return "Live";
-  if (connection === "connecting") return "Connecting";
-  if (connection === "paused") return "Paused";
-  return "Offline";
+  if (connection === "online") return "实时";
+  if (connection === "connecting") return "连接中";
+  if (connection === "paused") return "已暂停";
+  return "离线";
 }
 
 function readableStreamError(message: string): string {
-  if (!message.trim()) return "Can't show the screen right now. Tap retry to reconnect.";
-  return "Can't show the screen right now. Tap retry to reconnect.";
+  if (!message.trim()) return "暂时无法显示屏幕。请点重试重新连接。";
+  return "暂时无法显示屏幕。请点重试重新连接。";
 }
 
 const styles = StyleSheet.create({

@@ -40,9 +40,52 @@ interface HostedBrowserSession {
   cssKey?: string;
 }
 
+type BrowserHostIpcRegistrar = {
+  handle: (channel: string, listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown) => void;
+};
+
+type BrowserHostIpcTarget = Pick<
+  BrowserHost,
+  | "getSnapshot"
+  | "open"
+  | "show"
+  | "hide"
+  | "setBounds"
+  | "pause"
+  | "resume"
+  | "takeover"
+  | "release"
+  | "stop"
+  | "performAction"
+>;
+
 const DEFAULT_HOME_URL = "about:blank";
 const MAX_EVENTS_PER_SESSION = 300;
 const MIN_BROWSER_SIZE = 80;
+const SENSITIVE_QUERY_KEY_NAMES = [
+  "access_token",
+  "api_key",
+  "apikey",
+  "auth",
+  "auth_token",
+  "authorization",
+  "client_secret",
+  "code",
+  "cookie",
+  "id_token",
+  "jwt",
+  "key",
+  "oauth_token",
+  "password",
+  "refresh_token",
+  "secret",
+  "session",
+  "session_id",
+  "token"
+] as const;
+const SENSITIVE_QUERY_KEYS = new Set<string>(SENSITIVE_QUERY_KEY_NAMES);
+const SENSITIVE_URL_PARAM_REGEX = new RegExp(`([?&#](?:${SENSITIVE_QUERY_KEY_NAMES.join("|")})=)[^&#\\s"'<>]+`, "gi");
+const URL_IN_TEXT_REGEX = /\b(?:https?:\/\/|file:\/\/|app:\/\/)[^\s"'<>]+/gi;
 
 export class BrowserHost {
   private sessions = new Map<string, HostedBrowserSession>();
@@ -54,49 +97,9 @@ export class BrowserHost {
   constructor(private readonly getMainWindow: () => BrowserWindow | null) {}
 
   registerIpcHandlers(): void {
-    ipcMain.handle(IPC_CHANNELS.browserHostSnapshot, (event) => {
-      assertBrowserHostRenderer(event);
-      return this.getSnapshot();
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostOpen, async (event, request: BrowserHostOpenRequest) => {
-      assertBrowserHostRenderer(event);
-      return this.open(request);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostShow, (event, sessionId: string) => {
-      assertBrowserHostRenderer(event);
-      return this.show(sessionId);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostHide, (event) => {
-      assertBrowserHostRenderer(event);
-      return this.hide();
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostSetBounds, (event, bounds: BrowserHostBounds) => {
-      assertBrowserHostRenderer(event);
-      return this.setBounds(bounds);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostPause, (event, sessionId: string) => {
-      assertBrowserHostRenderer(event);
-      return this.pause(sessionId);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostResume, (event, sessionId: string) => {
-      assertBrowserHostRenderer(event);
-      return this.resume(sessionId);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostTakeover, (event, sessionId: string) => {
-      assertBrowserHostRenderer(event);
-      return this.takeover(sessionId);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostRelease, (event, sessionId: string) => {
-      assertBrowserHostRenderer(event);
-      return this.release(sessionId);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostStop, (event, sessionId: string) => {
-      assertBrowserHostRenderer(event);
-      return this.stop(sessionId);
-    });
-    ipcMain.handle(IPC_CHANNELS.browserHostAction, async (event, request: BrowserHostActionRequest) => {
-      assertBrowserHostRenderer(event);
-      return this.performAction(request.sessionId, request.action);
+    registerBrowserHostIpcHandlers({
+      handle: (channel, listener) => ipcMain.handle(channel, listener),
+      host: this
     });
   }
 
@@ -116,9 +119,10 @@ export class BrowserHost {
 
   getSnapshot(): BrowserHostSnapshot {
     return {
-      sessions: [...this.sessions.values()].map((entry) => ({ ...entry.session })),
+      sessions: [...this.sessions.values()].map((entry) => sanitizeSessionForRenderer(entry.session)),
       events: [...this.sessions.values()]
         .flatMap((entry) => entry.events)
+        .map(sanitizeEventForRenderer)
         .sort((a, b) => b.created_at.localeCompare(a.created_at)),
       activeSessionId: this.activeSessionId,
       visible: this.visible,
@@ -263,8 +267,8 @@ export class BrowserHost {
     this.emitSnapshot();
     return {
       ok: true,
-      session: { ...entry.session, status: "stopped", updated_at: timestamp() },
-      event,
+      session: sanitizeSessionForRenderer({ ...entry.session, status: "stopped", updated_at: timestamp() }),
+      event: sanitizeEventForRenderer(event),
       snapshot: this.getSnapshot()
     };
   }
@@ -515,8 +519,8 @@ export class BrowserHost {
   private ok(entry: HostedBrowserSession, event?: BrowserActivityEvent): BrowserHostActionResult {
     return {
       ok: true,
-      session: { ...entry.session },
-      event,
+      session: sanitizeSessionForRenderer(entry.session),
+      event: event ? sanitizeEventForRenderer(event) : undefined,
       snapshot: this.getSnapshot()
     };
   }
@@ -524,8 +528,8 @@ export class BrowserHost {
   private fail(message: string, entry?: HostedBrowserSession, event?: BrowserActivityEvent): BrowserHostActionResult {
     return {
       ok: false,
-      session: entry ? { ...entry.session } : undefined,
-      event,
+      session: entry ? sanitizeSessionForRenderer(entry.session) : undefined,
+      event: event ? sanitizeEventForRenderer(event) : undefined,
       snapshot: this.getSnapshot(),
       error: message
     };
@@ -600,6 +604,57 @@ export class BrowserHost {
     if (!window || window.isDestroyed()) return;
     window.webContents.send(IPC_CHANNELS.browserHostSnapshotChanged, snapshot);
   }
+}
+
+export function registerBrowserHostIpcHandlers({
+  handle,
+  host
+}: BrowserHostIpcRegistrar & { host: BrowserHostIpcTarget }): void {
+  handle(IPC_CHANNELS.browserHostSnapshot, (event) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeSnapshotForRenderer(host.getSnapshot());
+  });
+  handle(IPC_CHANNELS.browserHostOpen, async (event, request) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(await host.open(request as BrowserHostOpenRequest));
+  });
+  handle(IPC_CHANNELS.browserHostShow, (event, sessionId) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(host.show(String(sessionId)));
+  });
+  handle(IPC_CHANNELS.browserHostHide, (event) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(host.hide());
+  });
+  handle(IPC_CHANNELS.browserHostSetBounds, (event, bounds) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(host.setBounds(bounds as BrowserHostBounds));
+  });
+  handle(IPC_CHANNELS.browserHostPause, (event, sessionId) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(host.pause(String(sessionId)));
+  });
+  handle(IPC_CHANNELS.browserHostResume, (event, sessionId) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(host.resume(String(sessionId)));
+  });
+  handle(IPC_CHANNELS.browserHostTakeover, (event, sessionId) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(host.takeover(String(sessionId)));
+  });
+  handle(IPC_CHANNELS.browserHostRelease, (event, sessionId) => {
+    assertBrowserHostRenderer(event);
+    return sanitizeActionResultForRenderer(host.release(String(sessionId)));
+  });
+  handle(IPC_CHANNELS.browserHostStop, (event, sessionId) => {
+    assertBrowserHostRenderer(event);
+    return Promise.resolve(host.stop(String(sessionId))).then(sanitizeActionResultForRenderer);
+  });
+  handle(IPC_CHANNELS.browserHostAction, async (event, request) => {
+    assertBrowserHostRenderer(event);
+    const actionRequest = request as BrowserHostActionRequest;
+    return sanitizeActionResultForRenderer(await host.performAction(actionRequest.sessionId, actionRequest.action));
+  });
 }
 
 export class BrowserHostWebSocketBridge {
@@ -710,6 +765,7 @@ export class BrowserHostWebSocketBridge {
         result = { ok: true, snapshot: this.browserHost.getSnapshot() };
         break;
     }
+    result = sanitizeActionResultForRenderer(result);
 
     this.send({
       type: "result",
@@ -797,6 +853,141 @@ function normalizeBounds(bounds: BrowserHostBounds): BrowserHostBounds {
     width: Math.max(MIN_BROWSER_SIZE, Math.round(bounds.width)),
     height: Math.max(MIN_BROWSER_SIZE, Math.round(bounds.height))
   };
+}
+
+function sanitizeSessionForRenderer(session: BrowserSession): BrowserSession {
+  return {
+    ...session,
+    current_url: redactUrl(session.current_url),
+    last_observation: sanitizeObservationForRenderer(session.last_observation)
+  };
+}
+
+function sanitizeEventForRenderer(event: BrowserActivityEvent): BrowserActivityEvent {
+  return {
+    ...event,
+    action: sanitizeActionForRenderer(event.action),
+    url: redactUrl(event.url),
+    screenshot_url: event.screenshot_url ? "[redacted:screenshot]" : undefined,
+    error: event.error ? redactSensitiveText(event.error) : undefined
+  };
+}
+
+function sanitizeActionForRenderer(action: BrowserAction | undefined): BrowserAction | undefined {
+  if (!action) return undefined;
+  const sanitized: BrowserAction = { ...action };
+  if (typeof sanitized.url === "string") {
+    sanitized.url = redactUrl(sanitized.url);
+  }
+  if (typeof sanitized.selector === "string") {
+    sanitized.selector = "[redacted]";
+  }
+  if (typeof sanitized.text === "string") {
+    sanitized.text = "[redacted]";
+  }
+  if (sanitized.fields && Object.keys(sanitized.fields).length) {
+    sanitized.fields = Object.fromEntries(
+      Object.entries(sanitized.fields).map(([key, value], index) => [
+        `field_${index + 1}`,
+        typeof value === "string" ? "[redacted]" : value
+      ])
+    ) as Record<string, string>;
+  }
+  return sanitized;
+}
+
+function sanitizeActionResultForRenderer(result: BrowserHostActionResult): BrowserHostActionResult {
+  return {
+    ...result,
+    session: result.session ? sanitizeSessionForRenderer(result.session) : undefined,
+    event: result.event ? sanitizeEventForRenderer(result.event) : undefined,
+    snapshot: result.snapshot ? sanitizeSnapshotForRenderer(result.snapshot) : undefined,
+    error: result.error ? redactSensitiveText(result.error) : undefined
+  };
+}
+
+function sanitizeSnapshotForRenderer(snapshot: BrowserHostSnapshot): BrowserHostSnapshot {
+  return {
+    ...snapshot,
+    sessions: snapshot.sessions.map(sanitizeSessionForRenderer),
+    events: snapshot.events.map(sanitizeEventForRenderer)
+  };
+}
+
+function sanitizeObservationForRenderer(value: BrowserSession["last_observation"]): BrowserSession["last_observation"] {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return sanitizeRecordForRenderer(value);
+}
+
+function sanitizeRecordForRenderer(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      const lowered = key.toLowerCase();
+      if (typeof item === "string") {
+        if (lowered === "url" || lowered.endsWith("_url") || lowered === "href") {
+          return [key, redactUrl(item)];
+        }
+        if (lowered === "text" || lowered.endsWith("_text")) {
+          return [key, item ? "[redacted:text]" : ""];
+        }
+        if (SENSITIVE_QUERY_KEYS.has(lowered)) {
+          return [key, "[redacted]"];
+        }
+        return [key, redactSensitiveText(item)];
+      }
+      if (Array.isArray(item)) {
+        return [key, item.map((child) => (child && typeof child === "object" ? sanitizeRecordForRenderer(child as Record<string, unknown>) : child))];
+      }
+      if (item && typeof item === "object") {
+        return [key, sanitizeRecordForRenderer(item as Record<string, unknown>)];
+      }
+      return [key, item];
+    })
+  );
+}
+
+function redactUrl(value: string): string;
+function redactUrl(value: undefined): undefined;
+function redactUrl(value: string | undefined): string | undefined;
+function redactUrl(value: string | undefined): string | undefined {
+  if (!value) return value;
+  try {
+    const parsed = new URL(value);
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
+        parsed.searchParams.set(key, "[redacted]");
+      }
+    }
+    parsed.hash = redactUrlFragment(parsed.hash);
+    if (parsed.username) parsed.username = "[redacted]";
+    if (parsed.password) parsed.password = "[redacted]";
+    return parsed.toString();
+  } catch {
+    return value.replace(SENSITIVE_URL_PARAM_REGEX, "$1[redacted]");
+  }
+}
+
+function redactUrlFragment(hash: string): string {
+  if (!hash) return hash;
+  return hash.replace(SENSITIVE_URL_PARAM_REGEX, "$1[redacted]");
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(URL_IN_TEXT_REGEX, (match) => redactUrl(match))
+    .replace(/\b[a-z][\w-]*\[[^\]]*(?:password|token|secret|cookie|session|auth|key)[^\]]*\]/gi, "[redacted]")
+    .replace(/\[[^\]]*(?:password|token|secret|cookie|session|auth|key)[^\]]*\]/gi, "[redacted]")
+    .replace(/#[A-Za-z0-9_-]*(?:password|token|secret|cookie|session|auth|key)[A-Za-z0-9_-]*/gi, "#[redacted]")
+    .replace(/\b(?:token|password|secret|api[_-]?key|authorization|cookie|session|jwt|oauth)[\w.-]*\s*[:=]\s*[^\s"'<>]+/gi, (match) =>
+      match.replace(/([:=]\s*)[^\s"'<>]+/, "$1[redacted]")
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "sk-[redacted]");
 }
 
 function timestamp(): string {
