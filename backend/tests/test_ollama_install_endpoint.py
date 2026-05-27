@@ -30,6 +30,23 @@ def mock_ollama_running(monkeypatch):
     monkeypatch.setattr("app.services.ollama_service.is_running", _running)
 
 
+@pytest.fixture(autouse=True)
+def _mock_ready_hardware(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.ollama_service.hardware_readiness",
+        lambda model=None: {
+            "can_install": True,
+            "recommended_model": model or "test-model",
+            "reason": "ready",
+            "checks": [],
+            "memory_total_bytes": 16 * 1024**3,
+            "disk_free_bytes": 32 * 1024**3,
+            "cpu_logical_cores": 8,
+            "gpu_summary": "",
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_install_local_model_already_installed():
     from app.services import ollama_service
@@ -148,3 +165,16 @@ def test_install_local_model_endpoint():
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
+
+
+def test_local_model_readiness_endpoint():
+    """Test the hardware readiness endpoint used by the desktop setup UI."""
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    resp = client.get("/api/settings/local-model/readiness")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["can_install"] is True
+    assert data["recommended_model"] == "test-model"

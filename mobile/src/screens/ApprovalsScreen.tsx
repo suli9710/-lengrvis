@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { ChevronRight, Monitor, RefreshCcw, ShieldCheck, Unlink } from "lucide-react-native";
+import { BellOff, ChevronRight, RefreshCcw, ShieldCheck, Unlink } from "lucide-react-native";
 import type { ReactNode } from "react";
 
 import {
@@ -24,26 +24,29 @@ import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "..
 import { notifyApproval, requestNotificationPermission } from "../notifications";
 import { clearSession } from "../store/auth";
 
+type ApprovalConnection = "offline" | "connecting" | "online";
+
 export function ApprovalsScreen({
   session,
   onSelectApproval,
-  onOpenRemote,
   onUnpair,
 }: {
   session: PairingSession;
   onSelectApproval: (approval: BackendApproval) => void;
-  onOpenRemote: () => void;
   onUnpair: () => void;
 }) {
   const [approvals, setApprovals] = useState<BackendApproval[]>([]);
-  const [connection, setConnection] = useState<"offline" | "connecting" | "online">("offline");
+  const [connection, setConnection] = useState<ApprovalConnection>("offline");
   const [error, setError] = useState("");
+  const [notificationsOff, setNotificationsOff] = useState(false);
+  const [streamReconnectKey, setStreamReconnectKey] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
 
   const pendingCount = useMemo(
     () => approvals.filter((approval) => approval.status === "pending").length,
     [approvals],
   );
+  const headerTitle = pendingCount === 0 ? "All caught up" : `${pendingCount} waiting`;
 
   const upsertApproval = useCallback((approval: BackendApproval) => {
     setApprovals((current) => {
@@ -79,12 +82,15 @@ export function ApprovalsScreen({
   }, [mergePendingApprovals, session]);
 
   useEffect(() => {
-    void requestNotificationPermission();
+    void requestNotificationPermission()
+      .then((allowed) => setNotificationsOff(!allowed))
+      .catch(() => setNotificationsOff(true));
   }, []);
 
   useEffect(() => {
     let closedByEffect = false;
     setConnection("connecting");
+    setError("");
     void refreshApprovals().catch((currentError: unknown) => {
       if (currentError instanceof AuthExpiredError) {
         handleAuthExpired();
@@ -122,34 +128,40 @@ export function ApprovalsScreen({
     };
 
     socket.onerror = () => {
-      setError("WebSocket connection failed. Check LAN address and backend port.");
+      setError("Can't stay connected to your computer. Make sure Mavris is open, then tap refresh.");
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
+      if (event.code === 1008) {
+        handleAuthExpired();
+        return;
+      }
       if (!closedByEffect) setConnection("offline");
     };
 
     return () => {
       closedByEffect = true;
+      if (socketRef.current === socket) socketRef.current = null;
       socket.close();
     };
-  }, [handleAuthExpired, mergePendingApprovals, refreshApprovals, session, upsertApproval]);
+  }, [handleAuthExpired, mergePendingApprovals, refreshApprovals, session, streamReconnectKey, upsertApproval]);
 
-  const handleUnpair = async () => {
+  const disconnectPhone = async () => {
     socketRef.current?.close();
     socketRef.current = null;
     await clearSession();
     onUnpair();
   };
 
+  const handleUnpair = () => {
+    Alert.alert("Disconnect phone?", "You can connect again later from Mavris on your computer.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Disconnect", onPress: () => void disconnectPhone(), style: "destructive" },
+    ]);
+  };
+
   const handleRefresh = () => {
-    void refreshApprovals().catch((currentError: unknown) => {
-      if (currentError instanceof AuthExpiredError) {
-        handleAuthExpired();
-        return;
-      }
-      Alert.alert("Refresh failed", errorMessage(currentError));
-    });
+    setStreamReconnectKey((current) => current + 1);
   };
 
   return (
@@ -157,32 +169,36 @@ export function ApprovalsScreen({
       <StatusBar barStyle="dark-content" backgroundColor="#f6f4ee" />
       <View style={styles.header}>
         <View>
-          <Text style={styles.kicker}>{connection === "online" ? "Live approval stream" : "Approval companion"}</Text>
-          <Text style={styles.headerTitle}>{pendingCount} pending</Text>
+          <Text style={styles.kicker}>{connection === "online" ? "Connected to computer" : "Trying to connect"}</Text>
+          <Text style={styles.headerTitle}>{headerTitle}</Text>
         </View>
         <View style={styles.headerActions}>
-          <IconButton icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
-          <IconButton icon={<Unlink size={18} color="#8c2f39" />} onPress={() => void handleUnpair()} />
+          <IconButton accessibilityLabel="Refresh requests" icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
+          <IconButton accessibilityLabel="Disconnect phone" icon={<Unlink size={18} color="#8c2f39" />} onPress={handleUnpair} />
         </View>
       </View>
 
       <View style={styles.statusRow}>
         <ShieldCheck size={16} color={connection === "online" ? "#1f7a4d" : "#a46a00"} />
-        <Text style={styles.statusText}>{connection === "online" ? "Connected with JWT" : "Waiting for WebSocket"}</Text>
+        <Text style={styles.statusText}>{connectionStatusText(connection)}</Text>
       </View>
+      {notificationsOff ? (
+        <View style={styles.noticeRow}>
+          <BellOff size={16} color="#7a5700" />
+          <Text style={styles.noticeText}>Phone alerts are off. Leave this open or tap refresh to check for requests.</Text>
+        </View>
+      ) : null}
       {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
 
       <FlatList
-        ListHeaderComponent={<RemoteDesktopCard onPress={onOpenRemote} />}
-        ListHeaderComponentStyle={styles.listHeader}
         contentContainerStyle={approvals.length ? styles.list : styles.emptyList}
         data={approvals}
         keyExtractor={(approval) => approval.id}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <ShieldCheck size={34} color="#5f6b76" />
-            <Text style={styles.emptyTitle}>No approvals waiting</Text>
-            <Text style={styles.emptyText}>New approval gates will appear here and trigger a local notification.</Text>
+            <Text style={styles.emptyTitle}>You're all caught up</Text>
+            <Text style={styles.emptyText}>New requests from your computer will appear here.</Text>
           </View>
         }
         renderItem={({ item }) => <ApprovalCard approval={item} onPress={() => onSelectApproval(item)} />}
@@ -191,51 +207,76 @@ export function ApprovalsScreen({
   );
 }
 
-function RemoteDesktopCard({ onPress }: { onPress: () => void }) {
-  return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.remoteCard, pressed && styles.pressed]}>
-      <View style={styles.remoteIcon}>
-        <Monitor size={22} color="#f7faf8" />
-      </View>
-      <View style={styles.remoteBody}>
-        <Text style={styles.remoteTitle}>Remote desktop view</Text>
-        <Text style={styles.remoteText}>View the paired Windows desktop in real time.</Text>
-      </View>
-      <ChevronRight size={18} color="#65717c" />
-    </Pressable>
-  );
-}
-
 function ApprovalCard({ approval, onPress }: { approval: BackendApproval; onPress: () => void }) {
   const pending = approval.status === "pending";
+  const preview = readablePreview(approval.diff_preview);
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
       <View style={styles.cardHeader}>
         <View style={styles.cardTitleWrap}>
-          <Text style={styles.cardTitle}>{approvalTitle(approval)}</Text>
+          <Text style={styles.cardTitle}>{approvalCardTitle(approval)}</Text>
           <Text style={styles.cardMeta}>{shortDate(approval.created_at)}</Text>
         </View>
         <View style={styles.cardStatus}>
-          <Text style={[styles.badge, pending ? styles.badgePending : styles.badgeDone]}>{approvalStatusLabel(approval.status)}</Text>
+          <Text style={[styles.badge, pending ? styles.badgePending : styles.badgeDone]}>{approvalStatusText(approval)}</Text>
           <ChevronRight size={18} color="#65717c" />
         </View>
       </View>
       <Text style={styles.message}>{approval.message}</Text>
-      <Text numberOfLines={4} style={styles.preview}>{formatPreview(approval.diff_preview)}</Text>
+      <Text numberOfLines={3} style={styles.preview}>{preview}</Text>
     </Pressable>
   );
 }
 
-function IconButton({ icon, onPress }: { icon: ReactNode; onPress: () => void }) {
+function IconButton({
+  accessibilityLabel,
+  icon,
+  onPress,
+}: {
+  accessibilityLabel: string;
+  icon: ReactNode;
+  onPress: () => void;
+}) {
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
+    <Pressable
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+    >
       {icon}
     </Pressable>
   );
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
+  if (error instanceof Error && error.message.includes("Failed to fetch")) {
+    return "Could not reach your computer. Make sure Mavris is open, then tap refresh.";
+  }
+  return "Could not update requests. Tap refresh to try again.";
+}
+
+function connectionStatusText(connection: ApprovalConnection): string {
+  if (connection === "online") return "Connected";
+  if (connection === "connecting") return "Connecting";
+  return "Offline - tap refresh to try again";
+}
+
+function approvalStatusText(approval: BackendApproval): string {
+  if (approval.status === "pending") return "Waiting";
+  return approvalStatusLabel(approval.status);
+}
+
+function approvalCardTitle(approval: BackendApproval): string {
+  if (approval.approval_type === "tool_call") return "Review request";
+  return approvalTitle(approval).replace("Tool Approval", "Review request").replace("Tool approval", "Review request");
+}
+
+function readablePreview(value: unknown): string {
+  const preview = formatPreview(value);
+  if (preview === "No preview payload") return "Open to review the details.";
+  if (preview.trim().startsWith("{") || preview.trim().startsWith("[")) return "Open to review the details.";
+  return preview;
 }
 
 const styles = StyleSheet.create({
@@ -293,6 +334,24 @@ const styles = StyleSheet.create({
     color: "#3a4651",
     fontWeight: "700",
   },
+  noticeRow: {
+    marginHorizontal: 20,
+    marginTop: 8,
+    minHeight: 38,
+    borderRadius: 8,
+    backgroundColor: "#fff8df",
+    borderWidth: 1,
+    borderColor: "#ead89e",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  noticeText: {
+    flex: 1,
+    color: "#5f4a08",
+    lineHeight: 20,
+  },
   errorBanner: {
     marginHorizontal: 20,
     marginTop: 10,
@@ -307,8 +366,8 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: 20,
   },
-  listHeader: {
-    marginBottom: 14,
+  listFooter: {
+    marginTop: 14,
   },
   emptyState: {
     alignItems: "center",
@@ -332,39 +391,6 @@ const styles = StyleSheet.create({
     borderColor: "#d7dedf",
     padding: 16,
     gap: 12,
-  },
-  remoteCard: {
-    minHeight: 82,
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#d7dedf",
-    padding: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  remoteIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 8,
-    backgroundColor: "#17222b",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  remoteBody: {
-    flex: 1,
-    minWidth: 0,
-  },
-  remoteTitle: {
-    color: "#1f2933",
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  remoteText: {
-    color: "#5f6b76",
-    lineHeight: 20,
-    marginTop: 2,
   },
   cardHeader: {
     flexDirection: "row",

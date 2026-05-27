@@ -65,10 +65,78 @@ SENSITIVE_FIELD_NAMES = {
 
 
 BROWSER_WRITE_TOOLS = {
+    "browser.act",
     "browser.click_element",
+    "browser.cua",
+    "browser.cua_run",
     "browser.fill_form",
     "browser.submit_form",
 }
+BROWSER_ACTIVITY_READ_KINDS = {
+    "open",
+    "navigate",
+    "wait",
+    "screenshot",
+    "observe",
+}
+BROWSER_ACTIVITY_MUTATING_KINDS = {
+    "click",
+    "fill",
+    "submit",
+    "scroll",
+    "cua",
+}
+BROWSER_ACTIVITY_TOOL_KIND_MAP = {
+    "browser.act": "observe",
+    "browser.open_url": "open",
+    "browser.navigate": "navigate",
+    "browser.read_page": "observe",
+    "browser.summarize_page": "observe",
+    "browser.extract_links": "observe",
+    "browser.search_web_via_provider": "observe",
+    "browser.screenshot": "screenshot",
+    "browser.wait_for_selector": "wait",
+    "browser.click_element": "click",
+    "browser.fill_form": "fill",
+    "browser.submit_form": "submit",
+    "browser.cua": "cua",
+    "browser.cua_run": "cua",
+}
+BROWSER_ACTIVITY_HANDOFF_TERMS = {
+    "2fa",
+    "authenticator",
+    "checkout",
+    "cookie",
+    "credential",
+    "credentials",
+    "cvv",
+    "delete",
+    "download",
+    "login",
+    "message",
+    "order",
+    "otp",
+    "passcode",
+    "password",
+    "payment",
+    "purchase",
+    "send",
+    "token",
+    "upload",
+    "瀵嗙爜",
+    "鏀粯",
+    "涓嬪崟",
+}
+BROWSER_PROMPT_INJECTION_PATTERNS = {
+    r"ignore\s+(all\s+)?(previous|prior|system|developer)\s+instructions",
+    r"disregard\s+(all\s+)?(previous|prior|system|developer)\s+instructions",
+    r"reveal\s+(the\s+)?(system|developer)\s+prompt",
+    r"send\s+(your\s+)?(cookies|tokens|credentials|api\s*keys)",
+    r"disable\s+(safety|security|policy)",
+    r"you\s+are\s+now\s+(in\s+)?developer\s+mode",
+}
+CLEANUP_READ_TOOLS = {"file.cleanup_scan", "file.cleanup_plan", "file.dedupe_plan"}
+CLEANUP_WRITE_TOOLS = {"file.cleanup_execute", "file.cleanup_rollback"}
 
 FAST_PATH_ALLOWED_EFFECTS = {"read", "observe", "list", "open", "launch", "reveal", "navigate", "search", "inspect"}
 FAST_PATH_FORBIDDEN_EFFECTS = {
@@ -187,7 +255,8 @@ class PolicyEngine:
         context: dict[str, Any] | None = None,
         tool_definition: Any | None = None,
     ) -> SafetyReview:
-        static_risk = max_risk([risk_level, self.classify_tool_name(tool_name)])
+        classified_risk = self.classify_tool_call(tool_name, args)
+        static_risk = classified_risk if tool_name == "browser.act" else max_risk([risk_level, classified_risk])
         permission_decision = self._review_permission_policy(tool_name, args, context)
         if not permission_decision.allowed:
             reason = permission_decision.reason or f"Permission policy denied {tool_name}."
@@ -203,6 +272,10 @@ class PolicyEngine:
                 reasons=[reason],
                 safe_alternative="This action is blocked by your permission policy.",
             )
+
+        cleanup_review = self._review_cleanup_tool_call(task_id, step_id, tool_name, args, static_risk)
+        if cleanup_review is not None:
+            return cleanup_review
 
         cache_context = self._cache_context(args, context, tool_definition)
         cached = tool_decision_cache.get(tool_name, args, context=cache_context)
@@ -414,6 +487,9 @@ class PolicyEngine:
         )
 
     def classify_tool_name(self, tool_name: str) -> RiskLevel:
+        return self.classify_tool_call(tool_name, {})
+
+    def classify_tool_call(self, tool_name: str, args: dict[str, Any] | None = None) -> RiskLevel:
         if tool_name.startswith("mcp."):
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if any(term in tool_name for term in ["password", "cookie", "token", "shell"]):
@@ -426,6 +502,10 @@ class PolicyEngine:
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if tool_name in {"file.trash", "app.uninstall_app", "browser.submit_form"}:
             return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+        if tool_name in CLEANUP_WRITE_TOOLS:
+            return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+        if tool_name in CLEANUP_READ_TOOLS:
+            return RiskLevel.R0_READ_ONLY
         if tool_name in {
             "external.email.send",
             "external.calendar.create_event",
@@ -437,10 +517,18 @@ class PolicyEngine:
         if tool_name == "remote.view_screen":
             return RiskLevel.R1_OPEN_ONLY
         if tool_name in {
+            "browser.cua",
+            "browser.cua_run",
+        }:
+            return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+        if tool_name == "browser.act":
+            return _browser_activity_risk(args)
+        if tool_name in {
             "file.copy",
             "file.move",
             "file.rename",
             "file.write_text",
+            "file.edit_text",
             "file.create_folder",
             "browser.click_element",
             "browser.fill_form",
@@ -692,6 +780,106 @@ class PolicyEngine:
 
         return evaluate_permission_policy(policy, tool_name=tool_name, args=args, context=context, now=now)
 
+    def _review_cleanup_tool_call(
+        self,
+        task_id: str,
+        step_id: str | None,
+        tool_name: str,
+        args: dict[str, Any],
+        static_risk: RiskLevel,
+    ) -> SafetyReview | None:
+        if tool_name not in CLEANUP_WRITE_TOOLS:
+            return None
+        if tool_name == "file.cleanup_rollback":
+            if args.get("dry_run", True):
+                return SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type="tool_call",
+                    verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+                    risk_level=static_risk,
+                    reasons=["Cleanup rollback preview generated; user approval is required for live rollback guidance."],
+                    user_confirmation_message="Approve cleanup rollback after reviewing the rollback preview?",
+                )
+            if args.get("approved") and args.get("approval_id"):
+                return SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type="tool_call",
+                    verdict=SafetyVerdict.ALLOW,
+                    risk_level=static_risk,
+                    reasons=["Approved cleanup rollback may proceed; rollback tool still cannot restore recycle-bin items automatically."],
+                )
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+                risk_level=static_risk,
+                reasons=["Cleanup rollback live execution requires approved=true and approval_id."],
+                user_confirmation_message="Approve cleanup rollback after reviewing the rollback preview?",
+            )
+
+        missing = [key for key in ("plan_id", "content_hash", "selected_item_ids") if not args.get(key)]
+        if missing:
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=[f"cleanup_execute requires a valid cleanup plan binding: missing {', '.join(missing)}."],
+                safe_alternative="Run file.cleanup_plan first and pass plan_id, content_hash, and selected_item_ids to cleanup_execute.",
+            )
+
+        if _cleanup_args_touch_system_or_sensitive_path(args):
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["cleanup_execute arguments include a system or sensitive path hint."],
+                safe_alternative="Remove system, credential, browser profile, and sensitive paths from cleanup execution.",
+            )
+
+        live = args.get("dry_run") is False
+        needs_trash_approval = _cleanup_has_trash_with_prompt(args)
+        if live and args.get("approved") and args.get("approval_id"):
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.ALLOW,
+                risk_level=static_risk,
+                reasons=["Approved cleanup_execute may run; service will revalidate plan_id/content_hash and selected item ids."],
+            )
+        if live or needs_trash_approval:
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+                risk_level=static_risk,
+                reasons=[
+                    "cleanup_execute live execution or recycle-bin actions require explicit user approval.",
+                    "delete_direct items are executable only when selected from a valid cleanup plan binding.",
+                ],
+                user_confirmation_message="Approve this cleanup execution after reviewing the exact cleanup plan?",
+            )
+        return SafetyReview(
+            task_id=task_id,
+            step_id=step_id,
+            target_type="tool_call",
+            verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+            risk_level=static_risk,
+            reasons=[
+                "cleanup_execute is a destructive-capable tool; dry-run preview and approval are required before execution.",
+                "The cleanup service will reject stale or tampered plan_id/content_hash values.",
+            ],
+            user_confirmation_message="Review the cleanup preview and approve the selected cleanup items?",
+        )
+
 
 class _PermissionCheckAllowed:
     allowed = True
@@ -728,6 +916,38 @@ def _contains_sensitive_arg(value: Any, sensitive_keys: set[str]) -> bool:
 
 def _contains_system_path(args: dict[str, Any]) -> bool:
     return any(_is_system_path(path) for path in _candidate_paths(args))
+
+
+def _cleanup_args_touch_system_or_sensitive_path(args: dict[str, Any]) -> bool:
+    sensitive_terms = {
+        ".ssh",
+        "api_key",
+        "apikey",
+        "cookie",
+        "credential",
+        "credentials",
+        "id_rsa",
+        "key",
+        "password",
+        "passwd",
+        "private_key",
+        "secret",
+        "token",
+    }
+    for path in _candidate_paths(args):
+        normalized = _normalized_path(path)
+        if _is_system_path(path) or any(term in normalized for term in sensitive_terms):
+            return True
+    return False
+
+
+def _cleanup_has_trash_with_prompt(args: dict[str, Any]) -> bool:
+    if str(args.get("action") or "").casefold() == "trash_with_prompt":
+        return True
+    for item in args.get("items") or args.get("selected_items") or []:
+        if isinstance(item, dict) and str(item.get("action") or "").casefold() == "trash_with_prompt":
+            return True
+    return False
 
 
 def _candidate_paths(value: Any) -> list[str]:
@@ -767,3 +987,20 @@ def _normalized_path(path: str) -> str:
     except (TypeError, ValueError):
         pass
     return text.rstrip("/").casefold()
+
+
+def _browser_activity_risk(args: dict[str, Any] | None) -> RiskLevel:
+    payload = args or {}
+    kind = str(payload.get("kind") or "").strip().casefold().replace("_", "-")
+    action = payload.get("action")
+    if not kind and isinstance(action, dict):
+        kind = str(action.get("kind") or "").strip().casefold().replace("_", "-")
+    if kind in {"open", "navigate"}:
+        return RiskLevel.R1_OPEN_ONLY
+    if kind in {"observe", "screenshot", "wait"}:
+        return RiskLevel.R0_READ_ONLY
+    if kind in {"click", "fill", "scroll"}:
+        return RiskLevel.R2_REVERSIBLE_MODIFY
+    if kind in {"submit", "cua", "computer-use"}:
+        return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+    return RiskLevel.R2_REVERSIBLE_MODIFY

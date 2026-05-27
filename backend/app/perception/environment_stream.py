@@ -24,6 +24,7 @@ from app.orchestration.events import Event
 from app.perception.app_context import get_current_app_context
 from app.perception.schemas import AppContext, PerceptionEvent, ScreenState
 from app.perception.screen_monitor import ScreenMonitor, ScreenMonitorConfig
+from app.perception.storage import is_sensitive_context, sanitize_for_storage, store_observation, store_suggestion
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,9 @@ class EnvironmentEvent(Event):
             "timestamp": self.timestamp,
             "source_agent": self.source_agent,
         }
+
+    def safe_payload(self) -> dict[str, Any]:
+        return self.environment_payload()
 
 
 class ProactiveSuggestion(Event):
@@ -208,7 +212,7 @@ class EnvironmentRuleEngine:
                         "rule_id": rule.id,
                         "severity": rule.severity,
                         "suggestion": rule.suggestion or rule.body,
-                        "matched_events": [item.model_dump() for item in matched],
+                        "matched_events": [item.safe_payload() for item in matched],
                     },
                 )
             )
@@ -310,10 +314,16 @@ class EnvironmentStream:
     async def emit(self, event: EnvironmentEvent) -> list[ProactiveSuggestion]:
         if not event.task_id:
             event.task_id = self.task_id
-        await self._notify_sinks(event)
-        await self.dispatcher.dispatch(event)
+        sensitive = is_sensitive_context(payload=event)
+        dispatch_event = _suppressed_event(event) if sensitive else _safe_event(event)
+        self._store_observation(event)
+        await self._notify_sinks(dispatch_event)
+        await self.dispatcher.dispatch(dispatch_event)
+        if sensitive:
+            return []
         suggestions = self.rule_engine.evaluate(event)
         for suggestion in suggestions:
+            self._store_suggestion(suggestion, event)
             await self.dispatcher.dispatch(suggestion)
             self._publish_suggestion(event, suggestion)
         return suggestions
@@ -333,6 +343,18 @@ class EnvironmentStream:
                     await result
             except Exception:
                 logger.exception("Environment stream sink failed for %s", event.environment_type)
+
+    def _store_observation(self, event: EnvironmentEvent) -> None:
+        try:
+            store_observation(event)
+        except Exception:
+            logger.exception("Failed to store perception observation %s", event.id)
+
+    def _store_suggestion(self, suggestion: ProactiveSuggestion, event: EnvironmentEvent) -> None:
+        try:
+            store_suggestion(suggestion, event)
+        except Exception:
+            logger.exception("Failed to store perception suggestion %s", suggestion.id)
 
     def submit(self, event: EnvironmentEvent) -> None:
         self._schedule(self.emit(event))
@@ -500,7 +522,7 @@ class EnvironmentStream:
             "title": suggestion.title,
             "suggestion": suggestion.body or suggestion.title,
             "severity": suggestion.severity,
-            "environment_event": event.environment_payload(),
+            "environment_event": event.safe_payload(),
             "matched_event_ids": list(suggestion.matched_event_ids),
             "matched_event_types": [item.value for item in suggestion.matched_event_types],
         }
@@ -592,6 +614,30 @@ def system_environment_event(
         },
         metadata=body,
     )
+
+
+def _suppressed_event(event: EnvironmentEvent) -> EnvironmentEvent:
+    return EnvironmentEvent(
+        id=event.id,
+        task_id=event.task_id,
+        timestamp=event.timestamp,
+        source_agent=event.source_agent,
+        environment_type=event.environment_type,
+        summary_text="Sensitive context suppressed.",
+        subject="",
+        details={"sensitive_context_suppressed": True},
+        metadata={"sensitive_context_suppressed": True},
+    )
+
+
+def _safe_event(event: EnvironmentEvent) -> EnvironmentEvent:
+    if event.screen_state is None:
+        return event
+    safe = event.model_copy(deep=True)
+    safe.screen_state = None
+    safe.details = sanitize_for_storage(safe.details)
+    safe.metadata = sanitize_for_storage(safe.metadata)
+    return safe
 
 
 def default_environment_rules() -> list[EnvironmentRule]:

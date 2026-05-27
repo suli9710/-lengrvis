@@ -37,6 +37,11 @@ export interface BackendStatus {
   pid?: number;
   message?: string;
   lastCheckedAt: string;
+  shellMode?: "foreground" | "background";
+  guardianState?: "running" | "starting" | "stopped" | "error" | string;
+  fullBackendState?: "running" | "starting" | "stopped" | "error" | string;
+  fullBackendPort?: number;
+  lastWakeReason?: string;
   health?: {
     ok: boolean;
     latencyMs?: number;
@@ -50,11 +55,31 @@ export interface LocalLLMBackend {
   model?: string;
 }
 
+export interface LocalModelReadinessCheck {
+  key: string;
+  label: string;
+  ok: boolean;
+  actual: string;
+  required: string;
+}
+
+export interface LocalModelReadiness {
+  canInstall: boolean;
+  recommendedModel: string;
+  reason: string;
+  checks: LocalModelReadinessCheck[];
+  memoryTotalBytes: number;
+  diskFreeBytes: number;
+  cpuLogicalCores: number;
+  gpuSummary?: string;
+}
+
 export interface LocalLLMHealth {
   available: boolean;
   selectedBackend: LocalLLMBackend | null;
   probeOrder: string[];
   error?: string;
+  readiness?: LocalModelReadiness;
 }
 
 export interface LLMCapabilities {
@@ -225,6 +250,22 @@ export interface ChatResponse {
   engine?: "auto" | "os" | "developer" | string;
 }
 
+export interface CleanupPlan {
+  id: string;
+  contentHash?: string;
+  title: string;
+  summary?: string;
+  status?: "draft" | "needs_approval" | "approved" | "executed" | "rolled_back" | string;
+  createdAt?: string;
+  updatedAt?: string;
+  totalBytes?: number;
+  reclaimableBytes?: number;
+  permanentDeleteBytes?: number;
+  trashBytes?: number;
+  riskWarnings: string[];
+  items: CleanupItem[];
+}
+
 export interface RunEventPayload {
   id: string;
   run_id: string;
@@ -246,10 +287,24 @@ export interface IntentSuggestion {
   reason?: string;
 }
 
+export interface PerceptionSuggestionLaunchRequest {
+  suggestionId: string;
+  prompt?: string;
+  mode?: "privacy" | "efficiency" | "hybrid";
+}
+
+export interface PerceptionSuggestionLaunchResponse {
+  message: ChatMessage;
+  taskUpdates?: TaskEvent[];
+  runId?: string;
+  engine?: "auto" | "os" | "developer" | string;
+}
+
 export type TaskState = "queued" | "running" | "blocked" | "completed" | "failed";
 
 export interface TaskEvent {
   id: string;
+  runId?: string;
   title: string;
   description: string;
   state: TaskState;
@@ -257,6 +312,7 @@ export interface TaskEvent {
   createdAt: string;
   updatedAt: string;
   recordings?: TaskStepRecording[];
+  cleanupPlan?: CleanupPlan;
 }
 
 export interface TaskStepRecordingFrame {
@@ -457,12 +513,170 @@ export interface ApprovalRequest {
   createdAt: string;
   proposedAction: string;
   status: "pending" | "approved" | "denied";
+  rawPayload?: unknown;
+  cleanupPlan?: CleanupPlan;
 }
 
 export interface ApprovalDecision {
   approvalId: string;
   decision: "approved" | "denied";
   note?: string;
+}
+
+export type DocumentBlockType =
+  | "title"
+  | "heading"
+  | "paragraph"
+  | "list"
+  | "table"
+  | "image"
+  | "code"
+  | "metadata"
+  | string;
+
+export interface DocumentTable {
+  id: string;
+  title?: string;
+  columns: string[];
+  rows: string[][];
+  page?: number;
+  sourceBlockId?: string;
+}
+
+export interface DocumentBlock {
+  id: string;
+  type: DocumentBlockType;
+  text?: string;
+  level?: number;
+  page?: number;
+  order?: number;
+  columns?: string[];
+  rows?: string[][];
+  metadata?: Record<string, unknown>;
+}
+
+export interface DocumentCitation {
+  id: string;
+  label: string;
+  text: string;
+  path?: string;
+  blockId?: string;
+  page?: number;
+  score?: number;
+}
+
+export interface DocumentIR {
+  id: string;
+  path: string;
+  title: string;
+  mimeType?: string;
+  language?: string;
+  summary?: string;
+  text?: string;
+  truncated?: boolean;
+  blocks: DocumentBlock[];
+  tables: DocumentTable[];
+  citations?: DocumentCitation[];
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+}
+
+export interface DocumentParseRequest {
+  path: string;
+  includeText?: boolean;
+}
+
+export interface DocumentAskRequest {
+  path?: string;
+  documentId?: string;
+  question: string;
+  topK?: number;
+}
+
+export interface DocumentAskResponse {
+  answer: string;
+  citations: DocumentCitation[];
+  sourceChunks?: DocumentCitation[];
+  note?: string;
+}
+
+export interface DocumentCompareRequest {
+  paths: string[];
+  focus?: string;
+}
+
+export interface DocumentDifference {
+  id: string;
+  title: string;
+  detail: string;
+  severity?: "info" | "warning" | "critical" | string;
+  citations?: DocumentCitation[];
+}
+
+export interface DocumentCompareResponse {
+  summary: string;
+  documents: DocumentIR[];
+  differences: DocumentDifference[];
+  tables?: DocumentTable[];
+  note?: string;
+}
+
+export type CleanupDisposition = "permanent_delete" | "trash" | "suggestion_only" | "skip" | string;
+
+export interface CleanupItem {
+  id: string;
+  path: string;
+  name?: string;
+  action: string;
+  disposition: CleanupDisposition;
+  bucket?: "direct_delete" | "recycle_bin" | "suggestion_only" | "immediate" | "approval" | "info_only" | string;
+  sizeBytes?: number;
+  sizeMb?: number;
+  category?: string;
+  detail?: string;
+  reason?: string;
+  riskLevel?: SafetySeverity | string;
+  canRollback?: boolean;
+  selected?: boolean;
+  modifiedAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CleanupScanRequest {
+  roots?: string[];
+  thresholdMb?: number;
+  includeCaches?: boolean;
+}
+
+export interface CleanupPlanRequest extends CleanupScanRequest {
+  itemIds?: string[];
+  preferTrash?: boolean;
+}
+
+export interface CleanupExecuteRequest {
+  planId?: string;
+  contentHash?: string;
+  selectedItemIds?: string[];
+  roots?: string[];
+  items?: CleanupItem[];
+  dryRun?: boolean;
+  approved?: boolean;
+  approvalId?: string;
+}
+
+export interface CleanupRollbackRequest {
+  planId?: string;
+  executionId?: string;
+}
+
+export interface CleanupExecutionResult {
+  ok: boolean;
+  planId?: string;
+  executionId?: string;
+  freedBytes?: number;
+  executed: CleanupItem[];
+  rolledBack?: CleanupItem[];
+  errors?: string[];
 }
 
 export interface FileSearchResult {
@@ -538,6 +752,98 @@ export interface BrowserPageSnapshot {
   error?: string;
 }
 
+export type BrowserActionKind =
+  | "open"
+  | "navigate"
+  | "click"
+  | "fill"
+  | "submit"
+  | "scroll"
+  | "wait"
+  | "screenshot"
+  | "observe"
+  | "cua";
+
+export interface BrowserAction {
+  kind: BrowserActionKind;
+  url?: string;
+  selector?: string;
+  text?: string;
+  fields?: Record<string, string>;
+  dry_run?: boolean;
+  approved?: boolean;
+  approval_id?: string;
+  [key: string]: unknown;
+}
+
+export interface BrowserSession {
+  id: string;
+  task_id?: string;
+  current_url: string;
+  title: string;
+  status: "idle" | "loading" | "running" | "paused" | "stopped" | "error" | "awaiting_approval" | string;
+  mode: "watch" | "agent" | "takeover" | string;
+  created_at: string;
+  updated_at: string;
+  paused: boolean;
+  takeover: boolean;
+  last_observation?: string | Record<string, unknown> | null;
+}
+
+export interface BrowserActivityEvent {
+  id: string;
+  session_id: string;
+  task_id?: string;
+  step_id?: string;
+  type: string;
+  action?: BrowserAction;
+  url?: string;
+  title?: string;
+  risk_level?: "low" | "medium" | "high" | "critical" | string;
+  verdict?: string;
+  ok: boolean;
+  error?: string;
+  screenshot_url?: string;
+  created_at: string;
+}
+
+export interface BrowserHostBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrowserHostOpenRequest {
+  sessionId?: string;
+  taskId?: string;
+  url?: string;
+  title?: string;
+  mode?: string;
+}
+
+export interface BrowserHostActionRequest {
+  sessionId: string;
+  action: BrowserAction;
+}
+
+export interface BrowserHostSnapshot {
+  sessions: BrowserSession[];
+  events: BrowserActivityEvent[];
+  activeSessionId?: string | null;
+  visible: boolean;
+  hostAvailable: boolean;
+  error?: string;
+}
+
+export interface BrowserHostActionResult {
+  ok: boolean;
+  session?: BrowserSession;
+  event?: BrowserActivityEvent;
+  snapshot?: BrowserHostSnapshot;
+  error?: string;
+}
+
 export interface ToolExecutionPreview {
   ok: boolean;
   dryRun: boolean;
@@ -552,6 +858,12 @@ export interface McpServerConfig {
   name: string;
   url: string;
   enabled: boolean;
+  id?: string;
+  command?: string;
+  args?: string[];
+  transport?: string;
+  auth?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export interface SkillToolInfo {
@@ -642,17 +954,138 @@ export interface AppSettings {
   modelContextWindow: number;
   modelAutoCompactTokenLimit: number;
   workspaceRoot: string;
+  allowedDirectories?: string[];
   allowBrowserNetwork: boolean;
   remoteDesktopEnabled: boolean;
   appAllowlist: string[];
   browserMaxPageBytes: number;
   browserScreenshotDir: string;
   onnxModelPath: string;
-  onnxExecutionProvider: string;
+  onnxExecutionProvider: "Auto" | "WinML" | "DirectML" | "OpenVINO" | "CPU" | string;
+  onnxProviderPreference: string;
+  onnxDirectmlDeviceId: string;
+  onnxOpenvinoDevice: string;
+  onnxOpenvinoCacheDir: string;
+  onnxWarmOnStartup: boolean;
+  onnxModelFamily: string;
+  onnxEmbeddingBackend: string;
+  onnxEmbeddingModelPath: string;
+  onnxEmbeddingExecutionProvider: string;
+  onnxEmbeddingModelId: string;
+  onnxEmbeddingMaxBatchSize: number;
+  imageEmbeddingBackend: string;
+  onnxImageEmbeddingModelPath: string;
+  onnxImageEmbeddingExecutionProvider: string;
+  onnxImageEmbeddingModelId: string;
+  onnxImageEmbeddingMaxBatchSize: number;
+  ocrBackend: string;
+  ocrExecutionProvider: string;
+  ocrOpenvinoModelDir: string;
+  ocrOpenvinoDevice: string;
+  ocrLang: string;
+  ocrMinConfidence: number;
+  ocrBatchSize: number;
   mode: "privacy" | "efficiency" | "hybrid";
   allowCloudContext: boolean;
   allowFileContentUpload: boolean;
   mcpServers: McpServerConfig[];
+}
+
+export type HardwareAccelerationRuntime = "auto" | "winml" | "directml" | "openvino" | "cpu";
+
+export type HardwareAccelerationStatus = "ready" | "missing" | "error";
+
+export interface HardwareAccelerationCheck {
+  key: string;
+  label: string;
+  status: HardwareAccelerationStatus;
+  details?: string;
+  required?: string;
+  actual?: string;
+}
+
+export interface HardwareAccelerationStatusPayload {
+  available: boolean;
+  kind: string;
+  modelPath: string;
+  executionProvider: string;
+  availableProviders: string[];
+  generationRuntime: string;
+  runtimePackage?: string;
+  configuredProvider?: string;
+  selectedProvider?: string;
+  runtimePackages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
+  winml?: {
+    available?: boolean;
+    provider?: string;
+    providerAvailable?: boolean;
+    packages?: string[];
+    errors?: Record<string, string>;
+  };
+  errors?: string[];
+  error?: string;
+  llm?: {
+    runtime?: string;
+    available?: boolean;
+    modelPath?: string;
+    configuredProvider?: string;
+    selectedProvider?: string;
+    runtimePackages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
+    winml?: {
+      available?: boolean;
+      provider?: string;
+      providerAvailable?: boolean;
+      packages?: string[];
+      errors?: Record<string, string>;
+    };
+    errors?: string[];
+  };
+  textEmbedding?: HardwareAccelerationComponentStatus;
+  imageEmbedding?: HardwareAccelerationComponentStatus;
+  ocr?: HardwareAccelerationComponentStatus;
+}
+
+export interface HardwareAccelerationComponentStatus {
+  available: boolean;
+  component?: string;
+  kind?: string;
+  modelPath?: string;
+  executionProvider?: string;
+  availableProviders?: string[];
+  runtimePackage?: string;
+  configuredProvider?: string;
+  selectedProvider?: string;
+  runtimePackages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
+  winml?: HardwareAccelerationStatusPayload["winml"];
+  selectedBackend?: string;
+  runtime?: string;
+  model?: string;
+  errors?: string[];
+  error?: string;
+}
+
+export interface HardwareAccelerationSmokePayload {
+  ok: boolean;
+  available: boolean;
+  status: "ready" | "unavailable";
+  operation: "warmup" | "test_generate" | "test_embedding" | "test_ocr" | "test_image_embedding";
+  error?: string;
+  errors?: string[];
+  message?: string;
+  count?: number;
+  dim?: number;
+  source?: string;
+  backend?: {
+    kind: string;
+    model_path: string;
+    execution_provider: string;
+    available_providers: string[];
+    generation_runtime: string;
+    runtime_package?: string;
+    model_family?: string;
+    provider_options?: Record<string, string>;
+  };
+  llm?: HardwareAccelerationStatusPayload["llm"];
 }
 
 export interface AuditLogEntry {
@@ -689,10 +1122,26 @@ export interface MavrisDesktopBridge {
     getStatus: () => Promise<BackendStatus>;
     start: () => Promise<BackendStatus>;
     stop: () => Promise<BackendStatus>;
+    foreground: () => Promise<BackendStatus>;
+    background: () => Promise<BackendStatus>;
   };
   dialog: {
     chooseSkillDirectory: () => Promise<string | null>;
     chooseSkillZip: () => Promise<string | null>;
+  };
+  browserHost: {
+    getSnapshot: () => Promise<BrowserHostSnapshot>;
+    open: (request: BrowserHostOpenRequest) => Promise<BrowserHostActionResult>;
+    show: (sessionId: string) => Promise<BrowserHostActionResult>;
+    hide: () => Promise<BrowserHostActionResult>;
+    setBounds: (bounds: BrowserHostBounds) => Promise<BrowserHostActionResult>;
+    pause: (sessionId: string) => Promise<BrowserHostActionResult>;
+    resume: (sessionId: string) => Promise<BrowserHostActionResult>;
+    takeover: (sessionId: string) => Promise<BrowserHostActionResult>;
+    release: (sessionId: string) => Promise<BrowserHostActionResult>;
+    stop: (sessionId: string) => Promise<BrowserHostActionResult>;
+    performAction: (request: BrowserHostActionRequest) => Promise<BrowserHostActionResult>;
+    onSnapshot: (handler: (snapshot: BrowserHostSnapshot) => void) => () => void;
   };
   shell: {
     openExternal: (url: string) => Promise<void>;

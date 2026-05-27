@@ -158,14 +158,7 @@ def cluster_images(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     if exact_grouping_requested or cluster_by in {"objects", "tags"}:
         return _label_based_clustering(args, profiles, group_by=cluster_by)
 
-    label_texts = [vision_tools.image_label_text(profile) for profile in profiles]
-    embedder = args.get("embedder") or context.get("embedder")
-    try:
-        semantic_vectors = embed_texts_sync(label_texts, embedder=embedder)
-    except Exception:
-        semantic_vectors = hashing_vectorize(label_texts, dim=64)
-    if len(semantic_vectors) != len(profiles):
-        semantic_vectors = hashing_vectorize(label_texts, dim=64)
+    semantic_vectors, embedding_method = _image_semantic_vectors(profiles, context, args)
 
     # Adjust weights and k based on cluster_by dimension
     if cluster_by == "scene":
@@ -213,6 +206,7 @@ def cluster_images(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
         "count": len(clusters),
         "total": len(profiles),
         "method": "semantic_label_embedding_with_metadata",
+        "embedding_method": embedding_method,
         "metadata_weight": metadata_weight,
         "cluster_by": cluster_by,
     }
@@ -373,6 +367,42 @@ def _combine_image_vectors(
     for semantic, metadata in zip(semantic_vectors, metadata_vectors, strict=False):
         combined.append([float(value) for value in semantic] + [float(value) * metadata_weight for value in metadata])
     return combined
+
+
+def _image_semantic_vectors(
+    profiles: list[dict[str, Any]],
+    context: dict[str, Any],
+    args: dict[str, Any],
+) -> tuple[list[list[float]], str]:
+    from app.tools import vision_tools
+
+    vectors: list[list[float]] = []
+    attempted_image_embeddings = False
+    for profile in profiles:
+        path = profile.get("path")
+        if not path:
+            break
+        attempted_image_embeddings = True
+        result = vision_tools.image_embedding(Path(path), context=context, profile=profile)
+        if not result.get("ok") or not result.get("embedding") or result.get("source") == "label_text_embedding":
+            vectors = []
+            break
+        vectors.append([float(value) for value in result.get("embedding") or []])
+    if vectors and len(vectors) == len(profiles):
+        return vectors, "image_embedding"
+
+    label_texts = [vision_tools.image_label_text(profile) for profile in profiles]
+    embedder = args.get("embedder") or context.get("embedder")
+    try:
+        semantic_vectors = embed_texts_sync(label_texts, embedder=embedder)
+    except Exception:
+        semantic_vectors = hashing_vectorize(label_texts, dim=64)
+    if len(semantic_vectors) != len(profiles):
+        semantic_vectors = hashing_vectorize(label_texts, dim=64)
+    method = "label_text_embedding"
+    if attempted_image_embeddings:
+        method = "label_text_embedding_after_image_embedding_fallback"
+    return semantic_vectors, method
 
 
 def _metadata_feature_vectors(

@@ -8,8 +8,8 @@ from app.core.schemas import AgentMessage, ChatMessage, ChatRequest, ChatRespons
 from app.orchestration.agent_bus import AgentBus
 from app.security.lan import allow_lan_desktop_api, is_loopback_host
 from app.services.notification_service import SYSTEM_TASK_ID
+from app.services import perception_suggestion_service
 from app.services.task_service import handle_chat, list_chat_messages
-from app.agents.supervisor_agent import SupervisorAgent
 from app.perception.intent_predictor import IntentSuggestion
 
 
@@ -30,7 +30,7 @@ def chat_messages() -> list[ChatMessage]:
 
 @router.get("/chat/proactive-suggestions", response_model=list[IntentSuggestion])
 def proactive_suggestions() -> list[IntentSuggestion]:
-    return SupervisorAgent().proactive_suggestions()
+    return perception_suggestion_service.current_suggestions()
 
 
 @ws_router.websocket("/ws/tasks/{task_id}")

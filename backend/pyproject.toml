@@ -11,7 +11,42 @@ dependencies = [
   "PyYAML>=6.0",
   "psutil>=6.0",
   "send2trash>=1.8",
+  "pypdf>=5.0",
+  "Pillow>=10.0",
+  "pytesseract>=0.3.10",
+  "python-docx>=1.1",
+  "openpyxl>=3.1",
+  "python-pptx>=1.0",
+  "pandas>=2.2",
+  "beautifulsoup4>=4.12",
+  "playwright>=1.48",
+  "croniter>=2.0",
+  "numpy>=1.26",
+  "watchdog>=4.0",
+  "blake3>=0.4.1",
+  "docling>=2.30",
+  "unstructured[all-docs]>=0.16",
+  "paddleocr>=2.8",
   "pywin32>=306; platform_system == 'Windows'"
+]
+
+[project.optional-dependencies]
+acceleration = [
+  "tokenizers>=0.20",
+  "transformers>=4.45",
+  "onnxruntime>=1.18",
+]
+winml = [
+  "onnxruntime-windowsml>=1.22; platform_system == 'Windows'",
+  "onnxruntime-genai-winml>=0.8; platform_system == 'Windows'",
+]
+directml = [
+  "onnxruntime-directml>=1.18; platform_system == 'Windows'",
+  "onnxruntime-genai-directml>=0.8; platform_system == 'Windows'",
+]
+openvino = [
+  "onnxruntime-openvino>=1.18",
+  "openvino>=2024.4",
 ]
 
 [tool.pytest.ini_options]

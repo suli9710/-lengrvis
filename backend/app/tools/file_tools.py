@@ -11,13 +11,16 @@ try:
 except Exception:  # pragma: no cover - optional dependency guard
     send2trash = None
 
-from app.core.errors import SecurityError
-from app.core.paths import is_sensitive_path, is_system_path, normalize_path, resolve_authorized
+from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
+from app.services.cleanup_planner_service import CleanupPlannerService
 from app.tools.schemas import ToolDefinition
 
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".ts", ".tsx", ".js", ".css", ".yaml", ".yml"}
+READ_TEXT_MAX_CHARS = 120000
+EDIT_PREVIEW_CONTEXT_CHARS = 240
+_cleanup_service = CleanupPlannerService()
 
 
 def _allowed(context: dict[str, Any]) -> list[str]:
@@ -110,6 +113,24 @@ def hash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return {"path": str(path), "sha256": sha256_file(path)}
 
 
+def read_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    if not path.is_file():
+        return {"ok": False, "path": str(path), "error": "Path is not a file."}
+    max_chars = max(1, min(int(args.get("max_chars") or READ_TEXT_MAX_CHARS), READ_TEXT_MAX_CHARS))
+    text = path.read_text(encoding="utf-8", errors="replace")
+    truncated = len(text) > max_chars
+    return {
+        "ok": True,
+        "path": str(path),
+        "text": text[:max_chars],
+        "truncated": truncated,
+        "chars": len(text),
+        "sha256": sha256_file(path),
+        "_resource_state": _resource_states(path),
+    }
+
+
 def find_duplicates(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     groups: dict[str, list[str]] = {}
     for path in _iter_files(context):
@@ -117,6 +138,30 @@ def find_duplicates(args: dict[str, Any], context: dict[str, Any]) -> dict[str, 
         groups.setdefault(digest, []).append(str(path))
     duplicates = [{"sha256": digest, "paths": paths} for digest, paths in groups.items() if len(paths) > 1]
     return {"duplicates": duplicates, "count": len(duplicates)}
+
+
+def cleanup_scan(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    return _cleanup_service.cleanup_scan(args, context)
+
+
+def cleanup_plan(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    plan = _cleanup_service.create_plan(args, context)
+    return {"ok": True, **plan.model_dump(mode="json")}
+
+
+def dedupe_plan(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    plan = _cleanup_service.create_dedupe_plan(args, context)
+    return {"ok": True, **plan.model_dump(mode="json")}
+
+
+def cleanup_execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    return _cleanup_service.execute(args, context)
+
+
+def cleanup_rollback(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    from app.tools.rollback_tools import rollback_cleanup_result
+
+    return rollback_cleanup_result(args, context)
 
 
 def preview_batch_operation(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -185,23 +230,7 @@ def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_trash_target(path_value: str | Path, context: dict[str, Any]) -> Path:
-    allowed = _allowed(context)
-    if allowed:
-        return resolve_authorized(path_value, allowed)
-
-    candidate = normalize_path(path_value)
-    raw_path = Path(path_value)
-    if ".." in raw_path.parts:
-        raise SecurityError("Path traversal is not allowed.")
-    if not raw_path.is_absolute():
-        raise SecurityError("Explicit absolute path is required when no authorized directories are configured.")
-    if is_system_path(candidate) or is_sensitive_path(candidate):
-        raise SecurityError("Sensitive or system paths are not allowed.")
-    if candidate.exists() and candidate.is_symlink():
-        target = candidate.resolve(strict=True)
-        if is_system_path(target) or is_sensitive_path(target):
-            raise SecurityError("Symbolic link points to a sensitive or system path.")
-    return candidate
+    return resolve_authorized(path_value, _allowed(context))
 
 
 def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -216,6 +245,71 @@ def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
     return {"changed_paths": [str(path)], "rollback_info": {"backup": backup}}
+
+
+def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    old_string = str(args.get("old_string") or "")
+    new_string = str(args.get("new_string") or "")
+    replace_all = bool(args.get("replace_all", False))
+    if not old_string:
+        return {"ok": False, "error": "old_string is required.", "error_code": "OLD_STRING_REQUIRED"}
+    if not path.is_file():
+        return {"ok": False, "path": str(path), "error": "Path is not a file.", "error_code": "PATH_NOT_FILE"}
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match_count = text.count(old_string)
+    if match_count == 0:
+        return {
+            "ok": False,
+            "path": str(path),
+            "error": "old_string was not found.",
+            "error_code": "NO_MATCH",
+            "match_count": 0,
+            "_resource_state": _resource_states(path),
+        }
+    if not replace_all and match_count != 1:
+        return {
+            "ok": False,
+            "path": str(path),
+            "error": "old_string must match exactly once unless replace_all is true.",
+            "error_code": "NON_UNIQUE_MATCH",
+            "match_count": match_count,
+            "_resource_state": _resource_states(path),
+        }
+
+    edited = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+    replacements = match_count if replace_all else 1
+    if args.get("dry_run", True):
+        return {
+            "ok": True,
+            "dry_run": True,
+            "path": str(path),
+            "match_count": match_count,
+            "replacements": replacements,
+            "diff_preview": [
+                {
+                    "action": "edit_text",
+                    "path": str(path),
+                    "replace_all": replace_all,
+                    "match_count": match_count,
+                    "old_preview": _text_preview(old_string),
+                    "new_preview": _text_preview(new_string),
+                }
+            ],
+            "_resource_state": _resource_states(path),
+        }
+
+    backup = str(path.with_suffix(path.suffix + ".bak"))
+    shutil.copy2(path, backup)
+    path.write_text(edited, encoding="utf-8")
+    return {
+        "ok": True,
+        "changed_paths": [str(path)],
+        "match_count": match_count,
+        "replacements": replacements,
+        "rollback_info": {"backup": backup},
+    }
 
 
 def generate_markdown_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -250,6 +344,12 @@ def _resource_state(path: Path) -> dict[str, Any]:
         }
     )
     return state
+
+
+def _text_preview(value: str) -> str:
+    if len(value) <= EDIT_PREVIEW_CONTEXT_CHARS:
+        return value
+    return value[:EDIT_PREVIEW_CONTEXT_CHARS]
 
 
 def _input_schema(name: str) -> dict[str, Any]:
@@ -289,9 +389,46 @@ def _input_schema(name: str) -> dict[str, Any]:
             "required": ["path"],
             "additionalProperties": False,
         },
+        "file.read_text": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "max_chars": {"type": "integer"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
         "file.find_duplicates": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        "file.cleanup_scan": _cleanup_plan_schema(read_only=True),
+        "file.cleanup_plan": _cleanup_plan_schema(read_only=True),
+        "file.dedupe_plan": _cleanup_plan_schema(read_only=True),
+        "file.cleanup_execute": {
+            "type": "object",
+            "properties": {
+                "roots": {"type": "array", "items": {"type": "string"}},
+                "plan_id": {"type": "string"},
+                "content_hash": {"type": "string"},
+                "selected_item_ids": {"type": "array", "items": {"type": "string"}},
+                "dry_run": {"type": "boolean"},
+                "approved": {"type": "boolean"},
+                "approval_id": {"type": "string"},
+                "threshold_mb": {"type": "number"},
+                "older_than_days": {"type": "integer"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["roots", "plan_id", "content_hash", "selected_item_ids"],
+            "additionalProperties": False,
+        },
+        "file.cleanup_rollback": {
+            "type": "object",
+            "properties": {
+                "rollback_info": {"type": "object"},
+                "dry_run": {"type": "boolean"},
+                "approved": {"type": "boolean"},
+                "approval_id": {"type": "string"},
+            },
+            "required": ["rollback_info"],
             "additionalProperties": False,
         },
         "file.preview_batch_operation": {
@@ -347,6 +484,18 @@ def _input_schema(name: str) -> dict[str, Any]:
             "required": ["path", "text"],
             "additionalProperties": False,
         },
+        "file.edit_text": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean"},
+                "dry_run": {"type": "boolean"},
+            },
+            "required": ["path", "old_string", "new_string"],
+            "additionalProperties": False,
+        },
         "file.generate_markdown_report": {
             "type": "object",
             "properties": {
@@ -362,6 +511,22 @@ def _input_schema(name: str) -> dict[str, Any]:
     return schemas.get(name, {"type": "object", "properties": {}, "additionalProperties": False})
 
 
+def _cleanup_plan_schema(*, read_only: bool) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "roots": {"type": "array", "items": {"type": "string"}},
+            "threshold_mb": {"type": "number"},
+            "older_than_days": {"type": "integer"},
+            "limit": {"type": "integer"},
+        },
+        "additionalProperties": False,
+    }
+    if not read_only:
+        schema["properties"]["dry_run"] = {"type": "boolean"}
+    return schema
+
+
 def register(registry) -> None:
     defs = [
         ("file.search_by_name", search_by_name, RiskLevel.R0_READ_ONLY, False, True),
@@ -370,7 +535,13 @@ def register(registry) -> None:
         ("file.list_directory", list_directory, RiskLevel.R0_READ_ONLY, False, True),
         ("file.get_metadata", get_metadata, RiskLevel.R0_READ_ONLY, False, True),
         ("file.hash_file", hash_file, RiskLevel.R0_READ_ONLY, False, True),
+        ("file.read_text", read_text, RiskLevel.R0_READ_ONLY, False, True),
         ("file.find_duplicates", find_duplicates, RiskLevel.R0_READ_ONLY, False, True),
+        ("file.cleanup_scan", cleanup_scan, RiskLevel.R0_READ_ONLY, False, True),
+        ("file.cleanup_plan", cleanup_plan, RiskLevel.R0_READ_ONLY, False, True),
+        ("file.dedupe_plan", dedupe_plan, RiskLevel.R0_READ_ONLY, False, True),
+        ("file.cleanup_execute", cleanup_execute, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, True, True),
+        ("file.cleanup_rollback", cleanup_rollback, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, True, True),
         ("file.preview_batch_operation", preview_batch_operation, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
         ("file.create_folder", create_folder, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
         ("file.copy", copy_file, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
@@ -378,6 +549,7 @@ def register(registry) -> None:
         ("file.rename", rename_file, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
         ("file.trash", trash_file, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, True, True),
         ("file.write_text", write_text, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
+        ("file.edit_text", edit_text, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
         ("file.generate_markdown_report", generate_markdown_report, RiskLevel.R2_REVERSIBLE_MODIFY, True, True),
     ]
     for name, fn, risk, dry_run, auth in defs:
@@ -398,6 +570,6 @@ def register(registry) -> None:
                 resource_kinds=["file", "directory"],
                 fast_path_eligible=read_only,
                 trust_tier="builtin",
-                sensitive_arg_keys=["text"] if name == "file.write_text" else [],
+                sensitive_arg_keys=["text"] if name == "file.write_text" else ["old_string", "new_string"] if name == "file.edit_text" else [],
             )
         )

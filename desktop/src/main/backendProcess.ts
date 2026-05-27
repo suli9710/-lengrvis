@@ -9,6 +9,9 @@ import type { BackendStatus } from "../shared/types";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 const HEALTH_ENDPOINT = "/health";
+const RUNTIME_STATUS_ENDPOINT = "/api/runtime/status";
+const RUNTIME_FOREGROUND_ENDPOINT = "/api/runtime/foreground";
+const RUNTIME_BACKGROUND_ENDPOINT = "/api/runtime/background";
 const DEFAULT_WINDOWS_SERVICE_NAMES = [
   "MavrisBackend",
   "Mavris Backend",
@@ -178,6 +181,18 @@ export class BackendProcessManager {
     return this.refreshStatus(processState, this.status.message);
   }
 
+  async enterForeground(reason = "desktop_opened"): Promise<BackendStatus> {
+    await this.start();
+    await postRuntimeMode(this.getBaseUrl(), RUNTIME_FOREGROUND_ENDPOINT, reason);
+    return this.getStatus();
+  }
+
+  async enterBackground(reason = "tray_background"): Promise<BackendStatus> {
+    await this.start();
+    await postRuntimeMode(this.getBaseUrl(), RUNTIME_BACKGROUND_ENDPOINT, reason);
+    return this.getStatus();
+  }
+
   private async connectToWindowsService(service: WindowsServiceProbe): Promise<BackendStatus> {
     const serviceLabel = service.serviceName ? `Windows Service：${service.serviceName}` : "Windows Service";
     this.managedWindowsServiceName = service.serviceName ?? this.managedWindowsServiceName;
@@ -211,6 +226,7 @@ export class BackendProcessManager {
     fallbackMessage?: string
   ): Promise<BackendStatus> {
     const health = await probeHealth(this.getBaseUrl());
+    const runtime = health.ok ? await probeRuntimeStatus(this.getBaseUrl()) : {};
     const hasConfiguredCommand = Boolean(this.resolveBackendCommand());
 
     if (health.ok) {
@@ -219,16 +235,18 @@ export class BackendProcessManager {
         fallbackState === "running" || fallbackMessage?.includes("Windows Service")
           ? fallbackMessage ?? "后端已连接"
           : "后端已连接",
-        health
+        health,
+        runtime
       );
     } else if (!hasConfiguredCommand && fallbackState !== "error") {
       this.status = this.makeStatus(
         "not_configured",
         fallbackMessage ?? "等待外部后端",
-        health
+        health,
+        runtime
       );
     } else {
-      this.status = this.makeStatus(fallbackState, fallbackMessage, health);
+      this.status = this.makeStatus(fallbackState, fallbackMessage, health, runtime);
     }
 
     return this.status;
@@ -237,7 +255,8 @@ export class BackendProcessManager {
   private makeStatus(
     state: BackendStatus["state"],
     message?: string,
-    health?: BackendStatus["health"]
+    health?: BackendStatus["health"],
+    runtime?: Partial<BackendStatus>
   ): BackendStatus {
     return {
       state,
@@ -245,6 +264,7 @@ export class BackendProcessManager {
       pid: this.child?.pid,
       message,
       health,
+      ...runtime,
       lastCheckedAt: new Date().toISOString()
     };
   }
@@ -410,4 +430,42 @@ async function probeHealth(baseUrl: string): Promise<NonNullable<BackendStatus["
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function probeRuntimeStatus(baseUrl: string): Promise<Partial<BackendStatus>> {
+  try {
+    const response = await fetch(new URL(RUNTIME_STATUS_ENDPOINT, baseUrl), {
+      method: "GET",
+      signal: AbortSignal.timeout(1500)
+    });
+    if (!response.ok) {
+      return {};
+    }
+    const data = await response.json() as Record<string, unknown>;
+    return {
+      shellMode: data.shellMode === "foreground" ? "foreground" : data.shellMode === "background" ? "background" : undefined,
+      guardianState: stringValue(data.guardianState),
+      fullBackendState: stringValue(data.fullBackendState),
+      fullBackendPort: typeof data.fullBackendPort === "number" ? data.fullBackendPort : undefined,
+      lastWakeReason: stringValue(data.lastWakeReason)
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function postRuntimeMode(baseUrl: string, endpoint: string, reason: string): Promise<void> {
+  const response = await fetch(new URL(endpoint, baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+    signal: AbortSignal.timeout(35_000)
+  });
+  if (!response.ok) {
+    throw new Error(`Runtime mode request failed: ${response.status}`);
+  }
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

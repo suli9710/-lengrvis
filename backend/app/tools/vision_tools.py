@@ -1,16 +1,31 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from app.acceleration.onnx_sessions import (
+    OnnxAccelerationUnavailable,
+    OnnxSessionBackend,
+    available_execution_providers,
+    create_inference_session,
+    detect_session_backend,
+    health_payload,
+    preprocess_image_for_onnx,
+    run_session,
+    session_input_names,
+)
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, guess_language, ocr_image_result
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt
-from app.llm.registry import get_provider
+from app.llm.registry import get_effective_settings, get_provider
+from app.policy.privacy import can_use_cloud_model
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
@@ -177,6 +192,83 @@ def ocr_image(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return result.as_dict(path=image_path)
 
 
+def embed_image(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    image_path = _resolve_image(args, context)
+    if image_path is None:
+        return {"ok": False, "error": "missing path"}
+    if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+        return {"ok": False, "error": f"not a supported image extension: {image_path.suffix}"}
+    profile = args.get("profile") if isinstance(args.get("profile"), dict) else None
+    result = image_embedding(image_path, context=context, profile=profile)
+    return {
+        "ok": bool(result.get("ok")),
+        "path": str(image_path),
+        "embedding": result.get("embedding") or [],
+        "dim": len(result.get("embedding") or []),
+        "source": result.get("source", ""),
+        "model": result.get("model", ""),
+        "error": result.get("error", ""),
+        "fallback_used": bool(result.get("fallback_used", False)),
+    }
+
+
+def image_embedding(
+    image_path: Path,
+    *,
+    context: dict[str, Any] | None = None,
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = context or {}
+    settings = context.get("settings") or get_effective_settings()
+    accelerated = _local_image_embedding(image_path, settings=settings)
+    if accelerated.get("ok"):
+        return accelerated
+
+    cloud_allowed = can_use_cloud_model(settings, task="vision").allowed
+    if cloud_allowed:
+        provider = context.get("image_embedding_provider")
+        if provider is not None:
+            try:
+                vector = _run_maybe_async(provider.embed_image(str(image_path)))
+                coerced = _coerce_vector(vector)
+                if coerced:
+                    return {
+                        "ok": True,
+                        "embedding": coerced,
+                        "source": "vision_provider_image_embedding",
+                        "model": getattr(provider, "name", ""),
+                        "fallback_used": False,
+                    }
+            except Exception:
+                pass
+
+    fallback_profile = profile or _embedding_fallback_profile(image_path, context, settings=settings)
+    label_text = image_label_text(fallback_profile)
+    text_embedder = context.get("embedder")
+    if text_embedder is None and not can_use_cloud_model(settings, task="embed").allowed:
+        from app.indexer.clustering import hashing_vectorize
+
+        vector = hashing_vectorize([label_text], dim=64)[0]
+    else:
+        from app.indexer.embedding_service import embed_texts_sync
+
+        try:
+            vectors = embed_texts_sync([label_text], embedder=text_embedder)
+            vector = vectors[0] if vectors else []
+        except Exception:
+            from app.indexer.clustering import hashing_vectorize
+
+            vector = hashing_vectorize([label_text], dim=64)[0]
+    return {
+        "ok": bool(vector),
+        "embedding": _coerce_vector(vector),
+        "source": "label_text_embedding",
+        "model": getattr(settings, "embedding_model", ""),
+        "error": accelerated.get("error", ""),
+        "fallback_used": True,
+    }
+
+
 def compare_images(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path_a_raw = args.get("path_a") or args.get("a")
     path_b_raw = args.get("path_b") or args.get("b")
@@ -310,6 +402,261 @@ def image_label_text(profile: dict[str, Any]) -> str:
     if isinstance(gps, dict) and gps.get("latitude") is not None and gps.get("longitude") is not None:
         parts.append(f"gps {round(float(gps['latitude']), 2)} {round(float(gps['longitude']), 2)}")
     return " ".join(part for part in parts if part).strip()
+
+
+def _local_image_embedding(image_path: Path, *, settings: Any) -> dict[str, Any]:
+    model = str(getattr(settings, "onnx_image_embedding_model_path", "") or "").strip()
+    if _image_embedding_disabled(settings):
+        return {"ok": False, "source": "local_image_embedding", "model": model, "error": "Image embedding is disabled."}
+    if not model:
+        return {
+            "ok": False,
+            "source": "local_image_embedding",
+            "model": model,
+            "error": "No local image embedding model configured.",
+        }
+    if not Path(model).exists():
+        return {
+            "ok": False,
+            "source": "local_image_embedding",
+            "model": model,
+            "error": f"Local image embedding model not found: {model}",
+        }
+    backend = _image_embedding_backend(settings)
+    if backend is None:
+        return {
+            "ok": False,
+            "source": "local_image_embedding",
+            "model": model,
+            "error": "Local image embedding runtime is unavailable.",
+        }
+    try:
+        vector = _run_local_image_embedding(image_path, backend)
+    except OnnxAccelerationUnavailable as exc:
+        return {
+            "ok": False,
+            "source": f"local_image_embedding_{backend.kind.removeprefix('onnx-')}",
+            "model": model,
+            "error": str(exc),
+        }
+    return {
+        "ok": bool(vector),
+        "embedding": vector,
+        "source": f"local_image_embedding_{backend.kind.removeprefix('onnx-')}",
+        "model": backend.model_id or model,
+        "error": "" if vector else "Local image embedding produced no vector.",
+        "fallback_used": False,
+    }
+
+
+def _embedding_fallback_profile(image_path: Path, context: dict[str, Any], *, settings: Any) -> dict[str, Any]:
+    if can_use_cloud_model(settings, task="vision").allowed:
+        return describe_image({"path": str(image_path)}, context)
+    metadata = extract_image_metadata(image_path)
+    return {
+        "ok": True,
+        "path": str(image_path),
+        "description": str(metadata.get("description_hint") or ""),
+        "tags": ["image"],
+        "structured_labels": structure_image_labels(str(metadata.get("description_hint") or ""), metadata),
+        "metadata": metadata,
+    }
+
+
+def _available_image_embedding_runtime(backend: str) -> str:
+    candidates = [backend] if backend and backend != "auto" else ["winml", "directml", "openvino", "cpu"]
+    for candidate in candidates:
+        normalized = candidate.lower()
+        providers = available_execution_providers()
+        if normalized == "winml" and "WindowsMLExecutionProvider" in providers:
+            return "winml"
+        if normalized == "directml" and "DmlExecutionProvider" in providers:
+            return "directml"
+        if normalized == "openvino" and "OpenVINOExecutionProvider" in providers:
+            return "openvino"
+        if normalized == "cpu" and "CPUExecutionProvider" in providers:
+            return "cpu"
+    return ""
+
+
+def image_embedding_health(settings: Any | None = None) -> dict[str, Any]:
+    effective = settings or get_effective_settings()
+    model = str(getattr(effective, "onnx_image_embedding_model_path", "") or "").strip()
+    if _image_embedding_disabled(effective):
+        return health_payload(
+            component="image_embedding",
+            backend=None,
+            configured_model_path=model,
+            configured_provider=str(getattr(effective, "onnx_image_embedding_execution_provider", "") or ""),
+            error="Image embedding is disabled.",
+        )
+    backend = _image_embedding_backend(effective)
+    if backend is None:
+        error = "No local image embedding model configured."
+        if model and not Path(model).exists():
+            error = f"Local image embedding model not found: {model}"
+        elif model:
+            error = "Local image embedding runtime is unavailable."
+        return health_payload(
+            component="image_embedding",
+            backend=None,
+            configured_model_path=model,
+            configured_provider=str(getattr(effective, "onnx_image_embedding_execution_provider", "") or ""),
+            error=error,
+        )
+    return health_payload(
+        component="image_embedding",
+        backend=backend,
+        configured_model_path=model,
+        configured_provider=str(getattr(effective, "onnx_image_embedding_execution_provider", "") or ""),
+    )
+
+
+def test_image_embedding(settings: Any | None = None, image_path: str | None = None) -> dict[str, Any]:
+    effective = settings or get_effective_settings()
+    health = image_embedding_health(effective)
+    if not health.get("available"):
+        return {
+            "ok": False,
+            "available": False,
+            "status": "unavailable",
+            "operation": "test_image_embedding",
+            "error": health.get("error") or "Local image embedding is unavailable.",
+            "image_embedding": health,
+        }
+    try:
+        target = Path(image_path) if image_path else _synthetic_image_for_smoke()
+        result = _local_image_embedding(target, settings=effective)
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc) or exc.__class__.__name__
+        return {
+            "ok": False,
+            "available": False,
+            "status": "unavailable",
+            "operation": "test_image_embedding",
+            "error": error,
+            "image_embedding": health,
+        }
+    return {
+        "ok": bool(result.get("ok")),
+        "available": bool(result.get("ok")),
+        "status": "ready" if result.get("ok") else "unavailable",
+        "operation": "test_image_embedding",
+        "dim": len(result.get("embedding") or []),
+        "source": result.get("source", ""),
+        "error": result.get("error", ""),
+        "image_embedding": image_embedding_health(effective),
+    }
+
+
+def _image_embedding_disabled(settings: Any) -> bool:
+    backend = str(getattr(settings, "image_embedding_backend", "auto") or "auto").strip().lower()
+    return backend in {"disabled", "off", "none"}
+
+
+def _image_embedding_backend(settings: Any) -> OnnxSessionBackend | None:
+    model = str(getattr(settings, "onnx_image_embedding_model_path", "") or "").strip()
+    if not model:
+        return None
+    return detect_session_backend(
+        model_path=model,
+        configured_provider=str(getattr(settings, "onnx_image_embedding_execution_provider", "") or ""),
+        settings=settings,
+        model_id=str(getattr(settings, "onnx_image_embedding_model_id", "") or ""),
+    )
+
+
+def _run_local_image_embedding(image_path: Path, backend: OnnxSessionBackend) -> list[float]:
+    session = create_inference_session(backend)
+    input_names = session_input_names(session)
+    if not input_names:
+        raise OnnxAccelerationUnavailable("Image embedding ONNX model exposes no inputs.")
+    image_tensor = preprocess_image_for_onnx(image_path, size=_image_embedding_size(), normalize=True)
+    feed: dict[str, np.ndarray] = {}
+    for name in input_names:
+        lowered = name.lower()
+        if any(token in lowered for token in ("pixel", "image", "input", "x")):
+            feed[name] = image_tensor
+            break
+    if not feed:
+        feed[input_names[0]] = image_tensor
+    outputs = run_session(session, feed)
+    if not outputs:
+        raise OnnxAccelerationUnavailable("Image embedding ONNX model returned no outputs.")
+    vector = _pool_image_embedding_output(outputs)
+    return _l2_normalize_vector(vector)
+
+
+def _pool_image_embedding_output(outputs: list[Any]) -> list[float]:
+    best: np.ndarray | None = None
+    for output in outputs:
+        values = np.asarray(output, dtype=np.float32)
+        if values.size == 0:
+            continue
+        if values.ndim == 1:
+            candidate = values
+        elif values.ndim == 2:
+            candidate = values[0]
+        else:
+            candidate = values.reshape(values.shape[0], -1)[0]
+        if best is None or candidate.size > best.size:
+            best = candidate
+    if best is None:
+        return []
+    return [float(value) for value in best.tolist()]
+
+
+def _l2_normalize_vector(vector: list[float]) -> list[float]:
+    if not vector:
+        return []
+    values = np.asarray(vector, dtype=np.float32)
+    norm = float(np.linalg.norm(values))
+    if norm <= 1e-12:
+        return [float(value) for value in values.tolist()]
+    return [float(value) for value in (values / norm).tolist()]
+
+
+def _image_embedding_size() -> int:
+    raw = str(getattr(get_effective_settings(), "onnx_image_embedding_size", "") or "") or "224"
+    try:
+        return max(32, int(raw))
+    except ValueError:
+        return 224
+
+
+def _synthetic_image_for_smoke() -> Path:
+    import tempfile
+
+    from PIL import Image, ImageDraw
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="marvis_image_embedding_smoke_"))
+    path = temp_dir / "image-embedding-smoke.png"
+    image = Image.new("RGB", (224, 224), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((24, 24, 200, 200), outline="black")
+    draw.text((44, 104), "Mavris", fill="black")
+    image.save(path)
+    return path
+
+
+def _run_maybe_async(value: Any) -> Any:
+    if hasattr(value, "__await__"):
+        return asyncio.run(value)
+    return value
+
+
+def _coerce_vector(vector: Any) -> list[float]:
+    try:
+        return [float(value) for value in vector]
+    except Exception:
+        return []
+
+
+def _has_module(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
 
 
 def _heuristic_tags(description: str, structured_labels: dict[str, Any] | None = None) -> list[str]:
@@ -601,6 +948,7 @@ def register(registry) -> None:
         ("vision.describe_image", describe_image),
         ("vision.describe_images", describe_images),
         ("vision.ocr_image", ocr_image),
+        ("vision.embed_image", embed_image),
         ("vision.compare_images", compare_images),
     ]
     for name, fn in defs:

@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import dataclasses
+import importlib
+import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -20,11 +23,20 @@ from app.llm.usage import estimate_usage
 
 
 _PREFERRED_EXECUTION_PROVIDERS = [
+    ("onnx-winml", "WindowsMLExecutionProvider"),
     ("onnx-directml", "DmlExecutionProvider"),
     ("onnx-openvino", "OpenVINOExecutionProvider"),
     ("onnx-cpu", "CPUExecutionProvider"),
 ]
 _EXECUTION_PROVIDER_ALIASES = {
+    "winml": "WindowsMLExecutionProvider",
+    "windowsml": "WindowsMLExecutionProvider",
+    "windows_ml": "WindowsMLExecutionProvider",
+    "winml_execution_provider": "WindowsMLExecutionProvider",
+    "windowsml_execution_provider": "WindowsMLExecutionProvider",
+    "windows_ml_execution_provider": "WindowsMLExecutionProvider",
+    "winmlexecutionprovider": "WindowsMLExecutionProvider",
+    "windowsmlexecutionprovider": "WindowsMLExecutionProvider",
     "directml": "DmlExecutionProvider",
     "dml": "DmlExecutionProvider",
     "dml_execution_provider": "DmlExecutionProvider",
@@ -43,6 +55,14 @@ _PREFERRED_MODEL_DIR_NAMES = (
     "qwen2.5-3b",
 )
 _MODEL_ROOT_ENV_KEYS = ("MARVIS_ONNX_MODELS_DIR", "MAVRIS_ONNX_MODELS_DIR")
+_GENAI_RUNTIME_MODULES = ("onnxruntime_genai_winml", "onnxruntime_genai")
+_RUNTIME_PACKAGE_MODULES = (
+    "onnxruntime_genai_winml",
+    "onnxruntime_windowsml",
+    "onnxruntime_genai",
+    "onnxruntime",
+)
+_WINML_PROVIDER = "WindowsMLExecutionProvider"
 
 
 @dataclass(slots=True)
@@ -52,8 +72,23 @@ class OnnxBackend:
     execution_provider: str
     available_providers: list[str]
     generation_runtime: str = "onnxruntime_genai"
+    runtime_package: str = "onnxruntime_genai"
     model_family: str = ""
     provider_options: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class _GenaiModelState:
+    runtime: Any
+    config: Any
+    model: Any
+    tokenizer: Any
+    lock: threading.RLock = field(default_factory=threading.RLock)
+
+
+_GENAI_MODEL_CACHE: dict[str, _GenaiModelState] = {}
+_GENAI_MODEL_LOCKS: dict[str, threading.Lock] = {}
+_GENAI_GLOBAL_LOCK = threading.Lock()
 
 
 class OnnxProvider(LLMProvider):
@@ -92,6 +127,7 @@ class OnnxProvider(LLMProvider):
             metadata={
                 "backend": self.backend.kind,
                 "execution_provider": self.backend.execution_provider,
+                "runtime_package": self.backend.runtime_package,
             },
         )
 
@@ -114,43 +150,66 @@ class OnnxProvider(LLMProvider):
         from app.llm.local_provider import LocalBackendUnavailable
 
         try:
-            og = _import_genai_runtime()
+            state = self._ensure_genai_model()
         except ImportError as exc:
             raise LocalBackendUnavailable(
-                "ONNX acceleration is visible, but onnxruntime-genai is not installed or could not be loaded "
-                "for text generation."
+                "ONNX acceleration is visible, but no ONNX Runtime GenAI package could be loaded for text generation. "
+                "Install onnxruntime-genai-winml, onnxruntime-genai-directml, or an OpenVINO-capable GenAI runtime."
             ) from exc
         except Exception as exc:  # pragma: no cover - depends on optional native package
-            raise LocalBackendUnavailable(f"Unable to import onnxruntime-genai: {exc}") from exc
+            raise LocalBackendUnavailable(f"Unable to load ONNX Runtime GenAI model: {exc}") from exc
 
-        model_path = self._genai_model_path()
         try:
-            config = og.Config(model_path)
-            self._configure_execution_provider(config)
-            model = og.Model(config)
-            tokenizer = og.Tokenizer(model)
-            stream = tokenizer.create_stream()
-            input_tokens = tokenizer.encode(prompt)
-            params = og.GeneratorParams(model)
-            params.set_search_options(
-                max_length=max(1, len(input_tokens)) + max(1, self.settings.max_tokens),
-                temperature=temperature,
-                batch_size=1,
-            )
-            generator = og.Generator(model, params)
-            parts: list[str] = []
-            generated = 0
-            generator.append_tokens(input_tokens)
-            while not generator.is_done() and generated < self.settings.max_tokens:
-                generator.generate_next_token()
-                token = generator.get_next_tokens()[0]
-                parts.append(stream.decode(token))
-                generated += 1
-            return "".join(parts)
+            with state.lock:
+                stream = state.tokenizer.create_stream()
+                input_tokens = state.tokenizer.encode(prompt)
+                params = state.runtime.GeneratorParams(state.model)
+                params.set_search_options(
+                    max_length=max(1, len(input_tokens)) + max(1, self.settings.max_tokens),
+                    temperature=temperature,
+                    batch_size=1,
+                )
+                generator = state.runtime.Generator(state.model, params)
+                parts: list[str] = []
+                generated = 0
+                generator.append_tokens(input_tokens)
+                while not generator.is_done() and generated < self.settings.max_tokens:
+                    generator.generate_next_token()
+                    token = generator.get_next_tokens()[0]
+                    parts.append(stream.decode(token))
+                    generated += 1
+                return "".join(parts)
         except LocalBackendUnavailable:
             raise
         except Exception as exc:  # pragma: no cover - depends on optional native package/model
             raise LocalBackendUnavailable(f"ONNX text generation failed: {exc}") from exc
+
+    def _ensure_genai_model(self) -> _GenaiModelState:
+        key = self._genai_cache_key()
+        if key in _GENAI_MODEL_CACHE:
+            return _GENAI_MODEL_CACHE[key]
+        lock = _genai_model_lock(key)
+        with lock:
+            if key in _GENAI_MODEL_CACHE:
+                return _GENAI_MODEL_CACHE[key]
+            runtime = _import_genai_runtime(self.settings)
+            config = runtime.Config(self._genai_model_path())
+            self._configure_execution_provider(config)
+            model = runtime.Model(config)
+            tokenizer = runtime.Tokenizer(model)
+            state = _GenaiModelState(runtime=runtime, config=config, model=model, tokenizer=tokenizer)
+            _GENAI_MODEL_CACHE[key] = state
+            return state
+
+    def _genai_cache_key(self) -> str:
+        return "|".join(
+            [
+                self._genai_model_path(),
+                self.backend.execution_provider,
+                self.backend.runtime_package,
+                str(sorted(self.backend.provider_options.items())),
+            ]
+        )
 
     def _genai_model_path(self) -> str:
         from app.llm.local_provider import LocalBackendUnavailable
@@ -206,8 +265,9 @@ def detect_onnx_backend(
     candidate = _resolve_model_path(settings, model_path)
     if candidate is None:
         return None
-    if not _is_genai_runtime_available():
+    if not _genai_runtime_available(settings):
         return None
+    runtime_package = _available_genai_runtime_package(settings) or "onnxruntime_genai"
 
     providers = _available_execution_providers()
     selected = _select_execution_provider(providers, settings)
@@ -220,8 +280,10 @@ def detect_onnx_backend(
         model_path=str(candidate),
         execution_provider=execution_provider,
         available_providers=visible_providers,
+        generation_runtime=runtime_package,
+        runtime_package=runtime_package,
         model_family=_infer_model_family(candidate),
-        provider_options=_provider_options(execution_provider),
+        provider_options=_provider_options(execution_provider, settings),
     )
 
 
@@ -231,7 +293,7 @@ def _select_execution_provider(providers: list[str], settings: AppSettings | Non
     candidates = [(_kind_for_execution_provider(preferred), preferred)] if preferred else []
     candidates.extend(
         (kind, execution_provider)
-        for kind, execution_provider in _PREFERRED_EXECUTION_PROVIDERS
+        for kind, execution_provider in _preferred_execution_providers(settings)
         if execution_provider != preferred
     )
     provider_names = set(providers)
@@ -241,25 +303,203 @@ def _select_execution_provider(providers: list[str], settings: AppSettings | Non
     return None
 
 
+def _preferred_execution_providers(settings: AppSettings | None = None) -> list[tuple[str, str]]:
+    raw = ""
+    if settings is not None:
+        raw = str(getattr(settings, "onnx_provider_preference", "") or "").strip()
+    if not raw:
+        raw = os.environ.get("MARVIS_ONNX_PROVIDER_PREFERENCE") or os.environ.get("MAVRIS_ONNX_PROVIDER_PREFERENCE") or ""
+    if not raw:
+        return list(_PREFERRED_EXECUTION_PROVIDERS)
+
+    candidates: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for token in raw.replace(";", ",").split(","):
+        provider = _normalize_execution_provider(token)
+        if provider is None or provider in seen:
+            continue
+        seen.add(provider)
+        candidates.append((_kind_for_execution_provider(provider), provider))
+    for kind, provider in _PREFERRED_EXECUTION_PROVIDERS:
+        if provider not in seen:
+            candidates.append((kind, provider))
+    return candidates
+
+
 def health_snapshot(settings: AppSettings | None = None, *, model_path: str | None = None) -> dict[str, Any]:
     raw_model_path = _configured_model_path(settings, model_path)
     candidate = _resolve_model_path(settings, model_path)
-    genai_available = _is_genai_runtime_available()
+    runtime_packages = _runtime_packages_snapshot()
+    genai_runtime = _available_genai_runtime_package(settings, runtime_packages=runtime_packages)
+    genai_available = _genai_runtime_available(settings)
+    if not genai_available:
+        genai_runtime = ""
+    if genai_available and not genai_runtime:
+        genai_runtime = "onnxruntime_genai"
     providers = _available_execution_providers() if genai_available else []
+    configured_provider = _configured_execution_provider(settings) or ""
     backend = detect_onnx_backend(settings, model_path=model_path)
     if backend is not None:
-        return {"available": True, **asdict(backend)}
+        payload = {"available": True, **asdict(backend)}
+        return _with_status_details(
+            payload,
+            runtime_packages=runtime_packages,
+            providers=providers,
+            configured_provider=configured_provider,
+            selected_provider=backend.execution_provider,
+            errors=[],
+        )
 
     error = _unavailable_reason(candidate, genai_available, providers, configured_path=raw_model_path)
-    return {
+    payload = {
         "available": False,
         "kind": "onnx",
         "model_path": str(candidate or raw_model_path or ""),
         "execution_provider": "",
         "available_providers": providers,
-        "generation_runtime": "onnxruntime_genai" if genai_available else "",
+        "generation_runtime": genai_runtime or "",
+        "runtime_package": genai_runtime or "",
         "error": error,
     }
+    return _with_status_details(
+        payload,
+        runtime_packages=runtime_packages,
+        providers=providers,
+        configured_provider=configured_provider,
+        selected_provider="",
+        errors=[error],
+    )
+
+
+def warmup(settings: AppSettings | None = None, *, model_path: str | None = None) -> dict[str, Any]:
+    """Load the configured ONNX GenAI model once and report structured smoke status."""
+    settings = settings or AppSettings()
+    snapshot = health_snapshot(settings, model_path=model_path)
+    if not snapshot.get("available"):
+        return _smoke_unavailable("warmup", snapshot)
+
+    backend = detect_onnx_backend(settings, model_path=model_path)
+    if backend is None:
+        return _smoke_unavailable("warmup", snapshot)
+
+    provider = OnnxProvider(settings, backend)
+    try:
+        provider._ensure_genai_model()
+    except Exception as exc:  # noqa: BLE001 - native/runtime errors must be returned to callers.
+        error = str(exc) or exc.__class__.__name__
+        return {
+            "ok": False,
+            "available": False,
+            "status": "unavailable",
+            "operation": "warmup",
+            "error": error,
+            "errors": [error],
+            "llm": snapshot.get("llm", {}),
+        }
+
+    return {
+        "ok": True,
+        "available": True,
+        "status": "ready",
+        "operation": "warmup",
+        "backend": asdict(backend),
+        "llm": snapshot.get("llm", {}),
+    }
+
+
+async def test_generate(
+    settings: AppSettings | None = None,
+    *,
+    prompt: str = "Say hello from ONNX.",
+    max_tokens: int = 16,
+    model_path: str | None = None,
+) -> dict[str, Any]:
+    """Run a tiny ONNX generation smoke test without surfacing dependency failures as 500s."""
+    settings = settings or AppSettings()
+    snapshot = health_snapshot(settings, model_path=model_path)
+    if not snapshot.get("available"):
+        return _smoke_unavailable("test_generate", snapshot)
+
+    backend = detect_onnx_backend(settings, model_path=model_path)
+    if backend is None:
+        return _smoke_unavailable("test_generate", snapshot)
+
+    smoke_settings = dataclasses.replace(settings, max_tokens=max(1, min(int(max_tokens or 1), 64)))
+    provider = OnnxProvider(smoke_settings, backend)
+    try:
+        text = await provider.chat([{"role": "user", "content": prompt or "Say hello from ONNX."}])
+    except Exception as exc:  # noqa: BLE001 - route helper returns structured smoke status.
+        error = str(exc) or exc.__class__.__name__
+        return {
+            "ok": False,
+            "available": False,
+            "status": "unavailable",
+            "operation": "test_generate",
+            "error": error,
+            "errors": [error],
+            "llm": snapshot.get("llm", {}),
+        }
+
+    return {
+        "ok": True,
+        "available": True,
+        "status": "ready",
+        "operation": "test_generate",
+        "message": text,
+        "backend": asdict(backend),
+        "llm": snapshot.get("llm", {}),
+    }
+
+
+def _with_status_details(
+    payload: dict[str, Any],
+    *,
+    runtime_packages: dict[str, dict[str, Any]],
+    providers: list[str],
+    configured_provider: str,
+    selected_provider: str,
+    errors: list[str],
+) -> dict[str, Any]:
+    winml = _winml_snapshot(runtime_packages, providers)
+    details = {
+        "runtime": "onnx",
+        "available": bool(payload.get("available")),
+        "model_path": payload.get("model_path", ""),
+        "configured_provider": configured_provider,
+        "selected_provider": selected_provider,
+        "runtime_packages": runtime_packages,
+        "winml": winml,
+        "errors": errors,
+    }
+    return {
+        **payload,
+        "configured_provider": configured_provider,
+        "selected_provider": selected_provider,
+        "runtime_packages": runtime_packages,
+        "winml": winml,
+        "errors": errors,
+        "llm": details,
+    }
+
+
+def _smoke_unavailable(operation: str, snapshot: dict[str, Any]) -> dict[str, Any]:
+    errors = snapshot.get("errors") or ([snapshot["error"]] if snapshot.get("error") else [])
+    return {
+        "ok": False,
+        "available": False,
+        "status": "unavailable",
+        "operation": operation,
+        "error": errors[0] if errors else "ONNX runtime is unavailable.",
+        "errors": errors,
+        "llm": snapshot.get("llm", {}),
+    }
+
+
+def _genai_model_lock(key: str) -> threading.Lock:
+    with _GENAI_GLOBAL_LOCK:
+        if key not in _GENAI_MODEL_LOCKS:
+            _GENAI_MODEL_LOCKS[key] = threading.Lock()
+        return _GENAI_MODEL_LOCKS[key]
 
 
 def _resolve_model_path(settings: AppSettings | None, model_path: str | None) -> Path | None:
@@ -452,13 +692,18 @@ def _normalize_execution_provider(value: str | None) -> str | None:
     stripped = value.strip()
     if not stripped:
         return None
+    normalized = stripped.lower().replace("-", "_").replace(" ", "_")
+    alias = _EXECUTION_PROVIDER_ALIASES.get(normalized)
+    if alias:
+        return alias
     if stripped.endswith("ExecutionProvider"):
         return stripped
-    normalized = stripped.lower().replace("-", "_").replace(" ", "_")
-    return _EXECUTION_PROVIDER_ALIASES.get(normalized)
+    return None
 
 
 def _kind_for_execution_provider(execution_provider: str) -> str:
+    if execution_provider == _WINML_PROVIDER:
+        return "onnx-winml"
     if execution_provider == "DmlExecutionProvider":
         return "onnx-directml"
     if execution_provider == "OpenVINOExecutionProvider":
@@ -468,29 +713,121 @@ def _kind_for_execution_provider(execution_provider: str) -> str:
     return f"onnx-{execution_provider.lower().replace('executionprovider', '')}"
 
 
-def _provider_options(execution_provider: str) -> dict[str, str]:
+def _provider_options(execution_provider: str, settings: AppSettings | None = None) -> dict[str, str]:
+    if execution_provider == "OpenVINOExecutionProvider":
+        options: dict[str, str] = {}
+        device = str(getattr(settings, "onnx_openvino_device", "") or "").strip() if settings is not None else ""
+        cache_dir = str(getattr(settings, "onnx_openvino_cache_dir", "") or "").strip() if settings is not None else ""
+        if not device:
+            device = os.environ.get("MARVIS_ONNX_OPENVINO_DEVICE") or os.environ.get("MAVRIS_ONNX_OPENVINO_DEVICE") or ""
+        if not cache_dir:
+            cache_dir = os.environ.get("MARVIS_ONNX_OPENVINO_CACHE_DIR") or os.environ.get("MAVRIS_ONNX_OPENVINO_CACHE_DIR") or ""
+        if device and device.strip():
+            options["device_type"] = device.strip()
+        if cache_dir and cache_dir.strip():
+            options["cache_dir"] = cache_dir.strip()
+        return options
     if execution_provider != "DmlExecutionProvider":
         return {}
-    device_id = os.environ.get("MARVIS_ONNX_DIRECTML_DEVICE_ID")
+    device_id = str(getattr(settings, "onnx_directml_device_id", "") or "").strip() if settings is not None else ""
+    if not device_id:
+        device_id = os.environ.get("MARVIS_ONNX_DIRECTML_DEVICE_ID") or os.environ.get("MAVRIS_ONNX_DIRECTML_DEVICE_ID") or ""
     if device_id is None or not device_id.strip():
         return {}
     return {"device_id": device_id.strip()}
 
 
-def _import_genai_runtime() -> Any:
-    import onnxruntime_genai as og
+def _import_genai_runtime(settings: AppSettings | None = None) -> Any:
+    errors: list[str] = []
+    for module_name in _genai_runtime_import_order(settings):
+        try:
+            return importlib.import_module(module_name)
+        except ImportError as exc:
+            errors.append(f"{module_name}: {exc}")
+        except Exception as exc:
+            errors.append(f"{module_name}: {exc}")
+    raise ImportError("; ".join(errors) or "No ONNX Runtime GenAI package is importable.")
 
-    return og
 
 
-def _is_genai_runtime_available() -> bool:
+def _is_genai_runtime_available(settings: AppSettings | None = None) -> bool:
     try:
-        _import_genai_runtime()
+        _import_genai_runtime(settings)
     except ImportError:
         return False
     except Exception:
         return False
     return True
+
+
+def _genai_runtime_available(settings: AppSettings | None = None) -> bool:
+    try:
+        return _is_genai_runtime_available(settings)
+    except TypeError:
+        return _is_genai_runtime_available()
+
+
+def _available_genai_runtime_package(
+    settings: AppSettings | None = None,
+    *,
+    runtime_packages: dict[str, dict[str, Any]] | None = None,
+) -> str:
+    packages = runtime_packages or _runtime_packages_snapshot()
+    for module_name in _genai_runtime_import_order(settings):
+        if packages.get(module_name, {}).get("available"):
+            return module_name
+    return ""
+
+
+def _genai_runtime_import_order(settings: AppSettings | None = None) -> tuple[str, ...]:
+    configured = _configured_runtime(settings)
+    if configured in {"winml", "windowsml"}:
+        return ("onnxruntime_genai_winml", "onnxruntime_genai")
+    if configured in {"genai", "default", "standard"}:
+        return ("onnxruntime_genai", "onnxruntime_genai_winml")
+    return _GENAI_RUNTIME_MODULES
+
+
+def _configured_runtime(settings: AppSettings | None = None) -> str:
+    raw = ""
+    if settings is not None:
+        raw = str(getattr(settings, "onnx_runtime", "") or "").strip()
+    if not raw:
+        raw = os.environ.get("MARVIS_ONNX_RUNTIME") or os.environ.get("MAVRIS_ONNX_RUNTIME") or ""
+    normalized = raw.lower().replace("-", "_").replace(" ", "_")
+    return normalized if normalized else "auto"
+
+
+def _runtime_packages_snapshot() -> dict[str, dict[str, Any]]:
+    return {module_name: _runtime_package_snapshot(module_name) for module_name in _RUNTIME_PACKAGE_MODULES}
+
+
+def _runtime_package_snapshot(module_name: str) -> dict[str, Any]:
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        return {"available": False, "module": module_name, "error": str(exc)}
+    except Exception as exc:
+        return {"available": False, "module": module_name, "error": str(exc)}
+    version = str(getattr(module, "__version__", "") or "")
+    return {"available": True, "module": module_name, "version": version, "error": ""}
+
+
+def _winml_snapshot(runtime_packages: dict[str, dict[str, Any]], providers: list[str]) -> dict[str, Any]:
+    package_names = ("onnxruntime_genai_winml", "onnxruntime_windowsml")
+    available_packages = [name for name in package_names if runtime_packages.get(name, {}).get("available")]
+    package_errors = {
+        name: runtime_packages.get(name, {}).get("error", "")
+        for name in package_names
+        if runtime_packages.get(name, {}).get("error")
+    }
+    return {
+        "available": bool(available_packages or _WINML_PROVIDER in providers),
+        "provider": _WINML_PROVIDER,
+        "provider_available": _WINML_PROVIDER in providers or bool(available_packages),
+        "packages": available_packages,
+        "errors": package_errors,
+    }
 
 
 def _available_execution_providers() -> list[str]:
@@ -507,6 +844,8 @@ def _available_execution_providers() -> list[str]:
 
 
 def _genai_reports_provider_available(kind: str) -> bool:
+    if kind == "onnx-winml":
+        return _winml_runtime_available()
     try:
         og = _import_genai_runtime()
     except ImportError:
@@ -524,6 +863,14 @@ def _genai_reports_provider_available(kind: str) -> bool:
         except Exception:
             return False
     return False
+
+
+def _winml_runtime_available() -> bool:
+    packages = _runtime_packages_snapshot()
+    return any(
+        packages.get(name, {}).get("available")
+        for name in ("onnxruntime_genai_winml", "onnxruntime_windowsml")
+    )
 
 
 def _unavailable_reason(
@@ -544,7 +891,10 @@ def _unavailable_reason(
             "bundle under .marvis_data/models."
         )
     if not genai_available:
-        return "onnxruntime-genai is not installed. Install onnxruntime-genai-directml or an OpenVINO-capable GenAI runtime."
+        return (
+            "ONNX Runtime GenAI is not installed. Install onnxruntime-genai-winml, "
+            "onnxruntime-genai-directml, or an OpenVINO-capable GenAI runtime."
+        )
     if not providers:
         return "onnxruntime-genai is installed, but no ONNX Runtime execution providers were reported."
     wanted = ", ".join(provider for _, provider in _PREFERRED_EXECUTION_PROVIDERS)

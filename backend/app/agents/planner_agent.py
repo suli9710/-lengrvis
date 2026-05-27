@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import re
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,8 @@ from app.core.schemas import MessageType, Plan, PlanStep
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.mock_provider import MockProvider
 from app.llm.prompts import load_prompt, render_prompt
-from app.llm.registry import get_provider
+from app.llm.registry import get_effective_settings, get_provider
+from app.perception.storage import is_sensitive_context
 from app.policy.risk import RiskLevel, max_risk
 
 
@@ -112,7 +115,7 @@ class PlannerAgent(BaseAgent):
             },
         ]
         try:
-            provider = get_provider()
+            provider = self._provider_for_mode(mode)
             payload = await provider.structured_chat(messages, PLAN_SCHEMA)
         except LocalBackendUnavailable as exc:
             self.bus.publish_text(
@@ -161,6 +164,16 @@ class PlannerAgent(BaseAgent):
 
         self._publish_plan(task_id, plan)
         return plan
+
+    def _provider_for_mode(self, mode: str):
+        settings = dataclasses.replace(get_effective_settings(), mode=mode or "efficiency")
+        try:
+            parameters = inspect.signature(get_provider).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if parameters:
+            return get_provider(settings, task="planner")
+        return get_provider()
 
     def _format_session_context(self, session_context: dict[str, Any] | str | None) -> str:
         if not session_context:
@@ -227,21 +240,23 @@ class PlannerAgent(BaseAgent):
             return ""
         lines: list[str] = []
         screen_state = perception_context.get("screen_state")
-        if screen_state is not None:
-            description = str(getattr(screen_state, "description", "") or "").strip()
-            if description:
-                lines.append(f"- Visible screen: {description[:240]}")
-            tags = list(getattr(screen_state, "tags", []) or [])
-            if tags:
-                lines.append(f"- Screen tags: {', '.join(str(tag) for tag in tags[:8])}")
         app_context = perception_context.get("app_context")
         if app_context is None and screen_state is not None:
-            app_context = getattr(screen_state, "app_context", None)
+            app_context = _context_value(screen_state, "app_context", None)
+        if is_sensitive_context(screen_state=screen_state, app_context=app_context):
+            return ""
+        if screen_state is not None:
+            description = str(_context_value(screen_state, "description") or "").strip()
+            if description:
+                lines.append(f"- Visible screen: {description[:240]}")
+            tags = list(_context_value(screen_state, "tags", []) or [])
+            if tags:
+                lines.append(f"- Screen tags: {', '.join(str(tag) for tag in tags[:8])}")
         if app_context is not None:
-            title = str(getattr(app_context, "active_window_title", "") or "").strip()
-            process = str(getattr(app_context, "process_name", "") or "").strip()
-            focused = getattr(app_context, "focus_control", None)
-            focus_name = str(getattr(focused, "name", "") or getattr(focused, "text", "") or "").strip() if focused else ""
+            title = str(_context_value(app_context, "active_window_title") or "").strip()
+            process = str(_context_value(app_context, "process_name") or "").strip()
+            focused = _context_value(app_context, "focus_control", None)
+            focus_name = str(_context_value(focused, "name") or _context_value(focused, "text") or "").strip() if focused else ""
             if title or process:
                 lines.append(f"- Active app: {process or 'unknown'} / {title or 'untitled'}")
             if focus_name:
@@ -444,3 +459,9 @@ class PlannerAgent(BaseAgent):
                 raise ValueError(f"Step {step.id} depends on unknown step id(s): {', '.join(missing)}")
             if step.id in step.depends_on:
                 raise ValueError(f"Step {step.id} cannot depend on itself.")
+
+
+def _context_value(value: Any, key: str, default: Any = "") -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)

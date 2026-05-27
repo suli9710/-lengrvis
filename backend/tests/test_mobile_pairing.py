@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import threading
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.core import db
 from app.core.schemas import Approval, Plan, PlanStep, Task
 from app.main import app
 from app.security.mobile_jwt import decode_mobile_token
+from app.services import mobile_pairing_service
 from app.services.approval_event_service import publish_approval_created
 
 
@@ -96,6 +99,51 @@ def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
 
     replay_response = client.post("/api/pair", json={"code": code, "device_name": "Replay"})
     assert replay_response.status_code == 401
+
+
+def test_pair_code_redeem_is_atomic_under_concurrent_submitters(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _clear_pairing_failures()
+    code = mobile_pairing_service.create_pairing_request()["code"]
+    barrier = threading.Barrier(2)
+
+    def redeem(index: int) -> tuple[str, str | int]:
+        barrier.wait(timeout=5)
+        try:
+            payload = mobile_pairing_service.confirm_pairing(
+                code=code,
+                device_name=f"Phone {index}",
+                client_host=f"198.51.100.{index}",
+            )
+            return ("ok", payload["device_id"])
+        except HTTPException as exc:
+            return ("error", exc.status_code)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(redeem, [1, 2]))
+
+    assert [kind for kind, _value in results].count("ok") == 1
+    assert [value for kind, value in results if kind == "error"] == [401]
+    record = db.fetch_one("mobile_pairings", code)
+    assert record is not None
+    assert record["status"] == "used"
+    assert len(db.fetch_many("mobile_devices", limit=10)) == 1
+
+
+def test_pair_confirm_rate_limits_failed_attempts_by_client(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _clear_pairing_failures()
+    client = TestClient(app, client=("192.0.2.88", 50100))
+
+    for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
+        response = client.post("/api/pair/confirm", json={"code": "ffffff", "device_name": "Phone"})
+        assert response.status_code == 401
+
+    limited = client.post("/api/pair/confirm", json={"code": "ffffff", "device_name": "Phone"})
+
+    assert limited.status_code == 429
 
 
 def test_mobile_approval_routes_require_bearer_token(monkeypatch, tmp_path):
@@ -381,3 +429,8 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
 def _paired_token(client: TestClient) -> str:
     code = client.post("/api/pair/code").json()["code"]
     return client.post("/api/pair", json={"code": code, "device_name": "Test Phone"}).json()["token"]
+
+
+def _clear_pairing_failures() -> None:
+    with mobile_pairing_service._PAIR_CONFIRM_FAILURES_LOCK:
+        mobile_pairing_service._PAIR_CONFIRM_FAILURES.clear()

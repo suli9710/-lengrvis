@@ -15,6 +15,7 @@ def test_status_not_installed():
         assert result["installed"] is False
         assert result["running"] is False
         assert result["models"] == []
+        assert "readiness" in result
 
 
 def test_status_installed_not_running():
@@ -34,7 +35,7 @@ def test_status_installed_and_running():
         return True
 
     async def _models():
-        return ["qwen2.5:3b-instruct", "llama3:8b"]
+        return ["qwen2.5:3b", "llama3:8b"]
 
     with patch.object(ollama_service, "is_installed", return_value=True), \
          patch.object(ollama_service, "is_running", side_effect=_running), \
@@ -42,8 +43,9 @@ def test_status_installed_and_running():
         result = asyncio.run(ollama_service.status())
         assert result["installed"] is True
         assert result["running"] is True
-        assert "qwen2.5:3b-instruct" in result["models"]
+        assert "qwen2.5:3b" in result["models"]
         assert result["has_recommended"] is True
+        assert "readiness" in result
 
 
 def test_status_running_without_recommended_model():
@@ -63,7 +65,8 @@ def test_status_running_without_recommended_model():
 
 
 def test_is_installed_checks_path():
-    with patch("shutil.which", return_value=None):
+    with patch("shutil.which", return_value=None), \
+         patch("os.path.exists", return_value=False):
         assert ollama_service.is_installed() is False
     with patch("shutil.which", return_value="C:\\Program Files\\Ollama\\ollama.exe"):
         assert ollama_service.is_installed() is True
@@ -123,6 +126,25 @@ def test_install_winget_not_found():
         assert "winget" in result["error"].lower()
 
 
+def test_start_server_requires_installed_ollama():
+    with patch.object(ollama_service, "is_installed", return_value=False), \
+         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False):
+        result = asyncio.run(ollama_service.start_server())
+        assert result["ok"] is False
+        assert "not installed" in result["error"]
+
+
+def test_start_server_launches_ollama_when_available():
+    with patch.object(ollama_service, "is_installed", return_value=True), \
+         patch.object(ollama_service, "_ollama_executable", return_value="ollama"), \
+         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False), \
+         patch("subprocess.Popen") as popen, \
+         patch.object(ollama_service, "record"):
+        result = asyncio.run(ollama_service.start_server())
+        assert result["ok"] is True
+        popen.assert_called_once()
+
+
 def test_pull_model_connection_error():
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_client = MagicMock()
@@ -152,3 +174,53 @@ def test_pull_model_uses_default():
             result = asyncio.run(ollama_service.pull_model())
             assert result["ok"] is True
             assert result["model"] == ollama_service.RECOMMENDED_MODEL
+
+
+def test_assess_hardware_blocks_underpowered_machine():
+    result = ollama_service.assess_hardware(
+        memory_total_bytes=4 * 1024**3,
+        disk_free_bytes=4 * 1024**3,
+        cpu_logical_cores=2,
+    )
+    assert result["can_install"] is False
+    assert len([check for check in result["checks"] if not check["ok"]]) == 3
+
+
+def test_assess_hardware_recommends_medium_model_when_resources_allow():
+    result = ollama_service.assess_hardware(
+        memory_total_bytes=32 * 1024**3,
+        disk_free_bytes=64 * 1024**3,
+        cpu_logical_cores=12,
+    )
+    assert result["can_install"] is True
+    assert result["recommended_model"] == ollama_service.FALLBACK_MEDIUM_MODEL
+
+
+@pytest.mark.asyncio
+async def test_install_local_model_stops_when_hardware_not_ready(monkeypatch):
+    monkeypatch.setattr(
+        ollama_service,
+        "hardware_readiness",
+        lambda model=None: {
+            "can_install": False,
+            "recommended_model": "qwen2.5:3b",
+            "reason": "not enough memory",
+            "checks": [],
+        },
+    )
+    results = []
+    async for progress in ollama_service.install_local_model():
+        results.append(progress)
+    assert results == [
+        {
+            "phase": "hardware",
+            "status": "error",
+            "error": "not enough memory",
+            "readiness": {
+                "can_install": False,
+                "recommended_model": "qwen2.5:3b",
+                "reason": "not enough memory",
+                "checks": [],
+            },
+        }
+    ]

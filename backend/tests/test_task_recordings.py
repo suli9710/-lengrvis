@@ -187,6 +187,35 @@ def test_capture_step_screenshot_persists_png_blob(monkeypatch: pytest.MonkeyPat
     assert image.startswith(b"\x89PNG")
 
 
+def test_perception_capture_does_not_write_task_recordings(monkeypatch: pytest.MonkeyPatch):
+    from app.perception.screen_monitor import ScreenMonitor, ScreenMonitorConfig
+
+    monitor = ScreenMonitor(
+        ScreenMonitorConfig(enabled=True, publish_events=True, task_id="task_perception"),
+        capture_fn=lambda **kwargs: type(
+            "Frame",
+            (),
+            {
+                "image_base64": "ZmFrZS1qcGVn",
+                "timestamp": "2026-05-26T00:00:00+00:00",
+                "width": 1,
+                "height": 1,
+                "original_width": 1,
+                "original_height": 1,
+            },
+        )(),
+        describe_fn=lambda args, context: {"ok": True, "description": "Desktop"},  # noqa: ARG005
+        event_publisher=lambda event: None,  # noqa: ARG005
+    )
+
+    monitor.poll_once()
+
+    assert list_recording_frames("task_perception") == []
+    with db.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) AS count FROM task_recordings").fetchone()["count"]
+    assert count == 0
+
+
 def test_approved_step_records_approved_before_and_after(fake_capture):
     calls: list[dict[str, Any]] = []
     orchestrator = OrchestratorAgent()

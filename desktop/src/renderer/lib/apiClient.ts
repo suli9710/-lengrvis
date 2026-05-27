@@ -7,15 +7,38 @@ import type {
   ApprovalRequest,
   AuditLogEntry,
   BackendStatus,
+  BrowserActivityEvent,
+  BrowserAction,
+  BrowserHostActionResult,
+  BrowserHostOpenRequest,
+  BrowserHostSnapshot,
   BrowserLinkResult,
   BrowserPageSnapshot,
+  BrowserSession,
   CommandExecutionResult,
   CommandInfo,
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  CleanupExecutionResult,
+  CleanupExecuteRequest,
+  CleanupItem,
+  CleanupPlan,
+  CleanupPlanRequest,
+  CleanupRollbackRequest,
+  CleanupScanRequest,
   ContextUsage,
+  DocumentAskRequest,
+  DocumentAskResponse,
+  DocumentCitation,
+  DocumentCompareRequest,
+  DocumentCompareResponse,
+  DocumentIR,
+  DocumentParseRequest,
+  DocumentTable,
   FileSearchResult,
+  HardwareAccelerationSmokePayload,
+  HardwareAccelerationStatusPayload,
   InstalledApp,
   InstalledSkill,
   IntentSuggestion,
@@ -23,6 +46,9 @@ import type {
   LLMHealthStatus,
   LLMProfile,
   LocalLLMHealth,
+  LocalModelReadiness,
+  PerceptionSuggestionLaunchRequest,
+  PerceptionSuggestionLaunchResponse,
   Plan,
   SafetyReview,
   SkillImportResult,
@@ -54,6 +80,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const WS_RETRY_DELAY_MS = 2_500;
 
 export class MavrisApiClient {
+  private lastLoadedSettings: AppSettings | null = null;
+
   async request<TResponse, TBody = unknown>(request: ApiRequest<TBody>): Promise<ApiResponse<TResponse>> {
     if (!window.mavris) {
       return requestBackendDirect<TResponse, TBody>(FALLBACK_BACKEND_URL, request);
@@ -141,6 +169,23 @@ export class MavrisApiClient {
     return this.request<BackendIntentSuggestion[]>({ endpoint: "/api/chat/proactive-suggestions", timeoutMs: 2500 }).then(
       (response) => mapResponse(response, (suggestions) => suggestions.map(mapIntentSuggestion))
     );
+  }
+
+  async launchPerceptionSuggestion(
+    body: PerceptionSuggestionLaunchRequest
+  ): Promise<ApiResponse<PerceptionSuggestionLaunchResponse>> {
+    const response = await this.request<BackendSuggestionLaunchResponse, BackendSuggestionLaunchRequest>({
+      endpoint: `/api/perception/suggestions/${encodeURIComponent(body.suggestionId)}/launch`,
+      method: "POST",
+      body: {
+        suggestion_id: body.suggestionId,
+        prompt: body.prompt,
+        mode: body.mode ?? "efficiency"
+      },
+      timeoutMs: 10_000
+    });
+
+    return mapResponse(response, (data) => mapSuggestionLaunchResponse(data, body.prompt ?? body.suggestionId));
   }
 
   startRun(body: ChatRequest): Promise<ApiResponse<ChatResponse>> {
@@ -432,9 +477,14 @@ export class MavrisApiClient {
   }
 
   getSettings(): Promise<ApiResponse<AppSettings>> {
-    return this.request<BackendSettings>({ endpoint: "/api/settings" }).then((response) =>
-      mapResponse(response, mapSettings)
-    );
+    return this.request<BackendSettings>({ endpoint: "/api/settings" }).then((response) => {
+      const mapped = mapResponse(response, mapSettings);
+      if (mapped.ok && mapped.data) {
+        mapped.data = mergeDesktopOnlySettings(mapped.data, this.lastLoadedSettings);
+        this.lastLoadedSettings = mapped.data;
+      }
+      return mapped;
+    });
   }
 
   getLocalLlmHealth(): Promise<ApiResponse<LocalLLMHealth>> {
@@ -465,6 +515,54 @@ export class MavrisApiClient {
     }).then((response) => mapResponse(response, mapLlmCostSummary));
   }
 
+  getHardwareAccelerationStatus(): Promise<ApiResponse<HardwareAccelerationStatusPayload>> {
+    return this.request<BackendHardwareAccelerationStatus>({
+      endpoint: "/api/settings/onnx/status",
+      timeoutMs: 2500
+    }).then((response) => mapResponse(response, mapHardwareAccelerationStatus));
+  }
+
+  async runHardwareAccelerationSmoke(
+    payload: HardwareAccelerationSmokeRequest = {}
+  ): Promise<ApiResponse<HardwareAccelerationSmokePayload>> {
+    const endpointByOperation: Record<NonNullable<HardwareAccelerationSmokeRequest["operation"]>, string> = {
+      warmup: "/api/settings/onnx/warmup",
+      test_generate: "/api/settings/onnx/test-generate",
+      test_embedding: "/api/settings/onnx/test-embedding",
+      test_ocr: "/api/settings/onnx/test-ocr",
+      test_image_embedding: "/api/settings/onnx/test-image-embedding"
+    };
+    const operation = payload.operation ?? "warmup";
+    const body = operation === "test_generate"
+      ? {
+          prompt: payload.prompt,
+          max_tokens: payload.maxTokens,
+          model_path: payload.modelPath
+        }
+      : operation === "test_embedding"
+        ? {
+            texts: payload.texts,
+            model_path: payload.modelPath
+          }
+        : operation === "test_image_embedding"
+          ? {
+              image_path: payload.imagePath,
+              model_path: payload.modelPath
+            }
+      : {
+          model_path: payload.modelPath
+        };
+    const method = "POST";
+    const endpoint = endpointByOperation[operation];
+    const response = await this.request<BackendHardwareAccelerationSmoke, HardwareAccelerationSmokeRequestBody>({
+      endpoint,
+      method,
+      body,
+      timeoutMs: 10_000
+    });
+    return mapResponse(response, mapHardwareAccelerationSmoke);
+  }
+
   getContextUsage(taskId?: string): Promise<ApiResponse<ContextUsage>> {
     return this.request<BackendContextUsage>({
       endpoint: "/api/context/usage",
@@ -474,48 +572,19 @@ export class MavrisApiClient {
   }
 
   saveSettings(settings: AppSettings): Promise<ApiResponse<AppSettings>> {
+    const body = settingsPatchFor(settings, this.lastLoadedSettings);
     return this.request<BackendSettings, Partial<BackendSettings>>({
       endpoint: "/api/settings",
       method: "POST",
-      body: {
-        provider_name: settings.providerName,
-        base_url: settings.apiBaseUrl,
-        model: settings.model,
-        review_model: settings.reviewModel,
-        wire_api: settings.wireApi,
-        requires_openai_auth: settings.requiresOpenAiAuth,
-        model_reasoning_effort: settings.modelReasoningEffort,
-        disable_response_storage: settings.disableResponseStorage,
-        temperature: settings.temperature,
-        max_tokens: settings.maxTokens,
-        timeout: settings.timeout,
-        llm_api_max_retries: settings.llmApiMaxRetries,
-        llm_api_retry_backoff_seconds: settings.llmApiRetryBackoffSeconds,
-        llm_api_circuit_failure_threshold: settings.llmApiCircuitFailureThreshold,
-        llm_api_circuit_cooldown_seconds: settings.llmApiCircuitCooldownSeconds,
-        model_context_window: settings.modelContextWindow,
-        model_auto_compact_token_limit: settings.modelAutoCompactTokenLimit,
-        allowed_directories: settings.workspaceRoot ? [settings.workspaceRoot] : [],
-        allow_browser_network: settings.allowBrowserNetwork,
-        remote_desktop_enabled: settings.remoteDesktopEnabled,
-        app_allowlist: settings.appAllowlist,
-        browser_max_page_bytes: settings.browserMaxPageBytes,
-        browser_screenshot_dir: settings.browserScreenshotDir,
-        onnx_model_path: settings.onnxModelPath,
-        onnx_execution_provider: settings.onnxExecutionProvider,
-        mode: settings.mode,
-        allow_cloud_context: settings.allowCloudContext,
-        allow_file_content_upload: settings.allowFileContentUpload,
-        mcp_servers: settings.mcpServers
-          .filter((server) => server.url.trim() && server.name.trim())
-          .map((server) => ({
-            name: server.name.trim(),
-            url: server.url.trim(),
-            enabled: server.enabled,
-            transport: "http"
-          }))
+      body
+    }).then((response) => {
+      const mapped = mapResponse(response, mapSettings);
+      if (mapped.ok && mapped.data) {
+        mapped.data = mergeDesktopOnlySettings(mapped.data, settings);
+        this.lastLoadedSettings = mapped.data;
       }
-    }).then((response) => mapResponse(response, mapSettings));
+      return mapped;
+    });
   }
 
   listAuditLogs(): Promise<ApiResponse<AuditLogEntry[]>> {
@@ -571,6 +640,96 @@ export class MavrisApiClient {
     );
   }
 
+  parseDocument(body: DocumentParseRequest): Promise<ApiResponse<DocumentIR>> {
+    return this.request<BackendDocumentIR, BackendDocumentParseRequest>({
+      endpoint: "/api/documents/parse",
+      method: "POST",
+      body: {
+        path: body.path,
+        include_text: body.includeText
+      },
+      timeoutMs: 30_000
+    }).then((response) => mapResponse(response, mapDocumentIR));
+  }
+
+  askDocument(body: DocumentAskRequest): Promise<ApiResponse<DocumentAskResponse>> {
+    return this.request<BackendDocumentAskResponse, BackendDocumentAskRequest>({
+      endpoint: "/api/documents/ask",
+      method: "POST",
+      body: {
+        path: body.path,
+        document_id: body.documentId,
+        question: body.question,
+        top_k: body.topK
+      },
+      timeoutMs: 30_000
+    }).then((response) => mapResponse(response, mapDocumentAskResponse));
+  }
+
+  compareDocuments(body: DocumentCompareRequest): Promise<ApiResponse<DocumentCompareResponse>> {
+    return this.request<BackendDocumentCompareResponse, BackendDocumentCompareRequest>({
+      endpoint: "/api/documents/compare",
+      method: "POST",
+      body: {
+        paths: body.paths,
+        focus: body.focus
+      },
+      timeoutMs: 45_000
+    }).then((response) => mapResponse(response, mapDocumentCompareResponse));
+  }
+
+  scanCleanup(body: CleanupScanRequest = {}): Promise<ApiResponse<CleanupPlan>> {
+    return this.request<BackendCleanupPlan, BackendCleanupScanRequest>({
+      endpoint: "/api/files/cleanup/scan",
+      method: "POST",
+      body: cleanupScanRequestFor(body),
+      timeoutMs: 30_000
+    }).then((response) => mapResponse(response, mapCleanupPlan));
+  }
+
+  planCleanup(body: CleanupPlanRequest = {}): Promise<ApiResponse<CleanupPlan>> {
+    return this.request<BackendCleanupPlan, BackendCleanupPlanRequest>({
+      endpoint: "/api/files/cleanup/plan",
+      method: "POST",
+      body: {
+        ...cleanupScanRequestFor(body),
+        item_ids: body.itemIds,
+        prefer_trash: body.preferTrash
+      },
+      timeoutMs: 30_000
+    }).then((response) => mapResponse(response, mapCleanupPlan));
+  }
+
+  executeCleanup(body: CleanupExecuteRequest): Promise<ApiResponse<CleanupExecutionResult>> {
+    const selectedItemIds = body.selectedItemIds ?? body.items?.map((item) => item.id);
+    return this.request<BackendCleanupExecutionResult, BackendCleanupExecuteRequest>({
+      endpoint: "/api/files/cleanup/execute",
+      method: "POST",
+      body: {
+        roots: body.roots,
+        plan_id: body.planId,
+        content_hash: body.contentHash,
+        selected_item_ids: selectedItemIds,
+        dry_run: body.dryRun,
+        approved: body.approved,
+        approval_id: body.approvalId
+      },
+      timeoutMs: 60_000
+    }).then((response) => mapResponse(response, mapCleanupExecutionResult));
+  }
+
+  rollbackCleanup(body: CleanupRollbackRequest): Promise<ApiResponse<CleanupExecutionResult>> {
+    return this.request<BackendCleanupExecutionResult, BackendCleanupRollbackRequest>({
+      endpoint: "/api/files/cleanup/rollback",
+      method: "POST",
+      body: {
+        plan_id: body.planId,
+        execution_id: body.executionId
+      },
+      timeoutMs: 60_000
+    }).then((response) => mapResponse(response, mapCleanupExecutionResult));
+  }
+
   readBrowserPage(url: string): Promise<ApiResponse<BrowserPageSnapshot>> {
     return this.request<BackendBrowserPage>({
       endpoint: "/api/browser/read",
@@ -585,6 +744,294 @@ export class MavrisApiClient {
       query: { url },
       timeoutMs: 20_000
     }).then((response) => mapResponse(response, (data) => data.links.map(mapBrowserLink)));
+  }
+
+  async listBrowserSessions(): Promise<ApiResponse<BrowserSession[]>> {
+    const receivedAt = new Date().toISOString();
+    const [hostResult, backendResult] = await Promise.allSettled([
+      this.getBrowserHostSnapshot(),
+      this.request<BackendBrowserSessions>({ endpoint: "/api/browser/sessions", timeoutMs: 2500 })
+    ]);
+
+    const snapshot = hostResult.status === "fulfilled" ? hostResult.value : emptyBrowserHostSnapshot(false);
+    const backendSessions =
+      backendResult.status === "fulfilled" && backendResult.value.ok && backendResult.value.data?.ok !== false
+        ? (backendResult.value.data?.sessions ?? []).map(mapBrowserSession)
+        : [];
+
+    if (hostResult.status === "fulfilled" || backendResult.status === "fulfilled") {
+      return {
+        ok: true,
+        status: snapshot.hostAvailable || backendSessions.length ? 200 : 204,
+        data: mergeBrowserSessionArrays(backendSessions, snapshot.sessions),
+        receivedAt
+      };
+    }
+
+    return {
+      ok: false,
+      status: 0,
+      error: {
+        code: "BROWSER_ACTIVITY_UNAVAILABLE",
+        message: "Browser activity state is unavailable"
+      },
+      receivedAt
+    };
+  }
+
+  async listBrowserSessionEvents(sessionId: string, limit = 200): Promise<ApiResponse<BrowserActivityEvent[]>> {
+    const response = await this.request<BackendBrowserEvents>({
+      endpoint: `/api/browser/session/${encodeURIComponent(sessionId)}/events`,
+      query: { limit },
+      timeoutMs: 2500
+    });
+    const mapped = mapResponse(response, (data) => (data.events ?? []).map(mapBrowserActivityEvent));
+    if (mapped.ok && response.data?.ok === false) {
+      return {
+        ok: false,
+        status: response.status,
+        error: {
+          message: response.data.error ?? "Browser session events unavailable",
+          details: response.data
+        },
+        receivedAt: response.receivedAt
+      };
+    }
+    return mapped;
+  }
+
+  async observeBrowserSession(sessionId: string): Promise<ApiResponse<BrowserActivityEvent>> {
+    const hostSession = await this.hasBrowserHostSession(sessionId);
+    if (hostSession) {
+      return {
+        ok: false,
+        status: 204,
+        error: {
+          code: "DESKTOP_BROWSER_HOST_SESSION",
+          message: "Using desktop browser host observation."
+        },
+        receivedAt: new Date().toISOString()
+      };
+    }
+
+    const response = await this.request<BackendBrowserActivityEnvelope, { session_id: string }>({
+      endpoint: "/api/browser/observe",
+      method: "POST",
+      body: { session_id: sessionId },
+      timeoutMs: 10_000
+    });
+    const mapped = mapResponse(response, mapBrowserActivityEnvelope);
+    if (mapped.ok && mapped.data?.ok === false) {
+      return {
+        ok: false,
+        status: response.status,
+        error: {
+          message: mapped.data.error ?? "Browser observe failed",
+          details: response.data
+        },
+        receivedAt: response.receivedAt
+      };
+    }
+    return mapped;
+  }
+
+  pauseBrowserSession(sessionId: string): Promise<ApiResponse<BrowserSession>> {
+    return this.browserSessionCommand(sessionId, "pause");
+  }
+
+  resumeBrowserSession(sessionId: string): Promise<ApiResponse<BrowserSession>> {
+    return this.browserSessionCommand(sessionId, "resume");
+  }
+
+  takeoverBrowserSession(sessionId: string): Promise<ApiResponse<BrowserSession>> {
+    return this.browserSessionCommand(sessionId, "takeover");
+  }
+
+  releaseBrowserSession(sessionId: string): Promise<ApiResponse<BrowserSession>> {
+    return this.browserSessionCommand(sessionId, "release");
+  }
+
+  private browserSessionCommand(
+    sessionId: string,
+    command: "pause" | "resume" | "takeover" | "release"
+  ): Promise<ApiResponse<BrowserSession>> {
+    void sessionId;
+    return Promise.resolve({
+      ok: false,
+      status: 501,
+      error: {
+        code: "UNSUPPORTED_BROWSER_SESSION_COMMAND",
+        message: `Backend browser ${command} is not exposed; using desktop browser host state.`
+      },
+      receivedAt: new Date().toISOString()
+    });
+  }
+
+  async exportBrowserReplay(sessionId: string): Promise<ApiResponse<BrowserReplayExport>> {
+    const hostReplay = await this.exportBrowserHostReplay(sessionId);
+    if (hostReplay) return hostReplay;
+
+    const response = await this.request<BackendBrowserReplayExport, { session_id: string }>({
+      endpoint: "/api/browser/replay-export",
+      method: "POST",
+      body: { session_id: sessionId },
+      timeoutMs: 20_000
+    });
+    const mapped = mapResponse(response, mapBrowserReplayExport);
+    if (mapped.ok && mapped.data?.ok === false) {
+      return {
+        ok: false,
+        status: response.status,
+        error: {
+          message: mapped.data.error ?? "Replay export failed",
+          details: response.data
+        },
+        receivedAt: response.receivedAt
+      };
+    }
+    return mapped;
+  }
+
+  subscribeBrowserSession(
+    sessionId: string,
+    handlers: {
+      onMessage: (message: BackendBrowserSessionStreamEvent) => void;
+      onError?: (error: Event) => void;
+      onOpen?: () => void;
+    }
+  ): () => void {
+    void sessionId;
+    void handlers;
+    // Current backend has HTTP browser activity endpoints and Electron host snapshots, but no per-session browser WebSocket.
+    return () => undefined;
+  }
+
+  getBrowserHostSnapshot(): Promise<BrowserHostSnapshot> {
+    return window.mavris?.browserHost.getSnapshot() ?? Promise.resolve(emptyBrowserHostSnapshot(false));
+  }
+
+  openBrowserHost(request: BrowserHostOpenRequest): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.open(request) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  showBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.show(sessionId) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  hideBrowserHost(): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.hide() ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  setBrowserHostBounds(bounds: { x: number; y: number; width: number; height: number }): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.setBounds(bounds) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  pauseBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.pause(sessionId) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  resumeBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.resume(sessionId) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  takeoverBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.takeover(sessionId) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  releaseBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.release(sessionId) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  stopBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.stop(sessionId) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  performBrowserHostAction(sessionId: string, action: BrowserAction): Promise<BrowserHostActionResult> {
+    return window.mavris?.browserHost.performAction({ sessionId, action }) ?? Promise.resolve({
+      ok: false,
+      snapshot: emptyBrowserHostSnapshot(false),
+      error: "Desktop browser host is unavailable"
+    });
+  }
+
+  subscribeBrowserHostSnapshots(handler: (snapshot: BrowserHostSnapshot) => void): () => void {
+    return window.mavris?.browserHost.onSnapshot(handler) ?? (() => undefined);
+  }
+
+  private async exportBrowserHostReplay(sessionId: string): Promise<ApiResponse<BrowserReplayExport> | null> {
+    if (!window.mavris?.browserHost) return null;
+    const receivedAt = new Date().toISOString();
+    try {
+      const snapshot = await this.getBrowserHostSnapshot();
+      const session = snapshot.sessions.find((item) => item.id === sessionId);
+      if (!session) return null;
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          ok: true,
+          session,
+          events: snapshot.events.filter((event) => event.session_id === sessionId)
+        },
+        receivedAt
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        error: {
+          code: "BROWSER_HOST_UNAVAILABLE",
+          message: error instanceof Error ? error.message : "Browser host replay is unavailable"
+        },
+        receivedAt
+      };
+    }
+  }
+
+  private async hasBrowserHostSession(sessionId: string): Promise<boolean> {
+    if (!window.mavris?.browserHost) return false;
+    try {
+      const snapshot = await this.getBrowserHostSnapshot();
+      return snapshot.sessions.some((session) => session.id === sessionId);
+    } catch {
+      return false;
+    }
   }
 
   openWindowsSettings(uri: string): Promise<ApiResponse<{ ok: boolean; uri: string; opened?: boolean; error?: string }>> {
@@ -722,7 +1169,8 @@ export class MavrisApiClient {
     }
     return {
       ...base,
-      recordings: mapTaskRecordings(timeline.data)
+      recordings: mapTaskRecordings(timeline.data),
+      cleanupPlan: base.cleanupPlan ?? cleanupPlanFromTimeline(timeline.data)
     };
   }
 
@@ -883,6 +1331,12 @@ function buildRunWebSocketUrl(baseUrl: string, runId: string): string {
   return url.toString();
 }
 
+function buildBrowserSessionWebSocketUrl(baseUrl: string, sessionId: string): string {
+  const url = new URL(`/api/ws/browser/sessions/${encodeURIComponent(sessionId)}`, baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
 async function parseResponseBody(response: Response): Promise<unknown> {
   const contentType = response.headers.get("content-type") ?? "";
   if (response.status === 204) return undefined;
@@ -928,16 +1382,52 @@ function mapTaskState(status: string): TaskEvent["state"] {
   return "running";
 }
 
+function mapRunCreateResponse(data: BackendRunCreateResponse | BackendSuggestionLaunchResponse, fallbackTitle: string): PerceptionSuggestionLaunchResponse {
+  const run = "run" in data ? data.run : undefined;
+  const runId = data.run_id ?? run?.run_id ?? crypto.randomUUID();
+  const phase = data.phase ?? run?.phase ?? "running";
+  const engine = data.engine ?? run?.engine ?? "auto";
+  const backendMessage = "message" in data ? data.message : undefined;
+  const title = backendMessage ?? run?.message ?? fallbackTitle;
+  return {
+    runId,
+    engine,
+    message: {
+      id: `${runId}-suggestion-started`,
+      role: "assistant",
+      author: "Marvis",
+      content: `Run ${engine} started: ${zhBackendTaskStatus(phase)}.`,
+      createdAt: new Date().toISOString(),
+      status: "sent"
+    },
+    taskUpdates: [
+      {
+        id: runId,
+        runId,
+        title,
+        description: `Run status: ${zhBackendTaskStatus(phase)}`,
+        state: mapTaskState(phase),
+        agent: engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+        createdAt: run?.created_at ?? new Date().toISOString(),
+        updatedAt: run?.updated_at ?? run?.created_at ?? new Date().toISOString()
+      }
+    ]
+  };
+}
+
 function mapRunTaskEvent(run: BackendRunState): TaskEvent {
+  const cleanupPlan = cleanupPlanFromApprovalPayload(run.cleanup_plan ?? run.cleanupPlan ?? run.diff_preview);
   return {
     id: run.run_id,
+    runId: run.run_id,
     title: run.message || run.run_id,
     description: run.error || `Run status: ${zhBackendTaskStatus(run.phase)} (${run.engine})`,
     state: mapTaskState(run.phase),
     agent: run.engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
     createdAt: run.created_at || new Date().toISOString(),
     updatedAt: run.updated_at || run.created_at || new Date().toISOString(),
-    recordings: []
+    recordings: [],
+    cleanupPlan
   };
 }
 
@@ -1032,7 +1522,214 @@ function mapCommandExecutionResult(result: BackendCommandExecutionResult): Comma
   };
 }
 
+function mapDocumentIR(data: BackendDocumentIR): DocumentIR {
+  const path = String(data.path ?? "");
+  const blocks = (data.blocks ?? []).map(mapDocumentBlock);
+  const tables = [
+    ...(data.tables ?? []).map(mapDocumentTable),
+    ...blocks
+      .filter((block) => block.type === "table" && (block.columns?.length || block.rows?.length))
+      .map((block, index) => ({
+        id: block.id || `table-${index + 1}`,
+        title: block.text,
+        columns: block.columns ?? [],
+        rows: block.rows ?? [],
+        page: block.page,
+        sourceBlockId: block.id
+      }))
+  ];
+  return {
+    id: String(data.id ?? data.document_id ?? path),
+    path,
+    title: String(data.title ?? data.name ?? fileNameFromPath(path) ?? "文档"),
+    mimeType: optionalString(data.mime_type ?? data.mimeType),
+    language: optionalString(data.language),
+    summary: optionalString(data.summary),
+    text: optionalString(data.text),
+    truncated: data.truncated === undefined ? undefined : Boolean(data.truncated),
+    blocks,
+    tables,
+    citations: (data.citations ?? []).map(mapDocumentCitation),
+    metadata: recordOrUndefined(data.metadata),
+    createdAt: optionalString(data.created_at ?? data.createdAt)
+  };
+}
+
+function mapDocumentBlock(block: BackendDocumentBlock): DocumentIR["blocks"][number] {
+  const rows = tableRowsFromUnknown(block.rows);
+  return {
+    id: String(block.id ?? block.block_id ?? crypto.randomUUID()),
+    type: String(block.type ?? block.kind ?? "paragraph"),
+    text: optionalString(block.text ?? block.content),
+    level: numberOrUndefined(block.level),
+    page: numberOrUndefined(block.page),
+    order: numberOrUndefined(block.order ?? block.index),
+    columns: stringArray(block.columns),
+    rows,
+    metadata: recordOrUndefined(block.metadata)
+  };
+}
+
+function mapDocumentTable(table: BackendDocumentTable): DocumentTable {
+  return {
+    id: String(table.id ?? table.table_id ?? crypto.randomUUID()),
+    title: optionalString(table.title ?? table.name),
+    columns: stringArray(table.columns),
+    rows: tableRowsFromUnknown(table.rows),
+    page: numberOrUndefined(table.page),
+    sourceBlockId: optionalString(table.source_block_id ?? table.sourceBlockId)
+  };
+}
+
+function mapDocumentCitation(citation: BackendDocumentCitation, index = 0): DocumentCitation {
+  const label = String(citation.label ?? citation.id ?? `引用 ${index + 1}`);
+  return {
+    id: String(citation.id ?? label),
+    label,
+    text: String(citation.text ?? citation.snippet ?? citation.content ?? ""),
+    path: optionalString(citation.path),
+    blockId: optionalString(citation.block_id ?? citation.blockId),
+    page: numberOrUndefined(citation.page),
+    score: numberOrUndefined(citation.score)
+  };
+}
+
+function mapDocumentAskResponse(data: BackendDocumentAskResponse): DocumentAskResponse {
+  const sourceChunks = (data.source_chunks ?? data.sources ?? []).map(mapDocumentCitation);
+  const citationItems = arrayOfObjects(data.citation_items ?? data.citations_detail ?? data.citations);
+  return {
+    answer: String(data.answer ?? data.summary ?? ""),
+    citations: citationItems.length ? citationItems.map(mapDocumentCitation) : sourceChunks,
+    sourceChunks,
+    note: optionalString(data.note)
+  };
+}
+
+function mapDocumentCompareResponse(data: BackendDocumentCompareResponse): DocumentCompareResponse {
+  return {
+    summary: String(data.summary ?? ""),
+    documents: (data.documents ?? []).map(mapDocumentIR),
+    differences: (data.differences ?? data.items ?? []).map((item, index) => ({
+      id: String(item.id ?? `difference-${index + 1}`),
+      title: String(item.title ?? item.field ?? `差异 ${index + 1}`),
+      detail: String(item.detail ?? item.summary ?? item.text ?? ""),
+      severity: optionalString(item.severity),
+      citations: (item.citations ?? []).map(mapDocumentCitation)
+    })),
+    tables: (data.tables ?? []).map(mapDocumentTable),
+    note: optionalString(data.note)
+  };
+}
+
+function cleanupScanRequestFor(body: CleanupScanRequest): BackendCleanupScanRequest {
+  return {
+    roots: body.roots,
+    threshold_mb: body.thresholdMb,
+    include_caches: body.includeCaches
+  };
+}
+
+function mapCleanupPlan(input: BackendCleanupPlan): CleanupPlan {
+  const plan = normalizeCleanupPlan(input);
+  return {
+    id: String(plan.id ?? plan.plan_id ?? crypto.randomUUID()),
+    contentHash: optionalString(plan.content_hash ?? plan.contentHash),
+    title: String(plan.title ?? "清理计划"),
+    summary: optionalString(plan.summary ?? plan.detail),
+    status: optionalString(plan.status),
+    createdAt: optionalString(plan.created_at ?? plan.createdAt),
+    updatedAt: optionalString(plan.updated_at ?? plan.updatedAt),
+    totalBytes: numberOrUndefined(plan.total_bytes ?? plan.totalBytes),
+    reclaimableBytes: numberOrUndefined(plan.reclaimable_bytes ?? plan.reclaimableBytes ?? plan.freed_bytes ?? plan.freedBytes),
+    permanentDeleteBytes: numberOrUndefined(plan.permanent_delete_bytes ?? plan.permanentDeleteBytes),
+    trashBytes: numberOrUndefined(plan.trash_bytes ?? plan.trashBytes),
+    riskWarnings: stringArray(plan.risk_warnings ?? plan.riskWarnings ?? plan.warnings),
+    items: cleanupItemsForPlan(plan)
+  };
+}
+
+function normalizeCleanupPlan(input: BackendCleanupPlan): BackendCleanupPlan {
+  if (input && typeof input === "object" && input.cleanup_plan && typeof input.cleanup_plan === "object") {
+    return input.cleanup_plan as BackendCleanupPlan;
+  }
+  if (input && typeof input === "object" && input.plan && typeof input.plan === "object") {
+    return input.plan as BackendCleanupPlan;
+  }
+  return input;
+}
+
+function cleanupItemsForPlan(plan: BackendCleanupPlan): CleanupItem[] {
+  const direct = arrayOfObjects(plan.items).map((item) => mapCleanupItem(item, "suggestion_only"));
+  if (direct.length) return direct;
+
+  const buckets = plan.buckets && typeof plan.buckets === "object" ? plan.buckets : {};
+  return [
+    ...arrayOfObjects(buckets.direct_delete ?? buckets.permanent_delete).map((item) => mapCleanupItem(item, "direct_delete")),
+    ...arrayOfObjects(buckets.recycle_bin ?? buckets.trash).map((item) => mapCleanupItem(item, "recycle_bin")),
+    ...arrayOfObjects(buckets.suggestion_only ?? buckets.info_only).map((item) => mapCleanupItem(item, "suggestion_only")),
+    ...arrayOfObjects(buckets.immediate).map((item) => mapCleanupItem(item, "recycle_bin")),
+    ...arrayOfObjects(buckets.approval).map((item) => mapCleanupItem(item, "recycle_bin"))
+  ];
+}
+
+function mapCleanupItem(item: BackendCleanupItem, fallbackBucket: string): CleanupItem {
+  const bucket = String(item.bucket ?? fallbackBucket);
+  const action = String(item.action ?? "");
+  const disposition = cleanupDispositionFor(item, bucket, action);
+  const sizeBytes = numberOrUndefined(item.size_bytes ?? item.sizeBytes ?? item.bytes);
+  const sizeMb = numberOrUndefined(item.size_mb ?? item.sizeMb);
+  return {
+    id: String(item.id ?? item.path ?? crypto.randomUUID()),
+    path: String(item.path ?? ""),
+    name: optionalString(item.name),
+    action,
+    disposition,
+    bucket,
+    sizeBytes: sizeBytes ?? (sizeMb === undefined ? undefined : Math.round(sizeMb * 1024 * 1024)),
+    sizeMb,
+    category: optionalString(item.category),
+    detail: optionalString(item.detail ?? item.description),
+    reason: optionalString(item.reason),
+    riskLevel: optionalString(item.risk_level ?? item.riskLevel),
+    canRollback: item.can_rollback === undefined && item.canRollback === undefined
+      ? disposition === "trash"
+      : Boolean(item.can_rollback ?? item.canRollback),
+    selected: item.selected === undefined ? undefined : Boolean(item.selected),
+    modifiedAt: optionalString(item.modified_at ?? item.modifiedAt),
+    metadata: recordOrUndefined(item.metadata)
+  };
+}
+
+function cleanupDispositionFor(item: BackendCleanupItem, bucket: string, action: string): CleanupItem["disposition"] {
+  const explicit = item.disposition ?? item.mode ?? item.delete_mode;
+  if (typeof explicit === "string" && explicit) return explicit;
+  const normalized = `${bucket} ${action}`.toLowerCase();
+  if (normalized.includes("permanent") || normalized.includes("direct_delete") || normalized.includes("delete_permanent")) {
+    return "permanent_delete";
+  }
+  if (normalized.includes("info_only") || normalized.includes("suggestion") || normalized.includes("review")) {
+    return "suggestion_only";
+  }
+  if (normalized.includes("trash") || normalized.includes("recycle") || normalized.includes("cache") || normalized.includes("temp")) {
+    return "trash";
+  }
+  return "suggestion_only";
+}
+
+function mapCleanupExecutionResult(result: BackendCleanupExecutionResult): CleanupExecutionResult {
+  return {
+    ok: result.ok !== false,
+    planId: optionalString(result.plan_id ?? result.planId),
+    executionId: optionalString(result.execution_id ?? result.executionId),
+    freedBytes: numberOrUndefined(result.freed_bytes ?? result.freedBytes),
+    executed: arrayOfObjects(result.executed).map((item) => mapCleanupItem(item, "recycle_bin")),
+    rolledBack: arrayOfObjects(result.rolled_back ?? result.rolledBack).map((item) => mapCleanupItem(item, "recycle_bin")),
+    errors: stringArray(result.errors)
+  };
+}
+
 function mapTaskEvent(task: BackendTask): TaskEvent {
+  const cleanupPlan = cleanupPlanFromApprovalPayload(task.cleanup_plan ?? task.cleanupPlan ?? task.diff_preview);
   return {
     id: task.id,
     title: task.user_goal,
@@ -1041,7 +1738,8 @@ function mapTaskEvent(task: BackendTask): TaskEvent {
     agent: "调度 Agent",
     createdAt: task.created_at,
     updatedAt: task.updated_at,
-    recordings: []
+    recordings: [],
+    cleanupPlan
   };
 }
 
@@ -1075,6 +1773,18 @@ function mapTaskRecordings(timeline: BackendTimeline): NonNullable<TaskEvent["re
     ...recording,
     frames: dedupeFrames(recording.frames).sort((a, b) => Date.parse(a.capturedAt) - Date.parse(b.capturedAt))
   }));
+}
+
+function cleanupPlanFromTimeline(timeline: BackendTimeline): CleanupPlan | undefined {
+  const direct = cleanupPlanFromApprovalPayload(timeline.cleanup_plan ?? timeline.cleanupPlan);
+  if (direct) return direct;
+
+  for (const message of timeline.messages) {
+    const payload = metadataPayloadFor<unknown>(message);
+    const plan = cleanupPlanFromApprovalPayload(payload);
+    if (plan) return plan;
+  }
+  return undefined;
 }
 
 function mapTaskExplain(data: BackendTaskExplain): TaskExplain {
@@ -1268,16 +1978,232 @@ function mapRiskSeverity(risk: string): SafetyReview["findings"][number]["severi
 }
 
 function mapApproval(approval: BackendApproval): ApprovalRequest {
+  const cleanupPlan = cleanupPlanFromApprovalPayload(approval.diff_preview);
   return {
     id: approval.id,
-    title: zhApprovalType(approval.approval_type),
+    title: cleanupPlan ? "清理计划审批" : zhApprovalType(approval.approval_type),
     reason: zhBackendText(approval.message),
     requester: "HumanGateAgent",
-    riskLevel: "medium",
+    riskLevel: cleanupPlan?.items.some((item) => item.disposition === "permanent_delete") ? "high" : "medium",
     createdAt: approval.created_at,
     proposedAction: formatDiffPreview(approval.diff_preview),
-    status: approval.status === "rejected" ? "denied" : approval.status === "approved" ? "approved" : "pending"
+    status: approval.status === "rejected" ? "denied" : approval.status === "approved" ? "approved" : "pending",
+    rawPayload: approval.diff_preview,
+    cleanupPlan
   };
+}
+
+function cleanupPlanFromApprovalPayload(payload: unknown): CleanupPlan | undefined {
+  const candidate = findCleanupPayload(payload);
+  if (!candidate) return undefined;
+  const plan = mapCleanupPlan(candidate);
+  return plan.items.length ? plan : undefined;
+}
+
+function findCleanupPayload(value: unknown): BackendCleanupPlan | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    const items = value.filter((item): item is BackendCleanupItem => Boolean(item && typeof item === "object"));
+    return items.some(looksLikeCleanupItem) ? { items } : undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["cleanup_plan", "cleanupPlan", "plan", "diff_preview", "payload"]) {
+    const nested = findCleanupPayload(record[key]);
+    if (nested) return nested;
+  }
+
+  if (looksLikeCleanupPlan(record)) return record as BackendCleanupPlan;
+  return undefined;
+}
+
+function looksLikeCleanupPlan(record: Record<string, unknown>): boolean {
+  if (Array.isArray(record.items) && record.items.some(looksLikeCleanupItem)) return true;
+  const buckets = record.buckets;
+  return Boolean(
+    buckets &&
+      typeof buckets === "object" &&
+      ["direct_delete", "permanent_delete", "recycle_bin", "trash", "suggestion_only", "info_only", "immediate", "approval"]
+        .some((key) => Array.isArray((buckets as Record<string, unknown>)[key]))
+  );
+}
+
+function looksLikeCleanupItem(value: unknown): value is BackendCleanupItem {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const action = String(record.action ?? record.disposition ?? record.bucket ?? "").toLowerCase();
+  return Boolean(record.path && (
+    action.includes("clean") ||
+    action.includes("delete") ||
+    action.includes("trash") ||
+    action.includes("cache") ||
+    action.includes("review") ||
+    action.includes("recycle")
+  ));
+}
+
+function settingsPatchFor(settings: AppSettings, baseline: AppSettings | null): Partial<BackendSettings> {
+  const body: Partial<BackendSettings> = {};
+  const previous = baseline ?? settings;
+  const add = <K extends keyof BackendSettings>(key: K, value: BackendSettings[K], changed: boolean) => {
+    if (baseline === null || changed) {
+      body[key] = value;
+    }
+  };
+
+  add("provider_name", settings.providerName, settings.providerName !== previous.providerName);
+  add("base_url", settings.apiBaseUrl, settings.apiBaseUrl !== previous.apiBaseUrl);
+  add("model", settings.model, settings.model !== previous.model);
+  add("review_model", settings.reviewModel, settings.reviewModel !== previous.reviewModel);
+  add("wire_api", settings.wireApi, settings.wireApi !== previous.wireApi);
+  add("requires_openai_auth", settings.requiresOpenAiAuth, settings.requiresOpenAiAuth !== previous.requiresOpenAiAuth);
+  add("model_reasoning_effort", settings.modelReasoningEffort, settings.modelReasoningEffort !== previous.modelReasoningEffort);
+  add("disable_response_storage", settings.disableResponseStorage, settings.disableResponseStorage !== previous.disableResponseStorage);
+  add("temperature", settings.temperature, settings.temperature !== previous.temperature);
+  add("max_tokens", settings.maxTokens, settings.maxTokens !== previous.maxTokens);
+  add("timeout", settings.timeout, settings.timeout !== previous.timeout);
+  add("llm_api_max_retries", settings.llmApiMaxRetries, settings.llmApiMaxRetries !== previous.llmApiMaxRetries);
+  add(
+    "llm_api_retry_backoff_seconds",
+    settings.llmApiRetryBackoffSeconds,
+    settings.llmApiRetryBackoffSeconds !== previous.llmApiRetryBackoffSeconds
+  );
+  add(
+    "llm_api_circuit_failure_threshold",
+    settings.llmApiCircuitFailureThreshold,
+    settings.llmApiCircuitFailureThreshold !== previous.llmApiCircuitFailureThreshold
+  );
+  add(
+    "llm_api_circuit_cooldown_seconds",
+    settings.llmApiCircuitCooldownSeconds,
+    settings.llmApiCircuitCooldownSeconds !== previous.llmApiCircuitCooldownSeconds
+  );
+  add("model_context_window", settings.modelContextWindow, settings.modelContextWindow !== previous.modelContextWindow);
+  add(
+    "model_auto_compact_token_limit",
+    settings.modelAutoCompactTokenLimit,
+    settings.modelAutoCompactTokenLimit !== previous.modelAutoCompactTokenLimit
+  );
+  const allowedDirectories = allowedDirectoriesForSettings(settings, previous);
+  const previousAllowedDirectories = allowedDirectoriesForSettings(previous);
+  add("allowed_directories", allowedDirectories, !sameStringArray(allowedDirectories, previousAllowedDirectories));
+  add("allow_browser_network", settings.allowBrowserNetwork, settings.allowBrowserNetwork !== previous.allowBrowserNetwork);
+  add("remote_desktop_enabled", settings.remoteDesktopEnabled, settings.remoteDesktopEnabled !== previous.remoteDesktopEnabled);
+  add("app_allowlist", settings.appAllowlist, !sameStringArray(settings.appAllowlist, previous.appAllowlist));
+  add("browser_max_page_bytes", settings.browserMaxPageBytes, settings.browserMaxPageBytes !== previous.browserMaxPageBytes);
+  add("browser_screenshot_dir", settings.browserScreenshotDir, settings.browserScreenshotDir !== previous.browserScreenshotDir);
+  add("onnx_model_path", settings.onnxModelPath, settings.onnxModelPath !== previous.onnxModelPath);
+  add("onnx_execution_provider", settings.onnxExecutionProvider, settings.onnxExecutionProvider !== previous.onnxExecutionProvider);
+  add("onnx_provider_preference", settings.onnxProviderPreference, settings.onnxProviderPreference !== previous.onnxProviderPreference);
+  add("onnx_directml_device_id", settings.onnxDirectmlDeviceId, settings.onnxDirectmlDeviceId !== previous.onnxDirectmlDeviceId);
+  add("onnx_openvino_device", settings.onnxOpenvinoDevice, settings.onnxOpenvinoDevice !== previous.onnxOpenvinoDevice);
+  add("onnx_openvino_cache_dir", settings.onnxOpenvinoCacheDir, settings.onnxOpenvinoCacheDir !== previous.onnxOpenvinoCacheDir);
+  add("onnx_warm_on_startup", settings.onnxWarmOnStartup, settings.onnxWarmOnStartup !== previous.onnxWarmOnStartup);
+  add("onnx_model_family", settings.onnxModelFamily, settings.onnxModelFamily !== previous.onnxModelFamily);
+  add("embedding_backend", settings.onnxEmbeddingBackend, settings.onnxEmbeddingBackend !== previous.onnxEmbeddingBackend);
+  add("onnx_embedding_model_path", settings.onnxEmbeddingModelPath, settings.onnxEmbeddingModelPath !== previous.onnxEmbeddingModelPath);
+  add(
+    "onnx_embedding_execution_provider",
+    settings.onnxEmbeddingExecutionProvider,
+    settings.onnxEmbeddingExecutionProvider !== previous.onnxEmbeddingExecutionProvider
+  );
+  add("onnx_embedding_model_id", settings.onnxEmbeddingModelId, settings.onnxEmbeddingModelId !== previous.onnxEmbeddingModelId);
+  add(
+    "onnx_embedding_max_batch_size",
+    settings.onnxEmbeddingMaxBatchSize,
+    settings.onnxEmbeddingMaxBatchSize !== previous.onnxEmbeddingMaxBatchSize
+  );
+  add("image_embedding_backend", settings.imageEmbeddingBackend, settings.imageEmbeddingBackend !== previous.imageEmbeddingBackend);
+  add(
+    "onnx_image_embedding_model_path",
+    settings.onnxImageEmbeddingModelPath,
+    settings.onnxImageEmbeddingModelPath !== previous.onnxImageEmbeddingModelPath
+  );
+  add(
+    "onnx_image_embedding_execution_provider",
+    settings.onnxImageEmbeddingExecutionProvider,
+    settings.onnxImageEmbeddingExecutionProvider !== previous.onnxImageEmbeddingExecutionProvider
+  );
+  add(
+    "onnx_image_embedding_model_id",
+    settings.onnxImageEmbeddingModelId,
+    settings.onnxImageEmbeddingModelId !== previous.onnxImageEmbeddingModelId
+  );
+  add(
+    "onnx_image_embedding_max_batch_size",
+    settings.onnxImageEmbeddingMaxBatchSize,
+    settings.onnxImageEmbeddingMaxBatchSize !== previous.onnxImageEmbeddingMaxBatchSize
+  );
+  add("ocr_backend", settings.ocrBackend, settings.ocrBackend !== previous.ocrBackend);
+  add("ocr_execution_provider", settings.ocrExecutionProvider, settings.ocrExecutionProvider !== previous.ocrExecutionProvider);
+  add("ocr_openvino_model_dir", settings.ocrOpenvinoModelDir, settings.ocrOpenvinoModelDir !== previous.ocrOpenvinoModelDir);
+  add("ocr_openvino_device", settings.ocrOpenvinoDevice, settings.ocrOpenvinoDevice !== previous.ocrOpenvinoDevice);
+  add("ocr_lang", settings.ocrLang, settings.ocrLang !== previous.ocrLang);
+  add("ocr_min_confidence", settings.ocrMinConfidence, settings.ocrMinConfidence !== previous.ocrMinConfidence);
+  add("ocr_batch_size", settings.ocrBatchSize, settings.ocrBatchSize !== previous.ocrBatchSize);
+  add("mode", settings.mode, settings.mode !== previous.mode);
+  add("allow_cloud_context", settings.allowCloudContext, settings.allowCloudContext !== previous.allowCloudContext);
+  add(
+    "allow_file_content_upload",
+    settings.allowFileContentUpload,
+    settings.allowFileContentUpload !== previous.allowFileContentUpload
+  );
+  const mcpServers = settings.mcpServers.map(mapMcpServerForBackend).filter(hasPersistableMcpServerTarget);
+  const previousMcpServers = previous.mcpServers.map(mapMcpServerForBackend).filter(hasPersistableMcpServerTarget);
+  add("mcp_servers", mcpServers, JSON.stringify(mcpServers) !== JSON.stringify(previousMcpServers));
+
+  return body;
+}
+
+function mergeDesktopOnlySettings(settings: AppSettings, source: AppSettings | null): AppSettings {
+  if (!source) return settings;
+  return {
+    ...settings,
+    autoStartBackend: source.autoStartBackend,
+    telemetryEnabled: source.telemetryEnabled,
+    compactMode: source.compactMode,
+    theme: source.theme
+  };
+}
+
+function allowedDirectoriesForSettings(settings: AppSettings, baseline?: AppSettings | null): string[] {
+  const directories = settings.allowedDirectories?.length
+    ? settings.allowedDirectories.filter(Boolean)
+    : settings.workspaceRoot
+      ? [settings.workspaceRoot]
+      : [];
+  if (!settings.workspaceRoot) return directories;
+  if (!directories.length) return [settings.workspaceRoot];
+  if (directories[0] === settings.workspaceRoot) return directories;
+
+  const baselinePrimary = baseline?.workspaceRoot || baseline?.allowedDirectories?.[0] || directories[0];
+  if (settings.workspaceRoot !== baselinePrimary) {
+    return [settings.workspaceRoot, ...directories.slice(1).filter((directory) => directory !== settings.workspaceRoot)];
+  }
+
+  return [settings.workspaceRoot, ...directories.filter((directory) => directory !== settings.workspaceRoot)];
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function mapMcpServerForBackend(server: AppSettings["mcpServers"][number]): NonNullable<BackendSettings["mcp_servers"]>[number] {
+  const result: NonNullable<BackendSettings["mcp_servers"]>[number] = {
+    ...server,
+    name: String(server.name ?? "").trim(),
+    url: String(server.url ?? "").trim(),
+    enabled: server.enabled !== false
+  };
+  if (server.command !== undefined) result.command = String(server.command);
+  if (Array.isArray(server.args)) result.args = server.args.map(String);
+  if (server.transport !== undefined) result.transport = String(server.transport);
+  if (server.auth && typeof server.auth === "object") result.auth = server.auth;
+  return result;
+}
+
+function hasPersistableMcpServerTarget(server: NonNullable<BackendSettings["mcp_servers"]>[number]): boolean {
+  return Boolean(String(server.url ?? "").trim() || String(server.command ?? "").trim());
 }
 
 function mapSettings(settings: BackendSettings): AppSettings {
@@ -1285,11 +2211,18 @@ function mapSettings(settings: BackendSettings): AppSettings {
   const mode: AppSettings["mode"] = rawMode === "efficiency" || rawMode === "hybrid" ? rawMode : "privacy";
   const mcpServers = (settings.mcp_servers ?? [])
     .map((server) => ({
+      ...server,
+      id: typeof server?.id === "string" ? server.id : undefined,
       name: String(server?.name ?? "").trim(),
       url: String(server?.url ?? "").trim(),
+      command: typeof server?.command === "string" ? server.command : undefined,
+      args: Array.isArray(server?.args) ? server.args.map(String) : undefined,
+      transport: typeof server?.transport === "string" ? server.transport : undefined,
+      auth: server?.auth && typeof server.auth === "object" ? server.auth : undefined,
       enabled: server?.enabled !== false
     }))
-    .filter((server) => server.url.length > 0);
+    .filter((server) => server.url.length > 0 || Boolean(server.command));
+  const allowedDirectories = settings.allowed_directories ?? [];
   return {
     apiBaseUrl: settings.base_url ?? "http://127.0.0.1:8000",
     autoStartBackend: false,
@@ -1312,14 +2245,38 @@ function mapSettings(settings: BackendSettings): AppSettings {
     llmApiCircuitCooldownSeconds: Number(settings.llm_api_circuit_cooldown_seconds ?? 30),
     modelContextWindow: Number(settings.model_context_window ?? 128000),
     modelAutoCompactTokenLimit: Number(settings.model_auto_compact_token_limit ?? 96000),
-    workspaceRoot: settings.allowed_directories?.[0] ?? "",
+    workspaceRoot: allowedDirectories[0] ?? "",
+    allowedDirectories,
     allowBrowserNetwork: Boolean(settings.allow_browser_network),
     remoteDesktopEnabled: Boolean(settings.remote_desktop_enabled),
     appAllowlist: settings.app_allowlist ?? [],
     browserMaxPageBytes: settings.browser_max_page_bytes ?? 250000,
     browserScreenshotDir: settings.browser_screenshot_dir ?? "",
     onnxModelPath: settings.onnx_model_path ?? "",
-    onnxExecutionProvider: settings.onnx_execution_provider ?? "",
+    onnxExecutionProvider: normalizeExecutionProvider(settings.onnx_execution_provider ?? ""),
+    onnxProviderPreference: settings.onnx_provider_preference ?? "winml,directml,openvino,cpu",
+    onnxDirectmlDeviceId: settings.onnx_directml_device_id ?? "",
+    onnxOpenvinoDevice: settings.onnx_openvino_device ?? "AUTO",
+    onnxOpenvinoCacheDir: settings.onnx_openvino_cache_dir ?? "",
+    onnxWarmOnStartup: Boolean(settings.onnx_warm_on_startup),
+    onnxModelFamily: settings.onnx_model_family ?? "",
+    onnxEmbeddingBackend: settings.embedding_backend ?? "auto",
+    onnxEmbeddingModelPath: settings.onnx_embedding_model_path ?? "",
+    onnxEmbeddingExecutionProvider: settings.onnx_embedding_execution_provider ?? "",
+    onnxEmbeddingModelId: settings.onnx_embedding_model_id ?? "intfloat/multilingual-e5-small",
+    onnxEmbeddingMaxBatchSize: Number(settings.onnx_embedding_max_batch_size ?? 32),
+    imageEmbeddingBackend: settings.image_embedding_backend ?? "auto",
+    onnxImageEmbeddingModelPath: settings.onnx_image_embedding_model_path ?? "",
+    onnxImageEmbeddingExecutionProvider: settings.onnx_image_embedding_execution_provider ?? "",
+    onnxImageEmbeddingModelId: settings.onnx_image_embedding_model_id ?? "openai/clip-vit-base-patch32",
+    onnxImageEmbeddingMaxBatchSize: Number(settings.onnx_image_embedding_max_batch_size ?? 8),
+    ocrBackend: settings.ocr_backend ?? "auto",
+    ocrExecutionProvider: settings.ocr_execution_provider ?? "",
+    ocrOpenvinoModelDir: settings.ocr_openvino_model_dir ?? "",
+    ocrOpenvinoDevice: settings.ocr_openvino_device ?? "AUTO",
+    ocrLang: settings.ocr_lang ?? "multi",
+    ocrMinConfidence: Number(settings.ocr_min_confidence ?? 0),
+    ocrBatchSize: Number(settings.ocr_batch_size ?? 1),
     mode,
     allowCloudContext: Boolean(settings.allow_cloud_context),
     allowFileContentUpload: Boolean(settings.allow_file_content_upload),
@@ -1559,7 +2516,28 @@ function mapLocalLlmHealth(health: BackendLocalLlmHealth): LocalLLMHealth {
         }
       : null,
     probeOrder: (health.probe_order ?? []).map(String),
-    error: typeof health.error === "string" ? health.error : ""
+    error: typeof health.error === "string" ? health.error : "",
+    readiness: mapLocalModelReadiness(health.readiness)
+  };
+}
+
+function mapLocalModelReadiness(readiness?: BackendLocalModelReadiness): LocalModelReadiness | undefined {
+  if (!readiness || typeof readiness !== "object") return undefined;
+  return {
+    canInstall: Boolean(readiness.can_install),
+    recommendedModel: String(readiness.recommended_model ?? ""),
+    reason: String(readiness.reason ?? ""),
+    checks: (readiness.checks ?? []).map((check) => ({
+      key: String(check.key ?? ""),
+      label: String(check.label ?? ""),
+      ok: Boolean(check.ok),
+      actual: String(check.actual ?? ""),
+      required: String(check.required ?? "")
+    })),
+    memoryTotalBytes: Number(readiness.memory_total_bytes ?? 0),
+    diskFreeBytes: Number(readiness.disk_free_bytes ?? 0),
+    cpuLogicalCores: Number(readiness.cpu_logical_cores ?? 0),
+    gpuSummary: readiness.gpu_summary ? String(readiness.gpu_summary) : ""
   };
 }
 
@@ -1653,6 +2631,45 @@ function mapIntentSuggestion(suggestion: BackendIntentSuggestion): IntentSuggest
     confidence: Number(suggestion.confidence ?? 0),
     agentHint: suggestion.agent_hint,
     reason: suggestion.reason ? zhBackendText(suggestion.reason) : undefined
+  };
+}
+
+function mapSuggestionLaunchResponse(
+  data: BackendSuggestionLaunchResponse,
+  fallbackPrompt: string
+): PerceptionSuggestionLaunchResponse {
+  const runId = data.run_id ?? data.run?.run_id;
+  const engine = data.engine ?? data.run?.engine;
+  const phase = data.phase ?? data.run?.phase ?? "queued";
+  const message = data.message ?? data.run?.message ?? fallbackPrompt;
+  const createdAt = data.run?.created_at ?? new Date().toISOString();
+  const updatedAt = data.run?.updated_at ?? createdAt;
+
+  return {
+    runId,
+    engine,
+    message: {
+      id: `${runId ?? crypto.randomUUID()}-suggestion-launched`,
+      role: "assistant" as const,
+      author: "Marvis",
+      content: runId ? `Started from suggestion: ${zhBackendText(message)}` : zhBackendText(message),
+      createdAt: new Date().toISOString(),
+      status: "sent" as const
+    },
+    taskUpdates: runId
+      ? [
+          {
+            id: runId,
+            runId,
+            title: zhBackendText(message),
+            description: `Run status: ${zhBackendTaskStatus(phase)}`,
+            state: mapTaskState(phase),
+            agent: engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+            createdAt,
+            updatedAt
+          }
+        ]
+      : []
   };
 }
 
@@ -1754,6 +2771,129 @@ function mapBrowserPage(page: BackendBrowserPage): BrowserPageSnapshot {
   };
 }
 
+function mapBrowserSession(session: BackendBrowserSession): BrowserSession {
+  return {
+    id: String(session.id ?? ""),
+    task_id: optionalString(session.task_id),
+    current_url: String(session.current_url ?? session.url ?? ""),
+    title: String(session.title ?? ""),
+    status: String(session.status ?? "idle"),
+    mode: String(session.mode ?? "watch"),
+    created_at: String(session.created_at ?? new Date().toISOString()),
+    updated_at: String(session.updated_at ?? new Date().toISOString()),
+    paused: Boolean(session.paused),
+    takeover: Boolean(session.takeover),
+    last_observation: session.last_observation ?? null
+  };
+}
+
+function mapBrowserActivityEvent(event: BackendBrowserActivityEvent): BrowserActivityEvent {
+  return {
+    id: String(event.id ?? crypto.randomUUID()),
+    session_id: String(event.session_id ?? ""),
+    task_id: optionalString(event.task_id),
+    step_id: optionalString(event.step_id),
+    type: String(event.type ?? "event"),
+    action: isBrowserAction(event.action) ? event.action : undefined,
+    url: optionalString(event.url),
+    title: optionalString(event.title),
+    risk_level: optionalString(event.risk_level),
+    verdict: optionalString(event.verdict),
+    ok: event.ok !== false,
+    error: optionalString(event.error),
+    screenshot_url: optionalString(event.screenshot_url),
+    created_at: String(event.created_at ?? new Date().toISOString())
+  };
+}
+
+function mapBrowserActivityEnvelope(data: BackendBrowserActivityEnvelope): BrowserActivityEvent {
+  return mapBrowserActivityEvent(data.event ?? {
+    id: crypto.randomUUID(),
+    session_id: data.session?.id,
+    type: data.ok === false ? "observe.failed" : "observe",
+    action: { kind: "observe" },
+    url: data.url ?? data.session?.current_url ?? data.session?.url,
+    title: data.title ?? data.session?.title,
+    ok: data.ok !== false,
+    error: data.error,
+    created_at: new Date().toISOString()
+  });
+}
+
+function mapBrowserReplayExport(data: BackendBrowserReplayExport): BrowserReplayExport {
+  return {
+    ok: data.ok !== false,
+    url: optionalString(data.url),
+    path: optionalString(data.path),
+    session: data.session ? mapBrowserSession(data.session) : undefined,
+    events: Array.isArray(data.events) ? data.events.map(mapBrowserActivityEvent) : undefined,
+    error: optionalString(data.error)
+  };
+}
+
+function isBrowserAction(value: unknown): value is BrowserAction {
+  return Boolean(value && typeof value === "object" && typeof (value as { kind?: unknown }).kind === "string");
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+function arrayOfObjects(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+    : [];
+}
+
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function tableRowsFromUnknown(value: unknown): string[][] {
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => {
+    if (Array.isArray(row)) {
+      return row.map((cell) => String(cell ?? ""));
+    }
+    if (row && typeof row === "object") {
+      return Object.values(row).map((cell) => String(cell ?? ""));
+    }
+    return [String(row ?? "")];
+  });
+}
+
+function fileNameFromPath(path: string): string | undefined {
+  const normalized = path.replace(/\\/g, "/");
+  const name = normalized.split("/").filter(Boolean).pop();
+  return name || undefined;
+}
+
+function emptyBrowserHostSnapshot(hostAvailable: boolean): BrowserHostSnapshot {
+  return {
+    sessions: [],
+    events: [],
+    activeSessionId: null,
+    visible: false,
+    hostAvailable
+  };
+}
+
+function mergeBrowserSessionArrays(primary: BrowserSession[], secondary: BrowserSession[]): BrowserSession[] {
+  const byId = new Map<string, BrowserSession>();
+  for (const session of primary) byId.set(session.id, session);
+  for (const session of secondary) byId.set(session.id, { ...byId.get(session.id), ...session });
+  return [...byId.values()].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+}
+
 function emptyPlan(): Plan {
   return {
     id: "empty",
@@ -1807,6 +2947,20 @@ interface BackendRunCreateResponse {
   phase: string;
 }
 
+interface BackendSuggestionLaunchRequest {
+  suggestion_id: string;
+  prompt?: string;
+  mode: string;
+}
+
+interface BackendSuggestionLaunchResponse {
+  run_id?: string;
+  engine?: "auto" | "os" | "developer" | string;
+  phase?: string;
+  message?: string;
+  run?: BackendRunState;
+}
+
 interface BackendRunState {
   run_id: string;
   engine: "os" | "developer" | string;
@@ -1818,6 +2972,9 @@ interface BackendRunState {
   error?: string;
   created_at: string;
   updated_at: string;
+  cleanup_plan?: unknown;
+  cleanupPlan?: unknown;
+  diff_preview?: unknown;
 }
 
 interface BackendRunEvent extends RunEventPayload {
@@ -1853,6 +3010,9 @@ interface BackendTask {
   final_summary: string;
   created_at: string;
   updated_at: string;
+  cleanup_plan?: unknown;
+  cleanupPlan?: unknown;
+  diff_preview?: unknown;
 }
 
 interface BackendTimeline {
@@ -1860,6 +3020,8 @@ interface BackendTimeline {
   messages: BackendAgentMessage[];
   reviews: BackendSafetyReview[];
   recordings?: BackendStepRecording[];
+  cleanup_plan?: unknown;
+  cleanupPlan?: unknown;
 }
 
 interface BackendStepRecording {
@@ -2049,6 +3211,216 @@ interface BackendApproval {
   created_at: string;
 }
 
+interface BackendDocumentParseRequest {
+  path: string;
+  include_text?: boolean;
+}
+
+interface BackendDocumentAskRequest {
+  path?: string;
+  document_id?: string;
+  question: string;
+  top_k?: number;
+}
+
+interface BackendDocumentCompareRequest {
+  paths: string[];
+  focus?: string;
+}
+
+interface BackendDocumentBlock {
+  id?: string;
+  block_id?: string;
+  type?: string;
+  kind?: string;
+  text?: string;
+  content?: string;
+  level?: number | string;
+  page?: number | string;
+  order?: number | string;
+  index?: number | string;
+  columns?: unknown;
+  rows?: unknown;
+  metadata?: unknown;
+}
+
+interface BackendDocumentTable {
+  id?: string;
+  table_id?: string;
+  title?: string;
+  name?: string;
+  columns?: unknown;
+  rows?: unknown;
+  page?: number | string;
+  source_block_id?: string;
+  sourceBlockId?: string;
+}
+
+interface BackendDocumentCitation {
+  id?: string;
+  label?: string;
+  text?: string;
+  snippet?: string;
+  content?: string;
+  path?: string;
+  block_id?: string;
+  blockId?: string;
+  page?: number | string;
+  score?: number | string;
+}
+
+interface BackendDocumentIR {
+  id?: string;
+  document_id?: string;
+  path?: string;
+  title?: string;
+  name?: string;
+  mime_type?: string;
+  mimeType?: string;
+  language?: string;
+  summary?: string;
+  text?: string;
+  truncated?: boolean;
+  blocks?: BackendDocumentBlock[];
+  tables?: BackendDocumentTable[];
+  citations?: BackendDocumentCitation[];
+  metadata?: unknown;
+  created_at?: string;
+  createdAt?: string;
+}
+
+interface BackendDocumentAskResponse {
+  answer?: string;
+  summary?: string;
+  citations?: unknown;
+  citation_items?: BackendDocumentCitation[];
+  citations_detail?: BackendDocumentCitation[];
+  source_chunks?: BackendDocumentCitation[];
+  sources?: BackendDocumentCitation[];
+  note?: string;
+}
+
+interface BackendDocumentCompareDifference {
+  id?: string;
+  title?: string;
+  field?: string;
+  detail?: string;
+  summary?: string;
+  text?: string;
+  severity?: string;
+  citations?: BackendDocumentCitation[];
+}
+
+interface BackendDocumentCompareResponse {
+  summary?: string;
+  documents?: BackendDocumentIR[];
+  differences?: BackendDocumentCompareDifference[];
+  items?: BackendDocumentCompareDifference[];
+  tables?: BackendDocumentTable[];
+  note?: string;
+}
+
+interface BackendCleanupScanRequest {
+  roots?: string[];
+  threshold_mb?: number;
+  include_caches?: boolean;
+}
+
+interface BackendCleanupPlanRequest extends BackendCleanupScanRequest {
+  item_ids?: string[];
+  prefer_trash?: boolean;
+}
+
+interface BackendCleanupExecuteRequest {
+  roots?: string[];
+  plan_id?: string;
+  content_hash?: string;
+  selected_item_ids?: string[];
+  dry_run?: boolean;
+  approved?: boolean;
+  approval_id?: string;
+}
+
+interface BackendCleanupRollbackRequest {
+  plan_id?: string;
+  execution_id?: string;
+}
+
+interface BackendCleanupItem {
+  id?: string;
+  path?: string;
+  name?: string;
+  action?: string;
+  disposition?: string;
+  mode?: string;
+  delete_mode?: string;
+  bucket?: string;
+  size_bytes?: number;
+  sizeBytes?: number;
+  bytes?: number;
+  size_mb?: number;
+  sizeMb?: number;
+  category?: string;
+  detail?: string;
+  description?: string;
+  reason?: string;
+  risk_level?: string;
+  riskLevel?: string;
+  can_rollback?: boolean;
+  canRollback?: boolean;
+  selected?: boolean;
+  modified_at?: string;
+  modifiedAt?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+interface BackendCleanupPlan {
+  id?: string;
+  plan_id?: string;
+  content_hash?: string;
+  contentHash?: string;
+  title?: string;
+  summary?: string;
+  detail?: string;
+  status?: string;
+  created_at?: string;
+  createdAt?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  total_bytes?: number;
+  totalBytes?: number;
+  reclaimable_bytes?: number;
+  reclaimableBytes?: number;
+  freed_bytes?: number;
+  freedBytes?: number;
+  permanent_delete_bytes?: number;
+  permanentDeleteBytes?: number;
+  trash_bytes?: number;
+  trashBytes?: number;
+  risk_warnings?: unknown;
+  riskWarnings?: unknown;
+  warnings?: unknown;
+  items?: BackendCleanupItem[];
+  buckets?: Record<string, unknown>;
+  cleanup_plan?: unknown;
+  plan?: unknown;
+}
+
+interface BackendCleanupExecutionResult {
+  ok?: boolean;
+  plan_id?: string;
+  planId?: string;
+  execution_id?: string;
+  executionId?: string;
+  freed_bytes?: number;
+  freedBytes?: number;
+  executed?: unknown;
+  rolled_back?: unknown;
+  rolledBack?: unknown;
+  errors?: unknown;
+}
+
 export interface MobilePairingCode {
   code: string;
   expires_at: string;
@@ -2147,10 +3519,43 @@ interface BackendSettings {
   browser_screenshot_dir?: string;
   onnx_model_path?: string;
   onnx_execution_provider?: string;
+  onnx_provider_preference?: string;
+  onnx_directml_device_id?: string;
+  onnx_openvino_device?: string;
+  onnx_openvino_cache_dir?: string;
+  onnx_warm_on_startup?: boolean;
+  onnx_model_family?: string;
+  embedding_backend?: string;
+  onnx_embedding_model_path?: string;
+  onnx_embedding_execution_provider?: string;
+  onnx_embedding_model_id?: string;
+  onnx_embedding_max_batch_size?: number;
+  image_embedding_backend?: string;
+  onnx_image_embedding_model_path?: string;
+  onnx_image_embedding_execution_provider?: string;
+  onnx_image_embedding_model_id?: string;
+  onnx_image_embedding_max_batch_size?: number;
+  ocr_backend?: string;
+  ocr_execution_provider?: string;
+  ocr_openvino_model_dir?: string;
+  ocr_openvino_device?: string;
+  ocr_lang?: string;
+  ocr_min_confidence?: number;
+  ocr_batch_size?: number;
   mode?: string;
   allow_cloud_context?: boolean;
   allow_file_content_upload?: boolean;
-  mcp_servers?: Array<{ name?: string; url?: string; enabled?: boolean; transport?: string }>;
+  mcp_servers?: Array<{
+    id?: string;
+    name?: string;
+    url?: string;
+    command?: string;
+    args?: string[];
+    enabled?: boolean;
+    transport?: string;
+    auth?: Record<string, unknown>;
+    [key: string]: unknown;
+  }>;
 }
 
 interface BackendLlmCapabilities {
@@ -2329,6 +3734,25 @@ interface BackendLocalLlmBackend {
   model?: string;
 }
 
+interface BackendLocalModelReadinessCheck {
+  key?: string;
+  label?: string;
+  ok?: boolean;
+  actual?: string;
+  required?: string;
+}
+
+interface BackendLocalModelReadiness {
+  can_install?: boolean;
+  recommended_model?: string;
+  reason?: string;
+  checks?: BackendLocalModelReadinessCheck[];
+  memory_total_bytes?: number;
+  disk_free_bytes?: number;
+  cpu_logical_cores?: number;
+  gpu_summary?: string;
+}
+
 interface BackendLocalLlmHealth {
   available?: boolean;
   selected_backend?: BackendLocalLlmBackend | null;
@@ -2338,6 +3762,264 @@ interface BackendLocalLlmHealth {
   base_url?: string;
   models?: string[];
   model?: string;
+  readiness?: BackendLocalModelReadiness;
+}
+
+interface BackendHardwareAccelerationStatus {
+  available?: boolean;
+  kind?: string;
+  model_path?: string;
+  execution_provider?: string;
+  available_providers?: string[];
+  generation_runtime?: string;
+  runtime_package?: string;
+  configured_provider?: string;
+  selected_provider?: string;
+  runtime_packages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
+  winml?: {
+    available?: boolean;
+    provider?: string;
+    provider_available?: boolean;
+    packages?: string[];
+    errors?: Record<string, string>;
+  };
+  errors?: string[];
+  error?: string;
+  llm?: {
+    runtime?: string;
+    available?: boolean;
+    model_path?: string;
+    configured_provider?: string;
+    selected_provider?: string;
+    runtime_packages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
+    winml?: {
+      available?: boolean;
+      provider?: string;
+      provider_available?: boolean;
+      packages?: string[];
+      errors?: Record<string, string>;
+    };
+    errors?: string[];
+  };
+  text_embedding?: BackendHardwareAccelerationComponentStatus;
+  image_embedding?: BackendHardwareAccelerationComponentStatus;
+  ocr?: BackendHardwareAccelerationComponentStatus;
+}
+
+interface BackendHardwareAccelerationComponentStatus {
+  available?: boolean;
+  component?: string;
+  kind?: string;
+  model_path?: string;
+  execution_provider?: string;
+  available_providers?: string[];
+  runtime_package?: string;
+  configured_provider?: string;
+  selected_provider?: string;
+  runtime_packages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>;
+  winml?: BackendHardwareAccelerationStatus["winml"];
+  selected_backend?: string;
+  runtime?: string;
+  model?: string;
+  errors?: string[];
+  error?: string;
+}
+
+interface BackendHardwareAccelerationSmoke {
+  ok?: boolean;
+  available?: boolean;
+  status?: "ready" | "unavailable";
+  operation?: "warmup" | "test_generate" | "test_embedding" | "test_ocr" | "test_image_embedding";
+  error?: string;
+  errors?: string[];
+  message?: string;
+  count?: number;
+  dim?: number;
+  source?: string;
+  backend?: {
+    kind?: string;
+    model_path?: string;
+    execution_provider?: string;
+    available_providers?: string[];
+    generation_runtime?: string;
+    runtime_package?: string;
+    model_family?: string;
+    provider_options?: Record<string, string>;
+  };
+  llm?: BackendHardwareAccelerationStatus["llm"];
+  text_embedding?: BackendHardwareAccelerationComponentStatus;
+  image_embedding?: BackendHardwareAccelerationComponentStatus;
+  ocr?: BackendHardwareAccelerationComponentStatus;
+}
+
+interface HardwareAccelerationSmokeRequest {
+  operation?: "warmup" | "test_generate" | "test_embedding" | "test_ocr" | "test_image_embedding";
+  prompt?: string;
+  maxTokens?: number;
+  modelPath?: string;
+  texts?: string[];
+  imagePath?: string;
+}
+
+type HardwareAccelerationSmokeRequestBody = {
+  model_path?: string;
+  prompt?: string;
+  max_tokens?: number;
+  texts?: string[];
+  image_path?: string;
+};
+
+function mapHardwareAccelerationStatus(status: BackendHardwareAccelerationStatus): HardwareAccelerationStatusPayload {
+  return {
+    available: Boolean(status.available),
+    kind: String(status.kind ?? "onnx"),
+    modelPath: String(status.model_path ?? ""),
+    executionProvider: String(status.execution_provider ?? ""),
+    availableProviders: (status.available_providers ?? []).map(String),
+    generationRuntime: String(status.generation_runtime ?? ""),
+    runtimePackage: status.runtime_package ? String(status.runtime_package) : undefined,
+    configuredProvider: status.configured_provider ? String(status.configured_provider) : undefined,
+    selectedProvider: status.selected_provider ? String(status.selected_provider) : undefined,
+    runtimePackages: mapRuntimePackages(status.runtime_packages),
+    winml: status.winml ? mapWinmlStatus(status.winml) : undefined,
+    errors: Array.isArray(status.errors) ? status.errors.map(String) : status.error ? [String(status.error)] : [],
+    error: status.error ? String(status.error) : undefined,
+    llm: status.llm ? mapHardwareAccelerationLlm(status.llm) : undefined,
+    textEmbedding: status.text_embedding ? mapHardwareAccelerationComponent(status.text_embedding) : undefined,
+    imageEmbedding: status.image_embedding ? mapHardwareAccelerationComponent(status.image_embedding) : undefined,
+    ocr: status.ocr ? mapHardwareAccelerationComponent(status.ocr) : undefined
+  };
+}
+
+function mapHardwareAccelerationSmoke(data: BackendHardwareAccelerationSmoke): HardwareAccelerationSmokePayload {
+  return {
+    ok: Boolean(data.ok),
+    available: Boolean(data.available),
+    status: data.status === "ready" ? "ready" : "unavailable",
+    operation: mapHardwareAccelerationOperation(data.operation),
+    error: data.error ? String(data.error) : undefined,
+    errors: Array.isArray(data.errors) ? data.errors.map(String) : [],
+    message: data.message ? String(data.message) : undefined,
+    count: data.count !== undefined ? Number(data.count) : undefined,
+    dim: data.dim !== undefined ? Number(data.dim) : undefined,
+    source: data.source ? String(data.source) : undefined,
+    backend: data.backend
+      ? {
+          kind: String(data.backend.kind ?? ""),
+          model_path: String(data.backend.model_path ?? ""),
+          execution_provider: String(data.backend.execution_provider ?? ""),
+          available_providers: (data.backend.available_providers ?? []).map(String),
+          generation_runtime: String(data.backend.generation_runtime ?? ""),
+          runtime_package: data.backend.runtime_package ? String(data.backend.runtime_package) : undefined,
+          model_family: data.backend.model_family ? String(data.backend.model_family) : undefined,
+          provider_options: data.backend.provider_options ? objectStringRecord(data.backend.provider_options) : {}
+        }
+      : undefined,
+    llm: data.llm ? mapHardwareAccelerationLlm(data.llm) : undefined
+  };
+}
+
+function mapHardwareAccelerationLlm(llm: NonNullable<BackendHardwareAccelerationStatus["llm"]>): HardwareAccelerationStatusPayload["llm"] {
+  return {
+    runtime: String(llm.runtime ?? ""),
+    available: Boolean(llm.available),
+    modelPath: String(llm.model_path ?? ""),
+    configuredProvider: llm.configured_provider ? String(llm.configured_provider) : undefined,
+    selectedProvider: llm.selected_provider ? String(llm.selected_provider) : undefined,
+    runtimePackages: mapRuntimePackages(llm.runtime_packages),
+    winml: llm.winml ? mapWinmlStatus(llm.winml) : undefined,
+    errors: Array.isArray(llm.errors) ? llm.errors.map(String) : []
+  };
+}
+
+function mapHardwareAccelerationOperation(
+  operation?: BackendHardwareAccelerationSmoke["operation"]
+): HardwareAccelerationSmokePayload["operation"] {
+  if (
+    operation === "test_generate" ||
+    operation === "test_embedding" ||
+    operation === "test_ocr" ||
+    operation === "test_image_embedding"
+  ) {
+    return operation;
+  }
+  return "warmup";
+}
+
+function mapHardwareAccelerationComponent(
+  component: BackendHardwareAccelerationComponentStatus
+): NonNullable<HardwareAccelerationStatusPayload["textEmbedding"]> {
+  return {
+    available: Boolean(component.available),
+    component: component.component ? String(component.component) : undefined,
+    kind: component.kind ? String(component.kind) : undefined,
+    modelPath: String(component.model_path ?? ""),
+    executionProvider: String(component.execution_provider ?? ""),
+    availableProviders: (component.available_providers ?? []).map(String),
+    runtimePackage: component.runtime_package ? String(component.runtime_package) : undefined,
+    configuredProvider: component.configured_provider ? String(component.configured_provider) : undefined,
+    selectedProvider: component.selected_provider ? String(component.selected_provider) : undefined,
+    runtimePackages: mapRuntimePackages(component.runtime_packages),
+    winml: component.winml ? mapWinmlStatus(component.winml) : undefined,
+    selectedBackend: component.selected_backend ? String(component.selected_backend) : undefined,
+    runtime: component.runtime ? String(component.runtime) : undefined,
+    model: component.model ? String(component.model) : undefined,
+    errors: Array.isArray(component.errors) ? component.errors.map(String) : component.error ? [String(component.error)] : [],
+    error: component.error ? String(component.error) : undefined
+  };
+}
+
+function mapWinmlStatus(winml: NonNullable<BackendHardwareAccelerationStatus["winml"]>): NonNullable<HardwareAccelerationStatusPayload["winml"]> {
+  return {
+    available: Boolean(winml.available),
+    provider: String(winml.provider ?? "WindowsMLExecutionProvider"),
+    providerAvailable: Boolean(winml.provider_available),
+    packages: (winml.packages ?? []).map(String),
+    errors: Object.fromEntries(Object.entries(winml.errors ?? {}).map(([key, value]) => [key, String(value)]))
+  };
+}
+
+function mapRuntimePackages(
+  packages?: Record<string, { available?: boolean; module?: string; version?: string; error?: string }>
+): Record<string, { available?: boolean; module?: string; version?: string; error?: string }> | undefined {
+  if (!packages) return undefined;
+  return Object.fromEntries(
+    Object.entries(packages).map(([key, value]) => [
+      key,
+      {
+        available: Boolean(value.available),
+        module: value.module ? String(value.module) : undefined,
+        version: value.version ? String(value.version) : undefined,
+        error: value.error ? String(value.error) : undefined
+      }
+    ])
+  );
+}
+
+function objectStringRecord(value: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!value) return undefined;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item)]));
+}
+
+function normalizeExecutionProvider(value: string): AppSettings["onnxExecutionProvider"] {
+  const lowered = value.trim().toLowerCase();
+  if (!lowered) return "";
+  if (["auto", "winml", "directml", "openvino", "cpu"].includes(lowered)) {
+    return lowered === "auto" ? "" : (lowered[0].toUpperCase() + lowered.slice(1)) as AppSettings["onnxExecutionProvider"];
+  }
+  if (lowered === "windowsml" || lowered === "windows_ml") return "WinML";
+  if (lowered === "dml") return "DirectML";
+  return value;
+}
+
+function normalizeHardwareRuntime(value: string): string {
+  const lowered = String(value ?? "").trim().toLowerCase();
+  if (!lowered || lowered === "auto") return "";
+  if (lowered === "winml" || lowered === "windowsml" || lowered === "windows_ml") return "WinML";
+  if (lowered === "directml" || lowered === "dml") return "DirectML";
+  if (lowered === "openvino") return "OpenVINO";
+  if (lowered === "cpu") return "CPU";
+  return value;
 }
 
 interface BackendAuditEvent {
@@ -2427,6 +4109,81 @@ interface BackendBrowserPage {
   links?: BackendBrowserLink[];
   truncated?: boolean;
   adapter?: string;
+  error?: string;
+}
+
+interface BackendBrowserSession {
+  id?: string;
+  task_id?: string | null;
+  current_url?: string;
+  url?: string;
+  title?: string;
+  status?: string;
+  mode?: string;
+  created_at?: string;
+  updated_at?: string;
+  paused?: boolean;
+  takeover?: boolean;
+  last_observation?: string | Record<string, unknown> | null;
+}
+
+interface BackendBrowserActivityEvent {
+  id?: string;
+  session_id?: string;
+  task_id?: string | null;
+  step_id?: string | null;
+  type?: string;
+  action?: unknown;
+  url?: string;
+  title?: string;
+  risk_level?: string;
+  verdict?: string;
+  ok?: boolean;
+  error?: string;
+  screenshot_url?: string;
+  created_at?: string;
+}
+
+interface BackendBrowserActivityEnvelope extends BackendBrowserActivityEvent {
+  ok?: boolean;
+  event?: BackendBrowserActivityEvent;
+  session?: BackendBrowserSession;
+}
+
+interface BackendBrowserSessions {
+  ok?: boolean;
+  sessions?: BackendBrowserSession[];
+  error?: string;
+}
+
+interface BackendBrowserEvents {
+  ok?: boolean;
+  events?: BackendBrowserActivityEvent[];
+  error?: string;
+}
+
+interface BackendBrowserReplayExport {
+  ok?: boolean;
+  url?: string;
+  path?: string;
+  events?: BackendBrowserActivityEvent[];
+  session?: BackendBrowserSession;
+  error?: string;
+}
+
+export type BackendBrowserSessionStreamEvent =
+  | { type: "connected"; session_id: string }
+  | { type: "heartbeat"; session_id?: string }
+  | { type: "session"; session: BackendBrowserSession }
+  | { type: "event"; event: BackendBrowserActivityEvent }
+  | BackendBrowserActivityEvent;
+
+export interface BrowserReplayExport {
+  ok?: boolean;
+  url?: string;
+  path?: string;
+  events?: BrowserActivityEvent[];
+  session?: BrowserSession;
   error?: string;
 }
 

@@ -17,6 +17,7 @@ from app.orchestration.tool_runtime import ToolRuntime
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore, PermissionTimeWindow
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.tools import file_tools
 from app.tools.registry import register_all_tools
 from app.tools.schemas import ToolDefinition
 
@@ -132,6 +133,46 @@ def test_tool_runtime_persists_large_result_preview(tmp_path: Path):
     assert Path(output["path"]).exists()
     assert output["original_size"] > 100
     assert step.status == StepStatus.SUCCEEDED
+
+
+def test_tool_runtime_persists_redacted_tool_call_args():
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    orchestrator = OrchestratorAgent()
+    tool = ToolDefinition(
+        name="test.redacted_call",
+        description="redacted call",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        sensitive_arg_keys=["selector"],
+        trust_tier="builtin",
+        effects=["read"],
+    )
+    task, _plan, step = _task_plan_step(
+        "test.redacted_call",
+        {"url": "https://example.com/?token=secret-token-1234567890", "selector": "#account-token"},
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+    orchestrator._supervise_new_agent_messages = lambda *args, **kwargs: True  # type: ignore[method-assign]
+
+    execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    rows = db.fetch_many("tool_calls", "task_id = ?", (task.id,), limit=10)
+
+    assert execution.kind == "succeeded"
+    assert calls[0]["selector"] == "#account-token"
+    serialized = str(rows)
+    assert "secret-token-1234567890" not in serialized
+    assert "#account-token" not in serialized
+    assert rows[0]["args"]["selector"] == "***"
 
 
 def test_approved_tool_runtime_persists_large_result_preview(tmp_path: Path):
@@ -295,6 +336,68 @@ def test_runtime_allows_requires_authorized_path_tool_inside_allowed_directories
     assert calls == [{"path": str(inside)}]
     assert step.status == StepStatus.SUCCEEDED
     assert task.status == TaskStatus.COMPLETED
+
+
+def test_file_edit_text_requires_prior_read_state(tmp_path: Path):
+    target = tmp_path / "workspace" / "edit.txt"
+    target.write_text("alpha beta", encoding="utf-8")
+    orchestrator = OrchestratorAgent()
+    task, plan, step = _task_plan_step(
+        "file.edit_text",
+        {"path": str(target), "old_string": "alpha", "new_string": "omega", "dry_run": False},
+    )
+    tool = orchestrator.registry.get("file.edit_text")
+    runtime = TaskRuntimeContext.from_task(task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus)
+    runtime.allowed_directories = [str(tmp_path / "workspace")]
+
+    execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
+    assert execution.result is not None
+    output = execution.result.output
+
+    assert output["error_code"] == "READ_STATE_REQUIRED"
+    assert target.read_text(encoding="utf-8") == "alpha beta"
+    assert output["replan_recommended"] is True
+
+
+def test_file_edit_text_blocks_stale_write_after_read(tmp_path: Path):
+    target = tmp_path / "workspace" / "edit.txt"
+    target.write_text("alpha beta", encoding="utf-8")
+    orchestrator = OrchestratorAgent()
+    task, _plan, read_step = _task_plan_step("file.read_text", {"path": str(target)})
+    _edit_task, _edit_plan, edit_step = _task_plan_step(
+        "file.edit_text",
+        {"path": str(target), "old_string": "alpha", "new_string": "omega", "dry_run": False},
+    )
+    edit_step.task_id = task.id
+    read_tool = orchestrator.registry.get("file.read_text")
+    edit_tool = orchestrator.registry.get("file.edit_text")
+    runtime = TaskRuntimeContext.from_task(task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus)
+    runtime.allowed_directories = [str(tmp_path / "workspace")]
+    read_context = runtime.tool_context()
+    asyncio.run(ToolRuntime(orchestrator).execute_tool_with_locks(read_tool, read_step, read_step.args, read_context))
+    target.write_text("changed beta", encoding="utf-8")
+    execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, edit_step, edit_tool, runtime))
+    assert execution.result is not None
+    output = execution.result.output
+
+    assert target.read_text(encoding="utf-8") == "changed beta"
+    assert output["error_code"] == "STALE_RESOURCE_STATE"
+    assert output["resource_state_error"] is True
+
+
+def test_file_edit_text_dry_run_requires_unique_match(tmp_path: Path):
+    target = tmp_path / "workspace" / "edit.txt"
+    target.write_text("alpha alpha", encoding="utf-8")
+
+    result = file_tools.edit_text(
+        {"path": str(target), "old_string": "alpha", "new_string": "omega", "dry_run": True},
+        {"allowed_directories": [str(tmp_path / "workspace")]},
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "NON_UNIQUE_MATCH"
+    assert result["match_count"] == 2
+    assert "_resource_state" in result
 
 
 def test_pre_execute_hook_cannot_mutate_args_or_runtime_after_review(tmp_path: Path):

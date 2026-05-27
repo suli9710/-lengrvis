@@ -7,7 +7,7 @@ from typing import Any
 
 from app.config import AppSettings
 from app.core import db
-from app.core.schemas import Approval, Run, RunEngine, RunEvent, RunPhase, now_iso
+from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase, now_iso
 from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.engine_router import EngineRouter
@@ -15,6 +15,7 @@ from app.orchestration.execution_engine import default_run_store
 from app.orchestration.execution_models import EngineTurnResult, RunPhase as EngineRunPhase, RunState
 from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_event
 from app.orchestration.task_phase import TaskPhase
+from app.policy.risk import RiskLevel
 from app.services.task_service import get_task, set_task_status
 
 
@@ -28,10 +29,23 @@ ENGINE_TERMINAL_PHASES = {
 }
 _ACTIVE_RUN_TASKS: dict[str, asyncio.Future | concurrent.futures.Future] = {}
 _ACTIVE_RUN_TASKS_LOCK = threading.RLock()
+_ACCEPTING_NEW_RUNS = True
 
 
 async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Run:
     db.init_db()
+    if not _ACCEPTING_NEW_RUNS:
+        run = Run(
+            message=message,
+            mode=mode,
+            requested_engine=requested_engine,
+            engine=RunEngine.DEVELOPER if requested_engine == RunEngine.DEVELOPER else RunEngine.OS,
+            phase=RunPhase.PAUSED,
+            error="full_backend_backgrounding",
+        )
+        db.upsert_model("runs", run)
+        run_event_bus.publish(run.id, "run.paused", {"reason": "full_backend_backgrounding", "message": message, "mode": mode})
+        return run
     settings = get_effective_settings()
     run_event_bus.prune_old_events(settings)
     router = _engine_router(settings)
@@ -52,6 +66,7 @@ async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Ru
         return run
 
     run = _run_from_state(state, requested_engine=requested_engine)
+    run.state.setdefault("_runtime", {})["data_dir"] = settings.data_dir
     db.upsert_model("runs", run)
     run_event_bus.publish(
         run.id,
@@ -71,8 +86,11 @@ async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Ru
     if run.task_id:
         stop_event = asyncio.Event()
         queue = AgentBus().subscribe(run.task_id)
-        bridge_task = _schedule_background(_bridge_task_messages(run.id, run.task_id, queue, stop_event))
-    task = _schedule_background(_run_engine_loop(run.id, router, state, stop_event=stop_event, bridge_task=bridge_task))
+        bridge_task = _schedule_background(
+            _bridge_task_messages(run.id, run.task_id, queue, stop_event),
+            data_dir=settings.data_dir,
+        )
+    task = _schedule_background(_run_engine_loop(run.id, router, state, stop_event=stop_event, bridge_task=bridge_task), data_dir=settings.data_dir)
     _track_active_run(run.id, task)
     return run
 
@@ -81,11 +99,11 @@ def get_run(run_id: str) -> Run:
     data = db.fetch_one("runs", run_id)
     if not data:
         raise KeyError(run_id)
-    return Run.model_validate(data)
+    return _sync_run_phase_from_task(Run.model_validate(data))
 
 
 def list_runs(limit: int = 100) -> list[Run]:
-    return [Run.model_validate(item) for item in db.fetch_many("runs", limit=limit)]
+    return [_sync_run_phase_from_task(Run.model_validate(item)) for item in db.fetch_many("runs", limit=limit)]
 
 
 def get_timeline(run_id: str) -> dict[str, Any]:
@@ -113,6 +131,39 @@ def get_progress(run_id: str) -> dict[str, Any]:
 def list_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[RunEvent]:
     get_run(run_id)
     return run_event_bus.replay(run_id, after_sequence=after_sequence, limit=limit)
+
+
+async def prepare_for_background(*, timeout_seconds: float = 8.0) -> dict[str, Any]:
+    global _ACCEPTING_NEW_RUNS
+    _ACCEPTING_NEW_RUNS = False
+    active_ids = active_run_ids()
+    for run_id in active_ids:
+        try:
+            pause_run(run_id)
+        except Exception:
+            continue
+    deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
+    while active_run_ids() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.1)
+    return {
+        "ok": True,
+        "acceptingNewTasks": _ACCEPTING_NEW_RUNS,
+        "pausedRunIds": active_ids,
+        "remainingActiveRunIds": active_run_ids(),
+    }
+
+
+def enter_foreground_runtime() -> dict[str, Any]:
+    global _ACCEPTING_NEW_RUNS
+    _ACCEPTING_NEW_RUNS = True
+    return {"ok": True, "acceptingNewTasks": _ACCEPTING_NEW_RUNS}
+
+
+def runtime_status() -> dict[str, Any]:
+    return {
+        "acceptingNewTasks": _ACCEPTING_NEW_RUNS,
+        "activeRunIds": active_run_ids(),
+    }
 
 
 def pause_run(run_id: str) -> Run:
@@ -164,7 +215,7 @@ def _schedule_resume(run: Run) -> Run:
         return run
     _update_run(run, phase=RunPhase.RUNNING)
     run_event_bus.publish(run.id, "turn.started", {"reason": "resume_requested", "task_id": run.task_id})
-    task = _schedule_background(_resume_engine_loop(run.id, router, state))
+    task = _schedule_background(_resume_engine_loop(run.id, router, state), data_dir=_run_data_dir(run))
     _track_active_run(run.id, task)
     return run
 
@@ -176,7 +227,7 @@ def cancel_run(run_id: str) -> Run:
         try:
             from app.orchestration.claude_code_runner import cancel_claude_code_run
 
-            _schedule_background(cancel_claude_code_run(run.id))
+            _schedule_background(cancel_claude_code_run(run.id), data_dir=_run_data_dir(run))
         except Exception:
             pass
     if run.task_id:
@@ -343,7 +394,10 @@ async def _resume_engine_loop(run_id: str, router: EngineRouter, state: RunState
     if resumed.task_id:
         stop_event = asyncio.Event()
         queue = AgentBus().subscribe(resumed.task_id)
-        bridge_task = _schedule_background(_bridge_task_messages(run_id, resumed.task_id, queue, stop_event))
+        bridge_task = _schedule_background(
+            _bridge_task_messages(run_id, resumed.task_id, queue, stop_event),
+            data_dir=_run_data_dir(get_run(run_id)),
+        )
     await _run_engine_loop(run_id, router, resumed, stop_event=stop_event, bridge_task=bridge_task)
 
 
@@ -438,7 +492,7 @@ def _run_from_state(state: RunState, *, requested_engine: RunEngine) -> Run:
 
 
 def _update_run_from_state(run: Run, state: RunState) -> Run:
-    run.state = state.model_dump(mode="json")
+    run.state = _state_payload_for_run(run, state)
     return _update_run(
         run,
         phase=RunPhase(state.phase.value),
@@ -448,13 +502,13 @@ def _update_run_from_state(run: Run, state: RunState) -> Run:
 
 
 def _state_from_run(run: Run) -> RunState:
+    if run.state:
+        state = RunState.model_validate(_run_state_payload(run.state))
+        return default_run_store.put(state)
     try:
         return default_run_store.get(run.id)
     except KeyError:
         pass
-    if run.state:
-        state = RunState.model_validate(run.state)
-        return default_run_store.put(state)
     state = RunState(
         run_id=run.id,
         engine="developer" if run.engine == RunEngine.DEVELOPER else "os",
@@ -464,6 +518,13 @@ def _state_from_run(run: Run) -> RunState:
         task_id=run.task_id or "",
     )
     return default_run_store.put(state)
+
+
+def _run_data_dir(run: Run) -> str:
+    runtime = run.state.get("_runtime") if isinstance(run.state, dict) else None
+    if isinstance(runtime, dict) and runtime.get("data_dir"):
+        return str(runtime["data_dir"])
+    return ""
 
 
 def _run_cancelled(run_id: str) -> bool:
@@ -484,7 +545,7 @@ def _is_approval_continuation(run: Run) -> bool:
     if run.phase != RunPhase.RUNNING:
         return False
     try:
-        state = RunState.model_validate(run.state or {})
+        state = RunState.model_validate(_run_state_payload(run.state or {}))
     except Exception:
         return False
     return "continuing remaining plan steps" in state.transition_reason.casefold()
@@ -494,7 +555,7 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
     if not run.state:
         return
     try:
-        state = RunState.model_validate(run.state)
+        state = RunState.model_validate(_run_state_payload(run.state))
     except Exception:
         return
     state = state.model_copy(
@@ -504,21 +565,36 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
         },
         deep=True,
     )
-    run.state = state.model_dump(mode="json")
+    run.state = _state_payload_for_run(run, state)
     default_run_store.put(state)
 
 
 def _cancel_persisted_state(run: Run) -> None:
+    runtime = (run.state or {}).get("_runtime") if isinstance(run.state, dict) else None
     try:
         state = _state_from_run(run)
     except Exception:
         return
+    if isinstance(runtime, dict) and runtime:
+        run.state["_runtime"] = dict(runtime)
     state = state.model_copy(
         update={"phase": EngineRunPhase.CANCELLED, "transition_reason": "cancel_requested"},
         deep=True,
     )
-    run.state = state.model_dump(mode="json")
+    run.state = _state_payload_for_run(run, state)
     default_run_store.put(state)
+
+
+def _run_state_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in (raw or {}).items() if not str(key).startswith("_")}
+
+
+def _state_payload_for_run(run: Run, state: RunState) -> dict[str, Any]:
+    payload = state.model_dump(mode="json")
+    runtime = (run.state or {}).get("_runtime") if isinstance(run.state, dict) else None
+    if isinstance(runtime, dict) and runtime:
+        payload["_runtime"] = dict(runtime)
+    return payload
 
 
 def _update_run(run: Run, *, phase: RunPhase, task_id: str | None = None, error: str | None = None) -> Run:
@@ -530,6 +606,36 @@ def _update_run(run: Run, *, phase: RunPhase, task_id: str | None = None, error:
     run.updated_at = now_iso()
     db.upsert_model("runs", run)
     return run
+
+
+def _sync_run_phase_from_task(run: Run) -> Run:
+    if not run.task_id or run.phase in TERMINAL_PHASES or run.phase == RunPhase.PAUSED:
+        return run
+    try:
+        task = get_task(run.task_id)
+    except Exception:
+        return run
+    phase = _phase_for_task(task)
+    if phase == RunPhase.CANCELLED:
+        phase = _phase_for_task_plan(task, _latest_plan_for_task(task.id))
+    if phase == RunPhase.RUNNING or phase == run.phase:
+        return run
+    _sync_persisted_state_phase(run, phase, task.final_summary)
+    _update_run(run, phase=phase)
+    return run
+
+
+def _latest_plan_for_task(task_id: str) -> Plan | None:
+    try:
+        rows = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
+    except Exception:
+        return None
+    if not rows:
+        return None
+    try:
+        return Plan.model_validate(rows[0])
+    except Exception:
+        return None
 
 
 def _publish_plan_events(run_id: str, state: RunState) -> None:
@@ -565,11 +671,13 @@ def _publish_turn_result(run_id: str, result: EngineTurnResult) -> None:
             {"tool_name": source, "output": payload, "engine": state.engine, "turn": state.turn_count},
         )
         if isinstance(payload, dict):
-            for event in payload.get("mavris_events") or []:
+            for event in [*(payload.get("mavris_events") or []), *(payload.get("events") or [])]:
                 if not isinstance(event, dict):
                     continue
-                name = event.get("name")
-                event_payload = event.get("payload")
+                name = event.get("name") or event.get("event")
+                event_payload = event.get("payload") or {
+                    key: value for key, value in event.items() if key not in {"name", "event"}
+                }
                 if isinstance(name, str) and isinstance(event_payload, dict):
                     run_event_bus.publish(
                         run_id,
@@ -626,7 +734,25 @@ def _phase_for_task(task: Any) -> RunPhase:
     return RunPhase.RUNNING
 
 
-def _schedule_background(coro) -> asyncio.Future:
+def _phase_for_task_plan(task: Any, plan: Plan | None) -> RunPhase:
+    phase = _phase_for_task(task)
+    if phase != RunPhase.CANCELLED or plan is None:
+        return phase
+    summary = (getattr(task, "final_summary", "") or "").casefold()
+    if "cancel" in summary or "rejected" in summary:
+        return RunPhase.CANCELLED
+    if "deny" in summary or "denied" in summary or "forbidden" in summary or "safety" in summary:
+        return RunPhase.DENIED
+    if plan.global_risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
+        return RunPhase.DENIED
+    if any(step.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF for step in plan.steps):
+        return RunPhase.DENIED
+    if any(str(step.status) == "denied" for step in plan.steps):
+        return RunPhase.DENIED
+    return RunPhase.CANCELLED
+
+
+def _schedule_background(coro, *, data_dir: str | None = None) -> asyncio.Future:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -634,7 +760,8 @@ def _schedule_background(coro) -> asyncio.Future:
 
         def runner() -> None:
             try:
-                result = asyncio.run(coro)
+                with db.using_data_dir(data_dir):
+                    result = asyncio.run(coro)
             except Exception as exc:  # noqa: BLE001
                 future.set_exception(exc)
             else:
@@ -642,7 +769,11 @@ def _schedule_background(coro) -> asyncio.Future:
 
         threading.Thread(target=runner, name="run-service-background", daemon=True).start()
         return future
-    return loop.create_task(coro)
+    async def run_with_data_dir():
+        with db.using_data_dir(data_dir):
+            return await coro
+
+    return loop.create_task(run_with_data_dir())
 
 
 def _track_active_run(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> None:
@@ -661,3 +792,8 @@ def _run_active(run_id: str) -> bool:
     if task is None:
         return False
     return not task.done()
+
+
+def active_run_ids() -> list[str]:
+    with _ACTIVE_RUN_TASKS_LOCK:
+        return [run_id for run_id, task in _ACTIVE_RUN_TASKS.items() if not task.done()]

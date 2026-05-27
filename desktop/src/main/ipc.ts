@@ -13,6 +13,8 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
   ipcMain.handle(IPC_CHANNELS.backendStatus, () => backend.getStatus());
   ipcMain.handle(IPC_CHANNELS.backendStart, () => backend.start());
   ipcMain.handle(IPC_CHANNELS.backendStop, () => backend.stop());
+  ipcMain.handle(IPC_CHANNELS.backendForeground, () => backend.enterForeground());
+  ipcMain.handle(IPC_CHANNELS.backendBackground, () => backend.enterBackground());
 
   ipcMain.handle(IPC_CHANNELS.openExternal, async (event, url: string) => {
     assertTrustedRenderer(event);

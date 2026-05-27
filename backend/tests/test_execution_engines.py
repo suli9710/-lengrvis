@@ -12,7 +12,7 @@ from app.orchestration.claude_code_config import ClaudeCodeConfig, default_allow
 from app.orchestration.developer_engine import DeveloperExecutionEngine
 from app.orchestration.engine_router import EngineRouter, configured_default_engine, configured_max_turns, route_engine
 from app.orchestration.execution_engine import InMemoryRunStore
-from app.orchestration.execution_models import RunPhase
+from app.orchestration.execution_models import RunPhase, RunState
 from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -123,6 +123,26 @@ class RecoveryAgent:
     async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
         if observation and not observation.ok:
             return AgentAction(kind="propose_tool", tool_name="test.recovery_ok", args={"label": "recovery"})
+        return AgentAction(kind="propose_tool", tool_name=step.tool_name, args=dict(step.args))
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "ok"
+
+
+class NoRecoveryAgent:
+    name = "FileAgent"
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
+        return AgentAction(kind="propose_tool", tool_name=step.tool_name, args=dict(step.args))
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "ok"
+
+
+class DoneOnlyAgent:
+    name = "FileAgent"
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
         return AgentAction(kind="propose_tool", tool_name=step.tool_name, args=dict(step.args))
 
     async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
@@ -265,3 +285,104 @@ async def test_os_engine_recovery_step_runs_through_same_runtime_safety_path(tmp
     assert recovery_step.status == StepStatus.SUCCEEDED
     assert calls == [{"label": "primary"}, {"label": "recovery"}]
     assert {step.id, recovery_step.id}.issubset(reviewed_step_ids)
+
+
+@pytest.mark.asyncio
+async def test_os_engine_reflection_adds_read_before_retry_for_resource_state_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("MARVIS_RECOVERY_MAX_RETRIES", "0")
+    db.init_db()
+    target = tmp_path / "edit.txt"
+    target.write_text("alpha beta", encoding="utf-8")
+    events: list[str] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneOnlyAgent()
+    calls: list[dict] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {
+            "error": "Existing files must be read before writing.",
+            "error_code": "READ_STATE_REQUIRED",
+            "resource_state_error": True,
+            "replan_recommended": True,
+            "missing_read_state": [{"path": str(target), "exists": True}],
+        }
+
+    orchestrator.registry.register(
+        ToolDefinition(
+            name="test.resource_guard",
+            description="resource guard",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            agent_owner="FileAgent",
+            supports_dry_run=False,
+            requires_authorized_path=False,
+            execute=execute,
+            trust_tier="builtin",
+            effects=["read"],
+            fast_path_eligible=True,
+        )
+    )
+    task = Task(user_goal="edit stale file", mode="efficiency", status=TaskStatus.REVIEWING_PLAN)
+    db.upsert_model("tasks", task)
+    step = PlanStep(
+        task_id=task.id,
+        order=1,
+        agent_name="FileAgent",
+        tool_name="test.resource_guard",
+        description="Trigger resource guard",
+        args={"path": str(target)},
+        risk_level=RiskLevel.R0_READ_ONLY,
+    )
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[step])
+    db.upsert_model("plans", plan)
+    engine = OSExecutionEngine(orchestrator, store=InMemoryRunStore())
+
+    result = await engine.run_plan_turn(task, plan, event_hook=lambda name, payload: events.append(name))
+
+    assert result.finished is False
+    assert result.state.phase == RunPhase.RUNNING
+    assert result.outputs["outcome"] == "reflected"
+    assert "os.reflection.started" in events
+    assert step.status == StepStatus.SKIPPED
+    assert result.outputs["step_outcomes"][0]["kind"] == "failed"
+    added = [item for item in plan.steps if item.id != step.id]
+    assert [item.tool_name for item in added] == ["file.read_text", "test.resource_guard"]
+    assert added[1].depends_on == [added[0].id]
+    assert result.state.recovery_count_by_step[step.id] == 1
+
+
+@pytest.mark.asyncio
+async def test_os_engine_reflection_limit_pauses_low_information_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("MARVIS_RECOVERY_MAX_RETRIES", "0")
+    db.init_db()
+    calls: list[dict] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = NoRecoveryAgent()
+    orchestrator.registry.register(_runtime_tool("test.primary_fail", calls, ok=False))
+    task, plan, step = _task_plan("test.primary_fail")
+    state = RunState(
+        run_id=f"os_{task.id}",
+        engine="os",
+        phase=RunPhase.RUNNING,
+        task_id=task.id,
+        goal=task.user_goal,
+        mode=task.mode,
+        current_plan={"task_id": task.id, "plan_id": plan.id, "steps": [step.model_dump(mode="json")]},
+        recovery_count_by_step={step.id: 1, "__os_reflection_run__": 1},
+    )
+    engine = OSExecutionEngine(orchestrator, store=InMemoryRunStore())
+
+    result = await engine.run_plan_turn(task, plan, state=state)
+
+    assert result.finished is True
+    assert result.state.phase == RunPhase.FAILED
+    assert step.status == StepStatus.FAILED
+    assert calls == [{"label": "primary"}]

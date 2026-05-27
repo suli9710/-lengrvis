@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { TaskEvent, TaskExplain, TaskExplainEvidence, TaskState, TaskStepRecording } from "../../shared/types";
+import type { CleanupPlan, TaskEvent, TaskExplain, TaskExplainEvidence, TaskState, TaskStepRecording } from "../../shared/types";
 import { MavrisApiClient } from "../lib/apiClient";
 import {
   zhAgentName,
@@ -198,6 +198,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
                   ))}
                 </div>
               ) : null}
+              {task.cleanupPlan ? <TimelineCleanupPlan plan={task.cleanupPlan} /> : null}
               <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
               {task.state === "completed" && api ? (
                 <div className="row" style={{ marginTop: 8 }}>
@@ -351,6 +352,38 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
       ) : null}
     </Panel>
   );
+}
+
+function TimelineCleanupPlan({ plan }: { plan: CleanupPlan }) {
+  const permanent = plan.items.filter((item) => item.disposition === "permanent_delete");
+  const trash = plan.items.filter((item) => item.disposition === "trash");
+  const suggestions = plan.items.length - permanent.length - trash.length;
+  return (
+    <div className="timeline-cleanup">
+      <div className="row row--between">
+        <strong>清理预览</strong>
+        <span className="muted">{formatBytes(plan.reclaimableBytes)} 可释放</span>
+      </div>
+      <div className="timeline-cleanup__counts">
+        <span>永久删除 {permanent.length}</span>
+        <span>进回收站 {trash.length}</span>
+        <span>仅建议 {suggestions}</span>
+      </div>
+      {plan.riskWarnings.length ? <p>{plan.riskWarnings[0]}</p> : null}
+    </div>
+  );
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes || !Number.isFinite(bytes)) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
 function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; taskId: string | null; onClose: () => void }) {

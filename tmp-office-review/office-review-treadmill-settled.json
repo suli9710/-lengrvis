@@ -1,0 +1,232 @@
+{
+  "mapRect": {
+    "left": 258,
+    "top": 131.4,
+    "right": 1016,
+    "bottom": 666.6,
+    "width": 758,
+    "height": 535.2
+  },
+  "scale": 0.5973597935267857,
+  "agents": [
+    {
+      "id": "pm",
+      "pose": "working",
+      "runtimePose": "working",
+      "anchor": {
+        "x": 585,
+        "y": 277
+      },
+      "rect": {
+        "left": 623.8,
+        "top": 232.3,
+        "right": 701.1,
+        "bottom": 297.8,
+        "width": 77.3,
+        "height": 65.5
+      },
+      "visualRect": {
+        "left": 578.5,
+        "top": 171.8,
+        "right": 746.5,
+        "bottom": 297.8,
+        "width": 168,
+        "height": 126
+      },
+      "imgSrc": "working.gif",
+      "className": "office-agent office-agent--working office-agent--pose-working office-agent--runtime-working office-agent--target-working office-agent--agent-pm office-agent--active office-agent--still office-agent--lead"
+    },
+    {
+      "id": "file",
+      "pose": "coffee",
+      "runtimePose": "coffee",
+      "anchor": {
+        "x": 446.71784880585744,
+        "y": 239.78832146145155
+      },
+      "rect": {
+        "left": 547.7,
+        "top": 221,
+        "right": 612.1,
+        "bottom": 275.6,
+        "width": 64.4,
+        "height": 54.6
+      },
+      "visualRect": {
+        "left": 509.9,
+        "top": 170.6,
+        "right": 649.9,
+        "bottom": 275.6,
+        "width": 140,
+        "height": 105
+      },
+      "imgSrc": "fc_drink_coffee.gif",
+      "className": "office-agent office-agent--coffee office-agent--pose-coffee office-agent--runtime-coffee office-agent--target-coffee office-agent--agent-file office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "computer",
+      "pose": "treadmill",
+      "runtimePose": "treadmill",
+      "anchor": {
+        "x": 300,
+        "y": 474
+      },
+      "rect": {
+        "left": 465.1,
+        "top": 359.3,
+        "right": 519.4,
+        "bottom": 415.5,
+        "width": 54.3,
+        "height": 56.2
+      },
+      "visualRect": {
+        "left": 433.2,
+        "top": 307.5,
+        "right": 551.2,
+        "bottom": 415.5,
+        "width": 118,
+        "height": 108
+      },
+      "imgSrc": "running_treadmill_cropped.gif",
+      "className": "office-agent office-agent--treadmill office-agent--pose-treadmill office-agent--runtime-treadmill office-agent--target-treadmill office-agent--agent-computer office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "app",
+      "pose": "wander",
+      "runtimePose": "wander",
+      "anchor": {
+        "x": 474.38103785674247,
+        "y": 376.7570032113373
+      },
+      "rect": {
+        "left": 564.2,
+        "top": 302.8,
+        "right": 628.6,
+        "bottom": 357.4,
+        "width": 64.4,
+        "height": 54.6
+      },
+      "visualRect": {
+        "left": 526.4,
+        "top": 252.4,
+        "right": 666.4,
+        "bottom": 357.4,
+        "width": 140,
+        "height": 105
+      },
+      "imgSrc": "fc_walking_h.gif",
+      "className": "office-agent office-agent--wander office-agent--pose-wander office-agent--runtime-wander office-agent--target-wander office-agent--agent-app office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "browser",
+      "pose": "restroom",
+      "runtimePose": "restroom",
+      "anchor": {
+        "x": 224,
+        "y": 730
+      },
+      "rect": {
+        "left": 424.8,
+        "top": 499.9,
+        "right": 468.9,
+        "bottom": 568.5,
+        "width": 44.2,
+        "height": 68.6
+      },
+      "visualRect": {
+        "left": 398.8,
+        "top": 418.5,
+        "right": 494.8,
+        "bottom": 550.5,
+        "width": 96,
+        "height": 132
+      },
+      "imgSrc": "fc_pooping-0_cropped.gif",
+      "className": "office-agent office-agent--restroom office-agent--pose-restroom office-agent--runtime-restroom office-agent--target-restroom office-agent--agent-browser office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "search",
+      "pose": "nap",
+      "runtimePose": "nap",
+      "anchor": {
+        "x": 466.15964746933764,
+        "y": 622.8368270297833
+      },
+      "rect": {
+        "left": 557,
+        "top": 446.3,
+        "right": 626,
+        "bottom": 504.4,
+        "width": 69,
+        "height": 58.2
+      },
+      "visualRect": {
+        "left": 516.5,
+        "top": 392.4,
+        "right": 666.5,
+        "bottom": 504.4,
+        "width": 150,
+        "height": 112
+      },
+      "imgSrc": "sleeping.gif",
+      "className": "office-agent office-agent--nap office-agent--pose-nap office-agent--runtime-nap office-agent--target-nap office-agent--agent-search office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "safety",
+      "pose": "review",
+      "runtimePose": "working",
+      "anchor": {
+        "x": 552,
+        "y": 360
+      },
+      "rect": {
+        "left": 610.6,
+        "top": 292.8,
+        "right": 675,
+        "bottom": 347.4,
+        "width": 64.4,
+        "height": 54.6
+      },
+      "visualRect": {
+        "left": 572.8,
+        "top": 242.4,
+        "right": 712.8,
+        "bottom": 347.4,
+        "width": 140,
+        "height": 105
+      },
+      "imgSrc": "salute.gif",
+      "className": "office-agent office-agent--review office-agent--pose-review office-agent--runtime-working office-agent--target-review office-agent--agent-safety office-agent--active office-agent--still office-agent--standard"
+    }
+  ],
+  "treadmillFurniture": {
+    "tl": {
+      "x": 319.2,
+      "y": 308.2
+    },
+    "br": {
+      "x": 557,
+      "y": 494
+    }
+  },
+  "toiletFurniture": {
+    "tl": {
+      "x": 319.2,
+      "y": 474.3
+    },
+    "br": {
+      "x": 557,
+      "y": 661.8
+    }
+  },
+  "waterFurniture": {
+    "tl": {
+      "x": 319.2,
+      "y": 167.2
+    },
+    "br": {
+      "x": 557,
+      "y": 323.7
+    }
+  }
+}

@@ -5,6 +5,7 @@ from pathlib import Path
 from app.config import AppSettings, PROJECT_ROOT
 from app.orchestration.claude_code_config import ClaudeCodeConfig, default_allowed_tools
 from app.orchestration.claude_code_runner import (
+    ClaudeCodeStreamSummary,
     cancel_claude_code_run,
     claude_code_summary_to_turn_result,
     run_claude_code,
@@ -99,16 +100,12 @@ class DeveloperExecutionEngine(ExecutionEngine):
                 run_id=state.run_id,
             )
         except Exception as exc:  # noqa: BLE001 - external CLI failures become run failures.
-            failed = state.model_copy(
-                update={
-                    "phase": RunPhase.FAILED,
-                    "turn_count": state.turn_count + 1,
-                    "transition_reason": f"claude code run failed: {exc}",
-                    "current_plan": _mark_plan_steps_status(state.current_plan, "failed"),
-                },
-                deep=True,
+            result = claude_code_summary_to_turn_result(
+                state,
+                ClaudeCodeStreamSummary(launch_error=f"Unexpected Claude Code adapter failure: {exc}"),
             )
-            return EngineTurnResult(state=self.store.put(failed), finished=True, message=failed.transition_reason)
+            result.state.current_plan = _mark_plan_steps_status(result.state.current_plan, "failed")
+            return result.model_copy(update={"state": self.store.put(result.state)}, deep=True)
 
         result = claude_code_summary_to_turn_result(state, summary)
         step_status = "succeeded" if result.state.phase == RunPhase.COMPLETED else result.state.phase.value

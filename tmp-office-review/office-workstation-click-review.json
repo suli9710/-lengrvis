@@ -1,0 +1,200 @@
+[
+  {
+    "id": "pm",
+    "pose": "working",
+    "anchor": {
+      "x": 585,
+      "y": 277
+    },
+    "rect": {
+      "left": 623.8,
+      "top": 228.3,
+      "right": 701.1,
+      "bottom": 293.8,
+      "width": 77.3,
+      "height": 65.5
+    },
+    "visualRect": {
+      "left": 578.5,
+      "top": 167.8,
+      "right": 746.5,
+      "bottom": 293.8,
+      "width": 168,
+      "height": 126
+    },
+    "src": "working.gif",
+    "chairCenterCanvas": {
+      "x": 585,
+      "y": 244
+    },
+    "deltaFromChairCenter": {
+      "x": 0,
+      "y": 33
+    }
+  },
+  {
+    "id": "app",
+    "pose": "working",
+    "anchor": {
+      "x": 843,
+      "y": 277
+    },
+    "rect": {
+      "left": 784.4,
+      "top": 243.3,
+      "right": 848.8,
+      "bottom": 297.8,
+      "width": 64.4,
+      "height": 54.6
+    },
+    "visualRect": {
+      "left": 746.6,
+      "top": 192.8,
+      "right": 886.6,
+      "bottom": 297.8,
+      "width": 140,
+      "height": 105
+    },
+    "src": "working.gif",
+    "chairCenterCanvas": {
+      "x": 843,
+      "y": 250
+    },
+    "deltaFromChairCenter": {
+      "x": 0,
+      "y": 27
+    }
+  },
+  {
+    "id": "computer",
+    "pose": "working",
+    "anchor": {
+      "x": 587,
+      "y": 533
+    },
+    "rect": {
+      "left": 631.5,
+      "top": 396.2,
+      "right": 695.9,
+      "bottom": 450.8,
+      "width": 64.4,
+      "height": 54.6
+    },
+    "visualRect": {
+      "left": 593.7,
+      "top": 345.8,
+      "right": 733.7,
+      "bottom": 450.8,
+      "width": 140,
+      "height": 105
+    },
+    "src": "working.gif",
+    "chairCenterCanvas": {
+      "x": 587,
+      "y": 506
+    },
+    "deltaFromChairCenter": {
+      "x": 0,
+      "y": 27
+    }
+  },
+  {
+    "id": "browser",
+    "pose": "working",
+    "anchor": {
+      "x": 843,
+      "y": 533
+    },
+    "rect": {
+      "left": 784.4,
+      "top": 396.2,
+      "right": 848.8,
+      "bottom": 450.8,
+      "width": 64.4,
+      "height": 54.6
+    },
+    "visualRect": {
+      "left": 746.6,
+      "top": 345.8,
+      "right": 886.6,
+      "bottom": 450.8,
+      "width": 140,
+      "height": 105
+    },
+    "src": "working.gif",
+    "chairCenterCanvas": {
+      "x": 843,
+      "y": 506
+    },
+    "deltaFromChairCenter": {
+      "x": 0,
+      "y": 27
+    }
+  },
+  {
+    "id": "file",
+    "pose": "working",
+    "anchor": {
+      "x": 587,
+      "y": 789
+    },
+    "rect": {
+      "left": 631.5,
+      "top": 549.1,
+      "right": 695.9,
+      "bottom": 603.7,
+      "width": 64.4,
+      "height": 54.6
+    },
+    "visualRect": {
+      "left": 593.7,
+      "top": 498.7,
+      "right": 733.7,
+      "bottom": 603.7,
+      "width": 140,
+      "height": 105
+    },
+    "src": "working.gif",
+    "chairCenterCanvas": {
+      "x": 587,
+      "y": 762
+    },
+    "deltaFromChairCenter": {
+      "x": 0,
+      "y": 27
+    }
+  },
+  {
+    "id": "search",
+    "pose": "working",
+    "anchor": {
+      "x": 843,
+      "y": 789
+    },
+    "rect": {
+      "left": 784.4,
+      "top": 549.1,
+      "right": 848.8,
+      "bottom": 603.7,
+      "width": 64.4,
+      "height": 54.6
+    },
+    "visualRect": {
+      "left": 746.6,
+      "top": 498.7,
+      "right": 886.6,
+      "bottom": 603.7,
+      "width": 140,
+      "height": 105
+    },
+    "src": "working.gif",
+    "chairCenterCanvas": {
+      "x": 843,
+      "y": 762
+    },
+    "deltaFromChairCenter": {
+      "x": 0,
+      "y": 27
+    }
+  }
+]

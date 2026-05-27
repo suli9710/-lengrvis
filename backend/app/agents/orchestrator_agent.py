@@ -5,6 +5,7 @@ from typing import Any
 
 from app.agents.app_agent import AppAgent
 from app.agents.base import AgentContext, BaseAgent
+from app.agents.browser_activity_review_agent import BrowserActivityReviewAgent
 from app.agents.browser_agent import BrowserAgent
 from app.agents.computer_agent import ComputerAgent
 from app.agents.document_agent import DocumentAgent
@@ -61,6 +62,7 @@ class OrchestratorAgent:
         self.dispatcher = EventDispatcher(self.bus)
         self.planner = PlannerAgent(self.bus)
         self.safety = SafetyReviewAgent(self.bus)
+        self.browser_activity_review = BrowserActivityReviewAgent(self.bus)
         self.parallel_review = ParallelReviewAgent(self.bus)
         self.memory = MemoryAgent(self.bus)
         self.session_context_store = get_session_context_store()

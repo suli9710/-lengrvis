@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from app.config import AppSettings
+from app.core import db
+from app.services.browser_activity_runtime import BrowserActivityRuntime
+from app.tools import browser_tools
+
+
+class FakeBrowserAdapter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def perform(self, session, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN001
+        self.calls.append({"session_id": session.id, "action": dict(action)})
+        kind = action["kind"]
+        url = action.get("url") or session.current_url or "https://example.test/home?token=secret-token"
+        if kind == "screenshot":
+            return {"ok": True, "url": url, "title": "Example", "screenshot_url": "file:///tmp/browser.png"}
+        if kind in {"observe", "navigate", "open"}:
+            return {
+                "ok": True,
+                "url": url,
+                "title": "Example",
+                "text": "Visible page text containing Alice and secret-token.",
+                "links": [{"title": "Docs", "url": "https://example.test/docs"}],
+            }
+        return {"ok": True, "url": url, "title": "Example", "changed_paths": [], "rollback_info": {}}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    yield
+    browser_tools.reset_browser_activity_runtime()
+
+
+def _context(*, mode: str = "efficiency", allow_browser_network: bool = True) -> dict[str, Any]:
+    settings = AppSettings(
+        provider_name="mock",
+        mode=mode,
+        allow_browser_network=allow_browser_network,
+        allow_cloud_context=True,
+    )
+    return {"settings": settings, "allowed_directories": []}
+
+
+def test_runtime_starts_session_observes_and_records_redacted_events() -> None:
+    runtime = BrowserActivityRuntime(adapter=FakeBrowserAdapter())
+
+    started = runtime.session_start(
+        {
+            "task_id": "task-1",
+            "step_id": "step-1",
+            "url": "https://example.test/page?token=secret-token&name=Alice",
+        },
+        _context(),
+    )
+    observed = runtime.observe({"session_id": started["session"]["id"], "step_id": "step-2"}, _context())
+    events = runtime.events({"session_id": started["session"]["id"]})["events"]
+
+    assert started["ok"] is True
+    assert observed["ok"] is True
+    assert [event["type"] for event in events] == ["session.start", "observe"]
+    assert events[-1]["task_id"] == "task-1"
+    assert events[-1]["result"]["link_count"] == 1
+    assert "secret-token" not in str(events)
+    assert "Alice" not in str(events)
+
+    audit_events = db.fetch_many("audit_events", "task_id = ?", ("task-1",), limit=10)
+    assert any(event["event_type"] == "browser_activity.observe" for event in audit_events)
+    assert "secret-token" not in str(audit_events)
+
+
+def test_write_action_dry_run_preview_is_redacted_and_does_not_execute() -> None:
+    adapter = FakeBrowserAdapter()
+    runtime = BrowserActivityRuntime(adapter=adapter)
+    started = runtime.session_start({"task_id": "task-2"}, _context())
+
+    preview = runtime.act(
+        {
+            "session_id": started["session"]["id"],
+            "task_id": "task-2",
+            "action": {
+                "kind": "click",
+                "url": "https://example.test/account?token=secret-token",
+                "selector": "#go-button",
+                "text": "Alice",
+            },
+            "dry_run": True,
+        },
+        _context(),
+    )
+
+    assert preview["ok"] is True
+    assert preview["dry_run"] is True
+    assert adapter.calls == []
+    assert "secret-token" not in str(preview)
+    assert "#go-button" not in str(preview)
+    assert "Alice" not in str(preview)
+
+
+def test_live_write_action_requires_approval_then_records_sanitized_event() -> None:
+    adapter = FakeBrowserAdapter()
+    runtime = BrowserActivityRuntime(adapter=adapter)
+    started = runtime.session_start({"task_id": "task-3"}, _context())
+    args = {
+        "session_id": started["session"]["id"],
+        "task_id": "task-3",
+        "action": {
+            "kind": "fill",
+            "url": "https://example.test/profile?token=secret-token",
+            "fields": {"#email": "alice@example.test"},
+        },
+        "dry_run": False,
+    }
+
+    blocked = runtime.act(args, _context())
+    allowed = runtime.act({**args, "approved": True, "approval_id": "approval-1"}, _context())
+    events = runtime.events({"session_id": started["session"]["id"]})["events"]
+    replay = runtime.replay_export({"session_id": started["session"]["id"]}, _context())
+
+    assert blocked["ok"] is False
+    assert "approval_id" in blocked["error"]
+    assert allowed["ok"] is True
+    assert adapter.calls[-1]["action"]["kind"] == "fill"
+    assert any(event["type"] == "act.fill" and event["ok"] is True for event in events)
+    assert "secret-token" not in str(events)
+    assert "alice@example.test" not in str(replay)
+
+
+def test_legacy_read_page_uses_session_compatible_runtime_flow() -> None:
+    adapter = FakeBrowserAdapter()
+    browser_tools.reset_browser_activity_runtime(adapter=adapter)
+
+    page = browser_tools.read_page(
+        {"url": "https://example.test/read?token=secret-token", "task_id": "task-4"},
+        _context(),
+    )
+    events = browser_tools.get_browser_activity_runtime().events({})["events"]
+
+    assert page["ok"] is True
+    assert page["title"] == "Example"
+    assert adapter.calls[-1]["action"]["kind"] == "observe"
+    assert any(event["type"] == "observe" and event["task_id"] == "task-4" for event in events)
+    assert "secret-token" not in str(events)
+
+
+def test_open_url_defaults_to_isolated_session_without_system_browser(monkeypatch) -> None:
+    adapter = FakeBrowserAdapter()
+    browser_tools.reset_browser_activity_runtime(adapter=adapter)
+    opened: list[str] = []
+    monkeypatch.setattr(browser_tools.webbrowser, "open", lambda url, new=0: opened.append(url))
+
+    result = browser_tools.open_url({"url": "https://example.test/page?token=secret-token", "task_id": "task-5"}, _context())
+    events = browser_tools.get_browser_activity_runtime().events({"task_id": "task-5"})["events"]
+
+    assert result["ok"] is True
+    assert result["isolated_session"] is True
+    assert opened == []
+    assert events[0]["type"] == "session.start"
+    assert "secret-token" not in str(result)
+    assert "secret-token" not in str(events)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,8 @@ from app.perception.environment_stream import (
     file_changed_event,
     reset_environment_stream,
 )
-from app.perception.schemas import AppContext
+from app.perception.schemas import AppContext, ScreenState, UIElement
+from app.perception import storage as perception_storage
 
 
 @pytest.fixture(autouse=True)
@@ -256,6 +258,113 @@ def test_environment_stream_app_context_poll_emits_only_on_switch():
         assert seen[1].metadata["process_name"] == "EXCEL.EXE"
 
     asyncio.run(run())
+
+
+def test_environment_stream_screen_event_omits_image_base64_from_payload():
+    state = ScreenState(
+        description="Spreadsheet visible",
+        image_base64="raw-image-should-not-persist",
+        app_context=AppContext(available=True, process_name="EXCEL.EXE", active_window_title="Budget.xlsx"),
+    )
+    stream = EnvironmentStream(dispatcher=EventDispatcher(), rule_engine=EnvironmentRuleEngine([]))
+
+    event = stream.from_screen_state(state, task_id="task_screen")
+    payload = event.model_dump(mode="json")
+    storage_payload = perception_storage.sanitize_for_storage(event)
+
+    assert "raw-image-should-not-persist" not in json.dumps(event.environment_payload())
+    assert "raw-image-should-not-persist" not in json.dumps(storage_payload)
+    assert payload["screen_state"]["image_base64"] == "raw-image-should-not-persist"
+
+
+def test_environment_stream_dispatches_sanitized_screen_event_to_bus_and_audit(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+
+    async def run() -> None:
+        bus = AgentBus()
+        stream = EnvironmentStream(dispatcher=EventDispatcher(bus), bus=bus, rule_engine=EnvironmentRuleEngine([]))
+        state = ScreenState(
+            description="Spreadsheet visible",
+            image_base64="raw-image-should-not-persist",
+            app_context=AppContext(available=True, process_name="EXCEL.EXE", active_window_title="Budget.xlsx"),
+        )
+
+        await stream.handle_perception_event(type("Event", (), {"screen_state": state, "task_id": "task_screen"})())
+
+    from app.orchestration.agent_bus import AgentBus
+
+    asyncio.run(run())
+
+    serialized_messages = json.dumps(db.fetch_many("agent_messages", limit=20))
+    serialized_audit = json.dumps(db.fetch_many("audit_events", limit=20))
+    assert "raw-image-should-not-persist" not in serialized_messages
+    assert "raw-image-should-not-persist" not in serialized_audit
+
+
+def test_environment_storage_suppresses_sensitive_window_suggestion(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    event = EnvironmentEvent(
+        environment_type=EnvironmentEventType.APP_SWITCHED,
+        subject="1Password password vault",
+        app_context=AppContext(available=True, process_name="1Password.exe", active_window_title="Password vault"),
+    )
+    suggestion = EnvironmentRuleEngine(
+        [
+            EnvironmentRule(
+                id="sensitive_app",
+                event_pattern=[EnvironmentEventType.APP_SWITCHED],
+                title="Sensitive suggestion",
+                body="Do something with this visible password manager.",
+            )
+        ]
+    ).evaluate(event)[0]
+
+    stored_observation = perception_storage.store_observation(event)
+    stored_suggestion = perception_storage.store_suggestion(suggestion, source_event=event)
+
+    assert stored_observation is not None
+    assert stored_observation["suppressed"] is True
+    assert stored_observation["process_name"] == ""
+    assert stored_observation["window_title"] == ""
+    assert stored_suggestion is not None
+    assert stored_suggestion["suppressed"] is True
+    assert stored_suggestion["title"] == ""
+    assert stored_suggestion["payload"] == {
+        "event_type": "environment.proactive_suggestion",
+        "environment_type": "",
+        "suppression_reason": "sensitive_window_or_field",
+    }
+
+
+def test_environment_storage_suppresses_sensitive_control(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    safe_elements = [UIElement(role="text", name=f"field-{index}") for index in range(12)]
+    state = ScreenState(
+        description="A browser form is visible.",
+        tags=["browser"],
+        image_base64="raw-image-should-not-persist",
+        app_context=AppContext(
+            available=True,
+            process_name="chrome.exe",
+            active_window_title="Chrome",
+            focus_control=UIElement(role="edit", name="Password"),
+        ),
+        ui_elements=[*safe_elements, UIElement(role="textbox", name="token", text="API token")],
+    )
+    stream = EnvironmentStream(dispatcher=EventDispatcher(), rule_engine=EnvironmentRuleEngine([]))
+    event = stream.from_screen_state(state, task_id="task_sensitive_control")
+
+    stored_observation = perception_storage.store_observation(event)
+
+    assert stored_observation is not None
+    assert stored_observation["suppressed"] is True
+    dumped = json.dumps(stored_observation)
+    assert "Password" not in dumped
+    assert "API token" not in dumped
+    assert "raw-image-should-not-persist" not in dumped
 
 
 def default_file_rules() -> list[EnvironmentRule]:

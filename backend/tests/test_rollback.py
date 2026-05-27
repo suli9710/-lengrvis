@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.core import db
+from app.core.errors import SecurityError
 from app.core.schemas import ToolResult
 from app.tools import rollback_tools
 
@@ -27,7 +28,7 @@ def test_rollback_move_back_returns_file(tmp_path: Path):
         ok=True,
         rollback_info={"move_back": {"from": str(moved), "to": str(original)}},
     )
-    outcome = rollback_tools.rollback_tool_result(result)
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
     assert original.exists() and not moved.exists()
 
@@ -40,7 +41,7 @@ def test_rollback_trash_created_file_sends_to_recycle_bin(tmp_path: Path):
         ok=True,
         rollback_info={"trash_created_file": str(created)},
     )
-    outcome = rollback_tools.rollback_tool_result(result)
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
     assert not created.exists() or outcome.get("detail") == "already absent"
 
@@ -53,7 +54,7 @@ def test_rollback_delete_folder_if_empty(tmp_path: Path):
         ok=True,
         rollback_info={"delete_folder_if_empty": str(folder)},
     )
-    outcome = rollback_tools.rollback_tool_result(result)
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
     assert not folder.exists()
 
@@ -67,7 +68,7 @@ def test_rollback_delete_folder_if_empty_skipped_when_not_empty(tmp_path: Path):
         ok=True,
         rollback_info={"delete_folder_if_empty": str(folder)},
     )
-    outcome = rollback_tools.rollback_tool_result(result)
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is False
     assert folder.exists()
 
@@ -82,7 +83,7 @@ def test_rollback_restore_backup(tmp_path: Path):
         ok=True,
         rollback_info={"backup": str(backup)},
     )
-    outcome = rollback_tools.rollback_tool_result(result)
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is True
     assert original.read_text(encoding="utf-8") == "original-content"
     assert not backup.exists()
@@ -94,9 +95,56 @@ def test_rollback_restore_from_recycle_bin_requires_user_action(tmp_path: Path):
         ok=True,
         rollback_info={"restore_from_recycle_bin": str(tmp_path / "trashed.txt")},
     )
-    outcome = rollback_tools.rollback_tool_result(result)
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
     assert outcome["ok"] is False
     assert outcome.get("requires_user_action") is True
+
+
+def test_rollback_fails_closed_without_authorized_directories(tmp_path: Path):
+    moved = tmp_path / "to.txt"
+    moved.write_text("hello", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-no-auth",
+        ok=True,
+        rollback_info={"move_back": {"from": str(moved), "to": str(tmp_path / "from.txt")}},
+    )
+
+    outcome = rollback_tools.rollback_tool_result(result)
+
+    assert outcome["ok"] is False
+    assert "No authorized directories configured" in outcome["detail"]
+    assert moved.exists()
+
+
+def test_cleanup_rollback_preview_fails_closed_without_authorized_directories(tmp_path: Path):
+    with pytest.raises(SecurityError, match="No authorized directories configured"):
+        rollback_tools.rollback_cleanup_result(
+            {"rollback_info": {"restore_from_recycle_bin": str(tmp_path / "trashed.txt")}},
+            {},
+        )
+
+
+def test_execute_rollback_uses_effective_authorized_directories(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    original = tmp_path / "from.txt"
+    moved = tmp_path / "to.txt"
+    moved.write_text("hello", encoding="utf-8")
+    result = ToolResult(
+        tool_call_id="call-execute",
+        ok=True,
+        rollback_info={"move_back": {"from": str(moved), "to": str(original)}},
+    )
+    monkeypatch.setattr("app.tools.rollback_tools._results_for_task", lambda _task_id: [result])
+
+    class Settings:
+        allowed_directories = [str(tmp_path)]
+
+    monkeypatch.setattr("app.tools.rollback_tools.get_effective_settings", lambda: Settings())
+
+    outcome = rollback_tools.execute_rollback("task-1")
+
+    assert outcome["count"] == 1
+    assert outcome["executed"][0]["ok"] is True
+    assert original.exists() and not moved.exists()
 
 
 def test_rollback_noop_when_no_info():

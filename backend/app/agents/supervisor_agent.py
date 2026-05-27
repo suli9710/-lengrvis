@@ -13,6 +13,7 @@ from app.core.session_context import SessionContext, get_session_context_store
 from app.perception.context_store import latest_perception_context
 from app.perception.intent_predictor import IntentPredictor, IntentSuggestion
 from app.perception.schemas import AppContext, ScreenState
+from app.perception.storage import is_sensitive_context
 
 
 SUPERVISOR_SCHEMA: dict[str, Any] = {
@@ -167,6 +168,8 @@ class SupervisorAgent:
             app_context = app_context or _typed_context(perception_context.get("app_context"), AppContext)
             if app_context is None and screen_state is not None:
                 app_context = screen_state.app_context
+        if is_sensitive_context(screen_state=screen_state, app_context=app_context):
+            return []
         if history is None:
             try:
                 history = get_session_context_store().load_latest()
@@ -199,7 +202,6 @@ class SupervisorAgent:
                 "content": render_prompt("supervisor_user.md", {"mode": mode, "message": f"{perception_hint}{message}"}),
             },
         ]
-        return decision
 
     def _format_perception_context(self, perception_context: dict[str, Any] | None) -> str:
         if not perception_context:
@@ -208,14 +210,16 @@ class SupervisorAgent:
         screen_state = perception_context.get("screen_state")
         app_context = perception_context.get("app_context")
         if app_context is None and screen_state is not None:
-            app_context = getattr(screen_state, "app_context", None)
+            app_context = _context_value(screen_state, "app_context", None)
+        if is_sensitive_context(screen_state=screen_state, app_context=app_context):
+            return ""
         if app_context is not None:
-            title = str(getattr(app_context, "active_window_title", "") or "").strip()
-            process = str(getattr(app_context, "process_name", "") or "").strip()
+            title = str(_context_value(app_context, "active_window_title") or "").strip()
+            process = str(_context_value(app_context, "process_name") or "").strip()
             if title or process:
                 lines.append(f"Active app: {process or 'unknown'} / {title or 'untitled'}")
         if screen_state is not None:
-            description = str(getattr(screen_state, "description", "") or "").strip()
+            description = str(_context_value(screen_state, "description") or "").strip()
             if description:
                 lines.append(f"Visible screen: {description[:200]}")
         if not lines:
@@ -310,6 +314,12 @@ class SupervisorAgent:
 
 def _typed_context(value: Any, expected_type: type[ScreenState] | type[AppContext]) -> Any:
     return value if isinstance(value, expected_type) else None
+
+
+def _context_value(value: Any, key: str, default: Any = "") -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
 
 
 def coerce_supervisor_json(text: str) -> dict[str, Any]:

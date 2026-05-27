@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "models_root": ".marvis_data/models",
+  "models": [
+    {
+      "id": "qwen2.5-3b-instruct-onnx-genai",
+      "task": "llm",
+      "recommended": true,
+      "path": "qwen2.5-3b-instruct-onnx",
+      "repo": "onnx-community/Qwen2.5-3B-Instruct-ONNX",
+      "patterns": ["**/genai_config.json", "**/config.json", "**/*.onnx", "**/*.json", "**/*.txt"]
+    },
+    {
+      "id": "multilingual-e5-small-onnx",
+      "task": "text_embedding",
+      "recommended": true,
+      "path": "multilingual-e5-small",
+      "repo": "Xenova/multilingual-e5-small",
+      "patterns": ["onnx/model.onnx", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]
+    },
+    {
+      "id": "clip-vit-base-patch32-onnx",
+      "task": "image_embedding",
+      "recommended": true,
+      "path": "clip-vit-base-patch32",
+      "repo": "Xenova/clip-vit-base-patch32",
+      "patterns": ["onnx/vision_model.onnx", "preprocessor_config.json", "tokenizer.json", "vocab.json", "merges.txt"]
+    },
+    {
+      "id": "local-ocr-onnx",
+      "task": "ocr",
+      "recommended": false,
+      "path": "ocr",
+      "repo": "",
+      "patterns": ["*.onnx", "vocab.txt", "tokens.txt", "charset.txt"]
+    }
+  ]
+}

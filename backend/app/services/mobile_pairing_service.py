@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import socket
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -18,6 +19,11 @@ from app.security.mobile_jwt import decode_mobile_token, issue_mobile_token, new
 
 PAIR_CODE_TTL_SECONDS = 300
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
+PAIR_CONFIRM_FAILURE_LIMIT = 8
+PAIR_CONFIRM_FAILURE_WINDOW_SECONDS = 60
+
+_PAIR_CONFIRM_FAILURES: dict[str, list[float]] = {}
+_PAIR_CONFIRM_FAILURES_LOCK = threading.Lock()
 
 
 def create_pairing_request() -> dict[str, Any]:
@@ -47,36 +53,80 @@ def create_pairing_request() -> dict[str, Any]:
     }
 
 
-def confirm_pairing(*, code: str, device_name: str) -> dict[str, Any]:
+def confirm_pairing(*, code: str, device_name: str, client_host: str = "") -> dict[str, Any]:
     db.init_db()
     _expire_stale_pairings()
 
+    rate_key = _pairing_rate_key(client_host)
+    _raise_if_pairing_rate_limited(rate_key)
     normalized = _normalize_code(code)
     if len(normalized) != 6:
+        _record_pairing_failure(rate_key)
         raise HTTPException(status_code=422, detail="Pairing code must be 6 characters")
 
-    record = _load_pairing_record(normalized)
-    if record is None or record.get("status") != "pending":
+    result = _redeem_pairing_record(normalized, device_name)
+    if result is None:
+        _record_pairing_failure(rate_key)
         raise HTTPException(status_code=401, detail="Pairing code is invalid or expired")
-    if _parse_iso(str(record["expires_at"])) <= time.time():
-        _expire_pairing_record(record)
-        raise HTTPException(status_code=401, detail="Pairing code is invalid or expired")
+    _clear_pairing_failures(rate_key)
+    return result
 
+
+def _redeem_pairing_record(code: str, device_name: str) -> dict[str, Any] | None:
+    now = time.time()
     device_id = new_device_id()
-    device_name = device_name or "Android device"
+    device_name = _safe_device_name(device_name)
     token = issue_mobile_token(device_id=device_id, device_name=device_name, expires_in_seconds=TOKEN_TTL_SECONDS)
-    updated = dict(record)
-    updated.update(
-        {
-            "status": "used",
-            "device_id": device_id,
-            "device_name": device_name,
-            "used_at": now_iso(),
-            "updated_at": now_iso(),
-        }
-    )
-    _write_pairing_record(updated)
-    _upsert_mobile_device(device_id=device_id, device_name=device_name)
+    used_at = now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT data FROM mobile_pairings WHERE id = ?", (code,)).fetchone()
+        if not row:
+            return None
+        record = json.loads(row["data"])
+        if record.get("status") != "pending":
+            return None
+        if _parse_iso(str(record.get("expires_at") or "")) <= now:
+            updated = dict(record)
+            updated["status"] = "expired"
+            updated["updated_at"] = used_at
+            conn.execute(
+                """
+                UPDATE mobile_pairings
+                SET data = ?,
+                    status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status = ?
+                """,
+                (json.dumps(updated, ensure_ascii=False), "expired", used_at, code, "pending"),
+            )
+            return None
+        updated = dict(record)
+        updated.update(
+            {
+                "status": "used",
+                "device_id": device_id,
+                "device_name": device_name,
+                "used_at": used_at,
+                "updated_at": used_at,
+            }
+        )
+        cursor = conn.execute(
+            """
+            UPDATE mobile_pairings
+            SET data = ?,
+                status = ?,
+                used_at = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = ?
+            """,
+            (json.dumps(updated, ensure_ascii=False), "used", used_at, used_at, code, "pending"),
+        )
+        if cursor.rowcount != 1:
+            return None
+        _upsert_mobile_device_locked(conn, device_id=device_id, device_name=device_name, timestamp=used_at)
     return {
         "token": token,
         "token_type": "Bearer",
@@ -182,22 +232,27 @@ def _expire_stale_pairings() -> None:
 
 
 def _upsert_mobile_device(*, device_id: str, device_name: str) -> None:
+    timestamp = now_iso()
+    with db.connect() as conn:
+        _upsert_mobile_device_locked(conn, device_id=device_id, device_name=device_name, timestamp=timestamp)
+
+
+def _upsert_mobile_device_locked(conn: Any, *, device_id: str, device_name: str, timestamp: str) -> None:
     body = {
         "id": device_id,
         "device_id": device_id,
         "device_name": device_name,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
+        "created_at": timestamp,
+        "updated_at": timestamp,
     }
-    with db.connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO mobile_devices (id, data, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
-            """,
-            (device_id, json.dumps(body, ensure_ascii=False), body["created_at"], body["updated_at"]),
-        )
+    conn.execute(
+        """
+        INSERT INTO mobile_devices (id, data, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
+        """,
+        (device_id, json.dumps(body, ensure_ascii=False), body["created_at"], body["updated_at"]),
+    )
 
 
 def _decide_approval(approval_id: str, status: ApprovalStatus) -> Approval:
@@ -313,6 +368,43 @@ def _unique_code() -> str:
 
 def _normalize_code(code: str) -> str:
     return "".join(character for character in code if character.isalnum()).lower()
+
+
+def _safe_device_name(device_name: str) -> str:
+    cleaned = "".join(character for character in str(device_name or "") if character.isprintable()).strip()
+    return cleaned[:80] or "Android device"
+
+
+def _pairing_rate_key(client_host: str) -> str:
+    return (client_host or "unknown").strip().lower() or "unknown"
+
+
+def _raise_if_pairing_rate_limited(rate_key: str) -> None:
+    now = time.time()
+    with _PAIR_CONFIRM_FAILURES_LOCK:
+        failures = _recent_pairing_failures(rate_key, now)
+        if len(failures) >= PAIR_CONFIRM_FAILURE_LIMIT:
+            _PAIR_CONFIRM_FAILURES[rate_key] = failures
+            raise HTTPException(status_code=429, detail="Too many failed pairing attempts. Try again later.")
+        _PAIR_CONFIRM_FAILURES[rate_key] = failures
+
+
+def _record_pairing_failure(rate_key: str) -> None:
+    now = time.time()
+    with _PAIR_CONFIRM_FAILURES_LOCK:
+        failures = _recent_pairing_failures(rate_key, now)
+        failures.append(now)
+        _PAIR_CONFIRM_FAILURES[rate_key] = failures
+
+
+def _clear_pairing_failures(rate_key: str) -> None:
+    with _PAIR_CONFIRM_FAILURES_LOCK:
+        _PAIR_CONFIRM_FAILURES.pop(rate_key, None)
+
+
+def _recent_pairing_failures(rate_key: str, now: float) -> list[float]:
+    cutoff = now - PAIR_CONFIRM_FAILURE_WINDOW_SECONDS
+    return [timestamp for timestamp in _PAIR_CONFIRM_FAILURES.get(rate_key, []) if timestamp >= cutoff]
 
 
 def _server_info() -> dict[str, Any]:

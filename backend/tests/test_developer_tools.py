@@ -137,6 +137,39 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
     assert calls[0]["command"][-2:] == ["status", "--short"]
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest backend/tests/test_developer_tools.py",
+        "python -m pytest backend/tests/test_developer_tools.py",
+        "npm test",
+        "pnpm run test",
+    ],
+)
+def test_validate_test_command_allows_controlled_test_commands(command: str) -> None:
+    allowed, reason = developer_tools.validate_test_command(command)
+
+    assert allowed is True
+    assert reason == ""
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python script.py",
+        "pytest --junitxml report.xml",
+        "pytest --watch",
+        "npm run build",
+        "pytest tests > out.txt",
+    ],
+)
+def test_validate_test_command_rejects_uncontrolled_commands(command: str) -> None:
+    allowed, reason = developer_tools.validate_test_command(command)
+
+    assert allowed is False
+    assert reason
+
+
 def test_shell_readonly_rejects_without_allowed_directories(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[Any] = []
 
@@ -168,6 +201,60 @@ def test_run_command_marks_truncated_stdout_and_stderr(monkeypatch: pytest.Monke
     assert result["stderr"] == "e" * developer_tools.COMMAND_STDERR_LIMIT
     assert result["stdout_truncated"] is True
     assert result["stderr_truncated"] is True
+
+
+def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class Timeout:
+        stdout = "partial stdout"
+        stderr = "partial stderr"
+
+    def fake_run(*args: Any, **kwargs: Any):  # noqa: ANN202
+        raise developer_tools.subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"], output=Timeout.stdout, stderr=Timeout.stderr)
+
+    monkeypatch.setattr(developer_tools.subprocess, "run", fake_run)
+
+    result = developer_tools.test_run(
+        {"cwd": str(tmp_path), "command": "pytest backend/tests", "timeout_seconds": 1},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is False
+    assert result["timed_out"] is True
+    assert Path(result["stdout_path"]).read_text(encoding="utf-8") == "partial stdout"
+    assert Path(result["stderr_path"]).read_text(encoding="utf-8") == "partial stderr"
+
+
+def test_dev_test_run_background_returns_task_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class FakeTask:
+        id = "bgtask_test"
+
+        def snapshot(self, *, preview_chars: int = 4000):  # noqa: ARG002, ANN202
+            return {
+                "task_id": self.id,
+                "status": "running",
+                "command": ["pytest"],
+                "cwd": str(tmp_path),
+                "returncode": None,
+                "stdout_path": str(tmp_path / "out.log"),
+                "stderr_path": str(tmp_path / "err.log"),
+                "stdout_preview": "",
+                "stderr_preview": "",
+            }
+
+    monkeypatch.setattr(developer_tools, "start_background_process", lambda *args, **kwargs: FakeTask())
+    monkeypatch.setattr(developer_tools, "background_task_status", lambda task_id: {"ok": True, "task_id": task_id, "status": "succeeded"})
+
+    started = developer_tools.test_run(
+        {"cwd": str(tmp_path), "command": "pytest backend/tests", "background": True},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+    status = developer_tools.test_status({"task_id": "bgtask_test"}, {"allowed_directories": [str(tmp_path)]})
+
+    assert started["ok"] is True
+    assert started["background"] is True
+    assert started["task_id"] == "bgtask_test"
+    assert status["ok"] is True
+    assert status["summary"] == "Background test run bgtask_test is succeeded."
 
 
 def test_diff_preview_returns_summary_and_truncation_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -260,6 +347,7 @@ def test_registered_developer_tools_are_public_readonly_fast_path_tools() -> Non
     public = shell.to_public_dict(include_schema=True)
     inventory = registry.get("dev.pytest_inventory").to_public_dict(include_schema=True)
     worktree = registry.get("dev.worktree_preview").to_public_dict(include_schema=True)
+    test_run = registry.get("dev.test_run").to_public_dict(include_schema=True)
 
     assert public["permission_mode"] == "auto_readonly"
     assert public["read_only"] is True
@@ -275,3 +363,7 @@ def test_registered_developer_tools_are_public_readonly_fast_path_tools() -> Non
     assert inventory["effects"] == ["read", "inspect"]
     assert inventory["requires_authorized_path"] is True
     assert worktree["requires_authorized_path"] is True
+    assert test_run["risk_level"] == "R1_OPEN_ONLY"
+    assert test_run["read_only"] is False
+    assert test_run["fast_path_eligible"] is False
+    assert "execute_test" in test_run["effects"]

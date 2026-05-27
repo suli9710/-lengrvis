@@ -1,14 +1,14 @@
-import { Sparkles, Send } from "lucide-react";
+import { Pencil, Play, Send, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, IntentSuggestion } from "../../shared/types";
-import { zhConnectionState } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 
 interface ChatPanelProps {
   messages: ChatMessage[];
   connectionState: "online" | "offline" | "checking";
   onSend: (content: string) => Promise<void>;
+  onExecuteSuggestion?: (suggestion: IntentSuggestion) => Promise<void>;
   initialDraft?: string;
   autoFocus?: boolean;
   suggestions?: IntentSuggestion[];
@@ -18,12 +18,14 @@ export function ChatPanel({
   messages,
   connectionState,
   onSend,
+  onExecuteSuggestion,
   initialDraft = "",
   autoFocus = false,
   suggestions = []
 }: ChatPanelProps) {
   const [draft, setDraft] = useState(initialDraft);
   const [isSending, setIsSending] = useState(false);
+  const [executingSuggestionId, setExecutingSuggestionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const hasDraft = draft.trim().length > 0;
 
@@ -52,12 +54,29 @@ export function ChatPanel({
     }
   };
 
+  const editSuggestion = (suggestion: IntentSuggestion) => {
+    setDraft(suggestion.prompt);
+    window.setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const executeSuggestion = async (suggestion: IntentSuggestion) => {
+    if (!onExecuteSuggestion || executingSuggestionId) return;
+    setExecutingSuggestionId(suggestion.id);
+    try {
+      await onExecuteSuggestion(suggestion);
+    } finally {
+      setExecutingSuggestionId(null);
+    }
+  };
+
   return (
     <Panel
-      title="问 Marvis"
-      eyebrow="电脑 AI 管家"
+      title="Chat"
+      eyebrow="Mavris"
       className="panel--chat"
-      action={<Badge tone={connectionState === "online" ? "success" : "warning"}>{zhConnectionState(connectionState)}</Badge>}
+      action={connectionState === "online" ? null : (
+        <Badge tone="warning">{connectionState === "checking" ? "Checking connection" : "Offline"}</Badge>
+      )}
     >
       <div className="chat-log" aria-live="polite">
         {messages.map((message) => (
@@ -71,18 +90,40 @@ export function ChatPanel({
         ))}
       </div>
       {suggestions.length ? (
-        <div className="intent-suggestions" aria-label="Proactive suggestions">
+        <div className="intent-suggestions" aria-label="Suggestions">
           {suggestions.slice(0, 3).map((suggestion) => (
-            <button
+            <article
               className="intent-suggestion"
               key={suggestion.id}
-              type="button"
-              onClick={() => setDraft(suggestion.prompt)}
               title={suggestion.reason}
             >
-              <Sparkles size={14} aria-hidden="true" />
-              <span>{suggestion.prompt}</span>
-            </button>
+              <div className="intent-suggestion__head">
+                <Sparkles size={14} aria-hidden="true" />
+                <strong>{suggestion.title || suggestion.prompt}</strong>
+                <span>{formatConfidence(suggestion.confidence)}</span>
+              </div>
+              <p>{suggestion.prompt}</p>
+              {suggestion.reason ? <small>{suggestion.reason}</small> : null}
+              <div className="intent-suggestion__actions">
+                <button
+                  className="button button--primary button--small"
+                  type="button"
+                  onClick={() => void executeSuggestion(suggestion)}
+                  disabled={!onExecuteSuggestion || executingSuggestionId !== null}
+                >
+                  <Play size={14} aria-hidden="true" />
+                  {executingSuggestionId === suggestion.id ? "Executing" : "Execute"}
+                </button>
+                <button
+                  className="button button--ghost button--small"
+                  type="button"
+                  onClick={() => editSuggestion(suggestion)}
+                >
+                  <Pencil size={14} aria-hidden="true" />
+                  Edit
+                </button>
+              </div>
+            </article>
           ))}
         </div>
       ) : null}
@@ -97,7 +138,7 @@ export function ChatPanel({
               void submit();
             }
           }}
-          placeholder="例如：帮我找上周的合同、查电脑配置、把发票整理到文件夹"
+          placeholder="Ask Mavris to find a file, summarize a document, or check this computer."
           rows={3}
         />
         <button
@@ -106,11 +147,16 @@ export function ChatPanel({
           disabled={isSending || !hasDraft}
         >
           <Send size={16} aria-hidden="true" />
-          {isSending ? "发送中" : "发送"}
+          {isSending ? "Sending" : "Send"}
         </button>
       </div>
     </Panel>
   );
+}
+
+function formatConfidence(value: number): string {
+  const normalized = value > 1 ? value : value * 100;
+  return `${Math.round(normalized)}%`;
 }
 
 function formatTime(value: string): string {

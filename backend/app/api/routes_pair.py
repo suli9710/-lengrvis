@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from app.services import mobile_pairing_service
@@ -20,8 +20,13 @@ def create_pairing_code() -> dict:
 
 
 @router.post("/pair/confirm")
-def confirm_pairing(request: PairRedeemRequest) -> dict:
-    return mobile_pairing_service.confirm_pairing(code=request.code, device_name=request.device_name)
+def confirm_pairing(payload: PairRedeemRequest, request: Request) -> dict:
+    client_host = request.client.host if request.client else ""
+    return mobile_pairing_service.confirm_pairing(
+        code=payload.code,
+        device_name=payload.device_name,
+        client_host=client_host,
+    )
 
 
 @router.get("/pair/devices")
@@ -35,5 +40,10 @@ def create_pairing_code_legacy() -> dict:
 
 
 @router.post("/pair")
-def pair(request: PairRedeemRequest) -> dict:
-    return mobile_pairing_service.confirm_pairing(code=request.code, device_name=request.device_name)
+def pair(payload: PairRedeemRequest, request: Request) -> dict:
+    client_host = request.client.host if request.client else ""
+    return mobile_pairing_service.confirm_pairing(
+        code=payload.code,
+        device_name=payload.device_name,
+        client_host=client_host,
+    )

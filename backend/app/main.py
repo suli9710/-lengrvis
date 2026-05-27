@@ -16,14 +16,17 @@ from app.api import (
     routes_chat,
     routes_commands,
     routes_context,
+    routes_documents,
     routes_files,
     routes_mcp,
     routes_memories,
     routes_schedules,
     routes_mobile,
     routes_pair,
+    routes_perception,
     routes_remote,
     routes_runs,
+    routes_runtime,
     routes_settings,
     routes_skills,
     routes_system,
@@ -161,6 +164,7 @@ def create_app() -> FastAPI:
         routes_files.router,
         routes_system.router,
         routes_runs.router,
+        routes_runtime.router,
         routes_settings.router,
         routes_audit.router,
         routes_browser.router,
@@ -169,6 +173,8 @@ def create_app() -> FastAPI:
         routes_mcp.router,
         routes_commands.router,
         routes_context.router,
+        routes_documents.router,
+        routes_perception.router,
         routes_skills.router,
     ]:
         app.include_router(router, prefix="/api")
@@ -184,6 +190,8 @@ def create_app() -> FastAPI:
     app.include_router(routes_remote.ws_router, prefix="/api")
     app.include_router(routes_runs.ws_router)
     app.include_router(routes_runs.ws_router, prefix="/api")
+    app.include_router(routes_settings.ws_router)
+    app.include_router(routes_settings.ws_router, prefix="/api")
 
     return app
 

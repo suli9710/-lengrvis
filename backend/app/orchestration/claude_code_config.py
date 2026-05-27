@@ -7,10 +7,12 @@ from app.integrations.claude_code import (
     FORBIDDEN_CLI_FLAGS,
     OPENAI_MODEL_ENV_KEYS,
     ClaudeCodeConfig,
+    ClaudeCodeRuntimeHealth,
     assert_safe_claude_code_invocation,
     build_claude_code_command,
     build_claude_code_env,
     default_allowed_tools,
+    diagnose_claude_code_runtime,
     resolve_claude_code_runtime,
     validate_allowed_tools,
 )
@@ -22,11 +24,12 @@ __all__ = [
     "FORBIDDEN_CLI_FLAGS",
     "OPENAI_MODEL_ENV_KEYS",
     "ClaudeCodeConfig",
+    "ClaudeCodeRuntimeHealth",
     "assert_safe_claude_code_invocation",
     "build_claude_code_command",
     "build_claude_code_env",
     "default_allowed_tools",
+    "diagnose_claude_code_runtime",
     "resolve_claude_code_runtime",
     "validate_allowed_tools",
 ]
-
