@@ -19,10 +19,19 @@ croniter>=2.0
 numpy>=1.26
 pywin32>=306; platform_system=="Windows"
 watchdog>=4.0
+blake3>=0.4.1
+docling>=2.30
+unstructured[all-docs]>=0.16
+paddleocr>=2.8
 
 # Optional: remote desktop input injection fallback (ctypes handles basic Windows clicks)
 # pyautogui>=0.9.54; platform_system=="Windows"
 
 # Optional: NPU/GPU acceleration
+# onnxruntime-windowsml>=1.22; sys_platform == 'win32'
+# onnxruntime-genai-winml>=0.8; sys_platform == 'win32'
 # onnxruntime-directml>=1.18; sys_platform == 'win32'
-# onnxruntime-genai>=0.4; sys_platform == 'win32'
+# onnxruntime-genai-directml>=0.8; sys_platform == 'win32'
+# onnxruntime-openvino>=1.18
+# tokenizers>=0.20
+# transformers>=4.45

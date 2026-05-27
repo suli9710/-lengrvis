@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -10,18 +11,40 @@ from typing import Any
 
 import httpx
 
+try:
+    import psutil
+except Exception:  # pragma: no cover - optional in stripped-down test envs
+    psutil = None  # type: ignore[assignment]
+
 from app.core.audit import record
 
 OLLAMA_API = "http://127.0.0.1:11434"
-RECOMMENDED_MODEL = "qwen2.5:3b-instruct"
+RECOMMENDED_MODEL = "qwen2.5:3b"
+FALLBACK_SMALL_MODEL = RECOMMENDED_MODEL
+FALLBACK_MEDIUM_MODEL = "qwen2.5:7b"
+_GIB = 1024**3
+_MIN_CPU_CORES = 4
+_MIN_RAM_BYTES = 8 * _GIB
+_MIN_DISK_BYTES = 8 * _GIB
+_MEDIUM_CPU_CORES = 6
+_MEDIUM_RAM_BYTES = 16 * _GIB
+_MEDIUM_DISK_BYTES = 12 * _GIB
 _TIMEOUT = 5.0
 
 
 async def status() -> dict[str, Any]:
     """Return Ollama installation and runtime status."""
     installed = is_installed()
+    readiness = hardware_readiness()
     if not installed:
-        return {"installed": False, "running": False, "models": []}
+        return {
+            "installed": False,
+            "running": False,
+            "models": [],
+            "recommended_model": RECOMMENDED_MODEL,
+            "has_recommended": False,
+            "readiness": readiness,
+        }
     running = await is_running()
     models = await list_models() if running else []
     return {
@@ -30,12 +53,84 @@ async def status() -> dict[str, Any]:
         "models": models,
         "recommended_model": RECOMMENDED_MODEL,
         "has_recommended": RECOMMENDED_MODEL in " ".join(models),
+        "readiness": readiness,
+    }
+
+
+def hardware_readiness(model: str | None = None) -> dict[str, Any]:
+    """Assess whether this computer is a reasonable target for local Ollama setup."""
+    memory_total = _total_memory_bytes()
+    disk_free = _ollama_disk_free_bytes()
+    cpu_cores = os.cpu_count() or 0
+    return assess_hardware(
+        model=model,
+        memory_total_bytes=memory_total,
+        disk_free_bytes=disk_free,
+        cpu_logical_cores=cpu_cores,
+        gpu_summary=_gpu_summary(),
+    )
+
+
+def assess_hardware(
+    *,
+    model: str | None = None,
+    memory_total_bytes: int = 0,
+    disk_free_bytes: int = 0,
+    cpu_logical_cores: int = 0,
+    gpu_summary: str = "",
+) -> dict[str, Any]:
+    """Pure hardware gate used by runtime checks and tests."""
+    target = model or _recommended_model_for_hardware(
+        memory_total_bytes=memory_total_bytes,
+        disk_free_bytes=disk_free_bytes,
+        cpu_logical_cores=cpu_logical_cores,
+    )
+    requirements = _requirements_for_model(target)
+    checks = [
+        {
+            "key": "memory",
+            "label": "Memory",
+            "ok": memory_total_bytes >= requirements["memory_total_bytes"],
+            "actual": _format_bytes(memory_total_bytes),
+            "required": _format_bytes(requirements["memory_total_bytes"]),
+        },
+        {
+            "key": "disk",
+            "label": "Free disk space",
+            "ok": disk_free_bytes >= requirements["disk_free_bytes"],
+            "actual": _format_bytes(disk_free_bytes),
+            "required": _format_bytes(requirements["disk_free_bytes"]),
+        },
+        {
+            "key": "cpu",
+            "label": "CPU cores",
+            "ok": cpu_logical_cores >= requirements["cpu_logical_cores"],
+            "actual": str(cpu_logical_cores or "unknown"),
+            "required": str(requirements["cpu_logical_cores"]),
+        },
+    ]
+    can_install = all(check["ok"] for check in checks)
+    failed = [check for check in checks if not check["ok"]]
+    reason = (
+        f"This computer is ready for {target}."
+        if can_install
+        else "Local AI setup needs " + ", ".join(f"{item['label']} >= {item['required']}" for item in failed) + "."
+    )
+    return {
+        "can_install": can_install,
+        "recommended_model": target,
+        "reason": reason,
+        "checks": checks,
+        "memory_total_bytes": memory_total_bytes,
+        "disk_free_bytes": disk_free_bytes,
+        "cpu_logical_cores": cpu_logical_cores,
+        "gpu_summary": gpu_summary,
     }
 
 
 def is_installed() -> bool:
     """Check if ollama binary is on PATH."""
-    return shutil.which("ollama") is not None
+    return _ollama_executable() is not None
 
 
 async def is_running() -> bool:
@@ -89,6 +184,123 @@ async def install() -> dict[str, Any]:
         return {"ok": False, "error": "Installation timed out after 120 seconds."}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+async def start_server() -> dict[str, Any]:
+    """Start Ollama server in the background when the CLI is available."""
+    if await is_running():
+        return {"ok": True, "message": "Ollama server is already running."}
+    if not is_installed():
+        return {"ok": False, "error": "Ollama is not installed."}
+
+    try:
+        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        executable = _ollama_executable()
+        if not executable:
+            return {"ok": False, "error": "Ollama executable not found."}
+        subprocess.Popen(
+            [executable, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        record("ollama.start", "OllamaService", {"ok": True})
+        return {"ok": True, "message": "Ollama server is starting."}
+    except Exception as exc:
+        record("ollama.start", "OllamaService", {"ok": False, "error": str(exc)})
+        return {"ok": False, "error": str(exc)}
+
+
+def _requirements_for_model(model: str) -> dict[str, int]:
+    normalized = model.lower()
+    if "7b" in normalized:
+        return {
+            "memory_total_bytes": _MEDIUM_RAM_BYTES,
+            "disk_free_bytes": _MEDIUM_DISK_BYTES,
+            "cpu_logical_cores": _MEDIUM_CPU_CORES,
+        }
+    return {
+        "memory_total_bytes": _MIN_RAM_BYTES,
+        "disk_free_bytes": _MIN_DISK_BYTES,
+        "cpu_logical_cores": _MIN_CPU_CORES,
+    }
+
+
+def _ollama_executable() -> str | None:
+    path = shutil.which("ollama")
+    if path:
+        return path
+    candidates = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Ollama\ollama.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Ollama\ollama.exe"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _recommended_model_for_hardware(
+    *,
+    memory_total_bytes: int,
+    disk_free_bytes: int,
+    cpu_logical_cores: int,
+) -> str:
+    if (
+        memory_total_bytes >= _MEDIUM_RAM_BYTES
+        and disk_free_bytes >= _MEDIUM_DISK_BYTES
+        and cpu_logical_cores >= _MEDIUM_CPU_CORES
+    ):
+        return FALLBACK_MEDIUM_MODEL
+    return FALLBACK_SMALL_MODEL
+
+
+def _total_memory_bytes() -> int:
+    if psutil is None:
+        return 0
+    try:
+        return int(psutil.virtual_memory().total)
+    except Exception:
+        return 0
+
+
+def _ollama_disk_free_bytes() -> int:
+    target = os.getenv("OLLAMA_MODELS") or os.path.expanduser("~/.ollama")
+    try:
+        existing = target
+        while existing and not os.path.exists(existing):
+            parent = os.path.dirname(existing)
+            if parent == existing:
+                break
+            existing = parent
+        return int(shutil.disk_usage(existing or os.path.expanduser("~")).free)
+    except Exception:
+        return 0
+
+
+def _gpu_summary() -> str:
+    if sys.platform != "win32":
+        return ""
+    try:
+        proc = subprocess.run(
+            ["wmic", "path", "win32_VideoController", "get", "name"],
+            capture_output=True,
+            text=True,
+            timeout=0.75,
+            check=False,
+        )
+    except Exception:
+        return ""
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip() and line.strip().lower() != "name"]
+    return ", ".join(lines[:3])
+
+
+def _format_bytes(value: int) -> str:
+    if value <= 0:
+        return "unknown"
+    gib = value / _GIB
+    return f"{gib:.1f} GB"
 
 
 async def pull_model(model: str | None = None) -> dict[str, Any]:
@@ -152,7 +364,25 @@ async def pull_model_streaming(model: str | None = None):
 async def install_local_model(model: str | None = None):
     """Full install flow: detect Ollama -> install if needed -> pull model.
     Yields progress dicts for WebSocket streaming."""
-    target = model or RECOMMENDED_MODEL
+    readiness = hardware_readiness(model)
+    target = model or str(readiness["recommended_model"])
+
+    if not readiness["can_install"]:
+        yield {
+            "phase": "hardware",
+            "status": "error",
+            "error": readiness["reason"],
+            "readiness": readiness,
+        }
+        return
+
+    yield {
+        "phase": "hardware",
+        "status": "done",
+        "message": readiness["reason"],
+        "readiness": readiness,
+        "model": target,
+    }
 
     # Step 1: Check if Ollama is installed
     if not is_installed():
@@ -168,6 +398,8 @@ async def install_local_model(model: str | None = None):
     # Step 2: Check if Ollama is running
     running = await is_running()
     if not running:
+        yield {"phase": "start", "status": "starting", "message": "Starting Ollama server..."}
+        await start_server()
         yield {"phase": "start", "status": "waiting", "message": "Waiting for Ollama server to start..."}
         for _ in range(10):
             await asyncio.sleep(2)

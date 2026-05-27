@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.indexer.clustering import hashing_vectorize
+from app.indexer.local_embedding_provider import get_local_embedding_provider
 from app.llm.registry import get_effective_settings, get_provider
 
 
@@ -21,8 +22,16 @@ async def embed_texts(texts: list[str], *, embedder: Embedder | None = None) -> 
         if hasattr(vectors, "__await__"):
             vectors = await vectors  # type: ignore[assignment]
         return [_coerce_vector(vector) for vector in vectors]  # type: ignore[arg-type]
+    settings = get_effective_settings()
+    local_provider = get_local_embedding_provider(settings)
+    if local_provider is not None:
+        try:
+            vectors = await local_provider.embed(normalized, model=settings.embedding_model)
+            return [_coerce_vector(vector) for vector in vectors]
+        except Exception:
+            pass
     try:
-        vectors = await get_provider(task="embed").embed(normalized, model=get_effective_settings().embedding_model)
+        vectors = await get_provider(settings, task="embed").embed(normalized, model=settings.embedding_model)
         return [_coerce_vector(vector) for vector in vectors]
     except Exception:
         return hashing_vectorize(normalized, dim=64)

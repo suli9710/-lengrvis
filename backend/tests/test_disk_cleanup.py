@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.tools import system_tools
+from app.tools import file_tools
 
 
 @pytest.fixture
@@ -62,3 +63,20 @@ def test_cleanup_suggestions_three_buckets(workspace: Path):
     assert isinstance(buckets["info_only"], list)
     # info_only should mention the large files from the workspace.
     assert any("big_video" in item["path"] for item in buckets["info_only"])
+
+
+def test_file_cleanup_plan_returns_three_action_tiers(workspace: Path):
+    cache = workspace / "build"
+    cache.mkdir()
+    (cache / "artifact.tmp").write_text("cache", encoding="utf-8")
+
+    result = file_tools.cleanup_plan(
+        {"roots": [str(workspace)], "threshold_mb": 1, "older_than_days": 0},
+        {"allowed_directories": [str(workspace)]},
+    )
+
+    assert result["ok"] is True
+    assert result["plan_id"].startswith("cleanup_")
+    actions = {item["action"] for item in result["items"]}
+    assert "delete_direct" in actions
+    assert "trash_with_prompt" in actions or "review_only" in actions

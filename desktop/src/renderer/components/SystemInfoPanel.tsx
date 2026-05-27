@@ -138,7 +138,7 @@ function MiniList({ title, items, empty }: { title: string; items: string[]; emp
   return (
     <div className="system-mini-list">
       <strong>{title}</strong>
-      {items.length ? items.map((item) => <span key={item}>{item}</span>) : <span>{empty}</span>}
+      {items.length ? items.map((item, index) => <span key={`${item}-${index}`}>{item}</span>) : <span>{empty}</span>}
     </div>
   );
 }

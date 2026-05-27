@@ -115,7 +115,7 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return []
-    if key in {
+    int_min_one_keys = {
         "browser_max_page_bytes",
         "document_max_chars_to_llm",
         "llm_api_circuit_failure_threshold",
@@ -133,12 +133,23 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "context_min_summary_chars",
         "max_tokens",
         "timeout",
-    }:
-        return max(1, int(value))
+        "onnx_embedding_max_batch_size",
+        "onnx_image_embedding_max_batch_size",
+        "ocr_batch_size",
+    }
+    if key in int_min_one_keys:
+        return _coerce_int_setting(key, value, minimum=1)
     if key in {"llm_api_max_retries", "recovery_max_retries"}:
-        return max(0, int(value))
-    if key in {"llm_api_retry_backoff_seconds", "llm_api_circuit_cooldown_seconds", "temperature"}:
-        return max(0.0, float(value))
+        return _coerce_int_setting(key, value, minimum=0)
+    float_min_zero_keys = {
+        "llm_api_retry_backoff_seconds",
+        "llm_api_circuit_cooldown_seconds",
+        "temperature",
+        "ocr_min_confidence",
+        "perception_frame_diff_threshold",
+    }
+    if key in float_min_zero_keys:
+        return _coerce_float_setting(key, value, minimum=0.0)
     if key in {
         "provider_name",
         "base_url",
@@ -149,8 +160,27 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "network_access",
         "embedding_model",
         "vision_model",
+        "onnx_provider_preference",
+        "onnx_directml_device_id",
+        "onnx_openvino_device",
+        "onnx_openvino_cache_dir",
+        "onnx_model_family",
         "onnx_model_path",
+        "onnx_runtime",
         "onnx_execution_provider",
+        "embedding_backend",
+        "onnx_embedding_model_path",
+        "onnx_embedding_execution_provider",
+        "onnx_embedding_model_id",
+        "image_embedding_backend",
+        "onnx_image_embedding_model_path",
+        "onnx_image_embedding_execution_provider",
+        "onnx_image_embedding_model_id",
+        "ocr_backend",
+        "ocr_execution_provider",
+        "ocr_openvino_model_dir",
+        "ocr_openvino_device",
+        "ocr_lang",
         "jwt_secret",
     }:
         return str(value or "").strip()
@@ -188,6 +218,9 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "strict_state_machine",
         "remote_desktop_enabled",
         "allow_mock_fallback",
+        "onnx_enabled",
+        "onnx_warm_on_startup",
+        "perception_local_ocr_enabled",
         "context_auto_compact_enabled",
         "context_micro_compact_enabled",
         "context_history_snip_enabled",
@@ -197,6 +230,28 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
             return value
         return str(value).lower() in {"1", "true", "yes", "on"}
     return value
+
+
+def _coerce_int_setting(key: str, value: Any, *, minimum: int) -> int:
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError) as exc:
+        raise AppError(
+            "invalid_numeric_setting",
+            f"Setting '{key}' must be an integer.",
+            status_code=400,
+        ) from exc
+
+
+def _coerce_float_setting(key: str, value: Any, *, minimum: float) -> float:
+    try:
+        return max(minimum, float(value))
+    except (TypeError, ValueError) as exc:
+        raise AppError(
+            "invalid_numeric_setting",
+            f"Setting '{key}' must be a number.",
+            status_code=400,
+        ) from exc
 
 
 def _validate_settings_patch(patch: dict[str, Any]) -> None:

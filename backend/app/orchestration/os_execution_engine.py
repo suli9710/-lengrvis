@@ -20,6 +20,12 @@ from app.orchestration.execution_models import (
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.observations import summarize_result
+from app.orchestration.os_reflection import (
+    OSReflectionDecider,
+    OSReflectionInput,
+    apply_reflection_decision,
+    reflection_count_updates,
+)
 from app.orchestration.step_phase import set_step_status
 from app.policy.risk import RiskLevel
 
@@ -63,6 +69,7 @@ class OSExecutionEngine(ExecutionEngine):
         self.store = store or default_run_store
         self.event_hook = event_hook
         self._orchestrators_by_run: dict[str, OrchestratorAgent] = {}
+        self.reflection_decider = OSReflectionDecider()
 
     async def start_run(self, goal: str, mode: str, engine: EngineSelection = "auto") -> RunState:  # noqa: ARG002
         orchestrator = self._new_orchestrator()
@@ -139,7 +146,7 @@ class OSExecutionEngine(ExecutionEngine):
             current = last_result.state
             if last_result.finished:
                 return last_result
-            if not last_result.outputs.get("selected_step_ids"):
+            if not last_result.outputs.get("selected_step_ids") and last_result.outputs.get("outcome") != "reflected":
                 return last_result
 
         message = "OS execution engine reached its per-plan turn limit."
@@ -169,11 +176,23 @@ class OSExecutionEngine(ExecutionEngine):
         try:
             by_id, _dependents = orchestrator._build_step_graph(plan)
         except ValueError as exc:
+            record("task.step_graph_invalid", orchestrator.name, {"error": str(exc)}, task_id=task.id)
+            reflection_state = await self._maybe_reflect(
+                current,
+                task,
+                plan,
+                outputs,
+                hook,
+                turn=turn,
+                context=context,
+                graph_error=str(exc),
+            )
+            if reflection_state is not None:
+                return reflection_state
             for step in plan.steps:
                 if step.status == StepStatus.PENDING:
                     set_step_status(step, StepStatus.FAILED, actor="OSExecutionEngine")
             orchestrator._set_status(task, TaskStatus.FAILED, final_summary=str(exc))
-            record("task.step_graph_invalid", orchestrator.name, {"error": str(exc)}, task_id=task.id)
             return await self._finish_turn(
                 current,
                 task,
@@ -189,6 +208,18 @@ class OSExecutionEngine(ExecutionEngine):
         pending = self._pending_step_ids(plan)
         ready = orchestrator._ready_steps(pending, by_id)
         if not ready:
+            reflection_state = await self._maybe_reflect(
+                current,
+                task,
+                plan,
+                outputs,
+                hook,
+                turn=turn,
+                context=context,
+                no_ready=bool(pending),
+            )
+            if reflection_state is not None:
+                return reflection_state
             orchestrator._mark_blocked_steps(pending, by_id)
             return await self._finish_from_plan(current, task, plan, outputs, hook, turn)
 
@@ -269,6 +300,19 @@ class OSExecutionEngine(ExecutionEngine):
                 finished=True,
             )
         if stop_outcome in {"denied", "failed"}:
+            if stop_outcome == "failed":
+                reflection_state = await self._maybe_reflect(
+                    current,
+                    task,
+                    plan,
+                    outputs,
+                    hook,
+                    turn=turn,
+                    context=context,
+                    step_outcomes=step_outcomes,
+                )
+                if reflection_state is not None:
+                    return reflection_state
             phase = RunPhase.DENIED if stop_outcome == "denied" else RunPhase.FAILED
             return await self._finish_turn(
                 current,
@@ -281,8 +325,145 @@ class OSExecutionEngine(ExecutionEngine):
                 message=task.final_summary or f"Plan {stop_outcome}.",
                 finished=True,
             )
+        if any(outcome.kind == "failed" for _step, outcome in step_outcomes):
+            reflection_state = await self._maybe_reflect(
+                current,
+                task,
+                plan,
+                outputs,
+                hook,
+                turn=turn,
+                context=context,
+                step_outcomes=step_outcomes,
+            )
+            if reflection_state is not None:
+                return reflection_state
 
         return await self._finish_from_plan(current, task, plan, outputs, hook, turn)
+
+    async def _maybe_reflect(
+        self,
+        state: RunState,
+        task: Task,
+        plan: Plan,
+        outputs: dict[str, Any],
+        hook: OSEventHook | None,
+        *,
+        turn: int,
+        context: dict[str, Any],
+        step_outcomes: list[tuple[PlanStep, StepExecutionOutcome]] | None = None,
+        no_ready: bool = False,
+        graph_error: str = "",
+    ) -> EngineTurnResult | None:
+        run_reflection_count = int(state.recovery_count_by_step.get("__os_reflection_run__", 0))
+        reflection_input = OSReflectionInput(
+            task=task,
+            plan=plan,
+            turn=turn,
+            run_reflection_count=run_reflection_count,
+            step_reflection_counts=dict(state.recovery_count_by_step),
+            step_outcomes=step_outcomes or [],
+            no_ready=no_ready,
+            graph_error=graph_error,
+        )
+        if not self.reflection_decider.should_reflect(reflection_input):
+            return None
+        await self._emit(
+            outputs,
+            hook,
+            "os.reflection.started",
+            {
+                "turn": turn,
+                "task_id": task.id,
+                "plan_id": plan.id,
+                "reason": graph_error or "observed failed or ambiguous execution state",
+                "run_reflection_count": run_reflection_count,
+            },
+        )
+        decision = await self.reflection_decider.decide(reflection_input, self._orchestrator(), context)
+        outputs.setdefault("os_reflections", []).append(
+            {
+                "action": decision.action,
+                "reason": decision.reason,
+                "target_step_ids": decision.target_step_ids,
+                "step_count": len(decision.steps),
+            }
+        )
+        await self._emit(
+            outputs,
+            hook,
+            "os.reflection.decided",
+            {
+                "turn": turn,
+                "task_id": task.id,
+                "plan_id": plan.id,
+                "action": decision.action,
+                "reason": decision.reason,
+                "target_step_ids": decision.target_step_ids,
+            },
+        )
+        if decision.action in {"continue", "finish"}:
+            return None
+        updates = apply_reflection_decision(task, plan, decision, self._orchestrator())
+        next_counts = reflection_count_updates(state.recovery_count_by_step, decision)
+        if decision.action in {"add_steps", "replace_pending"} and updates.get("added_step_ids"):
+            next_state = self._state_from_task_plan(
+                state.model_copy(update={"recovery_count_by_step": next_counts}, deep=True),
+                task,
+                plan,
+                phase=RunPhase.RUNNING,
+                reason=decision.reason or "OS reflection updated pending plan.",
+                turn_count=turn,
+            )
+            db.upsert_model("plans", plan)
+            stored = self.store.put(next_state)
+            await self._emit(
+                outputs,
+                hook,
+                "turn.completed",
+                {
+                    "turn": turn,
+                    "task_id": task.id,
+                    "plan_id": plan.id,
+                    "outcome": "reflected",
+                    "added_step_ids": updates.get("added_step_ids", []),
+                },
+            )
+            outputs["outcome"] = "reflected"
+            outputs["current_plan"] = stored.current_plan
+            return EngineTurnResult(
+                state=stored,
+                finished=False,
+                message=decision.reason or "OS reflection updated the plan.",
+                outputs=outputs,
+            )
+        if decision.action == "ask_user":
+            paused_state = state.model_copy(update={"recovery_count_by_step": next_counts}, deep=True)
+            return await self._finish_turn(
+                paused_state,
+                task,
+                plan,
+                outputs,
+                hook,
+                phase=RunPhase.PAUSED,
+                outcome="paused",
+                message=decision.reason or "OS reflection needs user input before continuing.",
+                finished=True,
+            )
+        if decision.action == "fail":
+            failed_state = state.model_copy(update={"recovery_count_by_step": next_counts}, deep=True)
+            return await self._finish_turn(
+                failed_state,
+                task,
+                plan,
+                outputs,
+                hook,
+                phase=RunPhase.FAILED,
+                outcome="failed",
+                message=decision.reason or "OS reflection could not repair the plan.",
+                finished=True,
+            )
+        return None
 
     async def _execute_selected_steps(
         self,
@@ -315,7 +496,7 @@ class OSExecutionEngine(ExecutionEngine):
             outcome = self._normalize_step_outcome(task, step, raw_outcome)
             if outcome.result is not None:
                 observations_by_step[step.id] = outcome.result
-            if outcome.kind == "failed":
+            if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
                 outcome = await self._orchestrator().recovery_handler.recover_failed_step(
                     task,
                     plan,
@@ -352,7 +533,7 @@ class OSExecutionEngine(ExecutionEngine):
             return self._normalize_step_outcome(task, step, exc)
         if outcome.result is not None:
             observations_by_step[step.id] = outcome.result
-        if outcome.kind == "failed":
+        if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
             outcome = await self._orchestrator().recovery_handler.recover_failed_step(
                 task,
                 plan,
@@ -363,6 +544,13 @@ class OSExecutionEngine(ExecutionEngine):
                 threaded_tools=threaded_tools,
             )
         return outcome
+
+    def _defer_recovery_to_reflection(self, outcome: StepExecutionOutcome) -> bool:
+        result = outcome.result
+        if result is None:
+            return False
+        output = result.output or {}
+        return bool(output.get("replan_recommended") or output.get("resource_state_error"))
 
     async def _finish_from_plan(
         self,
@@ -804,6 +992,7 @@ class OSExecutionEngine(ExecutionEngine):
             "completed": "run.completed",
             "failed": "run.failed",
             "denied": "run.denied",
+            "paused": "run.paused",
         }.get(outcome, "")
 
     def _orchestrator(self) -> OrchestratorAgent:

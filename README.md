@@ -37,7 +37,7 @@ test_data/               授权目录、策略和隐私测试数据
 - 三模式 Provider 路由：默认效率（云端）/ 隐私（本地）/ 混合（按任务类型分流）。
 - 只有隐私模式或混合模式的本地任务会探测 Ollama、LM Studio、llama.cpp-compatible server；未检测到本地 LLM 时明确报错，不再静默回退 `MockProvider`。
 - `MockProvider` 仅用于开发、测试和非隐私路径的演示兜底。
-- ONNX Runtime Provider 框架（DirectML/NPU 路径预留）。
+- ONNX Runtime Provider 框架（WinML / DirectML / OpenVINO / CPU）。
 - 上下文管理运行时：所有 `get_provider()` 返回的 LLM provider 都会先经过统一 ContextManager，按 `tool result budget -> history snip -> micro-compact -> session memory -> auto-compact -> LLM call -> prompt-too-long reactive retry` 控制模型可见上下文；原始 AgentBus/DB 历史不删除。
 - Token 预算配置：`MARVIS_MODEL_CONTEXT_WINDOW`、`MARVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT`、`MARVIS_CONTEXT_*`。默认保留输出预算，接近阈值时自动摘要旧消息并保留最近消息尾部。
 
@@ -243,7 +243,7 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 ## 当前限制
 
 - 真正的本地推理（Ollama / LM Studio / llama.cpp-compatible server）需用户自行安装并启动；隐私模式探测不到本地后端时会明确失败。
-- NPU 加速（WinML / OpenVINO / DirectML）尚未集成，本地推理走 CPU。
+- 硬件加速配置已接入桌面端 Settings：可设置 `onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference`，并通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 做可用性检查。
 - pywinauto / 复杂 GUI 自动化是预留接口。
 - 手机远控目前是产品入口预留，还没有真实跨端通道。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
@@ -254,4 +254,16 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 - Intent prediction is available through `backend/app/perception/intent_predictor.py`: `ScreenState` + `AppContext` + `SessionContext` become 1-3 proactive suggestions, filtered at confidence `> 0.8`, with a quiet floating suggestion card in the desktop chat panel.
 - External service adapters live under `backend/app/adapters/`: email send, calendar event creation, and webhook post share `AdapterBase.connect()`, `execute()`, and `health_check()`, and are registered as `external.*` tools with dry-run previews and R2 approval flow. Live execution requires injecting real service clients or credentials in deployment; default registry instances are dry-run/test-safe.
 - The intended loop is: voice or text input -> perception/context -> intent prediction -> supervisor/planner -> tool execution -> safety review -> observations and session learning.
-- Production local acceleration is configured through the existing ONNX Runtime provider settings (`MARVIS_ONNX_MODEL_PATH`, `MARVIS_ONNX_EXECUTION_PROVIDER`). DirectML/NPU provider selection is wired as a deploy-time setting; actual provider availability still depends on the installed runtime and hardware.
+- Production local acceleration is configured through the ONNX Runtime provider settings (`MARVIS_ONNX_MODEL_PATH`, `MARVIS_ONNX_EXECUTION_PROVIDER`, `MARVIS_ONNX_PROVIDER_PREFERENCE`). WinML / DirectML / OpenVINO availability still depends on the installed runtime and hardware.
+
+### Hardware acceleration
+
+Desktop settings now expose the ONNX acceleration fields for model path, runtime selector, provider preference, DirectML device id, OpenVINO device/cache, embedding/image embedding/OCR runtime fields, and a hardware status card.
+
+The installer helper is:
+
+```powershell
+.\scripts\install_acceleration.ps1 -Runtime all
+```
+
+It supports `-Runtime winml|directml|openvino|cpu|all`, `-ModelDir`, `-HfMirror`, `-HfSource`, and a dry-run friendly `-WhatIf`.

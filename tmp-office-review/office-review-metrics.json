@@ -1,0 +1,1216 @@
+[
+  {
+    "label": "desktop",
+    "screenshot": "C:\\Users\\Suli\\Desktop\\mavris\\tmp-office-review\\office-desktop.png",
+    "data": {
+      "href": "http://127.0.0.1:5191/",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "scrollWidth": 1440
+      },
+      "mapRect": {
+        "x": 258,
+        "y": 131.4,
+        "width": 758,
+        "height": 535.2,
+        "left": 258,
+        "top": 131.4,
+        "right": 1016,
+        "bottom": 666.6
+      },
+      "scale": 0.5973597935267857,
+      "furniture": {
+        "water": {
+          "left": 319.2,
+          "top": 167.2,
+          "right": 557,
+          "bottom": 323.7,
+          "width": 237.8,
+          "height": 156.5
+        },
+        "treadmill": {
+          "left": 319.2,
+          "top": 308.2,
+          "right": 557,
+          "bottom": 494,
+          "width": 237.8,
+          "height": 185.8
+        },
+        "toilet": {
+          "left": 319.2,
+          "top": 474.3,
+          "right": 557,
+          "bottom": 661.8,
+          "width": 237.8,
+          "height": 187.5
+        },
+        "workstationPm": {
+          "left": 617.9,
+          "top": 207.8,
+          "right": 732.6,
+          "bottom": 265.2,
+          "width": 114.7,
+          "height": 57.4
+        },
+        "workstationApp": {
+          "left": 770.8,
+          "top": 207.8,
+          "right": 885.5,
+          "bottom": 265.2,
+          "width": 114.7,
+          "height": 57.4
+        },
+        "workstationComputer": {
+          "left": 617.9,
+          "top": 360.8,
+          "right": 732.6,
+          "bottom": 418.1,
+          "width": 114.7,
+          "height": 57.3
+        },
+        "workstationBrowser": {
+          "left": 770.8,
+          "top": 360.8,
+          "right": 885.5,
+          "bottom": 418.1,
+          "width": 114.7,
+          "height": 57.3
+        },
+        "workstationFile": {
+          "left": 617.9,
+          "top": 513.7,
+          "right": 732.6,
+          "bottom": 571,
+          "width": 114.7,
+          "height": 57.3
+        },
+        "workstationSearch": {
+          "left": 770.8,
+          "top": 513.7,
+          "right": 885.5,
+          "bottom": 571,
+          "width": 114.7,
+          "height": 57.3
+        }
+      },
+      "agents": [
+        {
+          "id": "pm",
+          "pose": "working",
+          "runtimePose": "working",
+          "targetPose": "working",
+          "anchor": {
+            "x": 585,
+            "y": 277
+          },
+          "className": "office-agent office-agent--working office-agent--pose-working office-agent--runtime-working office-agent--target-working office-agent--agent-pm office-agent--active office-agent--still office-agent--lead",
+          "rect": {
+            "x": 623.8,
+            "y": 232.3,
+            "width": 77.3,
+            "height": 65.5,
+            "left": 623.8,
+            "top": 232.3,
+            "right": 701.1,
+            "bottom": 297.8
+          },
+          "visualRect": {
+            "x": 578.5,
+            "y": 171.8,
+            "width": 168,
+            "height": 126,
+            "left": 578.5,
+            "top": 171.8,
+            "right": 746.5,
+            "bottom": 297.8
+          },
+          "imgRect": {
+            "x": 578.5,
+            "y": 171.8,
+            "width": 168,
+            "height": 126,
+            "left": 578.5,
+            "top": 171.8,
+            "right": 746.5,
+            "bottom": 297.8
+          },
+          "bubbleRect": {
+            "x": 602.5,
+            "y": 143.5,
+            "width": 120,
+            "height": 25,
+            "left": 602.5,
+            "top": 143.5,
+            "right": 722.5,
+            "bottom": 168.5
+          },
+          "labelRect": {
+            "x": 629.1,
+            "y": 305.8,
+            "width": 66.7,
+            "height": 42.5,
+            "left": 629.1,
+            "top": 305.8,
+            "right": 695.8,
+            "bottom": 348.3
+          },
+          "imgSrc": "working.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -38.6484, -65.5)",
+            "zIndex": "285",
+            "width": "77.2969px",
+            "height": "65.5px"
+          }
+        },
+        {
+          "id": "file",
+          "pose": "treadmill",
+          "runtimePose": "treadmill",
+          "targetPose": "treadmill",
+          "anchor": {
+            "x": 300,
+            "y": 474
+          },
+          "className": "office-agent office-agent--treadmill office-agent--pose-treadmill office-agent--runtime-treadmill office-agent--target-treadmill office-agent--agent-file office-agent--idle office-agent--moving office-agent--standard",
+          "rect": {
+            "x": 504.9,
+            "y": 300.4,
+            "width": 54.3,
+            "height": 56.2,
+            "left": 504.9,
+            "top": 300.4,
+            "right": 559.2,
+            "bottom": 356.5
+          },
+          "visualRect": {
+            "x": 473,
+            "y": 248.5,
+            "width": 118,
+            "height": 108,
+            "left": 473,
+            "top": 248.5,
+            "right": 591,
+            "bottom": 356.5
+          },
+          "imgRect": {
+            "x": 473,
+            "y": 246.5,
+            "width": 118,
+            "height": 108,
+            "left": 473,
+            "top": 246.5,
+            "right": 591,
+            "bottom": 354.5
+          },
+          "bubbleRect": {
+            "x": 493.5,
+            "y": 226.5,
+            "width": 77,
+            "height": 25,
+            "left": 493.5,
+            "top": 226.5,
+            "right": 570.5,
+            "bottom": 251.5
+          },
+          "labelRect": {
+            "x": 506.2,
+            "y": 362.5,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 506.2,
+            "top": 362.5,
+            "right": 557.9,
+            "bottom": 421.7
+          },
+          "imgSrc": "running_treadmill_cropped.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -27.1484, -56.1875)",
+            "zIndex": "474",
+            "width": "54.2969px",
+            "height": "56.1875px"
+          }
+        },
+        {
+          "id": "computer",
+          "pose": "wander",
+          "runtimePose": "wander",
+          "targetPose": "wander",
+          "anchor": {
+            "x": 470.2735774065857,
+            "y": 382.64395486412064
+          },
+          "className": "office-agent office-agent--wander office-agent--pose-wander office-agent--runtime-wander office-agent--target-wander office-agent--agent-computer office-agent--idle office-agent--moving office-agent--standard",
+          "rect": {
+            "x": 517.3,
+            "y": 330.2,
+            "width": 64.4,
+            "height": 54.6,
+            "left": 517.3,
+            "top": 330.2,
+            "right": 581.6,
+            "bottom": 384.8
+          },
+          "visualRect": {
+            "x": 479.4,
+            "y": 279.8,
+            "width": 140,
+            "height": 105,
+            "left": 479.4,
+            "top": 279.8,
+            "right": 619.4,
+            "bottom": 384.8
+          },
+          "imgRect": {
+            "x": 479.4,
+            "y": 277.8,
+            "width": 140,
+            "height": 105,
+            "left": 479.4,
+            "top": 277.8,
+            "right": 619.4,
+            "bottom": 382.8
+          },
+          "bubbleRect": {
+            "x": 510.9,
+            "y": 256.8,
+            "width": 77,
+            "height": 25,
+            "left": 510.9,
+            "top": 256.8,
+            "right": 587.9,
+            "bottom": 281.8
+          },
+          "labelRect": {
+            "x": 523.6,
+            "y": 390.8,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 523.6,
+            "top": 390.8,
+            "right": 575.3,
+            "bottom": 450
+          },
+          "imgSrc": "fc_walking_h.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+            "zIndex": "383",
+            "width": "64.3906px",
+            "height": "54.5938px"
+          }
+        },
+        {
+          "id": "app",
+          "pose": "restroom",
+          "runtimePose": "restroom",
+          "targetPose": "restroom",
+          "anchor": {
+            "x": 224,
+            "y": 730
+          },
+          "className": "office-agent office-agent--restroom office-agent--pose-restroom office-agent--runtime-restroom office-agent--target-restroom office-agent--agent-app office-agent--idle office-agent--moving office-agent--standard",
+          "rect": {
+            "x": 490.5,
+            "y": 407.6,
+            "width": 44.2,
+            "height": 68.6,
+            "left": 490.5,
+            "top": 407.6,
+            "right": 534.7,
+            "bottom": 476.2
+          },
+          "visualRect": {
+            "x": 464.6,
+            "y": 326.2,
+            "width": 96,
+            "height": 132,
+            "left": 464.6,
+            "top": 326.2,
+            "right": 560.6,
+            "bottom": 458.2
+          },
+          "imgRect": {
+            "x": 464.6,
+            "y": 326.2,
+            "width": 96,
+            "height": 132,
+            "left": 464.6,
+            "top": 326.2,
+            "right": 560.6,
+            "bottom": 458.2
+          },
+          "bubbleRect": {
+            "x": 479.6,
+            "y": 324.2,
+            "width": 66,
+            "height": 25,
+            "left": 479.6,
+            "top": 324.2,
+            "right": 545.6,
+            "bottom": 349.2
+          },
+          "labelRect": {
+            "x": 486.8,
+            "y": 482.2,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 486.8,
+            "top": 482.2,
+            "right": 538.4,
+            "bottom": 541.4
+          },
+          "imgSrc": "fc_pooping-0_cropped.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22.0938, -68.5938)",
+            "zIndex": "730",
+            "width": "44.1875px",
+            "height": "68.5938px"
+          }
+        },
+        {
+          "id": "browser",
+          "pose": "wander",
+          "runtimePose": "nap",
+          "targetPose": "nap",
+          "anchor": {
+            "x": 472.44726460629187,
+            "y": 604.4169942620011
+          },
+          "className": "office-agent office-agent--wander office-agent--pose-wander office-agent--runtime-nap office-agent--target-nap office-agent--agent-browser office-agent--idle office-agent--moving office-agent--standard",
+          "rect": {
+            "x": 498.1,
+            "y": 471.7,
+            "width": 64.4,
+            "height": 54.6,
+            "left": 498.1,
+            "top": 471.7,
+            "right": 562.5,
+            "bottom": 526.3
+          },
+          "visualRect": {
+            "x": 460.3,
+            "y": 421.3,
+            "width": 140,
+            "height": 105,
+            "left": 460.3,
+            "top": 421.3,
+            "right": 600.3,
+            "bottom": 526.3
+          },
+          "imgRect": {
+            "x": 460.3,
+            "y": 419.4,
+            "width": 140,
+            "height": 105,
+            "left": 460.3,
+            "top": 419.4,
+            "right": 600.3,
+            "bottom": 524.4
+          },
+          "bubbleRect": {
+            "x": 497.3,
+            "y": 398.3,
+            "width": 66,
+            "height": 25,
+            "left": 497.3,
+            "top": 398.3,
+            "right": 563.3,
+            "bottom": 423.3
+          },
+          "labelRect": {
+            "x": 504.5,
+            "y": 532.3,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 504.5,
+            "top": 532.3,
+            "right": 556.1,
+            "bottom": 591.5
+          },
+          "imgSrc": "fc_walking_h.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+            "zIndex": "604",
+            "width": "64.3906px",
+            "height": "54.5938px"
+          }
+        },
+        {
+          "id": "search",
+          "pose": "coffee",
+          "runtimePose": "coffee",
+          "targetPose": "coffee",
+          "anchor": {
+            "x": 438.4846448863978,
+            "y": 183.11235287634764
+          },
+          "className": "office-agent office-agent--coffee office-agent--pose-coffee office-agent--runtime-coffee office-agent--target-coffee office-agent--agent-search office-agent--idle office-agent--moving office-agent--standard",
+          "rect": {
+            "x": 549.9,
+            "y": 300.7,
+            "width": 64.4,
+            "height": 54.6,
+            "left": 549.9,
+            "top": 300.7,
+            "right": 614.3,
+            "bottom": 355.3
+          },
+          "visualRect": {
+            "x": 512.1,
+            "y": 250.3,
+            "width": 140,
+            "height": 105,
+            "left": 512.1,
+            "top": 250.3,
+            "right": 652.1,
+            "bottom": 355.3
+          },
+          "imgRect": {
+            "x": 512.1,
+            "y": 248.3,
+            "width": 140,
+            "height": 105,
+            "left": 512.1,
+            "top": 248.3,
+            "right": 652.1,
+            "bottom": 353.3
+          },
+          "bubbleRect": {
+            "x": 554.1,
+            "y": 227.3,
+            "width": 56,
+            "height": 25,
+            "left": 554.1,
+            "top": 227.3,
+            "right": 610.1,
+            "bottom": 252.3
+          },
+          "labelRect": {
+            "x": 556.2,
+            "y": 361.3,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 556.2,
+            "top": 361.3,
+            "right": 607.9,
+            "bottom": 420.5
+          },
+          "imgSrc": "fc_drink_coffee.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+            "zIndex": "183",
+            "width": "64.3906px",
+            "height": "54.5938px"
+          }
+        },
+        {
+          "id": "safety",
+          "pose": "review",
+          "runtimePose": "working",
+          "targetPose": "review",
+          "anchor": {
+            "x": 552,
+            "y": 360
+          },
+          "className": "office-agent office-agent--review office-agent--pose-review office-agent--runtime-working office-agent--target-review office-agent--agent-safety office-agent--active office-agent--still office-agent--standard",
+          "rect": {
+            "x": 610.6,
+            "y": 292.8,
+            "width": 64.4,
+            "height": 54.6,
+            "left": 610.6,
+            "top": 292.8,
+            "right": 675,
+            "bottom": 347.4
+          },
+          "visualRect": {
+            "x": 572.8,
+            "y": 242.4,
+            "width": 140,
+            "height": 105,
+            "left": 572.8,
+            "top": 242.4,
+            "right": 712.8,
+            "bottom": 347.4
+          },
+          "imgRect": {
+            "x": 572.2,
+            "y": 241.7,
+            "width": 141.1,
+            "height": 105.8,
+            "left": 572.2,
+            "top": 241.7,
+            "right": 713.3,
+            "bottom": 347.5
+          },
+          "bubbleRect": {
+            "x": 604.3,
+            "y": 219.4,
+            "width": 77,
+            "height": 25,
+            "left": 604.3,
+            "top": 219.4,
+            "right": 681.3,
+            "bottom": 244.4
+          },
+          "labelRect": {
+            "x": 616.9,
+            "y": 353.4,
+            "width": 51.7,
+            "height": 71.3,
+            "left": 616.9,
+            "top": 353.4,
+            "right": 668.6,
+            "bottom": 424.7
+          },
+          "imgSrc": "salute.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+            "zIndex": "368",
+            "width": "64.3906px",
+            "height": "54.5938px"
+          }
+        }
+      ],
+      "avatars": [
+        {
+          "rect": {
+            "x": 20,
+            "y": 22,
+            "width": 34,
+            "height": 34,
+            "left": 20,
+            "top": 22,
+            "right": 54,
+            "bottom": 56
+          },
+          "src": "standby.gif",
+          "objectFit": "contain",
+          "objectPosition": "50% 100%"
+        },
+        {
+          "rect": {
+            "x": 24,
+            "y": 843,
+            "width": 28,
+            "height": 28,
+            "left": 24,
+            "top": 843,
+            "right": 52,
+            "bottom": 871
+          },
+          "src": "standby.gif",
+          "objectFit": "contain",
+          "objectPosition": "50% 100%"
+        }
+      ]
+    }
+  },
+  {
+    "label": "mobile",
+    "screenshot": "C:\\Users\\Suli\\Desktop\\mavris\\tmp-office-review\\office-mobile.png",
+    "data": {
+      "href": "http://127.0.0.1:5191/",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "scrollWidth": 390
+      },
+      "mapRect": {
+        "x": 16,
+        "y": 502.4,
+        "width": 358,
+        "height": 380,
+        "left": 16,
+        "top": 502.4,
+        "right": 374,
+        "bottom": 882.4
+      },
+      "scale": 0.3290441176470588,
+      "furniture": {
+        "water": {
+          "left": 19.9,
+          "top": 564.7,
+          "right": 150.9,
+          "bottom": 650.9,
+          "width": 131,
+          "height": 86.2
+        },
+        "treadmill": {
+          "left": 19.9,
+          "top": 642.4,
+          "right": 150.9,
+          "bottom": 744.7,
+          "width": 131,
+          "height": 102.3
+        },
+        "toilet": {
+          "left": 19.9,
+          "top": 733.9,
+          "right": 150.9,
+          "bottom": 837.2,
+          "width": 131,
+          "height": 103.3
+        },
+        "workstationPm": {
+          "left": 184.5,
+          "top": 587.1,
+          "right": 247.6,
+          "bottom": 618.7,
+          "width": 63.1,
+          "height": 31.6
+        },
+        "workstationApp": {
+          "left": 268.7,
+          "top": 587.1,
+          "right": 331.9,
+          "bottom": 618.7,
+          "width": 63.2,
+          "height": 31.6
+        },
+        "workstationComputer": {
+          "left": 184.5,
+          "top": 671.3,
+          "right": 247.6,
+          "bottom": 702.9,
+          "width": 63.1,
+          "height": 31.6
+        },
+        "workstationBrowser": {
+          "left": 268.7,
+          "top": 671.3,
+          "right": 331.9,
+          "bottom": 702.9,
+          "width": 63.2,
+          "height": 31.6
+        },
+        "workstationFile": {
+          "left": 184.5,
+          "top": 755.6,
+          "right": 247.6,
+          "bottom": 787.2,
+          "width": 63.1,
+          "height": 31.6
+        },
+        "workstationSearch": {
+          "left": 268.7,
+          "top": 755.6,
+          "right": 331.9,
+          "bottom": 787.2,
+          "width": 63.2,
+          "height": 31.6
+        }
+      },
+      "agents": [
+        {
+          "id": "pm",
+          "pose": "working",
+          "runtimePose": "working",
+          "targetPose": "working",
+          "anchor": {
+            "x": 585,
+            "y": 277
+          },
+          "className": "office-agent office-agent--working office-agent--pose-working office-agent--runtime-working office-agent--target-working office-agent--agent-pm office-agent--active office-agent--still office-agent--lead",
+          "rect": {
+            "x": 187.5,
+            "y": 595.1,
+            "width": 44,
+            "height": 42,
+            "left": 187.5,
+            "top": 595.1,
+            "right": 231.5,
+            "bottom": 637.1
+          },
+          "visualRect": {
+            "x": 161.8,
+            "y": 565.6,
+            "width": 95.3,
+            "height": 71.5,
+            "left": 161.8,
+            "top": 565.6,
+            "right": 257.1,
+            "bottom": 637.1
+          },
+          "imgRect": {
+            "x": 161.8,
+            "y": 565.6,
+            "width": 95.3,
+            "height": 71.5,
+            "left": 161.8,
+            "top": 565.6,
+            "right": 257.1,
+            "bottom": 637.1
+          },
+          "bubbleRect": {
+            "x": 149.5,
+            "y": 551.2,
+            "width": 120,
+            "height": 25,
+            "left": 149.5,
+            "top": 551.2,
+            "right": 269.5,
+            "bottom": 576.2
+          },
+          "labelRect": {
+            "x": 176.1,
+            "y": 639.9,
+            "width": 66.7,
+            "height": 42.5,
+            "left": 176.1,
+            "top": 639.9,
+            "right": 242.8,
+            "bottom": 682.4
+          },
+          "imgSrc": "working.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22, -42)",
+            "zIndex": "285",
+            "width": "44px",
+            "height": "42px"
+          }
+        },
+        {
+          "id": "file",
+          "pose": "treadmill",
+          "runtimePose": "treadmill",
+          "targetPose": "treadmill",
+          "anchor": {
+            "x": 300,
+            "y": 474
+          },
+          "className": "office-agent office-agent--treadmill office-agent--pose-treadmill office-agent--runtime-treadmill office-agent--target-treadmill office-agent--agent-file office-agent--idle office-agent--still office-agent--standard",
+          "rect": {
+            "x": 179,
+            "y": 675.5,
+            "width": 44,
+            "height": 42,
+            "left": 179,
+            "top": 675.5,
+            "right": 223,
+            "bottom": 717.5
+          },
+          "visualRect": {
+            "x": 167.5,
+            "y": 656.3,
+            "width": 66.9,
+            "height": 61.3,
+            "left": 167.5,
+            "top": 656.3,
+            "right": 234.4,
+            "bottom": 717.5
+          },
+          "imgRect": {
+            "x": 167.5,
+            "y": 656.3,
+            "width": 66.9,
+            "height": 61.3,
+            "left": 167.5,
+            "top": 656.3,
+            "right": 234.4,
+            "bottom": 717.5
+          },
+          "bubbleRect": {
+            "x": 162.5,
+            "y": 645.5,
+            "width": 77,
+            "height": 25,
+            "left": 162.5,
+            "top": 645.5,
+            "right": 239.5,
+            "bottom": 670.5
+          },
+          "labelRect": {
+            "x": 175.1,
+            "y": 719.2,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 175.1,
+            "top": 719.2,
+            "right": 226.8,
+            "bottom": 778.4
+          },
+          "imgSrc": "running_treadmill_cropped.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22, -42)",
+            "zIndex": "474",
+            "width": "44px",
+            "height": "42px"
+          }
+        },
+        {
+          "id": "computer",
+          "pose": "wander",
+          "runtimePose": "wander",
+          "targetPose": "wander",
+          "anchor": {
+            "x": 470.2735774065857,
+            "y": 382.64395486412064
+          },
+          "className": "office-agent office-agent--wander office-agent--pose-wander office-agent--runtime-wander office-agent--target-wander office-agent--agent-computer office-agent--idle office-agent--still office-agent--standard",
+          "rect": {
+            "x": 219.7,
+            "y": 670.7,
+            "width": 44,
+            "height": 42,
+            "left": 219.7,
+            "top": 670.7,
+            "right": 263.7,
+            "bottom": 712.7
+          },
+          "visualRect": {
+            "x": 202,
+            "y": 653.1,
+            "width": 79.4,
+            "height": 59.6,
+            "left": 202,
+            "top": 653.1,
+            "right": 281.4,
+            "bottom": 712.7
+          },
+          "imgRect": {
+            "x": 202,
+            "y": 653,
+            "width": 79.4,
+            "height": 59.6,
+            "left": 202,
+            "top": 653,
+            "right": 281.4,
+            "bottom": 712.6
+          },
+          "bubbleRect": {
+            "x": 203.2,
+            "y": 641.8,
+            "width": 77,
+            "height": 25,
+            "left": 203.2,
+            "top": 641.8,
+            "right": 280.2,
+            "bottom": 666.8
+          },
+          "labelRect": {
+            "x": 215.9,
+            "y": 714.4,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 215.9,
+            "top": 714.4,
+            "right": 267.6,
+            "bottom": 773.6
+          },
+          "imgSrc": "fc_walking_h.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22, -42)",
+            "zIndex": "383",
+            "width": "44px",
+            "height": "42px"
+          }
+        },
+        {
+          "id": "app",
+          "pose": "restroom",
+          "runtimePose": "restroom",
+          "targetPose": "restroom",
+          "anchor": {
+            "x": 224,
+            "y": 730
+          },
+          "className": "office-agent office-agent--restroom office-agent--pose-restroom office-agent--runtime-restroom office-agent--target-restroom office-agent--agent-app office-agent--idle office-agent--still office-agent--standard",
+          "rect": {
+            "x": 155.5,
+            "y": 779.1,
+            "width": 44,
+            "height": 42,
+            "left": 155.5,
+            "top": 779.1,
+            "right": 199.5,
+            "bottom": 821.1
+          },
+          "visualRect": {
+            "x": 150.3,
+            "y": 736,
+            "width": 54.5,
+            "height": 74.9,
+            "left": 150.3,
+            "top": 736,
+            "right": 204.8,
+            "bottom": 810.9
+          },
+          "imgRect": {
+            "x": 150.3,
+            "y": 734.1,
+            "width": 54.5,
+            "height": 74.9,
+            "left": 150.3,
+            "top": 734.1,
+            "right": 204.8,
+            "bottom": 808.9
+          },
+          "bubbleRect": {
+            "x": 144.5,
+            "y": 736.6,
+            "width": 66,
+            "height": 25,
+            "left": 144.5,
+            "top": 736.6,
+            "right": 210.5,
+            "bottom": 761.6
+          },
+          "labelRect": {
+            "x": 151.7,
+            "y": 822.8,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 151.7,
+            "top": 822.8,
+            "right": 203.4,
+            "bottom": 882
+          },
+          "imgSrc": "fc_pooping-0_cropped.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22, -42)",
+            "zIndex": "730",
+            "width": "44px",
+            "height": "42px"
+          }
+        },
+        {
+          "id": "browser",
+          "pose": "nap",
+          "runtimePose": "nap",
+          "targetPose": "nap",
+          "anchor": {
+            "x": 472.44726460629187,
+            "y": 604.4169942620011
+          },
+          "className": "office-agent office-agent--nap office-agent--pose-nap office-agent--runtime-nap office-agent--target-nap office-agent--agent-browser office-agent--idle office-agent--still office-agent--standard",
+          "rect": {
+            "x": 211.5,
+            "y": 777.5,
+            "width": 44,
+            "height": 42,
+            "left": 211.5,
+            "top": 777.5,
+            "right": 255.5,
+            "bottom": 819.5
+          },
+          "visualRect": {
+            "x": 190.9,
+            "y": 756,
+            "width": 85.1,
+            "height": 63.5,
+            "left": 190.9,
+            "top": 756,
+            "right": 276,
+            "bottom": 819.5
+          },
+          "imgRect": {
+            "x": 190.9,
+            "y": 756,
+            "width": 85.1,
+            "height": 63.5,
+            "left": 190.9,
+            "top": 756,
+            "right": 276,
+            "bottom": 819.5
+          },
+          "bubbleRect": {
+            "x": 200.5,
+            "y": 744.1,
+            "width": 66,
+            "height": 25,
+            "left": 200.5,
+            "top": 744.1,
+            "right": 266.5,
+            "bottom": 769.1
+          },
+          "labelRect": {
+            "x": 207.6,
+            "y": 821.2,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 207.6,
+            "top": 821.2,
+            "right": 259.3,
+            "bottom": 880.4
+          },
+          "imgSrc": "sleeping.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22, -42)",
+            "zIndex": "604",
+            "width": "44px",
+            "height": "42px"
+          }
+        },
+        {
+          "id": "search",
+          "pose": "coffee",
+          "runtimePose": "coffee",
+          "targetPose": "coffee",
+          "anchor": {
+            "x": 438.4846448863978,
+            "y": 183.11235287634764
+          },
+          "className": "office-agent office-agent--coffee office-agent--pose-coffee office-agent--runtime-coffee office-agent--target-coffee office-agent--agent-search office-agent--idle office-agent--still office-agent--standard",
+          "rect": {
+            "x": 228.3,
+            "y": 618.8,
+            "width": 44,
+            "height": 42,
+            "left": 228.3,
+            "top": 618.8,
+            "right": 272.3,
+            "bottom": 660.8
+          },
+          "visualRect": {
+            "x": 210.6,
+            "y": 601.3,
+            "width": 79.4,
+            "height": 59.6,
+            "left": 210.6,
+            "top": 601.3,
+            "right": 290,
+            "bottom": 660.8
+          },
+          "imgRect": {
+            "x": 210.6,
+            "y": 601.3,
+            "width": 79.4,
+            "height": 59.6,
+            "left": 210.6,
+            "top": 601.3,
+            "right": 290,
+            "bottom": 660.8
+          },
+          "bubbleRect": {
+            "x": 222.3,
+            "y": 590,
+            "width": 56,
+            "height": 25,
+            "left": 222.3,
+            "top": 590,
+            "right": 278.3,
+            "bottom": 615
+          },
+          "labelRect": {
+            "x": 224.5,
+            "y": 662.5,
+            "width": 51.7,
+            "height": 59.2,
+            "left": 224.5,
+            "top": 662.5,
+            "right": 276.2,
+            "bottom": 721.7
+          },
+          "imgSrc": "fc_drink_coffee.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22, -42)",
+            "zIndex": "183",
+            "width": "44px",
+            "height": "42px"
+          }
+        },
+        {
+          "id": "safety",
+          "pose": "review",
+          "runtimePose": "working",
+          "targetPose": "review",
+          "anchor": {
+            "x": 552,
+            "y": 360
+          },
+          "className": "office-agent office-agent--review office-agent--pose-review office-agent--runtime-working office-agent--target-review office-agent--agent-safety office-agent--active office-agent--still office-agent--standard",
+          "rect": {
+            "x": 277.7,
+            "y": 649.4,
+            "width": 44,
+            "height": 42,
+            "left": 277.7,
+            "top": 649.4,
+            "right": 321.7,
+            "bottom": 691.4
+          },
+          "visualRect": {
+            "x": 260,
+            "y": 631.8,
+            "width": 79.4,
+            "height": 59.6,
+            "left": 260,
+            "top": 631.8,
+            "right": 339.4,
+            "bottom": 691.4
+          },
+          "imgRect": {
+            "x": 260,
+            "y": 631.8,
+            "width": 79.4,
+            "height": 59.6,
+            "left": 260,
+            "top": 631.8,
+            "right": 339.4,
+            "bottom": 691.4
+          },
+          "bubbleRect": {
+            "x": 261.2,
+            "y": 620.5,
+            "width": 77,
+            "height": 25,
+            "left": 261.2,
+            "top": 620.5,
+            "right": 338.2,
+            "bottom": 645.5
+          },
+          "labelRect": {
+            "x": 273.9,
+            "y": 693.1,
+            "width": 51.7,
+            "height": 71.3,
+            "left": 273.9,
+            "top": 693.1,
+            "right": 325.5,
+            "bottom": 764.4
+          },
+          "imgSrc": "salute.gif",
+          "computed": {
+            "transform": "matrix(1, 0, 0, 1, -22, -42)",
+            "zIndex": "368",
+            "width": "44px",
+            "height": "42px"
+          }
+        }
+      ],
+      "avatars": [
+        {
+          "rect": {
+            "x": 22,
+            "y": 14,
+            "width": 34,
+            "height": 34,
+            "left": 22,
+            "top": 14,
+            "right": 56,
+            "bottom": 48
+          },
+          "src": "standby.gif",
+          "objectFit": "contain",
+          "objectPosition": "50% 100%"
+        },
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "left": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0
+          },
+          "src": "standby.gif",
+          "objectFit": "contain",
+          "objectPosition": "50% 100%"
+        }
+      ]
+    }
+  }
+]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -126,3 +128,63 @@ def test_usage_summary_reads_stored_claude_usage(tmp_path, monkeypatch):
     assert summary["calls"] == 1
     assert "claude_usage" in summary
     assert summary["claude_usage"]["input_tokens"] >= 0
+
+
+def test_usage_summary_migrates_legacy_events_without_data_column(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db_path = tmp_path / "marvis.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE llm_usage_events (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                task TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd REAL,
+                estimated INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO llm_usage_events (
+                id, provider, model, mode, task, purpose,
+                prompt_tokens, completion_tokens, total_tokens,
+                total_cost_usd, estimated, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy_usage",
+                "legacy_provider",
+                "legacy_model",
+                "efficiency",
+                "legacy_task",
+                "chat",
+                12,
+                8,
+                20,
+                None,
+                1,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+    db.init_db()
+    summary = usage_summary(hours=1)
+    events = list_usage_events(limit=5)
+
+    assert summary["calls"] == 1
+    assert summary["prompt_tokens"] == 12
+    assert summary["completion_tokens"] == 8
+    assert summary["total_tokens"] == 20
+    assert summary["by_model"][0]["provider"] == "legacy_provider"
+    assert events[0]["provider"] == "legacy_provider"
+    assert events[0]["usage"]["total_tokens"] == 20

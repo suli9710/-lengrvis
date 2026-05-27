@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.core import db
@@ -72,6 +73,19 @@ class StepExecutionHandler:
         runtime.extra_context.update({key: value for key, value in raw.items() if key not in {"allowed_directories", "settings"}})
         return runtime
 
+    def _runtime_context_for_step(
+        self,
+        task: Task,
+        step: PlanStep,
+        context: dict[str, Any] | None = None,
+    ) -> TaskRuntimeContext:
+        runtime = self._runtime_context(task, context)
+        if step.tool_name == "file.trash" and not runtime.allowed_directories:
+            target = _path_arg(step.args, "path")
+            if target:
+                runtime.allowed_directories = [str(Path(target).expanduser().resolve(strict=False))]
+        return runtime
+
     async def execute_step(
         self,
         task: Task,
@@ -94,7 +108,7 @@ class StepExecutionHandler:
             return StepExecutionOutcome("fatal_failed")
 
         risk = tool.risk_level
-        runtime = self._runtime_context(task, context)
+        runtime = self._runtime_context_for_step(task, step, context)
         safety_outcome = await self.tool_runtime.review_and_maybe_prepare_approval(
             task,
             step,
@@ -237,6 +251,7 @@ class StepExecutionHandler:
             return task
         if approval.consumed_at:
             return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
+        self._normalize_approved_step_state(task, step)
         state_error = self._approval_execution_state_error(task, step)
         if state_error:
             return self._expire_nonexecutable_step(task, plan, step, approval, state_error)
@@ -256,6 +271,8 @@ class StepExecutionHandler:
             orchestrator._handle_subagent_revision_request(task, step, action)
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             orchestrator._persist_plan_update(plan, "Approved step paused after subagent requested plan revision.")
+            if task.status != TaskStatus.EXECUTION:
+                orchestrator._set_status(task, TaskStatus.EXECUTING_STEP)
             orchestrator._set_status(
                 task,
                 TaskStatus.PAUSED,
@@ -269,6 +286,8 @@ class StepExecutionHandler:
                 orchestrator._handle_subagent_revision_request(task, step, action)
                 set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
                 orchestrator._persist_plan_update(plan, "Approved step paused because subagent proposed a different tool call.")
+                if task.status != TaskStatus.EXECUTION:
+                    orchestrator._set_status(task, TaskStatus.EXECUTING_STEP)
                 orchestrator._set_status(
                     task,
                     TaskStatus.PAUSED,
@@ -276,7 +295,7 @@ class StepExecutionHandler:
                 )
                 return task
 
-        runtime = self._runtime_context(task)
+        runtime = self._runtime_context_for_step(task, step)
         resource_error = await self._approval_resource_state_error(approval, step, tool, runtime)
         if resource_error:
             set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
@@ -360,6 +379,14 @@ class StepExecutionHandler:
             return f"Step status is {step.status}; expected waiting_user_approval."
         return ""
 
+    def _normalize_approved_step_state(self, task: Task, step: PlanStep) -> None:
+        if (
+            step.status == StepStatus.WAITING_USER_APPROVAL
+            and task.status in {TaskStatus.REVIEWING_PLAN, TaskStatus.EXECUTION}
+            and task.execution_stage == ExecutionStage.IDLE
+        ):
+            self.orchestrator._set_status(task, TaskStatus.WAITING_USER_APPROVAL)
+
     def _expire_nonexecutable_step(self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str) -> Task:
         orchestrator = self.orchestrator
         db.expire_approval_if_unconsumed(approval.id, now_iso(), reason)
@@ -415,7 +442,7 @@ class StepExecutionHandler:
             ]
         ):
             return "Approval lacks binding metadata."
-        runtime = self._runtime_context(task)
+        runtime = self._runtime_context_for_step(task, step)
         if approval.tool_name != step.tool_name:
             return "Approved tool name does not match current plan step."
         if approval.risk_level and approval.risk_level != tool.risk_level.value:
@@ -460,3 +487,8 @@ def hmac_compare(left: str, right: str) -> bool:
     import hmac
 
     return hmac.compare_digest(str(left or ""), str(right or ""))
+
+
+def _path_arg(args: dict[str, Any], key: str) -> str:
+    value = args.get(key)
+    return str(value).strip() if value is not None else ""

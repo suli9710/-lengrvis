@@ -26,6 +26,13 @@ from app.core.schemas import (
     ToolResult,
 )
 from app.orchestration.result_budget import apply_result_budget
+from app.orchestration.resource_state import (
+    ResourceStateError,
+    attach_dry_run_resource_state,
+    capture_tool_resource_state,
+    remember_read_states_for_tool,
+    validate_write_preconditions,
+)
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
 from app.policy.approval_binding import (
@@ -134,21 +141,31 @@ class ToolRuntime:
             orchestrator._supervise_new_agent_messages(task.id, "tool_permission_denied")
             return RuntimeExecutionResult("step_denied")
 
-        if step.tool_name in BROWSER_WRITE_TOOLS:
-            browser_review = orchestrator.safety.review_browser_write(task.id, step.id, step.tool_name, step.args)
-            if browser_review and browser_review.verdict == SafetyVerdict.DENY:
+        review_context = runtime.tool_context()
+        review_context.update({"task_id": task.id, "step_id": step.id})
+        browser_review = None
+        browser_review_agent = getattr(orchestrator, "browser_activity_review", None)
+        if browser_review_agent is not None and str(step.tool_name or "").startswith("browser."):
+            browser_review = browser_review_agent.review_tool_call(
+                task.id,
+                step.id,
+                step.tool_name,
+                step.args,
+                tool.risk_level,
+                context=review_context,
+                tool_definition=tool,
+            )
+            if browser_review is not None and browser_review.verdict == SafetyVerdict.DENY:
                 set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
                 orchestrator.bus.publish_text(
                     task.id,
                     orchestrator.name,
-                    f"Denied browser write {step.tool_name}: {'; '.join(browser_review.reasons)}",
+                    f"Denied browser activity {step.tool_name}: {'; '.join(browser_review.reasons)}",
                     step_id=step.id,
                 )
-                orchestrator._supervise_new_agent_messages(task.id, "browser_write_denied")
+                orchestrator._supervise_new_agent_messages(task.id, "browser_activity_denied")
                 return RuntimeExecutionResult("step_denied")
 
-        review_context = runtime.tool_context()
-        review_context.update({"task_id": task.id, "step_id": step.id})
         review = self._review_tool_call(
             orchestrator.safety,
             task.id,
@@ -165,7 +182,10 @@ class ToolRuntime:
             orchestrator._supervise_new_agent_messages(task.id, "tool_call_denied")
             return RuntimeExecutionResult("step_denied")
 
-        if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+        approval_review = browser_review if browser_review is not None and browser_review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL else None
+        if approval_review is None and review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+            approval_review = review
+        if approval_review is not None:
             if not tool.supports_dry_run:
                 return self._deny_approval_without_dry_run(task, step, tool)
             return await self._prepare_approval(
@@ -173,7 +193,7 @@ class ToolRuntime:
                 step,
                 tool,
                 runtime,
-                review.user_confirmation_message,
+                approval_review.user_confirmation_message,
                 threaded_tools=threaded_tools,
             )
         return RuntimeExecutionResult("allowed")
@@ -225,17 +245,17 @@ class ToolRuntime:
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         args = approved_args or step.args
+        safe_args = self._redact_tool_args(args, tool)
         call = ToolCall(
             task_id=task.id,
             step_id=step.id,
             tool_name=step.tool_name,
-            args=args,
+            args=safe_args,
             risk_level=tool.risk_level,
             dry_run=False,
         )
         db.upsert_model("tool_calls", call)
-        safe_args = self._redact_tool_args(args, tool)
-        safe_call_payload = call.model_copy(update={"args": safe_args}).model_dump()
+        safe_call_payload = call.model_dump()
         orchestrator.bus.publish_text(
             task.id,
             orchestrator.name,
@@ -269,7 +289,10 @@ class ToolRuntime:
         after_phase = "after_approved" if approval_id else "after"
         before_frame = await orchestrator._capture_step_frame(task, step, before_phase)
         tool_context = runtime.tool_context()
+        tool_context.update({"task_id": task.id, "step_id": step.id})
+        tool_context["_expected_resource_state"] = self._approved_resource_state(approval_id)
         self._publish_tool_progress(task, step, tool, call.id, "started", detail=f"Starting {step.tool_name}.")
+        before_resource_state: list[dict[str, Any]] = []
         try:
             set_step_status(step, StepStatus.RUNNING, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.EXECUTING_TOOL)
@@ -281,6 +304,8 @@ class ToolRuntime:
                 tool_context,
                 threaded=threaded_tools,
             )
+            before_resource_state = list(tool_context.get("_resource_state_before") or [])
+            self._attach_execution_resource_state(tool, args, tool_context, output, before_resource_state)
             self._run_lifecycle_hook(tool.post_execute, tool, args, tool_context, task_id=task.id, step_id=step.id)
             self._publish_tool_progress(
                 task,
@@ -299,6 +324,27 @@ class ToolRuntime:
                 changed_paths=list(output.get("changed_paths", [])),
                 rollback_info=dict(output.get("rollback_info", {})),
                 observation=self._observation(step, tool, output),
+            )
+        except ResourceStateError as exc:
+            before_resource_state = list(tool_context.get("_resource_state_before") or [])
+            output = exc.to_output()
+            if before_resource_state:
+                output["_resource_state_before"] = before_resource_state
+            self._publish_tool_progress(
+                task,
+                step,
+                tool,
+                call.id,
+                "failed",
+                detail=f"{step.tool_name} blocked by resource state guard.",
+                payload={"error": str(exc), "error_code": exc.error_code, **exc.details},
+            )
+            result = ToolResult(
+                tool_call_id=call.id,
+                ok=False,
+                output=output,
+                error=str(exc),
+                observation=f"{step.tool_name} blocked because resource state changed or was not read.",
             )
         except Exception as exc:  # noqa: BLE001
             self._publish_tool_progress(
@@ -358,6 +404,31 @@ class ToolRuntime:
         set_step_status(step, StepStatus.SUCCEEDED if result.ok else StepStatus.FAILED, actor="ToolRuntime")
         await orchestrator._reflect_on_step(task, step, result)
         return RuntimeExecutionResult("succeeded" if result.ok else "failed", result)
+
+    def _approved_resource_state(self, approval_id: str | None) -> list[dict[str, Any]]:
+        if not approval_id:
+            return []
+        approval_data = db.fetch_one("approvals", approval_id)
+        if not approval_data:
+            return []
+        diff_preview = approval_data.get("diff_preview") if isinstance(approval_data, dict) else {}
+        if not isinstance(diff_preview, dict):
+            return []
+        state = diff_preview.get("_resource_state")
+        return state if isinstance(state, list) else []
+
+    def _attach_execution_resource_state(
+        self,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        context: dict[str, Any],
+        output: dict[str, Any],
+        before_state: list[dict[str, Any]],
+    ) -> None:
+        if args.get("dry_run") is True or not self._is_write_tool(tool):
+            return
+        output.setdefault("_resource_state_before", before_state)
+        output["_resource_state_after"] = capture_tool_resource_state(tool, args, context, preview=output)
 
     def _redact_tool_args(self, args: dict[str, Any], tool: ToolDefinition) -> dict[str, Any]:
         redacted = redact_value(args)
@@ -448,12 +519,14 @@ class ToolRuntime:
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         before_frame = await orchestrator._capture_step_frame(task, step, "before_dry_run")
+        dry_run_context = runtime.tool_context()
+        dry_run_context.update({"task_id": task.id, "step_id": step.id})
         try:
             preview = await self.execute_tool_with_locks(
                 tool,
                 step,
                 {**step.args, "dry_run": True},
-                runtime.tool_context(),
+                dry_run_context,
                 threaded=threaded_tools,
             )
         except Exception as exc:  # noqa: BLE001
@@ -706,11 +779,27 @@ class ToolRuntime:
         lock_keys = self._write_lock_keys(tool, args)
         if not lock_keys:
             if threaded:
-                return await asyncio.to_thread(tool.execute, args, context)
-            return tool.execute(args, context)
+                output = await self._execute_tool_body(tool, args, context, threaded=True)
+            else:
+                output = await self._execute_tool_body(tool, args, context, threaded=False)
+            return self._normalize_tool_output(tool, args, context, output)
         path_locks = self._locks_for_current_loop()
         locks = [path_locks.setdefault(key, asyncio.Lock()) for key in lock_keys]
-        return await self._execute_tool_under_locks(tool, args, context, locks, threaded=threaded)
+        output = await self._execute_tool_under_locks(tool, args, context, locks, threaded=threaded)
+        return self._normalize_tool_output(tool, args, context, output)
+
+    def _normalize_tool_output(
+        self,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        context: dict[str, Any],
+        output: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(output, dict):
+            output = {"result": output}
+        attach_dry_run_resource_state(output, tool, args, context)
+        remember_read_states_for_tool(tool, args, output, context)
+        return output
 
     async def _execute_tool_under_locks(
         self,
@@ -722,11 +811,31 @@ class ToolRuntime:
         threaded: bool = False,
     ) -> dict[str, Any]:
         if not locks:
-            if threaded:
-                return await asyncio.to_thread(tool.execute, args, context)
-            return tool.execute(args, context)
+            return await self._execute_tool_body(tool, args, context, threaded=threaded)
         async with locks[0]:
             return await self._execute_tool_under_locks(tool, args, context, locks[1:], threaded=threaded)
+
+    async def _execute_tool_body(
+        self,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        context: dict[str, Any],
+        *,
+        threaded: bool,
+    ) -> dict[str, Any]:
+        current_state = capture_tool_resource_state(tool, args, context)
+        if current_state:
+            context["_resource_state_before"] = current_state
+        validate_write_preconditions(
+            tool=tool,
+            args=args,
+            context=context,
+            current_state=current_state,
+            expected_approval_state=context.get("_expected_resource_state"),
+        )
+        if threaded or str(getattr(tool, "name", "") or "").startswith("browser."):
+            return await asyncio.to_thread(tool.execute, args, context)
+        return tool.execute(args, context)
 
     def _write_lock_keys(self, tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
         if not self._is_write_tool(tool) and not tool.concurrency_key:

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import time
 import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
 
+from app.config import DEFAULT_DATA_DIR
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
+from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
@@ -66,6 +69,10 @@ GIT_WRITE_FLAGS = {
 COMMAND_STDOUT_LIMIT = 20000
 COMMAND_STDERR_LIMIT = 8000
 DIFF_PREVIEW_LIMIT = 20000
+TEST_OUTPUT_PREVIEW_LIMIT = 12000
+TEST_TIMEOUT_DEFAULT_SECONDS = 120
+TEST_TIMEOUT_MAX_SECONDS = 1800
+TEST_FOREGROUND_TIMEOUT_MAX_SECONDS = 300
 GIT_CONFIG_GUARDS = [
     "-c",
     "advice.detachedHead=false",
@@ -79,6 +86,19 @@ GIT_CONFIG_GUARDS = [
     "diff.trustExitCode=false",
 ]
 GIT_DIFF_GUARD_FLAGS = ["--no-ext-diff", "--no-textconv"]
+TEST_EXECUTABLES = {"pytest", "pytest.exe", "python", "python.exe", "py", "py.exe", "npm", "npm.cmd", "pnpm", "pnpm.cmd"}
+PYTEST_WRITE_FLAGS = {
+    "--basetemp",
+    "--cache-clear-output",
+    "--cov-report",
+    "--html",
+    "--junit-xml",
+    "--junitxml",
+    "--log-file",
+    "--result-log",
+    "--self-contained-html",
+}
+TEST_WATCH_FLAGS = {"--looponfail", "--watch", "--watch-all", "--watchall", "-f", "-w"}
 
 
 def _allowed(context: dict[str, Any]) -> list[str]:
@@ -239,6 +259,61 @@ def worktree_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     }
 
 
+def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    command = str(args.get("command") or "").strip()
+    if not command:
+        return {"ok": False, "error": "Missing command."}
+    tokens, reason = _parse_test_command(command, allowed_directories=_allowed(context))
+    if tokens is None:
+        return {"ok": False, "error": reason, "controlled": False}
+    try:
+        root = _workspace_root(args, context)
+    except SecurityError as exc:
+        return {"ok": False, "error": str(exc), "controlled": False}
+
+    timeout_seconds = _bounded_timeout(args.get("timeout_seconds"), background=bool(args.get("background", False)))
+    output_dir = _test_output_dir(context)
+    if args.get("background", False):
+        try:
+            task = start_background_process(
+                tokens,
+                cwd=root,
+                env=_safe_command_env(),
+                output_dir=output_dir,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "controlled": True, "background": True}
+        snapshot = task.snapshot(preview_chars=_preview_limit(args))
+        return {
+            "ok": True,
+            "controlled": True,
+            "background": True,
+            "cwd": str(root),
+            **snapshot,
+            "summary": f"Started background test run {task.id}: {command}",
+        }
+
+    return _run_test_foreground(
+        tokens,
+        cwd=root,
+        command_text=command,
+        timeout_seconds=timeout_seconds,
+        output_dir=output_dir,
+        preview_chars=_preview_limit(args),
+    )
+
+
+def test_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return {"ok": False, "error": "Missing task_id."}
+    payload = background_task_status(task_id)
+    if payload.get("ok"):
+        payload["summary"] = f"Background test run {task_id} is {payload.get('status')}."
+    return payload
+
+
 def validate_readonly_shell(command: str, *, allowed_directories: list[str] | None = None) -> tuple[bool, str]:
     tokens, reason = _parse_readonly_shell(command, allowed_directories=allowed_directories)
     return (tokens is not None, reason)
@@ -271,6 +346,68 @@ def _parse_readonly_shell(command: str, *, allowed_directories: list[str] | None
             return None, git_flag_error
         tokens = _guarded_git_command(tokens[1:])
     return tokens, ""
+
+
+def validate_test_command(command: str, *, allowed_directories: list[str] | None = None) -> tuple[bool, str]:
+    tokens, reason = _parse_test_command(command, allowed_directories=allowed_directories)
+    return (tokens is not None, reason)
+
+
+def _parse_test_command(command: str, *, allowed_directories: list[str] | None = None) -> tuple[list[str] | None, str]:
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError as exc:
+        return None, f"Could not parse command: {exc}"
+    if not tokens:
+        return None, "Missing command."
+    tokens = [_strip_matching_quotes(token) for token in tokens]
+    lowered = [token.casefold() for token in tokens]
+    executable = Path(lowered[0]).name
+    if executable not in TEST_EXECUTABLES:
+        return None, f"Command '{tokens[0]}' is not in the controlled test allowlist."
+    if any(token in SHELL_WRITE_TOKENS or any(char in token for char in SHELL_METACHARS) for token in lowered):
+        return None, "Test command contains a write-like shell token."
+    if any(token in TEST_WATCH_FLAGS for token in lowered):
+        return None, "Watch/looping test modes are not allowed."
+    path_error = _shell_path_error(tokens, allowed_directories or [])
+    if path_error:
+        return None, path_error
+    shape_error = _test_command_shape_error(lowered)
+    if shape_error:
+        return None, shape_error
+    flag_error = _test_flag_error(lowered)
+    if flag_error:
+        return None, flag_error
+    return tokens, ""
+
+
+def _test_command_shape_error(lowered: list[str]) -> str:
+    executable = Path(lowered[0]).name
+    if executable in {"pytest", "pytest.exe"}:
+        return ""
+    if executable in {"python", "python.exe", "py", "py.exe"}:
+        if len(lowered) >= 3 and lowered[1] == "-m" and lowered[2] == "pytest":
+            return ""
+        return "Python test commands must use 'python -m pytest'."
+    if executable in {"npm", "npm.cmd", "pnpm", "pnpm.cmd"}:
+        if len(lowered) >= 2 and lowered[1] == "test":
+            return ""
+        if len(lowered) >= 3 and lowered[1] == "run" and lowered[2] == "test":
+            return ""
+        return "Package-manager test commands must use 'test' or 'run test'."
+    return "Unsupported test command."
+
+
+def _test_flag_error(lowered: list[str]) -> str:
+    for index, token in enumerate(lowered):
+        flag = token.split("=", 1)[0]
+        if flag in PYTEST_WRITE_FLAGS:
+            return f"pytest option {flag} writes files and is not allowed through dev.test_run."
+        if token in {"-o", "--override-ini"} and index + 1 < len(lowered):
+            value = lowered[index + 1]
+            if any(item in value for item in ("cache_dir=", "junit", "log_file")):
+                return "pytest override writes files and is not allowed through dev.test_run."
+    return ""
 
 
 def _strip_matching_quotes(token: str) -> str:
@@ -339,6 +476,68 @@ def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) ->
     }
 
 
+def _run_test_foreground(
+    command: list[str],
+    *,
+    cwd: Path,
+    command_text: str,
+    timeout_seconds: int,
+    output_dir: Path,
+    preview_chars: int,
+) -> dict[str, Any]:
+    started_at = time.time()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            shell=False,
+            env=_safe_command_env(),
+            capture_output=True,
+            text=True,
+            timeout=min(timeout_seconds, TEST_FOREGROUND_TIMEOUT_MAX_SECONDS),
+            check=False,
+        )
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        returncode = completed.returncode
+        timed_out = False
+        error = ""
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode_timeout_output(exc.stdout)
+        stderr = _decode_timeout_output(exc.stderr)
+        returncode = None
+        timed_out = True
+        error = f"Test run exceeded {min(timeout_seconds, TEST_FOREGROUND_TIMEOUT_MAX_SECONDS)}s timeout."
+
+    stdout_path, stderr_path = _persist_test_output(output_dir, stdout, stderr)
+    stdout_preview, stdout_truncated = _truncate_text(stdout, preview_chars)
+    stderr_preview, stderr_truncated = _truncate_text(stderr, preview_chars)
+    ok = returncode == 0 and not timed_out
+    payload = {
+        "ok": ok,
+        "controlled": True,
+        "background": False,
+        "cwd": str(cwd),
+        "command": command,
+        "command_text": command_text,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "error": error,
+        "started_at": started_at,
+        "completed_at": time.time(),
+        "stdout_preview": stdout_preview,
+        "stderr_preview": stderr_preview,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+        "stdout_bytes": len(stdout.encode("utf-8", errors="replace")),
+        "stderr_bytes": len(stderr.encode("utf-8", errors="replace")),
+    }
+    payload["summary"] = _summarize_test_run(payload)
+    return payload
+
+
 def _safe_command_env() -> dict[str, str]:
     import os
 
@@ -351,9 +550,51 @@ def _safe_command_env() -> dict[str, str]:
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_PAGER": "cat",
             "PAGER": "cat",
+            "PYTHONUNBUFFERED": "1",
         }
     )
     return env
+
+
+def _test_output_dir(context: dict[str, Any]) -> Path:
+    settings = context.get("settings")
+    raw = getattr(settings, "data_dir", "") if settings is not None else ""
+    root = Path(raw) if raw else DEFAULT_DATA_DIR
+    return root / "developer_test_runs"
+
+
+def _persist_test_output(output_dir: Path, stdout: str, stderr: str) -> tuple[Path, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"testrun_{int(time.time() * 1000)}"
+    stdout_path = output_dir / f"{stem}.stdout.log"
+    stderr_path = output_dir / f"{stem}.stderr.log"
+    stdout_path.write_text(stdout, encoding="utf-8", errors="replace")
+    stderr_path.write_text(stderr, encoding="utf-8", errors="replace")
+    return stdout_path, stderr_path
+
+
+def _decode_timeout_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _bounded_timeout(value: Any, *, background: bool) -> int:
+    try:
+        seconds = int(value or TEST_TIMEOUT_DEFAULT_SECONDS)
+    except (TypeError, ValueError):
+        seconds = TEST_TIMEOUT_DEFAULT_SECONDS
+    limit = TEST_TIMEOUT_MAX_SECONDS if background else TEST_FOREGROUND_TIMEOUT_MAX_SECONDS
+    return max(1, min(seconds, limit))
+
+
+def _preview_limit(args: dict[str, Any]) -> int:
+    try:
+        return max(1000, min(int(args.get("max_output_chars") or TEST_OUTPUT_PREVIEW_LIMIT), 60000))
+    except (TypeError, ValueError):
+        return TEST_OUTPUT_PREVIEW_LIMIT
 
 
 def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
@@ -411,6 +652,16 @@ def _summarize_pytest_inventory(payload: dict[str, Any]) -> str:
     return f"Static pytest inventory found {payload.get('test_count', 0)} test(s) in {payload.get('file_count', 0)} file(s){suffix}."
 
 
+def _summarize_test_run(payload: dict[str, Any]) -> str:
+    if payload.get("timed_out"):
+        return f"Test run timed out: {payload.get('command_text') or payload.get('command')}."
+    status = "passed" if payload.get("ok") else "failed"
+    stdout_len = int(payload.get("stdout_bytes") or 0)
+    stderr_len = int(payload.get("stderr_bytes") or 0)
+    truncated = " Preview truncated." if payload.get("stdout_truncated") or payload.get("stderr_truncated") else ""
+    return f"Controlled test run {status} with return code {payload.get('returncode')} ({stdout_len} stdout byte(s), {stderr_len} stderr byte(s)).{truncated}"
+
+
 def _result_summary(output: dict[str, Any]) -> str:
     summary = output.get("summary")
     if isinstance(summary, str) and summary:
@@ -466,6 +717,24 @@ def _schema(name: str) -> dict[str, Any]:
             "properties": {"cwd": {"type": "string"}, "name": {"type": "string"}, "branch": {"type": "string"}, "target_path": {"type": "string"}},
             "additionalProperties": False,
         },
+        "dev.test_run": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string"},
+                "command": {"type": "string"},
+                "timeout_seconds": {"type": "integer"},
+                "background": {"type": "boolean"},
+                "max_output_chars": {"type": "integer"},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+        "dev.test_status": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
     }
     return schemas[name]
 
@@ -479,31 +748,35 @@ def register(registry) -> None:
         ("dev.shell_readonly", shell_readonly, ["shell", "developer_status"], ["read", "inspect"]),
         ("dev.pytest_inventory", pytest_inventory, ["tests", "developer_status"], ["read", "inspect"]),
         ("dev.worktree_preview", worktree_preview, ["git", "worktree"], ["preview"]),
+        ("dev.test_run", test_run, ["tests", "developer_execution"], ["read", "inspect", "execute_test"]),
+        ("dev.test_status", test_status, ["tests", "developer_execution"], ["read", "inspect"]),
     ]
     for name, execute, capabilities, effects in defs:
+        risk_level = RiskLevel.R1_OPEN_ONLY if name == "dev.test_run" else RiskLevel.R0_READ_ONLY
+        read_only = name != "dev.test_run"
         registry.register(
             ToolDefinition(
                 name=name,
                 description=name.replace(".", " "),
                 input_schema=_schema(name),
                 output_schema={"type": "object"},
-                risk_level=RiskLevel.R0_READ_ONLY,
+                risk_level=risk_level,
                 agent_owner="ComputerAgent",
                 supports_dry_run=False,
                 requires_authorized_path=name not in {"dev.git_status", "dev.diff_preview", "dev.shell_readonly"},
                 execute=execute,
                 permission_mode="auto_readonly",
-                read_only=True,
-                concurrency_safe=True,
+                read_only=read_only,
+                concurrency_safe=read_only,
                 result_summary=_result_summary,
-                search_hint="developer cli grep glob git diff shell read-only pytest test inventory worktree preview",
+                search_hint="developer cli grep glob git diff shell read-only pytest test inventory worktree preview controlled test run background",
                 ui_summary=f"{name} developer tool",
                 capabilities=capabilities,
                 effects=effects,
                 resource_kinds=["workspace", "repository"],
-                fast_path_eligible=True,
+                fast_path_eligible=read_only,
                 trust_tier="builtin",
                 origin="builtin",
-                max_result_size=24000,
+                max_result_size=40000 if name == "dev.test_run" else 24000,
             )
         )

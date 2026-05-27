@@ -86,6 +86,19 @@ function Test-UvicornMavrisBackend([string]$CommandLine) {
     return $lower.Contains("uvicorn") -and $lower.Contains("backend.main:app")
 }
 
+function Stop-FullBackendIfWorkspaceOwned {
+    $fullBackendProcess = Get-ListenProcess 8001
+    if (-not $fullBackendProcess) {
+        return
+    }
+    $commandLine = [string]$fullBackendProcess.CommandLine
+    if ((Test-WorkspaceProcess $commandLine) -or $commandLine.ToLowerInvariant().Contains("backend.main:full_app")) {
+        Write-Step "Stopping stale full backend process on port 8001"
+        Stop-Process -Id $fullBackendProcess.ProcessId -Force -ErrorAction Stop
+        Start-Sleep -Milliseconds 500
+    }
+}
+
 function Stop-WorkspaceProcessOnPort([int]$Port, [string]$Purpose) {
     $process = Get-ListenProcess $Port
     if (-not $process) {
@@ -221,6 +234,7 @@ function Start-Backend([string]$Python) {
     }
 
     Write-Step "Starting backend at $BackendUrl"
+    Stop-FullBackendIfWorkspaceOwned
     foreach ($logPath in @($BackendStdoutLog, $BackendStderrLog)) {
         if (Test-Path $logPath) {
             Remove-Item -LiteralPath $logPath -Force

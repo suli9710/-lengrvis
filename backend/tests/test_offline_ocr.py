@@ -4,6 +4,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from app.config import AppSettings
@@ -62,6 +63,73 @@ def test_vision_tool_ocr_uses_local_result_in_privacy_mode(ocr_png: Path) -> Non
     assert result["ok"] is True
     assert result["text"] == FIXTURE_TEXT
     assert result["source"] == "local_metadata"
+
+
+def test_local_ocr_tries_accelerated_backend_before_tesseract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plain_png = tmp_path / "plain.png"
+    _write_metadata_png(plain_png, "")
+    calls: list[str] = []
+
+    def accelerated(path: Path, **kwargs: Any) -> ocr_service.OCRResult:
+        calls.append("accelerated")
+        return ocr_service.OCRResult(ok=True, text="ACCELERATED OCR TEXT", source="local_openvino")
+
+    monkeypatch.setattr(ocr_service, "accelerated_ocr_image", accelerated)
+    monkeypatch.setattr(ocr_service, "_ocr_text_with_tesseract", lambda path: calls.append("tesseract") or "TESS")
+
+    result = ocr_service.local_ocr_image(plain_png)
+
+    assert result.ok is True
+    assert result.text == "ACCELERATED OCR TEXT"
+    assert result.source == "local_openvino"
+    assert calls == ["accelerated"]
+
+
+def test_accelerated_ocr_smoke_reports_missing_runtime_without_user_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ocr_service, "_available_accelerated_runtime", lambda backend: "")
+    settings = AppSettings(ocr_backend="openvino", ocr_openvino_model_dir="")
+
+    result = ocr_service.accelerated_ocr_smoke(settings=settings)
+
+    assert result["ok"] is False
+    assert result["selected_backend"] == "openvino"
+    assert "runtime not installed" in result["error"]
+    assert result["smoke"] == "noop"
+
+
+def test_accelerated_ocr_runs_onnx_session_when_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = tmp_path / "plain.png"
+    model_path = tmp_path / "ocr" / "model.onnx"
+    model_path.parent.mkdir()
+    model_path.write_bytes(b"placeholder")
+    _write_metadata_png(image_path, "")
+
+    class _Input:
+        name = "pixel_values"
+
+    class _Session:
+        def get_inputs(self):
+            return [_Input()]
+
+        def run(self, output_names, feed):
+            assert "pixel_values" in feed
+            return [np.asarray(["ONNX OCR TEXT"], dtype=object)]
+
+    monkeypatch.setattr(ocr_service, "available_execution_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr("app.acceleration.onnx_sessions.available_execution_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr("app.acceleration.onnx_sessions.import_onnxruntime", lambda: object())
+    monkeypatch.setattr("app.acceleration.onnx_sessions.create_inference_session", lambda backend: _Session())
+    monkeypatch.setattr(ocr_service, "create_inference_session", lambda backend: _Session())
+    settings = AppSettings(ocr_backend="cpu", ocr_execution_provider="cpu", ocr_openvino_model_dir=str(model_path))
+
+    result = ocr_service.accelerated_ocr_image(image_path, settings=settings)
+
+    assert result.ok is True
+    assert result.text == "ONNX OCR TEXT"
+    assert result.source == "local_cpu"
 
 
 def test_cloud_vision_provider_is_fallback_when_local_ocr_has_no_text(

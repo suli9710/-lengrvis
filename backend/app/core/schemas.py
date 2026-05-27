@@ -481,6 +481,31 @@ class ScheduledTask(BaseModel):
     updated_at: str = Field(default_factory=now_iso)
 
 
+class WakeupStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class Wakeup(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("wakeup"))
+    source: str = "schedule"
+    source_id: str = ""
+    title: str = ""
+    body: str = ""
+    goal: str = ""
+    mode: str = "efficiency"
+    status: WakeupStatus = WakeupStatus.PENDING
+    run_id: str = ""
+    error: str = ""
+    due_at: str = Field(default_factory=now_iso)
+    decided_at: str = ""
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+
 class Memory(BaseModel):
     id: str = Field(default_factory=lambda: new_id("mem"))
     kind: str = "fact"

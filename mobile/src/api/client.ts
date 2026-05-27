@@ -84,7 +84,7 @@ export interface PairingSession {
 }
 
 export class AuthExpiredError extends Error {
-  constructor(message = "Session expired. Pair this device again.") {
+  constructor(message = "This phone was disconnected. Connect it again in Mavris.") {
     super(message);
     this.name = "AuthExpiredError";
   }
@@ -151,7 +151,7 @@ export function remoteScreenWebSocketUrl(session: PairingSession): string {
 
 export function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");
-  if (!trimmed) throw new Error("Enter the LAN address shown by Mavris desktop.");
+  if (!trimmed) throw new Error("Enter the computer address shown in Mavris.");
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
@@ -172,7 +172,7 @@ async function parseJson<T>(response: Response): Promise<T> {
     if (response.status === 401 || response.status === 403) {
       throw new AuthExpiredError(detail || undefined);
     }
-    throw new Error(detail || `HTTP ${response.status}`);
+    throw new Error(detail || "Mavris could not complete that request. Try again.");
   }
   return data as T;
 }

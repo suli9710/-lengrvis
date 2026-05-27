@@ -129,13 +129,16 @@ def list_usage_events(*, limit: int = 100) -> list[dict[str, Any]]:
     with db.connect() as conn:
         rows = conn.execute(
             """
-            SELECT data FROM llm_usage_events
+            SELECT provider, model, mode, task, purpose, prompt_tokens,
+                   completion_tokens, total_tokens, total_cost_usd,
+                   estimated, data, created_at
+            FROM llm_usage_events
             ORDER BY created_at DESC
             LIMIT ?
             """,
             (max(1, min(1000, int(limit))),),
         ).fetchall()
-    return [json.loads(row["data"]) for row in rows]
+    return [_usage_event_payload(row) for row in rows]
 
 
 def usage_summary(*, hours: int = 24) -> dict[str, Any]:
@@ -162,16 +165,18 @@ def usage_summary(*, hours: int = 24) -> dict[str, Any]:
     by_model: dict[str, dict[str, Any]] = {}
     last_event_at = ""
     for row in rows:
-        prompt = int(row["prompt_tokens"] or 0)
-        completion = int(row["completion_tokens"] or 0)
-        tokens = int(row["total_tokens"] or 0)
-        cost = row["total_cost_usd"]
-        model_key = f"{row['provider']}:{row['model']}"
+        prompt = _safe_int(_row_value(row, "prompt_tokens"))
+        completion = _safe_int(_row_value(row, "completion_tokens"))
+        tokens = _safe_int(_row_value(row, "total_tokens"))
+        cost = _row_value(row, "total_cost_usd")
+        provider = str(_row_value(row, "provider", "") or "")
+        model = str(_row_value(row, "model", "") or "")
+        model_key = f"{provider}:{model}"
         item = by_model.setdefault(
             model_key,
             {
-                "provider": row["provider"],
-                "model": row["model"],
+                "provider": provider,
+                "model": model,
                 "calls": 0,
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
@@ -188,17 +193,14 @@ def usage_summary(*, hours: int = 24) -> dict[str, Any]:
             cost_known = True
             total_cost += float(cost)
             item["total_cost_usd"] += float(cost)
-        if row["estimated"]:
+        if _safe_int(_row_value(row, "estimated")):
             estimated = True
             item["estimated"] = True
         total_prompt += prompt
         total_completion += completion
         total_tokens += tokens
-        last_event_at = max(last_event_at, str(row["created_at"] or ""))
-        try:
-            data = json.loads(row["data"])
-        except (TypeError, json.JSONDecodeError):
-            data = {}
+        last_event_at = max(last_event_at, str(_row_value(row, "created_at", "") or ""))
+        data = _usage_event_payload(row)
         claude_usage = data.get("claude_usage") if isinstance(data, dict) else {}
         if isinstance(claude_usage, dict):
             for key in CLAUDE_USAGE_KEYS:
@@ -245,3 +247,53 @@ def _int_token(*values: Any) -> int:
         except (TypeError, ValueError):
             continue
     return 0
+
+
+def _usage_event_payload(row: Any) -> dict[str, Any]:
+    data = _json_dict(_row_value(row, "data"))
+    if data:
+        return data
+    return {
+        "provider": _row_value(row, "provider", ""),
+        "model": _row_value(row, "model", ""),
+        "mode": _row_value(row, "mode", ""),
+        "task": _row_value(row, "task", ""),
+        "purpose": _row_value(row, "purpose", ""),
+        "usage": {
+            "prompt_tokens": _safe_int(_row_value(row, "prompt_tokens")),
+            "completion_tokens": _safe_int(_row_value(row, "completion_tokens")),
+            "total_tokens": _safe_int(_row_value(row, "total_tokens")),
+            "estimated": bool(_safe_int(_row_value(row, "estimated"), 1)),
+        },
+        "cost": {
+            "total_cost_usd": _row_value(row, "total_cost_usd"),
+            "estimated": bool(_safe_int(_row_value(row, "estimated"), 1)),
+        },
+        "created_at": _row_value(row, "created_at", ""),
+    }
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (IndexError, KeyError, TypeError):
+        return default
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        data = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default

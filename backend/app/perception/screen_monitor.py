@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import tempfile
 import threading
 from collections.abc import Callable
@@ -38,6 +39,7 @@ class ScreenMonitorConfig:
     quality: int = DEFAULT_JPEG_QUALITY
     vision_context: dict[str, Any] = field(default_factory=dict)
     temp_dir: str | None = None
+    frame_diff_gate_enabled: bool = True
 
     @classmethod
     def from_settings(cls, settings: Any) -> "ScreenMonitorConfig":
@@ -48,6 +50,7 @@ class ScreenMonitorConfig:
             max_width=int(getattr(settings, "perception_max_width", DEFAULT_CAPTURE_WIDTH) or DEFAULT_CAPTURE_WIDTH),
             max_height=int(getattr(settings, "perception_max_height", DEFAULT_CAPTURE_HEIGHT) or DEFAULT_CAPTURE_HEIGHT),
             quality=int(getattr(settings, "perception_jpeg_quality", DEFAULT_JPEG_QUALITY) or DEFAULT_JPEG_QUALITY),
+            frame_diff_gate_enabled=bool(getattr(settings, "perception_frame_diff_gate_enabled", True)),
             vision_context={
                 "settings": settings,
                 "allowed_directories": list(getattr(settings, "allowed_directories", []) or []),
@@ -84,6 +87,8 @@ class ScreenMonitor(PerceptionProvider):
         self.app_context_fn = app_context_fn or get_current_app_context
         self.event_publisher = event_publisher
         self.last_state: ScreenState | None = None
+        self._last_frame_hash: str = ""
+        self._last_vision_result: dict[str, Any] | None = None
         self.last_error: str = ""
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -122,8 +127,23 @@ class ScreenMonitor(PerceptionProvider):
             max_height=self.config.max_height,
             quality=self.config.quality,
         )
-        with _temporary_image(frame, self.config.temp_dir) as image_path:
-            vision_result = self.describe_fn({"path": str(image_path)}, self._vision_context(image_path.parent))
+        frame_hash = _frame_hash(frame)
+        reused_vision = bool(
+            self.config.frame_diff_gate_enabled
+            and frame_hash
+            and frame_hash == self._last_frame_hash
+            and self._last_vision_result is not None
+        )
+        if reused_vision:
+            vision_result = dict(self._last_vision_result or {})
+            metadata = dict(vision_result.get("metadata") or {})
+            metadata["frame_diff_gate"] = "reused"
+            vision_result["metadata"] = metadata
+        else:
+            with _temporary_image(frame, self.config.temp_dir) as image_path:
+                vision_result = self.describe_fn({"path": str(image_path)}, self._vision_context(image_path.parent))
+            self._last_frame_hash = frame_hash
+            self._last_vision_result = dict(vision_result or {}) if isinstance(vision_result, dict) else None
 
         state = _state_from_frame(
             frame,
@@ -220,3 +240,10 @@ def _frame_image_base64(frame: Any) -> str:
         return frame.removeprefix("data:image/jpeg;base64,")
     value = getattr(frame, "image_base64", "")
     return str(value or "")
+
+
+def _frame_hash(frame: Any) -> str:
+    raw = _frame_image_base64(frame)
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("ascii", errors="ignore")).hexdigest()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import base64
 import sys
 import threading
 import time
@@ -9,9 +10,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes_approvals import router as approvals_router
+from app.api.routes_perception import router as perception_router
 from app.api.routes_runs import router, ws_router
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep
+from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, Task
+from app.orchestration.execution_stage import ExecutionStage
+from app.orchestration.task_phase import TaskPhase
 from app.agents.planner_agent import PlannerAgent
 from app.orchestration.run_event_bus import RunEventBus
 from app.orchestration.execution_models import EngineTurnResult, RunPhase as EngineRunPhase
@@ -26,6 +30,7 @@ def _test_app() -> FastAPI:
     app = FastAPI()
     app.include_router(router, prefix="/api")
     app.include_router(approvals_router, prefix="/api")
+    app.include_router(perception_router, prefix="/api")
     app.include_router(ws_router)
     app.include_router(ws_router, prefix="/api")
     return app
@@ -277,6 +282,67 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
         assert follow_up.status == "succeeded"
 
 
+def test_run_state_runtime_metadata_does_not_break_resume(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    run = run_service.Run(
+        id="osrun_runtime_metadata",
+        message="resume",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.PAUSED,
+        state={
+            "run_id": "osrun_runtime_metadata",
+            "engine": "os",
+            "phase": "paused",
+            "turn_count": 0,
+            "goal": "resume",
+            "mode": "efficiency",
+            "_runtime": {"data_dir": str(tmp_path / "data")},
+        },
+    )
+    db.upsert_model("runs", run)
+
+    state = run_service._state_from_run(run)
+    state = state.model_copy(update={"phase": EngineRunPhase.RUNNING}, deep=True)
+    updated = run_service._update_run_from_state(run, state)
+
+    assert updated.state["_runtime"]["data_dir"] == str(tmp_path / "data")
+    assert run_service._state_from_run(updated).phase == EngineRunPhase.RUNNING
+
+
+def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    task = Task(user_goal="needs approval", mode="efficiency", status=TaskPhase.EXECUTION)
+    task.execution_stage = ExecutionStage.AWAITING_APPROVAL
+    db.upsert_model("tasks", task)
+    run = run_service.Run(
+        id="osrun_stale_waiting_read",
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        task_id=task.id,
+        state={
+            "run_id": "osrun_stale_waiting_read",
+            "engine": "os",
+            "phase": "running",
+            "goal": task.user_goal,
+            "mode": task.mode,
+            "task_id": task.id,
+        },
+    )
+    db.upsert_model("runs", run)
+
+    synced = run_service.get_run(run.id)
+
+    assert synced.phase == run_service.RunPhase.AWAITING_APPROVAL
+    assert synced.state["phase"] == "awaiting_approval"
+
+
 def test_resume_does_not_bypass_waiting_approval(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
@@ -442,6 +508,144 @@ def test_sync_resume_schedules_background_without_event_loop(monkeypatch, tmp_pa
         assert response.status_code == 200
         assert response.json()["phase"] == "running"
         _wait_for_phase(client, created["run_id"], "completed", "failed")
+
+
+def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    started = []
+    scheduled = []
+
+    class Router:
+        max_turns = 1
+
+    from app.orchestration.execution_models import RunState
+    from app.perception.intent_predictor import IntentSuggestion
+    from app.services import perception_suggestion_service
+
+    async def start_run(self, goal, mode, engine):  # noqa: ANN001, ANN202
+        started.append({"goal": goal, "mode": mode, "engine": engine})
+        return RunState(
+            run_id="osrun_suggestion_launch",
+            engine="os",
+            phase=EngineRunPhase.RUNNING,
+            goal=goal,
+            mode=mode,
+        )
+
+    async def run_turn(self, state):  # noqa: ANN001, ANN202
+        raise AssertionError("suggestion launch should not execute a turn inline")
+
+    Router.start_run = start_run
+    Router.run_turn = run_turn
+    monkeypatch.setattr(run_service, "_engine_router", lambda settings: Router())
+
+    def schedule_spy(coro, *, data_dir=None):  # noqa: ANN001, ANN202, ARG001
+        scheduled.append(coro)
+        coro.close()
+
+        class Done:
+            def done(self) -> bool:
+                return False
+
+        return Done()
+
+    monkeypatch.setattr(run_service, "_schedule_background", schedule_spy)
+    monkeypatch.setattr(
+        perception_suggestion_service,
+        "get_suggestion",
+        lambda suggestion_id: IntentSuggestion(
+            id=suggestion_id,
+            title="Open app",
+            prompt="Open Notepad with app.launch_installed.",
+            confidence=0.95,
+            agent_hint="AppAgent",
+            reason="Visible app context suggests launching Notepad.",
+        ),
+    )
+
+    with TestClient(_test_app()) as client:
+        response = client.post("/api/perception/suggestions/open_notepad/launch", json={"mode": "efficiency", "engine": "os"})
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "osrun_suggestion_launch"
+    assert started and "Open Notepad" in started[0]["goal"]
+    assert db.fetch_many("tool_calls", limit=10) == []
+    assert db.fetch_many("tool_results", limit=10) == []
+    assert len(scheduled) == 1
+
+
+def test_perception_capture_api_returns_sanitized_summary(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    from app.perception.schemas import AppContext
+    from app.perception import context_store
+
+    context_store.clear()
+    monkeypatch.setattr(
+        "app.perception.screen_monitor.capture_screen_frame",
+        lambda **kwargs: type(
+            "Frame",
+            (),
+            {
+                "image_base64": base64.b64encode(b"raw-screenshot").decode("ascii"),
+                "timestamp": "2026-05-26T00:00:00+00:00",
+                "width": 640,
+                "height": 360,
+                "original_width": 640,
+                "original_height": 360,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        "app.perception.screen_monitor.describe_image",
+        lambda args, context: {
+            "ok": True,
+            "description": "A document editor is visible.",
+            "tags": ["document"],
+            "structured_labels": {"ocr_full_text": "raw OCR should not leak"},
+        },
+    )
+    monkeypatch.setattr(
+        "app.perception.screen_monitor.get_current_app_context",
+        lambda: AppContext(available=True, process_name="WINWORD.EXE", active_window_title="Report.docx"),
+    )
+
+    with TestClient(_test_app()) as client:
+        response = client.post("/api/perception/capture")
+
+    assert response.status_code == 200
+    payload = response.json()
+    dumped = str(payload)
+    assert "image_base64" not in dumped
+    assert "raw-screenshot" not in dumped
+    assert "raw OCR should not leak" not in dumped
+    assert payload["screen_state"]["description"] == "A document editor is visible."
+
+
+def test_legacy_proactive_suggestions_route_uses_perception_service(monkeypatch):
+    from app.api import routes_chat
+    from app.perception.intent_predictor import IntentSuggestion
+
+    monkeypatch.setattr(
+        routes_chat.perception_suggestion_service,
+        "current_suggestions",
+        lambda: [
+            IntentSuggestion(
+                id="from_store",
+                title="Stored suggestion",
+                prompt="Launch through the perception suggestion store.",
+                confidence=0.91,
+            )
+        ],
+    )
+    app = FastAPI()
+    app.include_router(routes_chat.router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.get("/api/chat/proactive-suggestions")
+
+    assert response.status_code == 200
+    assert response.json()[0]["id"] == "from_store"
 
 
 def test_run_event_publish_allocates_contiguous_sequences_concurrently(monkeypatch, tmp_path):

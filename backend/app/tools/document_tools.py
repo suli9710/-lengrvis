@@ -6,8 +6,11 @@ from typing import Any
 
 from app.core.paths import resolve_authorized
 from app.indexer.ocr_service import extract_pdf_text_with_ocr_fallback
+from app.llm.registry import LOCAL_PROVIDERS
+from app.policy.privacy import can_upload_file_content
 from app.policy.risk import RiskLevel
 from app.services import document_service
+from app.services import document_intelligence_service
 from app.tools.schemas import ToolDefinition
 
 
@@ -27,6 +30,37 @@ def _document_max_chars_to_llm(context: dict[str, Any]) -> int:
 
 def _provider(task: str = "subagent"):
     return document_service._provider(task)
+
+
+def _document_provider(context: dict[str, Any]):
+    settings = context.get("settings")
+    if settings is None:
+        return _provider
+
+    decision = can_upload_file_content(settings)
+    if decision.allowed or _document_provider_is_local(settings):
+        return _provider
+
+    def resolver(task: str = "subagent"):
+        provider = _provider(task)
+        if _provider_is_cloud(provider):
+            return None
+        return provider
+
+    return resolver
+
+
+def _document_provider_is_local(settings: Any) -> bool:
+    mode = str(getattr(settings, "mode", "efficiency") or "efficiency").lower()
+    provider_name = str(getattr(settings, "provider_name", "") or "").lower()
+    return mode in {"privacy"} or provider_name in LOCAL_PROVIDERS
+
+
+def _provider_is_cloud(provider: Any) -> bool:
+    name = str(getattr(provider, "name", "") or provider.__class__.__name__).casefold()
+    module = str(getattr(provider.__class__, "__module__", "") or "").casefold()
+    markers = ("openai", "azure", "deepseek", "hunyuan", "custom_http")
+    return any(marker in name or marker in module for marker in markers)
 
 
 def _chunk_text(text: str, chunk_chars: int = _CHUNK_CHARS) -> list[str]:
@@ -104,7 +138,7 @@ def summarize(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         text,
         path_label=path.name,
         max_chars_to_llm=_document_max_chars_to_llm(context),
-        provider_resolver=_provider,
+        provider_resolver=_document_provider(context),
     )
     return {"path": str(path), **result}
 
@@ -118,7 +152,7 @@ def qa(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         question,
         path_label=path.name,
         max_chars_to_llm=_document_max_chars_to_llm(context),
-        provider_resolver=_provider,
+        provider_resolver=_document_provider(context),
     )
     return {"path": str(path), **result}
 
@@ -148,7 +182,65 @@ def generate_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, 
         content,
         title=title,
         max_chars_to_llm=_document_max_chars_to_llm(context),
-        provider_resolver=_provider,
+        provider_resolver=_document_provider(context),
+    )
+
+
+def parse_advanced(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    result = document_intelligence_service.parse_advanced(path, settings=context.get("settings"))
+    return result.as_dict()
+
+
+def extract_tables(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    return document_intelligence_service.extract_tables(path, settings=context.get("settings"))
+
+
+def ask_with_citations(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    return document_intelligence_service.ask_with_citations(
+        path,
+        str(args.get("question") or ""),
+        settings=context.get("settings"),
+        provider_resolver=_document_provider(context),
+        top_k=int(args.get("top_k") or document_intelligence_service.DEFAULT_TOP_K),
+    )
+
+
+def compare(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    paths = args.get("paths") if isinstance(args.get("paths"), list) else []
+    left_raw = args.get("left_path") or (paths[0] if len(paths) > 0 else None)
+    right_raw = args.get("right_path") or (paths[1] if len(paths) > 1 else None)
+    left_path = resolve_authorized(left_raw, _allowed(context))
+    right_path = resolve_authorized(right_raw, _allowed(context))
+    return document_intelligence_service.compare_documents(
+        left_path,
+        right_path,
+        settings=context.get("settings"),
+    )
+
+
+def redact_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    custom_patterns = args.get("custom_patterns") if isinstance(args.get("custom_patterns"), dict) else None
+    return document_intelligence_service.redact_preview(
+        path,
+        settings=context.get("settings"),
+        custom_patterns=custom_patterns,
+        max_chars=int(args.get("max_chars") or document_intelligence_service.DEFAULT_PREVIEW_CHARS),
+    )
+
+
+def generate_cited_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    return document_intelligence_service.generate_cited_report(
+        path,
+        title=str(args.get("title") or "Cited Report"),
+        query=str(args.get("query") or ""),
+        settings=context.get("settings"),
+        provider_resolver=_document_provider(context),
+        max_blocks=int(args.get("max_blocks") or document_intelligence_service.DEFAULT_REPORT_BLOCKS),
     )
 
 
@@ -161,6 +253,12 @@ def register(registry) -> None:
         ("document.analyze_csv", analyze_csv),
         ("document.analyze_xlsx", analyze_xlsx),
         ("document.generate_report", generate_report),
+        ("document.parse_advanced", parse_advanced),
+        ("document.extract_tables", extract_tables),
+        ("document.ask_with_citations", ask_with_citations),
+        ("document.compare", compare),
+        ("document.redact_preview", redact_preview),
+        ("document.generate_cited_report", generate_cited_report),
     ]
     for name, fn in defs:
         registry.register(
@@ -174,5 +272,11 @@ def register(registry) -> None:
                 supports_dry_run=False,
                 requires_authorized_path=name != "document.generate_report",
                 execute=fn,
+                read_only=True,
+                concurrency_safe=True,
+                effects=["read"],
+                resource_kinds=["document"],
+                fast_path_eligible=True,
+                trust_tier="builtin",
             )
         )

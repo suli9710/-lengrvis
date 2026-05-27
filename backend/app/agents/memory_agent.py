@@ -8,7 +8,7 @@ from app.agents.base import BaseAgent
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import Memory, MessageType, now_iso
-from app.llm.registry import get_provider
+from app.indexer.embedding_service import embed_texts
 
 
 class MemoryAgent(BaseAgent):
@@ -18,17 +18,12 @@ class MemoryAgent(BaseAgent):
 
     async def _embed(self, text: str) -> list[float]:
         try:
-            provider = get_provider(task="embed")
-            vectors = await provider.embed([text])
+            vectors = await embed_texts([text])
             if vectors and isinstance(vectors[0], list):
                 return [float(value) for value in vectors[0]]
         except Exception as exc:  # noqa: BLE001
             record("memory.embed_failed", self.name, {"error": str(exc)})
-        # Fallback: simple deterministic 8-dim hash so recall still works in tests.
-        digest = [0.0] * 8
-        for index, char in enumerate(text):
-            digest[index % 8] += float(ord(char) % 251) / 251.0
-        return digest
+        return []
 
     async def remember(
         self,
@@ -104,7 +99,7 @@ class MemoryAgent(BaseAgent):
         scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
             vector = row.get("embedding") or []
-            similarity = _cosine_similarity(query_vector, vector)
+            similarity = _cosine_similarity(query_vector, vector) + _lexical_overlap_score(query, str(row.get("content") or ""))
             scored.append((similarity, row))
         scored.sort(key=lambda item: item[0], reverse=True)
         results: list[Memory] = []
@@ -139,12 +134,19 @@ class MemoryAgent(BaseAgent):
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if not a or not b:
+    if not a or not b or len(a) != len(b):
         return 0.0
-    length = min(len(a), len(b))
-    dot = sum(a[i] * b[i] for i in range(length))
-    norm_a = math.sqrt(sum(value * value for value in a[:length]))
-    norm_b = math.sqrt(sum(value * value for value in b[:length]))
+    dot = sum(left * right for left, right in zip(a, b))
+    norm_a = math.sqrt(sum(value * value for value in a))
+    norm_b = math.sqrt(sum(value * value for value in b))
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _lexical_overlap_score(query: str, content: str) -> float:
+    query_chars = {char for char in str(query or "").lower() if not char.isspace()}
+    content_chars = {char for char in str(content or "").lower() if not char.isspace()}
+    if not query_chars or not content_chars:
+        return 0.0
+    return 0.1 * (len(query_chars & content_chars) / len(query_chars))

@@ -27,15 +27,15 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const handlePair = async () => {
     const code = pairCode.replace(/[^a-z0-9]/gi, "").toLowerCase();
     if (code.length !== 6) {
-      Alert.alert("Pairing code", "Enter the 6 character code from Mavris desktop.");
+      Alert.alert("Pairing code", "Enter the 6-character code shown in Mavris on your computer.");
       return;
     }
     if (!baseUrl.trim()) {
-      Alert.alert("Server IP", "Enter the LAN address shown by Mavris desktop, for example http://192.168.1.20:8000.");
+      Alert.alert("Computer address", "Enter the computer address shown in Mavris, for example http://192.168.1.20:8000.");
       return;
     }
     if (isLoopbackBaseUrl(baseUrl)) {
-      Alert.alert("Server IP", "Use the desktop LAN address, not localhost or 127.0.0.1.");
+      Alert.alert("Computer address", "That address points back to this phone. Use the computer address shown in Mavris.");
       return;
     }
     setIsBusy(true);
@@ -59,11 +59,11 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
         <View style={styles.pairIcon}>
           <Smartphone size={34} color="#1f2933" />
         </View>
-        <Text style={styles.title}>Mavris Approval</Text>
-        <Text style={styles.subtitle}>Pair on the same LAN to approve desktop tasks from Android.</Text>
+        <Text style={styles.title}>Connect to Mavris</Text>
+        <Text style={styles.subtitle}>Use the address and 6-character code shown on your computer.</Text>
 
         <View style={styles.form}>
-          <Text style={styles.label}>Server IP</Text>
+          <Text style={styles.label}>Computer address</Text>
           <TextInput
             autoCapitalize="none"
             autoCorrect={false}
@@ -73,20 +73,20 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
             style={styles.input}
             value={baseUrl}
           />
-          <Text style={styles.label}>Pairing Code</Text>
+          <Text style={styles.label}>Pairing code</Text>
           <TextInput
             autoCapitalize="none"
             autoCorrect={false}
             maxLength={6}
             onChangeText={(value) => setPairCode(value.replace(/[^a-z0-9]/gi, "").toLowerCase())}
-            placeholder="6 chars"
+            placeholder="6 letters or numbers"
             style={[styles.input, styles.codeInput]}
             value={pairCode}
           />
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
           <Pressable disabled={isBusy} onPress={handlePair} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
             {isBusy ? <ActivityIndicator color="#ffffff" /> : <Link2 size={18} color="#ffffff" />}
-            <Text style={styles.primaryButtonText}>Pair Device</Text>
+            <Text style={styles.primaryButtonText}>Connect phone</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -95,7 +95,15 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Request failed";
+  if (!(error instanceof Error)) return "Could not connect. Check the address and code, then try again.";
+  const message = error.message.toLowerCase();
+  if (message.includes("fetch") || message.includes("network")) {
+    return "Could not reach your computer. Make sure Mavris is open and the address is correct.";
+  }
+  if (message.includes("code") || message.includes("invalid") || message.includes("expired")) {
+    return "The code did not work. Check the code shown in Mavris and try again.";
+  }
+  return "Could not connect. Check the address and code, then try again.";
 }
 
 const styles = StyleSheet.create({

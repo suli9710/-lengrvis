@@ -6,6 +6,7 @@ import subprocess
 from typing import Any
 
 from app.core.audit import record
+from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
@@ -129,25 +130,31 @@ def open_settings_uri(args: dict[str, Any], context: dict[str, Any]) -> dict[str
 def find_large_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     threshold_mb = float(args.get("threshold_mb") or 100)
     limit = int(args.get("limit") or 50)
+    max_scanned = max(1, int(args.get("max_scanned") or 5000))
     threshold_bytes = int(threshold_mb * 1024 * 1024)
 
-    raw_roots = args.get("roots") or context.get("allowed_directories") or []
+    allowed = [str(path) for path in context.get("allowed_directories") or []]
+    raw_roots = args.get("roots") or allowed
     if isinstance(raw_roots, str):
         raw_roots = [raw_roots]
-    if not raw_roots:
+    if not raw_roots or not allowed:
         return {"files": [], "count": 0, "note": "No authorized roots configured."}
 
     results: list[dict[str, Any]] = []
     visited: set[str] = set()
+    scanned = 0
     for raw in raw_roots:
         try:
-            root_path = os.path.abspath(str(raw))
+            root_path = str(resolve_authorized(str(raw), allowed))
         except Exception:
             continue
         if not os.path.isdir(root_path):
             continue
         for current, _dirs, files in os.walk(root_path):
             for name in files:
+                scanned += 1
+                if scanned > max_scanned:
+                    break
                 full = os.path.join(current, name)
                 if full in visited:
                     continue
@@ -168,8 +175,10 @@ def find_large_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
                         "category": _categorize(name),
                     }
                 )
+            if scanned > max_scanned:
+                break
     results.sort(key=lambda item: -int(item["size"]))
-    return {"files": results[:limit], "count": len(results), "threshold_mb": threshold_mb}
+    return {"files": results[:limit], "count": len(results), "threshold_mb": threshold_mb, "scanned": scanned, "truncated": scanned > max_scanned}
 
 
 def cleanup_suggestions(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

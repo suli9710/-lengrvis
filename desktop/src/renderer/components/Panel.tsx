@@ -12,7 +12,7 @@ export function Panel({ title, eyebrow, action, className = "", children }: Pane
   return (
     <section className={`panel ${className}`}>
       <header className="panel__header">
-        <div>
+        <div className="panel__heading">
           {eyebrow ? <span className="panel__eyebrow">{eyebrow}</span> : null}
           <h2>{title}</h2>
         </div>

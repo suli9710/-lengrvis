@@ -7,6 +7,7 @@ from app.core import db
 from app.core.schemas import Plan, Task, TaskStatus
 from app.orchestration.events import GoalReviewed, PlanGenerated, TaskCreated
 from app.perception.context_store import latest_perception_context
+from app.perception.storage import perception_context_summary
 from app.policy.risk import SafetyVerdict
 
 if TYPE_CHECKING:
@@ -79,7 +80,7 @@ class PlanningHandler:
         orchestrator = self.orchestrator
         list_tools = getattr(orchestrator.registry, "list_for_planning", orchestrator.registry.list)
         tools = [tool.name for tool in list_tools() if tool.name == "tool.search" or not getattr(tool, "defer_loading", False)]
-        perception_context = latest_perception_context()
+        perception_context = perception_context_summary(latest_perception_context())
         try:
             return await orchestrator.planner.create_plan(
                 task.id,

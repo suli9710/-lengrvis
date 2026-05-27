@@ -43,6 +43,7 @@ def test_capture_once_describes_frame_and_builds_state(tmp_path):
 
     def describe(args, context):
         path = tmp_path.__class__(args["path"])
+        seen["image_path"] = path
         seen["image_exists"] = path.exists()
         seen["allowed_directories"] = context["allowed_directories"]
         return {
@@ -71,6 +72,7 @@ def test_capture_once_describes_frame_and_builds_state(tmp_path):
     assert state.metadata["source"] == "test"
     assert state.app_context.active_window_title == "Doc"
     assert seen["image_exists"] is True
+    assert seen["image_path"].exists() is False
     assert str(tmp_path) in seen["allowed_directories"]
     assert monitor.last_state is state
 
@@ -92,3 +94,35 @@ def test_screen_monitor_optionally_publishes_perception_event():
     assert isinstance(events[0], PerceptionEvent)
     assert events[0].task_id == "task_1"
     assert events[0].screen_state.id == state.id
+
+
+def test_screen_monitor_reuses_vision_result_for_unchanged_frame(tmp_path):
+    calls = {"describe": 0}
+
+    def describe(args, context):
+        calls["describe"] += 1
+        path = tmp_path.__class__(args["path"])
+        assert path.exists()
+        return {
+            "ok": True,
+            "description": f"Desktop pass {calls['describe']}",
+            "tags": ["screenshot"],
+            "metadata": {"source": "test"},
+        }
+
+    monitor = ScreenMonitor(
+        ScreenMonitorConfig(enabled=True, temp_dir=str(tmp_path)),
+        capture_fn=lambda **kwargs: _frame(),
+        describe_fn=describe,
+        app_context_fn=lambda: AppContext(active_window_title="Desktop"),
+    )
+
+    first = monitor.poll_once()
+    second = monitor.poll_once()
+
+    assert calls["describe"] == 1
+    assert first is not None
+    assert second is not None
+    assert second.description == first.description
+    assert second.metadata["source"] == "test"
+    assert second.metadata["frame_diff_gate"] == "reused"

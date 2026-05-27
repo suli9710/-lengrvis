@@ -72,16 +72,70 @@ def test_health_snapshot_structure(monkeypatch, tmp_path: Path):
 
     snapshot = onnx_provider.health_snapshot(model_path=str(model))
 
-    assert snapshot == {
-        "available": True,
-        "kind": "onnx-directml",
-        "model_path": str(model),
-        "execution_provider": "DmlExecutionProvider",
-        "available_providers": ["DmlExecutionProvider", "CPUExecutionProvider"],
-        "generation_runtime": "onnxruntime_genai",
-        "model_family": "",
-        "provider_options": {},
-    }
+    assert snapshot["available"] is True
+    assert snapshot["kind"] == "onnx-directml"
+    assert snapshot["model_path"] == str(model)
+    assert snapshot["execution_provider"] == "DmlExecutionProvider"
+    assert snapshot["available_providers"] == ["DmlExecutionProvider", "CPUExecutionProvider"]
+    assert snapshot["generation_runtime"] == "onnxruntime_genai"
+    assert snapshot["runtime_package"] == "onnxruntime_genai"
+    assert snapshot["model_family"] == ""
+    assert snapshot["provider_options"] == {}
+    assert snapshot["llm"]["runtime"] == "onnx"
+    assert snapshot["llm"]["selected_provider"] == "DmlExecutionProvider"
+    assert "onnxruntime_genai" in snapshot["runtime_packages"]
+    assert snapshot["winml"]["provider"] == "WindowsMLExecutionProvider"
+    assert snapshot["errors"] == []
+
+
+def test_detect_onnx_backend_prefers_winml_provider(monkeypatch, tmp_path: Path):
+    model = _write_genai_bundle(tmp_path / "model")
+    _mock_onnx_modules(
+        monkeypatch,
+        providers=["CPUExecutionProvider", "DmlExecutionProvider", "WindowsMLExecutionProvider"],
+    )
+
+    backend = onnx_provider.detect_onnx_backend(model_path=str(model))
+
+    assert backend is not None
+    assert backend.kind == "onnx-winml"
+    assert backend.execution_provider == "WindowsMLExecutionProvider"
+
+
+def test_detect_onnx_backend_accepts_windowsml_alias(monkeypatch, tmp_path: Path):
+    model = _write_genai_bundle(tmp_path / "model")
+    settings = AppSettings(onnx_model_path=str(model), onnx_execution_provider="windowsml")
+    _mock_onnx_modules(
+        monkeypatch,
+        providers=["DmlExecutionProvider", "WindowsMLExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    backend = onnx_provider.detect_onnx_backend(settings)
+
+    assert backend is not None
+    assert backend.kind == "onnx-winml"
+    assert backend.execution_provider == "WindowsMLExecutionProvider"
+
+
+def test_detect_onnx_backend_uses_winml_genai_package(monkeypatch, tmp_path: Path):
+    model = _write_genai_bundle(tmp_path / "model")
+    fake_genai = types.SimpleNamespace(__version__="1.0-winml")
+    monkeypatch.setitem(sys.modules, "onnxruntime_genai_winml", fake_genai)
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        types.SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]),
+    )
+
+    backend = onnx_provider.detect_onnx_backend(model_path=str(model))
+    snapshot = onnx_provider.health_snapshot(model_path=str(model))
+
+    assert backend is not None
+    assert backend.kind == "onnx-winml"
+    assert backend.execution_provider == "WindowsMLExecutionProvider"
+    assert backend.runtime_package == "onnxruntime_genai_winml"
+    assert snapshot["winml"]["available"] is True
+    assert "onnxruntime_genai_winml" in snapshot["winml"]["packages"]
 
 
 def test_onnx_provider_fallback_on_import_error(monkeypatch, tmp_path: Path):
@@ -122,6 +176,7 @@ def test_appsettings_reads_onnx_fields_from_sources(monkeypatch, tmp_path: Path)
         """
 llm:
   onnx_model_path: C:/models/from-yaml
+  onnx_runtime: genai
   onnx_execution_provider: OpenVINO
 """,
         encoding="utf-8",
@@ -129,11 +184,13 @@ llm:
     monkeypatch.setenv("MARVIS_CONFIG_FILE", str(config_file))
     monkeypatch.setenv("MARVIS_ENV_FILE", str(tmp_path / "missing.env"))
     monkeypatch.setenv("MAVRIS_ONNX_MODEL_PATH", "C:/models/from-env")
+    monkeypatch.setenv("MAVRIS_ONNX_RUNTIME", "winml")
     monkeypatch.setenv("MAVRIS_ONNX_EXECUTION_PROVIDER", "CPU")
 
     settings = AppSettings.from_sources()
 
     assert settings.onnx_model_path == "C:/models/from-env"
+    assert settings.onnx_runtime == "winml"
     assert settings.onnx_execution_provider == "CPU"
 
 
@@ -468,3 +525,55 @@ def test_settings_onnx_status_route_reports_snapshot(monkeypatch, tmp_path: Path
     assert payload["execution_provider"] == "DmlExecutionProvider"
     assert payload["available_providers"] == ["DmlExecutionProvider", "CPUExecutionProvider"]
     assert payload["model_path"] == str(model)
+
+
+def test_settings_onnx_test_generate_route_returns_unavailable_without_runtime(monkeypatch, tmp_path: Path):
+    model = _write_genai_bundle(tmp_path / "model")
+
+    monkeypatch.setenv("MARVIS_ONNX_MODEL_PATH", str(model))
+    monkeypatch.setitem(sys.modules, "onnxruntime_genai", None)
+    monkeypatch.setitem(sys.modules, "onnxruntime_genai_winml", None)
+
+    from app.main import create_app
+
+    response = TestClient(create_app()).post("/api/settings/onnx/test-generate", json={"prompt": "hello"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["status"] == "unavailable"
+    assert "error" in payload
+
+
+def test_settings_onnx_status_includes_embedding_ocr_and_image_sections(monkeypatch, tmp_path: Path):
+    model = _write_genai_bundle(tmp_path / "model")
+
+    monkeypatch.setenv("MARVIS_ONNX_MODEL_PATH", str(model))
+    monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
+    monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["CPUExecutionProvider"])
+
+    from app.main import create_app
+
+    response = TestClient(create_app()).get("/api/settings/onnx/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "text_embedding" in payload
+    assert "image_embedding" in payload
+    assert "ocr" in payload
+
+
+def test_settings_onnx_new_smoke_routes_return_structured_unavailable(monkeypatch):
+    monkeypatch.setenv("MARVIS_ONNX_MODEL_PATH", "")
+    monkeypatch.setattr("app.acceleration.onnx_sessions.available_execution_providers", lambda: [])
+
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    ocr = client.post("/api/settings/onnx/test-ocr", json={}).json()
+    image = client.post("/api/settings/onnx/test-image-embedding", json={}).json()
+
+    assert ocr["ok"] is False
+    assert "error" in ocr
+    assert image["ok"] is False
+    assert image["status"] == "unavailable"

@@ -1,0 +1,1024 @@
+from __future__ import annotations
+
+import csv
+import difflib
+import hashlib
+import json
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_fallback, ocr_image_result
+from app.services import document_service
+
+
+TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".log", ".rst"}
+CODE_OR_DATA_EXTENSIONS = {".json", ".yaml", ".yml", ".py", ".ts", ".tsx", ".js"}
+TABLE_EXTENSIONS = {".csv", ".xlsx"}
+OFFICE_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm"}
+SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | CODE_OR_DATA_EXTENSIONS | TABLE_EXTENSIONS | OFFICE_EXTENSIONS | IMAGE_EXTENSIONS
+
+DEFAULT_TOP_K = 4
+DEFAULT_REPORT_BLOCKS = 8
+DEFAULT_PREVIEW_CHARS = 20000
+
+
+class AdvancedParserUnavailable(RuntimeError):
+    """Raised when an optional advanced parser cannot be used."""
+
+
+@dataclass(slots=True)
+class DocumentBlock:
+    id: str
+    text: str
+    kind: str = "paragraph"
+    page: int | None = 1
+    index: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def citation(self) -> str:
+        if self.page is None:
+            return f"[block {self.index + 1}]"
+        return f"[p{self.page}:b{self.index + 1}]"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "text": self.text,
+            "kind": self.kind,
+            "page": self.page,
+            "index": self.index,
+            "citation": self.citation,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class DocumentTable:
+    id: str
+    rows: list[list[str]]
+    headers: list[str] = field(default_factory=list)
+    page: int | None = 1
+    caption: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "headers": list(self.headers),
+            "rows": [list(row) for row in self.rows],
+            "page": self.page,
+            "caption": self.caption,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(slots=True)
+class DocumentIR:
+    document_id: str
+    path: str
+    kind: str
+    pages: list[dict[str, Any]]
+    blocks: list[DocumentBlock]
+    tables: list[DocumentTable]
+    metadata: dict[str, Any]
+    parse_engine: str
+    ocr_engine: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return "\n\n".join(block.text for block in self.blocks if block.text)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "document_id": self.document_id,
+            "path": self.path,
+            "kind": self.kind,
+            "pages": list(self.pages),
+            "blocks": [block.as_dict() for block in self.blocks],
+            "tables": [table.as_dict() for table in self.tables],
+            "metadata": dict(self.metadata),
+            "parse_engine": self.parse_engine,
+            "ocr_engine": self.ocr_engine,
+            "warnings": list(self.warnings),
+        }
+
+
+ProviderResolver = Callable[[str], Any]
+
+
+def parse_advanced(
+    path: str | Path,
+    *,
+    settings: Any | None = None,
+    try_advanced: bool = True,
+) -> DocumentIR:
+    document_path = Path(path)
+    if not document_path.exists():
+        raise FileNotFoundError(f"Document not found: {document_path}")
+
+    warnings: list[str] = []
+    if try_advanced:
+        for parser_name, parser in (("docling", _parse_with_docling), ("unstructured", _parse_with_unstructured)):
+            try:
+                ir = parser(document_path)
+            except AdvancedParserUnavailable as exc:
+                warnings.append(f"{parser_name} parser unavailable: {exc}")
+                continue
+            except Exception as exc:  # noqa: BLE001 - parser plugins fail in many environment-specific ways.
+                warnings.append(f"{parser_name} parser failed: {exc}")
+                continue
+            if ir.blocks or ir.tables:
+                ir.warnings = warnings + ir.warnings
+                return ir
+            warnings.append(f"{parser_name} parser produced no content.")
+
+    fallback = _parse_with_builtin(document_path, settings=settings, warnings=warnings)
+    return fallback
+
+
+def extract_tables(path: str | Path, *, settings: Any | None = None) -> dict[str, Any]:
+    ir = parse_advanced(path, settings=settings)
+    return {
+        "document_id": ir.document_id,
+        "path": ir.path,
+        "kind": ir.kind,
+        "tables": [table.as_dict() for table in ir.tables],
+        "parse_engine": ir.parse_engine,
+        "warnings": ir.warnings,
+    }
+
+
+def ask_with_citations(
+    path: str | Path,
+    question: str,
+    *,
+    settings: Any | None = None,
+    provider_resolver: ProviderResolver | None = None,
+    top_k: int = DEFAULT_TOP_K,
+) -> dict[str, Any]:
+    ir = parse_advanced(path, settings=settings)
+    return answer_ir_with_citations(
+        ir,
+        question,
+        provider_resolver=provider_resolver,
+        top_k=top_k,
+    )
+
+
+def answer_ir_with_citations(
+    ir: DocumentIR,
+    question: str,
+    *,
+    provider_resolver: ProviderResolver | None = None,
+    top_k: int = DEFAULT_TOP_K,
+) -> dict[str, Any]:
+    cleaned_question = (question or "").strip()
+    if not cleaned_question:
+        return {
+            "document_id": ir.document_id,
+            "question": cleaned_question,
+            "answer": "",
+            "note": "no_question",
+            "citations": [],
+            "source_blocks": [],
+            "warnings": ir.warnings,
+        }
+
+    ranked = _rank_blocks(cleaned_question, ir.blocks, top_k=top_k)
+    if not ranked:
+        return {
+            "document_id": ir.document_id,
+            "question": cleaned_question,
+            "answer": "",
+            "note": "no_relevant_blocks",
+            "citations": [],
+            "source_blocks": [],
+            "warnings": ir.warnings,
+        }
+
+    prompt_context = _format_cited_blocks(ranked, max_chars=9000)
+    messages = _document_qa_messages(cleaned_question, prompt_context)
+    answer = _call_chat(messages, provider_resolver=provider_resolver)
+    if not answer:
+        answer = _fallback_cited_answer(cleaned_question, ranked)
+        note = "extractive_fallback"
+    else:
+        note = "llm_qa"
+
+    return {
+        "document_id": ir.document_id,
+        "question": cleaned_question,
+        "answer": answer,
+        "note": note,
+        "citations": [block.citation for block in ranked],
+        "source_blocks": [_source_block_payload(block) for block in ranked],
+        "warnings": ir.warnings,
+    }
+
+
+def compare_documents(
+    left_path: str | Path,
+    right_path: str | Path,
+    *,
+    settings: Any | None = None,
+) -> dict[str, Any]:
+    left = parse_advanced(left_path, settings=settings)
+    right = parse_advanced(right_path, settings=settings)
+    left_blocks = _paragraph_blocks(left)
+    right_blocks = _paragraph_blocks(right)
+    matcher = difflib.SequenceMatcher(
+        None,
+        [_normalize_for_diff(block.text) for block in left_blocks],
+        [_normalize_for_diff(block.text) for block in right_blocks],
+        autojunk=False,
+    )
+
+    added: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
+    changed: list[dict[str, Any]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "delete":
+            removed.extend(_source_block_payload(block) for block in left_blocks[i1:i2])
+            continue
+        if tag == "insert":
+            added.extend(_source_block_payload(block) for block in right_blocks[j1:j2])
+            continue
+
+        old_slice = left_blocks[i1:i2]
+        new_slice = right_blocks[j1:j2]
+        paired_count = min(len(old_slice), len(new_slice))
+        for index in range(paired_count):
+            old_block = old_slice[index]
+            new_block = new_slice[index]
+            if _blocks_are_changed_pair(old_block.text, new_block.text):
+                changed.append(
+                    {
+                        "from": _source_block_payload(old_block),
+                        "to": _source_block_payload(new_block),
+                    }
+                )
+            else:
+                removed.append(_source_block_payload(old_block))
+                added.append(_source_block_payload(new_block))
+        removed.extend(_source_block_payload(block) for block in old_slice[paired_count:])
+        added.extend(_source_block_payload(block) for block in new_slice[paired_count:])
+
+    return {
+        "left": {"document_id": left.document_id, "path": left.path},
+        "right": {"document_id": right.document_id, "path": right.path},
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "warnings": left.warnings + right.warnings,
+    }
+
+
+def redact_preview(
+    path: str | Path,
+    *,
+    settings: Any | None = None,
+    custom_patterns: dict[str, str] | None = None,
+    max_chars: int = DEFAULT_PREVIEW_CHARS,
+) -> dict[str, Any]:
+    ir = parse_advanced(path, settings=settings)
+    source = ir.text[: max(1, max_chars)]
+    redacted = source
+    findings: list[dict[str, Any]] = []
+
+    for label, pattern in _redaction_patterns(custom_patterns).items():
+        regex = re.compile(pattern)
+        matches = list(regex.finditer(redacted))
+        if not matches:
+            continue
+        redacted = regex.sub(f"[REDACTED:{label}]", redacted)
+        findings.append({"type": label, "count": len(matches)})
+
+    return {
+        "document_id": ir.document_id,
+        "path": ir.path,
+        "redacted_text": redacted,
+        "truncated": len(ir.text) > max_chars,
+        "findings": findings,
+        "warnings": ir.warnings,
+    }
+
+
+def generate_cited_report(
+    path: str | Path,
+    *,
+    title: str = "Cited Report",
+    query: str = "",
+    settings: Any | None = None,
+    provider_resolver: ProviderResolver | None = None,
+    max_blocks: int = DEFAULT_REPORT_BLOCKS,
+) -> dict[str, Any]:
+    ir = parse_advanced(path, settings=settings)
+    selected = _rank_blocks(query, ir.blocks, top_k=max_blocks) if query.strip() else _paragraph_blocks(ir)[:max_blocks]
+    if not selected:
+        return {
+            "document_id": ir.document_id,
+            "title": title,
+            "report": f"# {title}\n\nNo source blocks were available.",
+            "note": "no_source_blocks",
+            "citations": [],
+            "warnings": ir.warnings,
+        }
+
+    source = _format_cited_blocks(selected, max_chars=14000)
+    messages = _document_report_messages(title, source)
+    report = _call_chat(messages, provider_resolver=provider_resolver)
+    if report:
+        note = "llm_report"
+    else:
+        report = _fallback_cited_report(title, selected)
+        note = "extractive_fallback"
+
+    return {
+        "document_id": ir.document_id,
+        "title": title,
+        "report": report,
+        "note": note,
+        "citations": [block.citation for block in selected],
+        "source_blocks": [_source_block_payload(block) for block in selected],
+        "warnings": ir.warnings,
+    }
+
+
+def _parse_with_docling(path: Path) -> DocumentIR:
+    try:
+        from docling.document_converter import DocumentConverter
+    except Exception as exc:  # noqa: BLE001
+        raise AdvancedParserUnavailable(str(exc)) from exc
+
+    converter = DocumentConverter()
+    result = converter.convert(str(path))
+    document = getattr(result, "document", result)
+    text = ""
+    for method_name in ("export_to_markdown", "export_to_text"):
+        method = getattr(document, method_name, None)
+        if callable(method):
+            text = str(method() or "").strip()
+            if text:
+                break
+    if not text:
+        text = str(document or "").strip()
+    if not text:
+        raise AdvancedParserUnavailable("docling returned an empty document")
+
+    tables = _coerce_docling_tables(getattr(document, "tables", []) or [])
+    return _build_ir(
+        path,
+        kind=_detect_kind(path),
+        pages=[{"page": 1, "text": text}],
+        tables=tables,
+        parse_engine="docling",
+        metadata={"advanced_parser": "docling"},
+    )
+
+
+def _parse_with_unstructured(path: Path) -> DocumentIR:
+    try:
+        from unstructured.partition.auto import partition
+    except Exception as exc:  # noqa: BLE001
+        raise AdvancedParserUnavailable(str(exc)) from exc
+
+    elements = partition(filename=str(path))
+    if not elements:
+        raise AdvancedParserUnavailable("unstructured returned no elements")
+
+    pages: dict[int, list[str]] = {}
+    tables: list[DocumentTable] = []
+    for element in elements:
+        text = str(element or "").strip()
+        metadata = getattr(element, "metadata", None)
+        page_number = int(getattr(metadata, "page_number", None) or 1)
+        if text:
+            pages.setdefault(page_number, []).append(text)
+        category = str(getattr(element, "category", element.__class__.__name__) or "")
+        if category.casefold() == "table" and text:
+            rows = _rows_from_plain_table_text(text)
+            if rows:
+                tables.append(
+                    DocumentTable(
+                        id=f"table-{len(tables) + 1}",
+                        rows=rows,
+                        headers=_headers_from_rows(rows),
+                        page=page_number,
+                        caption="",
+                        metadata={"source": "unstructured"},
+                    )
+                )
+
+    page_payload = [{"page": page, "text": "\n\n".join(parts)} for page, parts in sorted(pages.items())]
+    return _build_ir(
+        path,
+        kind=_detect_kind(path),
+        pages=page_payload,
+        tables=tables,
+        parse_engine="unstructured",
+        metadata={"advanced_parser": "unstructured"},
+    )
+
+
+def _parse_with_builtin(path: Path, *, settings: Any | None, warnings: list[str]) -> DocumentIR:
+    ext = path.suffix.lower()
+    kind = _detect_kind(path)
+    ocr_engine = ""
+    tables: list[DocumentTable] = []
+    metadata: dict[str, Any] = {}
+
+    if ext in TEXT_EXTENSIONS or ext in {".yaml", ".yml", ".py", ".ts", ".tsx", ".js"}:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        pages = [{"page": 1, "text": text}]
+    elif ext == ".json":
+        text, metadata = _read_json_text(path, warnings)
+        pages = [{"page": 1, "text": text}]
+    elif ext == ".csv":
+        tables = _extract_csv_tables(path, warnings)
+        text = _tables_to_text(tables)
+        pages = [{"page": 1, "text": text}]
+    elif ext == ".xlsx":
+        pages, tables = _extract_xlsx(path, warnings)
+    elif ext == ".pdf":
+        pages = _extract_pdf_pages(path, settings=settings, warnings=warnings)
+    elif ext == ".docx":
+        pages, tables = _extract_docx(path, warnings)
+    elif ext == ".pptx":
+        pages, tables = _extract_pptx(path, warnings)
+    elif ext in {".html", ".htm"}:
+        pages, tables = _extract_html(path, warnings)
+    elif ext in IMAGE_EXTENSIONS:
+        result = ocr_image_result(path, settings=settings)
+        ocr_engine = result.source
+        if not result.ok:
+            warnings.append(result.error or "Image OCR produced no text.")
+        pages = [{"page": 1, "text": result.text}]
+    else:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            text = ""
+            warnings.append(f"Unsupported document type: {ext or '<none>'}")
+        pages = [{"page": 1, "text": text}]
+
+    return _build_ir(
+        path,
+        kind=kind,
+        pages=pages,
+        tables=tables,
+        parse_engine="builtin",
+        ocr_engine=ocr_engine,
+        metadata=metadata,
+        warnings=warnings,
+    )
+
+
+def _extract_csv_tables(path: Path, warnings: list[str]) -> list[DocumentTable]:
+    try:
+        with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as handle:
+            rows = [[_stringify_cell(cell) for cell in row] for row in csv.reader(handle)]
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"CSV extraction failed: {exc}")
+        return []
+    if not rows:
+        return []
+    return [
+        DocumentTable(
+            id="table-1",
+            rows=rows,
+            headers=_headers_from_rows(rows),
+            page=1,
+            caption=path.name,
+            metadata={"source": "csv"},
+        )
+    ]
+
+
+def _extract_xlsx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]], list[DocumentTable]]:
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"XLSX extraction unavailable: {exc}")
+        return [{"page": 1, "text": ""}], []
+
+    pages: list[dict[str, Any]] = []
+    tables: list[DocumentTable] = []
+    try:
+        workbook = load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"XLSX extraction failed: {exc}")
+        return [{"page": 1, "text": ""}], []
+
+    try:
+        for sheet_index, sheet in enumerate(workbook.worksheets, start=1):
+            rows = [
+                [_stringify_cell(value) for value in row]
+                for row in sheet.iter_rows(values_only=True)
+                if any(value is not None and str(value).strip() for value in row)
+            ]
+            if rows:
+                tables.append(
+                    DocumentTable(
+                        id=f"table-{len(tables) + 1}",
+                        rows=rows,
+                        headers=_headers_from_rows(rows),
+                        page=sheet_index,
+                        caption=sheet.title,
+                        metadata={"source": "xlsx", "sheet": sheet.title},
+                    )
+                )
+            pages.append(
+                {
+                    "page": sheet_index,
+                    "text": _rows_to_text(rows, title=f"Sheet: {sheet.title}"),
+                    "metadata": {"sheet": sheet.title},
+                }
+            )
+    finally:
+        close = getattr(workbook, "close", None)
+        if callable(close):
+            close()
+
+    return pages or [{"page": 1, "text": ""}], tables
+
+
+def _extract_pdf_pages(path: Path, *, settings: Any | None, warnings: list[str]) -> list[dict[str, Any]]:
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(path))
+        pages = [{"page": index, "text": page.extract_text() or ""} for index, page in enumerate(reader.pages, start=1)]
+        if any(len(page["text"].strip()) >= 24 for page in pages):
+            return pages
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"PDF page extraction fell back to OCR/text fallback: {exc}")
+
+    text = extract_pdf_text_with_ocr_fallback(path, settings=settings)
+    return [{"page": 1, "text": text}]
+
+
+def _extract_docx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]], list[DocumentTable]]:
+    try:
+        from docx import Document
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"DOCX extraction unavailable: {exc}")
+        return [{"page": 1, "text": ""}], []
+
+    try:
+        document = Document(str(path))
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"DOCX extraction failed: {exc}")
+        return [{"page": 1, "text": ""}], []
+
+    paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+    tables: list[DocumentTable] = []
+    for table in document.tables:
+        rows = [[_stringify_cell(cell.text) for cell in row.cells] for row in table.rows]
+        if rows:
+            tables.append(
+                DocumentTable(
+                    id=f"table-{len(tables) + 1}",
+                    rows=rows,
+                    headers=_headers_from_rows(rows),
+                    page=1,
+                    metadata={"source": "docx"},
+                )
+            )
+    table_text = _tables_to_text(tables)
+    text = "\n\n".join(part for part in ["\n\n".join(paragraphs), table_text] if part)
+    return [{"page": 1, "text": text}], tables
+
+
+def _extract_pptx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]], list[DocumentTable]]:
+    try:
+        from pptx import Presentation
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"PPTX extraction unavailable: {exc}")
+        return [{"page": 1, "text": ""}], []
+
+    try:
+        presentation = Presentation(str(path))
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"PPTX extraction failed: {exc}")
+        return [{"page": 1, "text": ""}], []
+
+    pages: list[dict[str, Any]] = []
+    tables: list[DocumentTable] = []
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        lines: list[str] = []
+        for shape in slide.shapes:
+            text = getattr(shape, "text", "")
+            if text:
+                lines.append(str(text))
+            if getattr(shape, "has_table", False):
+                rows = [[_stringify_cell(cell.text) for cell in row.cells] for row in shape.table.rows]
+                if rows:
+                    tables.append(
+                        DocumentTable(
+                            id=f"table-{len(tables) + 1}",
+                            rows=rows,
+                            headers=_headers_from_rows(rows),
+                            page=slide_index,
+                            metadata={"source": "pptx", "slide": slide_index},
+                        )
+                    )
+        pages.append({"page": slide_index, "text": "\n\n".join(lines), "metadata": {"slide": slide_index}})
+    return pages or [{"page": 1, "text": ""}], tables
+
+
+def _extract_html(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]], list[DocumentTable]]:
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        from bs4 import BeautifulSoup
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"HTML parser unavailable, used tag-stripping fallback: {exc}")
+        text = re.sub(r"<[^>]+>", " ", raw)
+        return [{"page": 1, "text": " ".join(text.split())}], []
+
+    soup = BeautifulSoup(raw, "html.parser")
+    tables: list[DocumentTable] = []
+    for table in soup.find_all("table"):
+        rows: list[list[str]] = []
+        for tr in table.find_all("tr"):
+            cells = tr.find_all(["th", "td"])
+            row = [" ".join(cell.get_text(" ", strip=True).split()) for cell in cells]
+            if row:
+                rows.append(row)
+        if rows:
+            tables.append(
+                DocumentTable(
+                    id=f"table-{len(tables) + 1}",
+                    rows=rows,
+                    headers=_headers_from_rows(rows),
+                    page=1,
+                    metadata={"source": "html"},
+                )
+            )
+    text = soup.get_text("\n", strip=True)
+    return [{"page": 1, "text": text}], tables
+
+
+def _build_ir(
+    path: Path,
+    *,
+    kind: str,
+    pages: list[dict[str, Any]],
+    tables: list[DocumentTable],
+    parse_engine: str,
+    ocr_engine: str = "",
+    metadata: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
+) -> DocumentIR:
+    warning_list = list(warnings or [])
+    document_id = _document_id(path, warning_list)
+    normalized_pages = _normalize_pages(pages)
+    blocks = _blocks_from_pages(normalized_pages)
+    file_metadata = _file_metadata(path)
+    file_metadata.update(metadata or {})
+    file_metadata["page_count"] = len(normalized_pages)
+    file_metadata["block_count"] = len(blocks)
+    file_metadata["table_count"] = len(tables)
+    return DocumentIR(
+        document_id=document_id,
+        path=str(path),
+        kind=kind,
+        pages=normalized_pages,
+        blocks=blocks,
+        tables=tables,
+        metadata=file_metadata,
+        parse_engine=parse_engine,
+        ocr_engine=ocr_engine,
+        warnings=warning_list,
+    )
+
+
+def _normalize_pages(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for index, page in enumerate(pages or [], start=1):
+        page_number = int(page.get("page") or index)
+        normalized.append(
+            {
+                "page": page_number,
+                "text": str(page.get("text") or ""),
+                "metadata": dict(page.get("metadata") or {}),
+            }
+        )
+    return normalized or [{"page": 1, "text": "", "metadata": {}}]
+
+
+def _blocks_from_pages(pages: list[dict[str, Any]]) -> list[DocumentBlock]:
+    blocks: list[DocumentBlock] = []
+    for page in pages:
+        page_number = int(page.get("page") or 1)
+        page_metadata = dict(page.get("metadata") or {})
+        for part in _split_text_blocks(str(page.get("text") or "")):
+            blocks.append(
+                DocumentBlock(
+                    id=f"block-{len(blocks) + 1}",
+                    text=part,
+                    kind=_guess_block_kind(part),
+                    page=page_number,
+                    index=len(blocks),
+                    metadata=page_metadata,
+                )
+            )
+    return blocks
+
+
+def _split_text_blocks(text: str) -> list[str]:
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if "\n\n" in cleaned:
+        candidates = re.split(r"\n\s*\n+", cleaned)
+    else:
+        candidates = cleaned.splitlines()
+    return [candidate.strip() for candidate in candidates if candidate.strip()]
+
+
+def _guess_block_kind(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith(("# ", "## ", "### ")):
+        return "heading"
+    if stripped.startswith(("- ", "* ", "1. ")):
+        return "list"
+    return "paragraph"
+
+
+def _document_id(path: Path, warnings: list[str]) -> str:
+    data = path.read_bytes()
+    try:
+        import blake3
+
+        return f"blake3:{blake3.blake3(data).hexdigest()}"
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"blake3 unavailable, used sha256 fallback: {exc}")
+        return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _file_metadata(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "name": path.name,
+        "extension": path.suffix.lower(),
+        "size_bytes": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+    }
+
+
+def _detect_kind(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".md", ".markdown"}:
+        return "markdown"
+    if ext in TEXT_EXTENSIONS:
+        return "text"
+    if ext == ".json":
+        return "json"
+    if ext == ".csv":
+        return "csv"
+    if ext == ".xlsx":
+        return "xlsx"
+    if ext == ".pdf":
+        return "pdf"
+    if ext == ".docx":
+        return "docx"
+    if ext == ".pptx":
+        return "pptx"
+    if ext in {".html", ".htm"}:
+        return "html"
+    if ext in IMAGE_EXTENSIONS:
+        return "image"
+    if ext in CODE_OR_DATA_EXTENSIONS:
+        return "text"
+    return ext.lstrip(".") or "unknown"
+
+
+def _read_json_text(path: Path, warnings: list[str]) -> tuple[str, dict[str, Any]]:
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        warnings.append(f"JSON parse failed, returned raw text: {exc}")
+        return raw, {}
+    return json.dumps(parsed, ensure_ascii=False, indent=2), {"json_type": type(parsed).__name__}
+
+
+def _stringify_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _headers_from_rows(rows: list[list[str]]) -> list[str]:
+    return list(rows[0]) if rows else []
+
+
+def _rows_to_text(rows: list[list[str]], *, title: str = "") -> str:
+    lines = [f"# {title}"] if title else []
+    lines.extend("\t".join(row) for row in rows)
+    return "\n".join(line for line in lines if line)
+
+
+def _tables_to_text(tables: Iterable[DocumentTable]) -> str:
+    chunks = []
+    for table in tables:
+        chunks.append(_rows_to_text(table.rows, title=table.caption or table.id))
+    return "\n\n".join(chunks)
+
+
+def _rows_from_plain_table_text(text: str) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if "\t" in stripped:
+            rows.append([part.strip() for part in stripped.split("\t")])
+        elif "|" in stripped:
+            rows.append([part.strip() for part in stripped.strip("|").split("|")])
+        else:
+            rows.append([part.strip() for part in re.split(r"\s{2,}", stripped) if part.strip()])
+    return [row for row in rows if row]
+
+
+def _coerce_docling_tables(raw_tables: Iterable[Any]) -> list[DocumentTable]:
+    tables: list[DocumentTable] = []
+    for raw in raw_tables:
+        rows: list[list[str]] = []
+        export = getattr(raw, "export_to_dataframe", None)
+        if callable(export):
+            try:
+                dataframe = export()
+                rows = [list(map(_stringify_cell, dataframe.columns))]
+                rows.extend([list(map(_stringify_cell, row)) for row in dataframe.values.tolist()])
+            except Exception:
+                rows = []
+        if not rows:
+            text = str(raw or "").strip()
+            rows = _rows_from_plain_table_text(text)
+        if rows:
+            tables.append(
+                DocumentTable(
+                    id=f"table-{len(tables) + 1}",
+                    rows=rows,
+                    headers=_headers_from_rows(rows),
+                    page=1,
+                    metadata={"source": "docling"},
+                )
+            )
+    return tables
+
+
+def _rank_blocks(query: str, blocks: list[DocumentBlock], *, top_k: int) -> list[DocumentBlock]:
+    candidates = [block for block in blocks if block.text.strip()]
+    if not candidates:
+        return []
+    ranked_chunks = document_service.rank_chunks(query, [block.text for block in candidates], top_k=max(1, top_k))
+    return [candidates[item.index] for item in ranked_chunks]
+
+
+def _format_cited_blocks(blocks: list[DocumentBlock], *, max_chars: int) -> str:
+    parts: list[str] = []
+    used = 0
+    for block in blocks:
+        prefix = f"{block.citation}\n"
+        remaining = max_chars - used - len(prefix)
+        if remaining <= 0:
+            break
+        body = block.text[:remaining]
+        parts.append(f"{prefix}{body}")
+        used += len(prefix) + len(body)
+    return "\n\n---\n\n".join(parts)
+
+
+def _document_qa_messages(question: str, source_blocks: str) -> list[dict[str, str]]:
+    return [
+        dict(
+            role="system",
+            content=(
+                "Answer the question using only the cited source blocks. "
+                "Keep citations in square brackets next to supported claims."
+            ),
+        ),
+        dict(
+            role="user",
+            content="Question: {question}\n\nSource blocks:\n{source_blocks}".format(
+                question=question,
+                source_blocks=source_blocks,
+            ),
+        ),
+    ]
+
+
+def _document_report_messages(title: str, source_blocks: str) -> list[dict[str, str]]:
+    return [
+        dict(
+            role="system",
+            content=(
+                "Write a concise report grounded in the cited source blocks. "
+                "Every factual bullet or paragraph must keep a citation."
+            ),
+        ),
+        dict(
+            role="user",
+            content="Title: {title}\n\nSource blocks:\n{source_blocks}".format(
+                title=title,
+                source_blocks=source_blocks,
+            ),
+        ),
+    ]
+
+
+def _source_block_payload(block: DocumentBlock) -> dict[str, Any]:
+    return {
+        "id": block.id,
+        "citation": block.citation,
+        "kind": block.kind,
+        "page": block.page,
+        "index": block.index,
+        "text": block.text[:1200],
+        "metadata": dict(block.metadata),
+    }
+
+
+def _fallback_cited_answer(question: str, blocks: list[DocumentBlock]) -> str:
+    excerpts = []
+    for block in blocks[:2]:
+        excerpt = " ".join(block.text.split())[:420]
+        excerpts.append(f"{block.citation} {excerpt}")
+    return f"Relevant source excerpts for '{question}':\n\n" + "\n\n".join(excerpts)
+
+
+def _fallback_cited_report(title: str, blocks: list[DocumentBlock]) -> str:
+    bullets = []
+    for block in blocks:
+        excerpt = " ".join(block.text.split())[:360]
+        bullets.append(f"- {excerpt} {block.citation}")
+    return f"# {title}\n\n## Source-Grounded Findings\n\n" + "\n".join(bullets)
+
+
+def _call_chat(messages: list[dict[str, str]], *, provider_resolver: ProviderResolver | None) -> str | None:
+    return document_service._call_chat(  # noqa: SLF001 - shared service helper keeps provider behavior consistent.
+        messages,
+        task="subagent",
+        temperature=0.2,
+        provider_resolver=provider_resolver,
+    )
+
+
+def _paragraph_blocks(ir: DocumentIR) -> list[DocumentBlock]:
+    return [block for block in ir.blocks if block.text.strip() and block.kind in {"paragraph", "heading", "list"}]
+
+
+def _normalize_for_diff(text: str) -> str:
+    return " ".join((text or "").split()).casefold()
+
+
+def _blocks_are_changed_pair(left: str, right: str) -> bool:
+    left_norm = _normalize_for_diff(left)
+    right_norm = _normalize_for_diff(right)
+    if not left_norm or not right_norm:
+        return False
+    left_tokens = _meaningful_diff_tokens(left_norm)
+    right_tokens = _meaningful_diff_tokens(right_norm)
+    if not left_tokens or not right_tokens:
+        return difflib.SequenceMatcher(None, left_norm, right_norm, autojunk=False).ratio() >= 0.75
+    overlap = len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
+    return overlap >= 0.45
+
+
+def _meaningful_diff_tokens(text: str) -> set[str]:
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "be",
+        "for",
+        "in",
+        "is",
+        "of",
+        "or",
+        "the",
+        "this",
+        "to",
+        "with",
+    }
+    return {token for token in re.findall(r"[\w\u4e00-\u9fff]+", text, flags=re.UNICODE) if token not in stop_words}
+
+
+def _redaction_patterns(custom_patterns: dict[str, str] | None) -> dict[str, str]:
+    patterns = {
+        "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b",
+        "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
+        "PHONE": r"(?<!\d)(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}(?!\d)",
+        "CREDIT_CARD": r"\b(?:\d[ -]*?){13,16}\b",
+        "CN_ID": r"\b\d{17}[\dXx]\b",
+    }
+    patterns.update(custom_patterns or {})
+    return patterns

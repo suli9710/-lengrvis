@@ -9,7 +9,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { ArrowLeft, Monitor, Pause, Play, Wifi, WifiOff } from "lucide-react-native";
+import { ArrowLeft, Monitor, Pause, Play, RefreshCcw, Wifi, WifiOff } from "lucide-react-native";
 
 import { remoteScreenWebSocketUrl, type PairingSession, type RemoteScreenEvent } from "../api/client";
 import { shortDate } from "../format";
@@ -28,7 +28,6 @@ interface ScreenFrame {
 export function RemoteScreen({
   session,
   onBack,
-  onSessionExpired,
 }: {
   session: PairingSession;
   onBack: () => void;
@@ -77,25 +76,26 @@ export function RemoteScreen({
           return;
         }
         if (payload.type === "error") {
-          setError(payload.message);
+          setError(readableStreamError(payload.message));
         }
       } catch {
-        setError("Received an unreadable screen stream event.");
+        setError("The screen view sent something this phone could not read. Tap retry to reconnect.");
       }
     };
 
     socket.onerror = () => {
-      setError("Remote desktop stream failed. Check LAN access and remote desktop settings.");
+      setError("Can't show the screen right now. Make sure Mavris is open, then tap retry.");
     };
 
     socket.onclose = (event) => {
       if (event.code === 1008) {
-        onSessionExpired();
+        setError("This screen view stopped working. Your phone is still connected for approvals.");
+        setConnection("offline");
         return;
       }
       setConnection((current) => (current === "paused" ? current : "offline"));
     };
-  }, [closeSocket, onSessionExpired, session]);
+  }, [closeSocket, session]);
 
   useEffect(() => {
     connect();
@@ -114,6 +114,7 @@ export function RemoteScreen({
   const online = connection === "online";
   const showLoading = connection === "connecting" && !frame;
   const aspectRatio = frame && frame.width > 0 && frame.height > 0 ? frame.width / frame.height : 16 / 9;
+  const canRetry = connection === "offline" || !!error;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -123,8 +124,8 @@ export function RemoteScreen({
           <ArrowLeft size={20} color="#f7faf8" />
         </Pressable>
         <View style={styles.headerText}>
-          <Text style={styles.kicker}>Remote desktop</Text>
-          <Text style={styles.headerTitle}>Live screen</Text>
+          <Text style={styles.kicker}>View only</Text>
+          <Text style={styles.headerTitle}>Computer screen</Text>
         </View>
         <Pressable onPress={handleToggleStream} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
           {online || connection === "connecting" ? <Pause size={20} color="#f7faf8" /> : <Play size={20} color="#f7faf8" />}
@@ -134,7 +135,7 @@ export function RemoteScreen({
       <View style={styles.statusRow}>
         {online ? <Wifi size={16} color="#75d39a" /> : <WifiOff size={16} color="#ffcf72" />}
         <Text style={styles.statusText}>{statusText(connection)}</Text>
-        {streamMeta.fps ? <Text style={styles.statusMeta}>{streamMeta.fps} fps</Text> : null}
+        {streamMeta.fps ? <Text style={styles.statusMeta}>Low-bandwidth view</Text> : null}
       </View>
 
       <View style={styles.viewer}>
@@ -143,18 +144,24 @@ export function RemoteScreen({
         ) : (
           <View style={styles.emptyFrame}>
             {showLoading ? <ActivityIndicator color="#75d39a" /> : <Monitor size={42} color="#93a2ad" />}
-            <Text style={styles.emptyTitle}>{showLoading ? "Connecting to desktop" : "No screen frame yet"}</Text>
-            <Text style={styles.emptyText}>Frames appear here as soon as the paired backend starts streaming.</Text>
+            <Text style={styles.emptyTitle}>{showLoading ? "Connecting to your computer" : "Waiting for the screen"}</Text>
+            <Text style={styles.emptyText}>You can see the computer here when screen sharing is available.</Text>
           </View>
         )}
       </View>
 
       <View style={styles.footer}>
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        {canRetry ? (
+          <Pressable onPress={connect} style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
+            <RefreshCcw size={16} color="#17222b" />
+            <Text style={styles.retryButtonText}>Retry screen view</Text>
+          </Pressable>
+        ) : null}
         <Text style={styles.footerText}>
           {frame
-            ? `${frame.originalWidth}x${frame.originalHeight} desktop, last frame ${shortDate(frame.timestamp)}`
-            : "View-only session. Remote input still requires approval."}
+            ? `Last updated ${shortDate(frame.timestamp)}. View only.`
+            : "View only. You can't control the computer from this screen."}
         </Text>
       </View>
     </SafeAreaView>
@@ -162,10 +169,15 @@ export function RemoteScreen({
 }
 
 function statusText(connection: ConnectionState): string {
-  if (connection === "online") return "Streaming over paired JWT";
+  if (connection === "online") return "Live";
   if (connection === "connecting") return "Connecting";
   if (connection === "paused") return "Paused";
-  return "Disconnected";
+  return "Offline";
+}
+
+function readableStreamError(message: string): string {
+  if (!message.trim()) return "Can't show the screen right now. Tap retry to reconnect.";
+  return "Can't show the screen right now. Tap retry to reconnect.";
 }
 
 const styles = StyleSheet.create({
@@ -279,6 +291,21 @@ const styles = StyleSheet.create({
   errorText: {
     color: "#ffcf72",
     lineHeight: 20,
+  },
+  retryButton: {
+    alignSelf: "flex-start",
+    minHeight: 40,
+    borderRadius: 8,
+    backgroundColor: "#ffcf72",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 12,
+  },
+  retryButtonText: {
+    color: "#17222b",
+    fontWeight: "800",
   },
   pressed: {
     opacity: 0.72,

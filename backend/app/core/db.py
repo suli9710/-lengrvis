@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -13,15 +14,30 @@ from pydantic import BaseModel
 from app.config import get_base_settings
 
 
+_DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("marvis_data_dir_override", default=None)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def db_path() -> Path:
-    settings = get_base_settings()
-    path = Path(settings.data_dir) / "marvis.db"
+    override = _DATA_DIR_OVERRIDE.get()
+    path = Path(override or get_base_settings().data_dir) / "marvis.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+@contextmanager
+def using_data_dir(data_dir: str | Path | None) -> Iterator[None]:
+    if not data_dir:
+        yield
+        return
+    token = _DATA_DIR_OVERRIDE.set(str(data_dir))
+    try:
+        yield
+    finally:
+        _DATA_DIR_OVERRIDE.reset(token)
 
 
 @contextmanager
@@ -256,6 +272,18 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS wakeups (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                source_id TEXT,
+                status TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_wakeups_status_due
+                ON wakeups(status, due_at);
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -273,6 +301,44 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS perception_observations (
+                id TEXT PRIMARY KEY,
+                task_id TEXT,
+                event_id TEXT,
+                event_type TEXT NOT NULL,
+                environment_type TEXT,
+                source_agent TEXT,
+                summary TEXT NOT NULL,
+                suppressed INTEGER NOT NULL DEFAULT 0,
+                process_name TEXT,
+                window_title TEXT,
+                screen_state_id TEXT,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_perception_observations_created
+                ON perception_observations(created_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_observations_task
+                ON perception_observations(task_id, created_at);
+            CREATE TABLE IF NOT EXISTS perception_suggestions (
+                id TEXT PRIMARY KEY,
+                task_id TEXT,
+                suggestion_id TEXT,
+                rule_id TEXT,
+                severity TEXT NOT NULL,
+                title TEXT,
+                summary TEXT NOT NULL,
+                suppressed INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'proposed',
+                linked_run_id TEXT,
+                expires_at TEXT,
+                data TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_perception_suggestions_created
+                ON perception_suggestions(created_at);
+            CREATE INDEX IF NOT EXISTS idx_perception_suggestions_task
+                ON perception_suggestions(task_id, created_at);
             """
         )
         try:
@@ -282,6 +348,22 @@ def init_db() -> None:
         except sqlite3.OperationalError:
             # Some Python builds may not ship FTS5. The search service falls back to LIKE.
             pass
+        _ensure_columns(
+            conn,
+            "llm_usage_events",
+            {
+                "data": "TEXT NOT NULL DEFAULT '{}'",
+            },
+        )
+        _ensure_columns(
+            conn,
+            "perception_suggestions",
+            {
+                "status": "TEXT NOT NULL DEFAULT 'proposed'",
+                "linked_run_id": "TEXT",
+                "expires_at": "TEXT",
+            },
+        )
 
 
 def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, status: str | None = None) -> None:
@@ -443,6 +525,31 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
                 ),
             )
             return
+        if table == "wakeups":
+            conn.execute(
+                """
+                INSERT INTO wakeups (id, source, source_id, status, due_at, data, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    source=excluded.source,
+                    source_id=excluded.source_id,
+                    status=excluded.status,
+                    due_at=excluded.due_at,
+                    data=excluded.data,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    data["id"],
+                    data.get("source", "schedule"),
+                    data.get("source_id") or "",
+                    data.get("status", "pending"),
+                    data.get("due_at") or data.get("created_at", now),
+                    _json(data),
+                    data.get("created_at", now),
+                    now,
+                ),
+            )
+            return
         if table == "memories":
             conn.execute(
                 """
@@ -481,6 +588,13 @@ def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
     return json.loads(row["data"]) if row else None
 
 
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, definition in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
 def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
     query = f"SELECT data FROM {table}"
     if where:
@@ -489,6 +603,68 @@ def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: i
     with connect() as conn:
         rows = conn.execute(query, (*args, limit)).fetchall()
     return [json.loads(row["data"]) for row in rows]
+
+
+def insert_perception_observation(payload: dict[str, Any]) -> None:
+    body = dict(payload)
+    body.setdefault("id", f"pobs_{uuid4().hex}")
+    body.setdefault("created_at", _now_iso())
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO perception_observations (
+                id, task_id, event_id, event_type, environment_type, source_agent, summary,
+                suppressed, process_name, window_title, screen_state_id, data, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                body["id"],
+                body.get("task_id") or None,
+                body.get("event_id") or None,
+                body.get("event_type") or "",
+                body.get("environment_type") or None,
+                body.get("source_agent") or None,
+                body.get("summary") or "",
+                1 if body.get("suppressed") else 0,
+                body.get("process_name") or None,
+                body.get("window_title") or None,
+                body.get("screen_state_id") or None,
+                _json(body),
+                body["created_at"],
+            ),
+        )
+
+
+def insert_perception_suggestion(payload: dict[str, Any]) -> None:
+    body = dict(payload)
+    body.setdefault("id", f"psug_{uuid4().hex}")
+    body.setdefault("created_at", _now_iso())
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO perception_suggestions (
+                id, task_id, suggestion_id, rule_id, severity, title, summary, suppressed,
+                status, linked_run_id, expires_at, data, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                body["id"],
+                body.get("task_id") or None,
+                body.get("suggestion_id") or None,
+                body.get("rule_id") or None,
+                body.get("severity") or "info",
+                body.get("title") or None,
+                body.get("summary") or "",
+                1 if body.get("suppressed") else 0,
+                body.get("status") or "proposed",
+                body.get("linked_run_id") or None,
+                body.get("expires_at") or None,
+                _json(body),
+                body["created_at"],
+            ),
+        )
 
 
 def next_run_event_sequence(run_id: str) -> int:

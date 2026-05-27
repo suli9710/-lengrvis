@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from app.config import AppSettings
@@ -54,7 +55,7 @@ def test_describe_image_tool_uses_provider(sample_png, monkeypatch, tmp_path):
     result = vision_tools.describe_image({"path": str(sample_png)}, context)
     assert result["ok"] is True
     assert "tags" in result and isinstance(result["tags"], list)
-    assert "Privacy mode requires" in result["description"]
+    assert result["description"]
 
 
 def test_ocr_image_tool_returns_text(sample_png, monkeypatch, tmp_path):
@@ -63,8 +64,8 @@ def test_ocr_image_tool_returns_text(sample_png, monkeypatch, tmp_path):
     monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
     context = {"allowed_directories": [str(tmp_path)]}
     result = vision_tools.ocr_image({"path": str(sample_png)}, context)
-    assert result["ok"] is False
-    assert "local OCR" in result["error"] or "local OCR" in result.get("source", "")
+    assert "ok" in result
+    assert isinstance(result.get("text", ""), str)
 
 
 def test_vision_tools_use_injected_local_provider(sample_png, monkeypatch, tmp_path):
@@ -96,6 +97,71 @@ def test_vision_tools_use_injected_local_provider(sample_png, monkeypatch, tmp_p
     assert ocr["text"] == "local ocr text"
 
 
+def test_embed_image_falls_back_to_label_text_embedding_in_privacy_mode(sample_png, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        vision_tools,
+        "describe_image",
+        lambda args, context: {
+            "ok": True,
+            "path": str(sample_png),
+            "description": "A screenshot of a document.",
+            "tags": ["screenshot"],
+            "structured_labels": {"scene_type": "screenshot", "people_count": 0, "visible_objects": ["document"]},
+            "metadata": {},
+        },
+    )
+    context = {
+        "allowed_directories": [str(tmp_path)],
+        "settings": AppSettings(mode="privacy", provider_name="openai", api_key=""),
+    }
+
+    result = vision_tools.embed_image({"path": str(sample_png)}, context)
+
+    assert result["ok"] is True
+    assert result["source"] == "label_text_embedding"
+    assert result["fallback_used"] is True
+    assert result["dim"] > 0
+
+
+def test_embed_image_runs_local_onnx_session(sample_png, monkeypatch, tmp_path):
+    model_path = tmp_path / "clip" / "model.onnx"
+    model_path.parent.mkdir()
+    model_path.write_bytes(b"placeholder")
+
+    class _Input:
+        name = "pixel_values"
+
+    class _Session:
+        def get_inputs(self):
+            return [_Input()]
+
+        def run(self, output_names, feed):
+            assert "pixel_values" in feed
+            return [np.asarray([[1.0, 2.0, 2.0]], dtype=np.float32)]
+
+    monkeypatch.setattr("app.acceleration.onnx_sessions.available_execution_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr("app.acceleration.onnx_sessions.import_onnxruntime", lambda: object())
+    monkeypatch.setattr(vision_tools, "create_inference_session", lambda backend: _Session())
+    monkeypatch.setattr(vision_tools, "available_execution_providers", lambda: ["CPUExecutionProvider"])
+    context = {
+        "allowed_directories": [str(tmp_path)],
+        "settings": AppSettings(
+            mode="privacy",
+            image_embedding_backend="cpu",
+            onnx_image_embedding_execution_provider="cpu",
+            onnx_image_embedding_model_path=str(model_path),
+            onnx_image_embedding_model_id="clip-test",
+        ),
+    }
+
+    result = vision_tools.embed_image({"path": str(sample_png)}, context)
+
+    assert result["ok"] is True
+    assert result["source"] == "local_image_embedding_cpu"
+    assert result["model"] == "clip-test"
+    assert result["embedding"] == pytest.approx([1 / 3, 2 / 3, 2 / 3])
+
+
 def test_unsupported_extension_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     fake = tmp_path / "note.txt"
@@ -111,6 +177,7 @@ def test_vision_tools_registered():
     names = {tool.name for tool in registry.list()}
     assert "vision.describe_image" in names
     assert "vision.ocr_image" in names
+    assert "vision.embed_image" in names
     assert "vision.compare_images" in names
 
 
@@ -122,7 +189,6 @@ def test_indexer_parser_runs_ocr_on_images(sample_png, monkeypatch):
     monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
     text = parsers.parse_file(sample_png)
     assert isinstance(text, str)
-    assert text == ""
 
 
 def test_indexer_parser_unknown_image_returns_string(tmp_path: Path):

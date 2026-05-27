@@ -9,8 +9,9 @@ import pytest
 from app.config import AppSettings
 from app.core import db
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS, PolicyEngine
-from app.policy.risk import RiskLevel
+from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools import browser_tools
+from app.tools.schemas import ToolDefinition
 
 
 @pytest.fixture(autouse=True)
@@ -164,6 +165,42 @@ def test_navigate_is_open_only_not_browser_write_gated():
     assert PolicyEngine().classify_tool_name("browser.navigate") == RiskLevel.R1_OPEN_ONLY
     assert PolicyEngine().review_browser_write_call("task_nav", "step_nav", "browser.navigate", {}) is None
     assert "secret-token" not in str(result)
+
+
+def test_browser_act_is_classified_by_nested_action_kind():
+    policy = PolicyEngine()
+
+    assert policy.classify_tool_call("browser.act", {"action": {"kind": "observe"}}) == RiskLevel.R0_READ_ONLY
+    read_review = policy.review_tool_call(
+        "task_observe",
+        "step_observe",
+        "browser.act",
+        {"action": {"kind": "observe", "url": "https://example.com"}},
+        RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+        tool_definition=ToolDefinition(
+            name="browser.act",
+            description="browser act",
+            input_schema={},
+            output_schema={},
+            risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            agent_owner="BrowserAgent",
+            supports_dry_run=True,
+            requires_authorized_path=False,
+            execute=lambda args, context: {"ok": True},
+            trust_tier="builtin",
+            effects=["browser_write"],
+        ),
+    )
+    assert read_review.verdict == SafetyVerdict.ALLOW
+    assert policy.classify_tool_call("browser.act", {"action": {"kind": "scroll"}}) == RiskLevel.R2_REVERSIBLE_MODIFY
+    review = policy.review_tool_call(
+        "task_scroll",
+        "step_scroll",
+        "browser.act",
+        {"action": {"kind": "scroll", "url": "https://example.com"}, "dry_run": False},
+        RiskLevel.R0_READ_ONLY,
+    )
+    assert review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
 
 
 def test_hybrid_with_cloud_context_unlocks_writes():

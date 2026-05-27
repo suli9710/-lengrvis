@@ -7,10 +7,34 @@ llm:
   model_auto_compact_token_limit: 96000
   # Privacy mode automatically prefers an ONNX GenAI model bundle when present.
   # Set onnx_model_path or MARVIS_ONNX_MODEL_PATH to a Qwen2.5-3B ONNX GenAI directory/config,
-  # or place the bundle under ./.marvis_data/models. onnx_execution_provider may be DirectML,
-  # OpenVINO, CPU, or blank for automatic preference.
+  # or place the bundle under ./.marvis_data/models. onnx_execution_provider may be WinML,
+  # DirectML, OpenVINO, CPU, or blank for automatic preference.
   onnx_model_path: ""
+  onnx_runtime: auto
   onnx_execution_provider: ""
+  onnx_provider_preference: winml,directml,openvino,cpu
+  onnx_directml_device_id: ""
+  onnx_openvino_device: AUTO
+  onnx_openvino_cache_dir: ""
+  onnx_warm_on_startup: false
+  onnx_model_family: ""
+  embedding_backend: auto
+  onnx_embedding_model_path: ""
+  onnx_embedding_execution_provider: ""
+  onnx_embedding_model_id: intfloat/multilingual-e5-small
+  onnx_embedding_max_batch_size: 32
+  image_embedding_backend: auto
+  onnx_image_embedding_model_path: ""
+  onnx_image_embedding_execution_provider: ""
+  onnx_image_embedding_model_id: openai/clip-vit-base-patch32
+  onnx_image_embedding_max_batch_size: 8
+  ocr_backend: auto
+  ocr_execution_provider: ""
+  ocr_openvino_model_dir: ""
+  ocr_openvino_device: AUTO
+  ocr_lang: multi
+  ocr_min_confidence: 0.0
+  ocr_batch_size: 1
   embedding_model: text-embedding-3-small
   temperature: 0.2
   max_tokens: 1600
@@ -41,6 +65,66 @@ privacy:
   browser_max_page_bytes: 250000
   document_max_chars_to_llm: 30000
   browser_screenshot_dir: ""
+
+perception:
+  enabled: false
+  interval_seconds: 5.0
+  publish_events: true
+  max_width: 1280
+  max_height: 720
+  jpeg_quality: 70
+  frame_diff_gate_enabled: true
+  frame_diff_threshold: 0.001
+  local_ocr_enabled: false
+  storage_enabled: true
+  # V1 stores summaries only. ScreenState.image_base64, OCR full text, and full UI trees
+  # are stripped before persistence even if upstream producers include them.
+  store_screenshots: false
+  app_context_interval_seconds: 2.0
+  environment_store_screenshots: false
+  environment_event_retention_days: 7
+  environment_sensitive_window_terms:
+    - password
+    - token
+    - cookie
+    - otp
+    - card
+    - bank
+    - checkout
+    - 2fa
+  sensitive_window_patterns:
+    - password
+    - passcode
+    - 1password
+    - bitwarden
+    - lastpass
+    - keychain
+    - credential
+    - secret
+    - token
+    - cookie
+    - otp
+    - 2fa
+    - api key
+    - bank
+    - card
+    - payment
+    - checkout
+    - wallet
+  sensitive_field_names:
+    - password
+    - passcode
+    - pin
+    - secret
+    - token
+    - api_key
+    - authorization
+    - cookie
+    - credential
+    - credit_card
+    - card_number
+    - cvv
+    - ssn
 
 orchestration:
   recovery_max_retries: 3

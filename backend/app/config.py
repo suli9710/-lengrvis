@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import base64
 import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ APP_ROOT = PROJECT_ROOT / "backend"
 DEFAULT_DATA_DIR = PROJECT_ROOT / ".marvis_data"
 CONFIG_PARENT_SEARCH_DEPTH = 5
 DEFAULT_JWT_SECRET = secrets.token_hex(32)
+DPAPI_PREFIX = "dpapi:"
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -38,6 +40,32 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return data if isinstance(data, dict) else {}
+
+
+def _decrypt_windows_dpapi(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    payload = text[len(DPAPI_PREFIX) :] if text.startswith(DPAPI_PREFIX) else text
+    if os.name != "nt":
+        raise RuntimeError("Encrypted API keys require Windows DPAPI on this platform.")
+    try:
+        import win32crypt  # type: ignore[import-not-found]
+
+        blob = base64.b64decode(payload)
+        return str(win32crypt.CryptUnprotectData(blob, None, None, None, 0)[1].decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - callers need a clear config failure.
+        raise RuntimeError("Failed to decrypt MARVIS_API_KEY_ENCRYPTED with Windows DPAPI.") from exc
+
+
+def _resolve_api_key(raw_plain: Any, raw_encrypted: Any) -> str:
+    plain = str(raw_plain or "").strip()
+    if plain:
+        return plain
+    encrypted = str(raw_encrypted or "").strip()
+    if not encrypted:
+        return ""
+    return _decrypt_windows_dpapi(encrypted)
 
 
 def _candidate_config_dirs() -> list[Path]:
@@ -121,8 +149,33 @@ class AppSettings:
     context_min_summary_chars: int = 1200
     embedding_model: str = "text-embedding-3-small"
     vision_model: str = ""
+    onnx_enabled: bool = True
     onnx_model_path: str = ""
+    onnx_runtime: str = "auto"
     onnx_execution_provider: str = ""
+    onnx_provider_preference: str = "winml,directml,openvino,cpu"
+    onnx_directml_device_id: str = ""
+    onnx_openvino_device: str = "AUTO"
+    onnx_openvino_cache_dir: str = ""
+    onnx_warm_on_startup: bool = False
+    onnx_model_family: str = ""
+    embedding_backend: str = "auto"
+    onnx_embedding_model_path: str = ""
+    onnx_embedding_execution_provider: str = ""
+    onnx_embedding_model_id: str = "intfloat/multilingual-e5-small"
+    onnx_embedding_max_batch_size: int = 32
+    image_embedding_backend: str = "auto"
+    onnx_image_embedding_model_path: str = ""
+    onnx_image_embedding_execution_provider: str = ""
+    onnx_image_embedding_model_id: str = "openai/clip-vit-base-patch32"
+    onnx_image_embedding_max_batch_size: int = 8
+    ocr_backend: str = "auto"
+    ocr_execution_provider: str = ""
+    ocr_openvino_model_dir: str = ""
+    ocr_openvino_device: str = "AUTO"
+    ocr_lang: str = "multi"
+    ocr_min_confidence: float = 0.0
+    ocr_batch_size: int = 1
     temperature: float = 0.2
     max_tokens: int = 1600
     timeout: int = 30
@@ -150,6 +203,23 @@ class AppSettings:
     default_engine: str = "auto"
     agent_loop_max_turns: int = 30
     run_event_retention_days: int = 30
+    perception_enabled: bool = False
+    perception_interval_seconds: float = 5.0
+    perception_publish_events: bool = True
+    perception_max_width: int = 1280
+    perception_max_height: int = 720
+    perception_jpeg_quality: int = 70
+    perception_frame_diff_gate_enabled: bool = True
+    perception_storage_enabled: bool = True
+    perception_store_screenshots: bool = False
+    perception_local_ocr_enabled: bool = False
+    perception_frame_diff_threshold: float = 0.001
+    perception_sensitive_window_patterns: list[str] = field(default_factory=list)
+    perception_sensitive_field_names: list[str] = field(default_factory=list)
+    environment_app_context_interval_seconds: float = 2.0
+    environment_store_screenshots: bool = False
+    environment_event_retention_days: int = 7
+    environment_rules: list[dict[str, Any]] = field(default_factory=list)
     jwt_secret: str = field(default_factory=lambda: DEFAULT_JWT_SECRET)
 
     @classmethod
@@ -165,6 +235,7 @@ class AppSettings:
         privacy = config.get("privacy", {}) if isinstance(config.get("privacy"), dict) else {}
         paths = config.get("paths", {}) if isinstance(config.get("paths"), dict) else {}
         orchestration = config.get("orchestration", {}) if isinstance(config.get("orchestration"), dict) else {}
+        perception = config.get("perception", {}) if isinstance(config.get("perception"), dict) else {}
 
         def _configured(raw: Any) -> bool:
             return raw is not None and not (isinstance(raw, str) and raw == "")
@@ -179,7 +250,7 @@ class AppSettings:
             raw_env = env.get(env_key)
             if _configured(raw_env):
                 return raw_env
-            for section in (llm, privacy, paths, orchestration):
+            for section in (llm, privacy, paths, orchestration, perception):
                 found, raw = _section_value(section, yaml_key)
                 if found:
                     return raw
@@ -190,7 +261,7 @@ class AppSettings:
                 raw = env.get(env_key)
                 if _configured(raw):
                     return raw
-            for section in (llm, privacy, paths, orchestration):
+            for section in (llm, privacy, paths, orchestration, perception):
                 found, raw = _section_value(section, yaml_key)
                 if found:
                     return raw
@@ -238,10 +309,49 @@ class AppSettings:
         else:
             app_allowlist_items = ["notepad", "calculator", "calc"]
 
+        sensitive_window_patterns = value(
+            "MARVIS_PERCEPTION_SENSITIVE_WINDOW_PATTERNS",
+            "sensitive_window_patterns",
+            [],
+        )
+        if not sensitive_window_patterns:
+            sensitive_window_patterns = value(
+                "MARVIS_ENVIRONMENT_SENSITIVE_WINDOW_TERMS",
+                "environment_sensitive_window_terms",
+                [],
+            )
+        if isinstance(sensitive_window_patterns, str):
+            sensitive_window_items = [item.strip() for item in sensitive_window_patterns.split(";") if item.strip()]
+        elif isinstance(sensitive_window_patterns, list):
+            sensitive_window_items = [str(item).strip() for item in sensitive_window_patterns if str(item).strip()]
+        else:
+            sensitive_window_items = []
+
+        sensitive_field_names = value(
+            "MARVIS_PERCEPTION_SENSITIVE_FIELD_NAMES",
+            "sensitive_field_names",
+            [],
+        )
+        if isinstance(sensitive_field_names, str):
+            sensitive_field_items = [item.strip() for item in sensitive_field_names.split(";") if item.strip()]
+        elif isinstance(sensitive_field_names, list):
+            sensitive_field_items = [str(item).strip() for item in sensitive_field_names if str(item).strip()]
+        else:
+            sensitive_field_items = []
+
+        environment_rules = value("MARVIS_ENVIRONMENT_RULES_CONFIG", "environment_rules", [])
+        if not isinstance(environment_rules, list):
+            environment_rules = []
+
+        api_key = _resolve_api_key(
+            value("MARVIS_API_KEY", "api_key", ""),
+            value("MARVIS_API_KEY_ENCRYPTED", "api_key_encrypted", ""),
+        )
+
         return cls(
             provider_name=str(value("MARVIS_PROVIDER_NAME", "provider_name", "openai_compatible")),
             base_url=str(value("MARVIS_BASE_URL", "base_url", "https://api.openai.com/v1")),
-            api_key=str(value("MARVIS_API_KEY", "api_key", "")),
+            api_key=api_key,
             model=str(value("MARVIS_MODEL", "model", "gpt-4o-mini")),
             review_model=str(value("MARVIS_REVIEW_MODEL", "review_model", "")),
             wire_api=str(value("MARVIS_WIRE_API", "wire_api", "chat_completions")),
@@ -297,9 +407,11 @@ class AppSettings:
             ),
             embedding_model=str(value("MARVIS_EMBEDDING_MODEL", "embedding_model", "text-embedding-3-small")),
             vision_model=str(value("MARVIS_VISION_MODEL", "vision_model", "")),
+            onnx_enabled=flag("MARVIS_ONNX_ENABLED", "onnx_enabled", True),
             onnx_model_path=str(
                 value_any(("MARVIS_ONNX_MODEL_PATH", "MAVRIS_ONNX_MODEL_PATH"), "onnx_model_path", "")
             ),
+            onnx_runtime=str(value_any(("MARVIS_ONNX_RUNTIME", "MAVRIS_ONNX_RUNTIME"), "onnx_runtime", "auto")),
             onnx_execution_provider=str(
                 value_any(
                     ("MARVIS_ONNX_EXECUTION_PROVIDER", "MAVRIS_ONNX_EXECUTION_PROVIDER"),
@@ -307,9 +419,58 @@ class AppSettings:
                     "",
                 )
             ),
-            temperature=float(value("MARVIS_TEMPERATURE", "temperature", 0.2)),
-            max_tokens=int(value("MARVIS_MAX_TOKENS", "max_tokens", 1600)),
-            timeout=int(value("MARVIS_TIMEOUT", "timeout", 30)),
+            onnx_provider_preference=str(
+                value("MARVIS_ONNX_PROVIDER_PREFERENCE", "onnx_provider_preference", "winml,directml,openvino,cpu")
+            ),
+            onnx_directml_device_id=str(
+                value("MARVIS_ONNX_DIRECTML_DEVICE_ID", "onnx_directml_device_id", "")
+            ),
+            onnx_openvino_device=str(value("MARVIS_ONNX_OPENVINO_DEVICE", "onnx_openvino_device", "AUTO")),
+            onnx_openvino_cache_dir=str(value("MARVIS_ONNX_OPENVINO_CACHE_DIR", "onnx_openvino_cache_dir", "")),
+            onnx_warm_on_startup=flag("MARVIS_ONNX_WARM_ON_STARTUP", "onnx_warm_on_startup", False),
+            onnx_model_family=str(value("MARVIS_ONNX_MODEL_FAMILY", "onnx_model_family", "")),
+            embedding_backend=str(value("MARVIS_EMBEDDING_BACKEND", "embedding_backend", "auto")),
+            onnx_embedding_model_path=str(
+                value("MARVIS_ONNX_EMBEDDING_MODEL_PATH", "onnx_embedding_model_path", "")
+            ),
+            onnx_embedding_execution_provider=str(
+                value("MARVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER", "onnx_embedding_execution_provider", "")
+            ),
+            onnx_embedding_model_id=str(
+                value("MARVIS_ONNX_EMBEDDING_MODEL_ID", "onnx_embedding_model_id", "intfloat/multilingual-e5-small")
+            ),
+            onnx_embedding_max_batch_size=int_value(
+                "MARVIS_ONNX_EMBEDDING_MAX_BATCH_SIZE",
+                "onnx_embedding_max_batch_size",
+                32,
+                minimum=1,
+            ),
+            image_embedding_backend=str(value("MARVIS_IMAGE_EMBEDDING_BACKEND", "image_embedding_backend", "auto")),
+            onnx_image_embedding_model_path=str(
+                value("MARVIS_ONNX_IMAGE_EMBEDDING_MODEL_PATH", "onnx_image_embedding_model_path", "")
+            ),
+            onnx_image_embedding_execution_provider=str(
+                value("MARVIS_ONNX_IMAGE_EMBEDDING_EXECUTION_PROVIDER", "onnx_image_embedding_execution_provider", "")
+            ),
+            onnx_image_embedding_model_id=str(
+                value("MARVIS_ONNX_IMAGE_EMBEDDING_MODEL_ID", "onnx_image_embedding_model_id", "openai/clip-vit-base-patch32")
+            ),
+            onnx_image_embedding_max_batch_size=int_value(
+                "MARVIS_ONNX_IMAGE_EMBEDDING_MAX_BATCH_SIZE",
+                "onnx_image_embedding_max_batch_size",
+                8,
+                minimum=1,
+            ),
+            ocr_backend=str(value("MARVIS_OCR_BACKEND", "ocr_backend", "auto")),
+            ocr_execution_provider=str(value("MARVIS_OCR_EXECUTION_PROVIDER", "ocr_execution_provider", "")),
+            ocr_openvino_model_dir=str(value("MARVIS_OCR_OPENVINO_MODEL_DIR", "ocr_openvino_model_dir", "")),
+            ocr_openvino_device=str(value("MARVIS_OCR_OPENVINO_DEVICE", "ocr_openvino_device", "AUTO")),
+            ocr_lang=str(value("MARVIS_OCR_LANG", "ocr_lang", "multi")),
+            ocr_min_confidence=float_value("MARVIS_OCR_MIN_CONFIDENCE", "ocr_min_confidence", 0.0),
+            ocr_batch_size=int_value("MARVIS_OCR_BATCH_SIZE", "ocr_batch_size", 1, minimum=1),
+            temperature=float_value("MARVIS_TEMPERATURE", "temperature", 0.2),
+            max_tokens=int_value("MARVIS_MAX_TOKENS", "max_tokens", 1600, minimum=1),
+            timeout=int_value("MARVIS_TIMEOUT", "timeout", 30, minimum=1),
             llm_api_max_retries=int_value("MARVIS_LLM_API_MAX_RETRIES", "llm_api_max_retries", 2),
             llm_api_retry_backoff_seconds=float_value(
                 "MARVIS_LLM_API_RETRY_BACKOFF_SECONDS",
@@ -332,8 +493,18 @@ class AppSettings:
             allow_browser_network=flag("MARVIS_ALLOW_BROWSER_NETWORK", "allow_browser_network", False),
             remote_desktop_enabled=flag("MARVIS_REMOTE_DESKTOP_ENABLED", "remote_desktop_enabled", False),
             app_allowlist=app_allowlist_items,
-            browser_max_page_bytes=int(value("MARVIS_BROWSER_MAX_PAGE_BYTES", "browser_max_page_bytes", 250000)),
-            document_max_chars_to_llm=int(value("MARVIS_DOCUMENT_MAX_CHARS_TO_LLM", "document_max_chars_to_llm", 30000)),
+            browser_max_page_bytes=int_value(
+                "MARVIS_BROWSER_MAX_PAGE_BYTES",
+                "browser_max_page_bytes",
+                250000,
+                minimum=1,
+            ),
+            document_max_chars_to_llm=int_value(
+                "MARVIS_DOCUMENT_MAX_CHARS_TO_LLM",
+                "document_max_chars_to_llm",
+                30000,
+                minimum=1,
+            ),
             browser_screenshot_dir=str(
                 value("MARVIS_BROWSER_SCREENSHOT_DIR", "browser_screenshot_dir", default_data_dir / "browser_screenshots")
             ),
@@ -355,6 +526,44 @@ class AppSettings:
                 30,
                 minimum=0,
             ),
+            perception_enabled=flag("MARVIS_PERCEPTION_ENABLED", "enabled", False),
+            perception_interval_seconds=float_value("MARVIS_PERCEPTION_INTERVAL_SECONDS", "interval_seconds", 5.0),
+            perception_publish_events=flag("MARVIS_PERCEPTION_PUBLISH_EVENTS", "publish_events", True),
+            perception_max_width=int_value("MARVIS_PERCEPTION_MAX_WIDTH", "max_width", 1280, minimum=1),
+            perception_max_height=int_value("MARVIS_PERCEPTION_MAX_HEIGHT", "max_height", 720, minimum=1),
+            perception_jpeg_quality=int_value("MARVIS_PERCEPTION_JPEG_QUALITY", "jpeg_quality", 70, minimum=1),
+            perception_frame_diff_gate_enabled=flag(
+                "MARVIS_PERCEPTION_FRAME_DIFF_GATE_ENABLED",
+                "frame_diff_gate_enabled",
+                True,
+            ),
+            perception_storage_enabled=flag("MARVIS_PERCEPTION_STORAGE_ENABLED", "storage_enabled", True),
+            perception_store_screenshots=flag("MARVIS_PERCEPTION_STORE_SCREENSHOTS", "store_screenshots", False),
+            perception_local_ocr_enabled=flag(
+                "MARVIS_PERCEPTION_LOCAL_OCR_ENABLED",
+                "local_ocr_enabled",
+                False,
+            ),
+            perception_frame_diff_threshold=float_value(
+                "MARVIS_PERCEPTION_FRAME_DIFF_THRESHOLD",
+                "frame_diff_threshold",
+                0.001,
+            ),
+            perception_sensitive_window_patterns=sensitive_window_items,
+            perception_sensitive_field_names=sensitive_field_items,
+            environment_app_context_interval_seconds=float_value(
+                "MARVIS_ENVIRONMENT_APP_CONTEXT_INTERVAL_SECONDS",
+                "app_context_interval_seconds",
+                2.0,
+            ),
+            environment_store_screenshots=flag("MARVIS_ENVIRONMENT_STORE_SCREENSHOTS", "environment_store_screenshots", False),
+            environment_event_retention_days=int_value(
+                "MARVIS_ENVIRONMENT_EVENT_RETENTION_DAYS",
+                "environment_event_retention_days",
+                7,
+                minimum=0,
+            ),
+            environment_rules=[dict(item) for item in environment_rules if isinstance(item, dict)],
             jwt_secret=str(
                 value_any(("MARVIS_JWT_SECRET", "MAVRIS_JWT_SECRET"), "jwt_secret", DEFAULT_JWT_SECRET)
             ),

@@ -16,6 +16,7 @@ import httpx
 from app.config import AppSettings
 from app.core.schemas import LocalLLMHealth
 from app.llm.onnx_provider import detect_onnx_backend, health_snapshot as onnx_health_snapshot
+from app.services.ollama_service import hardware_readiness
 
 
 @dataclass(slots=True)
@@ -87,6 +88,7 @@ def unavailable_message() -> str:
 
 def health_snapshot(settings: AppSettings | None = None, *, timeout: float = _DEFAULT_TIMEOUT) -> dict:
     """JSON-serialisable summary for `/api/settings/local-llm/health`."""
+    readiness = hardware_readiness()
     onnx_backend = detect_onnx_backend(settings) if settings is not None else detect_onnx_backend()
     onnx_snapshot = onnx_health_snapshot(settings) if settings is not None else onnx_health_snapshot()
     if onnx_backend is not None:
@@ -95,7 +97,11 @@ def health_snapshot(settings: AppSettings | None = None, *, timeout: float = _DE
             available=True,
             selected_backend=selected,
             probe_order=PROBE_ORDER,
-        ).model_dump() | selected | {"onnx": onnx_snapshot}
+        ).model_dump() | selected | {
+            "onnx": onnx_snapshot,
+            "llm": onnx_snapshot.get("llm", {}),
+            "readiness": readiness,
+        }
 
     backend = detect_local_backend(timeout=timeout)
     if backend is None:
@@ -104,7 +110,7 @@ def health_snapshot(settings: AppSettings | None = None, *, timeout: float = _DE
             selected_backend=None,
             probe_order=PROBE_ORDER,
             error=unavailable_message(),
-        ).model_dump() | {"onnx": onnx_snapshot}
+        ).model_dump() | {"onnx": onnx_snapshot, "llm": onnx_snapshot.get("llm", {}), "readiness": readiness}
     backend_dict = dataclasses.asdict(backend)
     selected = {
         **backend_dict,
@@ -114,4 +120,4 @@ def health_snapshot(settings: AppSettings | None = None, *, timeout: float = _DE
         available=True,
         selected_backend=selected,
         probe_order=PROBE_ORDER,
-    ).model_dump() | backend_dict | {"onnx": onnx_snapshot}
+    ).model_dump() | backend_dict | {"onnx": onnx_snapshot, "llm": onnx_snapshot.get("llm", {}), "readiness": readiness}

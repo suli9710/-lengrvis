@@ -1,0 +1,315 @@
+{
+  "scale": 0.5973597935267857,
+  "mapRect": {
+    "left": 258,
+    "top": 131.4,
+    "right": 1016,
+    "bottom": 666.6,
+    "width": 758,
+    "height": 535.2
+  },
+  "furniture": {
+    "water": {
+      "tl": {
+        "x": 265.2,
+        "y": 167.2
+      },
+      "br": {
+        "x": 502.9,
+        "y": 323.7
+      }
+    },
+    "treadmill": {
+      "tl": {
+        "x": 265.2,
+        "y": 308.2
+      },
+      "br": {
+        "x": 502.9,
+        "y": 494
+      }
+    },
+    "toilet": {
+      "tl": {
+        "x": 265.2,
+        "y": 474.3
+      },
+      "br": {
+        "x": 502.9,
+        "y": 661.9
+      }
+    },
+    "pm": {
+      "tl": {
+        "x": 563.8,
+        "y": 207.9
+      },
+      "br": {
+        "x": 678.5,
+        "y": 265.2
+      }
+    },
+    "app": {
+      "tl": {
+        "x": 716.8,
+        "y": 207.9
+      },
+      "br": {
+        "x": 831.5,
+        "y": 265.2
+      }
+    },
+    "computer": {
+      "tl": {
+        "x": 563.8,
+        "y": 360.8
+      },
+      "br": {
+        "x": 678.5,
+        "y": 418.1
+      }
+    },
+    "browser": {
+      "tl": {
+        "x": 716.8,
+        "y": 360.8
+      },
+      "br": {
+        "x": 831.5,
+        "y": 418.1
+      }
+    },
+    "file": {
+      "tl": {
+        "x": 563.8,
+        "y": 513.7
+      },
+      "br": {
+        "x": 678.5,
+        "y": 571.1
+      }
+    },
+    "search": {
+      "tl": {
+        "x": 716.8,
+        "y": 513.7
+      },
+      "br": {
+        "x": 831.5,
+        "y": 571.1
+      }
+    }
+  },
+  "agents": [
+    {
+      "id": "pm",
+      "pose": "working",
+      "runtimePose": "working",
+      "anchor": {
+        "x": 585,
+        "y": 277
+      },
+      "rect": {
+        "left": 623.8,
+        "top": 232.3,
+        "right": 701.1,
+        "bottom": 297.8,
+        "width": 77.3,
+        "height": 65.5
+      },
+      "visualRect": {
+        "left": 578.5,
+        "top": 171.8,
+        "right": 746.5,
+        "bottom": 297.8,
+        "width": 168,
+        "height": 126
+      },
+      "imgSrc": "working.gif",
+      "leftStyle": "403.492px",
+      "topStyle": "165.469px",
+      "transform": "matrix(1, 0, 0, 1, -38.6484, -65.5)",
+      "className": "office-agent office-agent--working office-agent--pose-working office-agent--runtime-working office-agent--target-working office-agent--agent-pm office-agent--active office-agent--still office-agent--lead"
+    },
+    {
+      "id": "file",
+      "pose": "wander",
+      "runtimePose": "wander",
+      "anchor": {
+        "x": 467.11828368885847,
+        "y": 367.72621365067477
+      },
+      "rect": {
+        "left": 559.9,
+        "top": 297.5,
+        "right": 624.3,
+        "bottom": 352,
+        "width": 64.4,
+        "height": 54.6
+      },
+      "visualRect": {
+        "left": 522.1,
+        "top": 247,
+        "right": 662.1,
+        "bottom": 352,
+        "width": 140,
+        "height": 105
+      },
+      "imgSrc": "fc_walking_h.gif",
+      "leftStyle": "333.074px",
+      "topStyle": "219.665px",
+      "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+      "className": "office-agent office-agent--wander office-agent--pose-wander office-agent--runtime-wander office-agent--target-wander office-agent--agent-file office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "computer",
+      "pose": "restroom",
+      "runtimePose": "restroom",
+      "anchor": {
+        "x": 224,
+        "y": 730
+      },
+      "rect": {
+        "left": 424.8,
+        "top": 499.9,
+        "right": 468.9,
+        "bottom": 568.5,
+        "width": 44.2,
+        "height": 68.6
+      },
+      "visualRect": {
+        "left": 398.8,
+        "top": 418.5,
+        "right": 494.8,
+        "bottom": 550.5,
+        "width": 96,
+        "height": 132
+      },
+      "imgSrc": "fc_pooping-0_cropped.gif",
+      "leftStyle": "187.845px",
+      "topStyle": "436.073px",
+      "transform": "matrix(1, 0, 0, 1, -22.0938, -68.5938)",
+      "className": "office-agent office-agent--restroom office-agent--pose-restroom office-agent--runtime-restroom office-agent--target-restroom office-agent--agent-computer office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "app",
+      "pose": "nap",
+      "runtimePose": "nap",
+      "anchor": {
+        "x": 467.1413717687735,
+        "y": 599.3722034084851
+      },
+      "rect": {
+        "left": 557.6,
+        "top": 432.2,
+        "right": 626.6,
+        "bottom": 490.4,
+        "width": 69,
+        "height": 58.2
+      },
+      "visualRect": {
+        "left": 517.1,
+        "top": 378.4,
+        "right": 667.1,
+        "bottom": 490.4,
+        "width": 150,
+        "height": 112
+      },
+      "imgSrc": "sleeping.gif",
+      "leftStyle": "333.088px",
+      "topStyle": "358.041px",
+      "transform": "matrix(1, 0, 0, 1, -34.5, -58.1875)",
+      "className": "office-agent office-agent--nap office-agent--pose-nap office-agent--runtime-nap office-agent--target-nap office-agent--agent-app office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "browser",
+      "pose": "coffee",
+      "runtimePose": "coffee",
+      "anchor": {
+        "x": 446.73269854965974,
+        "y": 173.7399706659333
+      },
+      "rect": {
+        "left": 547.7,
+        "top": 181.6,
+        "right": 612.1,
+        "bottom": 236.2,
+        "width": 64.4,
+        "height": 54.6
+      },
+      "visualRect": {
+        "left": 509.9,
+        "top": 131.2,
+        "right": 649.9,
+        "bottom": 236.2,
+        "width": 140,
+        "height": 105
+      },
+      "imgSrc": "fc_drink_coffee.gif",
+      "leftStyle": "320.896px",
+      "topStyle": "103.785px",
+      "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+      "className": "office-agent office-agent--coffee office-agent--pose-coffee office-agent--runtime-coffee office-agent--target-coffee office-agent--agent-browser office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "search",
+      "pose": "coffee",
+      "runtimePose": "coffee",
+      "anchor": {
+        "x": 459.29855466880565,
+        "y": 248.4271449232969
+      },
+      "rect": {
+        "left": 555.2,
+        "top": 226.2,
+        "right": 619.6,
+        "bottom": 280.8,
+        "width": 64.4,
+        "height": 54.6
+      },
+      "visualRect": {
+        "left": 517.4,
+        "top": 175.8,
+        "right": 657.4,
+        "bottom": 280.8,
+        "width": 140,
+        "height": 105
+      },
+      "imgSrc": "fc_drink_coffee.gif",
+      "leftStyle": "328.403px",
+      "topStyle": "148.4px",
+      "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+      "className": "office-agent office-agent--coffee office-agent--pose-coffee office-agent--runtime-coffee office-agent--target-coffee office-agent--agent-search office-agent--idle office-agent--still office-agent--standard"
+    },
+    {
+      "id": "safety",
+      "pose": "review",
+      "runtimePose": "working",
+      "anchor": {
+        "x": 552,
+        "y": 360
+      },
+      "rect": {
+        "left": 610.6,
+        "top": 292.8,
+        "right": 675,
+        "bottom": 347.4,
+        "width": 64.4,
+        "height": 54.6
+      },
+      "visualRect": {
+        "left": 572.8,
+        "top": 242.4,
+        "right": 712.8,
+        "bottom": 347.4,
+        "width": 140,
+        "height": 105
+      },
+      "imgSrc": "salute.gif",
+      "leftStyle": "383.779px",
+      "topStyle": "215.05px",
+      "transform": "matrix(1, 0, 0, 1, -32.1953, -54.5938)",
+      "className": "office-agent office-agent--review office-agent--pose-review office-agent--runtime-working office-agent--target-review office-agent--agent-safety office-agent--active office-agent--still office-agent--standard"
+    }
+  ]
+}

@@ -106,10 +106,11 @@ def test_bound_approval_executes_once_and_marks_consumed():
     assert refreshed.consumed_at
 
 
-def test_approved_step_cannot_execute_after_task_leaves_approval_state():
+@pytest.mark.parametrize("terminal_status", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED])
+def test_approved_step_cannot_execute_after_task_leaves_approval_state(terminal_status):
     orchestrator, task, plan, _step, approval, calls = _setup_bound_approval()
-    task.status = TaskStatus.CANCELLED
-    task.phase = TaskStatus.CANCELLED
+    task.status = terminal_status
+    task.phase = terminal_status
     task.execution_stage = ExecutionStage.IDLE
     db.upsert_model("tasks", task)
 

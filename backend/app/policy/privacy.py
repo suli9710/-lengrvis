@@ -47,7 +47,7 @@ def can_use_browser_writes(settings: AppSettings) -> PrivacyDecision:
     if mode == "privacy":
         return PrivacyDecision(False, "Privacy mode forbids browser write or interaction actions.")
     if not settings.allow_browser_network:
-        return PrivacyDecision(False, "Browser network access is disabled; write actions also blocked.")
+        return PrivacyDecision(False, "Browser network access is disabled outside privacy mode; write actions also blocked.")
     if mode == "hybrid" and not settings.allow_cloud_context:
         return PrivacyDecision(False, "Hybrid mode requires allow_cloud_context for browser writes.")
     return PrivacyDecision(True, "Browser write actions allowed subject to per-tool approval.")
