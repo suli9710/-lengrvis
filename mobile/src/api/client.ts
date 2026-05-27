@@ -83,8 +83,10 @@ export interface PairingSession {
   deviceId: string;
 }
 
+const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "mavris.mobile.token.";
+
 export class AuthExpiredError extends Error {
-  constructor(message = "This phone was disconnected. Connect it again in Mavris.") {
+  constructor(message = "这台手机已断开连接。请在 Mavris 中重新连接。") {
     super(message);
     this.name = "AuthExpiredError";
   }
@@ -138,20 +140,22 @@ export async function submitApprovalDecision(
 export function approvalWebSocketUrl(session: PairingSession): string {
   const url = new URL("/ws/mobile/approvals", session.baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("token", session.token);
   return url.toString();
 }
 
 export function remoteScreenWebSocketUrl(session: PairingSession): string {
   const url = new URL("/ws/remote/screen", session.baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("token", session.token);
   return url.toString();
+}
+
+export function mobileAuthWebSocketProtocols(session: PairingSession): string[] {
+  return [`${MOBILE_AUTH_WS_PROTOCOL_PREFIX}${session.token}`];
 }
 
 export function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");
-  if (!trimmed) throw new Error("Enter the computer address shown in Mavris.");
+  if (!trimmed) throw new Error("请输入 Mavris 中显示的电脑地址。");
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
@@ -172,7 +176,7 @@ async function parseJson<T>(response: Response): Promise<T> {
     if (response.status === 401 || response.status === 403) {
       throw new AuthExpiredError(detail || undefined);
     }
-    throw new Error(detail || "Mavris could not complete that request. Try again.");
+    throw new Error(detail || "Mavris 未能完成该请求，请重试。");
   }
   return data as T;
 }

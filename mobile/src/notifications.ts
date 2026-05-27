@@ -31,8 +31,8 @@ export async function notifyApproval(approval: BackendApproval): Promise<void> {
   await ensureNotificationChannel();
   await Notifications.scheduleNotificationAsync({
     content: {
-      title: "Mavris needs approval",
-      body: approval.message || "A task is waiting for your decision.",
+      title: "Mavris 需要你审批",
+      body: approval.message || "有一个任务正在等待你确认。",
       data: { approvalId: approval.id },
       sound: "default",
       priority: Notifications.AndroidNotificationPriority.HIGH,
@@ -64,7 +64,7 @@ export function getLastApprovalNotificationApprovalId(): string | null {
 async function ensureNotificationChannel(): Promise<void> {
   if (Platform.OS !== "android") return;
   await Notifications.setNotificationChannelAsync("approvals", {
-    name: "Approvals",
+    name: "审批提醒",
     importance: Notifications.AndroidImportance.HIGH,
     vibrationPattern: [0, 250, 250, 250],
     lightColor: "#0e5f76",

@@ -13,6 +13,7 @@ from app.orchestration.execution_models import (
     EngineSelection,
     EngineTurnResult,
     LargeResultRef,
+    NON_EXECUTABLE_RUN_PHASES,
     RunObservation,
     RunPhase,
     RunState,
@@ -114,7 +115,7 @@ class OSExecutionEngine(ExecutionEngine):
         return self.store.put(cancelled)
 
     async def run_turn(self, state: RunState) -> EngineTurnResult:
-        if state.phase in {RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED, RunPhase.COMPLETED, RunPhase.FAILED, RunPhase.DENIED, RunPhase.CANCELLED}:
+        if state.phase in NON_EXECUTABLE_RUN_PHASES:
             return EngineTurnResult(state=state, finished=True, message=f"Run is already {state.phase.value}.")
 
         orchestrator = self._orchestrator_for_state(state)

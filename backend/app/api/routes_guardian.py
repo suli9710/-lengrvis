@@ -12,7 +12,7 @@ from app.api.routes_pair import PairRedeemRequest
 from app.core import db
 from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
-from app.security.mobile_jwt import require_mobile_token
+from app.security.mobile_jwt import mobile_token_from_websocket, require_mobile_token
 from app.services import mobile_pairing_service, wakeup_service
 from app.services.guardian_runtime import runtime
 from app.services.notification_service import SYSTEM_TASK_ID
@@ -223,7 +223,7 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
     from app.security.mobile_jwt import decode_mobile_token
 
     try:
-        claims = decode_mobile_token(token)
+        claims = decode_mobile_token(mobile_token_from_websocket(websocket, token))
     except HTTPException:
         await websocket.close(code=1008)
         return

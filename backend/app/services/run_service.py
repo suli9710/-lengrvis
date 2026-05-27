@@ -12,14 +12,19 @@ from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.engine_router import EngineRouter
 from app.orchestration.execution_engine import default_run_store
-from app.orchestration.execution_models import EngineTurnResult, RunPhase as EngineRunPhase, RunState
+from app.orchestration.execution_models import (
+    TERMINAL_RUN_PHASES,
+    EngineTurnResult,
+    RunPhase as EngineRunPhase,
+    RunState,
+)
 from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_event
 from app.orchestration.task_phase import TaskPhase
 from app.policy.risk import RiskLevel
 from app.services.task_service import get_task, set_task_status
 
 
-TERMINAL_PHASES = {RunPhase.COMPLETED, RunPhase.FAILED, RunPhase.DENIED, RunPhase.CANCELLED}
+TERMINAL_PHASES = {RunPhase(phase.value) for phase in TERMINAL_RUN_PHASES}
 ENGINE_TERMINAL_PHASES = {
     EngineRunPhase.AWAITING_APPROVAL,
     EngineRunPhase.COMPLETED,
@@ -168,12 +173,15 @@ def runtime_status() -> dict[str, Any]:
 
 def pause_run(run_id: str) -> Run:
     run = get_run(run_id)
+    if run.phase in TERMINAL_PHASES:
+        return run
     if run.task_id:
         _expire_pending_approvals(run.task_id, "pause_requested")
         try:
             set_task_status(run.task_id, "paused")
         except Exception:
             pass
+    _sync_persisted_state_phase(run, RunPhase.PAUSED, "pause_requested")
     _update_run(run, phase=RunPhase.PAUSED)
     run_event_bus.publish(run.id, "turn.completed", {"reason": "pause_requested", "phase": run.phase.value})
     return run
@@ -222,6 +230,8 @@ def _schedule_resume(run: Run) -> Run:
 
 def cancel_run(run_id: str) -> Run:
     run = get_run(run_id)
+    if run.phase in TERMINAL_PHASES:
+        return run
     _cancel_persisted_state(run)
     if run.engine == RunEngine.DEVELOPER:
         try:
@@ -618,6 +628,8 @@ def _sync_run_phase_from_task(run: Run) -> Run:
     phase = _phase_for_task(task)
     if phase == RunPhase.CANCELLED:
         phase = _phase_for_task_plan(task, _latest_plan_for_task(task.id))
+    if _run_active(run.id) and run.phase == RunPhase.RUNNING and phase == RunPhase.PAUSED:
+        return run
     if phase == RunPhase.RUNNING or phase == run.phase:
         return run
     _sync_persisted_state_phase(run, phase, task.final_summary)

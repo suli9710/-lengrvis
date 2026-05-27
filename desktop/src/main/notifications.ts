@@ -6,6 +6,7 @@ import { connect as connectTls, type TLSSocket } from "node:tls";
 import { IPC_CHANNELS } from "../shared/ipc";
 import type { NotificationPayload } from "../shared/types";
 import type { BackendProcessManager } from "./backendProcess";
+import { assertTrustedRenderer } from "./ipc";
 
 const SYSTEM_NOTIFICATION_TASK_ID = "__system__";
 const RECONNECT_DELAY_MS = 5_000;
@@ -50,7 +51,8 @@ export class NotificationBridge {
   constructor(private readonly options: NotificationBridgeOptions) {}
 
   registerIpcHandlers(): void {
-    ipcMain.handle(IPC_CHANNELS.showNotification, (_event, payload: unknown, legacyBody?: unknown) => {
+    ipcMain.handle(IPC_CHANNELS.showNotification, (event, payload: unknown, legacyBody?: unknown) => {
+      assertTrustedRenderer(event);
       const notification = normalizeNotificationPayload(payload, legacyBody);
       if (!notification) {
         return { shown: false, reason: "invalid_payload" } satisfies NotificationResult;

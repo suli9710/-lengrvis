@@ -92,6 +92,49 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED, RunPhase.DENIED])
+async def test_developer_engine_does_not_execute_non_executable_phases(tmp_path, monkeypatch, phase) -> None:
+    async def fail_run_claude_code(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        raise AssertionError("non-executable developer phases must not invoke Claude Code")
+
+    monkeypatch.setattr("app.orchestration.developer_engine.run_claude_code", fail_run_claude_code)
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
+        store=InMemoryRunStore(),
+    )
+    state = RunState(run_id=f"devrun_{phase.value}", engine="developer", phase=phase, goal="inspect repository")
+
+    result = await engine.run_turn(state)
+
+    assert result.finished is True
+    assert result.state.phase == phase
+    assert result.message == f"Run is already {phase.value}."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", [RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED])
+async def test_engine_router_preserves_non_executable_phase_at_max_turns(tmp_path, phase) -> None:
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
+        store=InMemoryRunStore(),
+    )
+    router = EngineRouter({"developer": engine}, default_engine="developer", max_turns=1)
+    state = RunState(
+        run_id=f"devrun_router_{phase.value}",
+        engine="developer",
+        phase=phase,
+        goal="inspect repository",
+        turn_count=1,
+    )
+
+    result = await router.run_turn(state)
+
+    assert result.finished is True
+    assert result.state.phase == phase
+    assert result.message == f"Run is already {phase.value}."
+
+
+@pytest.mark.asyncio
 async def test_engine_router_resumes_and_cancels_by_run_id(tmp_path) -> None:
     engine = DeveloperExecutionEngine(
         settings=AppSettings(allowed_directories=[str(tmp_path)]),

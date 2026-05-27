@@ -71,11 +71,11 @@ export function ChatPanel({
 
   return (
     <Panel
-      title="Chat"
+      title="对话"
       eyebrow="Mavris"
       className="panel--chat"
       action={connectionState === "online" ? null : (
-        <Badge tone="warning">{connectionState === "checking" ? "Checking connection" : "Offline"}</Badge>
+        <Badge tone="warning">{connectionState === "checking" ? "正在检查连接" : "离线"}</Badge>
       )}
     >
       <div className="chat-log" aria-live="polite">
@@ -90,7 +90,7 @@ export function ChatPanel({
         ))}
       </div>
       {suggestions.length ? (
-        <div className="intent-suggestions" aria-label="Suggestions">
+        <div className="intent-suggestions" aria-label="建议">
           {suggestions.slice(0, 3).map((suggestion) => (
             <article
               className="intent-suggestion"
@@ -112,7 +112,7 @@ export function ChatPanel({
                   disabled={!onExecuteSuggestion || executingSuggestionId !== null}
                 >
                   <Play size={14} aria-hidden="true" />
-                  {executingSuggestionId === suggestion.id ? "Executing" : "Execute"}
+                  {executingSuggestionId === suggestion.id ? "正在执行" : "执行"}
                 </button>
                 <button
                   className="button button--ghost button--small"
@@ -120,7 +120,7 @@ export function ChatPanel({
                   onClick={() => editSuggestion(suggestion)}
                 >
                   <Pencil size={14} aria-hidden="true" />
-                  Edit
+                  编辑
                 </button>
               </div>
             </article>
@@ -138,7 +138,7 @@ export function ChatPanel({
               void submit();
             }
           }}
-          placeholder="Ask Mavris to find a file, summarize a document, or check this computer."
+          placeholder="让 Mavris 帮你找文件、总结文档，或检查这台电脑。"
           rows={3}
         />
         <button
@@ -147,7 +147,7 @@ export function ChatPanel({
           disabled={isSending || !hasDraft}
         >
           <Send size={16} aria-hidden="true" />
-          {isSending ? "Sending" : "Send"}
+          {isSending ? "发送中" : "发送"}
         </button>
       </div>
     </Panel>

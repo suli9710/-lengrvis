@@ -15,6 +15,14 @@ import {
 import type { BackendStatus } from "../../shared/types";
 import type { AssistantMode, MavrisStore, ViewKey } from "./types";
 
+const viewKeys = new Set<ViewKey>(["home", "chat", "files", "computer", "agents", "browser", "memories", "safety", "settings"]);
+
+function initialView(): ViewKey {
+  if (typeof window === "undefined") return "home";
+  const view = new URLSearchParams(window.location.search).get("view");
+  return viewKeys.has(view as ViewKey) ? view as ViewKey : "home";
+}
+
 export const disconnectedStatus: BackendStatus = {
   state: "not_configured",
   baseUrl: sampleSettings.apiBaseUrl,
@@ -84,7 +92,7 @@ export const useMavrisStore = create<MavrisStore>((set) => ({
   setActiveBrowserSessionId: (activeBrowserSessionId) => set({ activeBrowserSessionId }),
   setBrowserError: (browserError) => set({ browserError }),
 
-  activeView: "home" as ViewKey,
+  activeView: initialView(),
   setActiveView: (activeView) => set({ activeView }),
 
   safetyReview: sampleSafetyReview,

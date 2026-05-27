@@ -22,6 +22,14 @@ class RunPhase(StrEnum):
     CANCELLED = "cancelled"
 
 
+TERMINAL_RUN_PHASES: frozenset[RunPhase] = frozenset(
+    {RunPhase.COMPLETED, RunPhase.FAILED, RunPhase.DENIED, RunPhase.CANCELLED}
+)
+NON_EXECUTABLE_RUN_PHASES: frozenset[RunPhase] = frozenset(
+    {*TERMINAL_RUN_PHASES, RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED}
+)
+
+
 class RunObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

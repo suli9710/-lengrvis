@@ -213,18 +213,20 @@ class ClaudeCodeProcessRegistry:
             running_loop = None
         if running_loop is loop:
             return await self._cancel_on_owner_loop(run_id, process, timeout_seconds=timeout_seconds)
-        future = asyncio.run_coroutine_threadsafe(
-            self._cancel_on_owner_loop(run_id, process, timeout_seconds=timeout_seconds),
-            loop,
-        )
+        coro = self._cancel_on_owner_loop(run_id, process, timeout_seconds=timeout_seconds)
         try:
-            return await asyncio.wrap_future(future)
-        except (RuntimeError, concurrent.futures.CancelledError):
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                self.unregister(run_id, process)
-            return True
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+        except RuntimeError:
+            coro.close()
+            return self._terminate_without_owner_loop(run_id, process)
+        try:
+            return await asyncio.wait_for(
+                asyncio.wrap_future(future),
+                timeout=max(timeout_seconds + 0.5, timeout_seconds),
+            )
+        except (RuntimeError, asyncio.TimeoutError, concurrent.futures.CancelledError):
+            future.cancel()
+            return self._terminate_without_owner_loop(run_id, process)
 
     async def _cancel_on_owner_loop(
         self,
@@ -248,6 +250,15 @@ class ClaudeCodeProcessRegistry:
             await process.wait()
         finally:
             self.unregister(run_id, process)
+        return True
+
+    def _terminate_without_owner_loop(self, run_id: str, process: asyncio.subprocess.Process) -> bool:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            self.unregister(run_id, process)
+            return False
+        self.unregister(run_id, process)
         return True
 
     def active_run_ids(self) -> list[str]:
@@ -626,6 +637,7 @@ async def run_claude_code(
         summary.returncode = process.returncode
         if registry.consume_cancel_requested(run_id):
             summary.cancelled = True
+        await _wait_for_subprocess_transport_closed(process)
 
     return summary
 
@@ -1295,3 +1307,18 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
         except ProcessLookupError:
             return
         await process.wait()
+
+
+async def _wait_for_subprocess_transport_closed(process: asyncio.subprocess.Process) -> None:
+    protocol = getattr(process, "_protocol", None)
+    for _ in range(10):
+        transport = getattr(process, "_transport", None)
+        protocol_transport = getattr(protocol, "_transport", None)
+        pipe_fds = getattr(protocol, "_pipe_fds", ())
+        if (transport is None or transport.is_closing()) and protocol_transport is None and not pipe_fds:
+            return
+        await asyncio.sleep(0.05 if os.name == "nt" else 0)
+    transport = getattr(process, "_transport", None)
+    if transport is not None and not transport.is_closing():
+        transport.close()
+        await asyncio.sleep(0.1 if os.name == "nt" else 0)

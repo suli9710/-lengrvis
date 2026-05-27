@@ -14,6 +14,7 @@ TOKEN_ISSUER = "mavris-backend"
 TOKEN_SCOPE = "mobile:approval"
 REMOTE_VIEW_SCOPE = "remote:view"
 REMOTE_INPUT_SCOPE = "remote:input"
+MOBILE_AUTH_WS_PROTOCOL_PREFIX = "mavris.mobile.token."
 
 
 def issue_mobile_token(
@@ -72,9 +73,21 @@ def mobile_token_from_query(token: str = Query(default="")) -> dict[str, Any]:
     return decode_mobile_token(token)
 
 
+def mobile_token_from_websocket(websocket: WebSocket, token: str = "") -> str:
+    query_token = token.strip()
+    if query_token:
+        return query_token
+    for protocol in _websocket_protocols(websocket):
+        if protocol.startswith(MOBILE_AUTH_WS_PROTOCOL_PREFIX):
+            candidate = protocol.removeprefix(MOBILE_AUTH_WS_PROTOCOL_PREFIX).strip()
+            if candidate:
+                return candidate
+    return ""
+
+
 async def accept_or_close_mobile_websocket(websocket: WebSocket, token: str) -> dict[str, Any] | None:
     try:
-        return decode_mobile_token(token)
+        return decode_mobile_token(mobile_token_from_websocket(websocket, token))
     except HTTPException as exc:
         await websocket.accept()
         await websocket.send_json({"type": "error", "code": "unauthorized", "message": str(exc.detail)})
@@ -84,6 +97,11 @@ async def accept_or_close_mobile_websocket(websocket: WebSocket, token: str) -> 
 
 def new_device_id() -> str:
     return f"mobile_{secrets.token_hex(8)}"
+
+
+def _websocket_protocols(websocket: WebSocket) -> list[str]:
+    raw_header = websocket.headers.get("sec-websocket-protocol", "")
+    return [item.strip() for item in raw_header.split(",") if item.strip()]
 
 
 def _secret() -> str:

@@ -16,6 +16,7 @@ import {
   AuthExpiredError,
   approvalWebSocketUrl,
   listPendingApprovals,
+  mobileAuthWebSocketProtocols,
   type ApprovalEvent,
   type BackendApproval,
   type PairingSession,
@@ -46,7 +47,7 @@ export function ApprovalsScreen({
     () => approvals.filter((approval) => approval.status === "pending").length,
     [approvals],
   );
-  const headerTitle = pendingCount === 0 ? "All caught up" : `${pendingCount} waiting`;
+  const headerTitle = pendingCount === 0 ? "暂无待处理" : `${pendingCount} 项待审批`;
 
   const upsertApproval = useCallback((approval: BackendApproval) => {
     setApprovals((current) => {
@@ -99,7 +100,7 @@ export function ApprovalsScreen({
       setError(errorMessage(currentError));
     });
 
-    const socket = new WebSocket(approvalWebSocketUrl(session));
+    const socket = new WebSocket(approvalWebSocketUrl(session), mobileAuthWebSocketProtocols(session));
     socketRef.current = socket;
 
     socket.onopen = () => {
@@ -128,7 +129,7 @@ export function ApprovalsScreen({
     };
 
     socket.onerror = () => {
-      setError("Can't stay connected to your computer. Make sure Mavris is open, then tap refresh.");
+      setError("无法保持与电脑的连接。请确认 Mavris 已打开，然后点刷新。");
     };
 
     socket.onclose = (event) => {
@@ -154,9 +155,9 @@ export function ApprovalsScreen({
   };
 
   const handleUnpair = () => {
-    Alert.alert("Disconnect phone?", "You can connect again later from Mavris on your computer.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Disconnect", onPress: () => void disconnectPhone(), style: "destructive" },
+    Alert.alert("断开手机连接？", "之后仍可在电脑端 Mavris 重新连接。", [
+      { text: "取消", style: "cancel" },
+      { text: "断开连接", onPress: () => void disconnectPhone(), style: "destructive" },
     ]);
   };
 
@@ -169,12 +170,12 @@ export function ApprovalsScreen({
       <StatusBar barStyle="dark-content" backgroundColor="#f6f4ee" />
       <View style={styles.header}>
         <View>
-          <Text style={styles.kicker}>{connection === "online" ? "Connected to computer" : "Trying to connect"}</Text>
+          <Text style={styles.kicker}>{connection === "online" ? "已连接电脑" : "正在连接"}</Text>
           <Text style={styles.headerTitle}>{headerTitle}</Text>
         </View>
         <View style={styles.headerActions}>
-          <IconButton accessibilityLabel="Refresh requests" icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
-          <IconButton accessibilityLabel="Disconnect phone" icon={<Unlink size={18} color="#8c2f39" />} onPress={handleUnpair} />
+          <IconButton accessibilityLabel="刷新请求" icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
+          <IconButton accessibilityLabel="断开手机连接" icon={<Unlink size={18} color="#8c2f39" />} onPress={handleUnpair} />
         </View>
       </View>
 
@@ -185,7 +186,7 @@ export function ApprovalsScreen({
       {notificationsOff ? (
         <View style={styles.noticeRow}>
           <BellOff size={16} color="#7a5700" />
-          <Text style={styles.noticeText}>Phone alerts are off. Leave this open or tap refresh to check for requests.</Text>
+          <Text style={styles.noticeText}>手机通知已关闭。请保持此页面打开，或点击刷新查看请求。</Text>
         </View>
       ) : null}
       {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
@@ -197,8 +198,8 @@ export function ApprovalsScreen({
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <ShieldCheck size={34} color="#5f6b76" />
-            <Text style={styles.emptyTitle}>You're all caught up</Text>
-            <Text style={styles.emptyText}>New requests from your computer will appear here.</Text>
+            <Text style={styles.emptyTitle}>暂无待处理</Text>
+            <Text style={styles.emptyText}>电脑端的新审批请求会显示在这里。</Text>
           </View>
         }
         renderItem={({ item }) => <ApprovalCard approval={item} onPress={() => onSelectApproval(item)} />}
@@ -251,31 +252,31 @@ function IconButton({
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.includes("Failed to fetch")) {
-    return "Could not reach your computer. Make sure Mavris is open, then tap refresh.";
+    return "无法连接到电脑。请确认 Mavris 已打开，然后点刷新。";
   }
-  return "Could not update requests. Tap refresh to try again.";
+  return "无法更新请求。请点刷新重试。";
 }
 
 function connectionStatusText(connection: ApprovalConnection): string {
-  if (connection === "online") return "Connected";
-  if (connection === "connecting") return "Connecting";
-  return "Offline - tap refresh to try again";
+  if (connection === "online") return "已连接";
+  if (connection === "connecting") return "正在连接";
+  return "离线，请点刷新重试";
 }
 
 function approvalStatusText(approval: BackendApproval): string {
-  if (approval.status === "pending") return "Waiting";
+  if (approval.status === "pending") return "待审批";
   return approvalStatusLabel(approval.status);
 }
 
 function approvalCardTitle(approval: BackendApproval): string {
-  if (approval.approval_type === "tool_call") return "Review request";
-  return approvalTitle(approval).replace("Tool Approval", "Review request").replace("Tool approval", "Review request");
+  if (approval.approval_type === "tool_call") return "审批请求";
+  return approvalTitle(approval).replace("工具审批", "审批请求");
 }
 
 function readablePreview(value: unknown): string {
   const preview = formatPreview(value);
-  if (preview === "No preview payload") return "Open to review the details.";
-  if (preview.trim().startsWith("{") || preview.trim().startsWith("[")) return "Open to review the details.";
+  if (preview === "暂无预览内容") return "打开后查看详情。";
+  if (preview.trim().startsWith("{") || preview.trim().startsWith("[")) return "打开后查看详情。";
   return preview;
 }
 
