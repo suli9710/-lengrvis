@@ -1,77 +1,91 @@
 from __future__ import annotations
 
-import pytest
+import importlib
 
-from conftest import import_first, load_json_fixture, require_attr
+from app.policy.policy_engine import PolicyEngine
+from app.policy.risk import RiskLevel, SafetyVerdict
+from app.tools.schemas import ToolDefinition
 
 
-POLICY_MODULES = (
+LEGACY_STUB_MODULES = (
     "backend.policy.engine",
-    "backend.core.policy",
-    "backend.security.policy",
-    "mavris.policy.engine",
+    "backend.security.paths",
+    "backend.providers.fallback",
+    "backend.tools.files",
 )
 
 
-def _decision_allowed(decision) -> bool:
-    if isinstance(decision, bool):
-        return decision
-    if isinstance(decision, dict):
-        if "allowed" in decision:
-            return bool(decision["allowed"])
-        if "allow" in decision:
-            return bool(decision["allow"])
-        if "decision" in decision:
-            return str(decision["decision"]).lower() in {"allow", "allowed"}
-    for attr in ("allowed", "allow"):
-        if hasattr(decision, attr):
-            return bool(getattr(decision, attr))
-    if hasattr(decision, "decision"):
-        return str(getattr(decision, "decision")).lower() in {"allow", "allowed"}
-    raise AssertionError(f"Cannot interpret policy decision: {decision!r}")
-
-
-@pytest.fixture
-def policy_api():
-    module = import_first(POLICY_MODULES)
-    evaluator = require_attr(
-        module,
-        ("evaluate_policy", "evaluate", "authorize", "is_allowed", "PolicyEngine"),
+def _trusted_read_tool() -> ToolDefinition:
+    return ToolDefinition(
+        name="file.read_text",
+        description="Read authorized text files.",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=True,
+        execute=lambda _args, _context: {},
+        capabilities=["file.read"],
+        effects=["read"],
+        resource_kinds=["file"],
+        fast_path_eligible=True,
+        trust_tier="builtin",
     )
-    if isinstance(evaluator, type):
-        instance = evaluator(load_json_fixture("policies/basic_policy.json"))
-        return instance.evaluate
-    return evaluator
 
 
-def _evaluate(policy_api, action: str, resource: str, subject: str = "user"):
-    context = {
-        "subject": subject,
-        "action": action,
-        "resource": resource,
-        "metadata": {"source": "pytest"},
-    }
-    try:
-        return policy_api(context)
-    except TypeError:
-        return policy_api(subject=subject, action=action, resource=resource, context=context)
+def test_policy_engine_uses_real_app_contract():
+    assert PolicyEngine.__module__ == "app.policy.policy_engine"
 
 
-def test_policy_allows_declared_read_action(policy_api):
-    decision = _evaluate(policy_api, action="files.read", resource="workspace://notes/safe.txt")
+def test_legacy_stub_contract_modules_are_not_importable():
+    for module_name in LEGACY_STUB_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            assert exc.name in {module_name, module_name.rsplit(".", 1)[0]}
+        else:
+            raise AssertionError(f"{module_name} should not shadow app.* contracts")
 
-    assert _decision_allowed(decision) is True
+
+def test_policy_allows_trusted_read_only_tool_call():
+    review = PolicyEngine().review_tool_call(
+        task_id="task_contract",
+        step_id="step_read",
+        tool_name="file.read_text",
+        args={"path": "notes/safe.txt"},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        context={"user_trust_level": "medium"},
+        tool_definition=_trusted_read_tool(),
+    )
+
+    assert review.verdict == SafetyVerdict.ALLOW
+    assert review.risk_level == RiskLevel.R0_READ_ONLY
 
 
-@pytest.mark.parametrize(
-    ("action", "resource"),
-    [
-        ("files.delete", "workspace://notes/safe.txt"),
-        ("shell.exec", "system://powershell"),
-        ("files.read", "file:///etc/passwd"),
-    ],
-)
-def test_policy_denies_disallowed_actions_by_default(policy_api, action: str, resource: str):
-    decision = _evaluate(policy_api, action=action, resource=resource)
+def test_policy_requires_approval_for_modifying_file_tool_call():
+    review = PolicyEngine().review_tool_call(
+        task_id="task_contract",
+        step_id="step_write",
+        tool_name="file.write_text",
+        args={"path": "notes/safe.txt", "text": "updated", "dry_run": False},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        context={"user_trust_level": "medium"},
+    )
 
-    assert _decision_allowed(decision) is False
+    assert review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
+    assert review.risk_level == RiskLevel.R2_REVERSIBLE_MODIFY
+
+
+def test_policy_denies_forbidden_shell_or_secret_tool_call():
+    review = PolicyEngine().review_tool_call(
+        task_id="task_contract",
+        step_id="step_shell",
+        tool_name="shell.exec",
+        args={"command": "Get-Content token.txt"},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        context={"user_trust_level": "medium"},
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF

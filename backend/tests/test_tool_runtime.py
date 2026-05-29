@@ -9,7 +9,7 @@ import pytest
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, SafetyReview, StepStatus, Task, TaskStatus
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import StepPhase, set_step_status
@@ -573,6 +573,63 @@ def test_runtime_safety_review_uses_context_for_dynamic_risk():
     assert tool_call_review["risk_level"] == RiskLevel.R2_REVERSIBLE_MODIFY
     assert "Deep-night operation increases review risk" in " ".join(tool_call_review["reasons"])
     assert calls == [{"url": "https://example.com", "dry_run": True}]
+
+
+def test_runtime_honors_plan_step_requires_approval_when_safety_allows(monkeypatch):
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True, "dry_run": args.get("dry_run")}
+
+    class AllowingSafety:
+        def review_tool_call(self, task_id, step_id, *args, **kwargs):  # noqa: ANN001, ANN202, ARG002
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.ALLOW,
+                risk_level=RiskLevel.R0_READ_ONLY,
+                reasons=["test safety allow"],
+            )
+
+        def review_tool_result(self, task_id, step_id, *args, **kwargs):  # noqa: ANN001, ANN202, ARG002
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_result",
+                verdict=SafetyVerdict.ALLOW,
+                risk_level=RiskLevel.R0_READ_ONLY,
+                reasons=["test result allow"],
+            )
+
+    orchestrator = OrchestratorAgent()
+    monkeypatch.setattr(orchestrator, "safety", AllowingSafety())
+    monkeypatch.setattr(orchestrator, "_supervise_new_agent_messages", lambda *args, **kwargs: True)
+    task, _plan, step = _task_plan_step("test.force_approval", {"value": "planned"})
+    step.requires_approval = True
+    tool = ToolDefinition(
+        name=step.tool_name,
+        description="planner-forced approval",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["read"],
+    )
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+
+    outcome = asyncio.run(ToolRuntime(orchestrator).review_and_maybe_prepare_approval(task, step, tool, runtime))
+
+    assert outcome.kind == "waiting_user_approval"
+    assert calls == [{"value": "planned", "dry_run": True}]
+    assert step.status == StepStatus.WAITING_USER_APPROVAL
+    approvals = db.fetch_many("approvals", "task_id = ?", (task.id,), limit=10)
+    assert approvals and approvals[0]["status"] == ApprovalStatus.PENDING
 
 
 def test_runtime_denies_approval_when_tool_lacks_dry_run_after_dynamic_risk():

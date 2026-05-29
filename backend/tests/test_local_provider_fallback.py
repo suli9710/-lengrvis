@@ -224,3 +224,16 @@ def test_root_health_includes_local_llm_snapshot_for_privacy_mode(monkeypatch):
     assert payload["status"] == "ok"
     assert payload["local_llm"]["available"] is False
     assert payload["local_llm"]["selected_backend"] is None
+
+
+def test_process_env_mode_overrides_persisted_settings(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARVIS_MODE", "privacy")
+
+    from app.core import db
+    from app.llm.registry import get_effective_settings
+
+    db.init_db()
+    db.set_setting("mode", "efficiency")
+
+    assert get_effective_settings().mode == "privacy"

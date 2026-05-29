@@ -57,8 +57,8 @@ class MemoryAgent(BaseAgent):
                     message_type=MessageType.OBSERVATION,
                     structured_payload={"memory_id": memory.id, "kind": kind, "tags": memory.tags},
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            record("memory.bus_publish_failed", self.name, {"error": str(exc)}, task_id=task_id)
         return memory
 
     async def remember_lesson(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections import defaultdict
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -108,14 +109,10 @@ class RunEventBus:
     @staticmethod
     def _enqueue_event(queue: asyncio.Queue[RunEvent], event: RunEvent) -> None:
         if queue.full():
-            try:
+            with suppress(asyncio.QueueEmpty):
                 queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        try:
+        with suppress(asyncio.QueueFull):
             queue.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
 
 
 def run_event_to_wire(event: RunEvent, *, replay: bool = False) -> dict[str, Any]:

@@ -178,3 +178,18 @@ def test_local_model_readiness_endpoint():
     data = resp.json()
     assert data["can_install"] is True
     assert data["recommended_model"] == "test-model"
+
+
+def test_local_model_setup_plan_endpoint(mock_ollama_not_installed):
+    """Test the privacy onboarding setup plan endpoint."""
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    resp = client.get("/api/settings/local-model/setup-plan?model=test-model")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ready"] is False
+    assert data["next_action"] == "install_runtime"
+    assert data["model"] == "test-model"
+    assert data["steps"][0]["key"] == "hardware"

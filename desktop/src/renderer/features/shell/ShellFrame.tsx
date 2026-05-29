@@ -1,16 +1,32 @@
 import {
+  AppWindow,
   Bell,
   BookOpenText,
+  Bot,
+  CalendarDays,
+  CheckCircle2,
+  CircleDashed,
+  FileImage,
   Home,
+  Image as ImageIcon,
   Laptop,
   Loader2,
+  MapPin,
   MessageSquarePlus,
   RefreshCw,
   Settings,
+  Sparkles,
+  TerminalSquare,
+  TriangleAlert,
+  UserRound,
   type LucideIcon
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import type { ChatMessage, SystemInfo, TaskEvent } from "../../../shared/types";
+import xiaomaErrorGif from "../../assets/xiaoma-agent/sleeping.gif";
+import xiaomaCompletedGif from "../../assets/xiaoma-agent/salute.gif";
+import xiaomaRunningGif from "../../assets/xiaoma-agent/working.gif";
 import xiaomaStandbyGif from "../../assets/xiaoma-agent/standby.gif";
 import type { ConnectionState, ViewKey } from "../../store";
 
@@ -18,6 +34,11 @@ export interface NavItem {
   icon: LucideIcon;
   label: string;
   view: ViewKey;
+}
+
+export interface NavGroup {
+  label?: string;
+  items: NavItem[];
 }
 
 export interface RecentDialogue {
@@ -30,24 +51,69 @@ export interface ViewTitle {
   subtitle: string;
 }
 
-export const primaryNavItems: NavItem[] = [
-  { icon: Home, label: "首页", view: "home" },
-  { icon: MessageSquarePlus, label: "对话", view: "chat" },
-  { icon: BookOpenText, label: "文件", view: "files" },
-  { icon: Laptop, label: "电脑", view: "computer" },
-  { icon: Settings, label: "设置", view: "settings" }
+export const primaryNavGroups: NavGroup[] = [
+  {
+    items: [
+      { icon: Home, label: "首页", view: "home" },
+      { icon: MessageSquarePlus, label: "对话", view: "chat" },
+      { icon: Bot, label: "总览", view: "agentOps" },
+      { icon: TerminalSquare, label: "进度", view: "agents" },
+      { icon: Settings, label: "设置", view: "settings" }
+    ]
+  },
+  {
+    label: "本地知识库",
+    items: [
+      { icon: AppWindow, label: "应用", view: "apps" },
+      { icon: BookOpenText, label: "文档", view: "documents" },
+      { icon: BookOpenText, label: "文档识别", view: "documentOcr" },
+      { icon: BookOpenText, label: "论文", view: "papers" },
+      { icon: BookOpenText, label: "课件", view: "courseware" },
+      { icon: BookOpenText, label: "报告", view: "reports" }
+    ]
+  },
+  {
+    label: "图库",
+    items: [
+      { icon: ImageIcon, label: "图库", view: "gallery" },
+      { icon: FileImage, label: "图片识别", view: "imageOcr" },
+      { icon: UserRound, label: "人物印象", view: "people" },
+      { icon: MapPin, label: "足迹地点", view: "places" },
+      { icon: CalendarDays, label: "时光长廊", view: "timeline" }
+    ]
+  },
+  {
+    items: [
+      { icon: BookOpenText, label: "文件工具", view: "files" },
+      { icon: Laptop, label: "此电脑", view: "computer" }
+    ]
+  }
 ];
+
+export const primaryNavItems: NavItem[] = primaryNavGroups.flatMap((group) => group.items);
 
 export const viewTitles: Record<ViewKey, ViewTitle> = {
   browser: { title: "浏览器监看", subtitle: "查看浏览器活动，并在需要时接管控制" },
   home: { title: "首页", subtitle: "让 Mavris 帮你处理电脑上的事务" },
-  chat: { title: "对话", subtitle: "继续和 Mavris 协作" },
-  files: { title: "文件", subtitle: "查找、整理和分析你的文档" },
-  computer: { title: "电脑", subtitle: "检查这台设备并打开常用工具" },
+  chat: { title: "对话", subtitle: "自然对话，全程 Agent 协作" },
+  agentOps: { title: "Agent 总览", subtitle: "查看真实协作状态，并从对话或审批继续" },
+  apps: { title: "应用", subtitle: "直接查看本地应用和脚本" },
+  documents: { title: "文档", subtitle: "直接查看本地文档内容" },
+  documentOcr: { title: "文档识别", subtitle: "定位本地文档并按需识别" },
+  papers: { title: "论文", subtitle: "浏览本地论文和研究材料" },
+  courseware: { title: "课件", subtitle: "浏览本地课件和讲义" },
+  reports: { title: "报告", subtitle: "浏览本地报告和总结" },
+  gallery: { title: "图库", subtitle: "直接查看本地图片" },
+  imageOcr: { title: "图片识别", subtitle: "浏览图片并按需识别" },
+  people: { title: "人物印象", subtitle: "查看本地人物相关图片" },
+  places: { title: "足迹地点", subtitle: "查看本地地点相关图片" },
+  timeline: { title: "时光长廊", subtitle: "按时间查看本地图片" },
+  files: { title: "文件工具", subtitle: "查找、整理和分析你的文件" },
+  computer: { title: "此电脑", subtitle: "检查这台设备并打开常用工具" },
   agents: { title: "进度", subtitle: "当前正在处理的工作" },
   memories: { title: "记忆", subtitle: "Mavris 后续可使用的本地信息" },
   safety: { title: "审批", subtitle: "等待你确认的项目" },
-  settings: { title: "设置", subtitle: "偏好、安全权限和运行配置" }
+  settings: { title: "设置", subtitle: "隐私模式、本地 AI、技能、安全权限和运行配置" }
 };
 
 export function ShellFrame({
@@ -58,6 +124,9 @@ export function ShellFrame({
   onRefresh,
   onOpenApprovals,
   hasPendingApproval,
+  messages = [],
+  tasks = [],
+  systemInfo,
   children
 }: {
   activeView: ViewKey;
@@ -67,30 +136,341 @@ export function ShellFrame({
   onRefresh: () => void;
   onOpenApprovals: () => void;
   hasPendingApproval: boolean;
+  messages?: ChatMessage[];
+  tasks?: TaskEvent[];
+  systemInfo?: SystemInfo;
   children: ReactNode;
 }) {
   const viewMeta = viewTitles[activeView];
+  const connection = getConnectionSummary(connectionState, isLoading);
+  const workbench = getWorkbenchState({ isLoading, messages, tasks, connectionState });
+  const health = getComputerHealthSummary(systemInfo);
+  const recentReadableMessages = getRecentReadableMessages(messages);
 
   return (
     <div className="marvis-shell">
-      <Sidebar
-        activeView={activeView}
-        onViewChange={onViewChange}
-      />
+      <Sidebar activeView={activeView} onViewChange={onViewChange} />
 
-      <main className="marvis-main">
-        <WindowBar
-          viewMeta={viewMeta}
-          connectionState={connectionState}
-          isLoading={isLoading}
-          onRefresh={onRefresh}
-          onOpenApprovals={onOpenApprovals}
-          hasPendingApproval={hasPendingApproval}
+      <div className="marvis-workbench-layout">
+        <main className="marvis-main">
+          <WindowBar
+            activeView={activeView}
+            viewMeta={viewMeta}
+            connectionState={connectionState}
+            isLoading={isLoading}
+            onRefresh={onRefresh}
+            onOpenApprovals={onOpenApprovals}
+            hasPendingApproval={hasPendingApproval}
+          />
+          {children}
+        </main>
+
+        <WorkbenchPanel
+          state={workbench.state}
+          title={workbench.title}
+          detail={workbench.detail}
+          connection={connection}
+          health={health}
+          activeTask={workbench.activeTask}
+          recentMessages={recentReadableMessages}
         />
-        {children}
-      </main>
+      </div>
     </div>
   );
+}
+
+type WorkbenchAgentState = "idle" | "running" | "completed" | "error";
+
+interface StatusSummary {
+  state: WorkbenchAgentState;
+  text: string;
+  detail: string;
+}
+
+function WorkbenchPanel({
+  state,
+  title,
+  detail,
+  connection,
+  health,
+  activeTask,
+  recentMessages
+}: {
+  state: WorkbenchAgentState;
+  title: string;
+  detail: string;
+  connection: StatusSummary;
+  health: StatusSummary;
+  activeTask?: TaskEvent;
+  recentMessages: ChatMessage[];
+}) {
+  const image = workbenchGifForState(state);
+
+  return (
+    <aside className={`workbench-panel workbench-panel--${state}`} aria-label="Mavris 当前状态">
+      <section className="workbench-card workbench-card--agent">
+        <div className="workbench-card__head">
+          <span>
+            <Sparkles size={14} aria-hidden="true" />
+            状态总览
+          </span>
+          <strong>{stateLabel(state, connection.state)}</strong>
+        </div>
+        <div className="workbench-agent-stage">
+          <img className="workbench-agent-gif" src={image} alt="" draggable={false} />
+        </div>
+        <div className="workbench-status-stack">
+          <StatusLine title="Mavris 连接" summary={connection} />
+          <StatusLine title="最近任务" summary={{ state, text: title, detail }} />
+          <StatusLine title="电脑健康" summary={health} />
+        </div>
+      </section>
+
+      <section className="workbench-card">
+        <div className="workbench-card__head">
+          <span>
+            <TerminalSquare size={14} aria-hidden="true" />
+            下一步
+          </span>
+        </div>
+        {activeTask ? (
+          <div className="workbench-task">
+            <span className={`workbench-task__dot workbench-task__dot--${activeTask.state}`} />
+            <div>
+              <strong>{activeTask.title}</strong>
+              <p>{activeTask.description}</p>
+            </div>
+          </div>
+        ) : (
+          <p className="workbench-empty">在首页输入一句话，我会先整理要做什么，再开始执行。</p>
+        )}
+      </section>
+
+      <section className="workbench-card workbench-card--messages">
+        <div className="workbench-card__head">
+          <span>
+            <MessageSquarePlus size={14} aria-hidden="true" />
+            最近回复
+          </span>
+        </div>
+        <div className="workbench-message-list">
+          {recentMessages.length ? recentMessages.map((message) => (
+            <div className="workbench-message" key={message.id}>
+              <strong>{friendlyMessageAuthor(message)}</strong>
+              <p>{messagePreview(message)}</p>
+            </div>
+          )) : (
+            <p className="workbench-empty">这里会保留最近几条对话，方便你接着问。</p>
+          )}
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function StatusLine({ title, summary }: { title: string; summary: StatusSummary }) {
+  const Icon = summary.state === "error" ? TriangleAlert : summary.state === "idle" ? CircleDashed : CheckCircle2;
+  return (
+    <div className={`workbench-status-line workbench-status-line--${summary.state}`}>
+      <span className="workbench-status-line__icon">
+        <Icon size={13} aria-hidden="true" />
+      </span>
+      <div>
+        <strong>{title}</strong>
+        <p>{summary.text}</p>
+        <small>{summary.detail}</small>
+      </div>
+    </div>
+  );
+}
+
+function getWorkbenchState({
+  isLoading,
+  messages,
+  tasks,
+  connectionState
+}: {
+  isLoading: boolean;
+  messages: ChatMessage[];
+  tasks: TaskEvent[];
+  connectionState: ConnectionState;
+}) {
+  const visibleTasks = recentUserFacingTasks(tasks);
+  const activeTask = visibleTasks.find((task) => task.state === "running" || task.state === "queued" || task.state === "blocked");
+  const latestTask = visibleTasks[0];
+  const latestMessage = messages[messages.length - 1];
+  const hasError = latestTask?.state === "failed" || latestMessage?.status === "failed";
+
+  if (connectionState === "offline" && !activeTask) {
+    return {
+      state: "idle" as const,
+      title: "暂无最近任务",
+      detail: "Mavris 服务未连接，任务还不会进入执行流；这不代表电脑本身有问题。",
+      activeTask: undefined
+    };
+  }
+
+  if (connectionState === "checking" && !activeTask) {
+    return {
+      state: "running" as const,
+      title: "正在连接服务",
+      detail: "正在确认 Mavris 服务状态，还没有开始新的用户任务。",
+      activeTask: undefined
+    };
+  }
+
+  if (hasError) {
+    return {
+      state: "error" as const,
+      title: "最近任务需关注",
+      detail: "最近一次处理没有顺利完成，可以稍后重试或换个说法。",
+      activeTask: activeTask ?? latestTask
+    };
+  }
+
+  if (isLoading || activeTask) {
+    return {
+      state: "running" as const,
+      title: activeTask ? "小马正在工作" : "正在同步工作台",
+      detail: activeTask?.description || "我在整理最新状态，很快就可以继续使用。",
+      activeTask
+    };
+  }
+
+  if (latestTask?.state === "completed") {
+    return {
+      state: "completed" as const,
+      title: "刚完成一项工作",
+      detail: latestTask.description || "任务已经收尾，可以继续发起下一步。",
+      activeTask: latestTask
+    };
+  }
+
+  return {
+    state: "idle" as const,
+    title: latestTask ? "暂无进行中的任务" : "暂无最近任务",
+    detail: latestTask ? "最近任务已经收尾，可以继续发起下一步。" : "把文件、电脑或文档相关的需求交给我，我会先确认要做什么。",
+    activeTask: undefined
+  };
+}
+
+function getConnectionSummary(connectionState: ConnectionState, _isLoading: boolean): StatusSummary {
+  if (connectionState === "online") {
+    return {
+      state: "completed",
+      text: "已连接",
+      detail: "Mavris 服务可用，可以继续发起任务。"
+    };
+  }
+  if (connectionState === "checking") {
+    return {
+      state: "running",
+      text: "正在连接",
+      detail: "正在同步服务状态，这不代表电脑异常。"
+    };
+  }
+  return {
+    state: "error",
+    text: "连接待恢复",
+    detail: "只是 Mavris 服务暂时不可用，不代表电脑本身有问题。"
+  };
+}
+
+function getComputerHealthSummary(info?: SystemInfo): StatusSummary {
+  const diagnostics = info?.diagnostics;
+  const suggestions = info?.diagnostics?.suggestions ?? [];
+  const hasInfoValues = Boolean(diagnostics?.info && Object.keys(diagnostics.info).length > 0);
+  const hasSnapshot =
+    Boolean(diagnostics) &&
+    (hasInfoValues ||
+      Boolean(diagnostics?.disks?.length) ||
+      Boolean(diagnostics?.topProcesses?.length) ||
+      Boolean(diagnostics?.startupItems?.length) ||
+      Boolean(suggestions.length));
+  const hasCriticalIssue = suggestions.some((suggestion) =>
+    !/No critical system issue detected/i.test(suggestion) &&
+    /low|critical|error|failed|严重|不足|失败|异常/i.test(suggestion)
+  );
+
+  if (hasSnapshot && hasCriticalIssue) {
+    return {
+      state: "error",
+      text: "建议关注",
+      detail: "只读诊断发现了需要留意的项目，可以进入“此电脑”查看。"
+    };
+  }
+  if (hasSnapshot) {
+    return {
+      state: "completed",
+      text: "未发现关键问题",
+      detail: "只读诊断未发现关键系统问题。部分“未知”只表示暂未读取到。"
+    };
+  }
+  return {
+    state: "idle",
+    text: "尚未检查",
+    detail: "进入“此电脑”刷新后，会显示电脑健康快照。"
+  };
+}
+
+function workbenchGifForState(state: WorkbenchAgentState): string {
+  if (state === "running") return xiaomaRunningGif;
+  if (state === "completed") return xiaomaCompletedGif;
+  if (state === "error") return xiaomaErrorGif;
+  return xiaomaStandbyGif;
+}
+
+function stateLabel(state: WorkbenchAgentState, connectionState?: WorkbenchAgentState): string {
+  if (connectionState === "error") return "等待连接";
+  if (connectionState === "running") return "连接中";
+  if (state === "running") return "运行中";
+  if (state === "completed") return "已完成";
+  if (state === "error") return "需关注";
+  return "待命";
+}
+
+function messagePreview(message: ChatMessage): string {
+  if (typeof message.content === "string") return friendlyPreviewText(message.content);
+  const firstText = message.content.find((part) => part.type !== "tool_call");
+  if (firstText && "text" in firstText) return friendlyPreviewText(firstText.text);
+  const firstTool = message.content.find((part) => part.type === "tool_call");
+  if (firstTool && firstTool.type === "tool_call") {
+    if (firstTool.status === "error") return "有一步需要关注，我会在对话里说明。";
+    if (firstTool.status === "success") return "我已经完成了一个处理步骤。";
+    return "我正在处理相关步骤。";
+  }
+  return "";
+}
+
+function getRecentReadableMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages
+    .filter((message) => (message.role === "user" || message.role === "assistant") && messagePreview(message).trim())
+    .slice(-3);
+}
+
+function friendlyMessageAuthor(message: ChatMessage): string {
+  return message.role === "user" ? "你" : "Mavris";
+}
+
+function friendlyPreviewText(text: string): string {
+  return text
+    .replace(/\bAgent\b/gi, "助手")
+    .replace(/\bbackend\b/gi, "服务")
+    .replace(/\bworkbench\b/gi, "工作区")
+    .replace(/\btrace\b/gi, "记录")
+    .trim();
+}
+
+function recentUserFacingTasks(tasks: TaskEvent[]): TaskEvent[] {
+  const now = Date.now();
+  return [...tasks]
+    .sort((a, b) => taskUpdatedAt(b) - taskUpdatedAt(a))
+    .filter((task) => now - taskUpdatedAt(task) <= 24 * 60 * 60 * 1000);
+}
+
+function taskUpdatedAt(task: TaskEvent): number {
+  const time = Date.parse(task.updatedAt || task.createdAt);
+  return Number.isFinite(time) ? time : 0;
 }
 
 function Sidebar({
@@ -110,17 +490,35 @@ function Sidebar({
         </span>
       </div>
 
-      <nav className="primary-nav" aria-label="主导航">
-        {primaryNavItems.map((item) => (
-          <SideButton
-            key={item.view}
-            icon={item.icon}
-            label={item.label}
-            active={activeView === item.view}
-            onClick={() => onViewChange(item.view)}
-          />
-        ))}
-      </nav>
+      <div className="primary-nav-wrap">
+        <nav className="primary-nav" aria-label="主导航">
+          {mobilePrimaryNavItems.map((item) => (
+            <SideButton
+              key={`mobile-${item.view}`}
+              icon={item.icon}
+              label={item.label}
+              active={activeView === item.view}
+              onClick={() => onViewChange(item.view)}
+              mobileOnly
+            />
+          ))}
+          {primaryNavGroups.map((group, groupIndex) => (
+            <div className="primary-nav__group" key={group.label ?? `group-${groupIndex}`}>
+              {group.label ? <span className="primary-nav__label">{group.label}</span> : null}
+              {group.items.map((item) => (
+                <SideButton
+                  key={item.view}
+                  icon={item.icon}
+                  label={item.label}
+                  active={activeView === item.view}
+                  onClick={() => onViewChange(item.view)}
+                />
+              ))}
+            </div>
+          ))}
+        </nav>
+        <span className="primary-nav__more" aria-hidden="true">滑动查看更多</span>
+      </div>
 
       <div className="sidebar-user">
         <XiaoMaAvatar className="mini-avatar" />
@@ -133,6 +531,11 @@ function Sidebar({
   );
 }
 
+const mobilePrimaryNavOrder: ViewKey[] = ["home", "files", "documents", "computer", "chat", "settings"];
+const mobilePrimaryNavItems = mobilePrimaryNavOrder
+  .map((view) => primaryNavItems.find((item) => item.view === view))
+  .filter((item): item is NavItem => Boolean(item));
+
 function XiaoMaAvatar({ className }: { className: string }) {
   return (
     <span className={className} aria-hidden="true">
@@ -142,6 +545,7 @@ function XiaoMaAvatar({ className }: { className: string }) {
 }
 
 function WindowBar({
+  activeView,
   viewMeta,
   connectionState,
   isLoading,
@@ -149,6 +553,7 @@ function WindowBar({
   onOpenApprovals,
   hasPendingApproval
 }: {
+  activeView: ViewKey;
   viewMeta: ViewTitle;
   connectionState: ConnectionState;
   isLoading: boolean;
@@ -156,6 +561,8 @@ function WindowBar({
   onOpenApprovals: () => void;
   hasPendingApproval: boolean;
 }) {
+  const showConnectionPill = connectionState !== "online" && !(activeView === "home" && connectionState === "checking");
+
   return (
     <header className="window-bar">
       <div className="window-bar__left">
@@ -165,10 +572,10 @@ function WindowBar({
         </div>
       </div>
       <div className="window-actions">
-        {connectionState !== "online" ? (
+        {showConnectionPill ? (
           <span className={`connection-pill connection-pill--${connectionState}`}>
             <span className="connection-pill__dot" />
-            {connectionState === "checking" ? "正在检查连接" : "离线"}
+            {connectionState === "checking" ? "正在连接 Mavris" : "Mavris 服务未连接"}
           </span>
         ) : null}
         <button className="icon-button" aria-label="刷新" onClick={onRefresh} disabled={isLoading} type="button">
@@ -192,15 +599,22 @@ function SideButton({
   icon: Icon,
   label,
   active,
-  onClick
+  onClick,
+  mobileOnly = false
 }: {
   icon: LucideIcon;
   label: string;
   active?: boolean;
   onClick: () => void;
+  mobileOnly?: boolean;
 }) {
+  const className = [
+    "side-button",
+    active ? "side-button--active" : "",
+    mobileOnly ? "side-button--mobile-priority" : ""
+  ].filter(Boolean).join(" ");
   return (
-    <button className={active ? "side-button side-button--active" : "side-button"} onClick={onClick} type="button">
+    <button className={className} onClick={onClick} type="button">
       <Icon size={15} aria-hidden="true" />
       <span>{label}</span>
     </button>

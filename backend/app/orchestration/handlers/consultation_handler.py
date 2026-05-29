@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.core.schemas import Plan, Task, TaskStatus
-from app.orchestration.events import ConsultationDone, PlanReviewed
 from app.policy.risk import RiskLevel, SafetyVerdict
 
 if TYPE_CHECKING:
@@ -16,14 +15,8 @@ class ConsultationHandler:
     def __init__(self, orchestrator: OrchestratorAgent) -> None:
         self.orchestrator = orchestrator
 
-    def register(self, dispatcher: EventDispatcher) -> None:
-        dispatcher.register("consultation.done", self.handle_consultation_done)
-        dispatcher.register("plan.reviewed", self.handle_plan_reviewed)
-
-    def handle_consultation_done(self, event: ConsultationDone) -> None:  # pragma: no cover - registration hook
-        return None
-
-    def handle_plan_reviewed(self, event: PlanReviewed) -> None:  # pragma: no cover - registration hook
+    def register(self, _dispatcher: EventDispatcher) -> None:
+        """Compatibility no-op; consultation is invoked directly."""
         return None
 
     def consult_and_review(self, task: Task, plan: Plan) -> SafetyReview:

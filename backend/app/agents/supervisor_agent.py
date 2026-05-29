@@ -66,6 +66,7 @@ DELEGATION_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 
 CHAT_ONLY_HINTS = (
     "你好",
+    "聊天",
     "在吗",
     "谢谢",
     "你是谁",
@@ -116,7 +117,7 @@ class SupervisorAgent:
     name = "SupervisorAgent"
 
     async def decide(self, message: str, mode: str) -> SupervisorDecision:
-        heuristic = self.quick_decision(message)
+        fallback = self.quick_decision(message)
 
         try:
             provider = get_provider()
@@ -126,32 +127,27 @@ class SupervisorAgent:
             )
             decision = self._payload_to_decision(payload)
         except LocalBackendUnavailable:
-            return heuristic
+            return fallback
         except Exception:
-            return heuristic
+            return fallback
 
         if not decision.reply:
             decision = SupervisorDecision(
                 delegate=decision.delegate,
-                reply=heuristic.reply,
-                agent_hint=decision.agent_hint or heuristic.agent_hint,
+                reply=fallback.reply,
+                agent_hint=decision.agent_hint or fallback.agent_hint,
             )
 
         if not decision.delegate:
-            if heuristic.delegate:
-                return SupervisorDecision(True, decision.reply or heuristic.reply, heuristic.agent_hint)
+            if self._is_unhelpful_chat_reply(decision.reply):
+                return SupervisorDecision(False, fallback.reply or self._chat_reply(message), "")
             return SupervisorDecision(False, decision.reply, "")
 
-        if not heuristic.delegate:
-            return SupervisorDecision(
-                delegate=False,
-                reply=decision.reply or self._chat_reply(message),
-                agent_hint="",
-            )
-
-        agent_hint = decision.agent_hint if self._is_known_agent(decision.agent_hint) else heuristic.agent_hint
+        agent_hint = decision.agent_hint if self._is_known_agent(decision.agent_hint) else fallback.agent_hint
         if not agent_hint:
-            agent_hint = heuristic.agent_hint
+            agent_hint = fallback.agent_hint
+        if not agent_hint:
+            return SupervisorDecision(False, decision.reply or self._chat_reply(message), "")
         return SupervisorDecision(True, decision.reply, agent_hint)
 
     def proactive_suggestions(
@@ -185,7 +181,7 @@ class SupervisorAgent:
         prompts = [item.prompt for item in suggestions if item.confidence > 0.8]
         if not prompts:
             return ""
-        return "I can help with this next: " + " / ".join(prompts[:3])
+        return "我可以接着帮你做：" + " / ".join(prompts[:3])
 
     def quick_decision(self, message: str) -> SupervisorDecision:
         return self._heuristic_decision(message)
@@ -227,10 +223,31 @@ class SupervisorAgent:
         return "[Perception context]\n" + "\n".join(lines) + "\n\n"
 
     def _payload_to_decision(self, payload: dict[str, Any]) -> SupervisorDecision:
+        reply = self._sanitize_reply(str(payload.get("reply") or "").strip())
         return SupervisorDecision(
             delegate=bool(payload.get("delegate")),
-            reply=str(payload.get("reply") or "").strip(),
+            reply=reply,
             agent_hint=str(payload.get("agent_hint") or "").strip(),
+        )
+
+    def _sanitize_reply(self, reply: str) -> str:
+        normalized = re.sub(r"[\s，。；：,.!！?？]+", "", reply)
+        mojibake_template = "ä¸»ç®¡Agentå·²æ¶å°"
+        if "主管Agent已收到" in normalized or "确认意图" in normalized or mojibake_template in normalized:
+            return self._chat_reply("")
+        return reply
+
+    def _is_unhelpful_chat_reply(self, reply: str) -> bool:
+        normalized = re.sub(r"[\s，。；：,.!！?？]+", "", reply)
+        return any(
+            pattern in normalized
+            for pattern in (
+                "没看懂",
+                "不太明白",
+                "再具体说一下",
+                "请具体说明",
+                "请明确",
+            )
         )
 
     def _heuristic_decision(self, message: str) -> SupervisorDecision:
@@ -256,6 +273,13 @@ class SupervisorAgent:
                 agent_hint="AppAgent",
             )
 
+        if "清理" in normalized and any(domain in normalized for domain in ("文件", "目录", "文件夹", "盘", "磁盘")):
+            return SupervisorDecision(
+                delegate=True,
+                reply="收到，我会先生成清理预览，不会直接删除文件；需要执行清理时会再请你审批。",
+                agent_hint="FileAgent",
+            )
+
         for agent, domains, actions in DELEGATION_RULES:
             if any(domain in normalized for domain in domains) and any(action in normalized for action in actions):
                 return SupervisorDecision(
@@ -267,6 +291,22 @@ class SupervisorAgent:
         return SupervisorDecision(False, self._chat_reply(text))
 
     def _chat_reply(self, message: str) -> str:
+        normalized = message.lower()
+        if "你会" in normalized or normalized in {"会啊", "会吗"}:
+            return "会啊。我可以正常和你聊天，也可以在你明确要我做事时再调对应 Agent 去处理。"
+        if "真人" in normalized:
+            return "不是真人，我是 Mavris 里的主管 Agent。你可以把我当成一个先陪你自然对话、再按需要调度其他 Agent 的 AI 助手。"
+        if "模型" in normalized or "ai" in normalized or "人工智能" in normalized:
+            return "我是 Mavris 的主管 Agent，底层可以接不同模型。对你来说，我会先和你自然对话，需要实际操作时再调其他 Agent。"
+        if "不是说" in normalized or "自然对话" in normalized or "对话" in normalized:
+            return "对，这里应该先自然对话。我会先接住你的话，真的需要操作电脑、文件或网页时，再安排对应 Agent。"
+        if "聊天" in normalized:
+            return (
+                "当然可以聊天。刚才把一些普通消息说得太像任务确认了，这个体验不对。"
+                "你可以直接问我问题、闲聊，只有你明确要我操作电脑、文件、浏览器或应用时，我才会启动执行任务。"
+            )
+        if "你好" in normalized:
+            return "你好，我在。你可以直接和我聊天，也可以告诉我需要处理的电脑、文件或应用任务。"
         if "agent" in message.lower() or "工作" in message:
             return (
                 "对，这里应该先由主管 Agent 和你对话、理解意图、判断风险。"

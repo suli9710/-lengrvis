@@ -11,17 +11,14 @@ from app.policy.risk import SafetyVerdict
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
     from app.orchestration.dispatcher import EventDispatcher
-    from app.orchestration.events import StepReady
 
 
 class StepSchedulerHandler:
     def __init__(self, orchestrator: OrchestratorAgent) -> None:
         self.orchestrator = orchestrator
 
-    def register(self, dispatcher: EventDispatcher) -> None:
-        dispatcher.register("step.ready", self.handle_step_ready)
-
-    def handle_step_ready(self, event: StepReady) -> None:  # pragma: no cover - registration hook
+    def register(self, _dispatcher: EventDispatcher) -> None:
+        """Compatibility no-op; scheduling runs through ``process_steps``."""
         return None
 
     async def process_steps(self, task: Task, plan: Plan) -> None:

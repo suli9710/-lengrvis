@@ -9,34 +9,49 @@ interface PlanViewerProps {
 }
 
 export function PlanViewer({ plan }: PlanViewerProps) {
+  const hasSteps = plan.steps.length > 0;
+
   return (
     <Panel
       title="执行计划"
       eyebrow="当前目标"
-      action={<Badge tone="info">更新于 {new Date(plan.updatedAt).toLocaleTimeString()}</Badge>}
+      action={
+        hasSteps
+          ? <Badge tone="info">更新于 {new Date(plan.updatedAt).toLocaleTimeString()}</Badge>
+          : <Badge tone="neutral">暂无计划</Badge>
+      }
     >
-      <div className="plan-summary">
-        <ClipboardList size={18} aria-hidden="true" />
-        <div>
-          <strong>{plan.title}</strong>
-          <p>{plan.objective}</p>
-        </div>
-      </div>
-      <div className="step-list">
-        {plan.steps.map((step, index) => (
-          <article className="step-row" key={step.id}>
-            <span className={`step-row__index step-row__index--${step.state}`}>{index + 1}</span>
+      {hasSteps ? (
+        <>
+          <div className="plan-summary">
+            <ClipboardList size={18} aria-hidden="true" />
             <div>
-              <div className="row row--between">
-                <strong>{step.title}</strong>
-                <Badge tone={toneForStep(step.state)}>{zhStepState(step.state)}</Badge>
-              </div>
-              <p>{step.detail}</p>
-              <span className="muted">{zhAgentName(step.owner)}</span>
+              <strong>{plan.title}</strong>
+              <p>{plan.objective}</p>
             </div>
-          </article>
-        ))}
-      </div>
+          </div>
+          <div className="step-list">
+            {plan.steps.map((step, index) => (
+              <article className="step-row" key={step.id}>
+                <span className={`step-row__index step-row__index--${step.state}`}>{index + 1}</span>
+                <div>
+                  <div className="row row--between">
+                    <strong>{step.title}</strong>
+                    <Badge tone={toneForStep(step.state)}>{zhStepState(step.state)}</Badge>
+                  </div>
+                  <p>{step.detail}</p>
+                  <span className="muted">{zhAgentName(step.owner)}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="empty-state">
+          <ClipboardList size={18} aria-hidden="true" />
+          <span>暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。</span>
+        </div>
+      )}
     </Panel>
   );
 }

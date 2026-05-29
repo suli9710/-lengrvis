@@ -37,7 +37,7 @@ export function normalizeRunStreamEvent(runId: string, rawEvent: BackendRunStrea
   const eventRunId = String(rawEvent.run_id ?? payload.run_id ?? runId);
   const createdAt = String(rawEvent.created_at ?? payload.created_at ?? new Date().toISOString());
   const id = String(rawEvent.id ?? payload.id ?? `${eventRunId}-${name}-${createdAt}`);
-  const agent = String(payload.from_agent ?? payload.agent ?? "ExecutionEngine");
+  const agent = String(payload.from_agent ?? payload.agent ?? "执行引擎");
   const content = String(payload.content ?? payload.transition_reason ?? payload.message ?? name);
 
   return {
@@ -60,7 +60,7 @@ export function mergeRunUiEventIntoConversations(
   const conversationIndex = current.findIndex((conversation) => conversation.id === conversationId);
   const conversation = current[conversationIndex] ?? {
     id: conversationId,
-    title: "Run events",
+    title: "任务事件",
     status: "running" as const,
     messages: []
   };
@@ -129,9 +129,19 @@ export function preserveStreamedRunConversations(
 }
 
 export function latestStreamableTaskId(tasks: TaskEvent[]): string | null {
-  const candidates = tasks.filter((task) => task.state === "running" || task.state === "queued" || task.state === "blocked");
-  const task = candidates[0] ?? tasks[0];
-  return task?.id ?? null;
+  const candidates = tasks.filter(
+    (task) =>
+      Boolean(task.runId) &&
+      (task.state === "running" || task.state === "queued" || task.state === "blocked" || task.state === "paused")
+  );
+  const task = candidates.find((item) => wasUpdatedRecently(item));
+  return task?.runId ?? null;
+}
+
+function wasUpdatedRecently(task: TaskEvent): boolean {
+  const timestamp = Date.parse(task.updatedAt || task.createdAt || "");
+  if (Number.isNaN(timestamp)) return false;
+  return Date.now() - timestamp < 15 * 60 * 1000;
 }
 
 export function mergeStreamedAgentMessage(

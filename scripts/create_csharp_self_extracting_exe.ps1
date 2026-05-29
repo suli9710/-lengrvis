@@ -51,11 +51,15 @@ internal static class Program
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Mavris"
             );
-            if (Directory.Exists(target))
-            {
-                Directory.Delete(target, true);
-            }
             Directory.CreateDirectory(target);
+            Directory.CreateDirectory(Path.Combine(target, ".marvis_data"));
+            Directory.CreateDirectory(Path.Combine(target, "logs"));
+            string appTarget = Path.Combine(target, "app");
+            if (Directory.Exists(appTarget))
+            {
+                Directory.Delete(appTarget, true);
+            }
+            Directory.CreateDirectory(appTarget);
 
             string tempZip = Path.Combine(Path.GetTempPath(), "mavris-payload-" + Guid.NewGuid().ToString("N") + ".zip");
             using (Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip"))
@@ -70,21 +74,25 @@ internal static class Program
                 }
             }
 
-            ZipFile.ExtractToDirectory(tempZip, target);
+            ZipFile.ExtractToDirectory(tempZip, appTarget);
             File.Delete(tempZip);
 
-            string exe = Path.Combine(target, "Mavris.exe");
+            string exe = Path.Combine(appTarget, "Mavris.exe");
             if (!File.Exists(exe))
             {
                 throw new FileNotFoundException("Mavris.exe was not extracted.", exe);
             }
 
-            Process.Start(new ProcessStartInfo
+            ProcessStartInfo startInfo = new ProcessStartInfo
             {
                 FileName = exe,
-                WorkingDirectory = target,
-                UseShellExecute = true
-            });
+                WorkingDirectory = appTarget,
+                UseShellExecute = false
+            };
+            startInfo.EnvironmentVariables["MARVIS_CONFIG_DIR"] = target;
+            startInfo.EnvironmentVariables["MAVRIS_CONFIG_DIR"] = target;
+            startInfo.EnvironmentVariables["MARVIS_DATA_DIR"] = Path.Combine(target, ".marvis_data");
+            Process.Start(startInfo);
             return 0;
         }
         catch (Exception ex)

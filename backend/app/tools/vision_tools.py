@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ from app.tools.schemas import ToolDefinition
 
 _IMAGE_EXTENSIONS = IMAGE_EXTENSIONS
 _GPS_EXIF_TAG = 34853
+logger = logging.getLogger(__name__)
 
 _DESCRIPTION_METADATA_KEYS = (
     "marvis_description",
@@ -239,8 +241,8 @@ def image_embedding(
                         "model": getattr(provider, "name", ""),
                         "fallback_used": False,
                     }
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("image provider profile failed for %s: %s", image_path, exc, exc_info=True)
 
     fallback_profile = profile or _embedding_fallback_profile(image_path, context, settings=settings)
     label_text = image_label_text(fallback_profile)

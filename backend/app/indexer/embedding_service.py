@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -11,6 +12,7 @@ from app.llm.registry import get_effective_settings, get_provider
 
 
 Embedder = Callable[[list[str]], Awaitable[list[list[float]]] | list[list[float]]]
+logger = logging.getLogger(__name__)
 
 
 async def embed_texts(texts: list[str], *, embedder: Embedder | None = None) -> list[list[float]]:
@@ -28,8 +30,8 @@ async def embed_texts(texts: list[str], *, embedder: Embedder | None = None) -> 
         try:
             vectors = await local_provider.embed(normalized, model=settings.embedding_model)
             return [_coerce_vector(vector) for vector in vectors]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - local embeddings should degrade to the configured provider.
+            logger.debug("Local embedding provider failed; falling back to configured provider: %s", exc, exc_info=True)
     try:
         vectors = await get_provider(settings, task="embed").embed(normalized, model=settings.embedding_model)
         return [_coerce_vector(vector) for vector in vectors]

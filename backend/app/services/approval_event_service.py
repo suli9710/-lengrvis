@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections import defaultdict
+from contextlib import suppress
 
 from app.core.schemas import Approval
 from app.policy.approval_binding import redacted_preview
@@ -38,14 +39,10 @@ class ApprovalEventBus:
     @staticmethod
     def _enqueue_event(queue: asyncio.Queue[dict], event: dict) -> None:
         if queue.full():
-            try:
+            with suppress(asyncio.QueueEmpty):
                 queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        try:
+        with suppress(asyncio.QueueFull):
             queue.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
 
 
 _bus = ApprovalEventBus()

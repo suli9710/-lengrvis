@@ -36,6 +36,7 @@ export function zhTaskState(state: TaskState) {
     queued: "排队中",
     running: "执行中",
     blocked: "待审批",
+    paused: "已暂停",
     completed: "已完成",
     failed: "失败"
   };
@@ -128,14 +129,18 @@ export function zhApprovalType(type?: string) {
   return labels[type] ?? type;
 }
 
-export function zhBackendText(text?: string) {
+export function zhBackendText(text?: string): string {
   if (!text) return "";
+  const naturalReply = naturalSupervisorReply(text);
+  if (naturalReply) return naturalReply;
+  const userFacingError = zhUserFacingError(text);
+  if (userFacingError !== text.trim()) return userFacingError;
   const exact: Record<string, string> = {
-    "Primary provider failed; using MockProvider fallback:": "主模型调用失败，已切换到 MockProvider 兜底：",
-    "Provider returned invalid plan; using MockProvider fallback:": "模型返回的计划格式无效，已切换到 MockProvider 兜底：",
-    "File paths must stay inside authorized directories; modifying steps need dry-run previews.": "文件路径必须保持在授权目录内；修改类步骤需要先生成试运行预览。",
+    "Primary provider failed; using MockProvider fallback:": "AI 服务暂时不可用，已用临时模式继续处理：",
+    "Provider returned invalid plan; using MockProvider fallback:": "AI 服务返回的计划不完整，已用临时模式继续处理：",
+    "File paths must stay inside authorized directories; modifying steps need dry-run previews.": "为了保护你的文件，只会处理你先选择过的文件夹；移动、重命名或删除前会先给你确认。",
     "System inspection is read-only unless a Windows settings operation is explicitly approved.": "系统检查默认只读；只有明确审批后才允许执行 Windows 设置类操作。",
-    "Application operations are limited to indexed apps and authorized file/folder open actions; unknown executables require approval or are blocked.": "应用操作仅限已索引应用和授权文件/文件夹打开动作；未知可执行文件需要审批或会被拦截。",
+    "Application operations are limited to indexed apps and authorized file/folder open actions; unknown executables require approval or are blocked.": "应用操作只会打开已识别的应用，以及你先选择过的文件或文件夹；不认识的程序会先停下来确认。",
     "Browser operations start read-only; login, payment, submission, and messaging are handoff-only.": "浏览器操作默认只读；登录、支付、提交表单和发消息都必须交给人工处理。",
     "External search results must preserve source URL, title, summary, and retrieval time.": "外部搜索结果必须保留来源 URL、标题、摘要和检索时间。",
     "SafetyReviewAgent stopped the task during initial runtime supervision.": "安全审核 Agent 在初始运行监督中拦截了任务。",
@@ -145,7 +150,11 @@ export function zhBackendText(text?: string) {
     "Plan generated and waiting for approval on modifying steps.": "计划已生成，修改类步骤正在等待审批。",
     "Task completed with read-only/open-only MVP tools.": "任务已通过只读或打开类工具完成。",
     "Waiting for user approval before executing modifying operation.": "正在等待用户审批，审批后才会执行修改操作。",
-    "Preview only. Approval is required before any file is moved, copied, renamed, or deleted.": "当前仅为预览。移动、复制、重命名或删除文件前必须先获得审批。"
+    "Preview only. Approval is required before any file is moved, copied, renamed, or deleted.": "当前仅为预览。移动、复制、重命名或删除文件前必须先获得审批。",
+    "Explicit absolute path is required when no authorized directories are configured.": "请先选择要整理的文件夹，或填写完整的文件位置，例如桌面、下载、文档、图片里的某个文件。",
+    "No authorized directories configured.": "还没有选择要整理的文件夹。请先添加桌面、下载、文档或图片。",
+    "Path is outside authorized directories.": "这个文件不在你已选择的文件夹里。请换一个文件，或先把所在文件夹加入设置。",
+    "Plan denied.": "计划已被安全策略拦截。"
   };
   if (exact[text]) return exact[text];
   for (const [prefix, translatedPrefix] of Object.entries(exact)) {
@@ -161,6 +170,21 @@ export function zhBackendText(text?: string) {
   }
   if (text.startsWith("Denied step: ")) {
     return `步骤已被拒绝：${text.replace("Denied step: ", "")}`;
+  }
+  if (text.startsWith("任务执行失败：")) {
+    return `任务执行失败：${zhBackendText(text.replace("任务执行失败：", "").trim())}`;
+  }
+  if (text.includes("Explicit absolute path is required when no authorized directories are configured.")) {
+    return text.replace(
+      "Explicit absolute path is required when no authorized directories are configured.",
+      "请先选择要整理的文件夹，或填写完整的文件位置，例如桌面、下载、文档、图片里的某个文件。"
+    );
+  }
+  if (text.includes("No authorized directories configured.")) {
+    return text.replace("No authorized directories configured.", "还没有选择要整理的文件夹。请先添加桌面、下载、文档或图片。");
+  }
+  if (text.includes("Path is outside authorized directories.")) {
+    return text.replace("Path is outside authorized directories.", "这个文件不在你已选择的文件夹里。请换一个文件，或先把所在文件夹加入设置。");
   }
   if (text.startsWith("Calling tool ")) {
     return `正在调用工具：${text.replace("Calling tool ", "").replace(".", "")}`;
@@ -193,6 +217,115 @@ export function zhBackendText(text?: string) {
   if (text === "(matching authorized files)") return "匹配到的授权文件";
   if (text === "(choose target folder after approval)") return "审批后选择目标文件夹";
   return text;
+}
+
+export function zhUserFacingError(text?: string): string {
+  const raw = String(text ?? "").trim();
+  if (!raw) return "";
+  const compact = raw.replace(/\s+/g, " ");
+  const lower = compact.toLowerCase();
+
+  if (lower.includes("mockprovider")) {
+    return "当前 AI 服务临时不可用，我已切到临时模式，结果可能不完整。请稍后重试，或在设置里检查 AI 服务。";
+  }
+
+  if (
+    lower.includes("no authorized directories configured") ||
+    compact.includes("未配置授权目录") ||
+    compact.includes("尚未配置授权目录")
+  ) {
+    return "还没有选择要整理的文件夹。请先在设置里添加桌面、下载、文档或图片；在你确认前，我只会查看文件。";
+  }
+
+  if (
+    lower.includes("explicit absolute path is required") ||
+    compact.includes("未配置授权目录时，必须提供明确的绝对路径") ||
+    compact.includes("必须提供明确的绝对路径")
+  ) {
+    return "请先选择要整理的文件夹，或填写完整的文件位置，例如桌面、下载、文档、图片里的某个文件。";
+  }
+
+  if (
+    lower.includes("path is outside authorized directories") ||
+    lower.includes("outside authorized directories") ||
+    compact.includes("不在授权目录")
+  ) {
+    return "这个文件不在你已选择的文件夹里。请换一个文件，或先把所在文件夹加入设置。";
+  }
+
+  if (
+    lower.includes("file paths must stay inside authorized directories") ||
+    compact.includes("文件路径必须保持在授权目录内")
+  ) {
+    return "为了保护你的文件，只会处理你先选择过的文件夹；移动、重命名或删除前会先给你确认。";
+  }
+
+  if (
+    compact.includes("没有可分组的索引文件") ||
+    compact.includes("暂无索引") ||
+    compact.includes("未建立索引") ||
+    lower.includes("no indexed file") ||
+    lower.includes("no indexed files") ||
+    lower.includes("no index result") ||
+    lower.includes("no index results")
+  ) {
+    return "还没找到可搜索的文件。请先在设置里选择要整理的文件夹，或换成文件名试试。";
+  }
+
+  if (
+    lower.includes("http_404") ||
+    lower.includes("http 404") ||
+    lower.includes("status 404") ||
+    lower.includes("404") ||
+    lower.includes("not found")
+  ) {
+    return "这个功能入口暂时不可用。请确认 Mavris 正在运行并已更新，然后重试。";
+  }
+
+  if (
+    lower.includes("backend request failed") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("networkerror") ||
+    lower.includes("network error") ||
+    lower.includes("load failed") ||
+    lower.includes("econnrefused") ||
+    lower.includes("connection refused") ||
+    compact.includes("等待后端连接") ||
+    compact.includes("后端连接失败")
+  ) {
+    return "Mavris 暂时没连接上。请先启动或重启 Mavris，再重试。";
+  }
+
+  if (
+    lower.includes("renderer api requests must use backend-relative endpoints") ||
+    lower.includes("backend-relative")
+  ) {
+    return "这个功能没有正确连接到 Mavris。请重启应用后再试。";
+  }
+
+  if (
+    lower.includes("aborterror") ||
+    lower.includes("aborted") ||
+    lower.includes("timeout") ||
+    compact.includes("超时")
+  ) {
+    return "这一步等得有点久。请稍后重试，或先缩小要整理的文件夹范围。";
+  }
+
+  return raw;
+}
+
+function naturalSupervisorReply(text: string): string {
+  const normalized = text
+    .replace(/\s+/g, "")
+    .replace(/[，。；：,.!！?？]/g, "");
+  const mojibakeTemplate = "ä¸»ç®¡Agentå·²æ¶å°";
+  const isTemplate =
+    normalized.includes("主管Agent已收到") ||
+    normalized.includes("确认意图") ||
+    text.includes(mojibakeTemplate);
+  if (!isTemplate) return "";
+  return "我在，咱们正常聊。你可以直接问我问题或说想法；需要我实际操作电脑、文件、网页或应用时，我再安排对应 Agent。";
 }
 
 export function zhToolName(name?: string) {

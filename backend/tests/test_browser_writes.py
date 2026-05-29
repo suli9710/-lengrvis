@@ -119,6 +119,23 @@ def test_fill_form_blocks_sensitive_value():
     assert "sensitive" in result["error"].lower()
 
 
+def test_fill_form_blocks_luhn_valid_card_value_after_approval():
+    context = _context(mode="efficiency")
+    result = browser_tools.fill_form(
+        {
+            "url": "https://example.com/profile",
+            "fields": {"#notes": "4111111111111111"},
+            "dry_run": False,
+            "approved": True,
+            "approval_id": "approval-card",
+        },
+        context,
+    )
+
+    assert result["ok"] is False
+    assert "sensitive" in result["error"].lower()
+
+
 def test_fill_form_redacts_values_in_dry_run():
     context = _context(mode="efficiency")
     result = browser_tools.fill_form(

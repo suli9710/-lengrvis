@@ -27,6 +27,9 @@ const bridge: MavrisDesktopBridge = {
   },
   backendBaseUrl: process.env.MAVRIS_BACKEND_URL ?? "http://127.0.0.1:8000",
   dialog: {
+    chooseDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.chooseDirectory),
+    chooseDocument: () => ipcRenderer.invoke(IPC_CHANNELS.chooseDocument),
+    knownFolders: () => ipcRenderer.invoke(IPC_CHANNELS.knownFolders),
     chooseSkillDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.chooseSkillDirectory),
     chooseSkillZip: () => ipcRenderer.invoke(IPC_CHANNELS.chooseSkillZip)
   },
@@ -53,7 +56,8 @@ const bridge: MavrisDesktopBridge = {
     }
   },
   shell: {
-    openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url)
+    openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
+    getFileIcon: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.getFileIcon, path)
   },
   notifications: {
     show: (payload: NotificationPayload): Promise<{ shown: boolean; reason?: string }> =>

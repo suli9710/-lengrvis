@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import ipaddress
+import os
 from urllib.parse import urlparse
 
 from app.config import AppSettings, get_base_settings
@@ -22,7 +23,126 @@ KNOWN_TASKS = {"planner", "supervisor", "subagent", "embed", "vision", "ocr", "d
 
 def get_effective_settings() -> AppSettings:
     db.init_db()
-    return get_base_settings().merged(db.get_settings_overrides())
+    base = get_base_settings()
+    persisted = base.merged(db.get_settings_overrides())
+    return persisted.merged(_explicit_process_env_overrides(base))
+
+
+def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
+    overrides: dict[str, object] = {}
+    env_to_field = {
+        "MARVIS_MODE": "mode",
+        "MARVIS_PROVIDER_NAME": "provider_name",
+        "MARVIS_BASE_URL": "base_url",
+        "MARVIS_API_KEY": "api_key",
+        "MARVIS_MODEL": "model",
+        "MARVIS_REVIEW_MODEL": "review_model",
+        "MARVIS_WIRE_API": "wire_api",
+        "MARVIS_REQUIRES_OPENAI_AUTH": "requires_openai_auth",
+        "MARVIS_MODEL_REASONING_EFFORT": "model_reasoning_effort",
+        "MARVIS_DISABLE_RESPONSE_STORAGE": "disable_response_storage",
+        "MARVIS_NETWORK_ACCESS": "network_access",
+        "MARVIS_MODEL_CONTEXT_WINDOW": "model_context_window",
+        "MARVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT": "model_auto_compact_token_limit",
+        "MARVIS_CONTEXT_WARNING_BUFFER_TOKENS": "context_warning_buffer_tokens",
+        "MARVIS_CONTEXT_ERROR_BUFFER_TOKENS": "context_error_buffer_tokens",
+        "MARVIS_CONTEXT_MANUAL_COMPACT_BUFFER_TOKENS": "context_manual_compact_buffer_tokens",
+        "MARVIS_CONTEXT_AUTO_COMPACT_ENABLED": "context_auto_compact_enabled",
+        "MARVIS_CONTEXT_MICRO_COMPACT_ENABLED": "context_micro_compact_enabled",
+        "MARVIS_CONTEXT_HISTORY_SNIP_ENABLED": "context_history_snip_enabled",
+        "MARVIS_CONTEXT_SESSION_MEMORY_ENABLED": "context_session_memory_enabled",
+        "MARVIS_CONTEXT_SESSION_SUMMARY_LIMIT": "context_session_summary_limit",
+        "MARVIS_CONTEXT_RECENT_MESSAGE_LIMIT": "context_recent_message_limit",
+        "MARVIS_CONTEXT_MICRO_COMPACT_AGE": "context_micro_compact_age",
+        "MARVIS_CONTEXT_MICRO_COMPACT_TOOL_RESULT_CHARS": "context_micro_compact_tool_result_chars",
+        "MARVIS_CONTEXT_HISTORY_SNIP_THRESHOLD": "context_history_snip_threshold",
+        "MARVIS_CONTEXT_HISTORY_SNIP_KEEP_RECENT": "context_history_snip_keep_recent",
+        "MARVIS_CONTEXT_MIN_SUMMARY_CHARS": "context_min_summary_chars",
+        "MARVIS_EMBEDDING_MODEL": "embedding_model",
+        "MARVIS_VISION_MODEL": "vision_model",
+        "MARVIS_ONNX_ENABLED": "onnx_enabled",
+        "MARVIS_ONNX_MODEL_PATH": "onnx_model_path",
+        "MAVRIS_ONNX_MODEL_PATH": "onnx_model_path",
+        "MARVIS_ONNX_RUNTIME": "onnx_runtime",
+        "MAVRIS_ONNX_RUNTIME": "onnx_runtime",
+        "MARVIS_ONNX_EXECUTION_PROVIDER": "onnx_execution_provider",
+        "MAVRIS_ONNX_EXECUTION_PROVIDER": "onnx_execution_provider",
+        "MARVIS_ONNX_PROVIDER_PREFERENCE": "onnx_provider_preference",
+        "MARVIS_ONNX_DIRECTML_DEVICE_ID": "onnx_directml_device_id",
+        "MARVIS_ONNX_OPENVINO_DEVICE": "onnx_openvino_device",
+        "MARVIS_ONNX_OPENVINO_CACHE_DIR": "onnx_openvino_cache_dir",
+        "MARVIS_ONNX_WARM_ON_STARTUP": "onnx_warm_on_startup",
+        "MARVIS_ONNX_MODEL_FAMILY": "onnx_model_family",
+        "MARVIS_EMBEDDING_BACKEND": "embedding_backend",
+        "MARVIS_ONNX_EMBEDDING_MODEL_PATH": "onnx_embedding_model_path",
+        "MARVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER": "onnx_embedding_execution_provider",
+        "MARVIS_ONNX_EMBEDDING_MODEL_ID": "onnx_embedding_model_id",
+        "MARVIS_ONNX_EMBEDDING_MAX_BATCH_SIZE": "onnx_embedding_max_batch_size",
+        "MARVIS_IMAGE_EMBEDDING_BACKEND": "image_embedding_backend",
+        "MARVIS_ONNX_IMAGE_EMBEDDING_MODEL_PATH": "onnx_image_embedding_model_path",
+        "MARVIS_ONNX_IMAGE_EMBEDDING_EXECUTION_PROVIDER": "onnx_image_embedding_execution_provider",
+        "MARVIS_ONNX_IMAGE_EMBEDDING_MODEL_ID": "onnx_image_embedding_model_id",
+        "MARVIS_ONNX_IMAGE_EMBEDDING_MAX_BATCH_SIZE": "onnx_image_embedding_max_batch_size",
+        "MARVIS_OCR_BACKEND": "ocr_backend",
+        "MARVIS_OCR_EXECUTION_PROVIDER": "ocr_execution_provider",
+        "MARVIS_OCR_OPENVINO_MODEL_DIR": "ocr_openvino_model_dir",
+        "MARVIS_OCR_OPENVINO_DEVICE": "ocr_openvino_device",
+        "MARVIS_OCR_LANG": "ocr_lang",
+        "MARVIS_OCR_MIN_CONFIDENCE": "ocr_min_confidence",
+        "MARVIS_OCR_BATCH_SIZE": "ocr_batch_size",
+        "MARVIS_TEMPERATURE": "temperature",
+        "MARVIS_MAX_TOKENS": "max_tokens",
+        "MARVIS_TIMEOUT": "timeout",
+        "MARVIS_LLM_API_MAX_RETRIES": "llm_api_max_retries",
+        "MARVIS_LLM_API_RETRY_BACKOFF_SECONDS": "llm_api_retry_backoff_seconds",
+        "MARVIS_LLM_API_CIRCUIT_FAILURE_THRESHOLD": "llm_api_circuit_failure_threshold",
+        "MARVIS_LLM_API_CIRCUIT_COOLDOWN_SECONDS": "llm_api_circuit_cooldown_seconds",
+        "MARVIS_ALLOW_CLOUD_CONTEXT": "allow_cloud_context",
+        "MARVIS_ALLOW_FILE_CONTENT_UPLOAD": "allow_file_content_upload",
+        "MARVIS_ALLOW_BROWSER_NETWORK": "allow_browser_network",
+        "MARVIS_REMOTE_DESKTOP_ENABLED": "remote_desktop_enabled",
+        "MARVIS_APP_ALLOWLIST": "app_allowlist",
+        "MARVIS_BROWSER_MAX_PAGE_BYTES": "browser_max_page_bytes",
+        "MARVIS_DOCUMENT_MAX_CHARS_TO_LLM": "document_max_chars_to_llm",
+        "MARVIS_BROWSER_SCREENSHOT_DIR": "browser_screenshot_dir",
+        "MARVIS_ALLOWED_DIRECTORIES": "allowed_directories",
+        "MARVIS_SKILL_DIRECTORIES": "skill_directories",
+        "MARVIS_DATA_DIR": "data_dir",
+        "MARVIS_MCP_SERVERS": "mcp_servers",
+        "MARVIS_ALLOW_MOCK_FALLBACK": "allow_mock_fallback",
+        "MARVIS_STRICT_STATE_MACHINE": "strict_state_machine",
+        "MARVIS_RECOVERY_MAX_RETRIES": "recovery_max_retries",
+        "MARVIS_EXECUTION_ENGINES": "execution_engines",
+        "MAVRIS_EXECUTION_ENGINES": "execution_engines",
+        "MARVIS_DEFAULT_ENGINE": "default_engine",
+        "MAVRIS_DEFAULT_ENGINE": "default_engine",
+        "MARVIS_AGENT_LOOP_MAX_TURNS": "agent_loop_max_turns",
+        "MARVIS_RUN_EVENT_RETENTION_DAYS": "run_event_retention_days",
+        "MARVIS_PERCEPTION_ENABLED": "perception_enabled",
+        "MARVIS_PERCEPTION_INTERVAL_SECONDS": "perception_interval_seconds",
+        "MARVIS_PERCEPTION_PUBLISH_EVENTS": "perception_publish_events",
+        "MARVIS_PERCEPTION_MAX_WIDTH": "perception_max_width",
+        "MARVIS_PERCEPTION_MAX_HEIGHT": "perception_max_height",
+        "MARVIS_PERCEPTION_JPEG_QUALITY": "perception_jpeg_quality",
+        "MARVIS_PERCEPTION_FRAME_DIFF_GATE_ENABLED": "perception_frame_diff_gate_enabled",
+        "MARVIS_PERCEPTION_STORAGE_ENABLED": "perception_storage_enabled",
+        "MARVIS_PERCEPTION_STORE_SCREENSHOTS": "perception_store_screenshots",
+        "MARVIS_PERCEPTION_LOCAL_OCR_ENABLED": "perception_local_ocr_enabled",
+        "MARVIS_PERCEPTION_FRAME_DIFF_THRESHOLD": "perception_frame_diff_threshold",
+        "MARVIS_PERCEPTION_SENSITIVE_WINDOW_PATTERNS": "perception_sensitive_window_patterns",
+        "MARVIS_ENVIRONMENT_SENSITIVE_WINDOW_TERMS": "perception_sensitive_window_patterns",
+        "MARVIS_PERCEPTION_SENSITIVE_FIELD_NAMES": "perception_sensitive_field_names",
+        "MARVIS_ENVIRONMENT_RULES_CONFIG": "environment_rules",
+        "MARVIS_ENVIRONMENT_APP_CONTEXT_INTERVAL_SECONDS": "environment_app_context_interval_seconds",
+        "MARVIS_ENVIRONMENT_STORE_SCREENSHOTS": "environment_store_screenshots",
+        "MARVIS_ENVIRONMENT_EVENT_RETENTION_DAYS": "environment_event_retention_days",
+        "MARVIS_JWT_SECRET": "jwt_secret",
+        "MAVRIS_JWT_SECRET": "jwt_secret",
+    }
+    for env_key, field_name in env_to_field.items():
+        if env_key in os.environ and hasattr(base, field_name):
+            overrides[field_name] = getattr(base, field_name)
+    return overrides
 
 
 def _is_local_base_url(base_url: str) -> bool:

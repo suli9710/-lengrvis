@@ -27,7 +27,8 @@ dependencies = [
   "docling>=2.30",
   "unstructured[all-docs]>=0.16",
   "paddleocr>=2.8",
-  "pywin32>=306; platform_system == 'Windows'"
+  "pywin32>=306; platform_system == 'Windows'",
+  "comtypes>=1.4; platform_system == 'Windows'"
 ]
 
 [project.optional-dependencies]

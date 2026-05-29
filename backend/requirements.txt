@@ -18,6 +18,7 @@ playwright>=1.48
 croniter>=2.0
 numpy>=1.26
 pywin32>=306; platform_system=="Windows"
+comtypes>=1.4; platform_system=="Windows"
 watchdog>=4.0
 blake3>=0.4.1
 docling>=2.30

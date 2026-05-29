@@ -12,7 +12,7 @@
 
 | 原 ID | 能力 | 验证位置 | 状态 |
 |---|---|---|---|
-| T01 | 副 Agent act() 推理与领域 prompt | `orchestrator_agent.py:294` `_consult_subagent()`；`llm/prompts/*.md` 34 个文件 | ✅ 已完成 |
+| T01 | 领域 Agent `act()` 路由、边界与 prompt | `orchestrator_agent.py` `_consult_subagent()`；`agents/base.py` deterministic fast path；`llm/prompts/*.md` 38 个文件 | ✅ 路由与 prompt 已完成；不是 6 个独立自主推理 Agent |
 | T02 | 隐私模式本地 LLM Provider | `local_provider.py` 探测链 + `registry.py:86` raises `LocalBackendUnavailable` | ✅ 已完成 |
 | T04 | 文档 AI 摘要/问答/报告 | `document_service.py` map-reduce + QA + report 全接 LLM | ✅ 已完成 |
 | T05 | 运行时监督批量化 | `safety_review_agent.py:16` `BatchMessageReview` | ✅ 已完成 |
@@ -36,18 +36,36 @@
 
 让用户安装 Mavris 后无需额外操作即可使用隐私模式。当前本地 provider 探测链已完整（Ollama/LM Studio/llama.cpp），但需用户自行安装运行时和拉取模型。
 
+#### 当前进展
+
+- 已新增本地模型 `setup-plan` 后端接口，能返回硬件条件、运行时、服务、模型四步状态和下一步动作。
+- 设置页已产品化为“隐私模式开箱检查”，普通用户能看到一键开启隐私模式、本机条件、Ollama/模型准备步骤，以及“不会静默退回云端”的边界说明。
+- 隐私检查清单已串联主行动作：开启隐私模式后，下一步直接变成“一键准备本地 AI”，复用安装 Ollama、启动服务、下载模型的完整进度流。
+- 已打通随包资源通道：后端优先发现 bundled Ollama runtime/model 目录，启动 Ollama 时会指向随包模型目录；portable 构建可复制 `vendor/ollama` 和 `vendor/ollama-models`。
+- Electron 主进程启动随包后端时会显式注入 `MAVRIS_BUNDLED_OLLAMA_DIR`、`MAVRIS_BUNDLED_OLLAMA_MODELS_DIR`、`MAVRIS_OLLAMA_BUNDLE_MANIFEST` 和 `OLLAMA_MODELS`，并由 `desktop/scripts/backend-ollama-env-smoke.cjs` 验证。
+- 已新增 `scripts/bundle_ollama.ps1`：从已准备好的 Ollama runtime/model 目录生成 `vendor/ollama`、`vendor/ollama-models` 和 SHA256 manifest，并要求显式确认再分发许可。
+- 已新增 `scripts/prepare_ollama_release.ps1`：面向发布人员的一步式入口，会准备 vendor 资源，并用临时 portable 包执行 `verify_packaging.ps1 -RequireBundledOllama` 证明这些资源可被发布门禁消费。
+- portable 构建会校验 `vendor/ollama-bundle-manifest.json` 与当前 runtime/model 文件摘要一致，复制 manifest 到发布包；后端 setup-plan 会暴露 manifest 状态，设置页可显示随包资源已校验。
+- `scripts\build_all.ps1 -RequireBundledOllama` 已接入发布验证门禁，会检查 portable 目录和 zip 中的 Ollama runtime、models、bundle manifest 及摘要；当前真实 `dist` 包会被该门禁拦下，因为还没有实际随包资源。
+- 仍未完成真正的 Ollama 二进制/模型资源入库或自动下载，因此“全新机器无需额外下载即可隐私模式可用”仍是开放验收项。
+
 #### 方案
 
 - 安装包中内嵌 Ollama 二进制 + 预下载 `qwen2.5:3b-instruct-q4`（~2GB）
 - 首次启动检测 Ollama 缺失时引导一键安装（winget 或解压内嵌包）
 - Settings 面板加"一键拉取推荐模型"按钮 + 进度条
+- portable 构建从 `vendor/ollama` 和 `vendor/ollama-models` 复制随包 runtime/model，并校验/复制 `vendor/ollama-bundle-manifest.json`；发布前由下载/许可校验脚本填充这两个目录。
+- 使用 `scripts/prepare_ollama_release.ps1 -OllamaRuntimeDir <dir> -OllamaModelsDir <dir> -AcceptLicenses` 准备随包资源；manifest 保留来源、大小、文件数和 SHA256。需要拉取模型到 staging 时追加 `-PullModel -OllamaExe <ollama.exe>`。
+- 发布隐私模式开箱包时使用 `scripts\build_all.ps1 -RequireBundledOllama`；只检查已有产物时使用 `scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama`。
 
 #### 预计涉及文件
 
 - `scripts/build_all.ps1`（打包流程）
 - `desktop/src/renderer/components/SettingsPanel.tsx`（UI 引导）
 - `backend/app/main.py`（启动时 Ollama 健康检查）
-- 新增 `scripts/bundle_ollama.ps1`
+- `scripts/bundle_ollama.ps1`（准备随包 Ollama runtime/model + manifest）
+- `scripts/prepare_ollama_release.ps1`（发布准备入口 + vendor 资源门禁验证）
+- `scripts/build_portable.ps1`（复制随包 Ollama runtime/model）
 
 #### 验收标准
 
@@ -161,7 +179,7 @@
 #### 预计涉及文件
 
 - `backend/app/tools/app_tools.py`
-- 新建 Skill 包（`.mavris_data/skills/`）
+- 新建 Skill 包（`.marvis_data/skills/`）
 
 ---
 

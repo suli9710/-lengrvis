@@ -231,7 +231,7 @@ def configure_logging(
 
 def load_backend_app() -> Any:
     backend_main = import_module("backend.main")
-    return backend_main.app
+    return backend_main.create_full_app()
 
 
 def create_uvicorn_server(*, uvicorn_module: Any = uvicorn) -> uvicorn.Server:

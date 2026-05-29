@@ -47,8 +47,12 @@ def _event_to_dict_payload(event: Any) -> dict[str, Any]:
 
 
 class EventDispatcher:
-    """Central event dispatcher with handler registration, ordered execution,
-    and AgentBus / audit integration.
+    """Lightweight local dispatcher for environment/perception events.
+
+    This is not the production task workflow engine. Orchestrator task flow is
+    driven by direct handler method calls; this dispatcher remains for local
+    fan-out, AgentBus notification, and audit integration used by environment
+    stream/perception events and small compatibility notifications.
 
     Handlers are invoked in registration order for a given event type.  Both
     sync and async callables are supported.  The optional queue (``start`` /

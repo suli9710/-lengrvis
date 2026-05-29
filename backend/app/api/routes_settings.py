@@ -151,6 +151,11 @@ async def ollama_status():
     return await ollama_service.status()
 
 
+@router.get("/settings/local-model/setup-plan")
+async def local_model_setup_plan(model: str | None = None):
+    return await ollama_service.setup_plan(model)
+
+
 @router.get("/settings/local-model/readiness")
 def local_model_readiness(model: str | None = None):
     return ollama_service.hardware_readiness(model)

@@ -20,7 +20,8 @@
       "Bash(python -c \"from app.core.schemas import Task\")",
       "Bash(python -m pytest tests/test_ollama_service.py -v)",
       "Bash(python -m pytest test_three_layer_state.py -v)",
-      "WebFetch(domain:deepwiki.com)"
+      "WebFetch(domain:deepwiki.com)",
+      "Bash(xargs wc -l)"
     ]
   }
 }

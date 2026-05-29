@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, Query
 
 from app.agents.browser_activity_review_agent import BrowserActivityReviewAgent
-from app.core.schemas import SafetyReview
+from app.agents.safety_review_agent import SafetyReviewAgent
+from app.core import db
+from app.core.schemas import Approval, ApprovalStatus, SafetyReview, now_iso
 from app.llm.registry import get_effective_settings
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools import browser_tools
+from app.tools.registry import register_all_tools, registry as tool_registry
 
 
 router = APIRouter()
@@ -18,15 +25,39 @@ def _context():
     return {"settings": settings, "allowed_directories": settings.allowed_directories}
 
 
-def _review_direct_browser_call(tool_name: str, payload: dict, risk_level: RiskLevel) -> SafetyReview:
-    return _browser_review_agent.review_tool_call(
+def _tool_definition(tool_name: str):
+    if not tool_registry.list():
+        register_all_tools()
+    return tool_registry.get(tool_name)
+
+
+def _review_direct_browser_call(tool_name: str, payload: dict, context: dict) -> SafetyReview:
+    tool = _tool_definition(tool_name)
+    browser_review = _browser_review_agent.review_tool_call(
         "direct_browser_api",
         None,
         tool_name,
         payload,
-        risk_level,
-        context=_context(),
+        tool.risk_level,
+        context=context,
+        tool_definition=tool,
     )
+    if browser_review is not None and browser_review.verdict == SafetyVerdict.DENY:
+        return browser_review
+    global_review = SafetyReviewAgent(settings=context.get("settings")).review_tool_call(
+        "direct_browser_api",
+        None,
+        tool_name,
+        payload,
+        tool.risk_level,
+        context=context,
+        tool_definition=tool,
+    )
+    if global_review.verdict == SafetyVerdict.DENY:
+        return global_review
+    if browser_review is not None and browser_review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+        return browser_review
+    return global_review
 
 
 def _blocked_review_response(review: SafetyReview) -> dict | None:
@@ -46,6 +77,114 @@ def _blocked_review_response(review: SafetyReview) -> dict | None:
             "review": review.model_dump(mode="json"),
         }
     return None
+
+
+def _claim_valid_browser_approval(tool_name: str, payload: dict, context: dict) -> dict | None:
+    if not _browser_payload_is_live_write(tool_name, payload):
+        return None
+    if payload.get("approved") is not True:
+        return {
+            "ok": False,
+            "status": "requires_approval",
+            "requires_approval": True,
+            "paused": True,
+            "error": f"{tool_name} live execution requires approved=true and a valid approved approval_id.",
+        }
+    approval_id = str(payload.get("approval_id") or "").strip()
+    if not approval_id:
+        return {
+            "ok": False,
+            "status": "requires_approval",
+            "requires_approval": True,
+            "paused": True,
+            "error": f"{tool_name} live execution requires a valid approved approval_id.",
+        }
+    data = db.fetch_one("approvals", approval_id)
+    if not data:
+        return {"ok": False, "status": "denied", "error": "Approval id was not found in the approval database."}
+    approval = Approval.model_validate(data)
+    binding_error = _browser_approval_binding_error(approval, tool_name, payload, context, allow_consumed=False)
+    if binding_error:
+        return {"ok": False, "status": "denied", "error": binding_error}
+    claimed = db.claim_approval_for_execution(approval.id, now_iso())
+    if not claimed:
+        return {"ok": False, "status": "denied", "error": "Approval has already been consumed or is no longer approved."}
+    claimed_approval = Approval.model_validate(claimed)
+    binding_error = _browser_approval_binding_error(claimed_approval, tool_name, payload, context, allow_consumed=True)
+    if binding_error:
+        return {"ok": False, "status": "denied", "error": binding_error}
+    return None
+
+
+def _attach_review_to_approval_error(approval_error: dict, blocked: dict | None) -> dict:
+    if approval_error.get("status") == "requires_approval" and blocked is not None:
+        return {**blocked, "error": approval_error.get("error") or blocked.get("error")}
+    return approval_error
+
+
+def _browser_approval_binding_error(
+    approval: Approval,
+    tool_name: str,
+    payload: dict,
+    context: dict,
+    *,
+    allow_consumed: bool,
+) -> str:
+    if approval.approval_type != "tool_call":
+        return "Browser approval is not bound to a tool call."
+    if approval.status != ApprovalStatus.APPROVED:
+        return f"Browser approval status is {approval.status}; expected approved."
+    if approval.consumed_at and not allow_consumed:
+        return "Browser approval has already been consumed."
+    tool = _tool_definition(tool_name)
+    required = {
+        "tool_name": approval.tool_name,
+        "args_binding_hmac": approval.args_binding_hmac,
+        "preview_hmac": approval.preview_hmac,
+        "settings_fingerprint": approval.settings_fingerprint,
+        "permission_policy_version": approval.permission_policy_version,
+        "tool_version": approval.tool_version,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        return f"Browser approval lacks binding metadata: {', '.join(missing)}."
+    if approval.tool_name != tool_name:
+        return "Browser approval tool name does not match this route."
+    if approval.risk_level and approval.risk_level != tool.risk_level.value:
+        return "Browser approval risk level does not match this tool."
+    if approval.tool_version != getattr(tool, "tool_version", "1"):
+        return "Browser approval tool version does not match this tool."
+    expected_args = args_binding_hmac(tool_name, payload, task_id=approval.task_id, step_id=approval.step_id)
+    if not hmac.compare_digest(str(approval.args_binding_hmac or ""), str(expected_args or "")):
+        return "Browser approval arguments do not match this request."
+    expected_preview = preview_hmac(approval.diff_preview)
+    if not hmac.compare_digest(str(approval.preview_hmac or ""), str(expected_preview or "")):
+        return "Browser approval preview was modified after review."
+    expected_settings = settings_fingerprint(
+        context.get("settings"),
+        allowed_directories=list(context.get("allowed_directories") or []),
+    )
+    if not hmac.compare_digest(str(approval.settings_fingerprint or ""), str(expected_settings or "")):
+        return "Browser runtime settings changed after approval preview."
+    expected_policy = permission_policy_version(PermissionStore().updated_at())
+    if not hmac.compare_digest(str(approval.permission_policy_version or ""), str(expected_policy or "")):
+        return "Browser permission policy changed after approval preview."
+    return ""
+
+
+def _browser_payload_is_live_write(tool_name: str, payload: dict) -> bool:
+    if payload.get("dry_run") is True:
+        return False
+    if tool_name in {"browser.cua", "browser.cua_run"}:
+        return True
+    if tool_name != "browser.act":
+        return False
+    action = payload.get("action")
+    kind = ""
+    if isinstance(action, dict):
+        kind = str(action.get("kind") or "")
+    kind = str(payload.get("kind") or kind).strip().casefold().replace("_", "-")
+    return kind in {"click", "fill", "submit", "scroll", "cua"}
 
 
 @router.post("/browser/open-url")
@@ -85,22 +224,28 @@ def observe(payload: dict):
 
 @router.post("/browser/act")
 def act(payload: dict):
-    review = _review_direct_browser_call("browser.act", payload, RiskLevel.R2_REVERSIBLE_MODIFY)
+    context = _context()
+    review = _review_direct_browser_call("browser.act", payload, context)
     blocked = _blocked_review_response(review)
     if review.verdict == SafetyVerdict.DENY:
         return blocked
-    if blocked is not None and not payload.get("dry_run"):
-        return blocked
-    return browser_tools.act(payload, _context())
+    approval_error = _claim_valid_browser_approval("browser.act", payload, context)
+    if approval_error is not None:
+        return _attach_review_to_approval_error(approval_error, blocked)
+    return browser_tools.act(payload, context)
 
 
 @router.post("/browser/cua-run")
 async def cua_run(payload: dict):
-    review = _review_direct_browser_call("browser.cua_run", payload, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM)
+    context = _context()
+    review = _review_direct_browser_call("browser.cua_run", payload, context)
     blocked = _blocked_review_response(review)
-    if blocked is not None:
+    if review.verdict == SafetyVerdict.DENY:
         return blocked
-    return await browser_tools.cua_run_async(payload, _context())
+    approval_error = _claim_valid_browser_approval("browser.cua_run", payload, context)
+    if approval_error is not None:
+        return _attach_review_to_approval_error(approval_error, blocked)
+    return await browser_tools.cua_run_async(payload, context)
 
 
 @router.post("/browser/cua")

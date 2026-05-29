@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import threading
 from typing import Any
 
@@ -35,6 +36,7 @@ ENGINE_TERMINAL_PHASES = {
 _ACTIVE_RUN_TASKS: dict[str, asyncio.Future | concurrent.futures.Future] = {}
 _ACTIVE_RUN_TASKS_LOCK = threading.RLock()
 _ACCEPTING_NEW_RUNS = True
+logger = logging.getLogger(__name__)
 
 
 async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Run:
@@ -179,8 +181,8 @@ def pause_run(run_id: str) -> Run:
         _expire_pending_approvals(run.task_id, "pause_requested")
         try:
             set_task_status(run.task_id, "paused")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("could not mark task %s paused: %s", run.task_id, exc, exc_info=True)
     _sync_persisted_state_phase(run, RunPhase.PAUSED, "pause_requested")
     _update_run(run, phase=RunPhase.PAUSED)
     run_event_bus.publish(run.id, "turn.completed", {"reason": "pause_requested", "phase": run.phase.value})
@@ -238,14 +240,14 @@ def cancel_run(run_id: str) -> Run:
             from app.orchestration.claude_code_runner import cancel_claude_code_run
 
             _schedule_background(cancel_claude_code_run(run.id), data_dir=_run_data_dir(run))
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
+            logger.warning("Failed to schedule developer run cancellation for %s: %s", run.id, exc, exc_info=True)
     if run.task_id:
         _expire_pending_approvals(run.task_id, "cancel_requested")
         try:
             set_task_status(run.task_id, TaskPhase.CANCELLED)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
+            logger.warning("Failed to mark task %s cancelled while cancelling run %s: %s", run.task_id, run.id, exc, exc_info=True)
     _update_run(run, phase=RunPhase.CANCELLED)
     run_event_bus.publish(run.id, "run.cancelled", {"task_id": run.task_id, "reason": "cancel_requested"})
     return run
@@ -254,7 +256,8 @@ def cancel_run(run_id: str) -> Run:
 def _expire_pending_approvals(task_id: str, reason: str) -> None:
     try:
         expired = db.expire_pending_approvals_for_task(task_id, now_iso(), reason)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - approval expiry is best effort during state transitions.
+        logger.warning("Failed to expire pending approvals for task %s: %s", task_id, exc, exc_info=True)
         return
     if not expired:
         return
@@ -263,7 +266,8 @@ def _expire_pending_approvals(task_id: str, reason: str) -> None:
 
         for item in expired:
             publish_approval_decided(Approval.model_validate(item))
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - expiry already persisted; event fanout is best effort.
+        logger.warning("Failed to publish expired approval events for task %s: %s", task_id, exc, exc_info=True)
         return
 
 
@@ -357,8 +361,8 @@ async def _run_engine_loop(
                 await asyncio.wait_for(bridge_task, timeout=0.5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 bridge_task.cancel()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("run bridge task failed while stopping %s: %s", run_id, exc, exc_info=True)
         _untrack_active_run(run_id)
 
 
@@ -390,8 +394,8 @@ async def _monitor_task_to_terminal(
             await asyncio.wait_for(bridge_task, timeout=0.5)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             bridge_task.cancel()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("run bridge task failed while monitoring %s: %s", run_id, exc, exc_info=True)
 
 
 async def _resume_engine_loop(run_id: str, router: EngineRouter, state: RunState) -> None:
@@ -518,7 +522,7 @@ def _state_from_run(run: Run) -> RunState:
     try:
         return default_run_store.get(run.id)
     except KeyError:
-        pass
+        logger.debug("run state %s missing from store; rebuilding from run record", run.id)
     state = RunState(
         run_id=run.id,
         engine="developer" if run.engine == RunEngine.DEVELOPER else "os",

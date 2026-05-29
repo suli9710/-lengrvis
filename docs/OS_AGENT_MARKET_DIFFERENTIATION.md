@@ -7,7 +7,7 @@
 
 ## 1. 执行摘要
 
-Mavris 当前不是普通聊天机器人，也不只是开发者控制台。按仓库实证，它更接近一个 **Windows 优先、本地优先、多 Agent 编排的个人 OS Agent/电脑管家原型**：用户用自然语言提交目标，后端通过 Orchestrator、Planner、SafetyReview、File、Document、Computer、App、Browser、Search、Memory 等 Agent 分工，把任务拆成步骤，调用本地文件、系统、浏览器、文档、应用、远程桌面、Skill 和 MCP 工具，并在修改文件、浏览器提交、远程输入等高风险动作前走 dry-run 与审批。
+Mavris 当前不是普通聊天机器人，也不只是开发者控制台。按仓库实证，它更接近一个 **Windows 优先、本地优先、多 Agent 编排的个人 OS Agent/电脑管家原型**：用户用自然语言提交目标，后端由 Orchestrator、Planner、Supervisor、SafetyReview、OSExecutionEngine、Memory 等实质组件负责任务理解、计划、监督和状态推进；File、Document、Computer、App、Browser、Search 等领域 Agent 更准确地说是 domain shell agents，提供 owner/prompt/allowed tools 边界并共享 `act()`。系统调用本地文件、系统、浏览器、文档、应用、远程桌面、Skill 和 MCP 工具，并在修改文件、浏览器提交、远程输入等高风险动作前走 dry-run 与审批。
 
 与腾讯 Marvis 相比，Mavris 的底层工程骨架更透明：风险等级、路径沙盒、审批绑定、审计日志、Skill 安全审查、工具注册、上下文管理、移动审批和远程桌面后端都有可读代码支撑。但腾讯 Marvis 的产品化能力明显领先：官方已提供 Windows、macOS、Android 下载入口，强调端侧大模型、本地模式文件 0 上传、手机实时操控电脑、AI 图库/文档库、系统设置与文件理解等消费级能力。Mavris 的最大差距不是“有没有 Agent 架构”，而是 **端侧模型开箱即用、跨端体验、NPU/端侧加速、发布级应用生态集成和消费级打磨**。
 
@@ -22,7 +22,7 @@ Mavris 当前不是普通聊天机器人，也不只是开发者控制台。按�
 | 维度 | Mavris 当前状态 | 证据 |
 |---|---|---|
 | 定位 | Windows 优先的本地电脑 AI 管家，桌面端是消费级电脑助手入口 | `README.md`、`desktop/src/renderer/App.tsx` |
-| Agent 编排 | Orchestrator + Planner + SafetyReview + Memory + File/Document/Computer/App/Browser/Search 等专家 Agent | `backend/app/agents/orchestrator_agent.py` |
+| Agent 编排 | Orchestrator + Planner + Supervisor + SafetyReview + OSExecutionEngine + Memory；File/Document/Computer/App/Browser/Search 是领域 shell agent，共享 `BaseAgent.act()` 和 deterministic fast path | `backend/app/agents/orchestrator_agent.py`、`backend/app/agents/base.py` |
 | 工具注册 | 文件、文档、系统、远程、UI 自动化、工作流、应用、Excel、浏览器、搜索、视觉、聚类、Skill、MCP 等工具集中注册 | `backend/app/tools/registry.py` |
 | 安全模型 | R0-R4 风险等级；R2/R3 操作走 dry-run、审批、绑定校验；R4 阻断 | `backend/app/policy/risk.py`、`backend/app/policy/policy_engine.py`、`backend/app/orchestration/tool_runtime.py` |
 | 文件与文档 | FTS5、语义搜索、重复文件、文件操作、PDF/DOCX/XLSX/PPTX/CSV 抽取、OCR、文档摘要/问答/报告 | `backend/app/tools/file_tools.py`、`backend/app/tools/document_tools.py`、`backend/app/services/document_service.py` |
@@ -114,7 +114,7 @@ Manus 官网主打“Hands On AI”，入口任务包括创建 slides、建网�
 ### 5.2 Mavris 已接近市场主流的地方
 
 **多 Agent 编排**  
-Mavris 的 Orchestrator + Planner + 专家 Agent + SafetyReview + Memory 架构，已经接近腾讯 Marvis 所描述的 PM Agent + 专项 Agent 逻辑，也接近 ChatGPT Agent 的“模型自主选择工具”范式。差异在于模型能力和产品成熟度，而不是基本架构有无。
+Mavris 的 Orchestrator + Planner + Supervisor + SafetyReview + OSExecutionEngine + Memory 架构，已经具备个人 OS Agent 的编排骨架；File/Document/Browser/Computer/App/Search 等领域 Agent 主要承担工具边界、prompt 和 `act()` 路由。多数成功路径依赖 deterministic/schema validation、PolicyEngine 和 ToolRuntime，而不是每次都由独立 LLM Agent 自主推理。差异仍在模型能力、产品成熟度和领域 Agent 的真实任务成功率。
 
 **文件/文档理解**  
 Mavris 具备全文索引、语义搜索、OCR、文档摘要、QA、报告和多格式抽取，和腾讯 Marvis 的 AI 文档库方向、Genspark 的文档/报告工具方向相邻。差距在图片语义聚类、人像/地点/节日等消费图库能力，以及可视化体验。
@@ -146,7 +146,7 @@ Mavris 桌面端已有办公室 Agent、能力卡、审批弹窗、设置页，�
 
 ### 6.1 多 Agent 架构
 
-Mavris 的多 Agent 架构方向正确。短期不建议再增加 Agent 数量，而应提高每个 Agent 的任务成功率和可观察性：
+Mavris 的多 Agent 架构方向正确，但短期不建议再增加 Agent 数量或强化“自主 Agent 数量”宣传，而应提高实质编排组件和领域 shell agent 的任务成功率与可观察性：
 
 - 强化 Planner 输出的工具选择质量，减少计划和工具 schema 的错配。
 - 给 File/Document/Browser/Computer/App Agent 增加更明确的能力边界与失败恢复策略。

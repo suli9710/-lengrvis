@@ -12,6 +12,8 @@ from app.perception.schemas import AppContext, ScreenState, UIElement
 
 CONFIDENCE_THRESHOLD = 0.8
 MAX_SUGGESTIONS = 3
+RULE_SOURCE = "rules"
+MODEL_SOURCE = "model"
 
 
 class IntentSuggestion(BaseModel):
@@ -21,6 +23,8 @@ class IntentSuggestion(BaseModel):
     confidence: float
     agent_hint: str = ""
     reason: str = ""
+    source: str = RULE_SOURCE
+    model_enabled: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -42,9 +46,11 @@ class IntentPredictor:
         app_context: AppContext | None = None,
         history: Sequence[Any] | SessionContext | Mapping[str, Any] | None = None,
     ) -> list[IntentSuggestion]:
+        """Return rule-based suggestions, optionally augmented by an injected model hook."""
         context = _resolve_app_context(screen_state, app_context)
         features = build_intent_features(screen_state=screen_state, app_context=context, history=history)
-        candidates = self._model_candidates(features) + heuristic_candidates(features)
+        model_enabled = self.model is not None
+        candidates = self._model_candidates(features) + heuristic_candidates(features, model_enabled=model_enabled)
         return rank_suggestions(candidates, confidence_threshold=self.confidence_threshold, limit=self.max_suggestions)
 
     def _model_candidates(self, features: dict[str, Any]) -> list[IntentSuggestion]:
@@ -54,7 +60,7 @@ class IntentPredictor:
             raw_candidates = self.model.predict(features)
         except Exception:
             return []
-        return [_coerce_suggestion(item) for item in raw_candidates]
+        return [_with_source_metadata(_coerce_suggestion(item), source=MODEL_SOURCE, model_enabled=True) for item in raw_candidates]
 
 
 def predict_intents(
@@ -94,79 +100,103 @@ def build_intent_features(
     }
 
 
-def heuristic_candidates(features: dict[str, Any]) -> list[IntentSuggestion]:
+def heuristic_candidates(features: dict[str, Any], *, model_enabled: bool = False) -> list[IntentSuggestion]:
     text = _feature_text(features)
     candidates: list[IntentSuggestion] = []
 
     if _has_any(text, ("excel", "spreadsheet", "budget", ".xlsx", ".xls", "csv")):
         candidates.append(
-            IntentSuggestion(
-                id="spreadsheet_analyze",
-                title="Analyze spreadsheet",
-                prompt="Analyze the visible spreadsheet and summarize the important numbers.",
-                confidence=_score(text, base=0.82, boosts=("budget", "chart", "pivot", "formula", "table")),
-                agent_hint="DocumentAgent",
-                reason="Spreadsheet context is visible.",
+            _rule_suggestion(
+                rule_id="spreadsheet_context",
+                model_enabled=model_enabled,
+                suggestion=IntentSuggestion(
+                    id="spreadsheet_analyze",
+                    title="Analyze spreadsheet",
+                    prompt="Analyze the visible spreadsheet and summarize the important numbers.",
+                    confidence=_score(text, base=0.82, boosts=("budget", "chart", "pivot", "formula", "table")),
+                    agent_hint="DocumentAgent",
+                    reason="Spreadsheet context is visible.",
+                ),
             )
         )
 
     if _has_any(text, ("word", "docx", "document", "report", "pdf", "proposal")):
         candidates.append(
-            IntentSuggestion(
-                id="document_summarize",
-                title="Summarize document",
-                prompt="Summarize the visible document and call out likely next actions.",
-                confidence=_score(text, base=0.82, boosts=("report", "contract", "proposal", "review", "edit")),
-                agent_hint="DocumentAgent",
-                reason="Document editing or reading context is visible.",
+            _rule_suggestion(
+                rule_id="document_context",
+                model_enabled=model_enabled,
+                suggestion=IntentSuggestion(
+                    id="document_summarize",
+                    title="Summarize document",
+                    prompt="Summarize the visible document and call out likely next actions.",
+                    confidence=_score(text, base=0.82, boosts=("report", "contract", "proposal", "review", "edit")),
+                    agent_hint="DocumentAgent",
+                    reason="Document editing or reading context is visible.",
+                ),
             )
         )
 
     if _has_any(text, ("browser", "chrome", "edge", "firefox", "http", "web page", "网页", "页面")):
         candidates.append(
-            IntentSuggestion(
-                id="browser_extract",
-                title="Read page",
-                prompt="Read the current page and extract the useful facts.",
-                confidence=_score(text, base=0.81, boosts=("search", "results", "article", "login", "checkout")),
-                agent_hint="BrowserAgent",
-                reason="Browser context is visible.",
+            _rule_suggestion(
+                rule_id="browser_context",
+                model_enabled=model_enabled,
+                suggestion=IntentSuggestion(
+                    id="browser_extract",
+                    title="Read page",
+                    prompt="Read the current page and extract the useful facts.",
+                    confidence=_score(text, base=0.81, boosts=("search", "results", "article", "login", "checkout")),
+                    agent_hint="BrowserAgent",
+                    reason="Browser context is visible.",
+                ),
             )
         )
 
     if _has_any(text, ("explorer", "folder", "directory", "downloads", "desktop", ".txt", ".png", ".pdf")):
         candidates.append(
-            IntentSuggestion(
-                id="file_organize",
-                title="Organize files",
-                prompt="Review the visible folder and suggest a safe organization plan.",
-                confidence=_score(text, base=0.81, boosts=("downloads", "duplicate", "invoice", "contract")),
-                agent_hint="FileAgent",
-                reason="File or folder context is visible.",
+            _rule_suggestion(
+                rule_id="file_context",
+                model_enabled=model_enabled,
+                suggestion=IntentSuggestion(
+                    id="file_organize",
+                    title="Organize files",
+                    prompt="Review the visible folder and suggest a safe organization plan.",
+                    confidence=_score(text, base=0.81, boosts=("downloads", "duplicate", "invoice", "contract")),
+                    agent_hint="FileAgent",
+                    reason="File or folder context is visible.",
+                ),
             )
         )
 
     if _has_any(text, ("settings", "control panel", "task manager", "cpu", "memory", "disk", "network")):
         candidates.append(
-            IntentSuggestion(
-                id="system_diagnose",
-                title="Check system",
-                prompt="Check the visible system state and suggest a read-only diagnostic next step.",
-                confidence=_score(text, base=0.81, boosts=("error", "warning", "slow", "low", "offline")),
-                agent_hint="ComputerAgent",
-                reason="System management context is visible.",
+            _rule_suggestion(
+                rule_id="system_context",
+                model_enabled=model_enabled,
+                suggestion=IntentSuggestion(
+                    id="system_diagnose",
+                    title="Check system",
+                    prompt="Check the visible system state and suggest a read-only diagnostic next step.",
+                    confidence=_score(text, base=0.81, boosts=("error", "warning", "slow", "low", "offline")),
+                    agent_hint="ComputerAgent",
+                    reason="System management context is visible.",
+                ),
             )
         )
 
     if int(features.get("unfinished_task_count") or 0) > 0:
         candidates.append(
-            IntentSuggestion(
-                id="resume_task",
-                title="Resume task",
-                prompt="Resume the most recent unfinished task using the current screen context.",
-                confidence=0.83,
-                agent_hint="OrchestratorAgent",
-                reason="Session history has unfinished tasks.",
+            _rule_suggestion(
+                rule_id="unfinished_task_context",
+                model_enabled=model_enabled,
+                suggestion=IntentSuggestion(
+                    id="resume_task",
+                    title="Resume task",
+                    prompt="Resume the most recent unfinished task using the current screen context.",
+                    confidence=0.83,
+                    agent_hint="OrchestratorAgent",
+                    reason="Session history has unfinished tasks.",
+                ),
             )
         )
 
@@ -198,6 +228,31 @@ def _coerce_suggestion(raw: IntentSuggestion | Mapping[str, Any]) -> IntentSugge
     if isinstance(raw, IntentSuggestion):
         return raw
     return IntentSuggestion.model_validate(dict(raw))
+
+
+def _rule_suggestion(*, rule_id: str, model_enabled: bool, suggestion: IntentSuggestion) -> IntentSuggestion:
+    return _with_source_metadata(
+        suggestion,
+        source=RULE_SOURCE,
+        model_enabled=model_enabled,
+        extra_metadata={"rule_id": rule_id},
+    )
+
+
+def _with_source_metadata(
+    suggestion: IntentSuggestion,
+    *,
+    source: str,
+    model_enabled: bool,
+    extra_metadata: Mapping[str, Any] | None = None,
+) -> IntentSuggestion:
+    metadata = {
+        **suggestion.metadata,
+        **(dict(extra_metadata) if extra_metadata is not None else {}),
+        "source": source,
+        "model_enabled": model_enabled,
+    }
+    return suggestion.model_copy(update={"source": source, "model_enabled": model_enabled, "metadata": metadata})
 
 
 def _feature_text(features: dict[str, Any]) -> str:

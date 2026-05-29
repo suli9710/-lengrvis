@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -45,10 +46,8 @@ class GuardianRuntime:
     async def stop(self) -> None:
         if self._idle_task is not None:
             self._idle_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._idle_task
-            except asyncio.CancelledError:
-                pass
             self._idle_task = None
         await self.stop_full_backend(reason="guardian_stop")
 

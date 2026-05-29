@@ -82,6 +82,47 @@ export interface LocalLLMHealth {
   readiness?: LocalModelReadiness;
 }
 
+export type LocalModelSetupStepState = "pending" | "current" | "done" | "blocked";
+
+export interface LocalModelSetupStep {
+  key: string;
+  label: string;
+  state: LocalModelSetupStepState;
+  detail: string;
+}
+
+export interface LocalModelSetupPlan {
+  ready: boolean;
+  canInstall: boolean;
+  model: string;
+  readiness?: LocalModelReadiness;
+  installed: boolean;
+  running: boolean;
+  models: string[];
+  hasModel: boolean;
+  runtimeSource: "bundled" | "system" | "missing" | string;
+  bundledRuntimeAvailable: boolean;
+  bundledRuntimePath: string;
+  bundledModelsAvailable: boolean;
+  bundledModelsPath: string;
+  bundledModelAvailable: boolean;
+  bundledModelConfigured: boolean;
+  bundleManifest: {
+    present: boolean;
+    valid?: boolean;
+    path?: string;
+    model?: string;
+    acceptedLicenses?: boolean;
+    runtimeSha256?: string;
+    modelsSha256?: string;
+    runtimeFiles?: number;
+    modelsFiles?: number;
+    error?: string;
+  };
+  steps: LocalModelSetupStep[];
+  nextAction: "hardware_blocked" | "install_runtime" | "start_runtime" | "use_bundled_model" | "download_model" | "ready" | string;
+}
+
 export interface LLMCapabilities {
   tools: boolean;
   structuredJson: boolean;
@@ -227,14 +268,33 @@ export interface ContextUsage {
 }
 
 export type ChatRole = "system" | "developer" | "user" | "assistant" | "tool";
+export type ChatMessagePart =
+  | {
+      type: "text" | "reasoning" | "subagent" | "error" | "cancelled";
+      text: string;
+      title?: string;
+      agent?: string;
+      status?: "streaming" | "completed" | "error" | "cancelled";
+    }
+  | {
+      type: "tool_call";
+      toolName: string;
+      status: "running" | "success" | "error";
+      input?: string;
+      output?: string;
+      error?: string;
+      title?: string;
+    };
+export type ChatMessageContent = string | ChatMessagePart[];
+export type ChatMessageStatus = "sent" | "streaming" | "completed" | "failed" | "error" | "cancelled";
 
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   author: string;
-  content: string;
+  content: ChatMessageContent;
   createdAt: string;
-  status?: "sent" | "streaming" | "failed";
+  status?: ChatMessageStatus;
 }
 
 export interface ChatRequest {
@@ -300,7 +360,7 @@ export interface PerceptionSuggestionLaunchResponse {
   engine?: "auto" | "os" | "developer" | string;
 }
 
-export type TaskState = "queued" | "running" | "blocked" | "completed" | "failed";
+export type TaskState = "queued" | "running" | "blocked" | "paused" | "completed" | "failed";
 
 export interface TaskEvent {
   id: string;
@@ -687,6 +747,52 @@ export interface FileSearchResult {
   score: number;
 }
 
+export interface FileSearchMeta {
+  count: number;
+  scanned: number;
+  truncated: boolean;
+  status?: "missing_scope" | "empty_query" | "ok" | string;
+}
+
+export interface FileSearchResponse {
+  results: FileSearchResult[];
+  meta: FileSearchMeta;
+}
+
+export interface LocalLibraryItem {
+  id: string;
+  path: string;
+  name: string;
+  parent: string;
+  kind: "image" | "document" | "app" | string;
+  extension: string;
+  mimeType: string;
+  size: number;
+  createdAt: number;
+  modifiedAt: number;
+  previewUrl: string;
+  groupLabel: string;
+  iconUrl?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface LocalLibraryStats {
+  size: number;
+  byExtension: Record<string, number>;
+}
+
+export interface LocalLibraryResponse {
+  section: string;
+  roots: string[];
+  items: LocalLibraryItem[];
+  count: number;
+  total: number;
+  scanned: number;
+  truncated: boolean;
+  stats: LocalLibraryStats;
+}
+
 export interface InstalledApp {
   id: string;
   name: string;
@@ -694,6 +800,13 @@ export interface InstalledApp {
   command?: string;
   source: "builtin" | "start_menu" | "registry" | string;
   allowlisted: boolean;
+}
+
+export interface FileRevealResult {
+  ok: boolean;
+  path?: string;
+  revealed?: boolean;
+  error?: string;
 }
 
 export interface SystemProcess {
@@ -1126,6 +1239,9 @@ export interface MavrisDesktopBridge {
     background: () => Promise<BackendStatus>;
   };
   dialog: {
+    chooseDirectory: () => Promise<string | null>;
+    chooseDocument: () => Promise<string | null>;
+    knownFolders: () => Promise<Record<"desktop" | "downloads" | "documents" | "pictures", string | null>>;
     chooseSkillDirectory: () => Promise<string | null>;
     chooseSkillZip: () => Promise<string | null>;
   };
@@ -1145,6 +1261,7 @@ export interface MavrisDesktopBridge {
   };
   shell: {
     openExternal: (url: string) => Promise<void>;
+    getFileIcon: (path: string) => Promise<string | null>;
   };
   notifications: {
     show: (payload: NotificationPayload) => Promise<{ shown: boolean; reason?: string }>;

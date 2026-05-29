@@ -145,77 +145,81 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
 
   return (
     <Panel title="任务时间线" eyebrow="执行记录">
-      <ol className="timeline">
-        {tasks.map((task) => (
-          <li
-            className={task.id === focusedTaskId ? "timeline__item timeline__item--focused" : "timeline__item"}
-            key={task.id}
-            ref={task.id === focusedTaskId ? focusedTaskRef : undefined}
-          >
-            <span className={`timeline__marker timeline__marker--${task.state}`}>{iconForState(task.state)}</span>
-            <div className="timeline__content">
-              <div className="row row--between">
-                <strong>{task.title}</strong>
-                <Badge tone={toneForState(task.state)}>{zhTaskState(task.state)}</Badge>
-              </div>
-              <p>{task.description}</p>
-              {task.recordings?.length ? (
-                <div className="timeline-recordings">
-                  {task.recordings.map((recording) => (
-                    <div className="timeline-recording" key={recording.stepId}>
-                      <div className="timeline-recording__head">
-                        <span className="timeline-recording__title">
-                          <Images size={14} aria-hidden="true" />
-                          <span>{recording.toolName}</span>
-                        </span>
-                        <button
-                          type="button"
-                          className="icon-button icon-button--tiny"
-                          onClick={() => openRecordingPlayer(task.title, recording)}
-                          disabled={!recording.frames.some((frame) => frame.url)}
-                          title="播放录屏"
-                          aria-label="播放录屏"
-                        >
-                          <Play size={13} aria-hidden="true" />
-                        </button>
-                      </div>
-                      <div className="timeline-recording__frames">
-                        {recording.frames.map((frame, frameIndex) => (
+      {tasks.length ? (
+        <ol className="timeline">
+          {tasks.map((task) => (
+            <li
+              className={task.id === focusedTaskId ? "timeline__item timeline__item--focused" : "timeline__item"}
+              key={task.id}
+              ref={task.id === focusedTaskId ? focusedTaskRef : undefined}
+            >
+              <span className={`timeline__marker timeline__marker--${task.state}`}>{iconForState(task.state)}</span>
+              <div className="timeline__content">
+                <div className="row row--between">
+                  <strong>{task.title}</strong>
+                  <Badge tone={toneForState(task.state)}>{zhTaskState(task.state)}</Badge>
+                </div>
+                <p>{task.description}</p>
+                {task.recordings?.length ? (
+                  <div className="timeline-recordings">
+                    {task.recordings.map((recording) => (
+                      <div className="timeline-recording" key={recording.stepId}>
+                        <div className="timeline-recording__head">
+                          <span className="timeline-recording__title">
+                            <Images size={14} aria-hidden="true" />
+                            <span>{recording.toolName}</span>
+                          </span>
                           <button
                             type="button"
-                            className="timeline-frame"
-                            key={`${recording.stepId}-${frame.phase}-${frame.capturedAt}`}
-                            onClick={() => frame.url && openRecordingPlayer(task.title, recording, frameIndex)}
-                            disabled={!frame.url}
-                            title={frame.error || frame.phase}
+                            className="icon-button icon-button--tiny"
+                            onClick={() => openRecordingPlayer(task.title, recording)}
+                            disabled={!recording.frames.some((frame) => frame.url)}
+                            title="播放录屏"
+                            aria-label="播放录屏"
                           >
-                            {frame.url ? <img src={frame.url} alt={`${recording.toolName} ${phaseLabel(frame.phase)}`} /> : null}
-                            <span>{phaseLabel(frame.phase)}</span>
+                            <Play size={13} aria-hidden="true" />
                           </button>
-                        ))}
+                        </div>
+                        <div className="timeline-recording__frames">
+                          {recording.frames.map((frame, frameIndex) => (
+                            <button
+                              type="button"
+                              className="timeline-frame"
+                              key={`${recording.stepId}-${frame.phase}-${frame.capturedAt}`}
+                              onClick={() => frame.url && openRecordingPlayer(task.title, recording, frameIndex)}
+                              disabled={!frame.url}
+                              title={frame.error || frame.phase}
+                            >
+                              {frame.url ? <img src={frame.url} alt={`${recording.toolName} ${phaseLabel(frame.phase)}`} /> : null}
+                              <span>{phaseLabel(frame.phase)}</span>
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {task.cleanupPlan ? <TimelineCleanupPlan plan={task.cleanupPlan} /> : null}
-              <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
-              {task.state === "completed" && api ? (
-                <div className="row" style={{ marginTop: 8 }}>
-                  <button className="button button--ghost" onClick={() => void openExplain(task.id)} disabled={isWorking}>
-                    <HelpCircle size={14} aria-hidden="true" />
-                    为什么？
-                  </button>
-                  <button className="button button--ghost" onClick={() => void openPreview(task.id)} disabled={isWorking}>
-                    <RotateCcw size={14} aria-hidden="true" />
-                    回滚此任务
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </li>
-        ))}
-      </ol>
+                    ))}
+                  </div>
+                ) : null}
+                {task.cleanupPlan ? <TimelineCleanupPlan plan={task.cleanupPlan} /> : null}
+                <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
+                {task.state === "completed" && api ? (
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <button className="button button--ghost" onClick={() => void openExplain(task.id)} disabled={isWorking}>
+                      <HelpCircle size={14} aria-hidden="true" />
+                      为什么？
+                    </button>
+                    <button className="button button--ghost" onClick={() => void openPreview(task.id)} disabled={isWorking}>
+                      <RotateCcw size={14} aria-hidden="true" />
+                      回滚此任务
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="empty-state">暂无任务记录。真实任务启动后会出现在这里。</p>
+      )}
 
       {feedback ? <p className="muted" style={{ marginTop: 12 }}>{feedback}</p> : null}
 
@@ -532,6 +536,8 @@ function toneForState(state: TaskState): "neutral" | "success" | "warning" | "da
       return "success";
     case "blocked":
       return "warning";
+    case "paused":
+      return "neutral";
     case "failed":
       return "danger";
     case "running":

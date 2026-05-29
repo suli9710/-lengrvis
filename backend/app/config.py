@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import base64
+import logging
 import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -18,8 +19,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = PROJECT_ROOT / "backend"
 DEFAULT_DATA_DIR = PROJECT_ROOT / ".marvis_data"
 CONFIG_PARENT_SEARCH_DEPTH = 5
-DEFAULT_JWT_SECRET = secrets.token_hex(32)
 DPAPI_PREFIX = "dpapi:"
+MOBILE_JWT_SECRET_ENV_KEYS = ("MARVIS_JWT_SECRET", "MAVRIS_JWT_SECRET")
+MOBILE_JWT_SECRET_FILE = "mobile_jwt.secret"
+logger = logging.getLogger(__name__)
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -66,6 +69,32 @@ def _resolve_api_key(raw_plain: Any, raw_encrypted: Any) -> str:
     if not encrypted:
         return ""
     return _decrypt_windows_dpapi(encrypted)
+
+
+def _resolve_mobile_jwt_secret(raw_secret: Any, data_dir: str | Path) -> str:
+    configured = str(raw_secret or "").strip()
+    if configured:
+        return configured
+    return _local_mobile_jwt_secret(Path(data_dir))
+
+
+def _local_mobile_jwt_secret(data_dir: Path) -> str:
+    secret_path = data_dir / MOBILE_JWT_SECRET_FILE
+    try:
+        if secret_path.exists():
+            value = secret_path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        data_dir.mkdir(parents=True, exist_ok=True)
+        value = secrets.token_hex(32)
+        secret_path.write_text(value, encoding="utf-8")
+        try:
+            secret_path.chmod(0o600)
+        except OSError as exc:
+            logger.debug("could not restrict mobile JWT secret permissions at %s: %s", secret_path, exc)
+        return value
+    except OSError as exc:
+        raise RuntimeError("Mobile JWT secret is unavailable.") from exc
 
 
 def _candidate_config_dirs() -> list[Path]:
@@ -220,7 +249,7 @@ class AppSettings:
     environment_store_screenshots: bool = False
     environment_event_retention_days: int = 7
     environment_rules: list[dict[str, Any]] = field(default_factory=list)
-    jwt_secret: str = field(default_factory=lambda: DEFAULT_JWT_SECRET)
+    jwt_secret: str = ""
 
     @classmethod
     def from_sources(cls) -> "AppSettings":
@@ -347,6 +376,8 @@ class AppSettings:
             value("MARVIS_API_KEY", "api_key", ""),
             value("MARVIS_API_KEY_ENCRYPTED", "api_key_encrypted", ""),
         )
+        data_dir = str(value("MARVIS_DATA_DIR", "data_dir", default_data_dir))
+        jwt_secret = _resolve_mobile_jwt_secret(value_any(MOBILE_JWT_SECRET_ENV_KEYS, "jwt_secret", ""), data_dir)
 
         return cls(
             provider_name=str(value("MARVIS_PROVIDER_NAME", "provider_name", "openai_compatible")),
@@ -509,7 +540,7 @@ class AppSettings:
                 value("MARVIS_BROWSER_SCREENSHOT_DIR", "browser_screenshot_dir", default_data_dir / "browser_screenshots")
             ),
             allowed_directories=allowed_dirs,
-            data_dir=str(value("MARVIS_DATA_DIR", "data_dir", default_data_dir)),
+            data_dir=data_dir,
             skill_directories=skill_dirs,
             mcp_servers=_normalize_mcp_servers(value("MARVIS_MCP_SERVERS", "mcp_servers", [])),
             allow_mock_fallback=flag("MARVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", True),
@@ -564,9 +595,7 @@ class AppSettings:
                 minimum=0,
             ),
             environment_rules=[dict(item) for item in environment_rules if isinstance(item, dict)],
-            jwt_secret=str(
-                value_any(("MARVIS_JWT_SECRET", "MAVRIS_JWT_SECRET"), "jwt_secret", DEFAULT_JWT_SECRET)
-            ),
+            jwt_secret=jwt_secret,
         )
 
     def public_dict(self) -> dict[str, Any]:

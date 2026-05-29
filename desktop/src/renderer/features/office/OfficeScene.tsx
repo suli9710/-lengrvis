@@ -1,7 +1,18 @@
-import { CheckCircle2, Clock, CornerDownLeft, ShieldCheck, type LucideIcon } from "lucide-react";
+import {
+  CheckCircle2,
+  Clock,
+  CornerDownLeft,
+  FolderOpen,
+  LockKeyhole,
+  Radio,
+  ShieldCheck,
+  Sparkles,
+  type LucideIcon
+} from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 
 import type { TaskEvent } from "../../../shared/types";
+import type { ViewKey } from "../../store";
 import xiaomaWalkingGif from "../../assets/xiaoma-agent/fc_walking_h.gif";
 import xiaomaCoffeeGif from "../../assets/xiaoma-agent/fc_drink_coffee.gif";
 import xiaomaScreenAppGif from "../../assets/xiaoma-agent/fc_screen_working_apk_use.gif";
@@ -37,10 +48,41 @@ import {
   type OfficeMapSize
 } from "./model";
 
-export interface OfficeQuickSkill {
+interface OfficeQuickSkillBase {
+  id: string;
   icon: LucideIcon;
   title: string;
-  prompt: string;
+}
+
+export type OfficeQuickSkill =
+  | (OfficeQuickSkillBase & {
+      kind: "prompt";
+      prompt: string;
+    })
+  | (OfficeQuickSkillBase & {
+      kind: "view";
+      view: ViewKey;
+    })
+  | (OfficeQuickSkillBase & {
+      kind: "action";
+      action: "system-check";
+    });
+
+export interface HomeReadinessItem {
+  id: "connection" | "privacy" | "scope" | "document";
+  label: string;
+  detail: string;
+  state: "ready" | "action" | "warning";
+  actionLabel: string;
+  targetView?: ViewKey;
+}
+
+export interface HomeTrustItem {
+  id: "ai" | "files" | "upload" | "approval";
+  label: string;
+  value: string;
+  detail: string;
+  state: "ready" | "warning" | "blocked";
 }
 
 export interface OfficeSceneProps {
@@ -48,11 +90,14 @@ export interface OfficeSceneProps {
   draft: string;
   recentTasks: TaskEvent[];
   quickSkills: OfficeQuickSkill[];
+  readinessItems: HomeReadinessItem[];
+  trustItems: HomeTrustItem[];
   activeAgentId: string;
   onDraftChange: (value: string) => void;
   onSubmitPrompt: () => void;
   onAgentSelect: (prompt: string) => void;
-  onQuickSkill: (prompt: string) => void;
+  onQuickSkill: (skill: OfficeQuickSkill) => void;
+  onReadinessAction: (item: HomeReadinessItem) => void;
   safetyAlert: boolean;
 }
 
@@ -82,6 +127,14 @@ interface OfficeAgentVisualMetrics {
   haloTop: number;
   haloWidth: number;
   haloHeight: number;
+}
+
+interface CommandPreviewStep {
+  id: "understand" | "guard" | "execute";
+  label: string;
+  detail: string;
+  state: "idle" | "active" | "ready" | "blocked";
+  icon: LucideIcon;
 }
 
 const xiaomaPoseGifs: Record<OfficeAgentPose, string> = {
@@ -181,11 +234,14 @@ export function OfficeScene({
   draft,
   recentTasks,
   quickSkills,
+  readinessItems,
+  trustItems,
   activeAgentId,
   onDraftChange,
   onSubmitPrompt,
   onAgentSelect,
   onQuickSkill,
+  onReadinessAction,
   safetyAlert
 }: OfficeSceneProps) {
   const initialOfficeAgentId = activeAgentId || "pm";
@@ -202,7 +258,11 @@ export function OfficeScene({
   );
   const [movingAgents, setMovingAgents] = useState<Set<string>>(() => new Set());
   const walkClearIdRef = useRef<number | undefined>(undefined);
+  const quickNoticeClearIdRef = useRef<number | undefined>(undefined);
+  const commandInputRef = useRef<HTMLTextAreaElement | null>(null);
   const didSyncWorkingAgentsRef = useRef(false);
+  const [quickSkillNotice, setQuickSkillNotice] = useState("");
+  const [sendHintPulse, setSendHintPulse] = useState(false);
 
   const refreshAgentState = (nextWorkingAgentIds: ReadonlySet<string>, refreshIdleAgents: boolean) => {
     setAgentState((current) => {
@@ -254,6 +314,10 @@ export function OfficeScene({
         window.clearTimeout(walkClearIdRef.current);
         walkClearIdRef.current = undefined;
       }
+      if (quickNoticeClearIdRef.current) {
+        window.clearTimeout(quickNoticeClearIdRef.current);
+        quickNoticeClearIdRef.current = undefined;
+      }
     };
   }, [agents, workingAgentIds]);
 
@@ -277,11 +341,43 @@ export function OfficeScene({
     onAgentSelect(agent.prompt);
   };
 
-  const runningTaskCount = recentTasks.filter((task) => task.state === "running" || task.state === "queued").length;
-  const blockedTaskCount = recentTasks.filter((task) => task.state === "blocked").length;
-  const displayedTasks = recentTasks.slice(0, 3);
+  const handleQuickSkillClick = (skill: OfficeQuickSkill) => {
+    onQuickSkill(skill);
+
+    if (quickNoticeClearIdRef.current) {
+      window.clearTimeout(quickNoticeClearIdRef.current);
+    }
+    if (skill.kind === "prompt") {
+      setQuickSkillNotice("已填好这句话，下一步点发送开始。");
+      setSendHintPulse(false);
+      window.setTimeout(() => setSendHintPulse(true), 0);
+      window.setTimeout(() => setSendHintPulse(false), 1800);
+      window.requestAnimationFrame(() => commandInputRef.current?.focus());
+    } else if (skill.kind === "view") {
+      setQuickSkillNotice(`正在打开「${skill.title}」。`);
+    } else {
+      setQuickSkillNotice("正在进行只读电脑检查，不会改动系统设置。");
+    }
+    quickNoticeClearIdRef.current = window.setTimeout(() => {
+      setQuickSkillNotice("");
+      quickNoticeClearIdRef.current = undefined;
+    }, 3200);
+  };
+
+  const currentTasks = getHomeCurrentTasks(recentTasks);
+  const displayedTasks = getHomeVisibleTasks(recentTasks);
+  const setupSteps = buildHomeSetupSteps(readinessItems);
+  const activeTaskLabel = currentTasks.length > 0 ? summarizeActiveTasks(currentTasks) : "当前没有正在处理的任务";
+  const recentTaskLabel = displayedTasks.length > 0 ? `显示最近 ${displayedTasks.length} 项` : "还没有最近任务";
+  const blockedTaskCount = currentTasks.filter((task) => task.state === "blocked").length;
+  const runningTaskCount = currentTasks.filter((task) => task.state === "running" || task.state === "queued").length;
   const activeAgent = agents.find((agent) => agent.id === workingAgentId) ?? agents[0];
   const activeHelper = getFriendlyAgentCopy(activeAgent);
+  const draftReady = draft.trim().length > 0;
+  const commandPreviewSteps = useMemo(
+    () => buildCommandPreviewSteps(draft, quickSkillNotice, safetyAlert),
+    [draft, quickSkillNotice, safetyAlert]
+  );
   const isOfficeMapReady = officeMapSize.width > 0 && officeMapSize.height > 0;
   const officeScale = isOfficeMapReady
     ? Math.min(officeMapSize.width / officeViewBox.width, officeMapSize.height / officeViewBox.height)
@@ -294,19 +390,33 @@ export function OfficeScene({
       <div className="office-stage">
         <div className="office-headline">
           <div className="office-headline__title">
+            <span className="office-headline__eyebrow">
+              <Sparkles size={13} aria-hidden="true" />
+              本机优先的个人 AI 工作台
+            </span>
             <h1>问问 Mavris</h1>
-            <p>帮你处理文件、文档、应用和这台电脑上的事务。</p>
+            <p>一句话处理文件、文档、应用和这台电脑上的事务。</p>
           </div>
-          <div className="office-headline__legend">
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: activeAgent.accent
-              }}
-            />
-            随时待命 · <strong>{activeHelper.name}</strong>
+          <div className="office-headline__status" aria-label="当前工作状态">
+            <span className={runningTaskCount > 0 ? "home-status-pill home-status-pill--live" : "home-status-pill"}>
+              <Radio size={13} aria-hidden="true" />
+              {runningTaskCount > 0 ? `${runningTaskCount} 项处理中` : "当前空闲"}
+            </span>
+            <span className="home-status-pill home-status-pill--private">
+              <LockKeyhole size={13} aria-hidden="true" />
+              重要修改先确认
+            </span>
+            <span className="office-headline__legend">
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: activeAgent.accent
+                }}
+              />
+              <strong>{activeHelper.name}</strong>
+            </span>
           </div>
         </div>
 
@@ -341,11 +451,12 @@ export function OfficeScene({
 
         <div className="office-command-dock">
           <div className="office-command-dock__hint">
-            <span>你想让 Mavris 帮你做什么？</span>
+            <span>说出目标，Mavris 会先判断范围和风险</span>
             <span>·</span>
             <span><CornerDownLeft size={11} aria-hidden="true" /> Ctrl + Enter 发送</span>
           </div>
           <textarea
+            ref={commandInputRef}
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={(event) => {
@@ -356,9 +467,25 @@ export function OfficeScene({
             }}
             placeholder="例如：帮我找一个文件、总结一份文档，或检查这台电脑。"
           />
+          <div className={draftReady ? "command-preview command-preview--ready" : "command-preview"} aria-label="执行预览">
+            {commandPreviewSteps.map((step) => {
+              const Icon = step.icon;
+              return (
+                <span key={step.id} className={`command-preview__step command-preview__step--${step.state}`}>
+                  <Icon size={13} aria-hidden="true" />
+                  <span>
+                    <strong>{step.label}</strong>
+                    <em>{step.detail}</em>
+                  </span>
+                </span>
+              );
+            })}
+          </div>
           <div className="command-footer">
-            <span className="command-footer__note">涉及重要修改前，Mavris 会先征得你的确认。</span>
-            <button className="button button--primary command-footer__send" onClick={() => onSubmitPrompt()} type="button">
+            <span className={`command-footer__note ${quickSkillNotice ? "command-footer__note--ready" : ""}`}>
+              {quickSkillNotice || (draftReady ? "准备好了，发送后会进入任务流。" : "涉及重要修改前，Mavris 会先征得你的确认。")}
+            </span>
+            <button className={sendHintPulse ? "button button--primary command-footer__send command-footer__send--hint" : "button button--primary command-footer__send"} onClick={() => onSubmitPrompt()} type="button">
               <CornerDownLeft size={16} aria-hidden="true" />
               发送
             </button>
@@ -370,12 +497,87 @@ export function OfficeScene({
         <div className="inspector-card home-examples-card">
           <div className="inspector-card__head">
             <strong>可以这样开始</strong>
+            <span>普通话输入即可</span>
           </div>
           <div className="office-quick-actions">
             {quickSkills.slice(0, 3).map((skill) => (
-              <button key={skill.title} type="button" onClick={() => onQuickSkill(skill.prompt)}>
+              <button key={skill.title} type="button" onClick={() => handleQuickSkillClick(skill)}>
                 <skill.icon size={14} aria-hidden="true" />
-                <span>{skill.title}</span>
+                <span>
+                  <strong>{skill.title}</strong>
+                  <em>{quickSkillHint(skill)}</em>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="inspector-card home-trust-card">
+          <div className="inspector-card__head">
+            <strong>隐私与权限</strong>
+            <span>当前策略</span>
+          </div>
+          <div className="home-trust-grid">
+            {trustItems.map((item) => (
+              <div key={item.id} className={`home-trust-item home-trust-item--${item.state}`}>
+                <span className="home-trust-item__icon" aria-hidden="true">
+                  {trustIcon(item)}
+                </span>
+                <div>
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <em>{item.detail}</em>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="inspector-card home-readiness-card">
+          <div className="inspector-card__head">
+            <strong>开箱检查</strong>
+            <span>{readinessSummary(readinessItems)}</span>
+          </div>
+          <div className="home-readiness-list">
+            {readinessItems.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`home-readiness-item home-readiness-item--${item.state}`}
+                onClick={() => onReadinessAction(item)}
+              >
+                <span className="home-readiness-item__icon" aria-hidden="true">
+                  {readinessIcon(item)}
+                </span>
+                <span className="home-readiness-item__body">
+                  <strong>{item.label}</strong>
+                  <em>{item.detail}</em>
+                </span>
+                <span className="home-readiness-item__action">{item.actionLabel}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="inspector-card home-setup-card">
+          <div className="inspector-card__head">
+            <strong>下一步队列</strong>
+            <span>按顺序走即可</span>
+          </div>
+          <div className="home-setup-steps">
+            {setupSteps.map((step, index) => (
+              <button
+                key={step.item.id}
+                type="button"
+                className={`home-setup-step home-setup-step--${step.item.state}`}
+                onClick={() => onReadinessAction(step.item)}
+              >
+                <span className="home-setup-step__index">{index + 1}</span>
+                <span className="home-setup-step__copy">
+                  <strong>{step.title}</strong>
+                  <em>{step.detail}</em>
+                </span>
+                <span className="home-setup-step__state">{step.item.state === "ready" ? "就绪" : step.item.actionLabel}</span>
               </button>
             ))}
           </div>
@@ -387,12 +589,12 @@ export function OfficeScene({
           </div>
           <div className="metric-row">
             <div>
-              <strong>{runningTaskCount}</strong>
-              <span>进行中</span>
+              <strong>{currentTasks.length > 0 ? "处理中" : "空闲"}</strong>
+              <span>{activeTaskLabel}</span>
             </div>
             <div>
-              <strong>{displayedTasks.length}</strong>
-              <span>已显示</span>
+              <strong>最近</strong>
+              <span>{recentTaskLabel}</span>
             </div>
           </div>
 
@@ -403,7 +605,9 @@ export function OfficeScene({
                   <span className={"task-row__dot task-row__dot--" + task.state}>
                     {task.state === "completed" ? (
                       <CheckCircle2 size={14} aria-hidden="true" />
-                    ) : task.state === "blocked" || task.state === "failed" ? (
+                    ) : task.state === "blocked" ? (
+                      <ShieldCheck size={14} aria-hidden="true" />
+                    ) : task.state === "failed" ? (
                       <ShieldCheck size={14} aria-hidden="true" />
                     ) : (
                       <Clock size={14} aria-hidden="true" />
@@ -419,10 +623,10 @@ export function OfficeScene({
                 </button>
               ))
             ) : (
-              <p className="empty-note">最近任务会显示在这里。</p>
+              <p className="empty-note">你开始一个需求后，最近进展会显示在这里。</p>
             )}
             {blockedTaskCount > 0 ? (
-              <span className="task-list-card__approval">{blockedTaskCount} 项需要你审批</span>
+              <span className="task-list-card__approval">有项目需要你确认</span>
             ) : null}
           </div>
         </div>
@@ -457,7 +661,7 @@ function OfficeAgent({
   const targetPose: OfficeAgentPose = isWorking ? "working" : runtime.pose;
   const pose: OfficeAgentPose = isMoving ? "wander" : targetPose;
   const helper = getFriendlyAgentCopy(agent);
-  const activity = isMoving ? "移动中" : isWorking ? "正在帮忙" : "可用";
+  const activity = isMoving ? "移动中" : isWorking ? "正在协作" : "待命";
   const isLead = agent.scale === "lead" && isWorking;
   const screenPosition = projectOfficePoint(runtime.x, runtime.y, mapSize);
   const visualMetrics = getXiaomaVisualMetrics(pose, isLead, agentScale);
@@ -669,7 +873,7 @@ function getFriendlyAgentCopy(agent: OfficeAgentDefinition | undefined) {
     case "computer":
       return { name: "电脑", role: "检查设备" };
     case "app":
-      return { name: "应用", role: "打开工具" };
+      return { name: "应用", role: "应用协作" };
     case "browser":
       return { name: "网页", role: "查询资料" };
     case "search":
@@ -682,10 +886,134 @@ function getFriendlyAgentCopy(agent: OfficeAgentDefinition | undefined) {
   }
 }
 
+function quickSkillHint(skill: OfficeQuickSkill): string {
+  if (skill.kind === "action" && skill.action === "system-check") return "立即只读检查";
+  if (skill.kind === "view" && skill.id === "summarize-document") return "打开文档操作区";
+  return skill.kind === "prompt" ? "填好后点发送" : "打开页面";
+}
+
+function buildCommandPreviewSteps(draft: string, notice: string, safetyAlert: boolean): CommandPreviewStep[] {
+  const hasDraft = draft.trim().length > 0;
+  const hasQuickNotice = notice.trim().length > 0;
+  return [
+    {
+      id: "understand",
+      label: "理解目标",
+      detail: hasDraft || hasQuickNotice ? "已准备拆解" : "等待输入",
+      state: hasDraft || hasQuickNotice ? "ready" : "idle",
+      icon: Sparkles
+    },
+    {
+      id: "guard",
+      label: "确认范围",
+      detail: safetyAlert ? "需要你批准" : hasDraft ? "先看权限" : "不改系统",
+      state: safetyAlert ? "blocked" : hasDraft ? "active" : "idle",
+      icon: safetyAlert ? ShieldCheck : LockKeyhole
+    },
+    {
+      id: "execute",
+      label: "执行反馈",
+      detail: hasDraft ? "实时显示进度" : "任务会留痕",
+      state: hasDraft ? "active" : "idle",
+      icon: hasDraft ? Radio : Clock
+    }
+  ];
+}
+
+function readinessSummary(items: HomeReadinessItem[]) {
+  const readyCount = items.filter((item) => item.state === "ready").length;
+  return `${readyCount}/${items.length} 已就绪`;
+}
+
+function readinessIcon(item: HomeReadinessItem) {
+  if (item.id === "scope") return <FolderOpen size={14} />;
+  if (item.id === "privacy") return <LockKeyhole size={14} />;
+  if (item.id === "connection") return <Radio size={14} />;
+  if (item.state === "ready") return <CheckCircle2 size={14} />;
+  return <Sparkles size={14} />;
+}
+
+function trustIcon(item: HomeTrustItem) {
+  if (item.id === "files") return <FolderOpen size={14} />;
+  if (item.id === "approval") return <ShieldCheck size={14} />;
+  if (item.id === "upload") return <LockKeyhole size={14} />;
+  if (item.state === "ready") return <CheckCircle2 size={14} />;
+  return <Radio size={14} />;
+}
+
+function buildHomeSetupSteps(items: HomeReadinessItem[]) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const orderedIds: HomeReadinessItem["id"][] = ["connection", "scope", "document", "privacy"];
+  return orderedIds
+    .map((id) => byId.get(id))
+    .filter((item): item is HomeReadinessItem => Boolean(item))
+    .map((item) => ({
+      item,
+      title: setupStepTitle(item),
+      detail: setupStepDetail(item)
+    }));
+}
+
+function setupStepTitle(item: HomeReadinessItem): string {
+  if (item.id === "connection") return "确认 Mavris 可用";
+  if (item.id === "scope") return "选择文件范围";
+  if (item.id === "document") return "试一次文档操作";
+  return "准备隐私模式";
+}
+
+function setupStepDetail(item: HomeReadinessItem): string {
+  if (item.state === "ready") return item.detail;
+  if (item.id === "connection") return "先恢复服务连接，后续任务才会进入执行流。";
+  if (item.id === "scope") return "给文件工具一个明确范围，搜索不会卡在加载里。";
+  if (item.id === "document") return "打开文档区后，可以读取、总结或继续提问。";
+  return "本地 AI 就绪后，敏感文档可优先留在本机处理。";
+}
+
+function getHomeCurrentTasks(tasks: TaskEvent[]): TaskEvent[] {
+  return sortTasksByUpdatedAt(tasks)
+    .filter((task) => task.state === "running" || task.state === "queued" || task.state === "blocked")
+    .filter((task) => isRecentTask(task, 24))
+    .slice(0, 3);
+}
+
+function getHomeVisibleTasks(tasks: TaskEvent[]): TaskEvent[] {
+  const activeTasks = getHomeCurrentTasks(tasks);
+  const recentFinishedTasks = sortTasksByUpdatedAt(tasks)
+    .filter((task) => task.state === "completed" || task.state === "failed" || task.state === "paused")
+    .filter((task) => isRecentTask(task, 24))
+    .slice(0, 3);
+
+  return sortTasksByUpdatedAt([...activeTasks, ...recentFinishedTasks]).slice(0, 3);
+}
+
+function summarizeActiveTasks(tasks: TaskEvent[]): string {
+  const blockedTask = tasks.find((task) => task.state === "blocked");
+  if (blockedTask) return "有项目需要你确认";
+  const firstTask = tasks[0];
+  if (!firstTask) return "当前没有正在处理的任务";
+  return firstTask.title || "正在处理你的请求";
+}
+
+function sortTasksByUpdatedAt(tasks: TaskEvent[]): TaskEvent[] {
+  return [...tasks].sort((a, b) => taskUpdatedAt(b) - taskUpdatedAt(a));
+}
+
+function isRecentTask(task: TaskEvent, hours: number): boolean {
+  const updatedAt = taskUpdatedAt(task);
+  if (!updatedAt) return false;
+  return Date.now() - updatedAt <= hours * 60 * 60 * 1000;
+}
+
+function taskUpdatedAt(task: TaskEvent): number {
+  const time = Date.parse(task.updatedAt || task.createdAt);
+  return Number.isFinite(time) ? time : 0;
+}
+
 function friendlyTaskState(state: TaskEvent["state"]): string {
   if (state === "completed") return "已完成";
   if (state === "running") return "进行中";
   if (state === "blocked") return "待审批";
+  if (state === "paused") return "已暂停";
   if (state === "failed") return "未完成";
   return "等待中";
 }

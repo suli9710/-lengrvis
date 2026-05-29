@@ -50,6 +50,35 @@ def test_env_values_override_yaml(monkeypatch, tmp_path: Path):
     assert settings.llm_api_max_retries == 4
 
 
+def test_default_jwt_secret_is_reused_across_config_reloads(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("MARVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("MARVIS_CONFIG_FILE", str(tmp_path / "missing.yaml"))
+    monkeypatch.delenv("MARVIS_JWT_SECRET", raising=False)
+    monkeypatch.delenv("MAVRIS_JWT_SECRET", raising=False)
+
+    first = AppSettings.from_sources()
+    second = AppSettings.from_sources()
+
+    assert first.jwt_secret == second.jwt_secret
+    assert first.jwt_secret
+    assert (data_dir / "mobile_jwt.secret").read_text(encoding="utf-8").strip() == first.jwt_secret
+
+
+def test_env_jwt_secret_overrides_local_secret(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "mobile_jwt.secret").write_text("local-secret", encoding="utf-8")
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("MARVIS_JWT_SECRET", "env-secret")
+    monkeypatch.delenv("MAVRIS_JWT_SECRET", raising=False)
+
+    settings = AppSettings.from_sources()
+
+    assert settings.jwt_secret == "env-secret"
+
+
 def test_invalid_numeric_settings_fall_back_without_crashing(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

@@ -298,7 +298,7 @@ def resolve_onnx_model_path(raw: str | Path | None) -> Path | None:
     try:
         path = path.resolve(strict=False)
     except OSError:
-        pass
+        return None
     if path.is_file() and path.suffix.lower() in {".onnx", ".ort"}:
         return path
     if path.is_dir():
@@ -458,4 +458,3 @@ def _module_status(module_name: str) -> dict[str, Any]:
 
 def _module_available(module_name: str) -> bool:
     return _module_status(module_name)["available"]
-

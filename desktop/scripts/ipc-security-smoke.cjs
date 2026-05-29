@@ -22,6 +22,12 @@ Module._load = function patchedLoad(request, parent, isMain) {
     }
 
     return {
+      app: {
+        getFileIcon: async () => ({
+          isEmpty: () => false,
+          toDataURL: () => "data:image/png;base64,ZmFrZS1pY29u"
+        })
+      },
       BrowserWindow: {
         fromWebContents: (sender) => sender && sender.__trustedWindow ? sender.__trustedWindow : null,
         getAllWindows: () => []
@@ -109,6 +115,15 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     /untrusted renderer/
   );
   assert.equal(backendCalls, 0, "untrusted renderer must not reach backend lifecycle handler");
+
+  const getFileIconHandler = ipcHandlers.get(IPC_CHANNELS.getFileIcon);
+  assert.ok(getFileIconHandler, "file icon handler must be registered");
+  const icon = await Promise.resolve(getFileIconHandler(eventFor("http://127.0.0.1:5173/apps"), __filename));
+  assert.equal(icon, "data:image/png;base64,ZmFrZS1pY29u");
+  await assert.rejects(
+    async () => getFileIconHandler(eventFor("https://evil.example/app"), __filename),
+    /untrusted renderer/
+  );
 
   const notificationBridge = new NotificationBridge({ backend, getMainWindow: () => null });
   notificationBridge.registerIpcHandlers();

@@ -2,71 +2,68 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import import_first, require_attr
+from app.config import AppSettings
+from app.llm.local_provider import LocalBackend, LocalBackendUnavailable
+from app.llm.mock_provider import MockProvider
+from app.llm.openai_compatible import OpenAICompatibleProvider
+from app.llm.registry import get_provider_for_mode
 
 
-PROVIDER_MODULES = (
-    "backend.providers.fallback",
-    "backend.llm.providers",
-    "backend.core.providers",
-    "mavris.providers.fallback",
-)
+def _cloud_settings(**overrides) -> AppSettings:
+    settings = AppSettings(
+        provider_name="openai",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4o-mini",
+        mode="efficiency",
+    )
+    for key, value in overrides.items():
+        setattr(settings, key, value)
+    return settings
 
 
-class RecordingProvider:
-    def __init__(self, name: str, result: str | None = None, error: Exception | None = None):
-        self.name = name
-        self.result = result
-        self.error = error
-        self.calls = 0
-
-    def complete(self, prompt: str, **_kwargs):
-        self.calls += 1
-        if self.error:
-            raise self.error
-        return {"provider": self.name, "text": self.result or f"{self.name}: {prompt}"}
+def test_provider_fallback_uses_real_app_contract():
+    assert get_provider_for_mode.__module__ == "app.llm.registry"
 
 
-@pytest.fixture
-def provider_api():
-    module = import_first(PROVIDER_MODULES)
-    return require_attr(
-        module,
-        ("ProviderFallback", "FallbackProvider", "fallback_complete", "complete_with_fallback"),
+def test_efficiency_mode_without_api_key_uses_mock_only_when_allowed():
+    provider = get_provider_for_mode(
+        _cloud_settings(api_key="", allow_mock_fallback=True),
+        task="planner",
     )
 
-
-def _complete(provider_api, providers, prompt: str):
-    if isinstance(provider_api, type):
-        instance = provider_api(providers)
-        method = getattr(instance, "complete", None) or getattr(instance, "generate")
-        return method(prompt)
-    return provider_api(prompt=prompt, providers=providers)
+    assert isinstance(provider, MockProvider)
 
 
-def _provider_name(result):
-    if isinstance(result, dict):
-        return result.get("provider") or result.get("provider_name")
-    return getattr(result, "provider", getattr(result, "provider_name", None))
+def test_efficiency_mode_without_api_key_fails_when_mock_fallback_disabled():
+    with pytest.raises(LocalBackendUnavailable, match="cloud provider without api_key"):
+        get_provider_for_mode(
+            _cloud_settings(api_key="", allow_mock_fallback=False),
+            task="planner",
+        )
 
 
-def test_falls_back_to_next_provider_after_transient_error(provider_api):
-    primary = RecordingProvider("primary", error=TimeoutError("temporary outage"))
-    secondary = RecordingProvider("secondary", result="ok")
+def test_hybrid_local_task_falls_back_to_detected_local_backend(monkeypatch):
+    monkeypatch.setattr(
+        "app.llm.registry.detect_local_backend",
+        lambda: LocalBackend("ollama", "http://127.0.0.1:11434/v1", ["qwen2.5:3b-instruct"]),
+    )
 
-    result = _complete(provider_api, [primary, secondary], "hello")
+    provider = get_provider_for_mode(
+        _cloud_settings(api_key="sk-test", mode="hybrid", base_url="https://api.openai.com/v1"),
+        task="subagent",
+    )
 
-    assert primary.calls == 1
-    assert secondary.calls == 1
-    assert _provider_name(result) == "secondary"
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.settings.provider_name == "ollama"
+    assert provider.settings.base_url == "http://127.0.0.1:11434/v1"
+    assert provider.settings.model == "gpt-4o-mini"
 
 
-def test_does_not_call_fallback_when_primary_succeeds(provider_api):
-    primary = RecordingProvider("primary", result="ok")
-    secondary = RecordingProvider("secondary", result="unused")
+def test_hybrid_local_task_with_no_backend_fails_instead_of_mocking(monkeypatch):
+    monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
 
-    result = _complete(provider_api, [primary, secondary], "hello")
-
-    assert primary.calls == 1
-    assert secondary.calls == 0
-    assert _provider_name(result) == "primary"
+    with pytest.raises(LocalBackendUnavailable, match="Privacy mode requires"):
+        get_provider_for_mode(
+            _cloud_settings(api_key="sk-test", mode="hybrid", base_url="https://api.openai.com/v1"),
+            task="subagent",
+        )

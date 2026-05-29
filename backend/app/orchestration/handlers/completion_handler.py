@@ -11,21 +11,14 @@ from app.policy.risk import SafetyVerdict
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
     from app.orchestration.dispatcher import EventDispatcher
-    from app.orchestration.events import AllStepsResolved, TaskFinalized
 
 
 class CompletionHandler:
     def __init__(self, orchestrator: OrchestratorAgent) -> None:
         self.orchestrator = orchestrator
 
-    def register(self, dispatcher: EventDispatcher) -> None:
-        dispatcher.register("all_steps.resolved", self.handle_all_steps_resolved)
-        dispatcher.register("task.finalized", self.handle_task_finalized)
-
-    def handle_all_steps_resolved(self, event: AllStepsResolved) -> None:  # pragma: no cover - registration hook
-        return None
-
-    def handle_task_finalized(self, event: TaskFinalized) -> None:  # pragma: no cover - registration hook
+    def register(self, _dispatcher: EventDispatcher) -> None:
+        """Compatibility no-op; completion is invoked directly."""
         return None
 
     async def finalize(self, task: Task, plan: Plan) -> None:

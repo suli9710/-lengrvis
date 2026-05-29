@@ -12,9 +12,10 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
 }
 
 $env:MAVRIS_ENV = if ($env:MAVRIS_ENV) { $env:MAVRIS_ENV } else { "development" }
+$env:MAVRIS_FULL_BACKEND = "1"
 
 $Candidates = @(
-    "backend.main:app",
+    "backend.main:full_app",
     "backend.api:app",
     "mavris.main:app",
     "mavris.api:app"

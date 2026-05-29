@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import subprocess
@@ -9,6 +10,9 @@ from app.core.audit import record
 from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -108,8 +112,8 @@ def get_startup_items(args: dict[str, Any], context: dict[str, Any]) -> dict[str
                         index += 1
             except OSError:
                 continue
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("startup registry scan failed: %s", exc, exc_info=True)
 
     return {"startup_items": items, "count": len(items)}
 

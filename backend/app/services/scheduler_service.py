@@ -183,8 +183,13 @@ class Scheduler:
                 task_id=schedule.id,
                 severity="info" if ok else "error",
             )
-        except Exception:
-            pass  # Notification failure should never break scheduler
+        except Exception as exc:
+            record(
+                "scheduler.notification_failed",
+                "Scheduler",
+                {"id": schedule.id, "error": str(exc)},
+                task_id=schedule.id,
+            )
 
 
 _scheduler: Scheduler | None = None

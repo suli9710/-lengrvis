@@ -11,6 +11,7 @@ import type {
   HardwareAccelerationSmokePayload,
   LocalLLMHealth,
   LocalModelReadiness,
+  LocalModelSetupPlan,
   McpServerConfig
 } from "../../shared/types";
 import type { MavrisApiClient, MobileDevice, MobilePairingCode } from "../lib/apiClient";
@@ -48,6 +49,7 @@ const LOCAL_MODEL_OPTIONS = [
 
 const INSTALL_MODEL_WS_PATHS = ["/ws/settings/install-local-model", "/api/ws/settings/install-local-model"] as const;
 const INSTALL_MODEL_WS_RETRY_DELAY_MS = 2_500;
+const INSTALL_MODEL_WS_MAX_RETRIES = 4;
 type PermissionEffect = "allow" | "deny";
 type HardwareRuntime = "auto" | "winml" | "directml" | "openvino" | "cpu";
 
@@ -141,9 +143,11 @@ interface SettingsPanelProps {
   llmCostSummary: LLMCostSummary | null;
   hardwareAccelerationStatus?: HardwareAccelerationStatusPayload | null;
   onSave: (settings: AppSettings) => Promise<void>;
+  onLocalLlmHealthChange?: (health: LocalLLMHealth | null) => void;
   onStartBackend: () => Promise<void>;
   onStopBackend: () => Promise<void>;
   api: MavrisApiClient;
+  privacyIntentId?: number;
 }
 
 export function SettingsPanel({
@@ -154,9 +158,11 @@ export function SettingsPanel({
   llmCostSummary,
   hardwareAccelerationStatus,
   onSave,
+  onLocalLlmHealthChange,
   onStartBackend,
   onStopBackend,
-  api
+  api,
+  privacyIntentId
 }: SettingsPanelProps) {
   const [draft, setDraft] = useState(settings);
   const [isSaving, setIsSaving] = useState(false);
@@ -170,12 +176,14 @@ export function SettingsPanel({
   const [isPermissionSaving, setIsPermissionSaving] = useState(false);
   const [detectedLocalLlmHealth, setDetectedLocalLlmHealth] = useState<LocalLLMHealth | null>(localLlmHealth);
   const [isCheckingLocalLlm, setIsCheckingLocalLlm] = useState(false);
+  const [localModelSetupPlan, setLocalModelSetupPlan] = useState<LocalModelSetupPlan | null>(null);
   const [hardwareStatus, setHardwareStatus] = useState<HardwareAccelerationStatusPayload | null>(hardwareAccelerationStatus ?? null);
   const [isCheckingHardware, setIsCheckingHardware] = useState(false);
   const [hardwareStatusError, setHardwareStatusError] = useState("");
   const [hardwareSmokeStatus, setHardwareSmokeStatus] = useState("");
   const [hardwareSmoke, setHardwareSmoke] = useState<HardwareAccelerationSmokePayload | null>(null);
   const [saveError, setSaveError] = useState("");
+  const privacyEntryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setDraft(settings);
@@ -190,28 +198,81 @@ export function SettingsPanel({
   }, [hardwareAccelerationStatus]);
 
   useEffect(() => {
+    if (privacyIntentId === undefined) return;
+    window.setTimeout(() => {
+      privacyEntryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      privacyEntryRef.current?.focus({ preventScroll: true });
+    }, 0);
+  }, [privacyIntentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.getLocalModelSetupPlan()
+      .then((response) => {
+        if (!cancelled && response.ok && response.data) {
+          setLocalModelSetupPlan(response.data);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [api]);
+
+  const refreshLocalLlmHealth = useCallback(async (): Promise<LocalLLMHealth | null> => {
+    setIsCheckingLocalLlm(true);
+    try {
+      const [response, setupPlanResponse] = await Promise.all([
+        api.getLocalLlmHealth(),
+        api.getLocalModelSetupPlan().catch(() => null)
+      ]);
+      const nextHealth = response.ok && response.data
+        ? response.data
+        : {
+            available: false,
+            selectedBackend: null,
+            probeOrder: ["onnx", "ollama", "lmstudio", "llamacpp"],
+            error: response.error?.message ?? "无法检查本地 AI。"
+          };
+      setDetectedLocalLlmHealth(nextHealth);
+      setLocalModelSetupPlan(setupPlanResponse?.ok && setupPlanResponse.data ? setupPlanResponse.data : null);
+      onLocalLlmHealthChange?.(nextHealth);
+      return nextHealth;
+    } finally {
+      setIsCheckingLocalLlm(false);
+    }
+  }, [api, onLocalLlmHealthChange]);
+
+  useEffect(() => {
     if (draft.mode === "efficiency" || detectedLocalLlmHealth) return;
     let cancelled = false;
     setIsCheckingLocalLlm(true);
-    void api.getLocalLlmHealth().then((response) => {
+    void Promise.all([
+      api.getLocalLlmHealth(),
+      api.getLocalModelSetupPlan().catch(() => null)
+    ]).then(([response, setupPlanResponse]) => {
       if (cancelled) return;
       if (response.ok && response.data) {
         setDetectedLocalLlmHealth(response.data);
+        onLocalLlmHealthChange?.(response.data);
       } else {
-        setDetectedLocalLlmHealth({
+        const fallbackHealth: LocalLLMHealth = {
           available: false,
           selectedBackend: null,
           probeOrder: ["onnx", "ollama", "lmstudio", "llamacpp"],
           error: response.error?.message ?? "无法检查本地 AI。"
-        });
+        };
+        setDetectedLocalLlmHealth(fallbackHealth);
+        onLocalLlmHealthChange?.(fallbackHealth);
       }
+      setLocalModelSetupPlan(setupPlanResponse?.ok && setupPlanResponse.data ? setupPlanResponse.data : null);
     }).finally(() => {
       if (!cancelled) setIsCheckingLocalLlm(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [api, detectedLocalLlmHealth, draft.mode]);
+  }, [api, detectedLocalLlmHealth, draft.mode, onLocalLlmHealthChange]);
 
   useEffect(() => {
     let cancelled = false;
@@ -349,6 +410,35 @@ export function SettingsPanel({
         : "需要配置"
       : "检查中";
   const effectiveLocalLlmHealth = draft.mode === "efficiency" ? null : detectedLocalLlmHealth;
+  const enablePrivacyMode = async () => {
+    const previousDraft = draft;
+    const nextDraft = {
+      ...draft,
+      mode: "privacy" as const,
+      allowCloudContext: false,
+      allowFileContentUpload: false
+    };
+    setDraft(nextDraft);
+    setIsSaving(true);
+    setSaveError("");
+    try {
+      await onSave(nextDraft);
+      await refreshLocalLlmHealth();
+    } catch (error) {
+      setDraft(previousDraft);
+      setSaveError(readableError(error, "无法切换到隐私模式"));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+  const changeMode = (value: AppSettings["mode"]) => {
+    if (value === "privacy") {
+      void enablePrivacyMode();
+      return;
+    }
+    setSaveError("");
+    setDraft((current) => ({ ...current, mode: value }));
+  };
   const hardwareRuntime = providerToRuntime(draft.onnxExecutionProvider);
   return (
     <Panel
@@ -370,7 +460,8 @@ export function SettingsPanel({
                       name="mavris-mode"
                       value={value}
                       checked={draft.mode === value}
-                      onChange={() => setDraft((current) => ({ ...current, mode: value }))}
+                      disabled={isSaving && value === "privacy"}
+                      onChange={() => changeMode(value)}
                     />
                     <span>
                       <strong>{displayMode(value)}</strong>
@@ -444,10 +535,40 @@ export function SettingsPanel({
           </div>
         </fieldset>
         {draft.mode === "privacy" || draft.mode === "hybrid" ? (
-          <div className="settings-grid__full">
-            <LocalModelInstaller api={api} apiBaseUrl={draft.apiBaseUrl} readiness={effectiveLocalLlmHealth?.readiness} />
+          <div
+            ref={privacyEntryRef}
+            className={privacyIntentId === undefined ? "settings-grid__full settings-privacy-anchor" : "settings-grid__full settings-privacy-anchor settings-privacy-anchor--intent"}
+            tabIndex={-1}
+          >
+            {privacyIntentId !== undefined ? <PrivacyFlowHint /> : null}
+            <LocalModelInstaller
+              api={api}
+              apiBaseUrl={draft.apiBaseUrl}
+              readiness={effectiveLocalLlmHealth?.readiness}
+              health={effectiveLocalLlmHealth}
+              setupPlan={localModelSetupPlan}
+              mode={draft.mode}
+              onHealthRefresh={refreshLocalLlmHealth}
+            />
           </div>
-        ) : null}
+        ) : (
+          <div
+            ref={privacyEntryRef}
+            className={privacyIntentId === undefined ? "settings-grid__full settings-privacy-anchor" : "settings-grid__full settings-privacy-anchor settings-privacy-anchor--intent"}
+            tabIndex={-1}
+          >
+            {privacyIntentId !== undefined ? <PrivacyFlowHint /> : null}
+            <PrivacyReadinessPanel
+              mode={draft.mode}
+              health={detectedLocalLlmHealth}
+              setupPlan={localModelSetupPlan}
+              checking={isCheckingLocalLlm}
+              onEnablePrivacy={() => void enablePrivacyMode()}
+              onRefresh={() => void refreshLocalLlmHealth()}
+              disabled={isSaving}
+            />
+          </div>
+        )}
 
         <details className="mcp-servers settings-grid__full">
           <summary>高级设置</summary>
@@ -852,11 +973,19 @@ export function SettingsPanel({
 function LocalModelInstaller({
   api,
   apiBaseUrl,
-  readiness
+  readiness,
+  health,
+  setupPlan,
+  mode,
+  onHealthRefresh
 }: {
   api: MavrisApiClient;
   apiBaseUrl: string;
   readiness?: LocalModelReadiness;
+  health: LocalLLMHealth | null;
+  setupPlan: LocalModelSetupPlan | null;
+  mode: AppSettings["mode"];
+  onHealthRefresh?: () => Promise<LocalLLMHealth | null>;
 }) {
   const initialModel = localModelOptionValue(readiness?.recommendedModel);
   const [model, setModel] = useState<(typeof LOCAL_MODEL_OPTIONS)[number]["value"]>(initialModel);
@@ -870,6 +999,7 @@ function LocalModelInstaller({
 
   const isInstalling = status === "installing";
   const canInstall = readiness?.canInstall ?? true;
+  const lastError = status === "error" ? progress.error || progress.stage : "";
 
   useEffect(() => {
     if (readiness?.recommendedModel && status === "idle") {
@@ -899,9 +1029,69 @@ function LocalModelInstaller({
         setStatus("completed");
         setSocketStatus("closed");
         closeProgressSocket();
+        void onHealthRefresh?.();
       }
     },
-    [closeProgressSocket]
+    [closeProgressSocket, onHealthRefresh]
+  );
+
+  const startInstallRequest = useCallback(
+    async (fallbackStage?: string) => {
+      closeProgressSocket();
+      if (fallbackStage) {
+        setProgress({ stage: fallbackStage, percent: 1 });
+      }
+
+      const response = await api.request<InstallModelStartResponse, InstallModelRequest>({
+        endpoint: "/api/settings/install-local-model",
+        method: "POST",
+        body: { model },
+        timeoutMs: 30_000
+      });
+
+      if (!response.ok) {
+        setStatus("error");
+        setProgress({
+          stage: response.error?.message ?? "安装请求失败，请确认 Mavris 正在运行。",
+          percent: 0,
+          error: response.error?.message ?? "安装请求失败"
+        });
+        return;
+      }
+
+      const responseProgress = latestInstallModelProgress(response.data);
+      if (responseProgress) {
+        applyProgress(responseProgress);
+      }
+      const responsePercent = responseProgress ? clampPercent(responseProgress.percent) : 0;
+
+      if (response.data?.ok === false || response.data?.error) {
+        setStatus("error");
+        setProgress({
+          stage: response.data.error ?? response.data.message ?? "安装任务启动失败。",
+          percent: responseProgress ? responsePercent : 0,
+          error: response.data.error ?? response.data.message ?? "安装任务启动失败"
+        });
+        return;
+      }
+
+      if (responseProgress && responsePercent >= 100) {
+        setSocketStatus("closed");
+        setStatus("completed");
+        void onHealthRefresh?.();
+        return;
+      }
+
+      setProgress((current) =>
+        current.percent > 0
+          ? current
+          : {
+              stage: response.data?.message ?? "安装任务已启动，正在等待进度...",
+              percent: 1
+            }
+      );
+    },
+    [api, applyProgress, closeProgressSocket, model, onHealthRefresh]
   );
 
   const openProgressSocket = useCallback((): boolean => {
@@ -917,6 +1107,8 @@ function LocalModelInstaller({
     let retryId: number | undefined;
     let pathIndex = 0;
     let receivedProgress = false;
+    let reconnectAttempts = 0;
+    let fallbackStarted = false;
 
     const connect = () => {
       setSocketStatus(pathIndex === 0 && !receivedProgress ? "connecting" : "reconnecting");
@@ -943,6 +1135,25 @@ function LocalModelInstaller({
         }
         if (!receivedProgress && pathIndex < INSTALL_MODEL_WS_PATHS.length - 1) {
           pathIndex += 1;
+          reconnectAttempts = 0;
+        } else {
+          reconnectAttempts += 1;
+        }
+        if (reconnectAttempts >= INSTALL_MODEL_WS_MAX_RETRIES) {
+          setSocketStatus("closed");
+          if (!receivedProgress && !fallbackStarted) {
+            fallbackStarted = true;
+            void startInstallRequest("进度连接不可用，已切换为普通安装请求...");
+          } else {
+            setStatus("error");
+            setProgress({
+              stage: "安装进度连接中断，请重新检查或重试。",
+              percent: 0,
+              error: "安装进度连接中断，请重新检查或重试。"
+            });
+            void onHealthRefresh?.();
+          }
+          return;
         }
         retryId = window.setTimeout(connect, INSTALL_MODEL_WS_RETRY_DELAY_MS);
       };
@@ -959,7 +1170,7 @@ function LocalModelInstaller({
     };
 
     return true;
-  }, [apiBaseUrl, applyProgress, closeProgressSocket, model]);
+  }, [apiBaseUrl, applyProgress, closeProgressSocket, model, onHealthRefresh, startInstallRequest]);
 
   const installModel = async () => {
     if (!canInstall) {
@@ -978,56 +1189,7 @@ function LocalModelInstaller({
       return;
     }
 
-    const response = await api.request<InstallModelStartResponse, InstallModelRequest>({
-      endpoint: "/api/settings/install-local-model",
-      method: "POST",
-      body: { model },
-      timeoutMs: 30_000
-    });
-
-    if (!response.ok) {
-      closeProgressSocket();
-      setStatus("error");
-        setProgress({
-        stage: response.error?.message ?? "安装请求失败，请确认 Mavris 正在运行。",
-        percent: 0,
-        error: response.error?.message ?? "安装请求失败"
-      });
-      return;
-    }
-
-    const responseProgress = latestInstallModelProgress(response.data);
-    if (responseProgress) {
-      applyProgress(responseProgress);
-    }
-    const responsePercent = responseProgress ? clampPercent(responseProgress.percent) : 0;
-
-    if (response.data?.ok === false || response.data?.error) {
-      closeProgressSocket();
-      setStatus("error");
-      setProgress({
-        stage: response.data.error ?? response.data.message ?? "安装任务启动失败。",
-        percent: responseProgress ? responsePercent : progress.percent,
-        error: response.data.error ?? response.data.message ?? "安装任务启动失败"
-      });
-      return;
-    }
-
-    if (responseProgress && responsePercent >= 100) {
-      closeProgressSocket();
-      setSocketStatus("closed");
-      setStatus("completed");
-      return;
-    }
-
-    setProgress((current) =>
-      current.percent > 0
-        ? current
-        : {
-            stage: response.data?.message ?? "安装任务已启动，正在等待进度...",
-            percent: 1
-          }
-    );
+    await startInstallRequest();
   };
 
   const tone =
@@ -1041,11 +1203,21 @@ function LocalModelInstaller({
 
   return (
     <div className="local-model-installer">
+      <PrivacyReadinessPanel
+        mode={mode}
+        health={health}
+        setupPlan={setupPlan}
+        checking={isInstalling}
+        error={lastError}
+        onPrimaryAction={() => void installModel()}
+        onRefresh={() => void onHealthRefresh?.()}
+        disabled={isInstalling || !canInstall}
+      />
       <div className="local-model-installer__head">
         <div className="local-model-installer__copy">
-          <strong>本地 AI 设置</strong>
+          <strong>本地 AI 手动设置</strong>
           <span>
-            Mavris 会先检查这台电脑，条件满足后安装 Ollama 和本地模型。
+            上方按钮会按当前下一步自动处理；需要换模型时，可在这里手动选择。
           </span>
         </div>
         <Badge tone={tone}>{zhInstallModelStatus(status, socketStatus)}</Badge>
@@ -1070,18 +1242,18 @@ function LocalModelInstaller({
         </label>
         <button
           type="button"
-          className="button button--primary local-model-installer__button"
+          className="button button--secondary local-model-installer__button"
           disabled={isInstalling || !canInstall}
           onClick={() => void installModel()}
         >
           {isInstalling ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-          {isInstalling ? "正在安装" : "一键安装本地模型"}
+          {isInstalling ? "正在安装" : "手动安装所选模型"}
         </button>
       </div>
 
       <InstallModelProgressBar progress={progress} />
       {progress.error ? (
-        <span className="settings-status settings-status--error">{progress.error}</span>
+        <span className="settings-status settings-status--error" role="alert">{progress.error}</span>
       ) : null}
     </div>
   );
@@ -1108,6 +1280,281 @@ function InstallModelProgressBar({ progress }: { progress: InstallModelProgress 
       />
     </div>
   );
+}
+
+function PrivacyReadinessPanel({
+  mode,
+  health,
+  setupPlan,
+  checking,
+  disabled = false,
+  error = "",
+  onEnablePrivacy,
+  onPrimaryAction,
+  onRefresh
+}: {
+  mode: AppSettings["mode"];
+  health: LocalLLMHealth | null;
+  setupPlan: LocalModelSetupPlan | null;
+  checking: boolean;
+  disabled?: boolean;
+  error?: string;
+  onEnablePrivacy?: () => void;
+  onPrimaryAction?: () => void;
+  onRefresh?: () => void;
+}) {
+  const steps = buildPrivacyReadinessSteps(mode, health, setupPlan);
+  const ready = mode !== "efficiency" && (Boolean(health?.available) || Boolean(setupPlan?.ready));
+  const blocked = steps.some((step) => step.state === "blocked");
+  const tone = error || blocked ? "danger" : ready ? "success" : checking ? "info" : "warning";
+  const primaryAction = privacyReadinessPrimaryAction(mode, setupPlan, ready, blocked, checking);
+  const PrimaryIcon = privacyReadinessPrimaryIcon(primaryAction?.kind, checking);
+
+  return (
+    <section className={`privacy-readiness privacy-readiness--${tone}`} aria-label="隐私模式开箱检查">
+      <div className="privacy-readiness__head">
+        <div>
+          <strong>{ready ? "隐私模式已就绪" : "隐私模式开箱检查"}</strong>
+          <span>{privacyReadinessSummary(mode, health, setupPlan, checking)}</span>
+        </div>
+        <Badge tone={tone}>{error ? "需要处理" : ready ? "可本地处理" : blocked ? "条件不足" : checking ? "检查中" : "待配置"}</Badge>
+      </div>
+      {error ? (
+        <div className="privacy-readiness__alert" role="alert">
+          <AlertCircle size={16} aria-hidden="true" />
+          <span>{error}</span>
+        </div>
+      ) : null}
+      <ol className="privacy-readiness__steps">
+        {steps.map((step) => (
+          <li key={step.key} className={`privacy-step privacy-step--${step.state}`}>
+            <span className="privacy-step__dot" aria-hidden="true" />
+            <div>
+              <strong>{step.label}</strong>
+              <small>{step.detail}</small>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <div className="privacy-readiness__actions">
+        {mode === "efficiency" && onEnablePrivacy ? (
+          <button className="button button--primary" type="button" onClick={onEnablePrivacy} disabled={disabled}>
+            <ShieldCheck size={16} aria-hidden="true" />
+            开启隐私模式
+          </button>
+        ) : null}
+        {mode !== "efficiency" && primaryAction && onPrimaryAction ? (
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={onPrimaryAction}
+            disabled={disabled || primaryAction.disabled}
+          >
+            <PrimaryIcon className={checking ? "settings-spinner" : undefined} size={16} aria-hidden="true" />
+            {primaryAction.label}
+          </button>
+        ) : null}
+        <button className="button button--secondary" type="button" onClick={onRefresh} disabled={disabled || checking}>
+          {checking ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
+          重新检查
+        </button>
+      </div>
+      {setupPlan ? (
+        <PrivacyBundleStatus setupPlan={setupPlan} />
+      ) : null}
+      <p className="privacy-readiness__note">隐私模式会优先使用本机模型处理文件名、文档摘要和系统信息；没有本地 AI 时不会静默退回云端。</p>
+    </section>
+  );
+}
+
+function PrivacyFlowHint() {
+  return (
+    <div className="privacy-flow-hint" role="status">
+      <div>
+        <strong>从首页开箱检查来到这里</strong>
+        <span>先开启隐私模式，再按下一步准备本地 AI；没有本地 AI 时，隐私任务不会静默退回云端。</span>
+      </div>
+      <span>下一步看这里</span>
+    </div>
+  );
+}
+
+type PrivacyReadinessStepState = "pending" | "done" | "current" | "blocked";
+type PrivacyReadinessStep = { key: string; label: string; detail: string; state: PrivacyReadinessStepState };
+
+function buildPrivacyReadinessSteps(
+  mode: AppSettings["mode"],
+  health: LocalLLMHealth | null,
+  setupPlan: LocalModelSetupPlan | null
+): PrivacyReadinessStep[] {
+  const readiness = health?.readiness;
+  const hasLocalModel = Boolean(health?.available);
+  const hardwareReady = readiness?.canInstall ?? true;
+  const backend = health?.selectedBackend;
+  const setupSteps: PrivacyReadinessStep[] = setupPlan?.steps?.length
+    ? setupPlan.steps.map((step) => ({
+        key: `setup-${step.key}`,
+        label: zhLocalModelSetupStepLabel(step.key, step.label),
+        detail: zhLocalModelSetupDetail(step.key, step.detail, setupPlan.model, step.state),
+        state: toPrivacyReadinessStepState(step.state)
+      }))
+    : [];
+  const fallbackSetupSteps: PrivacyReadinessStep[] = [
+    {
+      key: "hardware",
+      label: "检查电脑条件",
+      detail: readiness?.reason || "会检查内存、磁盘空间和 CPU 是否适合本地模型。",
+      state: hardwareReady ? (mode === "efficiency" ? "current" : "done") : "blocked"
+    },
+    {
+      key: "runtime",
+      label: "准备本地 AI",
+      detail: backend ? `${backend.kind}${backend.model ? ` · ${backend.model}` : ""}` : "可一键安装 Ollama 和推荐模型，也可使用 LM Studio / llama.cpp。",
+      state: hasLocalModel ? "done" : hardwareReady ? "current" : "blocked"
+    }
+  ];
+
+  return [
+    {
+      key: "mode",
+      label: "选择隐私模式",
+      detail: mode === "efficiency" ? "当前还在高效模式；开启后会关闭云端辅助和文件上传。" : `${displayMode(mode)}模式已启用。`,
+      state: mode === "efficiency" ? "current" : "done"
+    },
+    ...(setupSteps.length ? setupSteps : fallbackSetupSteps),
+    {
+      key: "private-tasks",
+      label: "开始本地任务",
+      detail: hasLocalModel ? "现在可以在隐私模式下处理本地文件和文档问题。" : "本地 AI 就绪后，隐私任务会直接使用本机模型。",
+      state: hasLocalModel ? "done" : "current"
+    }
+  ];
+}
+
+function toPrivacyReadinessStepState(state: LocalModelSetupPlan["steps"][number]["state"]): PrivacyReadinessStepState {
+  if (state === "done" || state === "current" || state === "blocked") return state;
+  return "pending";
+}
+
+function privacyReadinessSummary(
+  mode: AppSettings["mode"],
+  health: LocalLLMHealth | null,
+  setupPlan: LocalModelSetupPlan | null,
+  checking: boolean
+): string {
+  if (checking) return "正在确认本地模型、运行时和电脑条件。";
+  if (mode === "efficiency") return "对标开箱即用体验：一键切换后，Mavris 会关闭云端辅助并检查本地 AI。";
+  if (health?.available || setupPlan?.ready) return "本地 AI 已可用，隐私任务会优先留在这台电脑上完成。";
+  if (setupPlan?.nextAction === "install_runtime") return "这台电脑条件已通过，下一步安装本地 AI 运行时。";
+  if (setupPlan?.nextAction === "start_runtime") return "本地 AI 已安装，下一步启动本地服务。";
+  if (setupPlan?.nextAction === "use_bundled_model") return `${setupPlan.model || "推荐模型"} 已随安装包提供，下一步启用随包模型，无需下载。`;
+  if (setupPlan?.nextAction === "download_model") return `本地服务已运行，下一步下载 ${setupPlan.model || "推荐模型"}。`;
+  if (setupPlan && !setupPlan.canInstall) return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
+  if (health?.readiness && !health.readiness.canInstall) return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
+  return "还需要准备本地 AI。可以用下方按钮一键安装推荐模型。";
+}
+
+function privacyReadinessPrimaryAction(
+  mode: AppSettings["mode"],
+  setupPlan: LocalModelSetupPlan | null,
+  ready: boolean,
+  blocked: boolean,
+  checking: boolean
+): { label: string; disabled: boolean; kind: "enable" | "start" | "download" | "bundled" | "blocked" | "working" } | null {
+  if (mode === "efficiency" || ready) return null;
+  if (checking) return { label: "正在准备本地 AI", disabled: true, kind: "working" };
+  if (blocked || setupPlan?.nextAction === "hardware_blocked") {
+    return { label: "电脑条件暂不满足", disabled: true, kind: "blocked" };
+  }
+  if (setupPlan?.nextAction === "start_runtime" && setupPlan.bundledModelAvailable) {
+    return { label: "下一步：启动随包本地 AI", disabled: false, kind: "bundled" };
+  }
+  if (setupPlan?.nextAction === "start_runtime") {
+    return { label: "下一步：启动本地 AI 服务", disabled: false, kind: "start" };
+  }
+  if (setupPlan?.nextAction === "use_bundled_model") {
+    return { label: "下一步：启用随包模型", disabled: false, kind: "bundled" };
+  }
+  if (setupPlan?.nextAction === "download_model") {
+    return { label: "下一步：下载推荐模型", disabled: false, kind: "download" };
+  }
+  return { label: "下一步：准备本地 AI", disabled: false, kind: "enable" };
+}
+
+function privacyReadinessPrimaryIcon(
+  kind: ReturnType<typeof privacyReadinessPrimaryAction> extends infer T
+    ? T extends { kind: infer K }
+      ? K
+      : undefined
+    : undefined,
+  checking: boolean
+): typeof Loader2 {
+  if (checking || kind === "working") return Loader2;
+  if (kind === "start") return Play;
+  if (kind === "bundled" || kind === "enable") return ShieldCheck;
+  if (kind === "blocked") return AlertCircle;
+  return Download;
+}
+
+function PrivacyBundleStatus({ setupPlan }: { setupPlan: LocalModelSetupPlan }) {
+  const manifest = setupPlan.bundleManifest;
+  const model = manifest.model || setupPlan.model || "推荐模型";
+  const runtimeOk = setupPlan.bundledRuntimeAvailable;
+  const modelsOk = setupPlan.bundledModelsAvailable;
+  const modelOk = setupPlan.bundledModelAvailable;
+  const manifestOk = manifest.present && manifest.valid !== false;
+  const manifestText = !manifest.present
+    ? "manifest 未找到"
+    : manifest.valid === false
+      ? `manifest 未通过：${manifest.error || "需要重新校验"}`
+      : `manifest 已校验${manifest.modelsFiles ? ` · ${manifest.modelsFiles} 个模型文件` : ""}`;
+  return (
+    <div className="privacy-bundle-status" aria-label="随包本地 AI 资源状态">
+      <span className={runtimeOk ? "privacy-bundle-status__item privacy-bundle-status__item--ok" : "privacy-bundle-status__item privacy-bundle-status__item--warn"}>
+        {runtimeOk ? <CheckCircle2 size={14} aria-hidden="true" /> : <AlertCircle size={14} aria-hidden="true" />}
+        运行时 {runtimeOk ? "已随包" : "未随包"}
+      </span>
+      <span className={modelsOk ? "privacy-bundle-status__item privacy-bundle-status__item--ok" : "privacy-bundle-status__item privacy-bundle-status__item--warn"}>
+        {modelsOk ? <CheckCircle2 size={14} aria-hidden="true" /> : <AlertCircle size={14} aria-hidden="true" />}
+        模型库 {modelsOk ? "已随包" : "未随包"}
+      </span>
+      <span className={modelOk ? "privacy-bundle-status__item privacy-bundle-status__item--ok" : "privacy-bundle-status__item privacy-bundle-status__item--warn"}>
+        {modelOk ? <CheckCircle2 size={14} aria-hidden="true" /> : <AlertCircle size={14} aria-hidden="true" />}
+        推荐模型 {modelOk ? model : `${model} 未找到`}
+      </span>
+      <span className={manifestOk ? "privacy-bundle-status__item privacy-bundle-status__item--ok" : "privacy-bundle-status__item privacy-bundle-status__item--warn"}>
+        {manifestOk ? <CheckCircle2 size={14} aria-hidden="true" /> : <AlertCircle size={14} aria-hidden="true" />}
+        {manifestText}
+      </span>
+    </div>
+  );
+}
+
+function zhLocalModelSetupStepLabel(key: string, fallback: string): string {
+  if (key === "hardware") return "检查电脑条件";
+  if (key === "runtime") return "准备本地 AI 运行时";
+  if (key === "server") return "启动本地 AI 服务";
+  if (key === "model") return "下载推荐模型";
+  return fallback || "准备本地 AI";
+}
+
+function zhLocalModelSetupDetail(
+  key: string,
+  fallback: string,
+  model: string,
+  state: LocalModelSetupPlan["steps"][number]["state"]
+): string {
+  if (key === "hardware") {
+    if (state === "done") return `这台电脑已满足 ${model || "推荐模型"} 的本地运行条件。`;
+    if (state === "blocked") return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
+    return fallback || "会检查内存、磁盘空间和 CPU 是否适合本地模型。";
+  }
+  if (key === "runtime") return state === "done" ? "Ollama 已安装。" : "Mavris 可以在 Windows 上自动安装 Ollama。";
+  if (key === "server") return state === "done" ? "Ollama 服务正在运行。" : "安装完成后，Mavris 会启动本地 AI 服务。";
+  if (key === "model" && fallback.includes("included with Mavris")) return `${model || "推荐模型"} 已随安装包提供，服务启动后会直接读取。`;
+  if (key === "model" && state === "current" && fallback.includes("bundled")) return `${model || "推荐模型"} 已随安装包提供，启用后无需下载。`;
+  if (key === "model") return state === "done" ? `${model || "推荐模型"} 已就绪。` : `下载 ${model || "推荐模型"} 后即可进入隐私任务。`;
+  return fallback;
 }
 
 function LocalModelReadinessView({ readiness }: { readiness: LocalModelReadiness }) {
@@ -1293,7 +1740,6 @@ function LocalLlmHealthNotice({ health }: { health: LocalLLMHealth | null }) {
         <small>{health?.available ? detail : `${detail} 隐私模式会等待本地 AI 可用后再继续。`}</small>
         <small>{probesText}</small>
       </span>
-      {health && !health.available ? <OllamaSetup /> : null}
     </div>
   );
 }

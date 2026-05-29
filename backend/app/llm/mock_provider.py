@@ -67,7 +67,12 @@ class MockProvider(LLMProvider):
             agent = "FileAgent"
             risk = "R2_REVERSIBLE_MODIFY"
             description = "Preview a reversible file organization operation and request approval."
-        elif any(term in user for term in ["delete", "remove", "trash", "删除", "删掉", "移除", "清理"]):
+        elif any(term in user for term in ["清理", "cleanup", "clean up"]) and not self._extract_windows_path(user):
+            tool = "file.cleanup_plan"
+            agent = "FileAgent"
+            risk = "R0_READ_ONLY"
+            description = "Scan authorized directories and generate a cleanup preview without deleting files."
+        elif any(term in user for term in ["delete", "remove", "trash", "删除", "删掉", "移除"]):
             tool = "file.trash"
             agent = "FileAgent"
             risk = "R3_DESTRUCTIVE_OR_SYSTEM"
@@ -101,6 +106,8 @@ class MockProvider(LLMProvider):
         if tool == "file.trash":
             path = self._extract_windows_path(user)
             return {"path": path or user, "dry_run": True}
+        if tool == "file.cleanup_plan":
+            return {"threshold_mb": 50, "older_than_days": 30}
         return {"query": user, "dry_run": True}
 
     def _extract_windows_path(self, user: str) -> str | None:
@@ -183,11 +190,39 @@ class MockProvider(LLMProvider):
         if "User message:" in raw_user:
             raw_user = raw_user.split("User message:", 1)[1]
         user = raw_user.strip().lower()
-        chat_only = ["你好", "在吗", "谢谢", "你是谁", "怎么工作", "什么意思", "为什么", "然后呢", "继续"]
+        chat_only = [
+            "你好",
+            "在吗",
+            "谢谢",
+            "你是谁",
+            "你是什么",
+            "什么模型",
+            "是什么模型",
+            "怎么工作",
+            "什么意思",
+            "为什么",
+            "然后呢",
+            "继续",
+            "聊天",
+        ]
         if any(term in user for term in chat_only):
+            if "聊天" in user:
+                reply = (
+                    "当然可以聊天。你可以直接问我问题或跟我说想法；"
+                    "只有你明确要我操作电脑、文件、浏览器或应用时，我才会启动执行任务。"
+                )
+            elif "什么模型" in user or "是什么模型" in user or "你是什么" in user or "你是谁" in user:
+                reply = (
+                    "我是 Mavris 里的主管 Agent。我的工作是先和你自然对话，理解你要什么；"
+                    "如果需要查文件、操作电脑、打开网页或处理文档，我再把具体工作交给对应 Agent。"
+                )
+            elif "你好" in user:
+                reply = "你好，我在。你可以直接和我聊天，也可以告诉我需要处理的电脑、文件或应用任务。"
+            else:
+                reply = "我在。你可以正常和我说话；需要实际操作时，我会先说明再分配给对应 Agent。"
             return {
                 "delegate": False,
-                "reply": "主管 Agent 已收到，我先直接和你对话；需要实际执行时再分配给对应 Agent。",
+                "reply": reply,
                 "agent_hint": "",
             }
         if any(term in user for term in ["查", "看", "读取", "获取", "诊断", "检测", "列出"]) and any(
@@ -197,6 +232,12 @@ class MockProvider(LLMProvider):
                 "delegate": True,
                 "reply": "收到，我会把这个执行请求交给电脑 Agent，后台处理并持续反馈进展。",
                 "agent_hint": "ComputerAgent",
+            }
+        if any(term in user for term in ["清理", "cleanup", "clean up"]) and any(term in user for term in ["文件", "目录", "文件夹", "盘"]):
+            return {
+                "delegate": True,
+                "reply": "收到，我会先生成清理预览，不会直接删除文件；需要执行清理时会再请你审批。",
+                "agent_hint": "FileAgent",
             }
         if any(term in user for term in ["查", "找", "搜索", "整理", "复制", "移动", "重命名", "删除"]) and any(
             term in user for term in ["文件", "文档", "目录", "文件夹", "发票", "合同", "素材"]
@@ -208,6 +249,16 @@ class MockProvider(LLMProvider):
             }
         return {
             "delegate": False,
-            "reply": "主管 Agent 已收到，我先和你确认意图；需要实际执行时再分配给对应 Agent。",
+            "reply": self._natural_chat_reply(user),
             "agent_hint": "",
         }
+
+    def _natural_chat_reply(self, user: str) -> str:
+        if not user:
+            return "我在，直接说就行。"
+        if "笨" in user or "卡" in user or "不自然" in user:
+            return (
+                "你说得对，这里应该像正常聊天一样先理解你，而不是一上来抛模板。"
+                "后面我会先用主管 Agent 和你对话，判断真的需要执行时再调对应 Agent。"
+            )
+        return "我在，咱们可以正常聊。你直接说想法或问题；需要实际处理电脑、文件、网页或文档时，我会再安排对应 Agent。"

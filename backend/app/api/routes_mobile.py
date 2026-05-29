@@ -94,6 +94,6 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "heartbeat"})
     except WebSocketDisconnect:
-        pass
+        return
     finally:
         get_approval_event_bus().unsubscribe(queue)

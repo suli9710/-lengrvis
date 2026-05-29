@@ -21,8 +21,14 @@ workspace/
 *.sqlite
 *.sqlite3
 logs/
-.marvis_data/approval_hmac.secret
+# Canonical local runtime data directory is .marvis_data.
+.marvis_data/
+# Historical typo/staging path; keep ignored so local runtime data does not split.
+.mavris_data/
 approval_hmac.secret
+# Accidental pip/glob and agent screenshot artifacts.
+=4.0
+tmp-agent-*.png
 
 # OS/editor
 .DS_Store

@@ -1,4 +1,14 @@
-# Marvis Agent EXE
+# Mavris
+
+## 普通用户快速开始
+
+1. 双击 `启动 Mavris.cmd` 启动 Mavris。
+2. 第一次启动可能会安装依赖，通常需要 1-5 分钟；之后启动一般在 20-60 秒内完成。命令行窗口会显示“正在启动”“已启动”或失败原因。
+3. 启动成功后会打开 Mavris 桌面窗口。如果没看到窗口，请手动打开 `http://127.0.0.1:5173`，或查看系统托盘里的 Mavris。
+4. 如果启动失败，请先双击 `Start-Mavris-Debug.cmd`，它会把最近的错误日志打印出来；完整日志在 `logs` 文件夹。
+5. 开发者说明保留在下面；普通使用只需要优先看这一节。
+
+## 产品说明
 
 这是一个 Windows 优先的本地电脑 AI 管家原型，定位更接近 Marvis 式个人 OS Agent：用户用自然语言描述目标，系统通过多 Agent 协作理解任务、规划步骤、调用本地工具，并在修改文件或系统设置前进行安全审核和用户确认。
 
@@ -18,7 +28,7 @@ test_data/               授权目录、策略和隐私测试数据
 
 ```text
 用户 -> OrchestratorAgent -> PlannerAgent -> SafetyReviewAgent
-    -> 专家 Agent 评议 -> ToolRegistry -> Observation
+    -> domain shell agent act() / PolicyEngine / ToolRuntime
     -> SafetyReviewAgent -> 下一步 / 审批 / 完成
 ```
 
@@ -26,10 +36,11 @@ test_data/               授权目录、策略和隐私测试数据
 
 ### 核心架构
 - 自然语言任务提交：桌面端或 `POST /api/chat`。
-- 12 个运行时 Agent：Orchestrator、Planner、Supervisor、File、Document、Computer、App、Browser、Search、Memory、SafetyReview、HumanGate。
-- **副 Agent 自主推理**：Orchestrator 在执行工具前调用所属副 Agent 的 `act()` 方法，副 Agent 可提议修正工具参数、请求重规划或跳过步骤。
+- **Agent 分层口径**：实质编排/推理组件是 Orchestrator、Planner、Supervisor、SafetyReview、OSExecutionEngine 和 Memory；PolicyEngine、ToolRuntime、审批绑定、路径沙盒和 schema validation 负责确定性安全与执行约束。
+- **Domain shell agents**：File、Document、Computer、App、Browser、Search 等领域 Agent 主要提供 owner/prompt/allowed tools 边界，并共享 `BaseAgent.act()`；多数正常成功路径会先走 deterministic fast path（tool owner、required args、schema、dry-run/approval 约束），不是每一步都调用 LLM 做自主推理。
+- **LLM 介入边界**：Planner/Supervisor、文档摘要/问答/报告、失败恢复、复杂改参或 fast path 无法确定时会调用 structured LLM；安全审查中低风险消息优先走确定性快速通道，高风险或模糊场景再进入完整审核。
 - **Step 级并行执行**：Plan 中无依赖的步骤通过 `asyncio.gather` 并发执行，有依赖的步骤按拓扑排序串行。
-- **34 个外部化 Prompt 文件**：所有 Agent system prompt 和 LLM 任务模板均存放在 `backend/app/llm/prompts/` 目录，可独立调整。
+- **38 个外部化 Prompt 文件**：Agent system prompt 和 LLM 任务模板存放在 `backend/app/llm/prompts/` 目录，可独立调整。
 
 ### LLM 与推理
 - OpenAI-compatible 真实 AI 接入：`base_url`、`api_key`、`model`、`wire_api` 可配置；支持 `chat/completions` 与 `responses` 两种 OpenAI 格式。
@@ -138,10 +149,10 @@ npm --prefix desktop run dev
 .\scripts\run_tests.ps1
 ```
 
-当前验证结果：
+最近一次记录的验证结果（本轮文档审计未能重新核验完整测试数）：
 
 ```text
-backend: 855 passed, 1 skipped
+backend: 1049 passed, 1 skipped
 desktop build passed
 mobile typecheck passed
 ```
@@ -190,6 +201,16 @@ npm --prefix desktop run dist:mac:arm64
 ```powershell
 .\scripts\build_all.ps1
 ```
+
+发布隐私模式开箱包时，先准备 `vendor\ollama`、`vendor\ollama-models` 和 `vendor\ollama-bundle-manifest.json`，再打开强制门禁：
+
+```powershell
+.\scripts\prepare_ollama_release.ps1 -OllamaRuntimeDir <runtime-dir> -OllamaModelsDir <models-dir> -AcceptLicenses
+.\scripts\build_all.ps1 -RequireBundledOllama
+.\scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama
+```
+
+`prepare_ollama_release.ps1` 会调用 `bundle_ollama.ps1` 生成 vendor 资源，并用临时 portable 包跑一次 `verify_packaging.ps1 -RequireBundledOllama`。需要直接从已安装 Ollama 拉取推荐模型时，可追加 `-PullModel -OllamaExe <ollama.exe>`。`-RequireBundledOllama` 会校验 portable 目录和 zip 中的 Ollama runtime、模型目录、bundle manifest 及 SHA256 摘要；缺任何一项都会失败。
 
 ## API
 
@@ -251,9 +272,9 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 ## Phase 5 AI OS Loop
 
 - Voice input is available through `backend/app/perception/voice_input.py`: optional `pywhispercpp` / `whisper.cpp` transcription, deterministic fallback for tests, wake-word gating, `VoiceInputEvent`, and automatic submission to `POST /api/chat`.
-- Intent prediction is available through `backend/app/perception/intent_predictor.py`: `ScreenState` + `AppContext` + `SessionContext` become 1-3 proactive suggestions, filtered at confidence `> 0.8`, with a quiet floating suggestion card in the desktop chat panel.
+- Rule-based intent suggestions are available through `backend/app/perception/intent_predictor.py`: `ScreenState` + `AppContext` + `SessionContext` become 1-3 proactive suggestions, filtered at confidence `> 0.8`, with `source="rules"` and `model_enabled=false` when no optional model hook is injected.
 - External service adapters live under `backend/app/adapters/`: email send, calendar event creation, and webhook post share `AdapterBase.connect()`, `execute()`, and `health_check()`, and are registered as `external.*` tools with dry-run previews and R2 approval flow. Live execution requires injecting real service clients or credentials in deployment; default registry instances are dry-run/test-safe.
-- The intended loop is: voice or text input -> perception/context -> intent prediction -> supervisor/planner -> tool execution -> safety review -> observations and session learning.
+- The intended loop is: voice or text input -> perception/context -> rule-based suggestions or optional model-backed suggestions -> supervisor/planner -> tool execution -> safety review -> observations and session learning.
 - Production local acceleration is configured through the ONNX Runtime provider settings (`MARVIS_ONNX_MODEL_PATH`, `MARVIS_ONNX_EXECUTION_PROVIDER`, `MARVIS_ONNX_PROVIDER_PREFERENCE`). WinML / DirectML / OpenVINO availability still depends on the installed runtime and hardware.
 
 ### Hardware acceleration

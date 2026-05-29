@@ -7,6 +7,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from "react";
 
@@ -17,12 +18,14 @@ import type {
   AuditLogEntry,
   ChatMessage,
   ContextUsage,
+  FileSearchMeta,
   IntentSuggestion,
   LLMCostSummary,
   LLMHealthStatus,
   LocalLLMHealth,
   Plan,
   SafetyReview,
+  SystemInfo,
   TaskEvent
 } from "../shared/types";
 import { AgentConversationPanel } from "./components/AgentConversationPanel";
@@ -30,7 +33,7 @@ import { ApprovalDialog } from "./components/ApprovalDialog";
 import { AuditLogPanel } from "./components/AuditLogPanel";
 import { BrowserActivityPanel } from "./components/BrowserActivityPanel";
 import { ChatPanel } from "./components/ChatPanel";
-import { FileSearchPanel } from "./components/FileSearchPanel";
+import { FileSearchPanel, type DocumentIntentAction, type FileToolTab } from "./components/FileSearchPanel";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { PlanViewer } from "./components/PlanViewer";
 import { SafetyReviewPanel } from "./components/SafetyReviewPanel";
@@ -39,26 +42,31 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { SystemInfoPanel } from "./components/SystemInfoPanel";
 import { TaskTimeline } from "./components/TaskTimeline";
 import { SkillsView } from "./views/SkillsView";
-import { sampleFileResults } from "./data/mockData";
+import { LocalLibraryView, localLibraryViewKeys, sectionForView } from "./views/LocalLibraryView";
 import {
   latestStreamableTaskId as latestStreamableTaskIdFromEvents,
   mergeRunStreamEventIntoConversations,
+  mergeStreamedAgentMessage,
   preserveStreamedRunConversations as preserveStreamedRunConversationsFromEvents
 } from "./events";
+import { AgentOpsView } from "./features/agents";
 import {
   inferActiveOfficeAgentId,
   OfficeScene,
   officeAgents,
+  type HomeReadinessItem,
+  type HomeTrustItem,
   type OfficeQuickSkill
 } from "./features/office";
 import { ShellFrame } from "./features/shell";
 import { MavrisApiClient } from "./lib/apiClient";
-import { useMavrisStore, type AssistantMode, type ViewKey } from "./store";
+import { zhBackendText } from "./lib/zh";
+import { useMavrisStore, type AssistantMode, type ConnectionState, type ViewKey } from "./store";
 
 const quickSkills: OfficeQuickSkill[] = [
-  { icon: FileSearch, title: "查找大文件", prompt: "找出这台电脑上最大的文件，并建议哪些可以安全清理。" },
-  { icon: BookOpenText, title: "总结文档", prompt: "总结 sample_contract.txt 的主要内容。" },
-  { icon: Laptop, title: "检查电脑", prompt: "检查这台电脑，并告诉我有哪些需要注意的地方。" }
+  { id: "find-large-files", icon: FileSearch, title: "查找大文件", kind: "prompt", prompt: "找出这台电脑上最大的文件，并建议哪些可以安全清理。" },
+  { id: "summarize-document", icon: BookOpenText, title: "总结文档", kind: "view", view: "files" },
+  { id: "check-computer", icon: Laptop, title: "检查电脑", kind: "action", action: "system-check" }
 ];
 
 export function App() {
@@ -120,15 +128,68 @@ export function App() {
   const browserError = useMavrisStore((state) => state.browserError);
   const setBrowserError = useMavrisStore((state) => state.setBrowserError);
   const [draft, setDraft] = useState("");
+  const [fileSearchError, setFileSearchError] = useState<string | null>(null);
+  const [fileSearchMeta, setFileSearchMeta] = useState<FileSearchMeta | null>(null);
+  const [fileToolTab, setFileToolTab] = useState<FileToolTab>("search");
+  const [documentIntent, setDocumentIntent] = useState<{
+    path: string;
+    action: DocumentIntentAction;
+    nonce: number;
+  } | null>(null);
+  const documentIntentNonce = useRef(0);
+  const [settingsIntent, setSettingsIntent] = useState<{ section: "privacy"; nonce: number } | null>(null);
+  const settingsIntentNonce = useRef(0);
+  const [isCheckingComputer, setIsCheckingComputer] = useState(false);
+  const [hasLoadedBackendTasks, setHasLoadedBackendTasks] = useState(false);
 
   const pendingApproval = approvalRequests.find((approval) => approval.status === "pending") ?? null;
-  const connectionState = backendStatus.state === "running" ? "online" : isLoading ? "checking" : "offline";
+  const connectionState = backendStatus.state === "running" ? "online" : backendStatus.state === "starting" ? "checking" : "offline";
   const activeOfficeAgentId = useMemo(
     () => inferActiveOfficeAgentId(tasks, plan, agentConversations, safetyReview.status),
     [agentConversations, plan, safetyReview.status, tasks]
   );
   const safetyAlert = safetyReview.status === "needs_review" || safetyReview.status === "blocked";
-  const latestTaskId = useMemo(() => latestStreamableTaskIdFromEvents(tasks), [tasks]);
+  const homeReadinessItems = useMemo(
+    () => buildHomeReadinessItems({
+      connectionState,
+      mode,
+      localLlmHealth,
+      allowedDirectories: settings.allowedDirectories,
+      workspaceRoot: settings.workspaceRoot
+    }),
+    [connectionState, localLlmHealth, mode, settings.allowedDirectories, settings.workspaceRoot]
+  );
+  const homeTrustItems = useMemo(
+    () =>
+      buildHomeTrustItems({
+        mode,
+        localLlmHealth,
+        allowedDirectories: settings.allowedDirectories,
+        workspaceRoot: settings.workspaceRoot,
+        allowCloudContext: settings.allowCloudContext,
+        allowFileContentUpload: settings.allowFileContentUpload
+      }),
+    [
+      localLlmHealth,
+      mode,
+      settings.allowCloudContext,
+      settings.allowFileContentUpload,
+      settings.allowedDirectories,
+      settings.workspaceRoot
+    ]
+  );
+  const chatStartedTaskIds = useRef(new Set<string>());
+  const announcedTerminalTaskIds = useRef(new Set<string>());
+  const refreshTaskSnapshotTimer = useRef<number | null>(null);
+  const latestTaskId = useMemo(
+    () => hasLoadedBackendTasks ? latestStreamableTaskIdFromEvents(tasks) : null,
+    [hasLoadedBackendTasks, tasks]
+  );
+  const latestLegacyTaskId = useMemo(
+    () => latestLegacyTaskIdFromEvents(tasks, chatStartedTaskIds.current, announcedTerminalTaskIds.current),
+    [tasks]
+  );
+  const recentReadableMessages = useMemo(() => recentReadableChatMessages(messages, 8), [messages]);
 
   const refreshWorkspace = useCallback(async () => {
     setIsLoading(true);
@@ -138,7 +199,8 @@ export function App() {
 
     const [
       chatResult,
-      tasksResult,
+      runsResult,
+      legacyTasksResult,
       planResult,
       agentsResult,
       safetyResult,
@@ -154,6 +216,7 @@ export function App() {
       browserHostResult
     ] = await Promise.allSettled([
       api.listChatMessages(),
+      api.listRuns(),
       api.listTaskTimeline(),
       api.getCurrentPlan(),
       api.listAgentConversations(),
@@ -171,7 +234,15 @@ export function App() {
     ]);
 
     if (chatResult.status === "fulfilled" && chatResult.value.ok && chatResult.value.data) setMessages(chatResult.value.data);
-    if (tasksResult.status === "fulfilled" && tasksResult.value.ok && tasksResult.value.data) setTasks(tasksResult.value.data);
+    const initialRunTasks = runsResult.status === "fulfilled" && runsResult.value.ok ? runsResult.value.data : undefined;
+    const initialLegacyTasks =
+      legacyTasksResult.status === "fulfilled" && legacyTasksResult.value.ok ? legacyTasksResult.value.data : undefined;
+    if (initialRunTasks || initialLegacyTasks) {
+      setTasks(mergeTaskSnapshots(initialRunTasks ?? [], initialLegacyTasks ?? []));
+    }
+    if (runsResult.status === "fulfilled" || legacyTasksResult.status === "fulfilled") {
+      setHasLoadedBackendTasks(true);
+    }
     if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
     if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) {
       setAgentConversations((current) => preserveStreamedRunConversationsFromEvents(current, agentsResult.value.data ?? []));
@@ -222,7 +293,7 @@ export function App() {
           available: false,
           selectedBackend: null,
           probeOrder: ["ollama", "lmstudio", "llamacpp"],
-          error: localLlmResult.error?.message ?? "Unable to read local LLM health"
+          error: localLlmResult.error?.message ?? "无法读取本地模型健康状态"
         });
       }
     } else {
@@ -247,16 +318,18 @@ export function App() {
     };
 
     setMessages((current) => [...current, userMessage]);
-    let result = await api.startRun({ content, mode });
+    let result = await api.sendChat({ content, mode });
     if (!result.ok) {
-      result = await api.sendChat({ content, mode });
+      result = await api.startRun({ content, mode });
     }
 
     const response = result.data;
     if (result.ok && response) {
       setMessages((current) => [...current, response.message]);
       if (response.taskUpdates?.length) {
-        setTasks(response.taskUpdates);
+        response.taskUpdates.forEach((task) => chatStartedTaskIds.current.add(task.id));
+        setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
+        setFocusedTaskId(response.taskUpdates[0]?.id ?? null);
         void refreshTaskSnapshot();
       }
       return;
@@ -297,7 +370,7 @@ export function App() {
     if (result.ok && response) {
       setMessages((current) => [...current, response.message]);
       if (response.taskUpdates?.length) {
-        setTasks(response.taskUpdates);
+        setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
       }
       setFocusedTaskId(response.runId ?? response.taskUpdates?.[0]?.id ?? null);
       void refreshTaskSnapshot();
@@ -325,16 +398,32 @@ export function App() {
   };
 
   const searchFiles = async (query: string) => {
-    setIsSearching(true);
-    const result = await api.searchFiles(query);
-    if (result.ok && result.data) {
-      setFileResults(result.data);
-    } else if (query) {
-      setFileResults(sampleFileResults.filter((item) => item.path.toLowerCase().includes(query.toLowerCase())));
-    } else {
-      setFileResults(sampleFileResults);
+    if (!query.trim()) {
+      setFileResults([]);
+      setFileSearchMeta(null);
+      setFileSearchError("请输入要查找的文件名或关键词。");
+      return;
     }
-    setIsSearching(false);
+    setIsSearching(true);
+    setFileSearchError(null);
+    try {
+      const result = await api.searchFiles(query);
+      if (result.ok && result.data) {
+        setFileResults(result.data.results);
+        setFileSearchMeta(result.data.meta);
+        return;
+      }
+
+      setFileResults([]);
+      setFileSearchMeta(null);
+      setFileSearchError(result.error?.message ?? "文件搜索失败，请稍后重试。");
+    } catch (error) {
+      setFileResults([]);
+      setFileSearchMeta(null);
+      setFileSearchError(error instanceof Error ? error.message : "文件搜索失败，请稍后重试。");
+    } finally {
+      setIsSearching(false);
+    }
   };
 
   const saveSettings = async (nextSettings: AppSettings) => {
@@ -382,7 +471,7 @@ export function App() {
     void refreshWorkspace();
   };
 
-  const refreshSystemInfo = async () => {
+  const refreshSystemInfo = async (): Promise<SystemInfo | null> => {
     const [statusResult, llmHealthResult, llmCostResult, systemResult] = await Promise.allSettled([
       api.getBackendStatus(),
       api.getLlmHealth(),
@@ -396,13 +485,18 @@ export function App() {
     if (llmCostResult.status === "fulfilled" && llmCostResult.value.ok && llmCostResult.value.data) {
       setLlmCostSummary(llmCostResult.value.data);
     }
-    if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
+    const nextSystemInfo =
+      systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data
+        ? systemResult.value.data
+        : null;
+    if (nextSystemInfo) setSystemInfo(nextSystemInfo);
     if (requiresLocalLlmHealth(mode)) {
       const localLlmResult = await api.getLocalLlmHealth();
       if (localLlmResult.ok && localLlmResult.data) setLocalLlmHealth(localLlmResult.data);
     } else {
       setLocalLlmHealth(null);
     }
+    return nextSystemInfo;
   };
 
   const refreshTaskSnapshot = useCallback(async () => {
@@ -428,16 +522,32 @@ export function App() {
     if (approvalsResult.status === "fulfilled" && approvalsResult.value.ok && approvalsResult.value.data) setApprovalRequests(approvalsResult.value.data);
   }, [api]);
 
+  const scheduleTaskSnapshotRefresh = useCallback(() => {
+    if (refreshTaskSnapshotTimer.current !== null) return;
+    refreshTaskSnapshotTimer.current = window.setTimeout(() => {
+      refreshTaskSnapshotTimer.current = null;
+      void refreshTaskSnapshot();
+    }, 1200);
+  }, [refreshTaskSnapshot]);
+
+  useEffect(() => () => {
+    if (refreshTaskSnapshotTimer.current !== null) {
+      window.clearTimeout(refreshTaskSnapshotTimer.current);
+      refreshTaskSnapshotTimer.current = null;
+    }
+  }, []);
+
   useEffect(() => {
+    if (!hasLoadedBackendTasks) return;
     const hasRunningTask = tasks.some(
-      (task) => task.state === "running" || task.state === "queued" || task.state === "blocked"
+      (task) => isActiveTask(task) && (Boolean(task.runId) || wasUpdatedRecently(task))
     );
     if (!hasRunningTask) return;
     const intervalId = window.setInterval(() => {
       void refreshTaskSnapshot();
     }, 2500);
     return () => window.clearInterval(intervalId);
-  }, [refreshTaskSnapshot, tasks]);
+  }, [hasLoadedBackendTasks, refreshTaskSnapshot, tasks]);
 
   useEffect(() => {
     if (!latestTaskId) return;
@@ -446,7 +556,11 @@ export function App() {
       onMessage: (event) => {
         if (event.type === "run_event") {
           setAgentConversations((current) => mergeRunStreamEventIntoConversations(current, latestTaskId, event));
-          void refreshTaskSnapshot();
+          const terminalMessage = chatMessageFromRunTerminalEvent(event);
+          if (terminalMessage) {
+            setMessages((current) => appendUniqueMessage(current, terminalMessage));
+          }
+          scheduleTaskSnapshotRefresh();
         }
       }
     });
@@ -454,7 +568,43 @@ export function App() {
     return () => {
       unsubscribe();
     };
-  }, [api, latestTaskId, refreshTaskSnapshot]);
+  }, [api, latestTaskId, scheduleTaskSnapshotRefresh]);
+
+  useEffect(() => {
+    if (!latestLegacyTaskId) return;
+
+    const unsubscribe = api.subscribeTaskMessages(latestLegacyTaskId, {
+      onMessage: (event) => {
+        if (event.type !== "agent_message" || !event.message) return;
+        const message = {
+          ...event.message,
+          content: zhBackendText(event.message.content)
+        };
+        setAgentConversations((current) => mergeStreamedAgentMessage(current, latestLegacyTaskId, message));
+        const chatMessage = chatMessageFromTaskAgentMessage(latestLegacyTaskId, message);
+        if (chatMessage) {
+          setMessages((current) => appendUniqueMessage(current, chatMessage));
+        }
+        scheduleTaskSnapshotRefresh();
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [api, latestLegacyTaskId, scheduleTaskSnapshotRefresh]);
+
+  useEffect(() => {
+    for (const task of tasks) {
+      if (task.runId || !chatStartedTaskIds.current.has(task.id)) continue;
+      if (task.state !== "completed" && task.state !== "failed") continue;
+      if (announcedTerminalTaskIds.current.has(task.id)) continue;
+      const message = chatMessageFromLegacyTaskTerminal(task);
+      if (!message) continue;
+      announcedTerminalTaskIds.current.add(task.id);
+      setMessages((current) => appendUniqueMessage(current, message));
+    }
+  }, [tasks, setMessages]);
 
   useEffect(() => {
     const unsubscribe = window.mavris?.notifications.onOpenTask((taskId) => {
@@ -489,6 +639,81 @@ export function App() {
     }
   };
 
+  const isLocalLibraryView = localLibraryViewKeys.has(activeView);
+  const openDocumentTool = (path = "", action: DocumentIntentAction = "summarize") => {
+    setFileToolTab("document");
+    setDocumentIntent(
+      path
+        ? {
+            path,
+            action,
+            nonce: ++documentIntentNonce.current
+          }
+        : null
+    );
+    setActiveView("files");
+  };
+
+  const handleQuickSkill = (skill: OfficeQuickSkill) => {
+    if (skill.kind === "action") {
+      if (skill.action === "system-check") {
+        void runComputerCheck();
+      }
+      return;
+    }
+    if (skill.kind === "view") {
+      if (skill.id === "summarize-document") {
+        setFileSearchError(null);
+        openDocumentTool("", "summarize");
+        return;
+      }
+      setActiveView(skill.view);
+      return;
+    }
+
+    setDraft(skill.prompt);
+  };
+
+  const runComputerCheck = async () => {
+    setActiveView("computer");
+    setIsCheckingComputer(true);
+    try {
+      await refreshSystemInfo();
+    } finally {
+      setIsCheckingComputer(false);
+    }
+  };
+
+  const handleReadinessAction = (item: HomeReadinessItem) => {
+    if (item.id === "connection") {
+      void refreshWorkspace();
+      return;
+    }
+    if (item.id === "scope") {
+      setFileToolTab("search");
+      setActiveView("files");
+      return;
+    }
+    if (item.id === "document") {
+      setFileToolTab("document");
+      setActiveView("files");
+      return;
+    }
+    if (item.id === "privacy") {
+      setSettingsIntent({ section: "privacy", nonce: ++settingsIntentNonce.current });
+      setActiveView("settings");
+      return;
+    }
+    setActiveView(item.targetView ?? "settings");
+  };
+
+  const requestCleanupApproval = async (scope: string) => {
+    await sendMessage(
+      `请基于这个文件范围生成清理确认任务：${scope}。先生成可清理项预览和审批请求；在我明确批准前不要移动或删除任何文件。`
+    );
+    void refreshTaskSnapshot();
+  };
+
   return (
     <>
       <ShellFrame
@@ -499,7 +724,14 @@ export function App() {
         onRefresh={() => void refreshWorkspace()}
         onOpenApprovals={() => setIsApprovalOpen(true)}
         hasPendingApproval={Boolean(pendingApproval)}
+        messages={messages}
+        tasks={tasks}
+        systemInfo={systemInfo}
       >
+
+        {isLocalLibraryView ? (
+          <LocalLibraryView api={api} activeSection={sectionForView(activeView)} onUseDocument={openDocumentTool} />
+        ) : null}
 
         {activeView === "home" ? (
           <section className="marvis-home">
@@ -512,7 +744,10 @@ export function App() {
               activeAgentId={activeOfficeAgentId}
               recentTasks={tasks}
               quickSkills={quickSkills}
-              onQuickSkill={(prompt) => setDraft(prompt)}
+              readinessItems={homeReadinessItems}
+              trustItems={homeTrustItems}
+              onQuickSkill={handleQuickSkill}
+              onReadinessAction={handleReadinessAction}
               safetyAlert={safetyAlert}
             />
           </section>
@@ -535,16 +770,64 @@ export function App() {
           </section>
         ) : null}
 
+        {activeView === "agentOps" ? (
+          <section className="agent-ops-view">
+            <AgentOpsView
+              tasks={tasks}
+              safetyReview={safetyReview}
+              onDraftPrompt={setDraft}
+              onOpenChat={() => setActiveView("chat")}
+              onOpenApprovals={() => setIsApprovalOpen(true)}
+            />
+          </section>
+        ) : null}
+
         {activeView === "files" ? (
           <section className="detail-grid">
-            <FileSearchPanel results={fileResults} isSearching={isSearching} onSearch={searchFiles} api={api} />
-            <ChatPanel messages={messages} connectionState={connectionState} onSend={sendMessage} />
+            <FileSearchPanel
+              results={fileResults}
+              searchMeta={fileSearchMeta}
+              isSearching={isSearching}
+              onSearch={searchFiles}
+              onClearResults={() => {
+                setFileResults([]);
+                setFileSearchMeta(null);
+                setFileSearchError(null);
+              }}
+              searchError={fileSearchError}
+              api={api}
+              connectionState={connectionState}
+              settings={settings}
+              onSaveSettings={saveSettings}
+              initialTool={fileToolTab}
+              onToolChange={setFileToolTab}
+              selectedDocumentPath={documentIntent?.path}
+              selectedDocumentAction={documentIntent?.action}
+              selectedDocumentIntentId={documentIntent?.nonce}
+              onDocumentIntentHandled={() => setDocumentIntent(null)}
+              hasPendingApproval={Boolean(pendingApproval)}
+              onOpenApprovals={() => setIsApprovalOpen(true)}
+              onRequestCleanupApproval={requestCleanupApproval}
+            />
+            <ChatPanel messages={recentReadableMessages} connectionState={connectionState} onSend={sendMessage} />
           </section>
         ) : null}
 
         {activeView === "computer" ? (
           <section className="detail-grid">
-            <SystemInfoPanel info={systemInfo} onRefresh={refreshSystemInfo} onOpenSettings={openWindowsSettings} />
+            <SystemInfoPanel
+              info={systemInfo}
+              isRefreshing={isCheckingComputer}
+              onRefresh={async () => {
+                setIsCheckingComputer(true);
+                try {
+                  await refreshSystemInfo();
+                } finally {
+                  setIsCheckingComputer(false);
+                }
+              }}
+              onOpenSettings={openWindowsSettings}
+            />
             <PlanViewer plan={plan} />
           </section>
         ) : null}
@@ -597,13 +880,21 @@ export function App() {
               localLlmHealth={localLlmHealth}
               llmHealth={llmHealth}
               llmCostSummary={llmCostSummary}
+              onLocalLlmHealthChange={setLocalLlmHealth}
               onSave={saveSettings}
               onStartBackend={async () => setBackendStatus(await api.startBackend())}
               onStopBackend={async () => setBackendStatus(await api.stopBackend())}
               api={api}
+              privacyIntentId={settingsIntent?.section === "privacy" ? settingsIntent.nonce : undefined}
             />
             <SkillsView api={api} />
-            <SystemInfoPanel info={systemInfo} onRefresh={refreshSystemInfo} onOpenSettings={openWindowsSettings} />
+            <SystemInfoPanel
+              info={systemInfo}
+              onRefresh={async () => {
+                await refreshSystemInfo();
+              }}
+              onOpenSettings={openWindowsSettings}
+            />
           </section>
         ) : null}
 
@@ -642,6 +933,356 @@ function mergeTaskSnapshots(runTasks: TaskEvent[], legacyTasks: TaskEvent[]): Ta
   return [...merged, ...legacyById.values()];
 }
 
+function latestLegacyTaskIdFromEvents(
+  tasks: TaskEvent[],
+  chatStartedTaskIds: Set<string>,
+  announcedTerminalTaskIds: Set<string>
+): string | null {
+  const active = tasks.find(
+    (task) =>
+      !task.runId &&
+      chatStartedTaskIds.has(task.id) &&
+      (task.state === "running" || task.state === "queued" || task.state === "blocked")
+  );
+  if (active) return active.id;
+  const pendingReplay = tasks.find(
+    (task) => !task.runId && chatStartedTaskIds.has(task.id) && !announcedTerminalTaskIds.has(task.id)
+  );
+  return pendingReplay?.id ?? null;
+}
+
 function requiresLocalLlmHealth(mode: AssistantMode): boolean {
   return mode === "privacy" || mode === "hybrid";
+}
+
+function buildHomeReadinessItems({
+  connectionState,
+  mode,
+  localLlmHealth,
+  allowedDirectories,
+  workspaceRoot
+}: {
+  connectionState: ConnectionState;
+  mode: AssistantMode;
+  localLlmHealth: LocalLLMHealth | null;
+  allowedDirectories?: string[];
+  workspaceRoot: string;
+}): HomeReadinessItem[] {
+  const primaryScope = allowedDirectories?.[0] || workspaceRoot || "";
+  const privacyReady = mode === "privacy" && Boolean(localLlmHealth?.available);
+  const privacyAction = mode === "efficiency" ? "开启" : localLlmHealth?.available ? "查看" : "准备";
+
+  return [
+    {
+      id: "connection",
+      label: "Mavris 连接",
+      detail: connectionState === "online" ? "服务已连接，可以直接开始任务" : connectionState === "checking" ? "正在确认后端服务" : "服务离线，先恢复连接",
+      state: connectionState === "online" ? "ready" : connectionState === "checking" ? "warning" : "action",
+      actionLabel: connectionState === "online" ? "刷新连接" : "检查连接"
+    },
+    {
+      id: "privacy",
+      label: "隐私与本地 AI",
+      detail: privacyReady
+        ? "隐私模式和本地 AI 已就绪"
+        : mode === "efficiency"
+          ? "当前是高效模式，可一键切到隐私"
+          : "隐私模式已开，继续准备本地 AI",
+      state: privacyReady ? "ready" : "action",
+      actionLabel: privacyAction,
+      targetView: "settings"
+    },
+    {
+      id: "scope",
+      label: "文件范围",
+      detail: primaryScope ? compactPath(primaryScope) : "先选择桌面、下载或指定文件夹",
+      state: primaryScope ? "ready" : "action",
+      actionLabel: primaryScope ? "查看" : "选择",
+      targetView: "files"
+    },
+    {
+      id: "document",
+      label: "文档操作",
+      detail: "读取、总结、提问都从这里进入",
+      state: "action",
+      actionLabel: "打开",
+      targetView: "files"
+    }
+  ];
+}
+
+function buildHomeTrustItems({
+  mode,
+  localLlmHealth,
+  allowedDirectories,
+  workspaceRoot,
+  allowCloudContext,
+  allowFileContentUpload
+}: {
+  mode: AssistantMode;
+  localLlmHealth: LocalLLMHealth | null;
+  allowedDirectories?: string[];
+  workspaceRoot: string;
+  allowCloudContext: boolean;
+  allowFileContentUpload: boolean;
+}): HomeTrustItem[] {
+  const primaryScope = allowedDirectories?.[0] || workspaceRoot || "";
+  const localReady = mode === "privacy" && Boolean(localLlmHealth?.available);
+  const localPreparing = mode !== "efficiency" && !localLlmHealth?.available;
+  const privacyMode = mode === "privacy";
+
+  return [
+    {
+      id: "ai",
+      label: "AI 运行",
+      value: localReady ? "本机可用" : privacyMode ? "本机优先" : localPreparing ? "本机准备中" : "高效模式",
+      detail: localReady
+        ? "隐私任务优先留在这台电脑"
+        : privacyMode
+          ? "健康未读取时不会静默退云端"
+        : localPreparing
+          ? "不会静默退回云端"
+          : allowCloudContext
+            ? "可使用云端辅助"
+            : "云端上下文关闭",
+      state: localReady || !allowCloudContext ? "ready" : "warning"
+    },
+    {
+      id: "files",
+      label: "文件范围",
+      value: primaryScope ? compactPath(primaryScope) : "未授权",
+      detail: primaryScope ? "文件工具只看这个范围" : "先选择桌面、下载或文件夹",
+      state: primaryScope ? "ready" : "warning"
+    },
+    {
+      id: "upload",
+      label: "文件内容上传",
+      value: allowFileContentUpload ? "需要确认" : "已关闭",
+      detail: allowFileContentUpload ? "读取内容前仍会遵守权限" : "默认不上传文件正文",
+      state: allowFileContentUpload ? "warning" : "ready"
+    },
+    {
+      id: "approval",
+      label: "危险操作",
+      value: "先审批",
+      detail: "删除、移动、写入前会停下来",
+      state: "ready"
+    }
+  ];
+}
+
+function compactPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length <= 2) return path;
+  return `${parts.at(-2)}/${parts.at(-1)}`;
+}
+
+function isActiveTask(task: TaskEvent): boolean {
+  return task.state === "running" || task.state === "queued" || task.state === "blocked" || task.state === "paused";
+}
+
+function wasUpdatedRecently(task: TaskEvent): boolean {
+  const timestamp = Date.parse(task.updatedAt || task.createdAt || "");
+  if (Number.isNaN(timestamp)) return true;
+  return Date.now() - timestamp < 15 * 60 * 1000;
+}
+
+function chatMessageFromRunTerminalEvent(event: {
+  id: string;
+  event?: string;
+  name?: string;
+  created_at?: string;
+  payload?: Record<string, unknown>;
+}): ChatMessage | null {
+  const name = event.event ?? event.name ?? "";
+  if (!["run.completed", "run.failed", "run.cancelled", "run.denied", "run.waiting_approval"].includes(name)) {
+    return null;
+  }
+  const payload = event.payload ?? {};
+  const content = terminalRunMessage(name, payload);
+  return {
+    id: `${event.id}-chat`,
+    role: "assistant",
+    author: "Mavris",
+    content,
+    createdAt: event.created_at ?? new Date().toISOString(),
+    status: name === "run.failed" ? "failed" : "sent"
+  };
+}
+
+function chatMessageFromTaskAgentMessage(
+  taskId: string,
+  message: {
+    id: string;
+    role?: ChatMessage["role"];
+    name?: string;
+    content: string;
+    created_at: string;
+    metadata?: Record<string, unknown>;
+    from_agent?: string;
+    message_type?: string;
+  }
+): ChatMessage | null {
+  if (!isUserVisibleTaskMessage(message)) return null;
+  const author = zhAgentAuthor(message.name ?? message.from_agent ?? String(message.metadata?.from_agent ?? "Agent"));
+  return {
+    id: `${message.id}-chat`,
+    role: "assistant",
+    author,
+    content: summarizeTaskAgentContent(message.content, author),
+    createdAt: message.created_at,
+    status: "sent"
+  };
+}
+
+function chatMessageFromLegacyTaskTerminal(task: TaskEvent): ChatMessage | null {
+  const content = task.state === "completed"
+    ? terminalLegacyTaskMessage("completed", task.description)
+    : terminalLegacyTaskMessage("failed", task.description);
+  return {
+    id: `${task.id}-terminal-chat`,
+    role: "assistant",
+    author: "主管 Agent",
+    content,
+    createdAt: task.updatedAt || new Date().toISOString(),
+    status: task.state === "failed" ? "failed" : "sent"
+  };
+}
+
+function isUserVisibleTaskMessage(message: {
+  role?: ChatMessage["role"];
+  content: string;
+  metadata?: Record<string, unknown>;
+  from_agent?: string;
+  message_type?: string;
+}): boolean {
+  if (message.role === "user" || message.role === "system" || message.role === "developer") return false;
+  const agent = String(message.metadata?.from_agent ?? message.from_agent ?? "");
+  const type = String(message.metadata?.message_type ?? message.message_type ?? "");
+  const content = message.content.trim();
+  if (!content) return false;
+  if (agent === "SafetyReviewAgent" || agent === "MemoryAgent" || agent === "ToolRuntime") return false;
+  if (type === "review") return false;
+  if (isInternalTaskMessageContent(content)) return false;
+  return /清理预览|cleanup plan|dry-run preview|已生成|等待.*审批|审批后|没有删除|没有继续|完成|失败/.test(content);
+}
+
+function summarizeTaskAgentContent(content: string, author: string): string {
+  const translated = zhBackendText(content).replace(/\s*Large output persisted to .+$/u, "").trim();
+  if (translated.includes("已生成清理预览")) {
+    return `${author} 已生成清理预览。你可以在任务面板查看候选项；不会直接删除文件，需要你审批后才会执行。`;
+  }
+  if (translated.includes("Explicit absolute path is required")) {
+    return `${author} 没有拿到明确路径，所以没有继续清理。请说具体目录，比如 D:\\Downloads 或 D:\\Temp。`;
+  }
+  return translated;
+}
+
+function isInternalTaskMessageContent(content: string): boolean {
+  const value = content.trim();
+  if (!value) return true;
+  const internalPatterns = [
+    /^propose_tool\b/i,
+    /^request_revision\b/i,
+    /^Calling tool\b/i,
+    /^Starting [\w.]+\.?$/i,
+    /^Completed [\w.]+\.?$/i,
+    /^Recorded before\/after screenshots/i,
+    /^tool_observation:/i,
+    /^Remembered:/i,
+    /^[\w.]+\s+已完成。?$/i,
+    /^[\w.]+\s+执行失败。?$/i,
+    /accepted the planned tool call via deterministic fast path/i
+  ];
+  if (internalPatterns.some((pattern) => pattern.test(value))) return true;
+  return [
+    "正在调用工具",
+    "文件路径必须保持在授权目录内",
+    "系统检查默认只读",
+    "应用操作仅限",
+    "浏览器操作默认只读",
+    "外部搜索结果必须保留"
+  ].some((fragment) => value.includes(fragment));
+}
+
+function terminalLegacyTaskMessage(status: "completed" | "failed", description: string): string {
+  const detail = stripTerminalPrefix(zhBackendText(description));
+  if (status === "completed") {
+    if (detail.includes("只读") || detail.includes("清理预览")) {
+      return "清理预览已完成。我没有删除任何文件；需要真正清理时，会先让你确认要处理哪些项目。";
+    }
+    return detail ? `任务已完成：${detail}` : "任务已完成。";
+  }
+  if (detail.includes("Explicit absolute path is required") || detail.includes("绝对路径")) {
+    return "这次没有继续执行，因为没有拿到明确目录。请告诉我具体要清理的位置，比如 D:\\Downloads 或 D:\\Temp。";
+  }
+  return detail ? `任务执行失败：${detail}` : "任务执行失败。";
+}
+
+function zhAgentAuthor(agent: string): string {
+  if (agent === "FileAgent") return "文件 Agent";
+  if (agent === "DocumentAgent") return "文档 Agent";
+  if (agent === "ComputerAgent") return "电脑 Agent";
+  if (agent === "BrowserAgent") return "浏览器 Agent";
+  if (agent === "SearchAgent") return "搜索 Agent";
+  if (agent === "PlannerAgent") return "规划 Agent";
+  if (agent === "OrchestratorAgent") return "调度 Agent";
+  return agent || "Agent";
+}
+
+function terminalRunMessage(name: string, payload: Record<string, unknown>): string {
+  const detail = String(
+    payload.final_summary ?? payload.message ?? payload.transition_reason ?? payload.reason ?? payload.error ?? ""
+  ).trim();
+  const normalizedDetail = stripTerminalPrefix(zhBackendText(detail));
+  const suffix = normalizedDetail ? `：${normalizedDetail}` : "。";
+  if (name === "run.completed") return `任务已完成${suffix}`;
+  if (name === "run.waiting_approval") return `任务正在等待你的审批${suffix}`;
+  if (name === "run.cancelled") return `任务已取消${suffix}`;
+  if (name === "run.denied") return `任务已被拦截${suffix}`;
+  return `任务执行失败${suffix}`;
+}
+
+function stripTerminalPrefix(value: string): string {
+  return value
+    .replace(/^任务执行失败[：:]\s*/u, "")
+    .replace(/^执行失败[：:]\s*/u, "")
+    .trim();
+}
+
+function recentReadableChatMessages(messages: ChatMessage[], limit: number): ChatMessage[] {
+  return messages
+    .filter((message) => {
+      const content = typeof message.content === "string" ? message.content : "";
+      if (!content.trim()) return false;
+      if (isMojibakeLike(content)) return false;
+      if (content.length > 480) return false;
+      return message.role === "user" || message.role === "assistant";
+    })
+    .slice(-limit);
+}
+
+function isMojibakeLike(value: string): boolean {
+  const compact = value.replace(/\s+/g, "");
+  if (!compact) return false;
+  const questionMarks = (compact.match(/\?/g) ?? []).length;
+  if (questionMarks >= 3 && questionMarks / compact.length > 0.2) return true;
+  return /�|Ã|Â|ä¸|ç®|å·|æ/.test(compact);
+}
+
+function appendUniqueMessage(current: ChatMessage[], message: ChatMessage): ChatMessage[] {
+  if (current.some((item) => item.id === message.id)) return current;
+  const messageTime = Date.parse(message.createdAt || "");
+  if (
+    current.some((item) => {
+      if (item.role !== message.role || item.author !== message.author || item.content !== message.content) return false;
+      const itemTime = Date.parse(item.createdAt || "");
+      if (Number.isNaN(itemTime) || Number.isNaN(messageTime)) return true;
+      return Math.abs(itemTime - messageTime) < 30_000;
+    })
+  ) {
+    return current;
+  }
+  return [...current, message];
 }

@@ -134,6 +134,32 @@ def test_live_write_action_requires_approval_then_records_sanitized_event() -> N
     assert "alice@example.test" not in str(replay)
 
 
+def test_live_fill_with_sensitive_value_is_blocked_before_adapter() -> None:
+    adapter = FakeBrowserAdapter()
+    runtime = BrowserActivityRuntime(adapter=adapter)
+    started = runtime.session_start({"task_id": "task-sensitive-fill"}, _context())
+
+    result = runtime.act(
+        {
+            "session_id": started["session"]["id"],
+            "task_id": "task-sensitive-fill",
+            "action": {
+                "kind": "fill",
+                "url": "https://example.test/profile",
+                "fields": {"#notes": "4111111111111111"},
+            },
+            "dry_run": False,
+            "approved": True,
+            "approval_id": "approval-card",
+        },
+        _context(),
+    )
+
+    assert result["ok"] is False
+    assert "sensitive" in result["error"].lower()
+    assert adapter.calls == []
+
+
 def test_legacy_read_page_uses_session_compatible_runtime_flow() -> None:
     adapter = FakeBrowserAdapter()
     browser_tools.reset_browser_activity_runtime(adapter=adapter)

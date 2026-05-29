@@ -1,6 +1,6 @@
-import { AppWindow, Cpu, HardDrive, Info, ListStart, RefreshCw, Settings, Zap } from "lucide-react";
+import { AppWindow, CheckCircle2, Cpu, HardDrive, Info, ListStart, Loader2, RefreshCw, Settings, Zap } from "lucide-react";
 
-import type { SystemInfo, SystemProcess } from "../../shared/types";
+import type { DiskInfo, SystemDiagnostic, SystemInfo, SystemProcess } from "../../shared/types";
 import { zhSource, zhSystemSuggestion } from "../lib/zh";
 import { Panel } from "./Panel";
 
@@ -8,9 +8,10 @@ interface SystemInfoPanelProps {
   info: SystemInfo;
   onRefresh: () => Promise<void>;
   onOpenSettings?: (uri: string) => Promise<void>;
+  isRefreshing?: boolean;
 }
 
-export function SystemInfoPanel({ info, onRefresh, onOpenSettings }: SystemInfoPanelProps) {
+export function SystemInfoPanel({ info, onRefresh, onOpenSettings, isRefreshing = false }: SystemInfoPanelProps) {
   const diagnostics = info.diagnostics;
   const processes = info.processes ?? diagnostics?.topProcesses ?? [];
   const startupItems = info.startupItems ?? diagnostics?.startupItems ?? [];
@@ -21,17 +22,45 @@ export function SystemInfoPanel({ info, onRefresh, onOpenSettings }: SystemInfoP
   const largestDisk = diagnostics?.disks
     ?.filter((disk) => disk.usage?.total)
     .sort((a, b) => Number(b.usage?.total ?? 0) - Number(a.usage?.total ?? 0))[0];
+  const hasDiagnostics =
+    Boolean(memoryTotal) ||
+    Boolean(largestDisk) ||
+    processes.length > 0 ||
+    startupItems.length > 0 ||
+    apps.length > 0 ||
+    Boolean(diagnostics?.suggestions?.length);
+  const healthSummary = buildHealthSummary({ hasDiagnostics, diagnostics, memoryUsedPercent, largestDisk });
 
   return (
     <Panel
       title="系统信息"
       eyebrow="Windows 核心能力"
       action={
-        <button className="icon-button" aria-label="刷新系统信息" onClick={() => void onRefresh()}>
-          <RefreshCw size={16} aria-hidden="true" />
+        <button className="icon-button" aria-label="刷新系统信息" onClick={() => void onRefresh()} disabled={isRefreshing}>
+          {isRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
         </button>
       }
     >
+      <div className={`system-check-hero system-check-hero--${healthSummary.tone}`}>
+        <div>
+          <span className="system-check-hero__eyebrow">一键只读检查</span>
+          <strong>{isRefreshing ? "正在读取电脑健康快照" : healthSummary.title}</strong>
+          <p>{isRefreshing ? "Mavris 只读取 CPU、内存、磁盘、启动项和进程信息，不会更改系统设置。" : healthSummary.detail}</p>
+        </div>
+        <button className="button button--primary" type="button" onClick={() => void onRefresh()} disabled={isRefreshing}>
+          {isRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
+          {isRefreshing ? "检查中" : hasDiagnostics ? "重新检查" : "立即只读检查"}
+        </button>
+      </div>
+
+      <div className="system-health-banner">
+        <Info size={16} aria-hidden="true" />
+        <div>
+          <strong>只读诊断，不改设置</strong>
+          <span>电脑健康、Mavris 连接、任务状态已经分开显示；“未知”通常表示暂未读取到，不代表电脑异常。</span>
+        </div>
+      </div>
+
       <div className="system-grid">
         <SystemMetric label="应用版本" value={info.appVersion} />
         <SystemMetric label="Electron 版本" value={info.electronVersion} />
@@ -102,6 +131,42 @@ export function SystemInfoPanel({ info, onRefresh, onOpenSettings }: SystemInfoP
       </div>
     </Panel>
   );
+}
+
+function buildHealthSummary({
+  hasDiagnostics,
+  diagnostics,
+  memoryUsedPercent,
+  largestDisk
+}: {
+  hasDiagnostics: boolean;
+  diagnostics: SystemDiagnostic | undefined;
+  memoryUsedPercent: number;
+  largestDisk: DiskInfo | undefined;
+}): { title: string; detail: string; tone: "idle" | "ready" | "warning" } {
+  if (!hasDiagnostics) {
+    return {
+      title: "还没有电脑健康快照",
+      detail: "点击后会立即读取系统状态，给你一个不改设置的第一份检查结果。",
+      tone: "idle"
+    };
+  }
+
+  const diskPercent = largestDisk?.usage?.percent;
+  const hasSuggestion = Boolean(diagnostics?.suggestions?.some((suggestion) => !/No critical system issue detected/i.test(suggestion)));
+  if (memoryUsedPercent >= 85 || (diskPercent !== undefined && diskPercent >= 90) || hasSuggestion) {
+    return {
+      title: "发现需要留意的项目",
+      detail: "下面列出了内存、磁盘、启动项和进程快照。Mavris 只给建议，不会自动修改系统。",
+      tone: "warning"
+    };
+  }
+
+  return {
+    title: "未发现关键问题",
+    detail: "电脑只读诊断已完成，可以继续让 Mavris 处理文件、文档或其他任务。",
+    tone: "ready"
+  };
 }
 
 function SystemMetric({

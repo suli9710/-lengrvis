@@ -260,7 +260,7 @@ def _resolve_raw_model_path(raw: str) -> Path | None:
     try:
         path = path.resolve(strict=False)
     except OSError:
-        pass
+        return None
     if path.is_file() and path.suffix.lower() in _MODEL_SUFFIXES:
         return path
     if path.is_dir():

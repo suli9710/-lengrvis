@@ -18,7 +18,6 @@ from app.core.schemas import (
     ToolResult,
     now_iso,
 )
-from app.orchestration.events import ApprovalNeeded, SafetyReviewDone, SubagentResponded, ToolExecuted
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.runtime_context import TaskRuntimeContext
@@ -37,22 +36,8 @@ class StepExecutionHandler:
         self.orchestrator = orchestrator
         self.tool_runtime = ToolRuntime(orchestrator)
 
-    def register(self, dispatcher: EventDispatcher) -> None:
-        dispatcher.register("subagent.responded", self.handle_subagent_responded)
-        dispatcher.register("safety_review.done", self.handle_safety_review_done)
-        dispatcher.register("approval.needed", self.handle_approval_needed)
-        dispatcher.register("tool.executed", self.handle_tool_executed)
-
-    def handle_subagent_responded(self, event: SubagentResponded) -> None:  # pragma: no cover - registration hook
-        return None
-
-    def handle_safety_review_done(self, event: SafetyReviewDone) -> None:  # pragma: no cover - registration hook
-        return None
-
-    def handle_approval_needed(self, event: ApprovalNeeded) -> None:  # pragma: no cover - registration hook
-        return None
-
-    def handle_tool_executed(self, event: ToolExecuted) -> None:  # pragma: no cover - registration hook
+    def register(self, _dispatcher: EventDispatcher) -> None:
+        """Compatibility no-op; step execution is invoked directly."""
         return None
 
     async def _yield_if_parallel(self, threaded_tools: bool) -> None:

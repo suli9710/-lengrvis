@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -9,6 +10,9 @@ from typing import Any
 
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
+
+
+logger = logging.getLogger(__name__)
 
 
 READ_STATE_TTL_SECONDS = 30 * 60
@@ -226,8 +230,8 @@ def remember_read_states_for_tool(
             try:
                 runtime.remember_file(str(state["path"]), partial_view=False, size=int(state.get("size") or 0))
                 runtime.extra_context.setdefault("_resource_read_states", {})[key] = cached
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("could not cache read state for %s: %s", state.get("path"), exc, exc_info=True)
 
 
 def validate_write_preconditions(
@@ -370,8 +374,8 @@ def _read_state_for_path(key: str, context: dict[str, Any]) -> dict[str, Any] | 
             cached = runtime.extra_context.get("_resource_read_states", {}).get(key)
             if cached:
                 return cached
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("could not read runtime resource cache for %s: %s", key, exc, exc_info=True)
     task_id = _task_id(context, runtime)
     if not task_id:
         return None
@@ -542,8 +546,8 @@ def _is_read_tool(tool: Any) -> bool:
         try:
             if tool.is_read_only():
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("tool read-only check failed for %s: %s", getattr(tool, "name", ""), exc, exc_info=True)
     effects = {str(item).casefold() for item in (getattr(tool, "effects", None) or [])}
     if effects & {"read", "list", "search", "inspect"}:
         return True

@@ -123,9 +123,9 @@ BROWSER_ACTIVITY_HANDOFF_TERMS = {
     "send",
     "token",
     "upload",
-    "瀵嗙爜",
-    "鏀粯",
-    "涓嬪崟",
+    "密码",
+    "支付",
+    "下单",
 }
 BROWSER_PROMPT_INJECTION_PATTERNS = {
     r"ignore\s+(all\s+)?(previous|prior|system|developer)\s+instructions",
@@ -512,9 +512,17 @@ class PolicyEngine:
             "external.webhook.post",
         }:
             return RiskLevel.R2_REVERSIBLE_MODIFY
-        if tool_name in {"remote.click", "remote.type_text", "remote.key_press"}:
+        if tool_name in {
+            "remote.click",
+            "remote.type_text",
+            "remote.key_press",
+            "ui_automation.click_at",
+            "ui_automation.drag",
+            "ui_automation.key_press",
+            "ui_automation.hotkey",
+        }:
             return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
-        if tool_name == "remote.view_screen":
+        if tool_name in {"remote.view_screen", "ui_automation.focus", "ui_automation.focus_window"}:
             return RiskLevel.R1_OPEN_ONLY
         if tool_name in {
             "browser.cua",
@@ -532,6 +540,8 @@ class PolicyEngine:
             "file.create_folder",
             "browser.click_element",
             "browser.fill_form",
+            "ui_automation.click",
+            "ui_automation.type_text",
         }:
             return RiskLevel.R2_REVERSIBLE_MODIFY
         if tool_name in {
@@ -985,7 +995,7 @@ def _normalized_path(path: str) -> str:
         if pure.drive:
             text = pure.as_posix()
     except (TypeError, ValueError):
-        pass
+        return text.rstrip("/").casefold()
     return text.rstrip("/").casefold()
 
 

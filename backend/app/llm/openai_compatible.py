@@ -387,14 +387,9 @@ class OpenAICompatibleProvider(LLMProvider):
             "content": render_prompt("structured_json_schema.md", {"schema": json.dumps(output_schema)}),
         }
         content = await self.chat([schema_prompt, *messages], temperature=0)
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            start = content.find("{")
-            end = content.rfind("}")
-            if start >= 0 and end > start:
-                return json.loads(content[start : end + 1])
-            raise
+        payload = _parse_structured_json(content)
+        _validate_structured_payload(payload, output_schema)
+        return payload
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         target_model = model or self.settings.embedding_model
@@ -488,6 +483,177 @@ class OpenAICompatibleProvider(LLMProvider):
 
     async def ocr(self, image_path: str) -> str:
         return await self.vision(image_path, load_prompt("vision_ocr.md"))
+
+
+def _parse_structured_json(content: str) -> Any:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as original:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(content):
+            if char not in "{[":
+                continue
+            try:
+                payload, _ = decoder.raw_decode(content[index:])
+            except json.JSONDecodeError:
+                continue
+            return payload
+        raise LLMApiResponseError("LLM structured response was not valid JSON.") from original
+
+
+def _validate_structured_payload(payload: Any, output_schema: dict[str, Any]) -> None:
+    if not isinstance(output_schema, dict):
+        raise LLMApiResponseError("LLM output schema must be a JSON Schema object.")
+    try:
+        from jsonschema import Draft202012Validator
+        from jsonschema.exceptions import SchemaError, ValidationError
+    except Exception:
+        _validate_structured_payload_lightweight(payload, output_schema)
+        return
+
+    try:
+        Draft202012Validator.check_schema(output_schema)
+        Draft202012Validator(output_schema).validate(payload)
+    except SchemaError as exc:
+        raise LLMApiResponseError(f"LLM output schema is invalid: {exc.message}") from exc
+    except ValidationError as exc:
+        raise LLMApiResponseError(
+            f"LLM structured response did not match output schema: {_format_jsonschema_error(exc)}"
+        ) from exc
+
+
+def _validate_structured_payload_lightweight(payload: Any, schema: dict[str, Any], path: str = "$") -> None:
+    if not isinstance(schema, dict):
+        return
+    expected_type = schema.get("type")
+    if expected_type is not None and not _matches_json_schema_type(payload, expected_type):
+        raise _schema_validation_error(
+            f"{path} expected {_format_expected_type(expected_type)}, got {_json_type_name(payload)}."
+        )
+    enum = schema.get("enum")
+    if isinstance(enum, list) and payload not in enum:
+        raise _schema_validation_error(f"{path} must be one of {enum!r}.")
+
+    if _should_validate_object_keywords(payload, schema):
+        _validate_object_payload(payload, schema, path)
+    if _should_validate_array_keywords(payload, schema):
+        _validate_array_payload(payload, schema, path)
+
+
+def _should_validate_object_keywords(payload: Any, schema: dict[str, Any]) -> bool:
+    schema_type = schema.get("type")
+    return schema_type == "object" or isinstance(payload, dict) and any(
+        key in schema for key in ("required", "properties", "additionalProperties")
+    )
+
+
+def _should_validate_array_keywords(payload: Any, schema: dict[str, Any]) -> bool:
+    schema_type = schema.get("type")
+    return schema_type == "array" or isinstance(payload, list) and "items" in schema
+
+
+def _validate_object_payload(payload: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(payload, dict):
+        raise _schema_validation_error(f"{path} expected object, got {_json_type_name(payload)}.")
+
+    required = schema.get("required") or []
+    missing = [str(key) for key in required if str(key) not in payload]
+    if missing:
+        raise _schema_validation_error(f"{path} missing required field(s): {', '.join(missing)}.")
+
+    properties = schema.get("properties") or {}
+    if not isinstance(properties, dict):
+        properties = {}
+    for key, property_schema in properties.items():
+        if key in payload:
+            _validate_structured_payload_lightweight(payload[key], property_schema, _join_schema_path(path, key))
+
+    additional_properties = schema.get("additionalProperties", True)
+    extra_keys = [key for key in payload if key not in properties]
+    if additional_properties is False and extra_keys:
+        extra = ", ".join(str(key) for key in extra_keys)
+        raise _schema_validation_error(f"{path} included unexpected field(s): {extra}.")
+    if isinstance(additional_properties, dict):
+        for key in extra_keys:
+            _validate_structured_payload_lightweight(
+                payload[key],
+                additional_properties,
+                _join_schema_path(path, key),
+            )
+
+
+def _validate_array_payload(payload: Any, schema: dict[str, Any], path: str) -> None:
+    if not isinstance(payload, list):
+        raise _schema_validation_error(f"{path} expected array, got {_json_type_name(payload)}.")
+    items_schema = schema.get("items")
+    if not isinstance(items_schema, dict):
+        return
+    for index, item in enumerate(payload):
+        _validate_structured_payload_lightweight(item, items_schema, f"{path}[{index}]")
+
+
+def _schema_validation_error(detail: str) -> LLMApiResponseError:
+    return LLMApiResponseError(f"LLM structured response did not match output schema: {detail}")
+
+
+def _matches_json_schema_type(value: Any, expected_type: Any) -> bool:
+    if isinstance(expected_type, list):
+        return any(_matches_json_schema_type(value, item) for item in expected_type)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return True
+
+
+def _json_type_name(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return type(value).__name__
+
+
+def _format_expected_type(expected_type: Any) -> str:
+    if isinstance(expected_type, list):
+        return " or ".join(str(item) for item in expected_type)
+    return str(expected_type)
+
+
+def _format_jsonschema_error(exc: Any) -> str:
+    path = "$"
+    for part in exc.path:
+        path = _join_schema_path(path, part)
+    return f"{path}: {exc.message}"
+
+
+def _join_schema_path(path: str, part: Any) -> str:
+    if isinstance(part, int):
+        return f"{path}[{part}]"
+    key = str(part)
+    if key.isidentifier():
+        return f"{path}.{key}"
+    return f"{path}[{key!r}]"
 
 
 def _chat_message_payload(message: dict[str, Any]) -> dict[str, Any]:

@@ -36,17 +36,22 @@ import type {
   DocumentIR,
   DocumentParseRequest,
   DocumentTable,
+  FileSearchResponse,
   FileSearchResult,
+  FileRevealResult,
   HardwareAccelerationSmokePayload,
   HardwareAccelerationStatusPayload,
   InstalledApp,
   InstalledSkill,
   IntentSuggestion,
+  LocalLibraryItem,
+  LocalLibraryResponse,
   LLMCostSummary,
   LLMHealthStatus,
   LLMProfile,
   LocalLLMHealth,
   LocalModelReadiness,
+  LocalModelSetupPlan,
   PerceptionSuggestionLaunchRequest,
   PerceptionSuggestionLaunchResponse,
   Plan,
@@ -72,7 +77,8 @@ import {
   zhBackendText,
   zhRiskLevel,
   zhSafetyVerdict,
-  zhToolName
+  zhToolName,
+  zhUserFacingError
 } from "./zh";
 
 const FALLBACK_BACKEND_URL = "http://127.0.0.1:8000";
@@ -142,9 +148,7 @@ export class MavrisApiClient {
           id: `${data.task_id ?? crypto.randomUUID()}-supervisor`,
           role: "assistant" as const,
           author: data.delegated ? "主管 Agent" : "主管 Agent",
-          content: data.task_id && data.status
-            ? `${zhBackendText(data.message)} 状态：${zhBackendTaskStatus(data.status)}。`
-            : zhBackendText(data.message),
+          content: zhBackendText(data.message),
           createdAt: new Date().toISOString(),
           status: "sent" as const
         },
@@ -204,18 +208,19 @@ export class MavrisApiClient {
         message: {
           id: `${data.run_id}-run-started`,
           role: "assistant" as const,
-          author: "Marvis",
-          content: `Run ${data.engine} started: ${zhBackendTaskStatus(data.phase)}.`,
+          author: "Mavris",
+          content: `已开始处理任务，当前状态：${zhBackendTaskStatus(data.phase)}。`,
           createdAt: new Date().toISOString(),
           status: "sent" as const
         },
         taskUpdates: [
           {
             id: data.run_id,
+            runId: data.run_id,
             title: body.content,
-            description: `Run status: ${zhBackendTaskStatus(data.phase)}`,
+            description: `状态：${zhBackendTaskStatus(data.phase)}`,
             state: mapTaskState(data.phase),
-            agent: data.engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+            agent: runEngineAgentName(data.engine),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           }
@@ -239,12 +244,28 @@ export class MavrisApiClient {
     if (!response.ok || !response.data) {
       return mapResponse(response, () => []);
     }
-    const tasks = await Promise.all(response.data.map((task) => this.mapTaskEventWithRecordings(task)));
+    const tasks = response.data.map(mapTaskEvent);
     return {
       ok: true,
       status: response.status,
       data: tasks,
       receivedAt: response.receivedAt
+    };
+  }
+
+  async getTaskTimelineEvent(taskId: string): Promise<ApiResponse<TaskEvent>> {
+    const taskResponse = await this.request<BackendTask>({ endpoint: `/api/tasks/${taskId}` });
+    if (!taskResponse.ok || !taskResponse.data) {
+      return mapResponse(taskResponse, () => {
+        throw new Error("Task not found");
+      });
+    }
+    const event = await this.mapTaskEventWithRecordings(taskResponse.data);
+    return {
+      ok: true,
+      status: taskResponse.status,
+      data: event,
+      receivedAt: taskResponse.receivedAt
     };
   }
 
@@ -451,29 +472,49 @@ export class MavrisApiClient {
     });
   }
 
-  searchFiles(query: string): Promise<ApiResponse<FileSearchResult[]>> {
+  searchFiles(query: string): Promise<ApiResponse<FileSearchResponse>> {
     return this.request<BackendFileSearchResponse>({
       endpoint: "/api/files/search",
       query: { q: query },
       timeoutMs: 10_000
     }).then((response) =>
-      mapResponse(response, (data) => [
-        ...(data.index_results ?? []).map((item, index) => ({
-          id: item.file_id ?? `index-${index}`,
-          path: item.path,
-          match: item.snippet ?? "",
-          line: 1,
-          score: 0.9
-        })),
-        ...(data.name_results ?? []).map((item, index) => ({
-          id: item.path ?? `name-${index}`,
-          path: item.path,
-          match: item.name ?? item.path,
-          line: 1,
-          score: 0.75
-        }))
-      ])
+      mapResponse(response, (data) => {
+        const results: FileSearchResult[] = [
+          ...(data.index_results ?? []).map((item, index) => ({
+            id: item.file_id ?? `index-${index}`,
+            path: item.path,
+            match: item.snippet ?? "",
+            line: 1,
+            score: 0.9
+          })),
+          ...(data.name_results ?? []).map((item, index) => ({
+            id: item.path ?? `name-${index}`,
+            path: item.path,
+            match: item.name ?? item.path,
+            line: 1,
+            score: 0.75
+          }))
+        ];
+        const meta = data.name_search ?? {};
+        return {
+          results,
+          meta: {
+            count: numberOrZero(meta.count),
+            scanned: numberOrZero(meta.scanned),
+            truncated: Boolean(meta.truncated),
+            status: meta.status ?? "ok"
+          }
+        };
+      })
     );
+  }
+
+  listLocalLibrary(section: string, query = "", limit = 240): Promise<ApiResponse<LocalLibraryResponse>> {
+    return this.request<BackendLocalLibraryResponse>({
+      endpoint: "/api/library",
+      query: { section, q: query, limit },
+      timeoutMs: 20_000
+    }).then((response) => mapResponse(response, mapLocalLibraryResponse));
   }
 
   getSettings(): Promise<ApiResponse<AppSettings>> {
@@ -492,6 +533,14 @@ export class MavrisApiClient {
       endpoint: "/api/settings/local-llm/health",
       timeoutMs: 2500
     }).then((response) => mapResponse(response, mapLocalLlmHealth));
+  }
+
+  getLocalModelSetupPlan(model?: string): Promise<ApiResponse<LocalModelSetupPlan>> {
+    return this.request<BackendLocalModelSetupPlan>({
+      endpoint: "/api/settings/local-model/setup-plan",
+      query: model ? { model } : undefined,
+      timeoutMs: 10_000
+    }).then((response) => mapResponse(response, mapLocalModelSetupPlan));
   }
 
   getLlmHealth(): Promise<ApiResponse<LLMHealthStatus>> {
@@ -638,6 +687,15 @@ export class MavrisApiClient {
     return this.request<BackendAppsResponse>({ endpoint: "/api/apps" }).then((response) =>
       mapResponse(response, (data) => data.apps.map(mapInstalledApp))
     );
+  }
+
+  revealFile(path: string): Promise<ApiResponse<FileRevealResult>> {
+    return this.request<BackendFileRevealResult, { path: string }>({
+      endpoint: "/api/apps/reveal",
+      method: "POST",
+      body: { path },
+      timeoutMs: 10_000
+    }).then((response) => mapResponse(response, mapFileRevealResult));
   }
 
   parseDocument(body: DocumentParseRequest): Promise<ApiResponse<DocumentIR>> {
@@ -1279,7 +1337,7 @@ async function requestBackendDirect<TResponse, TBody = unknown>(
         status: response.status,
         error: {
           code: `HTTP_${response.status}`,
-          message: getErrorMessage(data, response.statusText),
+          message: zhUserFacingError(getErrorMessage(data, response.statusText || `HTTP ${response.status}`)),
           details: data
         },
         receivedAt
@@ -1293,7 +1351,7 @@ async function requestBackendDirect<TResponse, TBody = unknown>(
       status: 0,
       error: {
         code: "NETWORK_ERROR",
-        message: error instanceof Error ? error.message : "Backend request failed"
+        message: zhUserFacingError(error instanceof Error ? error.message : "Backend request failed")
       },
       receivedAt
     };
@@ -1378,7 +1436,8 @@ function mapResponse<TInput, TOutput>(
 function mapTaskState(status: string): TaskEvent["state"] {
   if (status === "completed") return "completed";
   if (status === "failed" || status === "denied" || status === "cancelled") return "failed";
-  if (status === "waiting_user_approval" || status === "awaiting_approval" || status === "paused") return "blocked";
+  if (status === "paused") return "paused";
+  if (status === "waiting_user_approval" || status === "awaiting_approval") return "blocked";
   return "running";
 }
 
@@ -1395,8 +1454,8 @@ function mapRunCreateResponse(data: BackendRunCreateResponse | BackendSuggestion
     message: {
       id: `${runId}-suggestion-started`,
       role: "assistant",
-      author: "Marvis",
-      content: `Run ${engine} started: ${zhBackendTaskStatus(phase)}.`,
+      author: "Mavris",
+      content: `已开始处理建议任务，当前状态：${zhBackendTaskStatus(phase)}。`,
       createdAt: new Date().toISOString(),
       status: "sent"
     },
@@ -1405,9 +1464,9 @@ function mapRunCreateResponse(data: BackendRunCreateResponse | BackendSuggestion
         id: runId,
         runId,
         title,
-        description: `Run status: ${zhBackendTaskStatus(phase)}`,
+        description: `状态：${zhBackendTaskStatus(phase)}`,
         state: mapTaskState(phase),
-        agent: engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+        agent: runEngineAgentName(engine),
         createdAt: run?.created_at ?? new Date().toISOString(),
         updatedAt: run?.updated_at ?? run?.created_at ?? new Date().toISOString()
       }
@@ -1421,14 +1480,27 @@ function mapRunTaskEvent(run: BackendRunState): TaskEvent {
     id: run.run_id,
     runId: run.run_id,
     title: run.message || run.run_id,
-    description: run.error || `Run status: ${zhBackendTaskStatus(run.phase)} (${run.engine})`,
+    description: zhBackendText(run.error) || `状态：${zhBackendTaskStatus(run.phase)}（${zhRunEngine(run.engine)}）`,
     state: mapTaskState(run.phase),
-    agent: run.engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+    agent: runEngineAgentName(run.engine),
     createdAt: run.created_at || new Date().toISOString(),
     updatedAt: run.updated_at || run.created_at || new Date().toISOString(),
     recordings: [],
     cleanupPlan
   };
+}
+
+function zhRunEngine(engine?: string): string {
+  if (engine === "developer") return "开发执行";
+  if (engine === "os") return "电脑执行";
+  if (engine === "auto") return "自动选择";
+  return engine || "未知执行";
+}
+
+function runEngineAgentName(engine?: string): string {
+  if (engine === "developer") return "开发执行引擎";
+  if (engine === "os") return "电脑执行引擎";
+  return "执行引擎";
 }
 
 function latestRunState(runs: BackendRunState[]): BackendRunState | null {
@@ -1451,7 +1523,7 @@ function mapRunPlan(run: BackendRunState, timeline: BackendRunTimeline): Plan {
       ...emptyPlan(),
       id: run.run_id,
       title: run.message || run.run_id,
-      objective: run.error || `Run status: ${zhBackendTaskStatus(run.phase)}`,
+      objective: zhBackendText(run.error) || `状态：${zhBackendTaskStatus(run.phase)}`,
       updatedAt: run.updated_at
     };
   }
@@ -1477,7 +1549,7 @@ function mapRunConversation(run: BackendRunState, events: BackendRunEvent[]): Ag
     status: run.phase === "completed" ? "done" : run.phase === "awaiting_approval" ? "waiting" : "running",
     messages: events.map((event) => {
       const payload = event.payload ?? {};
-      const agent = String(payload.from_agent ?? (run.engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine"));
+      const agent = String(payload.from_agent ?? runEngineAgentName(run.engine));
       const content = String(payload.content ?? payload.transition_reason ?? event.name);
       return {
         id: event.id,
@@ -1519,6 +1591,42 @@ function mapCommandExecutionResult(result: BackendCommandExecutionResult): Comma
     diagnostics: Array.isArray(result.diagnostics) ? result.diagnostics.map(String) : undefined,
     error: result.error ? String(result.error) : undefined,
     nextAction: result.next_action ? String(result.next_action) : undefined
+  };
+}
+
+function mapLocalLibraryResponse(data: BackendLocalLibraryResponse): LocalLibraryResponse {
+  return {
+    section: String(data.section ?? "gallery"),
+    roots: data.roots ?? [],
+    items: (data.items ?? []).map(mapLocalLibraryItem),
+    count: Number(data.count ?? data.items?.length ?? 0),
+    total: Number(data.total ?? data.items?.length ?? 0),
+    scanned: Number(data.scanned ?? 0),
+    truncated: Boolean(data.truncated),
+    stats: {
+      size: Number(data.stats?.size ?? 0),
+      byExtension: data.stats?.by_extension ?? {}
+    }
+  };
+}
+
+function mapLocalLibraryItem(item: BackendLocalLibraryItem): LocalLibraryItem {
+  return {
+    id: String(item.id ?? item.path),
+    path: String(item.path ?? ""),
+    name: String(item.name ?? item.path ?? ""),
+    parent: String(item.parent ?? ""),
+    kind: String(item.kind ?? "document"),
+    extension: String(item.extension ?? ""),
+    mimeType: String(item.mime_type ?? ""),
+    size: Number(item.size ?? 0),
+    createdAt: Number(item.created_at ?? 0),
+    modifiedAt: Number(item.modified_at ?? 0),
+    previewUrl: String(item.preview_url ?? ""),
+    groupLabel: String(item.group_label ?? ""),
+    iconUrl: String(item.icon_url ?? ""),
+    width: Number(item.width ?? 0),
+    height: Number(item.height ?? 0)
   };
 }
 
@@ -2541,6 +2649,57 @@ function mapLocalModelReadiness(readiness?: BackendLocalModelReadiness): LocalMo
   };
 }
 
+function mapLocalModelSetupPlan(plan: BackendLocalModelSetupPlan): LocalModelSetupPlan {
+  return {
+    ready: Boolean(plan.ready),
+    canInstall: Boolean(plan.can_install),
+    model: String(plan.model ?? ""),
+    readiness: mapLocalModelReadiness(plan.readiness),
+    installed: Boolean(plan.installed),
+    running: Boolean(plan.running),
+    models: (plan.models ?? []).map(String),
+    hasModel: Boolean(plan.has_model),
+    runtimeSource: String(plan.runtime_source ?? ""),
+    bundledRuntimeAvailable: Boolean(plan.bundled_runtime_available),
+    bundledRuntimePath: String(plan.bundled_runtime_path ?? ""),
+    bundledModelsAvailable: Boolean(plan.bundled_models_available),
+    bundledModelsPath: String(plan.bundled_models_path ?? ""),
+    bundledModelAvailable: Boolean(plan.bundled_model_available),
+    bundledModelConfigured: Boolean(plan.bundled_model_configured),
+    bundleManifest: mapLocalModelBundleManifest(plan.bundle_manifest),
+    steps: (plan.steps ?? []).map((step) => ({
+      key: String(step.key ?? ""),
+      label: String(step.label ?? ""),
+      state: mapLocalModelSetupStepState(step.state),
+      detail: String(step.detail ?? "")
+    })),
+    nextAction: String(plan.next_action ?? "")
+  };
+}
+
+function mapLocalModelBundleManifest(manifest?: BackendLocalModelBundleManifest): LocalModelSetupPlan["bundleManifest"] {
+  if (!manifest || typeof manifest !== "object") return { present: false };
+  return {
+    present: Boolean(manifest.present),
+    valid: manifest.valid === undefined ? undefined : Boolean(manifest.valid),
+    path: optionalString(manifest.path),
+    model: optionalString(manifest.model),
+    acceptedLicenses: manifest.accepted_licenses === undefined ? undefined : Boolean(manifest.accepted_licenses),
+    runtimeSha256: optionalString(manifest.runtime_sha256),
+    modelsSha256: optionalString(manifest.models_sha256),
+    runtimeFiles: numberOrUndefined(manifest.runtime_files),
+    modelsFiles: numberOrUndefined(manifest.models_files),
+    error: optionalString(manifest.error)
+  };
+}
+
+function mapLocalModelSetupStepState(value: unknown): LocalModelSetupPlan["steps"][number]["state"] {
+  if (value === "pending" || value === "current" || value === "done" || value === "blocked") {
+    return value;
+  }
+  return "pending";
+}
+
 function mapInstalledApp(app: BackendInstalledApp): InstalledApp {
   return {
     id: String(app.id ?? app.name ?? ""),
@@ -2549,6 +2708,15 @@ function mapInstalledApp(app: BackendInstalledApp): InstalledApp {
     command: app.command,
     source: String(app.source ?? "unknown"),
     allowlisted: Boolean(app.allowlisted)
+  };
+}
+
+function mapFileRevealResult(result: BackendFileRevealResult): FileRevealResult {
+  return {
+    ok: result.ok !== false,
+    path: optionalString(result.path),
+    revealed: Boolean(result.revealed),
+    error: optionalString(result.error)
   };
 }
 
@@ -2618,9 +2786,17 @@ function mapChatMessage(message: BackendChatMessage): ChatMessage {
     role: message.role,
     author: message.author,
     content: zhBackendText(message.content),
-    createdAt: message.created_at,
+    createdAt: normalizeTimestamp(message.created_at ?? message.createdAt),
     status: message.status === "failed" ? "failed" : "sent"
   };
+}
+
+function normalizeTimestamp(value: unknown, fallback = new Date().toISOString()): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return fallback;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? fallback : new Date(timestamp).toISOString();
 }
 
 function mapIntentSuggestion(suggestion: BackendIntentSuggestion): IntentSuggestion {
@@ -2651,8 +2827,8 @@ function mapSuggestionLaunchResponse(
     message: {
       id: `${runId ?? crypto.randomUUID()}-suggestion-launched`,
       role: "assistant" as const,
-      author: "Marvis",
-      content: runId ? `Started from suggestion: ${zhBackendText(message)}` : zhBackendText(message),
+      author: "Mavris",
+      content: runId ? `已根据建议启动任务：${zhBackendText(message)}` : zhBackendText(message),
       createdAt: new Date().toISOString(),
       status: "sent" as const
     },
@@ -2662,9 +2838,9 @@ function mapSuggestionLaunchResponse(
             id: runId,
             runId,
             title: zhBackendText(message),
-            description: `Run status: ${zhBackendTaskStatus(phase)}`,
+            description: `状态：${zhBackendTaskStatus(phase)}`,
             state: mapTaskState(phase),
-            agent: engine === "developer" ? "DeveloperExecutionEngine" : "OSExecutionEngine",
+            agent: runEngineAgentName(engine),
             createdAt,
             updatedAt
           }
@@ -2844,6 +3020,10 @@ function numberOrUndefined(value: unknown): number | undefined {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function numberOrZero(value: unknown): number {
+  return numberOrUndefined(value) ?? 0;
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
 }
@@ -2923,7 +3103,8 @@ interface BackendChatMessage {
   role: "system" | "developer" | "user" | "assistant" | "tool";
   author: string;
   content: string;
-  created_at: string;
+  created_at?: string;
+  createdAt?: string;
   status?: string;
 }
 
@@ -3445,6 +3626,44 @@ export interface MobileDeviceList {
 interface BackendFileSearchResponse {
   index_results?: Array<{ file_id?: string; path: string; snippet?: string }>;
   name_results?: Array<{ path: string; name?: string }>;
+  name_search?: {
+    count?: number | string;
+    scanned?: number | string;
+    truncated?: boolean;
+    status?: string;
+  };
+}
+
+interface BackendLocalLibraryItem {
+  id: string;
+  path: string;
+  name: string;
+  parent: string;
+  kind: string;
+  extension: string;
+  mime_type?: string;
+  size?: number;
+  created_at?: number;
+  modified_at?: number;
+  preview_url?: string;
+  group_label?: string;
+  icon_url?: string;
+  width?: number;
+  height?: number;
+}
+
+interface BackendLocalLibraryResponse {
+  section: string;
+  roots?: string[];
+  items?: BackendLocalLibraryItem[];
+  count?: number;
+  total?: number;
+  scanned?: number;
+  truncated?: boolean;
+  stats?: {
+    size?: number;
+    by_extension?: Record<string, number>;
+  };
 }
 
 export interface BackendClusterEntry {
@@ -3765,6 +3984,47 @@ interface BackendLocalLlmHealth {
   readiness?: BackendLocalModelReadiness;
 }
 
+interface BackendLocalModelSetupStep {
+  key?: string;
+  label?: string;
+  state?: string;
+  detail?: string;
+}
+
+interface BackendLocalModelSetupPlan {
+  ready?: boolean;
+  can_install?: boolean;
+  model?: string;
+  readiness?: BackendLocalModelReadiness;
+  installed?: boolean;
+  running?: boolean;
+  models?: string[];
+  has_model?: boolean;
+  runtime_source?: string;
+  bundled_runtime_available?: boolean;
+  bundled_runtime_path?: string;
+  bundled_models_available?: boolean;
+  bundled_models_path?: string;
+  bundled_model_available?: boolean;
+  bundled_model_configured?: boolean;
+  bundle_manifest?: BackendLocalModelBundleManifest;
+  steps?: BackendLocalModelSetupStep[];
+  next_action?: string;
+}
+
+interface BackendLocalModelBundleManifest {
+  present?: boolean;
+  valid?: boolean;
+  path?: string;
+  model?: string;
+  accepted_licenses?: boolean;
+  runtime_sha256?: string;
+  models_sha256?: string;
+  runtime_files?: number;
+  models_files?: number;
+  error?: string;
+}
+
 interface BackendHardwareAccelerationStatus {
   available?: boolean;
   kind?: string;
@@ -4047,6 +4307,13 @@ interface BackendInstalledApp {
 
 interface BackendAppsResponse {
   apps: BackendInstalledApp[];
+}
+
+interface BackendFileRevealResult {
+  ok?: boolean;
+  path?: string;
+  revealed?: boolean;
+  error?: string;
 }
 
 interface BackendProcess {

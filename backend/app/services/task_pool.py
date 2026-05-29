@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import Awaitable, Callable
 
 from app.core.audit import record
@@ -65,10 +66,8 @@ class TaskPool:
         if target is None:
             return False
         target.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await target
-        except asyncio.CancelledError:
-            pass
         return True
 
     async def shutdown(self) -> None:

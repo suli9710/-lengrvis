@@ -48,6 +48,7 @@ PLAN_SCHEMA: dict[str, Any] = {
 
 DELETE_TERMS = ("delete", "remove", "trash", "删除", "删掉", "移除", "清理")
 UNINSTALL_TERMS = ("uninstall", "卸载")
+DRIVE_CLEANUP_RE = re.compile(r"(?P<drive>[a-zA-Z])\s*盘")
 PATH_SUFFIXES = (
     " 这个文件夹",
     " 这个目录",
@@ -74,6 +75,10 @@ class PlannerAgent(BaseAgent):
         goal_context: dict[str, Any] | str | None = None,
         session_context: dict[str, Any] | str | None = None,
     ) -> Plan:
+        deterministic_plan = self._deterministic_cleanup_plan(task_id, goal, tools)
+        if deterministic_plan:
+            self._publish_plan(task_id, deterministic_plan)
+            return deterministic_plan
         deterministic_plan = self._deterministic_file_plan(task_id, goal, tools)
         if deterministic_plan:
             self._publish_plan(task_id, deterministic_plan)
@@ -303,6 +308,58 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=True,
         )
 
+    def _deterministic_cleanup_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+        if "file.cleanup_plan" not in tools or not self._has_cleanup_intent(goal):
+            return None
+        if self._extract_windows_path(goal):
+            return None
+
+        roots = self._cleanup_roots(goal)
+        if not roots:
+            step = PlanStep(
+                id="step_1",
+                task_id=task_id,
+                order=1,
+                agent_name="FileAgent",
+                tool_name="file.search_by_name",
+                description="说明清理任务需要先设置授权目录。",
+                args={"query": "清理文件前需要先在设置中添加要扫描的授权目录。"},
+                expected_observation="已说明需要授权目录后才能扫描清理项。",
+                risk_level=RiskLevel.R0_READ_ONLY,
+                requires_approval=False,
+                rollback_strategy="未执行文件修改。",
+            )
+            return Plan(
+                task_id=task_id,
+                goal=goal,
+                assumptions=["用户提出了宽泛磁盘清理请求，但没有可用授权目录；不会把自然语言当作文件路径删除。"],
+                steps=[step],
+                global_risk_level=RiskLevel.R0_READ_ONLY,
+                requires_user_approval=False,
+            )
+
+        step = PlanStep(
+            id="step_1",
+            task_id=task_id,
+            order=1,
+            agent_name="FileAgent",
+            tool_name="file.cleanup_plan",
+            description="扫描授权目录并生成清理预览。",
+            args={"roots": roots, "threshold_mb": 50, "older_than_days": 30},
+            expected_observation="已生成清理预览，所有删除或移入回收站操作都需要用户审批后才会执行。",
+            risk_level=RiskLevel.R0_READ_ONLY,
+            requires_approval=False,
+            rollback_strategy="当前步骤只生成预览，不修改文件。",
+        )
+        return Plan(
+            task_id=task_id,
+            goal=goal,
+            assumptions=["检测到宽泛清理请求；先扫描授权目录生成清理预览，不直接删除文件。"],
+            steps=[step],
+            global_risk_level=RiskLevel.R0_READ_ONLY,
+            requires_user_approval=False,
+        )
+
     def _deterministic_uninstall_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
         if "app.uninstall_app" not in tools or not self._has_uninstall_intent(goal):
             return None
@@ -336,6 +393,29 @@ class PlannerAgent(BaseAgent):
     def _has_delete_intent(self, goal: str) -> bool:
         normalized = goal.lower()
         return any(term in normalized for term in DELETE_TERMS)
+
+    def _has_cleanup_intent(self, goal: str) -> bool:
+        normalized = goal.lower()
+        return "清理" in normalized or "cleanup" in normalized or "clean up" in normalized
+
+    def _cleanup_roots(self, goal: str) -> list[str]:
+        settings_roots = [str(path) for path in get_effective_settings().allowed_directories or []]
+        drive = self._extract_drive_root(goal)
+        if drive:
+            normalized_drive = drive.casefold().rstrip("\\/")
+            matching_roots = [
+                root
+                for root in settings_roots
+                if str(Path(root).drive).casefold().rstrip("\\/") == normalized_drive
+            ]
+            return matching_roots or settings_roots
+        return settings_roots
+
+    def _extract_drive_root(self, goal: str) -> str | None:
+        match = DRIVE_CLEANUP_RE.search(goal)
+        if not match:
+            return None
+        return f"{match.group('drive').upper()}:"
 
     def _has_uninstall_intent(self, goal: str) -> bool:
         normalized = goal.lower()

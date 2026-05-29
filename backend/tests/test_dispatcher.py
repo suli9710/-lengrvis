@@ -8,6 +8,14 @@ from pydantic import BaseModel, Field
 from app.core import db
 from app.core.schemas import new_id, now_iso
 from app.orchestration.dispatcher import EventDispatcher
+from app.orchestration.handlers import (
+    CompletionHandler,
+    ConsultationHandler,
+    PlanningHandler,
+    RecoveryHandler,
+    StepExecutionHandler,
+    StepSchedulerHandler,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -133,3 +141,25 @@ async def test_async_queue_processing(dispatcher):
     except asyncio.CancelledError:
         pass
     assert received == ["t1", "t2"]
+
+
+def test_orchestration_handler_registers_are_compatibility_noops():
+    class OrchestratorStub:
+        pass
+
+    dispatcher = EventDispatcher()
+    orchestrator = OrchestratorStub()
+
+    handlers = [
+        PlanningHandler(orchestrator),
+        ConsultationHandler(orchestrator),
+        StepSchedulerHandler(orchestrator),
+        StepExecutionHandler(orchestrator),
+        RecoveryHandler(orchestrator),
+        CompletionHandler(orchestrator),
+    ]
+
+    for handler in handlers:
+        handler.register(dispatcher)
+
+    assert dispatcher._handlers == {}

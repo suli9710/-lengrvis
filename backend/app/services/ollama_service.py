@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -30,12 +31,33 @@ _MEDIUM_CPU_CORES = 6
 _MEDIUM_RAM_BYTES = 16 * _GIB
 _MEDIUM_DISK_BYTES = 12 * _GIB
 _TIMEOUT = 5.0
+_BUNDLED_ENV_KEYS = ("MAVRIS_BUNDLED_OLLAMA_DIR", "MARVIS_BUNDLED_OLLAMA_DIR")
+_BUNDLED_MODEL_ENV_KEYS = ("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", "MARVIS_BUNDLED_OLLAMA_MODELS_DIR")
+_BUNDLED_RELATIVE_DIRS = (
+    ("resources", "ollama"),
+    ("ollama",),
+    ("vendor", "ollama"),
+)
+_BUNDLED_MODEL_RELATIVE_DIRS = (
+    ("resources", "ollama-models"),
+    ("ollama-models",),
+    ("vendor", "ollama-models"),
+)
+_BUNDLED_MANIFEST_ENV_KEYS = ("MAVRIS_OLLAMA_BUNDLE_MANIFEST", "MARVIS_OLLAMA_BUNDLE_MANIFEST")
+_BUNDLED_MANIFEST_RELATIVE_PATHS = (
+    ("resources", "ollama-bundle-manifest.json"),
+    ("ollama-bundle-manifest.json",),
+    ("vendor", "ollama-bundle-manifest.json"),
+)
 
 
 async def status() -> dict[str, Any]:
     """Return Ollama installation and runtime status."""
     installed = is_installed()
     readiness = hardware_readiness()
+    runtime_source = _ollama_runtime_source()
+    bundled_models_dir = _bundled_ollama_models_dir()
+    bundle_manifest = _ollama_bundle_manifest_summary()
     if not installed:
         return {
             "installed": False,
@@ -44,6 +66,12 @@ async def status() -> dict[str, Any]:
             "recommended_model": RECOMMENDED_MODEL,
             "has_recommended": False,
             "readiness": readiness,
+            "runtime_source": runtime_source,
+            "bundled_runtime_available": bundled_runtime_available(),
+            "bundled_runtime_path": _safe_runtime_path(runtime_source),
+            "bundled_models_available": bundled_models_dir is not None,
+            "bundled_models_path": str(bundled_models_dir) if bundled_models_dir else "",
+            "bundle_manifest": bundle_manifest,
         }
     running = await is_running()
     models = await list_models() if running else []
@@ -52,8 +80,75 @@ async def status() -> dict[str, Any]:
         "running": running,
         "models": models,
         "recommended_model": RECOMMENDED_MODEL,
-        "has_recommended": RECOMMENDED_MODEL in " ".join(models),
+        "has_recommended": _has_model(models, RECOMMENDED_MODEL),
         "readiness": readiness,
+        "runtime_source": runtime_source,
+        "bundled_runtime_available": runtime_source == "bundled",
+        "bundled_runtime_path": _safe_runtime_path(runtime_source),
+        "bundled_models_available": bundled_models_dir is not None,
+        "bundled_models_path": str(bundled_models_dir) if bundled_models_dir else "",
+        "bundle_manifest": bundle_manifest,
+    }
+
+
+async def setup_plan(model: str | None = None) -> dict[str, Any]:
+    """Return a user-facing local AI setup plan without mutating the machine."""
+    target = model or RECOMMENDED_MODEL
+    readiness = hardware_readiness(target)
+    installed = is_installed()
+    runtime_source = _ollama_runtime_source()
+    running = await is_running() if installed else False
+    models = await list_models() if running else []
+    has_model = _has_model(models, target)
+    bundled_available = runtime_source == "bundled"
+    bundled_models_dir = _bundled_ollama_models_dir()
+    bundled_model_available = _bundled_model_available(target)
+    bundled_model_configured = _bundled_model_configured(target) and (not running or has_model)
+    bundle_manifest = _ollama_bundle_manifest_summary()
+    return {
+        "ready": readiness["can_install"] and installed and running and has_model,
+        "can_install": readiness["can_install"],
+        "model": target,
+        "readiness": readiness,
+        "installed": installed,
+        "running": running,
+        "models": models,
+        "has_model": has_model,
+        "runtime_source": runtime_source,
+        "bundled_runtime_available": bundled_available,
+        "bundled_runtime_path": _safe_runtime_path(runtime_source),
+        "bundled_models_available": bundled_models_dir is not None,
+        "bundled_models_path": str(bundled_models_dir or ""),
+        "bundled_model_available": bundled_model_available,
+        "bundled_model_configured": bundled_model_configured,
+        "bundle_manifest": bundle_manifest,
+        "steps": [
+            {
+                "key": "hardware",
+                "label": "Check this computer",
+                "state": "done" if readiness["can_install"] else "blocked",
+                "detail": readiness["reason"],
+            },
+            {
+                "key": "runtime",
+                "label": "Install local AI runtime",
+                "state": "done" if installed else "current",
+                "detail": _runtime_setup_detail(installed, bundled_available),
+            },
+            {
+                "key": "server",
+                "label": "Start local AI service",
+                "state": "done" if running else "current" if installed else "pending",
+                "detail": "Ollama is running." if running else "Mavris will start Ollama after installation.",
+            },
+            {
+                "key": "model",
+                "label": "Use local model" if has_model else "Use bundled local model" if bundled_model_available else "Download recommended model",
+                "state": "done" if has_model else "current" if running else "pending",
+                "detail": _model_setup_detail(target, has_model, bundled_model_available, bundled_model_configured),
+            },
+        ],
+        "next_action": _setup_next_action(readiness, installed, running, has_model, bundled_model_available),
     }
 
 
@@ -133,6 +228,11 @@ def is_installed() -> bool:
     return _ollama_executable() is not None
 
 
+def bundled_runtime_available() -> bool:
+    """Return whether Mavris can use an Ollama runtime shipped with the app."""
+    return _bundled_ollama_executable() is not None
+
+
 async def is_running() -> bool:
     """Check if Ollama server is responding."""
     try:
@@ -157,9 +257,22 @@ async def list_models() -> list[str]:
 
 
 async def install() -> dict[str, Any]:
-    """Attempt to install Ollama via winget."""
-    if is_installed():
-        return {"ok": True, "message": "Ollama is already installed."}
+    """Make Ollama available, preferring a Mavris-bundled runtime over winget."""
+    source = _ollama_runtime_source()
+    if source == "bundled":
+        return {
+            "ok": True,
+            "message": "Bundled Ollama runtime is ready.",
+            "source": source,
+            "executable": _ollama_executable(),
+        }
+    if source == "system":
+        return {
+            "ok": True,
+            "message": "Ollama is already installed.",
+            "source": source,
+            "executable": _ollama_executable(),
+        }
 
     if sys.platform != "win32":
         return {"ok": False, "error": "Auto-install is only supported on Windows."}
@@ -177,6 +290,7 @@ async def install() -> dict[str, Any]:
         return {
             "ok": ok,
             "message": stdout.decode(errors="replace").strip() if ok else stderr.decode(errors="replace").strip(),
+            "source": "winget",
         }
     except FileNotFoundError:
         return {"ok": False, "error": "winget not found. Please install Ollama manually from https://ollama.com"}
@@ -198,14 +312,19 @@ async def start_server() -> dict[str, Any]:
         executable = _ollama_executable()
         if not executable:
             return {"ok": False, "error": "Ollama executable not found."}
+        env = os.environ.copy()
+        models_dir = _preferred_ollama_models_dir()
+        if models_dir:
+            env["OLLAMA_MODELS"] = str(models_dir)
         subprocess.Popen(
             [executable, "serve"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
+            env=env,
         )
-        record("ollama.start", "OllamaService", {"ok": True})
-        return {"ok": True, "message": "Ollama server is starting."}
+        record("ollama.start", "OllamaService", {"ok": True, "models_dir": str(models_dir) if models_dir else ""})
+        return {"ok": True, "message": "Ollama server is starting.", "models_dir": str(models_dir) if models_dir else ""}
     except Exception as exc:
         record("ollama.start", "OllamaService", {"ok": False, "error": str(exc)})
         return {"ok": False, "error": str(exc)}
@@ -227,6 +346,9 @@ def _requirements_for_model(model: str) -> dict[str, int]:
 
 
 def _ollama_executable() -> str | None:
+    bundled = _bundled_ollama_executable()
+    if bundled:
+        return bundled
     path = shutil.which("ollama")
     if path:
         return path
@@ -239,6 +361,219 @@ def _ollama_executable() -> str | None:
         if candidate and os.path.exists(candidate):
             return candidate
     return None
+
+
+def _ollama_runtime_source() -> str:
+    if _bundled_ollama_executable():
+        return "bundled"
+    if _system_ollama_executable():
+        return "system"
+    return "missing"
+
+
+def _system_ollama_executable() -> str | None:
+    path = shutil.which("ollama")
+    if path:
+        return path
+    candidates = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Ollama\ollama.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Ollama\ollama.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Ollama\ollama.exe"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _bundled_ollama_executable() -> str | None:
+    candidates = [
+        *(_candidate_ollama_executables_from_dir(value) for value in _bundled_runtime_dirs()),
+    ]
+    for group in candidates:
+        for candidate in group:
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _bundled_runtime_dirs() -> list[Path]:
+    roots: list[Path] = []
+    for key in _BUNDLED_ENV_KEYS:
+        value = os.getenv(key)
+        if value:
+            roots.append(Path(value).expanduser())
+
+    for anchor in _bundle_anchor_dirs():
+        for parts in _BUNDLED_RELATIVE_DIRS:
+            roots.append(anchor.joinpath(*parts))
+    return _unique_paths(roots)
+
+
+def _bundled_ollama_models_dir() -> Path | None:
+    for directory in _bundled_model_dirs():
+        if directory.exists() and directory.is_dir():
+            return directory
+    return None
+
+
+def _bundled_model_dirs() -> list[Path]:
+    roots: list[Path] = []
+    for key in _BUNDLED_MODEL_ENV_KEYS:
+        value = os.getenv(key)
+        if value:
+            roots.append(Path(value).expanduser())
+
+    for anchor in _bundle_anchor_dirs():
+        for parts in _BUNDLED_MODEL_RELATIVE_DIRS:
+            roots.append(anchor.joinpath(*parts))
+    return _unique_paths(roots)
+
+
+def _bundle_anchor_dirs() -> list[Path]:
+    anchors = []
+    if getattr(sys, "frozen", False):
+        anchors.append(Path(sys.executable).resolve().parent)
+    anchors.append(Path(__file__).resolve().parents[3])
+    return _unique_paths(anchors)
+
+
+def _ollama_bundle_manifest_path() -> Path | None:
+    for key in _BUNDLED_MANIFEST_ENV_KEYS:
+        value = os.getenv(key)
+        if value:
+            path = Path(value).expanduser()
+            if path.exists() and path.is_file():
+                return path
+    for anchor in _bundle_anchor_dirs():
+        for parts in _BUNDLED_MANIFEST_RELATIVE_PATHS:
+            path = anchor.joinpath(*parts)
+            if path.exists() and path.is_file():
+                return path
+    return None
+
+
+def _ollama_bundle_manifest_summary() -> dict[str, Any]:
+    path = _ollama_bundle_manifest_path()
+    if not path:
+        return {"present": False}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        return {"present": True, "valid": False, "path": str(path), "error": str(exc)}
+    runtime_summary = data.get("runtime", {}).get("summary", {}) if isinstance(data, dict) else {}
+    models_summary = data.get("models", {}).get("summary", {}) if isinstance(data, dict) else {}
+    return {
+        "present": True,
+        "valid": data.get("schema") == 1 and bool(data.get("accepted_licenses")),
+        "path": str(path),
+        "model": str(data.get("model", "")),
+        "accepted_licenses": bool(data.get("accepted_licenses")),
+        "runtime_sha256": str(runtime_summary.get("sha256", "")),
+        "models_sha256": str(models_summary.get("sha256", "")),
+        "runtime_files": int(runtime_summary.get("files", 0) or 0),
+        "models_files": int(models_summary.get("files", 0) or 0),
+    }
+
+
+def _preferred_ollama_models_dir() -> Path | None:
+    existing = os.getenv("OLLAMA_MODELS")
+    if existing:
+        return Path(existing).expanduser()
+    return _bundled_ollama_models_dir()
+
+
+def _same_path(left: Path | None, right: Path | None) -> bool:
+    if left is None or right is None:
+        return False
+    try:
+        return left.expanduser().resolve() == right.expanduser().resolve()
+    except Exception:
+        return str(left.expanduser()).lower() == str(right.expanduser()).lower()
+
+
+def _bundled_model_configured(model: str) -> bool:
+    """Return whether the preferred Ollama model store points at the bundled model."""
+    bundled_dir = _bundled_ollama_models_dir()
+    return _bundled_model_available(model) and _same_path(_preferred_ollama_models_dir(), bundled_dir)
+
+
+def _bundled_model_available(model: str) -> bool:
+    models_dir = _bundled_ollama_models_dir()
+    if not models_dir:
+        return False
+    name, tag = _ollama_model_name_and_tag(model)
+    candidates = [
+        models_dir / "manifests" / "registry.ollama.ai" / "library" / name / tag,
+    ]
+    if "/" in name:
+        candidates.append(models_dir / "manifests" / name / tag)
+    if any(candidate.exists() and candidate.is_file() for candidate in candidates):
+        return True
+    manifests_dir = models_dir / "manifests"
+    if not manifests_dir.exists():
+        return False
+    return any(path.name == tag and path.parent.name == name for path in manifests_dir.rglob(tag))
+
+
+def _ollama_model_name_and_tag(model: str) -> tuple[str, str]:
+    value = (model or RECOMMENDED_MODEL).strip()
+    if ":" not in value:
+        return value, "latest"
+    name, tag = value.rsplit(":", 1)
+    return name, tag or "latest"
+
+
+def _candidate_ollama_executables_from_dir(directory: Path) -> list[Path]:
+    exe_name = "ollama.exe" if sys.platform == "win32" else "ollama"
+    return [
+        directory / exe_name,
+        directory / "bin" / exe_name,
+        directory / "Ollama" / exe_name,
+    ]
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def _safe_runtime_path(runtime_source: str) -> str:
+    if runtime_source != "bundled":
+        return ""
+    executable = _bundled_ollama_executable()
+    return executable or ""
+
+
+def _runtime_setup_detail(installed: bool, bundled_available: bool) -> str:
+    if installed and bundled_available:
+        return "Mavris bundled Ollama runtime is available."
+    if installed:
+        return "Ollama is installed."
+    if bundled_available:
+        return "Mavris will use the bundled Ollama runtime."
+    return "Ollama will be installed automatically on Windows."
+
+
+def _model_setup_detail(
+    target: str,
+    has_model: bool,
+    bundled_model_available: bool,
+    bundled_model_configured: bool = False,
+) -> str:
+    if has_model:
+        return f"{target} is ready."
+    if bundled_model_configured:
+        return f"{target} is included with Mavris and the local service is configured to read it."
+    if bundled_model_available:
+        return f"{target} is included with Mavris and will be used when the local service starts."
+    return f"{target} will be downloaded for privacy mode."
 
 
 def _recommended_model_for_hardware(
@@ -254,6 +589,37 @@ def _recommended_model_for_hardware(
     ):
         return FALLBACK_MEDIUM_MODEL
     return FALLBACK_SMALL_MODEL
+
+
+def _has_model(models: list[str], target: str) -> bool:
+    normalized_target = target.lower()
+    return any(
+        model.lower() == normalized_target
+        or model.lower().startswith(f"{normalized_target}-")
+        or model.lower().startswith(f"{normalized_target}_")
+        or model.lower().startswith(f"{normalized_target}.")
+        for model in models
+    )
+
+
+def _setup_next_action(
+    readiness: dict[str, Any],
+    installed: bool,
+    running: bool,
+    has_model: bool,
+    bundled_model_available: bool = False,
+) -> str:
+    if not readiness.get("can_install"):
+        return "hardware_blocked"
+    if not installed:
+        return "install_runtime"
+    if not running:
+        return "start_runtime"
+    if bundled_model_available and not has_model:
+        return "use_bundled_model"
+    if not has_model:
+        return "download_model"
+    return "ready"
 
 
 def _total_memory_bytes() -> int:
@@ -397,9 +763,18 @@ async def install_local_model(model: str | None = None):
 
     # Step 2: Check if Ollama is running
     running = await is_running()
+    started_with_mavris_models = False
     if not running:
         yield {"phase": "start", "status": "starting", "message": "Starting Ollama server..."}
-        await start_server()
+        start_result = await start_server()
+        if not start_result.get("ok"):
+            yield {
+                "phase": "start",
+                "status": "error",
+                "error": start_result.get("error") or start_result.get("message") or "Ollama server could not be started.",
+            }
+            return
+        started_with_mavris_models = bool(start_result.get("models_dir"))
         yield {"phase": "start", "status": "waiting", "message": "Waiting for Ollama server to start..."}
         for _ in range(10):
             await asyncio.sleep(2)
@@ -411,10 +786,47 @@ async def install_local_model(model: str | None = None):
             return
     yield {"phase": "start", "status": "done", "message": "Ollama server is running."}
 
+    models = await list_models()
+    if _has_model(models, target):
+        yield {"phase": "pull", "status": "skipped", "message": f"Local model {target} is already installed.", "model": target}
+        yield {"phase": "switch", "status": "done", "message": f"Local model {target} is ready.", "model": target}
+        return
+
+    if started_with_mavris_models and _bundled_model_available(target):
+        yield {
+            "phase": "pull",
+            "status": "skipped",
+            "message": f"Bundled model {target} is ready; no download is needed.",
+            "model": target,
+        }
+        yield {"phase": "switch", "status": "done", "message": f"Bundled local model {target} is ready.", "model": target}
+        return
+
+    if _bundled_model_available(target):
+        yield {
+            "phase": "pull",
+            "status": "error",
+            "error": (
+                f"Bundled model {target} is available, but the running Ollama service is not using "
+                "the Mavris bundled model directory. Stop the existing Ollama service and try again."
+            ),
+            "model": target,
+        }
+        return
+
     # Step 3: Pull model with progress
+    pull_succeeded = False
     yield {"phase": "pull", "status": "starting", "model": target}
     async for progress in pull_model_streaming(target):
         yield {"phase": "pull", **progress}
+        if progress.get("status") == "error":
+            return
+        if progress.get("status") == "success":
+            pull_succeeded = True
+
+    if not pull_succeeded:
+        yield {"phase": "pull", "status": "error", "error": f"Model {target} did not finish downloading."}
+        return
 
     # Step 4: Switch provider
     yield {"phase": "switch", "status": "done", "message": f"Local model {target} is ready.", "model": target}
