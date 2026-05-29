@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import time
@@ -17,8 +18,18 @@ except Exception:  # pragma: no cover - optional dependency guard
     send2trash = None
 
 from app.core.audit import record
+from app.core import db
 from app.core.errors import SecurityError
 from app.core.paths import is_sensitive_path, is_system_path, normalize_path, resolve_authorized
+from app.core.schemas import Approval, ApprovalStatus, now_iso
+from app.policy.approval_binding import (
+    args_binding_hmac,
+    permission_policy_version,
+    preview_hmac,
+    settings_fingerprint,
+)
+from app.policy.permissions import PermissionStore
+from app.policy.risk import RiskLevel
 
 
 CleanupAction = Literal["delete_direct", "trash_with_prompt", "review_only"]
@@ -238,6 +249,9 @@ class CleanupPlannerService:
                 "skipped": [_preview_item(item) for item in review_only],
                 "_resource_state": [_resource_state(Path(root)) for root in plan.roots],
             }
+
+        if executable:
+            _claim_valid_cleanup_approval(args, context)
 
         trash_items = [item for item in executable if item.action == "trash_with_prompt"]
         if trash_items and (not args.get("approved") or not args.get("approval_id")):
@@ -744,3 +758,89 @@ def _record_cleanup_event(event_type: str, payload: dict[str, Any], context: dic
         record(event_type, "CleanupPlannerService", payload, task_id=context.get("task_id"))
     except Exception:
         return
+
+
+def _claim_valid_cleanup_approval(args: dict[str, Any], context: dict[str, Any]) -> Approval:
+    if args.get("approved") is not True:
+        raise SecurityError("Cleanup live execution requires approved=true and a valid approved approval_id.")
+    approval_id = str(args.get("approval_id") or "").strip()
+    if not approval_id:
+        raise SecurityError("Cleanup live execution requires a valid approved approval_id.")
+
+    data = db.fetch_one("approvals", approval_id)
+    if not data:
+        raise SecurityError("Cleanup live execution requires an approval_id that exists in the approval database.")
+    approval = Approval.model_validate(data)
+    binding_error = _cleanup_approval_binding_error(approval, args, context, allow_consumed=False)
+    if binding_error:
+        raise SecurityError(binding_error)
+
+    claimed = db.claim_approval_for_execution(approval.id, now_iso())
+    if not claimed:
+        raise SecurityError("Cleanup approval has already been consumed or is no longer approved.")
+    claimed_approval = Approval.model_validate(claimed)
+    binding_error = _cleanup_approval_binding_error(claimed_approval, args, context, allow_consumed=True)
+    if binding_error:
+        raise SecurityError(binding_error)
+    return claimed_approval
+
+
+def _cleanup_approval_binding_error(
+    approval: Approval,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    allow_consumed: bool,
+) -> str:
+    if approval.approval_type != "tool_call":
+        return "Cleanup approval is not bound to a tool call."
+    if approval.status != ApprovalStatus.APPROVED:
+        return f"Cleanup approval status is {approval.status}; expected approved."
+    if approval.consumed_at and not allow_consumed:
+        return "Cleanup approval has already been consumed."
+    required = {
+        "tool_name": approval.tool_name,
+        "args_binding_hmac": approval.args_binding_hmac,
+        "preview_hmac": approval.preview_hmac,
+        "settings_fingerprint": approval.settings_fingerprint,
+        "permission_policy_version": approval.permission_policy_version,
+        "tool_version": approval.tool_version,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        return f"Cleanup approval lacks binding metadata: {', '.join(missing)}."
+    if approval.tool_name != "file.cleanup_execute":
+        return "Cleanup approval tool name does not match file.cleanup_execute."
+    if approval.risk_level and approval.risk_level != RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value:
+        return "Cleanup approval risk level does not match cleanup_execute."
+    if approval.tool_version != "1":
+        return "Cleanup approval tool version does not match cleanup_execute."
+
+    expected_args = args_binding_hmac(
+        "file.cleanup_execute",
+        args,
+        task_id=approval.task_id,
+        step_id=approval.step_id,
+    )
+    if not _hmac_equal(approval.args_binding_hmac, expected_args):
+        return "Cleanup approval arguments do not match the current cleanup_execute request."
+
+    expected_preview = preview_hmac(approval.diff_preview)
+    if not _hmac_equal(approval.preview_hmac, expected_preview):
+        return "Cleanup approval preview was modified after review."
+
+    expected_settings = settings_fingerprint(
+        context.get("settings"),
+        allowed_directories=_allowed(context),
+    )
+    if not _hmac_equal(approval.settings_fingerprint, expected_settings):
+        return "Cleanup runtime settings changed after approval preview."
+
+    expected_policy = permission_policy_version(PermissionStore().updated_at())
+    if not _hmac_equal(approval.permission_policy_version, expected_policy):
+        return "Cleanup permission policy changed after approval preview."
+    return ""
+
+
+def _hmac_equal(left: str, right: str) -> bool:
+    return hmac.compare_digest(str(left or ""), str(right or ""))

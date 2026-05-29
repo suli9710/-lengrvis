@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import os
+import subprocess
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -99,6 +103,32 @@ def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
 
     replay_response = client.post("/api/pair", json={"code": code, "device_name": "Replay"})
     assert replay_response.status_code == 401
+
+
+def test_mobile_token_survives_backend_process_restart(tmp_path):
+    data_dir = tmp_path / "data"
+    token = _run_mobile_jwt_subprocess(
+        (
+            "from app.security.mobile_jwt import issue_mobile_token; "
+            "print(issue_mobile_token(device_id='mobile_restart', device_name='Restart Phone'))"
+        ),
+        data_dir,
+    )
+
+    claims_json = _run_mobile_jwt_subprocess(
+        (
+            "import json, os; "
+            "from app.security.mobile_jwt import decode_mobile_token; "
+            "print(json.dumps(decode_mobile_token(os.environ['MAVRIS_TEST_TOKEN']), sort_keys=True))"
+        ),
+        data_dir,
+        {"MAVRIS_TEST_TOKEN": token},
+    )
+    claims = json.loads(claims_json)
+
+    assert claims["device_id"] == "mobile_restart"
+    assert claims["device_name"] == "Restart Phone"
+    assert (data_dir / "mobile_jwt.secret").read_text(encoding="utf-8").strip()
 
 
 def test_pair_code_redeem_is_atomic_under_concurrent_submitters(monkeypatch, tmp_path):
@@ -444,6 +474,27 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
 def _paired_token(client: TestClient) -> str:
     code = client.post("/api/pair/code").json()["code"]
     return client.post("/api/pair", json={"code": code, "device_name": "Test Phone"}).json()["token"]
+
+
+def _run_mobile_jwt_subprocess(script: str, data_dir: Path, extra_env: dict[str, str] | None = None) -> str:
+    env = os.environ.copy()
+    env.update(
+        {
+            "MARVIS_DATA_DIR": str(data_dir),
+            "MARVIS_ENV_FILE": str(data_dir.parent / "missing.env"),
+            "MARVIS_CONFIG_FILE": str(data_dir.parent / "missing.yaml"),
+        }
+    )
+    env.pop("MARVIS_JWT_SECRET", None)
+    env.pop("MAVRIS_JWT_SECRET", None)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.check_output(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        text=True,
+    ).strip()
 
 
 def _clear_pairing_failures() -> None:

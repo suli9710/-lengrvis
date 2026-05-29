@@ -110,7 +110,7 @@ async def run_events(websocket: WebSocket, run_id: str):
             last_sequence = event.sequence
             await websocket.send_json(run_event_to_wire(event))
     except WebSocketDisconnect:
-        pass
+        return
     finally:
         run_event_bus.unsubscribe(run_id, queue)
 

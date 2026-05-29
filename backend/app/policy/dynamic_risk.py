@@ -195,7 +195,7 @@ def _context_datetime(context: dict[str, Any]) -> datetime | None:
         try:
             return datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
-            pass
+            return None
     return None
 
 
@@ -276,5 +276,5 @@ def _normalized_path(path: str) -> str:
         if pure.drive:
             text = pure.as_posix()
     except (TypeError, ValueError):
-        pass
+        return text.rstrip("/").casefold()
     return text.rstrip("/").casefold()

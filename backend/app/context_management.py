@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable
@@ -18,6 +19,8 @@ from app.llm.usage import estimate_usage, record_llm_response
 if TYPE_CHECKING:
     from app.core.schemas import AgentMessage
 
+
+logger = logging.getLogger(__name__)
 
 CHARS_PER_TOKEN = 4
 JSON_CHARS_PER_TOKEN = 2
@@ -1549,8 +1552,8 @@ def _record_event(event_type: str, actor: str, payload: dict[str, Any] | None = 
         from app.core.audit import record
 
         record(event_type, actor, payload or {})
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("audit record failed for %s by %s: %s", event_type, actor, exc, exc_info=True)
 
 
 def _error_text(exc: BaseException) -> str:

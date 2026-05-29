@@ -116,10 +116,8 @@ def _click_at(x: int, y: int) -> None:
         pyautogui.click(x=x, y=y)
         return
     except ImportError:
-        pass
-
-    if sys.platform != "win32":
-        raise RuntimeError("Remote click requires pyautogui outside Windows.")
+        if sys.platform != "win32":
+            raise RuntimeError("Remote click requires pyautogui outside Windows.") from None
     ctypes.windll.user32.SetCursorPos(x, y)
     ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
     ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
@@ -132,10 +130,8 @@ def _type_text(text: str) -> None:
         pyautogui.write(text)
         return
     except ImportError:
-        pass
-
-    if sys.platform != "win32":
-        raise RuntimeError("Remote typing requires optional dependency pyautogui outside Windows.")
+        if sys.platform != "win32":
+            raise RuntimeError("Remote typing requires optional dependency pyautogui outside Windows.") from None
     for character in text:
         _send_unicode_character(character)
 
@@ -147,10 +143,8 @@ def _press_key(key: str) -> None:
         pyautogui.press(key)
         return
     except ImportError:
-        pass
-
-    if sys.platform != "win32":
-        raise RuntimeError("Remote key press requires optional dependency pyautogui outside Windows.")
+        if sys.platform != "win32":
+            raise RuntimeError("Remote key press requires optional dependency pyautogui outside Windows.") from None
     vk_code = _VK_CODES.get(key)
     if vk_code is None:
         if len(key) == 1:

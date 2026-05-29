@@ -1,4 +1,5 @@
-import { BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
+import { existsSync } from "node:fs";
 
 import { IPC_CHANNELS } from "../shared/ipc";
 import type { ApiRequest, ApiResponse } from "../shared/types";
@@ -36,6 +37,77 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     await openSafeExternalUrl(url);
   });
 
+  ipcMain.handle(IPC_CHANNELS.getFileIcon, async (event, filePath: string) => {
+    assertTrustedRenderer(event);
+    return getFileIconDataUrl(filePath);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.chooseDirectory, async (event) => {
+    assertTrustedRenderer(event);
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = {
+      title: "选择文件夹",
+      properties: ["openDirectory", "createDirectory"]
+    };
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.chooseDocument, async (event) => {
+    assertTrustedRenderer(event);
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = {
+      title: "选择文档",
+      properties: ["openFile"],
+      filters: [
+        {
+          name: "可读取文档",
+          extensions: [
+            "pdf",
+            "docx",
+            "txt",
+            "md",
+            "markdown",
+            "log",
+            "rst",
+            "json",
+            "yaml",
+            "yml",
+            "py",
+            "ts",
+            "tsx",
+            "js",
+            "csv",
+            "xlsx",
+            "pptx",
+            "html",
+            "htm",
+            "png",
+            "jpg",
+            "jpeg",
+            "webp",
+            "bmp",
+            "tif",
+            "tiff"
+          ]
+        },
+        { name: "所有文件", extensions: ["*"] }
+      ]
+    };
+    const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.knownFolders, (event) => {
+    assertTrustedRenderer(event);
+    return {
+      desktop: app.getPath("desktop"),
+      downloads: app.getPath("downloads"),
+      documents: app.getPath("documents"),
+      pictures: app.getPath("pictures")
+    };
+  });
+
   ipcMain.handle(IPC_CHANNELS.chooseSkillDirectory, async (event) => {
     assertTrustedRenderer(event);
     const window = BrowserWindow.fromWebContents(event.sender);
@@ -64,6 +136,24 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     return proxyApiRequest(backend.getBaseUrl(), request);
   });
 
+}
+
+async function getFileIconDataUrl(filePath: string): Promise<string | null> {
+  if (typeof filePath !== "string" || !filePath.trim() || filePath.includes("\0")) {
+    return null;
+  }
+  if (!existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const icon = await app.getFileIcon(filePath, { size: "normal" });
+    if (icon.isEmpty()) {
+      return null;
+    }
+    return icon.toDataURL();
+  } catch {
+    return null;
+  }
 }
 
 async function proxyApiRequest<TData>(

@@ -534,7 +534,7 @@ def _resolve_raw_model_path(raw: str) -> Path | None:
     try:
         path = path.resolve(strict=False)
     except OSError:
-        pass
+        return None
     return _resolve_genai_model_path(path)
 
 

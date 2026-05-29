@@ -1,0 +1,9 @@
+[Unit]
+Description=Reapply Sub2API process priority
+Requires=docker.service
+After=docker.service sub2api.service
+ConditionPathExists=/usr/local/sbin/sub2api-priority-boost
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sub2api-priority-boost

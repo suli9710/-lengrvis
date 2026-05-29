@@ -10,9 +10,11 @@ from app.agents.browser_activity_review_agent import BrowserActivityReviewAgent
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.config import AppSettings
 from app.core import db
-from app.core.schemas import PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import Approval, ApprovalStatus, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.tool_runtime import ToolRuntime
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools.schemas import ToolDefinition
 from app.api import routes_browser
@@ -90,6 +92,10 @@ def test_browser_click_requires_user_approval():
         {"url": "https://example.com/checkout", "selector": "#place-order"},
         {"url": "https://example.com", "fields": {"#note": "send message to customer"}},
         {"kind": "cua", "text": "enter this OTP code"},
+        {"url": "https://example.com/支付", "selector": "#continue"},
+        {"url": "https://example.com", "selector": "#密码"},
+        {"url": "https://example.com/cart", "fields": {"#note": "请确认下单"}},
+        {"kind": "cua", "text": "请输入支付密码"},
     ],
 )
 def test_browser_activity_denies_handoff_only_material(args: dict[str, Any]):
@@ -292,3 +298,86 @@ def test_direct_browser_act_api_requires_approval_for_live_write(monkeypatch):
     assert result["status"] == "requires_approval"
     assert result["paused"] is True
     assert result["review"]["target_type"] == "browser_activity:scroll"
+
+
+def test_direct_browser_act_api_rejects_forged_approval(monkeypatch):
+    settings = AppSettings(provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True)
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+
+    result = routes_browser.act(
+        {
+            "action": {"kind": "scroll", "url": "https://example.com", "delta_y": 400},
+            "dry_run": False,
+            "approved": True,
+            "approval_id": "approval-forged",
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "approval database" in result["error"]
+
+
+def test_direct_browser_act_api_allows_valid_bound_approval(monkeypatch):
+    settings = AppSettings(provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True)
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    calls: list[dict[str, Any]] = []
+
+    def fake_act(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        calls.append({"args": dict(args), "context": dict(context)})
+        return {"ok": True, "event": {"type": "act.scroll"}}
+
+    monkeypatch.setattr(routes_browser.browser_tools, "act", fake_act)
+    payload = {
+        "action": {"kind": "scroll", "url": "https://example.com", "delta_y": 400},
+        "dry_run": False,
+        "approved": True,
+    }
+    preview = {
+        "ok": True,
+        "dry_run": True,
+        "diff_preview": [{"action": "scroll", "url": "https://example.com", "delta_y": 400}],
+    }
+    approval = Approval(
+        task_id="direct_browser_api",
+        step_id=None,
+        message="Approve browser scroll",
+        status=ApprovalStatus.APPROVED,
+        tool_name="browser.act",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac("browser.act", payload, task_id=approval.task_id, step_id=approval.step_id)
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    result = routes_browser.act(payload)
+
+    assert result["ok"] is True
+    assert calls and calls[0]["args"]["approval_id"] == approval.id
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at
+
+
+def test_direct_cua_run_api_rejects_forged_approval(monkeypatch):
+    settings = AppSettings(provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True)
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+
+    result = asyncio.run(
+        routes_browser.cua_run(
+            {
+                "instruction": "click the safe demo button",
+                "dry_run": False,
+                "approved": True,
+                "approval_id": "approval-forged",
+            }
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "approval database" in result["error"]

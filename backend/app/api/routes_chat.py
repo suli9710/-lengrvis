@@ -67,7 +67,7 @@ async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "heartbeat", "task_id": task_id})
     except WebSocketDisconnect:
-        pass
+        return
     finally:
         bus.unsubscribe(task_id, queue)
 

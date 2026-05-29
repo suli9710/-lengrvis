@@ -2,22 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import import_first, load_json_fixture, require_attr
-
-
-PRIVACY_MODULES = (
-    "app.policy.redaction",
-    "backend.privacy.redaction",
-    "backend.security.redaction",
-    "backend.core.privacy",
-    "mavris.privacy.redaction",
-)
+from app.policy.redaction import redact_text
+from conftest import load_json_fixture
 
 
 @pytest.fixture
 def redact():
-    module = import_first(PRIVACY_MODULES)
-    return require_attr(module, ("redact_text", "redact", "redact_payload", "sanitize_text"))
+    assert redact_text.__module__ == "app.policy.redaction"
+    return redact_text
 
 
 def _call_redact(redact, payload):

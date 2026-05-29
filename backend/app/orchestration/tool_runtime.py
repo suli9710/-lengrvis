@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,9 +47,12 @@ from app.policy.approval_binding import (
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
 from app.policy.redaction import redact_value
-from app.policy.risk import SafetyVerdict
+from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
 from app.tools.schemas import ToolDefinition
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -185,15 +189,21 @@ class ToolRuntime:
         approval_review = browser_review if browser_review is not None and browser_review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL else None
         if approval_review is None and review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             approval_review = review
-        if approval_review is not None:
+        requires_runtime_approval = self._requires_runtime_approval(step, tool)
+        if approval_review is not None or requires_runtime_approval:
             if not tool.supports_dry_run:
                 return self._deny_approval_without_dry_run(task, step, tool)
+            confirmation_message = (
+                approval_review.user_confirmation_message
+                if approval_review is not None and approval_review.user_confirmation_message
+                else step.description
+            )
             return await self._prepare_approval(
                 task,
                 step,
                 tool,
                 runtime,
-                approval_review.user_confirmation_message,
+                confirmation_message,
                 threaded_tools=threaded_tools,
             )
         return RuntimeExecutionResult("allowed")
@@ -650,6 +660,11 @@ class ToolRuntime:
             return "Dry-run preview must not report changed_paths."
         return ""
 
+    def _requires_runtime_approval(self, step: PlanStep, tool: ToolDefinition) -> bool:
+        if bool(getattr(step, "requires_approval", False)):
+            return True
+        return tool.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
+
     def _validate_input(self, tool: ToolDefinition, args: dict[str, Any], runtime: TaskRuntimeContext) -> str:
         if not tool.validate_input:
             return ""
@@ -679,8 +694,8 @@ class ToolRuntime:
                 summary = tool.result_summary(output)
                 if summary:
                     return summary
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("tool result summary failed for %s: %s", tool.name, exc, exc_info=True)
         return step.expected_observation or f"{step.tool_name} completed."
 
     def _authorized_path_error(self, tool: ToolDefinition, args: dict[str, Any], context: dict[str, Any]) -> str:

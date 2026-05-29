@@ -12,6 +12,7 @@ from app.llm.openai_compatible import (
     LLMApiResponseError,
     OpenAICompatibleProvider,
     _CIRCUITS,
+    _validate_structured_payload_lightweight,
     circuit_snapshot,
     normalize_openai_base_url,
 )
@@ -286,6 +287,123 @@ def test_chat_payload_strips_non_provider_message_fields(monkeypatch):
 
     sent = FakeAsyncClient.requests[0]["json"]["messages"][0]
     assert sent == {"role": "user", "content": "hello"}
+
+
+def test_structured_chat_validates_schema_and_extracts_embedded_json(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": 'Result:\n{"name":"Ada","items":[{"id":"a","count":2}]}\nDone.'
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        ),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name", "items"],
+        "properties": {
+            "name": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "count"],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "count": {"type": "integer"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+    provider = OpenAICompatibleProvider(_settings())
+
+    payload = asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert payload == {"name": "Ada", "items": [{"id": "a", "count": 2}]}
+
+
+def test_structured_chat_rejects_missing_required_field(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(200, {"choices": [{"message": {"content": '{"count": 1}'}, "finish_reason": "stop"}]}),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name", "count"],
+        "properties": {
+            "name": {"type": "string"},
+            "count": {"type": "integer"},
+        },
+    }
+    provider = OpenAICompatibleProvider(_settings())
+
+    with pytest.raises(LLMApiResponseError, match="structured response did not match output schema"):
+        asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+
+def test_structured_chat_rejects_wrong_nested_type(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {"content": '{"items":[{"id":"a","count":"two"}]}'},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        ),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["id", "count"],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "count": {"type": "integer"},
+                    },
+                },
+            }
+        },
+    }
+    provider = OpenAICompatibleProvider(_settings())
+
+    with pytest.raises(LLMApiResponseError, match="structured response did not match output schema"):
+        asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+
+def test_lightweight_schema_validation_rejects_extra_fields_and_bad_array_item_type():
+    schema = {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+            "items": {"type": "array", "items": {"type": "string"}},
+        },
+        "additionalProperties": False,
+    }
+
+    with pytest.raises(LLMApiResponseError, match="unexpected field"):
+        _validate_structured_payload_lightweight({"items": ["a"], "extra": True}, schema)
+    with pytest.raises(LLMApiResponseError, match=r"\$\.items\[0\].*string"):
+        _validate_structured_payload_lightweight({"items": [1]}, schema)
 
 
 @pytest.mark.parametrize(

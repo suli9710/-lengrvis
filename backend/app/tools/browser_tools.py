@@ -10,6 +10,7 @@ from app.llm.cua_provider import CUAProvider, resolve_cua_provider
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
 from app.policy.redaction import redact_text
 from app.policy.risk import RiskLevel
+from app.policy.sensitive_values import looks_sensitive_value
 from app.services.browser_activity_runtime import BrowserActivityAdapter, BrowserActivityRuntime
 from app.tools.schemas import ToolDefinition
 
@@ -218,7 +219,7 @@ def _sensitive_selector(selector: str) -> bool:
 
 def _sensitive_value(value: Any) -> bool:
     lowered = str(value or "").lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS)
+    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS) or looks_sensitive_value(value)
 
 
 def _has_approval(args: dict[str, Any]) -> bool:

@@ -9,13 +9,40 @@ from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 
+def active_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    app_context = asyncio.run(target.active_window())
+    return {"ok": bool(app_context.available), "app_context": app_context.model_dump(mode="json")}
+
+
+def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(
+        target.observe(
+            _selector_args(args),
+            max_depth=int(args.get("max_depth") or args.get("maxDepth") or 2),
+            max_elements=int(args.get("max_elements") or args.get("maxElements") or 200),
+        )
+    )
+
+
 def find_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
     element = asyncio.run(
         target.find_element(
-            name=str(args.get("name") or ""),
-            control_type=str(args.get("control_type") or args.get("controlType") or ""),
-            automation_id=str(args.get("automation_id") or args.get("automationId") or ""),
+            _selector_args(args),
+        )
+    )
+    return {"ok": element is not None, "element": element.to_dict() if element else None}
+
+
+def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    element = asyncio.run(
+        target.wait_for_element(
+            _selector_args(args),
+            timeout_seconds=float(args.get("timeout_seconds") or args.get("timeoutSeconds") or 5),
+            poll_interval_seconds=float(args.get("poll_interval_seconds") or args.get("pollIntervalSeconds") or 0.25),
         )
     )
     return {"ok": element is not None, "element": element.to_dict() if element else None}
@@ -28,7 +55,15 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args):
         return _approval_error("click")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
-    return asyncio.run(target.click(selector, task_id=_task_id(context), step_id=_step_id(context)))
+    return asyncio.run(
+        target.click(
+            selector,
+            task_id=_task_id(context),
+            step_id=_step_id(context),
+            approved=bool(args.get("approved")),
+            approval_id=str(args.get("approval_id") or ""),
+        )
+    )
 
 
 def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -39,7 +74,152 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not _has_approval(args):
         return _approval_error("type_text")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
-    return asyncio.run(target.type_text(selector, text, task_id=_task_id(context), step_id=_step_id(context)))
+    return asyncio.run(
+        target.type_text(
+            selector,
+            text,
+            task_id=_task_id(context),
+            step_id=_step_id(context),
+            approved=bool(args.get("approved")),
+            approval_id=str(args.get("approval_id") or ""),
+        )
+    )
+
+
+def focus(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(target.focus(_selector_args(args)))
+
+
+def list_windows(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    windows = asyncio.run(target.list_windows())
+    return {"ok": True, "windows": windows, "count": len(windows)}
+
+
+def focus_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(
+        target.focus_window(
+            title=str(args.get("title") or ""),
+            title_contains=str(args.get("title_contains") or args.get("titleContains") or ""),
+            class_name=str(args.get("class_name") or args.get("className") or ""),
+            process_id=_optional_int(args.get("process_id") or args.get("processId")),
+            hwnd=_optional_int(args.get("hwnd")),
+        )
+    )
+
+
+def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    x = int(args.get("x") or 0)
+    y = int(args.get("y") or 0)
+    detail = {
+        "x": x,
+        "y": y,
+        "button": str(args.get("button") or "left"),
+        "clicks": int(args.get("clicks") or 1),
+    }
+    if args.get("dry_run", True):
+        return _preview("click_at", detail)
+    if not _has_approval(args):
+        return _approval_error("click_at")
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(
+        target.click_at(
+            x,
+            y,
+            button=detail["button"],
+            clicks=detail["clicks"],
+            task_id=_task_id(context),
+            step_id=_step_id(context),
+            approved=bool(args.get("approved")),
+            approval_id=str(args.get("approval_id") or ""),
+        )
+    )
+
+
+def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    detail = {
+        "start_x": int(args.get("start_x") or args.get("startX") or 0),
+        "start_y": int(args.get("start_y") or args.get("startY") or 0),
+        "end_x": int(args.get("end_x") or args.get("endX") or 0),
+        "end_y": int(args.get("end_y") or args.get("endY") or 0),
+        "duration_seconds": float(args.get("duration_seconds") or args.get("durationSeconds") or 0.2),
+        "button": str(args.get("button") or "left"),
+    }
+    if args.get("dry_run", True):
+        return _preview("drag", detail)
+    if not _has_approval(args):
+        return _approval_error("drag")
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(
+        target.drag(
+            detail["start_x"],
+            detail["start_y"],
+            detail["end_x"],
+            detail["end_y"],
+            duration_seconds=detail["duration_seconds"],
+            button=detail["button"],
+            task_id=_task_id(context),
+            step_id=_step_id(context),
+            approved=bool(args.get("approved")),
+            approval_id=str(args.get("approval_id") or ""),
+        )
+    )
+
+
+def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    key = str(args.get("key") or "")
+    if not key:
+        return {"ok": False, "error": "Key is required."}
+    if args.get("dry_run", True):
+        return _preview("key_press", {"key": key})
+    if not _has_approval(args):
+        return _approval_error("key_press")
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(
+        target.key_press(
+            key,
+            task_id=_task_id(context),
+            step_id=_step_id(context),
+            approved=bool(args.get("approved")),
+            approval_id=str(args.get("approval_id") or ""),
+        )
+    )
+
+
+def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    keys = args.get("keys") or []
+    if isinstance(keys, str):
+        keys = [item.strip() for item in keys.split("+") if item.strip()]
+    keys = [str(key) for key in keys]
+    if not keys:
+        return {"ok": False, "error": "At least one key is required."}
+    if args.get("dry_run", True):
+        return _preview("hotkey", {"keys": keys})
+    if not _has_approval(args):
+        return _approval_error("hotkey")
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(
+        target.hotkey(
+            keys,
+            task_id=_task_id(context),
+            step_id=_step_id(context),
+            approved=bool(args.get("approved")),
+            approval_id=str(args.get("approval_id") or ""),
+        )
+    )
+
+
+def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    return asyncio.run(
+        target.screenshot(
+            max_width=int(args.get("max_width") or args.get("maxWidth") or 1280),
+            max_height=int(args.get("max_height") or args.get("maxHeight") or 720),
+            quality=int(args.get("quality") or 50),
+        )
+    )
 
 
 def get_property(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
@@ -60,6 +240,8 @@ def get_children(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 def _selector_args(args: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": str(args.get("name") or ""),
+        "name_contains": str(args.get("name_contains") or args.get("nameContains") or ""),
+        "text_contains": str(args.get("text_contains") or args.get("textContains") or ""),
         "control_type": str(args.get("control_type") or args.get("controlType") or ""),
         "automation_id": str(args.get("automation_id") or args.get("automationId") or ""),
         "class_name": str(args.get("class_name") or args.get("className") or ""),
@@ -97,14 +279,45 @@ def _step_id(context: dict[str, Any]) -> str | None:
     return str(context.get("step_id") or "") or None
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
 def register(registry) -> None:
     definitions = [
+        (
+            "ui_automation.active_window",
+            active_window,
+            RiskLevel.R0_READ_ONLY,
+            False,
+            "Read the current foreground window and focused control.",
+            ["observe", "inspect"],
+        ),
+        (
+            "ui_automation.observe",
+            observe,
+            RiskLevel.R0_READ_ONLY,
+            False,
+            "Observe the current UIAutomation tree or a selected subtree.",
+            ["observe", "inspect", "list"],
+        ),
         (
             "ui_automation.find_element",
             find_element,
             RiskLevel.R0_READ_ONLY,
             False,
             "Find a semantic UIAutomation element by name/control type/automation id.",
+            ["observe", "inspect"],
+        ),
+        (
+            "ui_automation.wait_for_element",
+            wait_for_element,
+            RiskLevel.R0_READ_ONLY,
+            False,
+            "Wait until a semantic UIAutomation element appears.",
+            ["observe", "wait"],
         ),
         (
             "ui_automation.click",
@@ -112,6 +325,7 @@ def register(registry) -> None:
             RiskLevel.R2_REVERSIBLE_MODIFY,
             True,
             "Click a semantic UIAutomation element after approval.",
+            ["click", "write"],
         ),
         (
             "ui_automation.type_text",
@@ -119,6 +333,71 @@ def register(registry) -> None:
             RiskLevel.R2_REVERSIBLE_MODIFY,
             True,
             "Type text into a semantic UIAutomation element after approval.",
+            ["type", "write"],
+        ),
+        (
+            "ui_automation.focus",
+            focus,
+            RiskLevel.R1_OPEN_ONLY,
+            False,
+            "Focus a semantic UIAutomation element.",
+            ["open", "focus"],
+        ),
+        (
+            "ui_automation.list_windows",
+            list_windows,
+            RiskLevel.R0_READ_ONLY,
+            False,
+            "List visible desktop windows.",
+            ["observe", "list"],
+        ),
+        (
+            "ui_automation.focus_window",
+            focus_window,
+            RiskLevel.R1_OPEN_ONLY,
+            False,
+            "Bring a desktop window to the foreground.",
+            ["open", "focus"],
+        ),
+        (
+            "ui_automation.click_at",
+            click_at,
+            RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            True,
+            "Click absolute screen coordinates after approval.",
+            ["click", "input", "write"],
+        ),
+        (
+            "ui_automation.drag",
+            drag,
+            RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            True,
+            "Drag between absolute screen coordinates after approval.",
+            ["drag", "input", "write"],
+        ),
+        (
+            "ui_automation.key_press",
+            key_press,
+            RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            True,
+            "Press a keyboard key after approval.",
+            ["keyboard", "input", "write"],
+        ),
+        (
+            "ui_automation.hotkey",
+            hotkey,
+            RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            True,
+            "Press a keyboard shortcut after approval.",
+            ["keyboard", "input", "write"],
+        ),
+        (
+            "ui_automation.screenshot",
+            screenshot,
+            RiskLevel.R0_READ_ONLY,
+            False,
+            "Capture the current desktop screenshot.",
+            ["observe", "screenshot"],
         ),
         (
             "ui_automation.get_property",
@@ -126,6 +405,7 @@ def register(registry) -> None:
             RiskLevel.R0_READ_ONLY,
             False,
             "Read a property from a semantic UIAutomation element.",
+            ["observe", "inspect"],
         ),
         (
             "ui_automation.get_children",
@@ -133,9 +413,10 @@ def register(registry) -> None:
             RiskLevel.R0_READ_ONLY,
             False,
             "List children of a semantic UIAutomation element.",
+            ["observe", "list"],
         ),
     ]
-    for name, fn, risk, supports_dry_run, description in definitions:
+    for name, fn, risk, supports_dry_run, description, effects in definitions:
         registry.register(
             ToolDefinition(
                 name=name,
@@ -147,6 +428,10 @@ def register(registry) -> None:
                 supports_dry_run=supports_dry_run,
                 requires_authorized_path=False,
                 execute=fn,
-                search_hint="semantic ui automation accessibility windows app control",
+                search_hint="semantic ui automation accessibility windows app control gui desktop screen mouse keyboard",
+                effects=effects,
+                concurrency_safe=risk == RiskLevel.R0_READ_ONLY,
+                concurrency_key="desktop_gui_input" if supports_dry_run or name in {"ui_automation.focus", "ui_automation.focus_window"} else "",
+                sensitive_arg_keys=["text"] if name == "ui_automation.type_text" else [],
             )
         )

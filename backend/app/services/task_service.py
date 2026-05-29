@@ -9,7 +9,6 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import ChatMessage, ChatResponse, OpenAIMessageRole, Task, TaskStatus
-from app.llm.local_provider import LocalBackendUnavailable
 from app.orchestration.state_machine import safe_transition
 from app.services.task_pool import get_pool
 
@@ -52,22 +51,6 @@ async def handle_chat(message: str, mode: str) -> ChatResponse:
     db.upsert_model("chat_messages", user_message)
 
     supervisor = SupervisorAgent()
-    quick_decision = supervisor.quick_decision(message)
-    if not quick_decision.delegate and _is_explicit_file_path_request(message):
-        quick_decision = SupervisorDecision(
-            delegate=True,
-            reply=supervisor._delegation_reply("FileAgent", message.lower()),
-            agent_hint="FileAgent",
-        )
-    if not quick_decision.delegate and _is_uninstall_request(message):
-        quick_decision = SupervisorDecision(
-            delegate=True,
-            reply=supervisor._delegation_reply("AppAgent", message.lower()),
-            agent_hint="AppAgent",
-        )
-    if quick_decision.delegate:
-        asyncio.create_task(_run_supervisor_background(supervisor, message, mode))
-        return _delegate_task(message, mode, quick_decision)
     decision = await supervisor.decide(message, mode)
     if not decision.delegate and _is_explicit_file_path_request(message):
         decision = SupervisorDecision(
@@ -151,13 +134,6 @@ async def _run_task_through_orchestrator(task: Task) -> Task:
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
         raise
-
-
-async def _run_supervisor_background(supervisor: SupervisorAgent, message: str, mode: str) -> None:
-    try:
-        await supervisor.decide(message, mode)
-    except Exception as exc:
-        record("supervisor.background_failed", "SupervisorAgent", {"error": str(exc)})
 
 
 async def _run_task_background(task: Task) -> None:

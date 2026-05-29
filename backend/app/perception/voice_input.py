@@ -396,7 +396,7 @@ def _coerce_whisper_segments(segments: Any) -> tuple[str, float | None, dict[str
             try:
                 confidences.append(float(confidence))
             except (TypeError, ValueError):
-                pass
+                continue
 
     average_confidence = sum(confidences) / len(confidences) if confidences else None
     return normalize_transcript(" ".join(texts)), average_confidence, {"segment_count": len(items)}

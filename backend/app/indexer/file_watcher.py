@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import os
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -190,10 +191,8 @@ class FileWatcher:
 
         if self._consumer_task is not None:
             self._consumer_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._consumer_task
-            except asyncio.CancelledError:
-                pass
             self._consumer_task = None
 
         record("file_watcher.stopped", "FileWatcher", {})
@@ -204,7 +203,7 @@ class FileWatcher:
 
         while True:
             # Drain available events from the queue
-            try:
+            with suppress(asyncio.TimeoutError):
                 path, action = await asyncio.wait_for(
                     self._queue.get(), timeout=0.5
                 )
@@ -216,8 +215,6 @@ class FileWatcher:
                         pending[path] = (action, time.monotonic())
                     except asyncio.QueueEmpty:
                         break
-            except asyncio.TimeoutError:
-                pass
 
             # Process entries that have been quiet for debounce_seconds
             now = time.monotonic()
@@ -229,26 +226,26 @@ class FileWatcher:
 
             for path in ready:
                 action, _ = pending.pop(path)
+                await self._notify_change(path, action)
                 try:
+                    normalized = str(Path(path).expanduser().resolve(strict=False))
                     if action == "upsert":
-                        normalized = str(
-                            Path(path).expanduser().resolve(strict=False)
-                        )
-                        self._fts_index.index_file(
-                            normalized, self._allowed_directories
+                        await asyncio.to_thread(
+                            self._fts_index.index_file,
+                            normalized,
+                            self._allowed_directories,
                         )
                     elif action == "delete":
-                        normalized = str(
-                            Path(path).expanduser().resolve(strict=False)
+                        await asyncio.to_thread(
+                            self._fts_index.remove_file,
+                            normalized,
                         )
-                        self._fts_index.remove_file(normalized)
                 except Exception as exc:
                     record(
                         "file_watcher.error",
                         "FileWatcher",
                         {"path": path, "action": action, "error": str(exc)},
                     )
-                await self._notify_change(path, action)
 
     async def _notify_change(self, path: str, action: str) -> None:
         for callback in list(self._change_callbacks):

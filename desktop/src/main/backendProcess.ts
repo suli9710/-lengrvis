@@ -105,12 +105,15 @@ export class BackendProcessManager {
     this.status = this.makeStatus("starting", "正在启动后端进程");
 
     try {
+      const bundledOllamaEnv = resolveBundledOllamaEnv(command);
       this.child = spawn(command, args, {
         cwd: this.options.cwd ?? process.env.MAVRIS_BACKEND_CWD ?? dirname(command),
         env: {
           ...process.env,
           MARVIS_CONFIG_DIR: process.env.MARVIS_CONFIG_DIR ?? resolveConfigDir(command),
-          MAVRIS_BACKEND_URL: this.getBaseUrl()
+          MAVRIS_FULL_BACKEND: process.env.MAVRIS_FULL_BACKEND ?? "1",
+          MAVRIS_BACKEND_URL: this.getBaseUrl(),
+          ...bundledOllamaEnv
         },
         windowsHide: true
       });
@@ -354,6 +357,46 @@ function resolveConfigDir(command: string): string {
   return match ?? getCwd();
 }
 
+function resolveBundledOllamaEnv(command: string): NodeJS.ProcessEnv {
+  const resourcesDir = resolveResourcesDir(command);
+  const ollamaDir = join(resourcesDir, "ollama");
+  const modelsDir = join(resourcesDir, "ollama-models");
+  const manifestPath = join(resourcesDir, "ollama-bundle-manifest.json");
+  const env: NodeJS.ProcessEnv = {};
+
+  if (existsSync(ollamaDir)) {
+    env.MAVRIS_BUNDLED_OLLAMA_DIR = process.env.MAVRIS_BUNDLED_OLLAMA_DIR ?? ollamaDir;
+    env.MARVIS_BUNDLED_OLLAMA_DIR = process.env.MARVIS_BUNDLED_OLLAMA_DIR ?? ollamaDir;
+  }
+
+  if (existsSync(modelsDir)) {
+    env.MAVRIS_BUNDLED_OLLAMA_MODELS_DIR = process.env.MAVRIS_BUNDLED_OLLAMA_MODELS_DIR ?? modelsDir;
+    env.MARVIS_BUNDLED_OLLAMA_MODELS_DIR = process.env.MARVIS_BUNDLED_OLLAMA_MODELS_DIR ?? modelsDir;
+    env.OLLAMA_MODELS = process.env.OLLAMA_MODELS ?? modelsDir;
+  }
+
+  if (existsSync(manifestPath)) {
+    env.MAVRIS_OLLAMA_BUNDLE_MANIFEST = process.env.MAVRIS_OLLAMA_BUNDLE_MANIFEST ?? manifestPath;
+    env.MARVIS_OLLAMA_BUNDLE_MANIFEST = process.env.MARVIS_OLLAMA_BUNDLE_MANIFEST ?? manifestPath;
+  }
+
+  return env;
+}
+
+function resolveResourcesDir(command: string): string {
+  const packagedResourcesDir = process.resourcesPath;
+  if (existsSync(join(packagedResourcesDir, "backend"))) {
+    return packagedResourcesDir;
+  }
+
+  const commandResourcesDir = join(dirname(command), "..");
+  if (existsSync(join(commandResourcesDir, "backend"))) {
+    return commandResourcesDir;
+  }
+
+  return packagedResourcesDir;
+}
+
 async function writeBackendLog(message: string): Promise<void> {
   try {
     const logDir = app.getPath("userData");
@@ -418,8 +461,14 @@ async function probeHealth(baseUrl: string): Promise<NonNullable<BackendStatus["
       signal: controller.signal
     });
 
+    const data = await response.clone().json().catch(() => ({})) as Record<string, unknown>;
+    const mode = typeof data.mode === "string" ? data.mode : "";
+    const shellMode = typeof data.shellMode === "string" ? data.shellMode : "";
+    const fullBackendState = typeof data.fullBackendState === "string" ? data.fullBackendState : "";
+    const guardianReady = mode === "guardian" && shellMode === "foreground" && fullBackendState === "running";
+    const ok = response.ok && (mode !== "guardian" || guardianReady);
     return {
-      ok: response.ok,
+      ok,
       latencyMs: Date.now() - startedAt
     };
   } catch {

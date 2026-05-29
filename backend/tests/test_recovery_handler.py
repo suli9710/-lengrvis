@@ -70,7 +70,6 @@ def test_recovery_handler_creates_and_executes_recovery_step():
         )
     )
     handler = RecoveryHandler(orchestrator)
-    handler.register(orchestrator.dispatcher)
     task = Task(id="task_1", user_goal="read file")
     step = PlanStep(task_id=task.id, agent_name="FileAgent", tool_name="file.read", description="read original")
     plan = Plan(id="plan_1", task_id=task.id, goal=task.user_goal, steps=[step])

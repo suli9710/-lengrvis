@@ -16,6 +16,7 @@ from app.core.schemas import new_id, now_iso
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
 from app.policy.redaction import REDACTED, redact_text, redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.policy.sensitive_values import looks_sensitive_value
 
 
 BROWSER_ACTION_KINDS = {
@@ -673,7 +674,7 @@ def _sensitive_selector(selector: str) -> bool:
 
 def _sensitive_value(value: Any) -> bool:
     lowered = str(value or "").lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS)
+    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS) or looks_sensitive_value(value)
 
 
 def _sanitize_action(action: dict[str, Any]) -> dict[str, Any]:

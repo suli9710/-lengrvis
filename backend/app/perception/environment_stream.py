@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+from contextlib import suppress
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -292,10 +293,8 @@ class EnvironmentStream:
         self._started = False
         if self._app_context_task is not None:
             self._app_context_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._app_context_task
-            except asyncio.CancelledError:
-                pass
             self._app_context_task = None
         if self.screen_monitor is not None:
             self.screen_monitor.stop()

@@ -59,7 +59,7 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                 message = await asyncio.wait_for(websocket.receive_json(), timeout=0.01)
                 fps, quality = _apply_stream_controls(message, fps=fps, quality=quality)
             except asyncio.TimeoutError:
-                pass
+                message = None
             except WebSocketDisconnect:
                 break
             except Exception:

@@ -857,6 +857,32 @@ def test_os_run_denies_r4_tool_without_execution(monkeypatch, tmp_path):
         assert calls == []
 
 
+def test_broad_drive_cleanup_uses_cleanup_plan_not_trash_path(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "old-installer.zip").write_bytes(b"0" * (2 * 1024 * 1024))
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(workspace))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+
+    with TestClient(_test_app()) as client:
+        created = client.post(
+            "/api/runs",
+            json={"message": "清理d盘文件", "mode": "efficiency", "engine": "os"},
+        )
+        assert created.status_code == 200
+        final = _wait_for_phase(client, created.json()["run_id"], "completed", "failed")
+        assert final["phase"] == "completed"
+        plans = db.fetch_many("plans", limit=10)
+        assert plans
+        step = plans[0]["steps"][0]
+        assert step["tool_name"] == "file.cleanup_plan"
+        assert step["args"]["roots"] == [str(workspace)]
+
+
 def test_cancelled_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()

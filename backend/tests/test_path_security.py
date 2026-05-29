@@ -1,47 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote
 
 import pytest
 
-from conftest import call_with_supported_kwargs, import_first, require_attr
+from app.core.errors import SecurityError
+from app.core.paths import resolve_authorized
 
 
-PATH_MODULES = (
-    "backend.security.paths",
-    "backend.core.path_security",
-    "backend.tools.path_security",
-    "mavris.security.paths",
-    "mavris.core.path_security",
-)
+def _resolve(root: Path, candidate: str):
+    decoded = unquote(candidate).replace("\\", "/")
+    return resolve_authorized(root / decoded, [str(root)])
 
 
-@pytest.fixture
-def path_api():
-    module = import_first(PATH_MODULES)
-    validator = require_attr(
-        module,
-        (
-            "resolve_workspace_path",
-            "validate_workspace_path",
-            "safe_join",
-            "ensure_safe_path",
-        ),
-    )
-    return validator
-
-
-def _resolve(validator, root: Path, candidate: str):
-    return call_with_supported_kwargs(
-        validator,
-        root=root,
-        workspace_root=root,
-        base_dir=root,
-        base=root,
-        path=candidate,
-        candidate=candidate,
-        relative_path=candidate,
-    )
+def test_path_security_uses_real_app_contract():
+    assert resolve_authorized.__module__ == "app.core.paths"
 
 
 @pytest.mark.parametrize(
@@ -55,19 +29,19 @@ def _resolve(validator, root: Path, candidate: str):
         "notes/%2e%2e/outside.txt",
     ],
 )
-def test_rejects_paths_that_escape_workspace(path_api, workspace: Path, candidate: str):
-    with pytest.raises((PermissionError, ValueError, OSError)):
-        _resolve(path_api, workspace, candidate)
+def test_rejects_paths_that_escape_workspace(workspace: Path, candidate: str):
+    with pytest.raises(SecurityError):
+        _resolve(workspace, candidate)
 
 
-def test_allows_normalized_child_path(path_api, workspace: Path):
-    resolved = Path(_resolve(path_api, workspace, "notes/./safe.txt")).resolve()
+def test_allows_normalized_child_path(workspace: Path):
+    resolved = Path(_resolve(workspace, "notes/./safe.txt")).resolve()
 
     assert resolved == (workspace / "notes" / "safe.txt").resolve()
     assert resolved.is_relative_to(workspace.resolve())
 
 
-def test_rejects_symlink_escape(path_api, workspace: Path, tmp_path: Path):
+def test_rejects_symlink_escape(workspace: Path, tmp_path: Path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("do not read\n", encoding="utf-8")
@@ -78,5 +52,5 @@ def test_rejects_symlink_escape(path_api, workspace: Path, tmp_path: Path):
     except OSError as exc:
         pytest.skip(f"symlink creation is unavailable on this platform: {exc}")
 
-    with pytest.raises((PermissionError, ValueError, OSError)):
-        _resolve(path_api, workspace, "linked-outside/secret.txt")
+    with pytest.raises(SecurityError):
+        _resolve(workspace, "linked-outside/secret.txt")

@@ -1,0 +1,3 @@
+@echo off
+echo ollama version smoke
+exit /b 0

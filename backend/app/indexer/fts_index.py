@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,9 @@ from app.indexer.embedding_service import Embedder, embed_texts_sync
 from app.indexer.parsers import parse_file
 from app.llm.registry import get_effective_settings
 from app.tools.file_tools import sha256_file
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,8 +41,8 @@ class FTSIndex:
             conn.execute("DELETE FROM document_chunk_embeddings")
             try:
                 conn.execute("DELETE FROM document_chunks_fts")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("could not clear optional FTS table: %s", exc, exc_info=True)
 
         files = 0
         chunks = 0
@@ -92,8 +96,8 @@ class FTSIndex:
                             "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
                             (doc_chunk.file_id, item.path, item.text),
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
                     if vector:
                         conn.execute(
                             """
@@ -241,8 +245,8 @@ class FTSIndex:
                         "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
                         (doc_chunk.file_id, item.path, item.text),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
                 if vector:
                     conn.execute(
                         """
@@ -284,8 +288,8 @@ class FTSIndex:
                 conn.execute(
                     "DELETE FROM document_chunks_fts WHERE file_id = ?", (file_id,)
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("could not delete optional FTS rows for %s: %s", file_id, exc, exc_info=True)
             conn.execute(
                 "DELETE FROM indexed_files WHERE id = ?", (file_id,)
             )

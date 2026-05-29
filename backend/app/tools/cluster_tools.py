@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.tools.schemas import ToolDefinition
 
 _VALID_CLUSTER_BY = {"auto", "scene", "people", "objects", "time", "location", "tags"}
 _EXACT_GROUP_BY = {"scene", "people", "objects", "tags"}
+logger = logging.getLogger(__name__)
 
 
 _GENERIC_CATEGORIES = {
@@ -52,8 +54,8 @@ def _iter_indexed_files(context: dict[str, Any]):
                     "size": row["size"],
                 }
             return
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("indexed file lookup failed, falling back to authorized walk: %s", exc, exc_info=True)
     # Fallback: walk authorized directories when nothing is indexed yet.
     for base in context.get("allowed_directories") or []:
         try:
@@ -309,8 +311,8 @@ def _iter_image_files(args: dict[str, Any], context: dict[str, Any]):
             if path.exists() and path.suffix.lower() in IMAGE_EXTENSIONS:
                 yielded = True
                 yield path
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("indexed image lookup failed, falling back to authorized walk: %s", exc, exc_info=True)
     if yielded:
         return
 
@@ -580,7 +582,7 @@ def _generate_cluster_name(members: list[dict[str, Any]]) -> str:
             try:
                 timestamps.append(datetime.fromtimestamp(ts))
             except (OSError, ValueError, OverflowError):
-                pass
+                continue
     if timestamps:
         month_counts: Counter[tuple[int, int]] = Counter()
         for dt in timestamps:

@@ -70,6 +70,21 @@ async def test_chat_only_turn_returns_supervisor_feedback_without_task(monkeypat
 
 
 @pytest.mark.anyio
+async def test_complaint_about_chatting_gets_natural_chat_reply(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("MARVIS_API_KEY", "")
+    db.init_db()
+
+    response = await handle_chat("你怎么不和我聊天", "efficiency")
+
+    assert response.delegated is False
+    assert response.task_id is None
+    assert "可以聊天" in response.message or "当然" in response.message
+    assert "确认意图" not in response.message
+
+
+@pytest.mark.anyio
 async def test_supervisor_calls_provider_even_for_chat_only_turn(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -81,6 +96,95 @@ async def test_supervisor_calls_provider_even_for_chat_only_turn(monkeypatch, tm
     assert provider.calls == 1
     assert response.delegated is False
     assert response.message == "model supervisor reply"
+    assert db.fetch_many("tasks") == []
+
+
+@pytest.mark.anyio
+async def test_provider_delegation_can_start_task_without_frontend_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    provider = RecordingSupervisorProvider(
+        {
+            "delegate": True,
+            "reply": "我会先交给文件 Agent 生成清理预览，确认安全后再继续。",
+            "agent_hint": "FileAgent",
+        }
+    )
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+
+    response = await handle_chat("帮我看看 d 盘哪些文件可以清理", "efficiency")
+
+    assert provider.calls == 1
+    assert response.delegated is True
+    assert response.agent == "FileAgent"
+    assert response.task_id
+    assert response.message == "我会先交给文件 Agent 生成清理预览，确认安全后再继续。"
+    assert len(db.fetch_many("tasks")) == 1
+
+
+@pytest.mark.anyio
+async def test_provider_chat_decision_is_not_overridden_by_keyword_heuristic(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    provider = RecordingSupervisorProvider(
+        {
+            "delegate": False,
+            "reply": "我是 Mavris 的主管 Agent，会先和你自然对话，再按需要调其他 Agent。",
+            "agent_hint": "",
+        }
+    )
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+
+    response = await handle_chat("你是什么模型", "efficiency")
+
+    assert provider.calls == 1
+    assert response.delegated is False
+    assert response.task_id is None
+    assert response.message.startswith("我是 Mavris")
+    assert db.fetch_many("tasks") == []
+
+
+@pytest.mark.anyio
+async def test_short_conversation_uses_natural_fallback_when_model_is_unhelpful(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    provider = RecordingSupervisorProvider(
+        {
+            "delegate": False,
+            "reply": "我没看懂你的意思，可以再具体说一下你想让我做什么吗？",
+            "agent_hint": "",
+        }
+    )
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+
+    response = await handle_chat("你会啊", "efficiency")
+
+    assert response.delegated is False
+    assert response.task_id is None
+    assert "会啊" in response.message
+    assert "没看懂" not in response.message
+    assert db.fetch_many("tasks") == []
+
+
+@pytest.mark.anyio
+async def test_identity_chat_stays_conversational(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    provider = RecordingSupervisorProvider(
+        {
+            "delegate": False,
+            "reply": "请具体说明你的任务。",
+            "agent_hint": "",
+        }
+    )
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+
+    response = await handle_chat("你是真人吗", "efficiency")
+
+    assert response.delegated is False
+    assert response.task_id is None
+    assert "不是真人" in response.message
+    assert "请具体" not in response.message
     assert db.fetch_many("tasks") == []
 
 

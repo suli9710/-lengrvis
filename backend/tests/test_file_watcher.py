@@ -116,6 +116,34 @@ def test_file_watcher_debounce(allowed_dir: Path):
     asyncio.run(_run())
 
 
+def test_file_watcher_indexes_without_blocking_event_loop(allowed_dir: Path):
+    """Slow indexing work should not freeze the API event loop."""
+
+    async def _run():
+        from app.indexer.file_watcher import FileWatcher
+
+        watcher = FileWatcher(debounce_seconds=0.1)
+
+        def slow_index(_path: str, _allowed_directories: list[str]) -> bool:
+            time.sleep(0.5)
+            return True
+
+        watcher._fts_index.index_file = slow_index
+        await watcher.start([str(allowed_dir)])
+        try:
+            test_file = allowed_dir / "slow_index.txt"
+            test_file.write_text("slow indexing should not block", encoding="utf-8")
+
+            await asyncio.sleep(0.2)
+            started = time.perf_counter()
+            await asyncio.sleep(0.05)
+            assert time.perf_counter() - started < 0.2
+        finally:
+            await watcher.stop()
+
+    asyncio.run(_run())
+
+
 def test_file_watcher_singleton():
     """get_file_watcher returns the same instance."""
     from app.indexer.file_watcher import get_file_watcher

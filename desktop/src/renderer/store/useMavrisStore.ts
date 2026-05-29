@@ -1,21 +1,39 @@
 import { create } from "zustand";
 
 import {
-  sampleAgentConversations,
-  sampleApprovalRequests,
-  sampleAuditLogs,
-  sampleChatMessages,
-  sampleFileResults,
-  samplePlan,
-  sampleSafetyReview,
-  sampleSettings,
-  sampleSystemInfo,
-  sampleTaskTimeline
-} from "../data/mockData";
-import type { BackendStatus } from "../../shared/types";
+  defaultSettings,
+  disconnectedStatus,
+  emptyPlan,
+  emptySafetyReview,
+  emptySystemInfo
+} from "./defaults";
 import type { AssistantMode, MavrisStore, ViewKey } from "./types";
 
-const viewKeys = new Set<ViewKey>(["home", "chat", "files", "computer", "agents", "browser", "memories", "safety", "settings"]);
+export { disconnectedStatus };
+
+const viewKeys = new Set<ViewKey>([
+  "home",
+  "chat",
+  "apps",
+  "documents",
+  "documentOcr",
+  "papers",
+  "courseware",
+  "reports",
+  "gallery",
+  "imageOcr",
+  "people",
+  "places",
+  "timeline",
+  "files",
+  "computer",
+  "agents",
+  "agentOps",
+  "browser",
+  "memories",
+  "safety",
+  "settings"
+]);
 
 function initialView(): ViewKey {
   if (typeof window === "undefined") return "home";
@@ -23,19 +41,9 @@ function initialView(): ViewKey {
   return viewKeys.has(view as ViewKey) ? view as ViewKey : "home";
 }
 
-export const disconnectedStatus: BackendStatus = {
-  state: "not_configured",
-  baseUrl: sampleSettings.apiBaseUrl,
-  message: "等待后端连接",
-  lastCheckedAt: new Date().toISOString(),
-  health: {
-    ok: false
-  }
-};
-
 export const useMavrisStore = create<MavrisStore>((set) => ({
   backendStatus: disconnectedStatus,
-  settings: sampleSettings,
+  settings: defaultSettings,
   localLlmHealth: null,
   llmHealth: null,
   llmCostSummary: null,
@@ -51,11 +59,11 @@ export const useMavrisStore = create<MavrisStore>((set) => ({
   setMode: (mode) => set({ mode }),
   setIsLoading: (isLoading) => set({ isLoading }),
 
-  messages: sampleChatMessages,
-  tasks: sampleTaskTimeline,
-  plan: samplePlan,
-  agentConversations: sampleAgentConversations,
-  fileResults: sampleFileResults,
+  messages: [],
+  tasks: [],
+  plan: emptyPlan,
+  agentConversations: [],
+  fileResults: [],
   intentSuggestions: [],
   isSearching: false,
   focusedTaskId: null,
@@ -95,10 +103,10 @@ export const useMavrisStore = create<MavrisStore>((set) => ({
   activeView: initialView(),
   setActiveView: (activeView) => set({ activeView }),
 
-  safetyReview: sampleSafetyReview,
-  approvalRequests: sampleApprovalRequests,
-  auditEntries: sampleAuditLogs,
-  systemInfo: sampleSystemInfo,
+  safetyReview: emptySafetyReview,
+  approvalRequests: [],
+  auditEntries: [],
+  systemInfo: emptySystemInfo,
   isApprovalOpen: false,
   approvalError: null,
   setSafetyReview: (safetyReview) => set({ safetyReview }),

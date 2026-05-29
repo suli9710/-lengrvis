@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from typing import Any
 
 import httpx
@@ -261,10 +262,8 @@ async def proxy_websocket(websocket: WebSocket, path: str):
     except WebSocketDisconnect:
         return
     except Exception:
-        try:
+        with suppress(RuntimeError):
             await websocket.close(code=1011)
-        except RuntimeError:
-            pass
 
 
 @proxy_router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])

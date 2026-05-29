@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 from app.core.audit import record
 from app.core import db
 from app.core.schemas import Plan, Task, TaskStatus
-from app.orchestration.events import GoalReviewed, PlanGenerated, TaskCreated
 from app.perception.context_store import latest_perception_context
 from app.perception.storage import perception_context_summary
 from app.policy.risk import SafetyVerdict
@@ -19,18 +18,12 @@ class PlanningHandler:
     def __init__(self, orchestrator: OrchestratorAgent) -> None:
         self.orchestrator = orchestrator
 
-    def register(self, dispatcher: EventDispatcher) -> None:
-        dispatcher.register("task.created", self.handle_task_created)
-        dispatcher.register("goal.reviewed", self.handle_goal_reviewed)
-        dispatcher.register("plan.generated", self.handle_plan_generated)
+    def register(self, _dispatcher: EventDispatcher) -> None:
+        """Compatibility no-op.
 
-    def handle_task_created(self, event: TaskCreated) -> None:  # pragma: no cover - registration hook
-        return None
-
-    def handle_goal_reviewed(self, event: GoalReviewed) -> None:  # pragma: no cover - registration hook
-        return None
-
-    def handle_plan_generated(self, event: PlanGenerated) -> None:  # pragma: no cover - registration hook
+        Planning runs through ``run_task`` and direct orchestrator calls; the
+        dispatcher is not the production workflow engine.
+        """
         return None
 
     async def run_task(self, task: Task) -> Task:

@@ -6,45 +6,36 @@ import pytest
 
 from conftest import import_first, require_attr
 
+from app.tools.file_tools import read_text as app_read_text
+
 
 FILE_TOOL_MODULES = (
-    "backend.tools.files",
-    "backend.file_tools",
-    "backend.core.file_tools",
-    "mavris.tools.files",
+    "app.tools.file_tools",
 )
 
 INDEX_MODULES = (
-    "backend.index",
-    "backend.search.index",
-    "backend.core.index",
-    "mavris.index",
+    "app.indexer.fts_index",
 )
 
 SYSTEM_MODULES = (
-    "backend.system",
-    "backend.core.system",
-    "mavris.system",
+    "app.services.system_service",
 )
 
 API_MODULES = (
-    "backend.api",
-    "backend.main",
-    "mavris.api",
-    "mavris.main",
+    "app.main",
 )
 
 
 def test_file_tool_reads_inside_workspace(workspace: Path):
-    module = import_first(FILE_TOOL_MODULES)
-    read_file = require_attr(module, ("read_file", "read_workspace_file", "read_text"))
+    assert app_read_text.__module__ == "app.tools.file_tools"
 
-    try:
-        result = read_file(root=workspace, workspace_root=workspace, path="notes/safe.txt")
-    except TypeError:
-        result = read_file(workspace, "notes/safe.txt")
+    result = app_read_text(
+        {"path": str(workspace / "notes" / "safe.txt")},
+        {"allowed_directories": [str(workspace)]},
+    )
 
-    assert "project notes" in str(result)
+    assert result["ok"] is True
+    assert "project notes" in result["text"]
 
 
 def test_index_can_ingest_and_search_text(workspace: Path):

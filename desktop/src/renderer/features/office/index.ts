@@ -1,5 +1,5 @@
 export { OfficeScene } from "./OfficeScene";
-export type { OfficeQuickSkill, OfficeSceneProps } from "./OfficeScene";
+export type { HomeReadinessItem, HomeTrustItem, OfficeQuickSkill, OfficeSceneProps } from "./OfficeScene";
 export {
   activeOfficeAgentIds,
   createOfficeAgentState,

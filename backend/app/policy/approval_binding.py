@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 from pathlib import Path
@@ -14,6 +15,7 @@ from app.policy.redaction import redact_value
 
 APPROVAL_HMAC_ENV_KEYS = ("MARVIS_APPROVAL_HMAC_SECRET", "MAVRIS_APPROVAL_HMAC_SECRET")
 APPROVAL_HMAC_SECRET_FILE = "approval_hmac.secret"
+logger = logging.getLogger(__name__)
 
 
 def approval_secret() -> str:
@@ -37,8 +39,8 @@ def _local_approval_secret() -> str:
         secret_path.write_text(value, encoding="utf-8")
         try:
             secret_path.chmod(0o600)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug("could not restrict approval HMAC secret permissions at %s: %s", secret_path, exc)
         return value
     except OSError as exc:
         raise RuntimeError("Approval HMAC secret is unavailable.") from exc

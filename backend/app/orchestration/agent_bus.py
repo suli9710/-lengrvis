@@ -4,6 +4,7 @@ import asyncio
 import json
 import threading
 from collections import defaultdict
+from contextlib import suppress
 from typing import Any
 
 from app.config import AppSettings
@@ -88,14 +89,10 @@ class AgentBus:
     @staticmethod
     def _enqueue_message(queue: asyncio.Queue[AgentMessage], message: AgentMessage) -> None:
         if queue.full():
-            try:
+            with suppress(asyncio.QueueEmpty):
                 queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        try:
+        with suppress(asyncio.QueueFull):
             queue.put_nowait(message)
-        except asyncio.QueueFull:
-            pass
 
     def publish_text(
         self,

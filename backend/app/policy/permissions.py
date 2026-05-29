@@ -400,5 +400,5 @@ def _context_datetime(context: dict[str, Any]) -> datetime:
         try:
             return datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
-            pass
+            return datetime.now().astimezone()
     return datetime.now().astimezone()

@@ -76,7 +76,7 @@ class OSReflectionDecider:
                 return _read_before_retry_decision(step, result)
             action = await _consult_owner_for_reflection(orchestrator, data.task, step, result)
             if action and action.kind == "propose_tool":
-                recovery_step = _step_from_action(data.task, data.plan, step, action)
+                recovery_step = _step_from_action(data.task, data.plan, step, action, orchestrator)
                 return OSReflectionDecision(
                     action="add_steps",
                     reason=action.rationale or f"Add reflected recovery step after {step.tool_name} failed.",
@@ -186,10 +186,10 @@ async def _consult_owner_for_reflection(
     return action
 
 
-def _step_from_action(task: Task, plan: Plan, failed_step: PlanStep, action: AgentAction) -> PlanStep:  # noqa: ARG001
+def _step_from_action(task: Task, plan: Plan, failed_step: PlanStep, action: AgentAction, orchestrator: Any | None = None) -> PlanStep:  # noqa: ARG001
     tool_name = action.tool_name or failed_step.tool_name
     args = dict(action.args or failed_step.args or {})
-    risk = failed_step.risk_level
+    risk = _risk_for_tool(orchestrator, tool_name, failed_step.risk_level)
     agent_name = failed_step.agent_name
     return PlanStep(
         task_id=task.id,
@@ -200,10 +200,21 @@ def _step_from_action(task: Task, plan: Plan, failed_step: PlanStep, action: Age
         args=args,
         expected_observation=f"Reflected step after {failed_step.id} completes successfully.",
         risk_level=risk,
-        requires_approval=failed_step.requires_approval or bool(tool_name != failed_step.tool_name),
+        requires_approval=failed_step.requires_approval or _risk_requires_approval(risk),
         depends_on=[],
         rollback_strategy=failed_step.rollback_strategy,
     )
+
+
+def _risk_for_tool(orchestrator: Any | None, tool_name: str, fallback: RiskLevel) -> RiskLevel:
+    try:
+        return orchestrator.registry.get(tool_name).risk_level
+    except Exception:
+        return fallback
+
+
+def _risk_requires_approval(risk: RiskLevel) -> bool:
+    return risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
 
 
 def _add_reflection_steps(plan: Plan, steps: list[PlanStep]) -> list[PlanStep]:

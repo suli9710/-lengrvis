@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
+from app.agents.safety_review_agent import SafetyReviewAgent
+from app.core.errors import SecurityError
+from app.core.schemas import SafetyReview
 from app.llm.registry import get_effective_settings
+from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services import file_service
+from app.services.local_library_service import list_local_library, preview_local_image
 from app.tools import file_tools
+from app.tools.registry import register_all_tools, registry as tool_registry
 
 
 router = APIRouter()
@@ -13,6 +19,45 @@ router = APIRouter()
 def _tool_context() -> dict:
     settings = get_effective_settings()
     return {"allowed_directories": settings.allowed_directories, "settings": settings}
+
+
+def _tool_definition(tool_name: str):
+    if not tool_registry.list():
+        register_all_tools()
+    return tool_registry.get(tool_name)
+
+
+def _blocked_review_response(review: SafetyReview) -> dict | None:
+    if review.verdict == SafetyVerdict.DENY:
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "; ".join(review.reasons) or review.safe_alternative or "Tool call denied.",
+            "review": review.model_dump(mode="json"),
+        }
+    if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
+        return {
+            "ok": False,
+            "status": "requires_approval",
+            "requires_approval": True,
+            "paused": True,
+            "review": review.model_dump(mode="json"),
+        }
+    return None
+
+
+def _review_cleanup_execute(payload: dict, context: dict) -> dict | None:
+    tool = _tool_definition("file.cleanup_execute")
+    review = SafetyReviewAgent(settings=context.get("settings")).review_tool_call(
+        "direct_file_api",
+        None,
+        tool.name,
+        payload,
+        tool.risk_level if tool.risk_level else RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+        context=context,
+        tool_definition=tool,
+    )
+    return _blocked_review_response(review)
 
 
 @router.post("/index/rebuild")
@@ -40,6 +85,20 @@ def duplicates():
     return file_service.duplicates()
 
 
+@router.get("/library")
+def local_library(
+    section: str = Query("gallery"),
+    q: str = Query(""),
+    limit: int = Query(240, ge=1, le=500),
+):
+    return list_local_library(section=section, query=q, limit=limit)
+
+
+@router.get("/library/preview")
+def local_library_preview(path: str = Query(...)):
+    return preview_local_image(path)
+
+
 @router.get("/files/{file_id}")
 def file_detail(file_id: str):
     return {"id": file_id, "note": "File detail endpoint is reserved for indexed metadata lookup."}
@@ -62,7 +121,15 @@ def cleanup_plan(payload: dict | None = None):
 
 @router.post("/files/cleanup/execute")
 def cleanup_execute(payload: dict | None = None):
-    return file_tools.cleanup_execute(payload or {}, _tool_context())
+    payload = payload or {}
+    context = _tool_context()
+    blocked = _review_cleanup_execute(payload, context)
+    if blocked is not None:
+        return blocked
+    try:
+        return file_tools.cleanup_execute(payload, context)
+    except SecurityError as exc:
+        return {"ok": False, "status": "denied", "error": exc.message}
 
 
 @router.post("/files/cleanup/rollback")
@@ -85,7 +152,7 @@ def cluster_files(payload: dict | None = None):
         try:
             args["k"] = int(payload["k"])
         except (TypeError, ValueError):
-            pass
+            raise HTTPException(status_code=400, detail="k must be an integer.") from None
     for key in ("group_by", "cluster_by", "paths", "image_paths", "images", "limit", "metadata_weight"):
         if key in payload:
             args[key] = payload[key]

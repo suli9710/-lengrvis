@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING
 
 from app.core.audit import record
 from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
-from app.orchestration.events import StepEvent, ToolFailed
+from app.orchestration.events import ToolFailed
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.step_phase import set_step_status
+from app.policy.risk import RiskLevel
 from app.tools import rollback_tools
 
 if TYPE_CHECKING:
@@ -25,10 +26,12 @@ class RecoveryHandler:
         self.max_retries = max_retries
         self._retry_counts: dict[tuple[str, str], int] = {}
 
-    def register(self, dispatcher: EventDispatcher) -> None:
-        dispatcher.register(StepEvent.TOOL_FAILED.value, self.handle_tool_failed)
+    def register(self, _dispatcher: EventDispatcher) -> None:
+        """Compatibility no-op.
 
-    def handle_tool_failed(self, event: ToolFailed) -> None:  # pragma: no cover - registration hook
+        ``tool.failed`` is still emitted from ``recover_failed_step`` for
+        notification and audit, but recovery itself is called directly.
+        """
         return None
 
     async def recover_failed_step(
@@ -151,6 +154,7 @@ class RecoveryHandler:
     def _create_recovery_step(self, failed_step: PlanStep, action: AgentAction) -> PlanStep:
         tool_name = action.tool_name or failed_step.tool_name
         args = dict(action.args or failed_step.args or {})
+        risk = self._risk_for_tool(tool_name, failed_step.risk_level)
         return PlanStep(
             task_id=failed_step.task_id,
             order=failed_step.order + 1,
@@ -159,11 +163,20 @@ class RecoveryHandler:
             description=action.rationale or f"Recover failed step: {failed_step.description}",
             args=args,
             expected_observation=f"Recovery for {failed_step.id} completes successfully.",
-            risk_level=failed_step.risk_level,
-            requires_approval=failed_step.requires_approval or bool(action.tool_name and action.tool_name != failed_step.tool_name),
+            risk_level=risk,
+            requires_approval=failed_step.requires_approval or self._risk_requires_approval(risk),
             depends_on=[],
             rollback_strategy=failed_step.rollback_strategy,
         )
+
+    def _risk_for_tool(self, tool_name: str, fallback: RiskLevel) -> RiskLevel:
+        try:
+            return self.orchestrator.registry.get(tool_name).risk_level
+        except Exception:
+            return fallback
+
+    def _risk_requires_approval(self, risk: RiskLevel) -> bool:
+        return risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
 
     def _recovery_observation(
         self,

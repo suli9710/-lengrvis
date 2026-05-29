@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency guard
     send2trash = None
 
+from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
 from app.services.cleanup_planner_service import CleanupPlannerService
@@ -20,6 +22,8 @@ from app.tools.schemas import ToolDefinition
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".ts", ".tsx", ".js", ".css", ".yaml", ".yml"}
 READ_TEXT_MAX_CHARS = 120000
 EDIT_PREVIEW_CONTEXT_CHARS = 240
+SEARCH_NAME_DEFAULT_LIMIT = 100
+SEARCH_NAME_DEFAULT_MAX_SCANNED = 5000
 _cleanup_service = CleanupPlannerService()
 
 
@@ -51,12 +55,28 @@ def sha256_file(path: Path) -> str:
 
 def search_by_name(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     query = str(args.get("query", "")).lower()
+    limit = _bounded_int(args.get("limit"), SEARCH_NAME_DEFAULT_LIMIT, minimum=1, maximum=500)
+    max_scanned = _bounded_int(args.get("max_scanned"), SEARCH_NAME_DEFAULT_MAX_SCANNED, minimum=1, maximum=100000)
     results = []
+    scanned = 0
     for path in _iter_files(context):
+        scanned += 1
         if not query or query in path.name.lower():
             stat = path.stat()
             results.append({"path": str(path), "name": path.name, "size": stat.st_size, "modified_at": stat.st_mtime})
-    return {"results": results[:100], "count": len(results)}
+            if len(results) >= limit:
+                return {"results": results, "count": len(results), "scanned": scanned, "truncated": True}
+        if scanned >= max_scanned:
+            return {"results": results, "count": len(results), "scanned": scanned, "truncated": True}
+    return {"results": results, "count": len(results), "scanned": scanned, "truncated": False}
+
+
+def _bounded_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
 
 
 def search_full_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -182,39 +202,50 @@ def preview_batch_operation(args: dict[str, Any], context: dict[str, Any]) -> di
 
 
 def create_folder(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    path = resolve_authorized(args["path"], _allowed(context))
+    allowed = _allowed(context)
+    path = resolve_authorized(args["path"], allowed)
     if args.get("dry_run", True):
         return {"dry_run": True, "would_create": str(path)}
-    path.mkdir(parents=True, exist_ok=True)
+    _safe_mkdir(path, allowed)
     return {"changed_paths": [str(path)], "rollback_info": {"delete_folder_if_empty": str(path)}}
 
 
 def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    src = resolve_authorized(args["source"], _allowed(context))
-    dst = resolve_authorized(args["destination"], _allowed(context))
+    allowed = _allowed(context)
+    src = resolve_authorized(args["source"], allowed)
+    dst = resolve_authorized(args["destination"], allowed)
     if args.get("dry_run", True):
         return {"dry_run": True, "diff_preview": [{"action": "copy", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_mutation_path_safe(src, allowed, include_self=True)
+    _prepare_parent_for_mutation(dst, allowed)
+    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
     shutil.copy2(src, dst)
     return {"changed_paths": [str(dst)], "rollback_info": {"trash_created_file": str(dst)}}
 
 
 def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    src = resolve_authorized(args["source"], _allowed(context))
-    dst = resolve_authorized(args["destination"], _allowed(context))
+    allowed = _allowed(context)
+    src = resolve_authorized(args["source"], allowed)
+    dst = resolve_authorized(args["destination"], allowed)
     if args.get("dry_run", True):
         return {"dry_run": True, "diff_preview": [{"action": "move", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_mutation_path_safe(src, allowed, include_self=True)
+    _prepare_parent_for_mutation(dst, allowed)
+    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
     shutil.move(str(src), str(dst))
     return {"changed_paths": [str(dst)], "rollback_info": {"move_back": {"from": str(dst), "to": str(src)}}}
 
 
 def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    src = resolve_authorized(args["source"], _allowed(context))
+    allowed = _allowed(context)
+    src = resolve_authorized(args["source"], allowed)
     dst = src.with_name(str(args["new_name"]))
-    dst = resolve_authorized(dst, _allowed(context))
+    dst = resolve_authorized(dst, allowed)
     if args.get("dry_run", True):
         return {"dry_run": True, "diff_preview": [{"action": "rename", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
+    _ensure_mutation_path_safe(src, allowed, include_self=True)
+    _prepare_parent_for_mutation(dst, allowed)
+    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
     src.rename(dst)
     return {"changed_paths": [str(dst)], "rollback_info": {"rename_back": {"from": str(dst), "to": str(src)}}}
 
@@ -225,6 +256,7 @@ def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return {"dry_run": True, "diff_preview": [{"action": "trash", "path": str(path)}], "_resource_state": _resource_states(path)}
     if send2trash is None:
         raise RuntimeError("send2trash is not installed; permanent deletion is forbidden.")
+    _ensure_mutation_path_safe(path, _allowed(context), include_self=True)
     send2trash(str(path))
     return {"changed_paths": [str(path)], "rollback_info": {"restore_from_recycle_bin": str(path)}}
 
@@ -234,21 +266,23 @@ def _resolve_trash_target(path_value: str | Path, context: dict[str, Any]) -> Pa
 
 
 def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    path = resolve_authorized(args["path"], _allowed(context))
+    allowed = _allowed(context)
+    path = resolve_authorized(args["path"], allowed)
     text = str(args.get("text", ""))
     if args.get("dry_run", True):
         return {"dry_run": True, "diff_preview": [{"action": "write_text", "path": str(path), "bytes": len(text)}], "_resource_state": _resource_states(path)}
     backup = None
     if path.exists():
+        _ensure_mutation_path_safe(path, allowed, include_self=True)
         backup = str(path.with_suffix(path.suffix + ".bak"))
-        shutil.copy2(path, backup)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+        _safe_copy_existing_file(path, Path(backup), allowed)
+    _safe_write_text(path, text, allowed)
     return {"changed_paths": [str(path)], "rollback_info": {"backup": backup}}
 
 
 def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    path = resolve_authorized(args["path"], _allowed(context))
+    allowed = _allowed(context)
+    path = resolve_authorized(args["path"], allowed)
     old_string = str(args.get("old_string") or "")
     new_string = str(args.get("new_string") or "")
     replace_all = bool(args.get("replace_all", False))
@@ -257,6 +291,7 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not path.is_file():
         return {"ok": False, "path": str(path), "error": "Path is not a file.", "error_code": "PATH_NOT_FILE"}
 
+    _ensure_mutation_path_safe(path, allowed, include_self=True)
     text = path.read_text(encoding="utf-8", errors="replace")
     match_count = text.count(old_string)
     if match_count == 0:
@@ -301,8 +336,8 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         }
 
     backup = str(path.with_suffix(path.suffix + ".bak"))
-    shutil.copy2(path, backup)
-    path.write_text(edited, encoding="utf-8")
+    _safe_copy_existing_file(path, Path(backup), allowed)
+    _safe_write_text(path, edited, allowed)
     return {
         "ok": True,
         "changed_paths": [str(path)],
@@ -313,14 +348,111 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def generate_markdown_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    path = resolve_authorized(args["path"], _allowed(context))
+    allowed = _allowed(context)
+    path = resolve_authorized(args["path"], allowed)
     title = args.get("title", "Marvis Report")
     body = args.get("body", "")
     text = f"# {title}\n\n{body}\n"
     if args.get("dry_run", True):
         return {"dry_run": True, "diff_preview": [{"action": "generate_markdown_report", "path": str(path)}], "_resource_state": _resource_states(path)}
-    path.write_text(text, encoding="utf-8")
+    _safe_write_text(path, text, allowed)
     return {"changed_paths": [str(path)], "rollback_info": {"trash_created_file": str(path)}}
+
+
+def _safe_mkdir(path: Path, allowed: list[str]) -> None:
+    _ensure_mutation_path_safe(path, allowed, include_self=True)
+    path.mkdir(parents=True, exist_ok=True)
+    _ensure_mutation_path_safe(path, allowed, include_self=True)
+
+
+def _safe_copy_existing_file(src: Path, dst: Path, allowed: list[str]) -> None:
+    _ensure_mutation_path_safe(src, allowed, include_self=True)
+    _prepare_parent_for_mutation(dst, allowed)
+    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
+    shutil.copy2(src, dst)
+
+
+def _safe_write_text(path: Path, text: str, allowed: list[str]) -> None:
+    _prepare_parent_for_mutation(path, allowed)
+    _ensure_mutation_path_safe(path, allowed, include_self=_path_exists_or_reparse_point(path))
+    if _supports_dir_fd_no_follow():
+        _write_text_with_dir_fd_no_follow(path, text)
+        return
+    path.write_text(text, encoding="utf-8")
+
+
+def _prepare_parent_for_mutation(path: Path, allowed: list[str]) -> None:
+    _ensure_mutation_path_safe(path.parent, allowed, include_self=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_mutation_path_safe(path.parent, allowed, include_self=True)
+
+
+def _ensure_mutation_path_safe(path: Path, allowed: list[str], *, include_self: bool) -> None:
+    target = path if include_self else path.parent
+    real_target = target.expanduser().resolve(strict=False)
+    base = _authorized_real_base(real_target, allowed)
+    _reject_reparse_points(base, target)
+
+
+def _authorized_real_base(real_target: Path, allowed: list[str]) -> Path:
+    if not allowed:
+        raise SecurityError("No authorized directories configured.")
+    for raw_base in allowed:
+        base = Path(raw_base).expanduser().resolve(strict=False)
+        try:
+            if real_target == base or real_target.is_relative_to(base):
+                return base
+        except ValueError:
+            continue
+    raise SecurityError("Path resolves outside authorized directories.")
+
+
+def _reject_reparse_points(base: Path, target: Path) -> None:
+    try:
+        relative = target.relative_to(base)
+    except ValueError:
+        return
+
+    current = base
+    for part in relative.parts:
+        current = current / part
+        if _is_reparse_point(current):
+            raise SecurityError("Filesystem links inside authorized directories are not writable.")
+
+
+def _path_exists_or_reparse_point(path: Path) -> bool:
+    return path.exists() or _is_reparse_point(path)
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return bool(is_junction and is_junction())
+    except OSError:
+        return True
+
+
+def _supports_dir_fd_no_follow() -> bool:
+    return hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
+
+
+def _write_text_with_dir_fd_no_follow(path: Path, text: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    mode = 0o666
+    dir_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(path.name, flags, mode, dir_fd=dir_fd)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fd = -1
+                fh.write(text)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _resource_states(*paths: Path) -> list[dict[str, Any]]:

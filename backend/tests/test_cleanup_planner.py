@@ -4,14 +4,34 @@ from pathlib import Path
 
 import pytest
 
+from app.core import db
 from app.core.errors import SecurityError
+from app.core.schemas import Approval, ApprovalStatus
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
+from app.policy.risk import RiskLevel
+from app.api import routes_files
+from app.config import AppSettings
 from app.services.cleanup_planner_service import CleanupPlannerService
 from app.tools import file_tools
 from app.tools.registry import register_all_tools
 
 
+@pytest.fixture(autouse=True)
+def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / ".db"))
+    db.init_db()
+    yield
+
+
 def _context(root: Path) -> dict:
     return {"allowed_directories": [str(root)]}
+
+
+def _workspace(tmp_path: Path) -> Path:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    return root
 
 
 def _selected(plan: dict, action: str) -> list[str]:
@@ -19,20 +39,21 @@ def _selected(plan: dict, action: str) -> list[str]:
 
 
 def test_cleanup_plan_hash_is_stable_for_same_files(tmp_path: Path):
-    cache_dir = tmp_path / ".pytest_cache"
+    root = _workspace(tmp_path)
+    cache_dir = root / ".pytest_cache"
     cache_dir.mkdir()
     cache_file = cache_dir / "node.tmp"
     cache_file.write_text("cache", encoding="utf-8")
-    downloads = tmp_path / "Downloads"
+    downloads = root / "Downloads"
     downloads.mkdir()
     installer = downloads / "old.msi"
     installer.write_bytes(b"0" * 1024)
 
     service = CleanupPlannerService()
-    args = {"roots": [str(tmp_path)], "threshold_mb": 1, "older_than_days": 0}
+    args = {"roots": [str(root)], "threshold_mb": 1, "older_than_days": 0}
 
-    first = service.create_plan(args, _context(tmp_path))
-    second = service.create_plan(args, _context(tmp_path))
+    first = service.create_plan(args, _context(root))
+    second = service.create_plan(args, _context(root))
 
     assert first.content_hash == second.content_hash
     assert first.plan_id == second.plan_id
@@ -41,45 +62,57 @@ def test_cleanup_plan_hash_is_stable_for_same_files(tmp_path: Path):
 
 
 def test_cleanup_execute_rejects_tampered_plan_hash(tmp_path: Path):
-    cache_dir = tmp_path / "build"
+    root = _workspace(tmp_path)
+    cache_dir = root / "build"
     cache_dir.mkdir()
     target = cache_dir / "artifact.tmp"
     target.write_text("cache", encoding="utf-8")
     service = CleanupPlannerService()
-    plan = service.create_plan({"roots": [str(tmp_path)]}, _context(tmp_path))
+    plan = service.create_plan({"roots": [str(root)]}, _context(root))
 
     with pytest.raises(SecurityError, match="plan_id/content_hash"):
         service.execute(
             {
-                "roots": [str(tmp_path)],
+                "roots": [str(root)],
                 "plan_id": plan.plan_id,
                 "content_hash": "tampered",
                 "selected_item_ids": [plan.items[0].id],
                 "dry_run": False,
             },
-            _context(tmp_path),
+            _context(root),
         )
     assert target.exists()
 
 
-def test_cleanup_execute_allows_only_whitelisted_direct_delete(tmp_path: Path):
-    cache_dir = tmp_path / "build"
+def test_cleanup_execute_direct_delete_requires_valid_approval(tmp_path: Path):
+    root = _workspace(tmp_path)
+    cache_dir = root / "build"
     cache_dir.mkdir()
     target = cache_dir / "artifact.tmp"
     target.write_text("cache", encoding="utf-8")
     service = CleanupPlannerService()
-    plan = service.create_plan({"roots": [str(tmp_path)]}, _context(tmp_path))
+    args = {"roots": [str(root)]}
+    context = _context(root)
+    plan = service.create_plan(args, context)
     selected = [item.id for item in plan.items if item.path == str(target.resolve())]
+    execute_args = {
+        **args,
+        "plan_id": plan.plan_id,
+        "content_hash": plan.content_hash,
+        "selected_item_ids": selected,
+        "dry_run": False,
+    }
+
+    with pytest.raises(SecurityError, match="approval_id"):
+        service.execute(execute_args, context)
+
+    preview = service.execute({**execute_args, "dry_run": True}, context)
+    approval = _approved_cleanup_execution(execute_args, context, preview)
+    execute_args = {**execute_args, "approved": True, "approval_id": approval.id}
 
     result = service.execute(
-        {
-            "roots": [str(tmp_path)],
-            "plan_id": plan.plan_id,
-            "content_hash": plan.content_hash,
-            "selected_item_ids": selected,
-            "dry_run": False,
-        },
-        _context(tmp_path),
+        execute_args,
+        context,
     )
 
     assert result["ok"] is True
@@ -88,14 +121,36 @@ def test_cleanup_execute_allows_only_whitelisted_direct_delete(tmp_path: Path):
     assert result["rollback_info"]["permanent_delete_unrecoverable"][0]["path"] == str(target.resolve())
 
 
-def test_cleanup_execute_trash_requires_approval_and_uses_send2trash(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    downloads = tmp_path / "Downloads"
+def _approved_cleanup_execution(args: dict, context: dict, preview: dict) -> Approval:
+    approval = Approval(
+        task_id="direct_cleanup_api",
+        step_id=None,
+        message="Approve cleanup execution",
+        status=ApprovalStatus.APPROVED,
+        tool_name="file.cleanup_execute",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        args_binding_hmac=args_binding_hmac("file.cleanup_execute", args, task_id="direct_cleanup_api", step_id=None),
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(context.get("settings"), allowed_directories=context.get("allowed_directories") or []),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+    return approval
+
+
+def test_cleanup_execute_trash_requires_valid_approval_and_uses_send2trash(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    db.init_db()
+    root = _workspace(tmp_path)
+    downloads = root / "Downloads"
     downloads.mkdir()
     installer = downloads / "old-installer.zip"
     installer.write_bytes(b"0" * 1024)
     service = CleanupPlannerService()
-    args = {"roots": [str(tmp_path)], "older_than_days": 0}
-    plan = service.create_plan(args, _context(tmp_path))
+    args = {"roots": [str(root)], "older_than_days": 0}
+    context = _context(root)
+    plan = service.create_plan(args, context)
     selected = [item.id for item in plan.items if item.path == str(installer.resolve())]
     trashed: list[str] = []
 
@@ -114,24 +169,76 @@ def test_cleanup_execute_trash_requires_approval_and_uses_send2trash(monkeypatch
                 "selected_item_ids": selected,
                 "dry_run": False,
             },
-            _context(tmp_path),
+            context,
         )
 
+    forged_args = {
+        **args,
+        "plan_id": plan.plan_id,
+        "content_hash": plan.content_hash,
+        "selected_item_ids": selected,
+        "dry_run": False,
+        "approved": True,
+        "approval_id": "approval-1",
+    }
+    with pytest.raises(SecurityError, match="approval database"):
+        service.execute(forged_args, context)
+
+    approved_args = {**forged_args, "approval_id": ""}
+    preview = service.execute({**args, "plan_id": plan.plan_id, "content_hash": plan.content_hash, "selected_item_ids": selected, "dry_run": True}, context)
+    approval = _approved_cleanup_execution(approved_args, context, preview)
+    approved_args["approval_id"] = approval.id
+
     result = service.execute(
-        {
-            **args,
-            "plan_id": plan.plan_id,
-            "content_hash": plan.content_hash,
-            "selected_item_ids": selected,
-            "dry_run": False,
-            "approved": True,
-            "approval_id": "approval-1",
-        },
-        _context(tmp_path),
+        approved_args,
+        context,
     )
 
     assert trashed == [str(installer.resolve())]
     assert result["rollback_info"]["restore_from_recycle_bin"] == [str(installer.resolve())]
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at
+
+
+def test_cleanup_execute_route_requires_policy_and_bound_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    root = _workspace(tmp_path)
+    cache_dir = root / "build"
+    cache_dir.mkdir()
+    target = cache_dir / "artifact.tmp"
+    target.write_text("cache", encoding="utf-8")
+    settings = AppSettings(provider_name="mock", mode="efficiency", allowed_directories=[str(root)])
+    monkeypatch.setattr(routes_files, "get_effective_settings", lambda: settings)
+    service = CleanupPlannerService()
+    args = {"roots": [str(root)]}
+    context = {"allowed_directories": [str(root)], "settings": settings}
+    plan = service.create_plan(args, context)
+    selected = [item.id for item in plan.items if item.path == str(target.resolve())]
+    payload = {
+        **args,
+        "plan_id": plan.plan_id,
+        "content_hash": plan.content_hash,
+        "selected_item_ids": selected,
+        "dry_run": False,
+    }
+
+    blocked = routes_files.cleanup_execute(payload)
+    assert blocked["status"] == "requires_approval"
+    assert target.exists()
+
+    forged = routes_files.cleanup_execute({**payload, "approved": True, "approval_id": "approval-forged"})
+    assert forged["status"] == "denied"
+    assert "approval" in forged["error"].lower()
+    assert target.exists()
+
+    preview = service.execute({**payload, "dry_run": True}, context)
+    approval = _approved_cleanup_execution(payload, context, preview)
+    allowed = routes_files.cleanup_execute({**payload, "approved": True, "approval_id": approval.id})
+
+    assert allowed["ok"] is True
+    assert str(target.resolve()) in allowed["changed_paths"]
+    assert not target.exists()
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at
 
 
 def test_cleanup_tools_are_registered_with_schemas(tmp_path: Path):
@@ -144,4 +251,3 @@ def test_cleanup_tools_are_registered_with_schemas(tmp_path: Path):
     plan = file_tools.cleanup_plan({"roots": [str(tmp_path)]}, _context(tmp_path))
     assert plan["ok"] is True
     assert plan["plan_id"].startswith("cleanup_")
-

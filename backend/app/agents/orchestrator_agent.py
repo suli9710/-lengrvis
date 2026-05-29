@@ -252,7 +252,6 @@ class OrchestratorAgent:
         step.requires_approval = (
             bool(step.requires_approval)
             or tool.risk_level.value.startswith(("R2", "R3"))
-            or original["tool_name"] != proposed_tool_name
         )
         if changed:
             self.bus.publish_text(

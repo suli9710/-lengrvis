@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$BackendHost = "127.0.0.1",
     [int]$BackendPort = 8000,
     [int]$FrontendPort = 5173,
@@ -9,17 +9,26 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+try {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [Console]::OutputEncoding = $utf8NoBom
+    [Console]::InputEncoding = $utf8NoBom
+    $OutputEncoding = $utf8NoBom
+}
+catch {
+}
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DesktopDir = Join-Path $Root "desktop"
 $BackendUrl = "http://$BackendHost`:$BackendPort"
 $FrontendUrl = "http://127.0.0.1`:$FrontendPort"
 $LogDir = Join-Path $Root "logs"
-$BackendStdoutLog = Join-Path $LogDir "backend.out.log"
-$BackendStderrLog = Join-Path $LogDir "backend.err.log"
+$LogStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+$BackendStdoutLog = Join-Path $LogDir "backend.$BackendPort.$LogStamp.out.log"
+$BackendStderrLog = Join-Path $LogDir "backend.$BackendPort.$LogStamp.err.log"
 $DesktopStdoutLog = Join-Path $LogDir "desktop.out.log"
 $DesktopStderrLog = Join-Path $LogDir "desktop.err.log"
-$FrontendStdoutLog = Join-Path $LogDir "frontend.out.log"
-$FrontendStderrLog = Join-Path $LogDir "frontend.err.log"
+$FrontendStdoutLog = Join-Path $LogDir "frontend.$FrontendPort.$LogStamp.out.log"
+$FrontendStderrLog = Join-Path $LogDir "frontend.$FrontendPort.$LogStamp.err.log"
 $startedBackend = $null
 $startedFrontend = $null
 $startedDesktop = $null
@@ -39,7 +48,7 @@ function Find-Python {
     if ($python) {
         return $python.Source
     }
-    throw "Python was not found. Install Python 3.12+ or create .venv first."
+    throw "未找到 Python。请先安装 Python 3.12+，或在项目目录创建 .venv。"
 }
 
 function Find-Npm {
@@ -51,7 +60,7 @@ function Find-Npm {
     if ($npm) {
         return $npm.Source
     }
-    throw "npm was not found. Install Node.js 20+ first."
+    throw "未找到 npm。请先安装 Node.js 20+。"
 }
 
 function Test-Health {
@@ -83,7 +92,7 @@ function Test-PackagedMavrisBackend([string]$CommandLine) {
 
 function Test-UvicornMavrisBackend([string]$CommandLine) {
     $lower = if ($CommandLine) { $CommandLine.ToLowerInvariant() } else { "" }
-    return $lower.Contains("uvicorn") -and $lower.Contains("backend.main:app")
+    return $lower.Contains("uvicorn") -and ($lower.Contains("backend.main:app") -or $lower.Contains("backend.main:full_app"))
 }
 
 function Stop-FullBackendIfWorkspaceOwned {
@@ -93,7 +102,7 @@ function Stop-FullBackendIfWorkspaceOwned {
     }
     $commandLine = [string]$fullBackendProcess.CommandLine
     if ((Test-WorkspaceProcess $commandLine) -or $commandLine.ToLowerInvariant().Contains("backend.main:full_app")) {
-        Write-Step "Stopping stale full backend process on port 8001"
+        Write-Step "正在关闭旧的完整后端进程（端口 8001）"
         Stop-Process -Id $fullBackendProcess.ProcessId -Force -ErrorAction Stop
         Start-Sleep -Milliseconds 500
     }
@@ -107,13 +116,32 @@ function Stop-WorkspaceProcessOnPort([int]$Port, [string]$Purpose) {
 
     $commandLine = [string]$process.CommandLine
     if (Test-WorkspaceProcess $commandLine) {
-        Write-Step "Stopping stale $Purpose process on port $Port"
+        Write-Step "正在关闭旧的 $Purpose 进程（端口 $Port）"
         Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
         Start-Sleep -Milliseconds 500
         return
     }
 
-    throw "Port $Port is already used by another process: $commandLine"
+    throw "端口 $Port 已被其他程序占用：$commandLine"
+}
+
+function Stop-WorkspaceListenerOnPort([int]$Port, [string]$Purpose) {
+    try {
+        $process = Get-ListenProcess $Port
+        if (-not $process) {
+            return
+        }
+
+        $commandLine = [string]$process.CommandLine
+        if (Test-WorkspaceProcess $commandLine) {
+            Write-Step "正在清理本次启动留下的 $Purpose 进程（端口 $Port）"
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    catch {
+        Write-Host "清理 $Purpose 进程时遇到问题：$($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 function Ensure-NodeDependencies([string]$Npm, [bool]$NeedsDesktop) {
@@ -137,10 +165,10 @@ function Ensure-NodeDependencies([string]$Npm, [bool]$NeedsDesktop) {
     }
 
     if ($missingDependency) {
-        Write-Step "Installing desktop dependencies"
+        Write-Step "正在安装桌面依赖（首次启动可能需要几分钟）"
         & $Npm --prefix $DesktopDir install
         if ($LASTEXITCODE -ne 0) {
-            throw "npm install failed."
+            throw "桌面依赖安装失败。请查看上方输出或 logs 文件夹。"
         }
     }
 }
@@ -163,10 +191,10 @@ function Ensure-PythonDependencies([string]$Python) {
         return
     }
 
-    Write-Step "Installing backend dependencies"
+    Write-Step "正在安装后端依赖（首次启动可能需要几分钟）"
     & $Python -m pip install -r (Join-Path $Root "backend\requirements.txt")
     if ($LASTEXITCODE -ne 0) {
-        throw "pip install failed."
+        throw "后端依赖安装失败。请查看上方输出或 logs 文件夹。"
     }
 }
 
@@ -204,10 +232,10 @@ function Ensure-DesktopBuild([string]$Npm) {
         return
     }
 
-    Write-Step "Building desktop shell"
+    Write-Step "正在准备桌面窗口"
     & $Npm --prefix $DesktopDir run build:electron
     if ($LASTEXITCODE -ne 0) {
-        throw "desktop build failed."
+        throw "桌面窗口构建失败。请查看上方输出或 logs 文件夹。"
     }
 }
 
@@ -216,33 +244,29 @@ function Start-Backend([string]$Python) {
     if ($existing) {
         $commandLine = [string]$existing.CommandLine
         if (Test-PackagedMavrisBackend $commandLine) {
-            Write-Step "Stopping installed Mavris backend so this workspace version can run"
+            Write-Step "正在关闭已安装版 Mavris 后端，改用当前目录版本"
             Stop-Process -Id $existing.ProcessId -Force -ErrorAction Stop
             Start-Sleep -Milliseconds 700
         }
         elseif ((Test-WorkspaceProcess $commandLine) -or (Test-UvicornMavrisBackend $commandLine)) {
             if (Test-Health) {
-                Write-Step "Mavris backend already running at $BackendUrl"
+                Write-Step "后端服务已在运行：$BackendUrl"
                 return $null
             }
             Stop-Process -Id $existing.ProcessId -Force -ErrorAction Stop
             Start-Sleep -Milliseconds 500
         }
         else {
-            throw "Backend port $BackendPort is already used by another process: $commandLine"
+            throw "后端端口 $BackendPort 已被其他程序占用：$commandLine"
         }
     }
 
-    Write-Step "Starting backend at $BackendUrl"
+    Write-Step "正在启动后端服务：$BackendUrl"
     Stop-FullBackendIfWorkspaceOwned
-    foreach ($logPath in @($BackendStdoutLog, $BackendStderrLog)) {
-        if (Test-Path $logPath) {
-            Remove-Item -LiteralPath $logPath -Force
-        }
-    }
+    $env:MAVRIS_FULL_BACKEND = "1"
     $process = Start-Process `
         -FilePath $Python `
-        -ArgumentList @("-m", "uvicorn", "backend.main:app", "--host", $BackendHost, "--port", [string]$BackendPort) `
+        -ArgumentList @("-m", "uvicorn", "backend.main:full_app", "--host", $BackendHost, "--port", [string]$BackendPort) `
         -WorkingDirectory $Root `
         -WindowStyle Hidden `
         -RedirectStandardOutput $BackendStdoutLog `
@@ -251,7 +275,7 @@ function Start-Backend([string]$Python) {
 
     for ($index = 0; $index -lt 40; $index += 1) {
         if (Test-Health) {
-            Write-Step "Backend is ready"
+            Write-Step "后端服务已启动"
             return $process
         }
         if ($process.HasExited) {
@@ -267,7 +291,7 @@ function Start-Backend([string]$Python) {
             $tail += (Get-Content -Path $logPath -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
         }
     }
-    throw "Backend did not become ready. Log tail:`n$tail"
+    throw "后端服务启动超时。请查看日志：$BackendStdoutLog 和 $BackendStderrLog`n最近日志：$tail"
 }
 
 function Start-Frontend([string]$Npm) {
@@ -278,28 +302,22 @@ function Start-Frontend([string]$Npm) {
             try {
                 $response = Invoke-WebRequest -Uri $FrontendUrl -UseBasicParsing -TimeoutSec 2
                 if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
-                    Write-Step "Frontend already running at $FrontendUrl"
+                    Write-Step "界面服务已在运行：$FrontendUrl"
                     return $null
                 }
             }
             catch {
-                Write-Step "Stopping stale frontend process on port $FrontendPort"
+                Write-Step "正在关闭旧的界面服务进程（端口 $FrontendPort）"
                 Stop-Process -Id $existing.ProcessId -Force -ErrorAction Stop
                 Start-Sleep -Milliseconds 500
             }
         }
         else {
-            throw "Frontend port $FrontendPort is already used by another process: $commandLine"
+            throw "界面服务端口 $FrontendPort 已被其他程序占用：$commandLine"
         }
     }
 
-    foreach ($logPath in @($FrontendStdoutLog, $FrontendStderrLog)) {
-        if (Test-Path $logPath) {
-            Remove-Item -LiteralPath $logPath -Force
-        }
-    }
-
-    Write-Step "Starting frontend at $FrontendUrl"
+    Write-Step "正在启动界面服务：$FrontendUrl"
     $process = Start-Process `
         -FilePath $Npm `
         -ArgumentList @("--prefix", $DesktopDir, "run", "dev:web", "--", "--port", [string]$FrontendPort, "--strictPort") `
@@ -313,7 +331,7 @@ function Start-Frontend([string]$Npm) {
         try {
             $response = Invoke-WebRequest -Uri $FrontendUrl -UseBasicParsing -TimeoutSec 2
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
-                Write-Step "Frontend is ready"
+                Write-Step "界面服务已启动"
                 return $process
             }
         }
@@ -332,7 +350,7 @@ function Start-Frontend([string]$Npm) {
             $tail += (Get-Content -Path $logPath -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
         }
     }
-    throw "Frontend did not become ready. Log tail:`n$tail"
+    throw "界面服务启动超时。请查看日志：$FrontendStdoutLog 和 $FrontendStderrLog`n最近日志：$tail"
 }
 
 function Get-RunningDesktopProcess([string]$ElectronPath) {
@@ -349,12 +367,12 @@ function Get-RunningDesktopProcess([string]$ElectronPath) {
 function Start-DesktopShell {
     $electron = Join-Path $DesktopDir "node_modules\electron\dist\electron.exe"
     if (-not (Test-Path $electron)) {
-        throw "Electron runtime was not found at $electron. Run npm --prefix desktop install first."
+        throw "未找到桌面运行时：$electron。请先运行 npm --prefix desktop install。"
     }
 
     $existing = Get-RunningDesktopProcess $electron
     if ($existing) {
-        Write-Step "Desktop app already running"
+        Write-Step "桌面窗口已在运行"
         return $null
     }
 
@@ -364,7 +382,7 @@ function Start-DesktopShell {
     Set-Variable -Name DesktopStdoutLog -Scope Script -Value $DesktopStdoutLog
     Set-Variable -Name DesktopStderrLog -Scope Script -Value $DesktopStderrLog
 
-    Write-Step "Starting desktop app"
+    Write-Step "正在打开 Mavris 桌面窗口"
     $previousViteDevServerUrl = $env:VITE_DEV_SERVER_URL
     try {
         $env:VITE_DEV_SERVER_URL = $FrontendUrl
@@ -399,7 +417,7 @@ function Start-DesktopShell {
         $process.Refresh()
         $exitCode = $process.ExitCode
         if ($null -eq $exitCode -or $exitCode -eq 0) {
-            Write-Step "Desktop app handed off to an existing Mavris window"
+            Write-Step "Mavris 已交给现有窗口"
             return $null
         }
 
@@ -410,10 +428,10 @@ function Start-DesktopShell {
                 $tail += (Get-Content -Path $logPath -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
             }
         }
-        throw "Desktop app exited during startup with code $exitCode. Log tail:`n$tail"
+        throw "桌面窗口启动后立即退出，退出代码 $exitCode。请查看日志：$DesktopStderrLog`n最近日志：$tail"
     }
 
-    Write-Step "Desktop app is ready"
+    Write-Step "桌面窗口已打开"
     return $process
 }
 
@@ -435,7 +453,7 @@ try {
     $startedFrontend = Start-Frontend $npm
 
     if ($CheckOnly) {
-        Write-Step "Startup check passed"
+        Write-Step "启动检查通过"
         exit 0
     }
 
@@ -443,52 +461,62 @@ try {
         $startedDesktop = Start-DesktopShell
     }
 
-    Write-Step "Mavris is ready"
-    Write-Host "Open: $FrontendUrl"
+    Write-Step "Mavris 已启动"
+    Write-Host "访问地址：$FrontendUrl"
     if (-not $Desktop) {
         Start-Process $FrontendUrl | Out-Null
     }
     if ($Detached) {
         $leaveProcessesRunning = $true
-        Write-Host "Mavris is running in the background. You can close this window."
+        Write-Host "Mavris 正在后台运行。可以关闭这个窗口。"
         exit 0
     }
 
-    Write-Host "Close this window or press Ctrl+C to stop this development session."
+    Write-Host "保持此窗口打开即可持续运行；关闭窗口或按 Ctrl+C 会停止本次开发会话。"
     while ($true) {
         if ($startedBackend -and $startedBackend.HasExited) {
-            throw "Backend process exited. Check $BackendStderrLog"
+            throw "后端服务已退出。请查看日志：$BackendStderrLog"
         }
         if ($startedFrontend -and $startedFrontend.HasExited) {
-            throw "Frontend process exited. Check $FrontendStderrLog"
+            throw "界面服务已退出。请查看日志：$FrontendStderrLog"
         }
         if ($startedDesktop -and $startedDesktop.HasExited) {
             if ($startedDesktop.ExitCode -eq 0) {
-                Write-Step "Desktop app exited"
+                Write-Step "桌面窗口已关闭"
                 exit 0
             }
-            throw "Desktop app exited. Check $DesktopStderrLog"
+            throw "桌面窗口已退出。请查看日志：$DesktopStderrLog"
         }
         Start-Sleep -Seconds 2
     }
 }
 catch {
     Write-Host ""
-    Write-Host "Startup failed:" -ForegroundColor Red
+    Write-Host "启动失败：" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host "日志文件夹：$LogDir" -ForegroundColor Yellow
+    Write-Host "也可以双击 Start-Mavris-Debug.cmd 查看最近错误。" -ForegroundColor Yellow
     exit 1
 }
 finally {
     if (-not $leaveProcessesRunning -and $startedFrontend -and -not $startedFrontend.HasExited) {
-        Write-Step "Stopping frontend started by this launcher"
+        Write-Step "正在停止本次启动的界面服务"
         Stop-Process -Id $startedFrontend.Id -Force -ErrorAction SilentlyContinue
     }
     if (-not $leaveProcessesRunning -and $startedDesktop -and -not $startedDesktop.HasExited) {
-        Write-Step "Stopping desktop app started by this launcher"
+        Write-Step "正在停止本次启动的桌面窗口"
         Stop-Process -Id $startedDesktop.Id -Force -ErrorAction SilentlyContinue
     }
     if (-not $leaveProcessesRunning -and $startedBackend -and -not $startedBackend.HasExited) {
-        Write-Step "Stopping backend started by this launcher"
+        Write-Step "正在停止本次启动的后端服务"
         Stop-Process -Id $startedBackend.Id -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $leaveProcessesRunning) {
+        if ($startedFrontend) {
+            Stop-WorkspaceListenerOnPort $FrontendPort "界面服务"
+        }
+        if ($startedBackend) {
+            Stop-WorkspaceListenerOnPort $BackendPort "后端服务"
+        }
     }
 }

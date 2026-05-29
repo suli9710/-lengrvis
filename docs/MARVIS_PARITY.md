@@ -2,7 +2,7 @@
 
 > 版本：2026-05-25 实证修订版
 > 审计方法：对 `backend/`、`desktop/`、`scripts/` 全部源码逐模块静态分析，与腾讯 Marvis 公开能力做逐项对比
-> 审计范围：backend（Python 多 Agent runtime）+ desktop（Electron 桌面端）+ scripts（构建打包）+ 22 个 pytest 通过、self-extracting EXE 已产出
+> 审计范围：backend（Python 多 Agent runtime）+ desktop（Electron 桌面端）+ scripts（构建打包）；测试数量以 README 当前验证结果为准
 
 ## 一、对标对象速览：腾讯 Marvis（2026/05/20 上线）
 
@@ -31,8 +31,8 @@
 | # | 能力 | 实现位置 | 状态 |
 |---|---|---|---|
 | 1 | 多 Agent 编排状态机 + 安全监督全链路 | `orchestrator_agent.py` | 完整：R0-R4 风险 × dry-run × 审批 Gate × 运行时消息审查 |
-| 2 | **副 Agent act() 自主推理路由** | `orchestrator_agent.py:294` `_consult_subagent()` | **完整**：orchestrator 在工具执行前调副 Agent，正确处理 propose_tool / request_revision / done 三种 AgentAction |
-| 3 | **6 个副 Agent 领域 prompt** | `backend/app/llm/prompts/{file,document,computer,app,browser,search}_agent.md` | **完整**：34 个 .md prompt 文件，全部外部化 |
+| 2 | **domain shell agent act() 路由** | `orchestrator_agent.py` `_consult_subagent()`；`agents/base.py` | **完整但需准确定义**：File/Document/Computer/App/Browser/Search 共享 `BaseAgent.act()`，正常工具执行优先走 deterministic fast path；只有失败恢复、复杂改参或 schema/owner 无法确定时才进入 structured LLM |
+| 3 | **领域 Agent prompt 与 LLM 任务模板** | `backend/app/llm/prompts/{file,document,computer,app,browser,search}_agent.md` | **完整**：38 个 .md prompt 文件，全部外部化 |
 | 4 | 5 级风险分级 + 敏感词检测 + 浏览器写二审 | `policy_engine.py` | 完整 |
 | 5 | 路径沙盒（符号链接逃逸 / `..` 穿越 / 系统路径） | `paths.py` | 完整 |
 | 6 | 文件工具集 15 个 + send2trash 真实回收站 | `file_tools.py` | 完整 |
@@ -109,9 +109,9 @@
 
 | 维度 | Marvis | Mavris 实证 | 差距 | 优先级 |
 |---|---|---|---|---|
-| 主 Agent 编排 | 1+5 | Orchestrator+Planner+Supervisor+SafetyReview+Memory+6 副 | 相当 | — |
-| 副 Agent 自主推理 | 5 个独立推理 | `_consult_subagent()` + act() 已接通 | 相当 | — |
-| 副 Agent 领域 prompt | 5 套专家 prompt | 34 个 .md 文件已外部化 | 相当 | — |
+| 主 Agent 编排 | 1+5 | Orchestrator/Planner/Supervisor/SafetyReview/OSExecutionEngine + Memory + 6 个领域 shell agent | 机制相近但口径不同 | — |
+| 副 Agent 推理 | 公开口径的 5 个专项 Agent | `_consult_subagent()` + 共享 `BaseAgent.act()`；多数成功路径是 deterministic/schema validation | 弱于“完全自主”宣传 | P1 |
+| 副 Agent 领域 prompt | 5 套专家 prompt | 38 个 .md prompt/任务模板已外部化 | 相当 | — |
 | 文档 AI 摘要/QA/报告 | LLM 驱动 | map-reduce + QA + report 已接 LLM | 相当 | — |
 | 长期记忆 | 个人 KB + 索引 | MemoryAgent 完整 | 相当 | — |
 | 多模型路由 | 三模式 | Privacy/Efficiency/Hybrid 完整 | 相当 | — |
@@ -195,7 +195,7 @@
 ## 五、验证方案
 
 ### 自动化
-- 既有 22 个测试保持通过
+- 测试数量以 README 当前验证结果为准；重点关注 backend pytest、desktop typecheck/build、mobile typecheck。
 - 重点回归：`test_marvis_parity_e2e.py`
 
 ### 手动验证（按 Marvis 公开 demo 复现）
@@ -217,9 +217,9 @@
 
 | 指标 | 评分 | 说明 |
 |---|---|---|
-| 架构完整度 | **A** | 多 Agent + 状态机 + 安全审查 + 工具注册全链路完整 |
-| 功能覆盖率（vs Marvis） | **B+** | 38 项对齐，4 项占位，8 项缺失（主要跨端 + 硬件加速） |
-| 代码质量 | **A-** | Pydantic v2 类型完备，22+ pytest，清晰模块边界 |
+| 架构完整度 | **A-** | 编排、状态机、安全审查、PolicyEngine、ToolRuntime 和工具注册链路完整；领域 Agent 多为 shell + 共享 `act()`，不应按“12 个自主推理 Agent”宣传 |
+| 功能覆盖率（vs Marvis） | **B** | 多项底层能力对齐，但跨端、硬件加速、应用生态和独立领域推理仍有差距 |
+| 代码质量 | **A-** | Pydantic v2 类型完备，测试覆盖较多，清晰模块边界 |
 | 安全机制 | **A+** | 5 级风险 + 路径沙盒 + PII 脱敏 + Skill 安全审查，**优于 Marvis 公开标准** |
 | 开箱即用体验 | **C** | 隐私模式需用户自装 Ollama |
 

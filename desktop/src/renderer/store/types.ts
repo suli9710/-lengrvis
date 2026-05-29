@@ -21,7 +21,28 @@ import type {
 } from "../../shared/types";
 
 export type AssistantMode = "privacy" | "efficiency" | "hybrid";
-export type ViewKey = "home" | "chat" | "files" | "computer" | "agents" | "browser" | "memories" | "safety" | "settings";
+export type ViewKey =
+  | "home"
+  | "chat"
+  | "apps"
+  | "documents"
+  | "documentOcr"
+  | "papers"
+  | "courseware"
+  | "reports"
+  | "gallery"
+  | "imageOcr"
+  | "people"
+  | "places"
+  | "timeline"
+  | "files"
+  | "computer"
+  | "agents"
+  | "agentOps"
+  | "browser"
+  | "memories"
+  | "safety"
+  | "settings";
 export type ConnectionState = "online" | "checking" | "offline";
 
 export interface BackendSettingsSlice {

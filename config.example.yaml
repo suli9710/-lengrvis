@@ -61,6 +61,8 @@ privacy:
   allow_file_content_upload: false
   allow_browser_network: false
   strict_state_machine: false
+  # Leave blank to persist a generated secret in paths.data_dir/mobile_jwt.secret.
+  # MARVIS_JWT_SECRET or a non-empty jwt_secret value overrides that local file.
   jwt_secret: ""
   browser_max_page_bytes: 250000
   document_max_chars_to_llm: 30000

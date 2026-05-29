@@ -299,7 +299,9 @@ export function inferActiveOfficeAgentId(
     return "safety";
   }
 
-  const activeTask = tasks.find((task) => task.state === "running" || task.state === "queued" || task.state === "blocked");
+  const activeTask = tasks.find(
+    (task) => task.state === "running" || task.state === "queued" || task.state === "blocked" || task.state === "paused"
+  );
   const activeStep = plan.steps.find((step) => step.state === "active" || step.state === "blocked");
   const latestAgentMessage = conversations
     .flatMap((conversation) => conversation.messages)
@@ -335,7 +337,7 @@ export function activeOfficeAgentIds(workingAgentId: string, tasks: TaskEvent[],
   const activeIds = new Set<string>([workingAgentId || "pm"]);
 
   for (const task of tasks) {
-    if (task.state !== "running" && task.state !== "queued" && task.state !== "blocked") continue;
+    if (task.state !== "running" && task.state !== "queued" && task.state !== "blocked" && task.state !== "paused") continue;
     const agentId = agentIdFromText(task.agent) || agentIdFromText(task.title) || agentIdFromText(task.description);
     if (agentId) activeIds.add(agentId);
   }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import re
@@ -15,6 +16,7 @@ from app.tools.schemas import ToolDefinition
 
 
 ALLOWLIST = {"notepad": "notepad.exe", "calculator": "calc.exe", "calc": "calc.exe"}
+logger = logging.getLogger(__name__)
 
 APP_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
     "browser": (
@@ -178,6 +180,12 @@ def _scan_registry_apps() -> list[dict[str, Any]]:
     try:
         import winreg
 
+        def optional_value(subkey: Any, value_name: str) -> str:
+            try:
+                return str(winreg.QueryValueEx(subkey, value_name)[0])
+            except OSError:
+                return ""
+
         locations = [
             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
             (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -196,31 +204,11 @@ def _scan_registry_apps() -> list[dict[str, Any]]:
                         try:
                             with winreg.OpenKey(root, subkey_name) as subkey:
                                 name = str(winreg.QueryValueEx(subkey, "DisplayName")[0])
-                                install_location = ""
-                                try:
-                                    install_location = str(winreg.QueryValueEx(subkey, "InstallLocation")[0])
-                                except OSError:
-                                    pass
-                                uninstall_string = ""
-                                quiet_uninstall_string = ""
-                                publisher = ""
-                                version = ""
-                                try:
-                                    uninstall_string = str(winreg.QueryValueEx(subkey, "UninstallString")[0])
-                                except OSError:
-                                    pass
-                                try:
-                                    quiet_uninstall_string = str(winreg.QueryValueEx(subkey, "QuietUninstallString")[0])
-                                except OSError:
-                                    pass
-                                try:
-                                    publisher = str(winreg.QueryValueEx(subkey, "Publisher")[0])
-                                except OSError:
-                                    pass
-                                try:
-                                    version = str(winreg.QueryValueEx(subkey, "DisplayVersion")[0])
-                                except OSError:
-                                    pass
+                                install_location = optional_value(subkey, "InstallLocation")
+                                uninstall_string = optional_value(subkey, "UninstallString")
+                                quiet_uninstall_string = optional_value(subkey, "QuietUninstallString")
+                                publisher = optional_value(subkey, "Publisher")
+                                version = optional_value(subkey, "DisplayVersion")
                                 apps.append(
                                     {
                                         "id": name.lower(),
@@ -237,8 +225,8 @@ def _scan_registry_apps() -> list[dict[str, Any]]:
                             continue
             except OSError:
                 continue
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("registry app scan failed: %s", exc, exc_info=True)
     return apps
 
 

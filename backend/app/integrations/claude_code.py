@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
@@ -243,10 +244,8 @@ class ClaudeCodeProcessRegistry:
         try:
             await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
-            try:
+            with suppress(ProcessLookupError):
                 process.kill()
-            except ProcessLookupError:
-                pass
             await process.wait()
         finally:
             self.unregister(run_id, process)

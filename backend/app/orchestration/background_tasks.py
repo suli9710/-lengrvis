@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -123,10 +124,8 @@ def refresh_background_task(task: BackgroundTask) -> None:
     returncode = process.poll()
     if returncode is None:
         if time.time() - task.started_at > task.timeout_seconds:
-            try:
+            with suppress(OSError):
                 process.kill()
-            except OSError:
-                pass
             task.status = "timed_out"
             task.error = f"Background task exceeded {task.timeout_seconds}s timeout."
             task.returncode = process.poll()
@@ -146,10 +145,8 @@ def _watch_process(task: BackgroundTask) -> None:
         task.returncode = returncode
         task.status = "succeeded" if returncode == 0 else "failed"
     except subprocess.TimeoutExpired:
-        try:
+        with suppress(OSError):
             process.kill()
-        except OSError:
-            pass
         task.status = "timed_out"
         task.error = f"Background task exceeded {task.timeout_seconds}s timeout."
         try:

@@ -5,6 +5,7 @@ import hashlib
 import tempfile
 import threading
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -208,10 +209,8 @@ class _temporary_image:
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         if self.path is not None:
-            try:
+            with suppress(OSError):
                 self.path.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def _state_from_frame(frame: Any, *, vision_result: dict[str, Any], app_context: AppContext) -> ScreenState:
