@@ -42,6 +42,7 @@ def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
         "MARVIS_MODEL_REASONING_EFFORT": "model_reasoning_effort",
         "MARVIS_DISABLE_RESPONSE_STORAGE": "disable_response_storage",
         "MARVIS_NETWORK_ACCESS": "network_access",
+        "MARVIS_PERMISSION_MODE": "permission_mode",
         "MARVIS_MODEL_CONTEXT_WINDOW": "model_context_window",
         "MARVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT": "model_auto_compact_token_limit",
         "MARVIS_CONTEXT_WARNING_BUFFER_TOKENS": "context_warning_buffer_tokens",

@@ -40,6 +40,12 @@ def workspace(tmp_path: Path) -> Path:
     return root
 
 
+@pytest.fixture(autouse=True)
+def desktop_api_token_optional_for_testclient(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MAVRIS_TEST", "1")
+    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
+
+
 def import_first(module_names: Iterable[str]) -> Any:
     """Import the first available module from a list of expected locations."""
 
@@ -87,4 +93,3 @@ def call_with_supported_kwargs(func: Callable[..., Any], **kwargs: Any) -> Any:
 def load_json_fixture(relative_path: str) -> Any:
     path = TEST_DATA / relative_path
     return json.loads(path.read_text(encoding="utf-8"))
-

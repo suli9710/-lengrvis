@@ -83,7 +83,13 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
             value={pairCode}
           />
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-          <Pressable disabled={isBusy} onPress={handlePair} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: isBusy, busy: isBusy }}
+            disabled={isBusy}
+            onPress={handlePair}
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+          >
             {isBusy ? <ActivityIndicator color="#ffffff" /> : <Link2 size={18} color="#ffffff" />}
             <Text style={styles.primaryButtonText}>连接手机</Text>
           </Pressable>

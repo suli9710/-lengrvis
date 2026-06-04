@@ -14,7 +14,16 @@ export default defineConfig({
   },
   build: {
     outDir: "dist/renderer",
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom"],
+          icons: ["lucide-react"],
+          state: ["zustand"]
+        }
+      }
+    }
   },
   server: {
     host: "127.0.0.1",

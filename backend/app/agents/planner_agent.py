@@ -28,7 +28,7 @@ PLAN_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {
                 "type": "object",
-                "required": ["id", "agent_name", "tool_name", "description", "args", "risk_level", "depends_on"],
+                "required": ["id", "agent_name", "tool_name", "description", "args", "depends_on"],
                 "properties": {
                     "id": {"type": "string"},
                     "agent_name": {"type": "string"},
@@ -469,7 +469,10 @@ class PlannerAgent(BaseAgent):
             id_aliases.setdefault(f"step_{idx}", step_ids[idx - 1])
 
         for idx, raw in enumerate(raw_steps, start=1):
-            risk = RiskLevel(str(raw.get("risk_level", "R0_READ_ONLY")))
+            try:
+                risk = RiskLevel(str(raw.get("risk_level", "R0_READ_ONLY")))
+            except ValueError:
+                risk = RiskLevel.R0_READ_ONLY
             args = dict(raw.get("args") or {})
             if risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}:
                 args["dry_run"] = True

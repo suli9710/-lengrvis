@@ -101,7 +101,8 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       backendCalls += 1;
       return { state: "running" };
     },
-    getBaseUrl: () => "http://127.0.0.1:8000"
+    getBaseUrl: () => "http://127.0.0.1:8000",
+    getDesktopApiToken: () => "desktop-secret"
   };
   registerIpcHandlers(backend);
   const backendStartHandler = ipcHandlers.get(IPC_CHANNELS.backendStart);

@@ -11,6 +11,7 @@ from app.llm.profiles import profile_for_provider, profile_for_settings
 from app.llm.prompts import load_prompt
 from app.llm.registry import _is_local_base_url, get_effective_settings, get_provider, get_provider_for_mode
 from app.policy.redaction import redact_text
+from app.security.sensitive_confirmation import CONFIRMATION_FIELD, require_settings_confirmation
 from app.llm.usage import list_usage_events, usage_summary
 
 
@@ -36,6 +37,7 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
         if key in allowed:
             coerced[key] = _coerce_setting_value(key, value)
     _validate_settings_patch(coerced)
+    require_settings_confirmation({**coerced, CONFIRMATION_FIELD: payload.get(CONFIRMATION_FIELD)})
     for key, value in coerced.items():
         db.set_setting(key, value)
     return get_settings()
@@ -189,6 +191,17 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         if candidate not in {"privacy", "efficiency", "hybrid"}:
             return "privacy"
         return candidate
+    if key == "permission_mode":
+        candidate = str(value).strip().lower()
+        aliases = {
+            "accept_edits": "trusted_edits",
+            "trusted": "trusted_edits",
+            "auto": "auto_review",
+            "dontask": "dont_ask",
+            "deny": "dont_ask",
+        }
+        candidate = aliases.get(candidate, candidate)
+        return candidate if candidate in {"plan", "default", "trusted_edits", "auto_review", "dont_ask"} else "default"
     if key == "mcp_servers":
         if not isinstance(value, list):
             return []

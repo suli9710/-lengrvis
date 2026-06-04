@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from app.core import db
 from app.core.audit import record
@@ -15,40 +15,59 @@ DEFAULT_GUARDIAN_TICK_SECONDS = 30
 
 
 class GuardianScheduler:
-    def __init__(self, *, tick_seconds: int = DEFAULT_GUARDIAN_TICK_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        tick_seconds: int = DEFAULT_GUARDIAN_TICK_SECONDS,
+        full_backend_available: Callable[[], Awaitable[bool]] | None = None,
+    ) -> None:
         self.tick_seconds = tick_seconds
         self._task: asyncio.Task[None] | None = None
-        self._stop = asyncio.Event()
+        self._stop: asyncio.Event | None = None
+        self._full_backend_available = full_backend_available or self._default_full_backend_available
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         db.init_db()
+        self._stop = asyncio.Event()
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="mavris-guardian-scheduler")
 
     async def stop(self) -> None:
-        self._stop.set()
+        if self._stop is not None:
+            self._stop.set()
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
         self._task = None
+        self._stop = None
 
     async def tick(self, *, now: datetime | None = None) -> list[str]:
+        if await self._full_backend_available():
+            return []
+
         fired: list[str] = []
         now_dt = now or datetime.now(timezone.utc)
         for row in db.fetch_many("scheduled_tasks", "enabled = 1", (), limit=500):
             if not _due(row, now=now_dt):
                 continue
             schedule = ScheduledTask.model_validate(row)
-            fired.append(schedule.id)
             schedule.last_run_at = now_dt.replace(microsecond=0).isoformat()
             schedule.last_status = "waiting_user_confirmation"
             schedule.next_run_at = _next_run(schedule.cron, base=now_dt)
             schedule.updated_at = now_iso()
-            db.upsert_model("scheduled_tasks", schedule)
+            claimed = db.claim_scheduled_task_run(
+                schedule.id,
+                expected_next_run_at=str(row.get("next_run_at") or ""),
+                claimed_data=schedule.model_dump(mode="json"),
+            )
+            if claimed is None:
+                continue
+            schedule = ScheduledTask.model_validate(claimed)
+            fired.append(schedule.id)
             wakeup_service.create_schedule_wakeup(schedule, due_at=schedule.last_run_at)
             record(
                 "guardian_scheduler.wakeup_created",
@@ -59,6 +78,8 @@ class GuardianScheduler:
         return fired
 
     async def _run(self) -> None:
+        if self._stop is None:
+            self._stop = asyncio.Event()
         while not self._stop.is_set():
             try:
                 await self.tick()
@@ -76,6 +97,14 @@ class GuardianScheduler:
             "status": "running" if self._task and not self._task.done() else "idle",
             "tick_seconds": self.tick_seconds,
         }
+
+    async def _default_full_backend_available(self) -> bool:
+        try:
+            from app.services.guardian_runtime import runtime
+
+            return await runtime._is_full_backend_healthy()
+        except Exception:
+            return False
 
 
 def _due(schedule_data: dict[str, Any], now: datetime) -> bool:

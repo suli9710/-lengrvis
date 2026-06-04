@@ -42,6 +42,7 @@ export interface BackendStatus {
   fullBackendState?: "running" | "starting" | "stopped" | "error" | string;
   fullBackendPort?: number;
   lastWakeReason?: string;
+  runtimeModeError?: string;
   health?: {
     ok: boolean;
     latencyMs?: number;
@@ -362,6 +363,17 @@ export interface PerceptionSuggestionLaunchResponse {
 
 export type TaskState = "queued" | "running" | "blocked" | "paused" | "completed" | "failed";
 
+export interface TaskBoundaryEvent {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  severity: "info" | "warning" | "danger" | "success" | string;
+  stepId?: string;
+  createdAt: string;
+  payload?: Record<string, unknown>;
+}
+
 export interface TaskEvent {
   id: string;
   runId?: string;
@@ -373,6 +385,7 @@ export interface TaskEvent {
   updatedAt: string;
   recordings?: TaskStepRecording[];
   cleanupPlan?: CleanupPlan;
+  boundaryEvents?: TaskBoundaryEvent[];
 }
 
 export interface TaskStepRecordingFrame {
@@ -501,6 +514,7 @@ export interface TaskExplain {
 }
 
 export type PlanStepState = "pending" | "active" | "done" | "blocked";
+export type PermissionMode = "plan" | "default" | "trusted_edits" | "auto_review" | "dont_ask";
 
 export interface PlanStep {
   id: string;
@@ -508,6 +522,13 @@ export interface PlanStep {
   detail: string;
   state: PlanStepState;
   owner: string;
+  toolName?: string;
+  riskLevel?: string;
+  effects?: string[];
+  resourceKinds?: string[];
+  trustTier?: string;
+  approvalState?: string;
+  deferredTool?: boolean;
 }
 
 export interface Plan {
@@ -562,10 +583,14 @@ export interface SafetyReview {
   status: "clear" | "needs_review" | "blocked";
   updatedAt: string;
   findings: SafetyFinding[];
+  boundaryEvents?: TaskBoundaryEvent[];
 }
 
 export interface ApprovalRequest {
   id: string;
+  taskId?: string;
+  stepId?: string | null;
+  approvalType?: string;
   title: string;
   reason: string;
   requester: string;
@@ -575,6 +600,15 @@ export interface ApprovalRequest {
   status: "pending" | "approved" | "denied";
   rawPayload?: unknown;
   cleanupPlan?: CleanupPlan;
+  toolName?: string;
+  toolTrustTier?: string;
+  toolEffects?: string[];
+  resourceKinds?: string[];
+  policyMode?: PermissionMode | string;
+  dryRunSummary?: string;
+  modelAction?: Record<string, unknown>;
+  runtimeControlFields?: Record<string, unknown>;
+  engineeringBoundary?: Record<string, unknown>;
 }
 
 export interface ApprovalDecision {
@@ -1099,6 +1133,7 @@ export interface AppSettings {
   ocrMinConfidence: number;
   ocrBatchSize: number;
   mode: "privacy" | "efficiency" | "hybrid";
+  permissionMode: PermissionMode;
   allowCloudContext: boolean;
   allowFileContentUpload: boolean;
   mcpServers: McpServerConfig[];

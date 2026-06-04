@@ -10,7 +10,8 @@ from app.api.routes_guardian import proxy_router, router, ws_router
 from app.core import db
 from app.core.errors import AppError
 from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_mobile_lan_http_path
-from app.security.mobile_jwt import decode_mobile_token
+from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
+from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token
 from app.services.guardian_runtime import runtime
 from app.services.guardian_scheduler import get_guardian_scheduler
 
@@ -64,11 +65,17 @@ def create_guardian_app() -> FastAPI:
         if scheme.lower() != "bearer" or not token:
             return JSONResponse(status_code=401, content={"detail": "Missing mobile bearer token"})
         try:
-            decode_mobile_token(token)
+            decode_mobile_token(token, allowed_scopes={TOKEN_SCOPE, REMOTE_INPUT_SCOPE})
         except Exception as exc:  # noqa: BLE001
             status_code = getattr(exc, "status_code", 401)
             detail = getattr(exc, "detail", "Invalid mobile token")
             return JSONResponse(status_code=status_code, content={"detail": detail})
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def desktop_api_token_guard(request: Request, call_next):
+        if should_require_desktop_api_token(request) and not has_valid_desktop_api_token(request):
+            return JSONResponse(status_code=401, content={"detail": "Missing desktop API token"})
         return await call_next(request)
 
     @app.exception_handler(AppError)

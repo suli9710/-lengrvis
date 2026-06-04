@@ -59,7 +59,7 @@ class Scheduler:
     ) -> None:
         self.tick_seconds = tick_seconds
         self._task: asyncio.Task | None = None
-        self._stop = asyncio.Event()
+        self._stop: asyncio.Event | None = None
         self._executor = executor  # async callable (goal, mode) -> None; injected for tests
         self._fired_ids: set[str] = set()
 
@@ -67,17 +67,20 @@ class Scheduler:
         if self._task is not None and not self._task.done():
             return
         db.init_db()
+        self._stop = asyncio.Event()
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="mavris-scheduler")
 
     async def stop(self) -> None:
-        self._stop.set()
+        if self._stop is not None:
+            self._stop.set()
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
         self._task = None
+        self._stop = None
 
     def schedule(self, cron: str, goal: str, mode: str = "efficiency", *, note: str = "") -> ScheduledTask:
         if not _CRONITER_AVAILABLE:
@@ -104,12 +107,9 @@ class Scheduler:
         return ScheduledTask.model_validate(row) if row else None
 
     def cancel(self, schedule_id: str) -> bool:
-        item = self.get(schedule_id)
-        if not item:
+        updated = db.set_scheduled_task_enabled(schedule_id, False, updated_at=now_iso())
+        if updated is None:
             return False
-        item.enabled = False
-        item.updated_at = now_iso()
-        db.upsert_model("scheduled_tasks", item)
         record("scheduler.cancelled", "Scheduler", {"id": schedule_id}, task_id=schedule_id)
         return True
 
@@ -117,14 +117,20 @@ class Scheduler:
         item = self.get(schedule_id)
         if not item:
             return None
-        item.enabled = enabled
-        item.updated_at = now_iso()
+        next_run_at = item.next_run_at
         if enabled and _CRONITER_AVAILABLE:
-            item.next_run_at = _next_run(item.cron)
-        db.upsert_model("scheduled_tasks", item)
-        return item
+            next_run_at = _next_run(item.cron)
+        updated = db.set_scheduled_task_enabled(
+            schedule_id,
+            enabled,
+            next_run_at=next_run_at,
+            updated_at=now_iso(),
+        )
+        return ScheduledTask.model_validate(updated) if updated is not None else None
 
     async def _run(self) -> None:
+        if self._stop is None:
+            self._stop = asyncio.Event()
         while not self._stop.is_set():
             try:
                 await self.tick()
@@ -145,17 +151,27 @@ class Scheduler:
             if not _due(row, now=now_dt):
                 continue
             schedule = ScheduledTask.model_validate(row)
-            fired.append(schedule.id)
-            self._fired_ids.add(schedule.id)
             schedule.last_run_at = now_dt.replace(microsecond=0).isoformat()
             schedule.last_status = "running"
             if _CRONITER_AVAILABLE:
                 schedule.next_run_at = _next_run(schedule.cron, base=now_dt)
-            db.upsert_model("scheduled_tasks", schedule)
+            schedule.updated_at = now_iso()
+            claimed = db.claim_scheduled_task_run(
+                schedule.id,
+                expected_next_run_at=str(row.get("next_run_at") or ""),
+                claimed_data=schedule.model_dump(mode="json"),
+            )
+            if claimed is None:
+                continue
+            schedule = ScheduledTask.model_validate(claimed)
+            fired.append(schedule.id)
+            self._fired_ids.add(schedule.id)
             asyncio.create_task(self._execute(schedule))
         return fired
 
     async def _execute(self, schedule: ScheduledTask) -> None:
+        last_status = "completed"
+        last_task_id = ""
         try:
             if self._executor is not None:
                 task_id = await self._executor(schedule.goal, schedule.mode)
@@ -165,13 +181,23 @@ class Scheduler:
                 orchestrator = OrchestratorAgent()
                 task = await orchestrator.handle_user_goal(schedule.goal, schedule.mode)
                 task_id = task.id
-            schedule.last_task_id = str(task_id or "")
-            schedule.last_status = "completed"
+            last_task_id = str(task_id or "")
         except Exception as exc:  # noqa: BLE001
-            schedule.last_status = f"failed: {exc}"
+            last_status = f"failed: {exc}"
             record("scheduler.execute_failed", "Scheduler", {"id": schedule.id, "error": str(exc)}, task_id=schedule.id)
         finally:
-            db.upsert_model("scheduled_tasks", schedule)
+            persisted = db.complete_scheduled_task_run(
+                schedule.id,
+                expected_last_run_at=schedule.last_run_at,
+                expected_next_run_at=schedule.next_run_at,
+                last_status=last_status,
+                last_task_id=last_task_id,
+            )
+            if persisted is not None:
+                schedule = ScheduledTask.model_validate(persisted)
+            else:
+                schedule.last_status = last_status
+                schedule.last_task_id = last_task_id
 
         try:
             from app.services import notification_service
@@ -191,6 +217,14 @@ class Scheduler:
                 task_id=schedule.id,
             )
 
+    def status(self) -> dict[str, Any]:
+        return {
+            "status": "running" if self._task and not self._task.done() else "idle",
+            "tick_seconds": self.tick_seconds,
+            "schedules": [item.model_dump() for item in self.list()],
+            "cron_engine": "croniter" if _CRONITER_AVAILABLE else "fallback",
+        }
+
 
 _scheduler: Scheduler | None = None
 
@@ -203,10 +237,4 @@ def get_scheduler() -> Scheduler:
 
 
 def status() -> dict[str, Any]:
-    sched = get_scheduler()
-    return {
-        "status": "running" if sched._task and not sched._task.done() else "idle",
-        "tick_seconds": sched.tick_seconds,
-        "schedules": [item.model_dump() for item in sched.list()],
-        "cron_engine": "croniter" if _CRONITER_AVAILABLE else "fallback",
-    }
+    return get_scheduler().status()

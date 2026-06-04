@@ -82,7 +82,7 @@ Manus 官网主打“Hands On AI”，入口任务包括创建 slides、建网�
 |---|---|---|---|---|---|---|
 | 产品定位 | 本地电脑管家/OS Agent 原型 | 消费级全端私人 AI 助手 | 云端虚拟电脑通用任务 Agent | Windows 平台原生 AI 体验 | API 电脑控制 + 开发者 Agent | 云端 AI 工作空间/通用 Agent |
 | 平台 | Windows 优先；Electron；Android companion；macOS 打包路径 | Windows / macOS / Android；iOS 规划 | ChatGPT Web/App | Windows 11 / Copilot+ PC | API、Claude Code 桌面/终端/IDE/Web/Slack/移动路由 | Web、桌面/移动入口、工作区工具 |
-| OS 控制深度 | 文件、系统信息、Windows 设置 URI、远程桌面、UI 自动化预留 | 官方宣称深度理解 PC OS，可改设置和手机接管 | 主要在自有虚拟电脑和网页环境 | OS 原生 Settings agent、Recall、Click to Do、文件/屏幕上下文 | Computer Use 可用屏幕/鼠标/键盘；Claude Code 操作开发环境 | 以云端任务和内容生产为主 |
+| OS 控制深度 | 文件、系统信息、Windows 设置 URI、远程桌面、UIAutomation 语义控件、屏幕截图、鼠标/键盘输入；写入动作 dry-run + 审批 | 官方宣称深度理解 PC OS，可改设置和手机接管 | 主要在自有虚拟电脑和网页环境 | OS 原生 Settings agent、Recall、Click to Do、文件/屏幕上下文 | Computer Use 可用屏幕/鼠标/键盘；Claude Code 操作开发环境 | 以云端任务和内容生产为主 |
 | 本地模型 | 探测 ONNX / Ollama / LM Studio / llama.cpp；未捆绑模型 | 本地模式端侧大模型，文件 0 上传 | 云端模型为主 | Phi Silica/NPU、本地 OCR/Click to Do | Claude 云端/API；Claude Code 在本机执行但模型云端 | 云端模型为主 |
 | 文件/文档 | FTS5、语义搜索、OCR、文档 AI、文件工具、Excel COM | AI 图库、AI 文档库、文档/表格理解与生成 | 可上传/生成/编辑文件，侧重云端任务产物 | Recall/Click to Do/文件 Actions，和 Windows/Office 集成 | Claude Code 读写代码文件；Computer Use 可操控应用 | 大量文档/报告/表格/PPT 工具 |
 | 浏览器/网页 | Playwright/httpx；读写动作审批 | 官网场景含微博签到、票务信息、搜索监控等 | 强项：网页浏览、登录接管、采购/预订等 | Edge/Copilot/Actions 生态 | Computer Use 能网页操作，Claude for Chrome/Code 生态 | Browser operator / Web app |

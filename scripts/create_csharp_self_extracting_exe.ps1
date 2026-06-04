@@ -4,11 +4,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
 
-$ZipPath = Join-Path $Root $PortableZip
-$OutputPath = Join-Path $Root $OutputExe
+function Resolve-ProjectPath {
+    param([string]$Path)
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    return Join-Path $Root $Path
+}
+
+$ZipPath = Resolve-ProjectPath $PortableZip
+$OutputPath = Resolve-ProjectPath $OutputExe
 $BuildDir = Join-Path $Root "build\csharp-sfx"
 $SourcePath = Join-Path $BuildDir "MavrisSfx.cs"
 $PayloadPath = Join-Path $BuildDir "payload.zip"

@@ -21,6 +21,33 @@ def no_bundled_ollama(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(ollama_service, "_bundle_anchor_dirs", lambda: [tmp_path / "empty-bundle-anchor"])
 
 
+def test_repository_vendor_ollama_is_not_a_bundled_source(monkeypatch, tmp_path: Path):
+    for key in (
+        "MAVRIS_BUNDLED_OLLAMA_DIR",
+        "MARVIS_BUNDLED_OLLAMA_DIR",
+        "MAVRIS_BUNDLED_OLLAMA_MODELS_DIR",
+        "MARVIS_BUNDLED_OLLAMA_MODELS_DIR",
+        "MAVRIS_OLLAMA_BUNDLE_MANIFEST",
+        "MARVIS_OLLAMA_BUNDLE_MANIFEST",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    runtime_dir = tmp_path / "vendor" / "ollama"
+    models_dir = tmp_path / "vendor" / "ollama-models"
+    manifest_path = tmp_path / "vendor" / "ollama-bundle-manifest.json"
+    model_manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
+    runtime_dir.mkdir(parents=True)
+    model_manifest.parent.mkdir(parents=True)
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    model_manifest.write_text("{}", encoding="utf-8")
+    manifest_path.write_text('{"schema":1,"accepted_licenses":true}', encoding="utf-8")
+    monkeypatch.setattr(ollama_service, "_bundle_anchor_dirs", lambda: [tmp_path])
+
+    assert ollama_service.bundled_runtime_available() is False
+    assert ollama_service._bundled_ollama_models_dir() is None
+    assert ollama_service._ollama_bundle_manifest_summary()["present"] is False
+
+
 def test_status_not_installed():
     with patch.object(ollama_service, "is_installed", return_value=False):
         result = asyncio.run(ollama_service.status())

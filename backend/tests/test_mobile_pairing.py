@@ -9,15 +9,24 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
+from app.api import routes_remote
+from app.llm.registry import get_effective_settings
 from app.core import db
 from app.core.schemas import Approval, Plan, PlanStep, Task
 from app.main import app
-from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, decode_mobile_token
+from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token, issue_mobile_token
+from app.security import mobile_jwt
+from app.security.sensitive_confirmation import create_settings_confirmation
+from app.api.routes_mobile import _mobile_event_allowed
 from app.services import mobile_pairing_service
 from app.services.approval_event_service import publish_approval_created
+from app.services.settings_service import update_settings
+from app.tools.registry import register_all_tools
 
 
 def test_pair_request_generates_code(monkeypatch, tmp_path):
@@ -105,6 +114,22 @@ def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
     assert replay_response.status_code == 401
 
 
+def test_pair_code_includes_remote_view_scope_only_when_remote_desktop_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    patch = {"remote_desktop_enabled": True}
+    confirmation = create_settings_confirmation(patch)
+    if confirmation.get("required"):
+        patch["confirmation_nonce"] = confirmation["nonce"]
+    update_settings(patch)
+    client = TestClient(app)
+
+    token = _paired_token(client)
+    claims = decode_mobile_token(token)
+
+    assert set(claims["scope"].split()) == {"mobile:approval", "remote:view"}
+
+
 def test_mobile_token_survives_backend_process_restart(tmp_path):
     data_dir = tmp_path / "data"
     token = _run_mobile_jwt_subprocess(
@@ -116,11 +141,11 @@ def test_mobile_token_survives_backend_process_restart(tmp_path):
     )
 
     claims_json = _run_mobile_jwt_subprocess(
-        (
-            "import json, os; "
-            "from app.security.mobile_jwt import decode_mobile_token; "
-            "print(json.dumps(decode_mobile_token(os.environ['MAVRIS_TEST_TOKEN']), sort_keys=True))"
-        ),
+            (
+                "import json, os; "
+                "from app.security.mobile_jwt import decode_mobile_token; "
+                "print(json.dumps(decode_mobile_token(os.environ['MAVRIS_TEST_TOKEN'], require_active_device=False), sort_keys=True))"
+            ),
         data_dir,
         {"MAVRIS_TEST_TOKEN": token},
     )
@@ -186,6 +211,69 @@ def test_mobile_approval_routes_require_bearer_token(monkeypatch, tmp_path):
     assert response.status_code == 401
 
 
+def test_revoked_mobile_device_token_cannot_use_mobile_api_or_remote_screen(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    device_id = decode_mobile_token(token)["device_id"]
+    approval = Approval(task_id="task_revoked_mobile", step_id="step_1", message="Approve revoked test")
+    db.upsert_model("approvals", approval)
+
+    revoke_response = client.delete(f"/api/pair/devices/{device_id}")
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    devices_response = client.get("/api/pair/devices")
+
+    assert revoke_response.status_code == 200
+    assert revoke_response.json()["status"] == "revoked"
+    assert pending_response.status_code == 401
+    assert devices_response.status_code == 200
+    assert all(device["device_id"] != device_id for device in devices_response.json()["devices"])
+
+
+def test_mobile_device_list_only_returns_calling_device(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    first_token = _paired_token(client)
+    second_token = _paired_token(client)
+    first_device_id = decode_mobile_token(first_token)["device_id"]
+    second_device_id = decode_mobile_token(second_token)["device_id"]
+
+    response = client.get("/api/mobile/devices", headers={"Authorization": f"Bearer {first_token}"})
+
+    assert response.status_code == 200
+    assert [device["device_id"] for device in response.json()["devices"]] == [first_device_id]
+    assert second_device_id not in [device["device_id"] for device in response.json()["devices"]]
+
+
+def test_mobile_device_can_only_revoke_itself(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    first_token = _paired_token(client)
+    second_token = _paired_token(client)
+    first_device_id = decode_mobile_token(first_token)["device_id"]
+    second_device_id = decode_mobile_token(second_token)["device_id"]
+
+    cross_response = client.delete(
+        f"/api/mobile/devices/{second_device_id}",
+        headers={"Authorization": f"Bearer {first_token}"},
+    )
+    own_response = client.delete(
+        f"/api/mobile/devices/{first_device_id}",
+        headers={"Authorization": f"Bearer {first_token}"},
+    )
+
+    assert cross_response.status_code == 403
+    assert db.fetch_one("mobile_devices", second_device_id)["status"] == "active"
+    assert own_response.status_code == 200
+    assert db.fetch_one("mobile_devices", first_device_id)["status"] == "revoked"
+
+
 def test_mobile_can_list_and_decide_pending_approvals(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -208,6 +296,866 @@ def test_mobile_can_list_and_decide_pending_approvals(monkeypatch, tmp_path):
     )
     assert decision_response.status_code == 200
     assert decision_response.json()["status"] == "rejected"
+
+
+def test_mobile_filters_and_blocks_cross_device_approvals(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    first_token = _paired_token(client)
+    second_token = _paired_token(client)
+    first_device_id = decode_mobile_token(first_token)["device_id"]
+    second_device_id = decode_mobile_token(second_token)["device_id"]
+    first_approval = Approval(
+        task_id="task_mobile_first_device",
+        step_id="step_1",
+        message="Approve first device test",
+        allowed_device_ids=[first_device_id],
+    )
+    second_approval = Approval(
+        task_id="task_mobile_second_device",
+        step_id="step_1",
+        message="Approve second device test",
+        allowed_device_ids=[second_device_id],
+    )
+    db.upsert_model("approvals", first_approval)
+    db.upsert_model("approvals", second_approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {first_token}"},
+    )
+    cross_device_response = client.post(
+        f"/api/mobile/approvals/{second_approval.id}/decision",
+        headers={"Authorization": f"Bearer {first_token}"},
+        json={"decision": "denied"},
+    )
+    allowed_response = client.post(
+        f"/api/mobile/approvals/{first_approval.id}/decision",
+        headers={"Authorization": f"Bearer {first_token}"},
+        json={"decision": "denied"},
+    )
+
+    assert pending_response.status_code == 200
+    assert [approval["id"] for approval in pending_response.json()] == [first_approval.id]
+    assert cross_device_response.status_code == 403
+    assert db.fetch_one("approvals", second_approval.id)["status"] == "pending"
+    assert allowed_response.status_code == 200
+    assert allowed_response.json()["status"] == "rejected"
+
+
+def test_mobile_approval_scope_cannot_decide_remote_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    approval = Approval(
+        task_id="task_mobile_remote_input",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input test",
+    )
+    db.upsert_model("approvals", approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    decision_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert pending_response.status_code == 200
+    assert pending_response.json() == []
+    assert decision_response.status_code == 403
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_same_device_mobile_approval_scope_cannot_decide_remote_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    device_id = decode_mobile_token(token)["device_id"]
+    approval = Approval(
+        task_id="task_mobile_remote_input_same_device",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve same-device remote input test",
+        source_device_id=device_id,
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    decision_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert pending_response.status_code == 200
+    assert pending_response.json() == []
+    assert decision_response.status_code == 403
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_scope_can_decide_remote_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+    approval = Approval(
+        task_id="task_mobile_remote_input_allowed",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input with scope",
+        source_device_id=device_id,
+        source_grant_id=grant["grant_id"],
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+
+
+def test_remote_input_grant_cannot_decide_approval_from_other_grant(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    source_grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    other_grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    other_token = _claim_remote_input_token(client, paired_token, other_grant)
+    approval = Approval(
+        task_id="task_mobile_remote_input_other_grant",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input from source grant",
+        source_device_id=device_id,
+        source_grant_id=source_grant["grant_id"],
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {other_token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 403
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_grant_cannot_decide_approval_missing_grant_binding(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+    approval = Approval(
+        task_id="task_mobile_remote_input_missing_grant",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input without grant binding",
+        source_device_id=device_id,
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 403
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_scope_cannot_decide_after_remote_desktop_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+    approval = Approval(
+        task_id="task_mobile_remote_input_disabled",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input after remote desktop disabled",
+        source_device_id=device_id,
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+    update_settings({"remote_desktop_enabled": False})
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Remote desktop is disabled"
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_scope_cannot_decide_unbound_remote_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+    approval = Approval(
+        task_id="task_mobile_remote_input_unbound",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve unbound remote input",
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 403
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_scope_cannot_decide_other_device_remote_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    first_token = _paired_token(client)
+    second_token = _paired_token(client)
+    first_device_id = decode_mobile_token(first_token)["device_id"]
+    second_device_id = decode_mobile_token(second_token)["device_id"]
+    first_grant = client.post(f"/api/pair/devices/{first_device_id}/remote-input-grants").json()
+    first_remote_token = _claim_remote_input_token(client, first_token, first_grant)
+    approval = Approval(
+        task_id="task_mobile_remote_input_other_device",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve other device remote input",
+        source_device_id=second_device_id,
+        allowed_device_ids=[second_device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {first_remote_token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 403
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_scope_requires_grant_source_for_approval_claims(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    token = issue_mobile_token(device_id=device_id, device_name="Test Phone", scope=REMOTE_INPUT_SCOPE)
+    approval = Approval(
+        task_id="task_mobile_remote_input_plain_scope",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve plain remote input scope",
+        source_device_id=device_id,
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 401
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_approval_policy_requires_grant_backed_claims(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_policy", device_name="Policy Phone")
+    approval = Approval(
+        task_id="task_mobile_remote_input_policy",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input through policy",
+        source_device_id="mobile_policy",
+        allowed_device_ids=["mobile_policy"],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+
+    allowed = mobile_pairing_service.mobile_claims_can_access_approval(
+        approval,
+        {
+            "device_id": "mobile_policy",
+            "device_name": "Policy Phone",
+            "scope": REMOTE_INPUT_SCOPE,
+        },
+    )
+
+    assert allowed is False
+
+
+def test_desktop_can_issue_short_lived_remote_input_grant_for_paired_device(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+
+    grant_response = client.post(f"/api/pair/devices/{device_id}/remote-input-grants")
+
+    assert grant_response.status_code == 200
+    payload = grant_response.json()
+    assert "token" not in payload
+    assert "token_type" not in payload
+    assert payload["expires_in"] <= mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS
+    assert all(grant["status"] == "active" for grant in payload["device"]["remote_input_grants"])
+    assert all("token" not in grant for grant in payload["device"]["remote_input_grants"])
+
+
+def test_remote_input_grant_creation_requires_remote_desktop_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+
+    response = client.post(f"/api/pair/devices/{device_id}/remote-input-grants")
+
+    assert response.status_code == 403
+    assert db.fetch_one("mobile_devices", device_id)["remote_input_grants"] == []
+
+
+def test_remote_input_grant_claim_requires_remote_desktop_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    update_settings({"remote_desktop_enabled": False})
+
+    response = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Remote desktop is disabled"
+    assert "token" not in response.json()
+    device = db.fetch_one("mobile_devices", device_id)
+    assert device["remote_input_grants"][0]["status"] == "active"
+
+
+def test_revoking_remote_input_grant_invalidates_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+
+    revoke_response = client.delete(f"/api/pair/devices/{device_id}/remote-input-grants/{grant['grant_id']}")
+
+    assert revoke_response.status_code == 200
+    assert revoke_response.json()["status"] == "revoked"
+    assert "token" not in json.dumps(client.get("/api/pair/devices").json(), ensure_ascii=False)
+    response = client.post(
+        f"/api/mobile/approvals/{Approval(task_id='unused', step_id='step_1', approval_type='remote_input', message='unused').id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+    assert response.status_code == 401
+
+
+def test_revoking_mobile_device_invalidates_remote_input_grant(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+    approval = Approval(
+        task_id="task_revoked_remote_input_grant",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve revoked remote input grant",
+    )
+    db.upsert_model("approvals", approval)
+
+    revoke_response = client.delete(f"/api/pair/devices/{device_id}")
+    decision_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert revoke_response.status_code == 200
+    assert decision_response.status_code == 401
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_mobile_device_revoke_is_atomic_with_remote_input_grant_creation(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_atomic_revoke", device_name="Atomic")
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, str]] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def create_grant() -> None:
+        try:
+            barrier.wait(timeout=5)
+            grant = mobile_pairing_service.create_remote_input_grant("mobile_atomic_revoke")
+            with lock:
+                results.append(("grant", grant["grant_id"]))
+        except BaseException as exc:  # noqa: BLE001
+            with lock:
+                errors.append(exc)
+
+    def revoke_device() -> None:
+        try:
+            barrier.wait(timeout=5)
+            revoked = mobile_pairing_service.revoke_mobile_device("mobile_atomic_revoke")
+            with lock:
+                results.append(("revoke", revoked["status"]))
+        except BaseException as exc:  # noqa: BLE001
+            with lock:
+                errors.append(exc)
+
+    grant_thread = threading.Thread(target=create_grant)
+    revoke_thread = threading.Thread(target=revoke_device)
+    grant_thread.start()
+    revoke_thread.start()
+    grant_thread.join(timeout=5)
+    revoke_thread.join(timeout=5)
+
+    assert not grant_thread.is_alive()
+    assert not revoke_thread.is_alive()
+    assert [kind for kind, _value in results].count("revoke") == 1
+    assert all(getattr(error, "status_code", None) == 409 for error in errors)
+    device = db.fetch_one("mobile_devices", "mobile_atomic_revoke")
+    assert device is not None
+    assert device["status"] == "revoked"
+    grants_by_id = {grant["id"]: grant for grant in device["remote_input_grants"]}
+    for kind, value in results:
+        if kind == "grant":
+            assert grants_by_id[value]["status"] == "revoked"
+    assert all(grant["status"] == "revoked" for grant in device["remote_input_grants"])
+
+
+def test_expired_remote_input_grant_token_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+    device = db.fetch_one("mobile_devices", device_id)
+    assert device is not None
+    device["remote_input_grants"][0]["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(device, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), device_id),
+        )
+    approval = Approval(
+        task_id="task_expired_remote_input_grant",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve expired remote input grant",
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 401
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_remote_input_grant_can_decide_remote_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+    approval = Approval(
+        task_id="task_remote_input_grant_allowed",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input grant",
+        source_device_id=device_id,
+        source_grant_id=grant["grant_id"],
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "rejected"
+
+
+def test_mobile_websocket_receives_remote_input_grant_without_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{paired_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+
+        grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+        event = websocket.receive_json()
+
+    event_text = json.dumps(event, ensure_ascii=False)
+    assert event["type"] == "remote_input_grant_created"
+    assert event["device_id"] == device_id
+    assert event["grant"]["id"] == grant["grant_id"]
+    assert "token" not in grant
+    assert "token" not in event["grant"]
+
+
+def test_mobile_websocket_receives_remote_input_grant_revoked_without_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{paired_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+
+        client.delete(f"/api/pair/devices/{device_id}/remote-input-grants/{grant['grant_id']}")
+        event = websocket.receive_json()
+
+    event_text = json.dumps(event, ensure_ascii=False)
+    assert event["type"] == "remote_input_grant_revoked"
+    assert event["device_id"] == device_id
+    assert event["grant"]["id"] == grant["grant_id"]
+    assert event["grant"]["status"] == "revoked"
+    assert "token" not in grant
+    assert "token" not in event["grant"]
+
+
+def test_remote_input_grant_full_websocket_lifecycle(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    monkeypatch.setattr(routes_remote, "register_all_tools", lambda settings=None: registry)
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{paired_token}"],
+    ) as mobile_websocket:
+        assert mobile_websocket.receive_json()["type"] == "connected"
+
+        grant_response = client.post(f"/api/pair/devices/{device_id}/remote-input-grants")
+        assert grant_response.status_code == 200
+        grant = grant_response.json()
+        created_event = mobile_websocket.receive_json()
+        assert created_event["type"] == "remote_input_grant_created"
+        assert created_event["device_id"] == device_id
+        assert created_event["grant"]["id"] == grant["grant_id"]
+        assert "token" not in grant
+        assert "token" not in json.dumps(created_event, ensure_ascii=False)
+
+        claim_response = client.post(
+            f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+            headers={"Authorization": f"Bearer {paired_token}"},
+        )
+        assert claim_response.status_code == 200
+        claimed = claim_response.json()
+
+        with client.websocket_connect(
+            "/ws/remote/input",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{claimed['token']}"],
+        ) as input_websocket:
+            assert input_websocket.receive_json()["type"] == "connected"
+
+            input_websocket.send_json({"type": "click", "x": 101, "y": 202})
+            input_result = input_websocket.receive_json()
+            assert input_result["type"] == "approval_required"
+            approval_id = input_result["approval_id"]
+            approval = db.fetch_one("approvals", approval_id)
+            assert approval is not None
+            assert approval["approval_type"] == "remote_input"
+            assert approval["source_device_id"] == device_id
+            assert approval["source_grant_id"] == grant["grant_id"]
+            assert approval["allowed_device_ids"] == [device_id]
+            assert approval["required_mobile_scopes"] == [REMOTE_INPUT_SCOPE]
+
+            revoke_response = client.delete(f"/api/pair/devices/{device_id}/remote-input-grants/{grant['grant_id']}")
+            assert revoke_response.status_code == 200
+            revoked_event = mobile_websocket.receive_json()
+            assert revoked_event["type"] == "remote_input_grant_revoked"
+            assert revoked_event["device_id"] == device_id
+            assert revoked_event["grant"]["id"] == grant["grant_id"]
+            assert revoked_event["grant"]["status"] == "revoked"
+            assert "token" not in json.dumps(revoked_event, ensure_ascii=False)
+
+            input_websocket.send_json({"type": "click", "x": 1, "y": 2})
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                input_websocket.receive_json()
+
+    assert exc_info.value.code == 1008
+
+
+def test_mobile_websocket_filters_other_device_remote_input_grant_revoked(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    first_token = _paired_token(client)
+    second_token = _paired_token(client)
+    first_device_id = decode_mobile_token(first_token)["device_id"]
+    second_device_id = decode_mobile_token(second_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{second_device_id}/remote-input-grants").json()
+    revoked = client.delete(f"/api/pair/devices/{second_device_id}/remote-input-grants/{grant['grant_id']}").json()
+
+    allowed = _mobile_event_allowed(
+        {"type": "remote_input_grant_revoked", "device_id": second_device_id, "grant": revoked},
+        {"device_id": first_device_id},
+    )
+
+    assert allowed is False
+
+
+def test_mobile_device_can_claim_remote_input_grant_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+
+    response = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    claims = decode_mobile_token(payload["token"], allowed_scopes={REMOTE_INPUT_SCOPE})
+    assert claims["device_id"] == device_id
+    assert claims["grant_id"] == grant["grant_id"]
+    assert payload["expires_in"] <= mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS
+
+
+def test_mobile_device_cannot_claim_other_device_remote_input_grant(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    first_token = _paired_token(client)
+    second_token = _paired_token(client)
+    second_device_id = decode_mobile_token(second_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{second_device_id}/remote-input-grants").json()
+
+    response = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {first_token}"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_mobile_device_cannot_claim_revoked_remote_input_grant(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    client.delete(f"/api/pair/devices/{device_id}/remote-input-grants/{grant['grant_id']}")
+
+    response = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_mobile_device_cannot_claim_expired_remote_input_grant(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    device = db.fetch_one("mobile_devices", device_id)
+    assert device is not None
+    device["remote_input_grants"][0]["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(device, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), device_id),
+        )
+
+    response = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_remote_input_scope_cannot_use_general_mobile_resources(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = _claim_remote_input_token(client, paired_token, grant)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    devices_response = client.get(
+        "/api/mobile/devices",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    revoke_response = client.delete(
+        f"/api/mobile/devices/{device_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert pending_response.status_code == 403
+    assert devices_response.status_code == 403
+    assert revoke_response.status_code == 403
+    assert db.fetch_one("mobile_devices", device_id)["status"] == "active"
+
+
+def test_remote_input_grant_token_cannot_use_general_mobile_resources_even_with_mobile_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = issue_mobile_token(
+        device_id=device_id,
+        device_name="Test Phone",
+        scope=[TOKEN_SCOPE, REMOTE_INPUT_SCOPE],
+        source="remote_input_grant",
+        grant_id=grant["grant_id"],
+    )
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    devices_response = client.get(
+        "/api/mobile/devices",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    claim_response = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    revoke_response = client.delete(
+        f"/api/mobile/devices/{device_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert pending_response.status_code == 403
+    assert devices_response.status_code == 403
+    assert claim_response.status_code == 403
+    assert revoke_response.status_code == 403
+    assert db.fetch_one("mobile_devices", device_id)["status"] == "active"
 
 
 def test_mobile_approval_payload_redacts_sensitive_preview(monkeypatch, tmp_path):
@@ -374,6 +1322,50 @@ def test_approval_decision_is_atomic_under_concurrent_submitters(monkeypatch, tm
     assert stored["decided_at"]
 
 
+def test_approved_approval_execution_claim_is_atomic_under_concurrent_callers(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    approval = Approval(
+        task_id="task_claim_atomic",
+        step_id="step_1",
+        message="Claim atomically",
+        status="approved",
+    )
+    db.upsert_model("approvals", approval)
+
+    results: list[dict | None] = []
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+
+    def claim() -> None:
+        try:
+            barrier.wait(timeout=5)
+            row = db.claim_approval_for_execution(approval.id, datetime.now(timezone.utc).isoformat())
+            with lock:
+                results.append(row)
+        except BaseException as exc:  # noqa: BLE001
+            with lock:
+                errors.append(exc)
+
+    first = threading.Thread(target=claim)
+    second = threading.Thread(target=claim)
+    first.start()
+    second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert errors == []
+    assert len(results) == 2
+    assert sum(row is not None for row in results) == 1
+    stored = db.fetch_one("approvals", approval.id)
+    assert stored is not None
+    assert stored["status"] == "approved"
+    assert stored["consumed_at"]
+
+
 def test_mobile_detail_redacts_task_and_omits_plan_args(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -415,7 +1407,10 @@ def test_mobile_approval_websocket_receives_created_event(monkeypatch, tmp_path)
     client = TestClient(app)
     token = _paired_token(client)
 
-    with client.websocket_connect(f"/ws/mobile/approvals?token={token}") as websocket:
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
         connected = websocket.receive_json()
         assert connected["type"] == "connected"
 
@@ -444,13 +1439,102 @@ def test_mobile_approval_websocket_accepts_token_subprotocol(monkeypatch, tmp_pa
     assert connected["type"] == "connected"
 
 
+def test_mobile_approval_websocket_closes_when_device_revoked(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    device_id = decode_mobile_token(token)["device_id"]
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        connected = websocket.receive_json()
+        assert connected["type"] == "connected"
+
+        revoked = client.delete(f"/api/pair/devices/{device_id}").json()
+        event = websocket.receive_json()
+        assert event["type"] == "mobile_device_revoked"
+        assert event["device"]["device_id"] == device_id
+        assert event["device"]["status"] == "revoked"
+        assert "token" not in json.dumps(event, ensure_ascii=False)
+
+        try:
+            websocket.receive_json()
+            raise AssertionError("Mobile approval WebSocket should close after its device is revoked")
+        except Exception as exc:  # noqa: BLE001
+            assert getattr(exc, "code", None) == 1008
+        assert revoked["status"] == "revoked"
+
+
+def test_mobile_approval_websocket_closes_after_token_expires(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_expiring_ws", device_name="Expiring Phone")
+    token = issue_mobile_token(device_id="mobile_expiring_ws", device_name="Expiring Phone", expires_in_seconds=60)
+    client = TestClient(app)
+
+    class ExpiredTokenClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(seconds=120)
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        monkeypatch.setattr(mobile_jwt, "datetime", ExpiredTokenClock)
+        approval = Approval(task_id="task_ws_mobile_expired", step_id="step_1", message="Expired token event")
+        db.upsert_model("approvals", approval)
+        publish_approval_created(approval)
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_json()
+
+    assert exc_info.value.code == 1008
+
+
+def test_mobile_approval_websocket_rejects_remote_input_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_remote_ws", device_name="Remote Phone")
+    token = issue_mobile_token(device_id="mobile_remote_ws", device_name="Remote Phone", scope=REMOTE_INPUT_SCOPE)
+    client = TestClient(app)
+
+    try:
+        with client.websocket_connect(
+            "/ws/mobile/approvals",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ):
+            raise AssertionError("Mobile approval WebSocket should reject remote-input-only tokens")
+    except Exception as exc:  # noqa: BLE001
+        assert getattr(exc, "code", None) == 1008
+
+
+def test_mobile_approval_websocket_rejects_query_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+
+    try:
+        with client.websocket_connect(f"/ws/mobile/approvals?token={token}"):
+            raise AssertionError("Mobile approval WebSocket should reject URL query tokens")
+    except Exception as exc:  # noqa: BLE001
+        assert getattr(exc, "code", None) == 1008
+
+
 def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
 
-    with client.websocket_connect(f"/ws/mobile/approvals?token={token}") as websocket:
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
         connected = websocket.receive_json()
         assert connected["type"] == "connected"
 
@@ -474,6 +1558,23 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
 def _paired_token(client: TestClient) -> str:
     code = client.post("/api/pair/code").json()["code"]
     return client.post("/api/pair", json={"code": code, "device_name": "Test Phone"}).json()["token"]
+
+
+def _enable_remote_desktop() -> None:
+    patch = {"remote_desktop_enabled": True}
+    confirmation = create_settings_confirmation(patch)
+    if confirmation.get("required"):
+        patch["confirmation_nonce"] = confirmation["nonce"]
+    update_settings(patch)
+
+
+def _claim_remote_input_token(client: TestClient, paired_token: str, grant: dict) -> str:
+    response = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+    assert response.status_code == 200
+    return response.json()["token"]
 
 
 def _run_mobile_jwt_subprocess(script: str, data_dir: Path, extra_env: dict[str, str] | None = None) -> str:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Iterable
 
 import httpx
@@ -87,6 +88,58 @@ class ContextProjection:
             "compact_metadata": redact_compact_metadata(self.compact_metadata or {}),
             "retained_tail_message_ids": list(self.retained_tail_message_ids or []),
         }
+
+
+def build_llm_request_snapshot(
+    projection: ContextProjection,
+    settings: AppSettings,
+    *,
+    task: str,
+    purpose: str,
+    provider: str,
+    model: str,
+    tools: list[dict[str, Any]] | None = None,
+    profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    prompt_hash = hashlib.sha256(
+        json.dumps(projection.messages, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    try:
+        from app.policy.approval_binding import permission_policy_version
+        from app.policy.permissions import PermissionStore
+
+        policy_version = permission_policy_version(PermissionStore().updated_at())
+    except Exception:
+        policy_version = ""
+    return {
+        "snapshot_id": f"ctx_{prompt_hash[:16]}",
+        "prompt_hash": prompt_hash,
+        "visible_tool_ids": _visible_tool_ids(tools),
+        "policy_version": policy_version,
+        "context_projection": projection.to_dict(),
+        "routing": {
+            "mode": settings.mode,
+            "permission_mode": getattr(settings, "permission_mode", "default"),
+            "task": task,
+            "purpose": purpose,
+            "provider": provider,
+            "model": model,
+            "profile": profile or {},
+        },
+    }
+
+
+def _visible_tool_ids(tools: list[dict[str, Any]] | None) -> list[str]:
+    result: list[str] = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("name"):
+            result.append(str(function.get("name")))
+        elif tool.get("name"):
+            result.append(str(tool.get("name")))
+    return sorted({item for item in result if item})
 
 
 COMPACT_BOUNDARY_TYPES = {"manual_compact", "auto_compact", "reactive_compact"}
@@ -1063,7 +1116,9 @@ class ContextAwareProvider(LLMProvider):
                     tools=tools,
                 )
                 projection = fallback_projection
+        response = self._with_request_snapshot(response, projection, purpose="chat", tools=tools)
         response = self._with_cost(response)
+        request_snapshot = response.metadata.get("request_snapshot") if isinstance(response.metadata, dict) else {}
         record_llm_response(
             response,
             self.settings,
@@ -1073,6 +1128,7 @@ class ContextAwareProvider(LLMProvider):
             projection={
                 **projection.to_dict(),
                 "context_usage": _safe_context_usage_snapshot(projection, self.settings),
+                "request_snapshot": request_snapshot,
             },
         )
         return response
@@ -1130,15 +1186,22 @@ class ContextAwareProvider(LLMProvider):
                     output_schema,
                 )
                 projection = fallback_projection
-        structured_response = self._with_cost(
-            LLMResponse(
-                content=_json(payload),
-                provider=getattr(self.provider, "name", self.profile.provider_name),
-                model=self.profile.model,
-                usage=estimate_usage(projection.messages, _json(payload)),
-                metadata={"structured": True},
-            )
+        payload_json = _json(payload)
+        structured_response = LLMResponse(
+            content=payload_json,
+            provider=getattr(self.provider, "name", self.profile.provider_name),
+            model=self.profile.model,
+            usage=estimate_usage(projection.messages, payload_json),
+            metadata={"structured": True},
         )
+        structured_response = self._with_request_snapshot(
+            structured_response,
+            projection,
+            purpose="structured_chat",
+            tools=None,
+        )
+        structured_response = self._with_cost(structured_response)
+        request_snapshot = structured_response.metadata.get("request_snapshot") if isinstance(structured_response.metadata, dict) else {}
         record_llm_response(
             structured_response,
             self.settings,
@@ -1148,6 +1211,7 @@ class ContextAwareProvider(LLMProvider):
             projection={
                 **projection.to_dict(),
                 "context_usage": _safe_context_usage_snapshot(projection, self.settings),
+                "request_snapshot": request_snapshot,
             },
         )
         return payload
@@ -1214,9 +1278,29 @@ class ContextAwareProvider(LLMProvider):
     def _with_cost(self, response: LLMResponse) -> LLMResponse:
         if response.cost is not None:
             return response
-        from dataclasses import replace
 
         return replace(response, cost=self.profile.estimate_cost(response.usage))
+
+    def _with_request_snapshot(
+        self,
+        response: LLMResponse,
+        projection: ContextProjection,
+        *,
+        purpose: str,
+        tools: list[dict[str, Any]] | None,
+    ) -> LLMResponse:
+        snapshot = build_llm_request_snapshot(
+            projection,
+            self.settings,
+            task=self.task,
+            purpose=purpose,
+            provider=response.provider,
+            model=response.model,
+            tools=tools,
+            profile=self.profile.to_dict(),
+        )
+        metadata = {**(response.metadata or {}), "request_snapshot": snapshot}
+        return replace(response, metadata=metadata)
 
 
 def force_compact_for_retry(messages: list[dict[str, Any]], settings: AppSettings) -> ContextProjection:

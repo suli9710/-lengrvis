@@ -2,7 +2,7 @@ param(
     [string]$OllamaRuntimeDir = "",
     [string]$OllamaModelsDir = "",
     [string]$OllamaExe = "",
-    [string]$OutputRoot = "vendor",
+    [string]$OutputRoot = ".marvis_data\ollama-release",
     [string]$Model = "qwen2.5:3b",
     [string]$RuntimeSource = "",
     [string]$ModelSource = "",
@@ -544,14 +544,14 @@ function New-BundleManifest {
         }
         runtime = [ordered]@{
             source = $RuntimeSource
-            path = if ($RuntimeDir) { "vendor/ollama" } else { "" }
+            path = if ($RuntimeDir) { Get-RelativePath -Root $repoRoot -Path $RuntimeDir } else { "" }
             executable = if ($RuntimeExecutable) { Get-RelativePath -Root $RuntimeDir -Path $RuntimeExecutable } else { "" }
             version = Get-OllamaVersion -ExecutablePath $RuntimeExecutable
             summary = Get-DirectorySummary -Path $RuntimeDir
         }
         models = [ordered]@{
             source = $ModelSource
-            path = if ($ModelsDir) { "vendor/ollama-models" } else { "" }
+            path = if ($ModelsDir) { Get-RelativePath -Root $repoRoot -Path $ModelsDir } else { "" }
             model_manifest = if ($modelManifestPath) { Get-RelativePath -Root $ModelsDir -Path $modelManifestPath } else { "" }
             summary = Get-DirectorySummary -Path $ModelsDir
         }

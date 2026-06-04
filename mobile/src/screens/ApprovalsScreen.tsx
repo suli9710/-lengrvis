@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  AppState,
+  type AppStateStatus,
   FlatList,
   Pressable,
   SafeAreaView,
@@ -9,31 +11,42 @@ import {
   Text,
   View,
 } from "react-native";
-import { BellOff, ChevronRight, RefreshCcw, ShieldCheck, Unlink } from "lucide-react-native";
+import { BellOff, ChevronRight, Monitor, RefreshCcw, ShieldCheck, Unlink } from "lucide-react-native";
 import type { ReactNode } from "react";
 
 import {
   AuthExpiredError,
   approvalWebSocketUrl,
+  disconnectMobileDevice,
+  ForbiddenError,
   listPendingApprovals,
   mobileAuthWebSocketProtocols,
   type ApprovalEvent,
   type BackendApproval,
   type PairingSession,
+  type RemoteInputGrant,
 } from "../api/client";
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
 import { notifyApproval, requestNotificationPermission } from "../notifications";
 import { clearSession } from "../store/auth";
 
 type ApprovalConnection = "offline" | "connecting" | "online";
+const INITIAL_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 30000;
 
 export function ApprovalsScreen({
   session,
   onSelectApproval,
+  onOpenRemote,
+  onRemoteInputGrant,
+  onRemoteInputGrantRevoked,
   onUnpair,
 }: {
   session: PairingSession;
   onSelectApproval: (approval: BackendApproval) => void;
+  onOpenRemote: () => void;
+  onRemoteInputGrant: (grant: RemoteInputGrant) => void;
+  onRemoteInputGrantRevoked: (grant: RemoteInputGrant) => void;
   onUnpair: () => void;
 }) {
   const [approvals, setApprovals] = useState<BackendApproval[]>([]);
@@ -42,6 +55,8 @@ export function ApprovalsScreen({
   const [notificationsOff, setNotificationsOff] = useState(false);
   const [streamReconnectKey, setStreamReconnectKey] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
 
   const pendingCount = useMemo(
     () => approvals.filter((approval) => approval.status === "pending").length,
@@ -57,6 +72,10 @@ export function ApprovalsScreen({
   }, []);
 
   const handleAuthExpired = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     socketRef.current?.close();
     socketRef.current = null;
     void clearSession().finally(onUnpair);
@@ -82,6 +101,16 @@ export function ApprovalsScreen({
     mergePendingApprovals(pending);
   }, [mergePendingApprovals, session]);
 
+  const scheduleReconnect = useCallback(() => {
+    if (reconnectTimerRef.current) return;
+    const delay = Math.min(MAX_RECONNECT_DELAY_MS, INITIAL_RECONNECT_DELAY_MS * 2 ** reconnectAttemptRef.current);
+    reconnectAttemptRef.current += 1;
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      setStreamReconnectKey((current) => current + 1);
+    }, delay);
+  }, []);
+
   useEffect(() => {
     void requestNotificationPermission()
       .then((allowed) => setNotificationsOff(!allowed))
@@ -90,6 +119,10 @@ export function ApprovalsScreen({
 
   useEffect(() => {
     let closedByEffect = false;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     setConnection("connecting");
     setError("");
     void refreshApprovals().catch((currentError: unknown) => {
@@ -104,6 +137,7 @@ export function ApprovalsScreen({
     socketRef.current = socket;
 
     socket.onopen = () => {
+      reconnectAttemptRef.current = 0;
       setConnection("online");
       setError("");
     };
@@ -122,6 +156,18 @@ export function ApprovalsScreen({
         }
         if (payload.type === "approval_decided") {
           upsertApproval(payload.approval);
+          return;
+        }
+        if (payload.type === "remote_input_grant_created" && payload.device_id === session.deviceId) {
+          onRemoteInputGrant(payload.grant);
+          return;
+        }
+        if (payload.type === "remote_input_grant_revoked" && payload.device_id === session.deviceId) {
+          onRemoteInputGrantRevoked(payload.grant);
+          return;
+        }
+        if (payload.type === "mobile_device_revoked" && payload.device_id === session.deviceId) {
+          handleAuthExpired();
         }
       } catch {
         // Polling remains available if a stream event is malformed.
@@ -137,7 +183,10 @@ export function ApprovalsScreen({
         handleAuthExpired();
         return;
       }
-      if (!closedByEffect) setConnection("offline");
+      if (!closedByEffect) {
+        setConnection("offline");
+        scheduleReconnect();
+      }
     };
 
     return () => {
@@ -145,13 +194,44 @@ export function ApprovalsScreen({
       if (socketRef.current === socket) socketRef.current = null;
       socket.close();
     };
-  }, [handleAuthExpired, mergePendingApprovals, refreshApprovals, session, streamReconnectKey, upsertApproval]);
+  }, [handleAuthExpired, mergePendingApprovals, onRemoteInputGrant, onRemoteInputGrantRevoked, refreshApprovals, scheduleReconnect, session, streamReconnectKey, upsertApproval]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (state !== "active") return;
+      void refreshApprovals().catch((currentError: unknown) => {
+        if (currentError instanceof AuthExpiredError) {
+          handleAuthExpired();
+          return;
+        }
+        setError(errorMessage(currentError));
+      });
+      setStreamReconnectKey((current) => current + 1);
+    });
+    return () => subscription.remove();
+  }, [handleAuthExpired, refreshApprovals]);
+
+  useEffect(
+    () => () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    },
+    [],
+  );
 
   const disconnectPhone = async () => {
+    let disconnectError: unknown;
+    try {
+      await disconnectMobileDevice(session);
+    } catch (currentError) {
+      disconnectError = currentError;
+    }
     socketRef.current?.close();
     socketRef.current = null;
     await clearSession();
     onUnpair();
+    if (disconnectError) {
+      Alert.alert("断开连接", disconnectErrorMessage(disconnectError));
+    }
   };
 
   const handleUnpair = () => {
@@ -174,6 +254,7 @@ export function ApprovalsScreen({
           <Text style={styles.headerTitle}>{headerTitle}</Text>
         </View>
         <View style={styles.headerActions}>
+          <IconButton accessibilityLabel="查看电脑屏幕" icon={<Monitor size={18} color="#23313d" />} onPress={onOpenRemote} />
           <IconButton accessibilityLabel="刷新请求" icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
           <IconButton accessibilityLabel="断开手机连接" icon={<Unlink size={18} color="#8c2f39" />} onPress={handleUnpair} />
         </View>
@@ -190,6 +271,16 @@ export function ApprovalsScreen({
         </View>
       ) : null}
       {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="查看电脑屏幕"
+        onPress={onOpenRemote}
+        style={({ pressed }) => [styles.remoteEntry, pressed && styles.pressed]}
+      >
+        <Monitor size={16} color="#23313d" />
+        <Text style={styles.remoteEntryText}>查看电脑屏幕</Text>
+        <ChevronRight size={17} color="#65717c" />
+      </Pressable>
 
       <FlatList
         contentContainerStyle={approvals.length ? styles.list : styles.emptyList}
@@ -254,13 +345,26 @@ function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.includes("Failed to fetch")) {
     return "无法连接到电脑。请确认 Mavris 已打开，然后点刷新。";
   }
+  if (error instanceof ForbiddenError) {
+    return "这台手机没有权限查看这些审批。请在电脑端重新配对后再试。";
+  }
   return "无法更新请求。请点刷新重试。";
+}
+
+function disconnectErrorMessage(error: unknown): string {
+  if (error instanceof AuthExpiredError) {
+    return "电脑端已不再接受这台手机的登录。本地连接信息已清除。";
+  }
+  if (error instanceof ForbiddenError) {
+    return "电脑端拒绝了断开请求，可能这台手机已不是当前配对设备。本地连接信息已清除。";
+  }
+  return "没能通知电脑端断开连接，可能电脑不在线。本地连接信息已清除。";
 }
 
 function connectionStatusText(connection: ApprovalConnection): string {
   if (connection === "online") return "已连接";
   if (connection === "connecting") return "正在连接";
-  return "离线，请点刷新重试";
+  return "离线，正在自动重连";
 }
 
 function approvalStatusText(approval: BackendApproval): string {
@@ -358,6 +462,24 @@ const styles = StyleSheet.create({
     marginTop: 10,
     color: "#8c2f39",
     lineHeight: 20,
+  },
+  remoteEntry: {
+    marginHorizontal: 20,
+    marginTop: 10,
+    minHeight: 42,
+    borderRadius: 8,
+    backgroundColor: "#eef5f2",
+    borderWidth: 1,
+    borderColor: "#cddbd3",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  remoteEntryText: {
+    flex: 1,
+    color: "#23313d",
+    fontWeight: "800",
   },
   list: {
     padding: 20,

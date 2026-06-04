@@ -13,6 +13,8 @@ Set-Location $Root
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $Failures = New-Object System.Collections.Generic.List[string]
+$MissingArtifacts = New-Object System.Collections.Generic.List[object]
+$MinimumSelfExtractingExeBytes = 65536
 
 function Resolve-ProjectPath([string]$Path) {
     if ([System.IO.Path]::IsPathRooted($Path)) {
@@ -25,6 +27,7 @@ function Test-RequiredFile([string]$Label, [string]$Path) {
     $FullPath = Resolve-ProjectPath $Path
     if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
         $Failures.Add("$Label missing: $FullPath")
+        $MissingArtifacts.Add([pscustomobject]@{ Label = $Label; Path = $FullPath; Type = "file" })
         return
     }
     $Item = Get-Item -LiteralPath $FullPath
@@ -43,6 +46,7 @@ function Test-RequiredDirectory([string]$Label, [string]$Path) {
     $FullPath = Resolve-ProjectPath $Path
     if (-not (Test-Path -LiteralPath $FullPath -PathType Container)) {
         $Failures.Add("$Label missing: $FullPath")
+        $MissingArtifacts.Add([pscustomobject]@{ Label = $Label; Path = $FullPath; Type = "directory" })
         return
     }
     Write-Host "[ok] $Label`: $FullPath"
@@ -87,6 +91,84 @@ function Test-ZipDirectoryEntry([System.IO.Compression.ZipArchive]$Zip, [string]
         return
     }
     Write-Host "[ok] zip directory $Normalized contains files"
+}
+
+function Test-SelfExtractingExecutable([string]$Path) {
+    $FullPath = Resolve-ProjectPath $Path
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+        return
+    }
+
+    $Item = Get-Item -LiteralPath $FullPath
+    if ($Item.Length -lt $MinimumSelfExtractingExeBytes) {
+        $Failures.Add("self-extracting executable is too small to be a release SFX ($($Item.Length) bytes; expected at least $MinimumSelfExtractingExeBytes): $FullPath")
+        return
+    }
+
+    $Stream = [System.IO.File]::Open($FullPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    $Reader = New-Object System.IO.BinaryReader($Stream)
+    try {
+        if ($Stream.Length -lt 0x100) {
+            $Failures.Add("self-extracting executable is too small for a PE header: $FullPath")
+            return
+        }
+
+        $Mz = $Reader.ReadUInt16()
+        if ($Mz -ne 0x5A4D) {
+            $Failures.Add("self-extracting executable does not start with MZ header: $FullPath")
+            return
+        }
+
+        $Stream.Position = 0x3C
+        $PeOffset = [int64]$Reader.ReadUInt32()
+        if ($PeOffset -lt 0x40 -or $PeOffset -gt ($Stream.Length - 0x18)) {
+            $Failures.Add("self-extracting executable has invalid PE header offset $PeOffset`: $FullPath")
+            return
+        }
+
+        $Stream.Position = $PeOffset
+        $PeSignature = $Reader.ReadUInt32()
+        if ($PeSignature -ne 0x00004550) {
+            $Failures.Add("self-extracting executable has invalid PE signature at offset $PeOffset`: $FullPath")
+            return
+        }
+
+        $Machine = $Reader.ReadUInt16()
+        if ($Machine -notin @(0x014C, 0x8664, 0xAA64)) {
+            $Failures.Add(("self-extracting executable uses unexpected PE machine 0x{0:X4}: {1}" -f $Machine, $FullPath))
+        }
+
+        $SectionCount = $Reader.ReadUInt16()
+        if ($SectionCount -lt 1 -or $SectionCount -gt 96) {
+            $Failures.Add("self-extracting executable has invalid PE section count $SectionCount`: $FullPath")
+        }
+
+        $Stream.Position = $PeOffset + 0x14
+        $OptionalHeaderSize = $Reader.ReadUInt16()
+        if ($OptionalHeaderSize -lt 0x60) {
+            $Failures.Add("self-extracting executable optional header is too small ($OptionalHeaderSize bytes): $FullPath")
+            return
+        }
+
+        $OptionalHeaderOffset = $PeOffset + 0x18
+        if (($OptionalHeaderOffset + $OptionalHeaderSize) -gt $Stream.Length) {
+            $Failures.Add("self-extracting executable optional header extends beyond file length: $FullPath")
+            return
+        }
+
+        $Stream.Position = $OptionalHeaderOffset
+        $OptionalMagic = $Reader.ReadUInt16()
+        if ($OptionalMagic -notin @(0x010B, 0x020B)) {
+            $Failures.Add(("self-extracting executable uses unexpected PE optional header magic 0x{0:X4}: {1}" -f $OptionalMagic, $FullPath))
+            return
+        }
+
+        Write-Host "[ok] self-extracting executable PE header validated ($($Item.Length) bytes): $FullPath"
+    }
+    finally {
+        $Reader.Dispose()
+        $Stream.Dispose()
+    }
 }
 
 function Get-DirectorySummary {
@@ -173,6 +255,7 @@ Test-RequiredDirectory "portable renderer dist" (Join-Path $PortablePath "resour
 Test-RequiredFile "portable app package manifest" (Join-Path $PortablePath "resources\app\package.json")
 Test-RequiredFile "portable zip" $PortableZipPath
 Test-RequiredFile "self-extracting executable" $SelfExtractingPath
+Test-SelfExtractingExecutable $SelfExtractingPath
 if ($RequireBundledOllama) {
     Test-NonEmptyDirectory "portable Ollama runtime" $PortableOllamaDir
     Test-NonEmptyDirectory "portable Ollama models" $PortableOllamaModelsDir
@@ -202,6 +285,15 @@ if ($Failures.Count -gt 0) {
     Write-Host "Packaging verification failed:" -ForegroundColor Red
     foreach ($Failure in $Failures) {
         Write-Host " - $Failure" -ForegroundColor Red
+    }
+    if ($MissingArtifacts.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Missing release artifacts are blocking the gate:" -ForegroundColor Yellow
+        foreach ($Artifact in $MissingArtifacts) {
+            Write-Host " - $($Artifact.Label) ($($Artifact.Type)): $($Artifact.Path)" -ForegroundColor Yellow
+        }
+        Write-Host ""
+        Write-Host "This verification step does not generate artifacts. Run a full packaging build first, or pass -DistDir/-PortableDir/-PortableZip/-SelfExtractingExe to the artifacts you intend to release." -ForegroundColor Yellow
     }
     exit 1
 }

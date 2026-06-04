@@ -23,5 +23,8 @@ def record(event_type: str, actor: str, payload: dict[str, Any] | None = None, t
         actor=actor,
         payload=sanitize_payload(payload or {}),
     )
-    db.upsert_model("audit_events", event)
-    return event
+    return AuditEvent.model_validate(db.insert_audit_event(event))
+
+
+def verify_chain(limit: int = 10000) -> dict[str, Any]:
+    return db.verify_audit_log(limit=limit)

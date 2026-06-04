@@ -1,5 +1,6 @@
 param(
     [string]$OutputDir = "dist\Mavris-win-portable",
+    [string]$BackendExe = "dist\backend.exe",
     [string]$BundledOllamaDir = "",
     [string]$BundledOllamaModelsDir = "",
     [string]$BundledOllamaManifest = "",
@@ -169,17 +170,14 @@ function Test-OllamaBundleManifest {
 
 $ElectronDist = Join-Path $Root "desktop\node_modules\electron\dist"
 $DesktopDist = Join-Path $Root "desktop\dist"
-$BackendExe = Join-Path $Root "dist\backend.exe"
+$BackendExe = Resolve-ProjectPath $BackendExe
 $Out = Resolve-ProjectPath $OutputDir
-$DefaultOllamaDir = Join-Path $Root "vendor\ollama"
-$DefaultOllamaModelsDir = Join-Path $Root "vendor\ollama-models"
-$DefaultOllamaManifest = Join-Path $Root "vendor\ollama-bundle-manifest.json"
-$ResolvedOllamaDir = if ($BundledOllamaDir) { Resolve-ProjectPath $BundledOllamaDir } elseif (Test-Path $DefaultOllamaDir) { $DefaultOllamaDir } else { "" }
-$ResolvedOllamaModelsDir = if ($BundledOllamaModelsDir) { Resolve-ProjectPath $BundledOllamaModelsDir } elseif (Test-Path $DefaultOllamaModelsDir) { $DefaultOllamaModelsDir } else { "" }
-$ResolvedOllamaManifest = if ($BundledOllamaManifest) { Resolve-ProjectPath $BundledOllamaManifest } elseif (Test-Path $DefaultOllamaManifest) { $DefaultOllamaManifest } else { "" }
+$ResolvedOllamaDir = if ($BundledOllamaDir) { Resolve-ProjectPath $BundledOllamaDir } else { "" }
+$ResolvedOllamaModelsDir = if ($BundledOllamaModelsDir) { Resolve-ProjectPath $BundledOllamaModelsDir } else { "" }
+$ResolvedOllamaManifest = if ($BundledOllamaManifest) { Resolve-ProjectPath $BundledOllamaManifest } else { "" }
 
-if (($ResolvedOllamaDir -or $ResolvedOllamaModelsDir) -and -not ($ResolvedOllamaDir -and $ResolvedOllamaModelsDir)) {
-    throw "Bundled Ollama runtime and models must be packaged together."
+if (($ResolvedOllamaDir -or $ResolvedOllamaModelsDir -or $ResolvedOllamaManifest) -and -not ($ResolvedOllamaDir -and $ResolvedOllamaModelsDir -and $ResolvedOllamaManifest)) {
+    throw "Bundled Ollama runtime, models, and manifest must be provided explicitly together. Default builds download Ollama and models on demand."
 }
 
 Assert-PortableOutputPath -OutputPath $Out -InputDirectories @(
@@ -271,6 +269,8 @@ if ($ResolvedOllamaDir -and $ResolvedOllamaModelsDir) {
     Copy-Item -LiteralPath $ResolvedOllamaManifest -Destination $OllamaManifestOut -Force
     Test-OllamaBundleManifest -ManifestPath $OllamaManifestOut -RuntimeDir $OllamaOutDir -ModelsDir $OllamaModelsOutDir
     Write-Host "Bundled Ollama manifest copied and verified at $OllamaManifestOut"
+} else {
+    Write-Host "Ollama runtime and models are not bundled; Mavris will install/pull them on demand."
 }
 
 Write-Host "Portable build created at $Out"

@@ -63,6 +63,7 @@ import type {
   SystemInfo,
   SystemProcess,
   TaskEvent,
+  TaskBoundaryEvent,
   RunEventPayload,
   TaskExplain,
   TaskExplainChainItem,
@@ -287,7 +288,7 @@ export class MavrisApiClient {
       const task = tasksResponse.data[0];
       const timeline = await this.request<BackendTimeline>({ endpoint: `/api/tasks/${task.id}/timeline` });
       return mapResponse(timeline, (data) => {
-        const plannerMessage = data.messages.find((message) => agentNameFor(message) === "PlannerAgent");
+        const plannerMessage = [...data.messages].reverse().find((message) => agentNameFor(message) === "PlannerAgent");
         const rawPlan = metadataPayloadFor<BackendPlan>(plannerMessage);
         if (!rawPlan?.steps?.length) {
           return {
@@ -308,7 +309,14 @@ export class MavrisApiClient {
             title: zhToolName(step.tool_name),
             detail: zhBackendText(step.description),
             state: step.status === "succeeded" ? "done" : step.status === "waiting_user_approval" ? "blocked" : "pending",
-            owner: step.agent_name
+            owner: step.agent_name,
+            toolName: step.tool_name,
+            riskLevel: step.risk_level,
+            effects: step.tool_effects ?? [],
+            resourceKinds: step.resource_kinds ?? [],
+            trustTier: step.trust_tier,
+            approvalState: step.requires_approval ? "required" : "not_required",
+            deferredTool: Boolean(step.deferred_tool)
           }))
         };
       });
@@ -420,6 +428,7 @@ export class MavrisApiClient {
             ? "needs_review"
             : "clear",
         updatedAt: reviews[0]?.created_at ?? task.updated_at,
+        boundaryEvents: mapBoundaryEvents(task.boundary_events),
         findings: reviews.map((review) => ({
           id: review.id,
           severity: mapRiskSeverity(review.risk_level),
@@ -469,6 +478,28 @@ export class MavrisApiClient {
   listMobileDevices(): Promise<ApiResponse<MobileDeviceList>> {
     return this.request<MobileDeviceList>({
       endpoint: "/api/pair/devices"
+    });
+  }
+
+  revokeMobileDevice(deviceId: string): Promise<ApiResponse<MobileDevice>> {
+    return this.request<MobileDevice>({
+      endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}`,
+      method: "DELETE"
+    });
+  }
+
+  createRemoteInputGrant(deviceId: string, expiresInSeconds = 300): Promise<ApiResponse<RemoteInputGrantIssueResult>> {
+    return this.request<RemoteInputGrantIssueResult, { expires_in: number }>({
+      endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}/remote-input-grants`,
+      method: "POST",
+      body: { expires_in: expiresInSeconds }
+    });
+  }
+
+  revokeRemoteInputGrant(deviceId: string, grantId: string): Promise<ApiResponse<RemoteInputGrant>> {
+    return this.request<RemoteInputGrant>({
+      endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}/remote-input-grants/${encodeURIComponent(grantId)}`,
+      method: "DELETE"
     });
   }
 
@@ -620,8 +651,16 @@ export class MavrisApiClient {
     }).then((response) => mapResponse(response, mapContextUsage));
   }
 
-  saveSettings(settings: AppSettings): Promise<ApiResponse<AppSettings>> {
+  async saveSettings(settings: AppSettings): Promise<ApiResponse<AppSettings>> {
     const body = settingsPatchFor(settings, this.lastLoadedSettings);
+    const confirmation = await this.request<SensitiveChangeConfirmation, Partial<BackendSettings>>({
+      endpoint: "/api/settings/confirm-sensitive-change",
+      method: "POST",
+      body
+    });
+    if (confirmation.ok && confirmation.data?.required && confirmation.data.nonce) {
+      body.confirmation_nonce = confirmation.data.nonce;
+    }
     return this.request<BackendSettings, Partial<BackendSettings>>({
       endpoint: "/api/settings",
       method: "POST",
@@ -633,6 +672,22 @@ export class MavrisApiClient {
         this.lastLoadedSettings = mapped.data;
       }
       return mapped;
+    });
+  }
+
+  async confirmPermissionRuleChange(rule: BackendPermissionRule): Promise<ApiResponse<SensitiveChangeConfirmation>> {
+    return this.request<SensitiveChangeConfirmation, { action: string; rule: BackendPermissionRule }>({
+      endpoint: "/api/settings/permission-policy/confirm-relaxation",
+      method: "POST",
+      body: { action: "upsert_rule", rule }
+    });
+  }
+
+  async confirmPermissionRuleDelete(ruleId: string): Promise<ApiResponse<SensitiveChangeConfirmation>> {
+    return this.request<SensitiveChangeConfirmation, { action: string; rule_id: string }>({
+      endpoint: "/api/settings/permission-policy/confirm-relaxation",
+      method: "POST",
+      body: { action: "delete_rule", rule_id: ruleId }
     });
   }
 
@@ -1225,10 +1280,12 @@ export class MavrisApiClient {
     if (!timeline.ok || !timeline.data) {
       return base;
     }
+    const boundaryEvents = mapBoundaryEvents(timeline.data.boundary_events);
     return {
       ...base,
       recordings: mapTaskRecordings(timeline.data),
-      cleanupPlan: base.cleanupPlan ?? cleanupPlanFromTimeline(timeline.data)
+      cleanupPlan: base.cleanupPlan ?? cleanupPlanFromTimeline(timeline.data),
+      boundaryEvents: boundaryEvents.length ? boundaryEvents : base.boundaryEvents
     };
   }
 
@@ -1490,6 +1547,19 @@ function mapRunTaskEvent(run: BackendRunState): TaskEvent {
   };
 }
 
+function mapBoundaryEvents(value: unknown): TaskBoundaryEvent[] {
+  return arrayOfObjects(value).map((event) => ({
+    id: String(event.id ?? crypto.randomUUID()),
+    kind: String(event.kind ?? "boundary"),
+    title: zhBackendText(String(event.title ?? "工程边界")),
+    detail: zhBackendText(String(event.detail ?? "")),
+    severity: String(event.severity ?? "info"),
+    stepId: optionalString(event.step_id ?? event.stepId),
+    createdAt: String(event.created_at ?? event.createdAt ?? new Date().toISOString()),
+    payload: recordOrUndefined(event.payload)
+  }));
+}
+
 function zhRunEngine(engine?: string): string {
   if (engine === "developer") return "开发执行";
   if (engine === "os") return "电脑执行";
@@ -1537,7 +1607,14 @@ function mapRunPlan(run: BackendRunState, timeline: BackendRunTimeline): Plan {
       title: zhToolName(step.tool_name),
       detail: zhBackendText(step.description),
       state: step.status === "succeeded" ? "done" : step.status === "waiting_user_approval" ? "blocked" : "pending",
-      owner: step.agent_name
+      owner: step.agent_name,
+      toolName: step.tool_name,
+      riskLevel: step.risk_level,
+      effects: step.tool_effects ?? [],
+      resourceKinds: step.resource_kinds ?? [],
+      trustTier: step.trust_tier,
+      approvalState: step.requires_approval ? "required" : "not_required",
+      deferredTool: Boolean(step.deferred_tool)
     }))
   };
 }
@@ -1847,7 +1924,8 @@ function mapTaskEvent(task: BackendTask): TaskEvent {
     createdAt: task.created_at,
     updatedAt: task.updated_at,
     recordings: [],
-    cleanupPlan
+    cleanupPlan,
+    boundaryEvents: mapBoundaryEvents(task.boundary_events)
   };
 }
 
@@ -2089,16 +2167,34 @@ function mapApproval(approval: BackendApproval): ApprovalRequest {
   const cleanupPlan = cleanupPlanFromApprovalPayload(approval.diff_preview);
   return {
     id: approval.id,
+    taskId: approval.task_id ? String(approval.task_id) : undefined,
+    stepId: approval.step_id === undefined ? undefined : approval.step_id,
+    approvalType: approval.approval_type,
     title: cleanupPlan ? "清理计划审批" : zhApprovalType(approval.approval_type),
     reason: zhBackendText(approval.message),
     requester: "HumanGateAgent",
-    riskLevel: cleanupPlan?.items.some((item) => item.disposition === "permanent_delete") ? "high" : "medium",
+    riskLevel: cleanupPlan?.items.some((item) => item.disposition === "permanent_delete")
+      ? "high"
+      : mapRiskSeverity(approval.risk_level ?? ""),
     createdAt: approval.created_at,
     proposedAction: formatDiffPreview(approval.diff_preview),
     status: approval.status === "rejected" ? "denied" : approval.status === "approved" ? "approved" : "pending",
     rawPayload: approval.diff_preview,
-    cleanupPlan
+    cleanupPlan,
+    toolName: approval.tool_name,
+    toolTrustTier: approval.tool_trust_tier,
+    toolEffects: approval.tool_effects ?? [],
+    resourceKinds: approval.resource_kinds ?? [],
+    policyMode: approval.policy_mode ?? approval.permission_mode,
+    dryRunSummary: approval.dry_run_summary,
+    modelAction: optionalObjectRecord(approval.model_action),
+    runtimeControlFields: optionalObjectRecord(approval.runtime_control_fields ?? approval.runtime_fields),
+    engineeringBoundary: optionalObjectRecord(approval.engineering_boundary)
   };
+}
+
+function optionalObjectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function cleanupPlanFromApprovalPayload(payload: unknown): CleanupPlan | undefined {
@@ -2250,6 +2346,7 @@ function settingsPatchFor(settings: AppSettings, baseline: AppSettings | null): 
   add("ocr_min_confidence", settings.ocrMinConfidence, settings.ocrMinConfidence !== previous.ocrMinConfidence);
   add("ocr_batch_size", settings.ocrBatchSize, settings.ocrBatchSize !== previous.ocrBatchSize);
   add("mode", settings.mode, settings.mode !== previous.mode);
+  add("permission_mode", settings.permissionMode, settings.permissionMode !== previous.permissionMode);
   add("allow_cloud_context", settings.allowCloudContext, settings.allowCloudContext !== previous.allowCloudContext);
   add(
     "allow_file_content_upload",
@@ -2386,10 +2483,19 @@ function mapSettings(settings: BackendSettings): AppSettings {
     ocrMinConfidence: Number(settings.ocr_min_confidence ?? 0),
     ocrBatchSize: Number(settings.ocr_batch_size ?? 1),
     mode,
+    permissionMode: normalizePermissionMode(settings.permission_mode),
     allowCloudContext: Boolean(settings.allow_cloud_context),
     allowFileContentUpload: Boolean(settings.allow_file_content_upload),
     mcpServers
   };
+}
+
+function normalizePermissionMode(value?: string): AppSettings["permissionMode"] {
+  const normalized = String(value ?? "default").toLowerCase();
+  if (normalized === "plan" || normalized === "trusted_edits" || normalized === "auto_review" || normalized === "dont_ask") {
+    return normalized;
+  }
+  return "default";
 }
 
 function mapLlmHealth(health: BackendLlmHealth): LLMHealthStatus {
@@ -3194,6 +3300,7 @@ interface BackendTask {
   cleanup_plan?: unknown;
   cleanupPlan?: unknown;
   diff_preview?: unknown;
+  boundary_events?: BackendBoundaryEvent[];
 }
 
 interface BackendTimeline {
@@ -3203,6 +3310,20 @@ interface BackendTimeline {
   recordings?: BackendStepRecording[];
   cleanup_plan?: unknown;
   cleanupPlan?: unknown;
+  boundary_events?: BackendBoundaryEvent[];
+}
+
+interface BackendBoundaryEvent {
+  id?: string;
+  kind?: string;
+  title?: string;
+  detail?: string;
+  severity?: string;
+  step_id?: string;
+  stepId?: string;
+  created_at?: string;
+  createdAt?: string;
+  payload?: Record<string, unknown>;
 }
 
 interface BackendStepRecording {
@@ -3262,6 +3383,12 @@ interface BackendPlan {
     tool_name: string;
     description: string;
     status: string;
+    risk_level?: string;
+    requires_approval?: boolean;
+    tool_effects?: string[];
+    resource_kinds?: string[];
+    trust_tier?: string;
+    deferred_tool?: boolean;
   }>;
 }
 
@@ -3385,9 +3512,23 @@ interface BackendTaskExplain {
 
 interface BackendApproval {
   id: string;
+  task_id?: string | null;
+  step_id?: string | null;
   approval_type: string;
   message: string;
   diff_preview: unknown;
+  tool_name?: string;
+  risk_level?: string;
+  tool_trust_tier?: string;
+  tool_effects?: string[];
+  resource_kinds?: string[];
+  policy_mode?: string;
+  permission_mode?: string;
+  dry_run_summary?: string;
+  model_action?: unknown;
+  runtime_control_fields?: unknown;
+  runtime_fields?: unknown;
+  engineering_boundary?: unknown;
   status: string;
   created_at: string;
 }
@@ -3615,12 +3756,32 @@ export interface MobilePairingCode {
 export interface MobileDevice {
   device_id: string;
   device_name: string;
+  status?: string;
   created_at: string;
   updated_at: string;
+  revoked_at?: string;
+  remote_input_grants?: RemoteInputGrant[];
 }
 
 export interface MobileDeviceList {
   devices: MobileDevice[];
+}
+
+export interface RemoteInputGrant {
+  id: string;
+  status?: string;
+  scope?: "remote:input" | string;
+  created_at?: string;
+  expires_at?: string;
+  revoked_at?: string;
+}
+
+export interface RemoteInputGrantIssueResult {
+  grant_id: string;
+  device_id: string;
+  expires_at: string;
+  expires_in: number;
+  device?: MobileDevice;
 }
 
 interface BackendFileSearchResponse {
@@ -3762,8 +3923,10 @@ interface BackendSettings {
   ocr_min_confidence?: number;
   ocr_batch_size?: number;
   mode?: string;
+  permission_mode?: string;
   allow_cloud_context?: boolean;
   allow_file_content_upload?: boolean;
+  confirmation_nonce?: string;
   mcp_servers?: Array<{
     id?: string;
     name?: string;
@@ -3775,6 +3938,29 @@ interface BackendSettings {
     auth?: Record<string, unknown>;
     [key: string]: unknown;
   }>;
+}
+
+interface SensitiveChangeConfirmation {
+  required?: boolean;
+  nonce?: string;
+  expires_at?: string;
+  changes?: Array<Record<string, unknown>>;
+}
+
+interface BackendPermissionRule {
+  id?: string;
+  name?: string;
+  effect?: "allow" | "deny";
+  tools?: string[];
+  path_patterns?: string[];
+  time_windows?: Array<{
+    days?: number[];
+    start?: string;
+    end?: string;
+    timezone?: string;
+  }>;
+  reason?: string;
+  enabled?: boolean;
 }
 
 interface BackendLlmCapabilities {

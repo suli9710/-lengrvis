@@ -3,7 +3,6 @@ import {
   BrowserWindow,
   WebContentsView,
   ipcMain,
-  shell,
   type IpcMainInvokeEvent,
   type Rectangle,
   type WebContents
@@ -21,7 +20,7 @@ import type {
   BrowserHostSnapshot,
   BrowserSession
 } from "../shared/types";
-import { isSafeExternalUrl, isTrustedRendererUrl } from "./ipc";
+import { isTrustedRendererUrl } from "./ipc";
 
 type BrowserContainer =
   | {
@@ -665,7 +664,8 @@ export class BrowserHostWebSocketBridge {
 
   constructor(
     private readonly browserHost: BrowserHost,
-    private readonly getBaseUrl: () => string
+    private readonly getBaseUrl: () => string,
+    private readonly getDesktopApiToken: () => string = () => ""
   ) {}
 
   start(): void {
@@ -692,7 +692,11 @@ export class BrowserHostWebSocketBridge {
   private connect(): void {
     if (this.stopped || typeof WebSocket === "undefined") return;
     try {
-      this.socket = new WebSocket(buildBrowserHostWebSocketUrl(this.getBaseUrl()));
+      const desktopApiToken = this.getDesktopApiToken();
+      this.socket = new WebSocket(
+        buildBrowserHostWebSocketUrl(this.getBaseUrl()),
+        desktopApiToken ? [`mavris.desktop.token.${desktopApiToken}`] : undefined
+      );
       this.socket.addEventListener("open", () => {
         this.send({ type: "snapshot", snapshot: this.browserHost.getSnapshot() });
       });
@@ -804,11 +808,8 @@ function createBrowserContainer(partition: string): BrowserContainer {
   };
 }
 
-function hardenEmbeddedWebContents(webContents: WebContents): void {
-  webContents.setWindowOpenHandler(({ url }) => {
-    if (isSafeExternalUrl(url)) {
-      void shell.openExternal(url);
-    }
+export function hardenEmbeddedWebContents(webContents: WebContents): void {
+  webContents.setWindowOpenHandler(() => {
     return { action: "deny" };
   });
   webContents.on("will-navigate", (event, url) => {
@@ -1088,10 +1089,35 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-function buildBrowserHostWebSocketUrl(baseUrl: string): string {
+export function buildBrowserHostWebSocketUrl(baseUrl: string): string {
+  if (!isLoopbackBackendUrl(baseUrl)) {
+    throw new Error("BrowserHost WebSocket bridge requires a loopback backend baseUrl");
+  }
   const url = new URL("/api/ws/browser-host", baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
+}
+
+export function isLoopbackBackendUrl(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return false;
+    }
+    return isLoopbackHostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") {
+    return true;
+  }
+  const ipv4Match = normalized.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!ipv4Match) return false;
+  return ipv4Match.slice(1).every((part) => Number(part) >= 0 && Number(part) <= 255) && Number(ipv4Match[1]) === 127;
 }
 
 type BrowserHostBridgeMessage =

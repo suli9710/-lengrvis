@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.policy.risk import RiskLevel
+from app.tools.registry import ToolRegistry
 from app.tools.schemas import ToolDefinition
 
 
@@ -150,3 +151,25 @@ def test_tool_definition_infers_readonly_and_concurrency_defaults() -> None:
     assert read_tool.is_concurrency_safe() is True
     assert keyed_tool.is_concurrency_safe() is False
     assert destructive_tool.is_concurrency_safe() is False
+
+
+def test_registry_hides_tools_missing_model_visible_contract() -> None:
+    registry = ToolRegistry()
+    tool = ToolDefinition(
+        name="test.incomplete_contract",
+        description="missing contract metadata",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="TestAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=_noop,
+    )
+
+    registry.register(tool)
+
+    assert registry.get(tool.name) is tool
+    assert tool.contract_errors()
+    assert registry.list_for_planning() == []
+    assert registry.search("incomplete contract") == []

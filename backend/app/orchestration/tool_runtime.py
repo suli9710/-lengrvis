@@ -45,6 +45,8 @@ from app.policy.approval_binding import (
     settings_fingerprint,
 )
 from app.policy.permissions import PermissionStore
+from app.policy.model_boundary import model_control_arg_error
+from app.policy.permission_modes import permission_mode_from_context, trusted_reversible_edit_allowed
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
 from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
@@ -122,6 +124,24 @@ class ToolRuntime:
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         orchestrator._set_status(task, TaskStatus.REVIEWING_TOOL_CALL)
+        boundary_error = model_control_arg_error(step.args)
+        if boundary_error:
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            record(
+                "model_boundary.tool_args_denied",
+                "ToolRuntime",
+                {"tool": step.tool_name, "error": boundary_error},
+                task_id=task.id,
+            )
+            orchestrator.bus.publish_text(task.id, orchestrator.name, f"Denied step: {boundary_error}", step_id=step.id)
+            orchestrator._supervise_new_agent_messages(task.id, "model_boundary_denied")
+            result = ToolResult(
+                tool_call_id=f"{step.id}_model_boundary",
+                ok=False,
+                error=boundary_error,
+                observation=f"{step.tool_name} was denied by model boundary constraints.",
+            )
+            return RuntimeExecutionResult("step_denied", result)
         validation_error = self._validate_input(tool, step.args, runtime)
         if validation_error:
             set_step_status(step, StepStatus.FAILED, actor="ToolRuntime")
@@ -189,7 +209,7 @@ class ToolRuntime:
         approval_review = browser_review if browser_review is not None and browser_review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL else None
         if approval_review is None and review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             approval_review = review
-        requires_runtime_approval = self._requires_runtime_approval(step, tool)
+        requires_runtime_approval = self._requires_runtime_approval(step, tool, runtime)
         if approval_review is not None or requires_runtime_approval:
             if not tool.supports_dry_run:
                 return self._deny_approval_without_dry_run(task, step, tool)
@@ -617,7 +637,15 @@ class ToolRuntime:
             preview_hmac=preview_hmac(safe_preview),
             settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
             permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+            policy_mode=permission_mode_from_context(runtime.tool_context(), runtime.settings),
             tool_version=getattr(tool, "tool_version", "1"),
+            tool_trust_tier=str(getattr(tool, "trust_tier", "") or ""),
+            tool_effects=list(getattr(tool, "effects", []) or []),
+            resource_kinds=list(getattr(tool, "resource_kinds", []) or []),
+            dry_run_summary=self._approval_dry_run_summary(tool, preview),
+            model_action=dict(getattr(step, "model_action", {}) or {}),
+            runtime_control_fields=self._runtime_control_fields(),
+            engineering_boundary=self._approval_boundary_facts(step, tool, runtime, safe_preview),
         )
         db.upsert_model("approvals", approval)
         publish_approval_created(approval)
@@ -660,10 +688,80 @@ class ToolRuntime:
             return "Dry-run preview must not report changed_paths."
         return ""
 
-    def _requires_runtime_approval(self, step: PlanStep, tool: ToolDefinition) -> bool:
+    def _requires_runtime_approval(self, step: PlanStep, tool: ToolDefinition, runtime: TaskRuntimeContext) -> bool:
+        mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
+        if mode in {"trusted_edits", "auto_review"} and trusted_reversible_edit_allowed(tool, step.args):
+            return False
         if bool(getattr(step, "requires_approval", False)):
             return True
         return tool.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
+
+    def auto_approved_args(
+        self,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        runtime: TaskRuntimeContext,
+    ) -> dict[str, Any] | None:
+        mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
+        if mode not in {"trusted_edits", "auto_review"}:
+            return None
+        if not trusted_reversible_edit_allowed(tool, args):
+            return None
+        return {**dict(args or {}), "dry_run": False, "auto_approved": True}
+
+    def _approval_dry_run_summary(self, tool: ToolDefinition, preview: dict[str, Any]) -> str:
+        if preview.get("error"):
+            return f"{tool.name} dry-run failed: {preview.get('error')}"
+        changed = preview.get("would_change") or preview.get("changes") or preview.get("items") or preview.get("changed_paths")
+        if isinstance(changed, list):
+            return f"{tool.name} dry-run preview contains {len(changed)} item(s)."
+        if isinstance(changed, dict):
+            return f"{tool.name} dry-run preview contains {len(changed)} field(s)."
+        return f"{tool.name} dry-run preview generated."
+
+    def _runtime_control_fields(self) -> dict[str, Any]:
+        return {
+            "approved": "runtime_only",
+            "approval_id": "runtime_only",
+            "policy_decision": "runtime_only",
+            "risk_level": "registry_policy_only",
+            "trust_tier": "registry_only",
+        }
+
+    def _approval_boundary_facts(
+        self,
+        step: PlanStep,
+        tool: ToolDefinition,
+        runtime: TaskRuntimeContext,
+        safe_preview: dict[str, Any],
+    ) -> dict[str, Any]:
+        policy_mode = permission_mode_from_context(runtime.tool_context(), runtime.settings)
+        return {
+            "policy_mode": policy_mode,
+            "tool": {
+                "name": tool.name,
+                "risk_level": tool.risk_level.value,
+                "trust_tier": str(getattr(tool, "trust_tier", "") or ""),
+                "effects": list(getattr(tool, "effects", []) or []),
+                "resource_kinds": list(getattr(tool, "resource_kinds", []) or []),
+                "read_only": tool.is_read_only(),
+                "destructive": bool(getattr(tool, "destructive", False)),
+                "supports_dry_run": bool(getattr(tool, "supports_dry_run", False)),
+                "tool_version": str(getattr(tool, "tool_version", "1") or "1"),
+            },
+            "model_action": dict(getattr(step, "model_action", {}) or {}),
+            "runtime_fields": self._runtime_control_fields(),
+            "binding": {
+                "args_bound": True,
+                "preview_bound": True,
+                "settings_bound": True,
+                "permission_policy_bound": True,
+            },
+            "dry_run": {
+                "summary": self._approval_dry_run_summary(tool, safe_preview),
+                "preview_keys": sorted(str(key) for key in safe_preview.keys() if not str(key).startswith("_"))[:20],
+            },
+        }
 
     def _validate_input(self, tool: ToolDefinition, args: dict[str, Any], runtime: TaskRuntimeContext) -> str:
         if not tool.validate_input:

@@ -7,6 +7,7 @@ import pytest
 
 from app.config import AppSettings
 from app.context_management import PromptTooLongError
+from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.openai_compatible import (
     LLMApiCircuitOpen,
     LLMApiResponseError,
@@ -16,6 +17,7 @@ from app.llm.openai_compatible import (
     circuit_snapshot,
     normalize_openai_base_url,
 )
+from app.llm.registry import get_provider_for_mode
 
 
 class FakeAsyncClient:
@@ -158,6 +160,22 @@ def test_chat_retries_transient_http_error(monkeypatch):
     assert FakeAsyncClient.calls == 2
 
 
+def test_chat_result_metadata_includes_retry_trace(monkeypatch):
+    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    FakeAsyncClient.responses = [
+        _response(500, {"error": "temporary"}),
+        _response(200, {"choices": [{"message": {"content": "ok"}}]}),
+    ]
+    provider = OpenAICompatibleProvider(_settings())
+
+    result = asyncio.run(provider.chat_result([{"role": "user", "content": "hello"}]))
+
+    trace = result.metadata["api_trace"]
+    assert trace["ok"] is True
+    assert trace["attempts"] == 2
+    assert trace["retry_events"][0]["status_code"] == 500
+
+
 def test_chat_rejects_non_json_success_payload(monkeypatch):
     monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
     FakeAsyncClient.responses = [_text_response(200, "<html>not json</html>", {"content-type": "text/html"})]
@@ -203,6 +221,7 @@ def test_prompt_too_long_does_not_retry_or_open_circuit(monkeypatch):
 
     assert FakeAsyncClient.calls == 1
     assert exc_info.value.provider == "openai"
+    assert provider.transport_metadata()["prompt_too_long"]["provider"] == "openai"
     assert _CIRCUITS == {}
 
 
@@ -220,6 +239,16 @@ def test_prompt_too_long_parses_reported_token_gap(monkeypatch):
     assert exc_info.value.limit_tokens == 135000
     assert exc_info.value.token_gap == 2500
     assert FakeAsyncClient.calls == 1
+
+
+def test_privacy_mode_does_not_silently_fallback_to_cloud_or_mock(monkeypatch):
+    monkeypatch.setattr("app.llm.registry.detect_onnx_backend", lambda settings: None)
+    monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
+    settings = _settings(base_url="https://api.openai.com/v1", allow_mock_fallback=True)
+    settings.mode = "privacy"
+
+    with pytest.raises(LocalBackendUnavailable):
+        get_provider_for_mode(settings, task="planner")
 
 
 def test_retry_after_header_controls_retry_sleep(monkeypatch):

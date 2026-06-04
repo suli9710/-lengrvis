@@ -6,8 +6,10 @@ import {
 import {
   useCallback,
   useEffect,
+  lazy,
   useMemo,
   useRef,
+  Suspense,
   useState
 } from "react";
 
@@ -31,18 +33,15 @@ import type {
 import { AgentConversationPanel } from "./components/AgentConversationPanel";
 import { ApprovalDialog } from "./components/ApprovalDialog";
 import { AuditLogPanel } from "./components/AuditLogPanel";
-import { BrowserActivityPanel } from "./components/BrowserActivityPanel";
 import { ChatPanel } from "./components/ChatPanel";
-import { FileSearchPanel, type DocumentIntentAction, type FileToolTab } from "./components/FileSearchPanel";
+import type { DocumentIntentAction, FileToolTab } from "./components/FileSearchPanel";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { PlanViewer } from "./components/PlanViewer";
 import { SafetyReviewPanel } from "./components/SafetyReviewPanel";
 import { SchedulePanel } from "./components/SchedulePanel";
-import { SettingsPanel } from "./components/SettingsPanel";
 import { SystemInfoPanel } from "./components/SystemInfoPanel";
 import { TaskTimeline } from "./components/TaskTimeline";
-import { SkillsView } from "./views/SkillsView";
-import { LocalLibraryView, localLibraryViewKeys, sectionForView } from "./views/LocalLibraryView";
+import { localLibraryViewKeys, sectionForView } from "./views/localLibrarySections";
 import {
   latestStreamableTaskId as latestStreamableTaskIdFromEvents,
   mergeRunStreamEventIntoConversations,
@@ -52,7 +51,6 @@ import {
 import { AgentOpsView } from "./features/agents";
 import {
   inferActiveOfficeAgentId,
-  OfficeScene,
   officeAgents,
   type HomeReadinessItem,
   type HomeTrustItem,
@@ -68,6 +66,13 @@ const quickSkills: OfficeQuickSkill[] = [
   { id: "summarize-document", icon: BookOpenText, title: "总结文档", kind: "view", view: "files" },
   { id: "check-computer", icon: Laptop, title: "检查电脑", kind: "action", action: "system-check" }
 ];
+
+const OfficeScene = lazy(() => import("./features/office/OfficeScene").then((module) => ({ default: module.OfficeScene })));
+const FileSearchPanel = lazy(() => import("./components/FileSearchPanel").then((module) => ({ default: module.FileSearchPanel })));
+const BrowserActivityPanel = lazy(() => import("./components/BrowserActivityPanel").then((module) => ({ default: module.BrowserActivityPanel })));
+const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
+const SkillsView = lazy(() => import("./views/SkillsView").then((module) => ({ default: module.SkillsView })));
+const LocalLibraryView = lazy(() => import("./views/LocalLibraryView").then((module) => ({ default: module.LocalLibraryView })));
 
 export function App() {
   const api = useMemo(() => new MavrisApiClient(), []);
@@ -141,8 +146,26 @@ export function App() {
   const settingsIntentNonce = useRef(0);
   const [isCheckingComputer, setIsCheckingComputer] = useState(false);
   const [hasLoadedBackendTasks, setHasLoadedBackendTasks] = useState(false);
+  const [heroSubmitting, setHeroSubmitting] = useState(false);
+  const [heroSubmitError, setHeroSubmitError] = useState<string | null>(null);
+  const [approvalSelectionContext, setApprovalSelectionContext] = useState<"task" | "queue">("task");
+  const [approvalQueueCursor, setApprovalQueueCursor] = useState(0);
+  const heroSubmitInFlight = useRef(false);
+  const backendStatusRef = useRef(backendStatus);
 
-  const pendingApproval = approvalRequests.find((approval) => approval.status === "pending") ?? null;
+  const pendingApprovals = useMemo(
+    () => approvalRequests.filter((approval) => approval.status === "pending"),
+    [approvalRequests]
+  );
+  const pendingApproval = useMemo(
+    () => {
+      if (approvalSelectionContext === "queue") {
+        return pendingApprovals[Math.min(approvalQueueCursor, Math.max(pendingApprovals.length - 1, 0))] ?? null;
+      }
+      return selectedPendingApproval(pendingApprovals, focusedTaskId);
+    },
+    [approvalQueueCursor, approvalSelectionContext, focusedTaskId, pendingApprovals]
+  );
   const connectionState = backendStatus.state === "running" ? "online" : backendStatus.state === "starting" ? "checking" : "offline";
   const activeOfficeAgentId = useMemo(
     () => inferActiveOfficeAgentId(tasks, plan, agentConversations, safetyReview.status),
@@ -191,123 +214,142 @@ export function App() {
   );
   const recentReadableMessages = useMemo(() => recentReadableChatMessages(messages, 8), [messages]);
 
+  useEffect(() => {
+    backendStatusRef.current = backendStatus;
+  }, [backendStatus]);
+
   const refreshWorkspace = useCallback(async () => {
     setIsLoading(true);
 
-    const currentStatus = await api.getBackendStatus();
-    setBackendStatus(currentStatus);
+    try {
+      const currentStatus = await api.getBackendStatus();
+      setBackendStatus(currentStatus);
 
-    const [
-      chatResult,
-      runsResult,
-      legacyTasksResult,
-      planResult,
-      agentsResult,
-      safetyResult,
-      approvalsResult,
-      settingsResult,
-      llmHealthResult,
-      llmCostResult,
-      contextUsageResult,
-      auditResult,
-      systemResult,
-      suggestionsResult,
-      browserSessionsResult,
-      browserHostResult
-    ] = await Promise.allSettled([
-      api.listChatMessages(),
-      api.listRuns(),
-      api.listTaskTimeline(),
-      api.getCurrentPlan(),
-      api.listAgentConversations(),
-      api.getSafetyReview(),
-      api.listPendingApprovals(),
-      api.getSettings(),
-      api.getLlmHealth(),
-      api.getLlmCostSummary(),
-      api.getContextUsage(),
-      api.listAuditLogs(),
-      api.getSystemInfo(),
-      api.listIntentSuggestions(),
-      api.listBrowserSessions(),
-      api.getBrowserHostSnapshot()
-    ]);
+      const [
+        chatResult,
+        runsResult,
+        legacyTasksResult,
+        planResult,
+        agentsResult,
+        safetyResult,
+        approvalsResult,
+        settingsResult,
+        llmHealthResult,
+        llmCostResult,
+        contextUsageResult,
+        auditResult,
+        systemResult,
+        suggestionsResult,
+        browserSessionsResult,
+        browserHostResult
+      ] = await Promise.allSettled([
+        api.listChatMessages(),
+        api.listRuns(),
+        api.listTaskTimeline(),
+        api.getCurrentPlan(),
+        api.listAgentConversations(),
+        api.getSafetyReview(),
+        api.listPendingApprovals(),
+        api.getSettings(),
+        api.getLlmHealth(),
+        api.getLlmCostSummary(),
+        api.getContextUsage(),
+        api.listAuditLogs(),
+        api.getSystemInfo(),
+        api.listIntentSuggestions(),
+        api.listBrowserSessions(),
+        api.getBrowserHostSnapshot()
+      ]);
 
-    if (chatResult.status === "fulfilled" && chatResult.value.ok && chatResult.value.data) setMessages(chatResult.value.data);
-    const initialRunTasks = runsResult.status === "fulfilled" && runsResult.value.ok ? runsResult.value.data : undefined;
-    const initialLegacyTasks =
-      legacyTasksResult.status === "fulfilled" && legacyTasksResult.value.ok ? legacyTasksResult.value.data : undefined;
-    if (initialRunTasks || initialLegacyTasks) {
-      setTasks(mergeTaskSnapshots(initialRunTasks ?? [], initialLegacyTasks ?? []));
-    }
-    if (runsResult.status === "fulfilled" || legacyTasksResult.status === "fulfilled") {
-      setHasLoadedBackendTasks(true);
-    }
-    if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
-    if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) {
-      setAgentConversations((current) => preserveStreamedRunConversationsFromEvents(current, agentsResult.value.data ?? []));
-    }
-    if (safetyResult.status === "fulfilled" && safetyResult.value.ok && safetyResult.value.data) setSafetyReview(safetyResult.value.data);
-    if (approvalsResult.status === "fulfilled" && approvalsResult.value.ok && approvalsResult.value.data) setApprovalRequests(approvalsResult.value.data);
-    if (settingsResult.status === "fulfilled" && settingsResult.value.ok && settingsResult.value.data) {
-      setSettings(settingsResult.value.data);
-      setMode(settingsResult.value.data.mode);
-    }
-    if (llmHealthResult.status === "fulfilled" && llmHealthResult.value.ok && llmHealthResult.value.data) {
-      setLlmHealth(llmHealthResult.value.data);
-    }
-    if (llmCostResult.status === "fulfilled" && llmCostResult.value.ok && llmCostResult.value.data) {
-      setLlmCostSummary(llmCostResult.value.data);
-    }
-    if (contextUsageResult.status === "fulfilled" && contextUsageResult.value.ok && contextUsageResult.value.data) {
-      setContextUsage(contextUsageResult.value.data);
-    }
-    if (auditResult.status === "fulfilled" && auditResult.value.ok && auditResult.value.data) setAuditEntries(auditResult.value.data);
-    if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
-    if (suggestionsResult.status === "fulfilled" && suggestionsResult.value.ok && suggestionsResult.value.data) {
-      setIntentSuggestions(suggestionsResult.value.data);
-    }
-    if (browserSessionsResult.status === "fulfilled" && browserSessionsResult.value.ok && browserSessionsResult.value.data) {
-      setBrowserSessions(browserSessionsResult.value.data);
-      if (!activeBrowserSessionId && browserSessionsResult.value.data[0]) {
-        setActiveBrowserSessionId(browserSessionsResult.value.data[0].id);
+      if (chatResult.status === "fulfilled" && chatResult.value.ok && chatResult.value.data) setMessages(chatResult.value.data);
+      const initialRunTasks = runsResult.status === "fulfilled" && runsResult.value.ok ? runsResult.value.data : undefined;
+      const initialLegacyTasks =
+        legacyTasksResult.status === "fulfilled" && legacyTasksResult.value.ok ? legacyTasksResult.value.data : undefined;
+      if (initialRunTasks || initialLegacyTasks) {
+        setTasks(mergeTaskSnapshots(initialRunTasks ?? [], initialLegacyTasks ?? []));
       }
-    }
-    if (browserHostResult.status === "fulfilled") {
-      setBrowserHostSnapshot(browserHostResult.value);
-      if (browserHostResult.value.activeSessionId) {
-        setActiveBrowserSessionId(browserHostResult.value.activeSessionId);
+      if (runsResult.status === "fulfilled" || legacyTasksResult.status === "fulfilled") {
+        setHasLoadedBackendTasks(true);
       }
-    }
+      if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
+      if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) {
+        setAgentConversations((current) => preserveStreamedRunConversationsFromEvents(current, agentsResult.value.data ?? []));
+      }
+      if (safetyResult.status === "fulfilled" && safetyResult.value.ok && safetyResult.value.data) setSafetyReview(safetyResult.value.data);
+      if (approvalsResult.status === "fulfilled" && approvalsResult.value.ok && approvalsResult.value.data) setApprovalRequests(approvalsResult.value.data);
+      if (settingsResult.status === "fulfilled" && settingsResult.value.ok && settingsResult.value.data) {
+        setSettings(settingsResult.value.data);
+        setMode(settingsResult.value.data.mode);
+      }
+      if (llmHealthResult.status === "fulfilled" && llmHealthResult.value.ok && llmHealthResult.value.data) {
+        setLlmHealth(llmHealthResult.value.data);
+      }
+      if (llmCostResult.status === "fulfilled" && llmCostResult.value.ok && llmCostResult.value.data) {
+        setLlmCostSummary(llmCostResult.value.data);
+      }
+      if (contextUsageResult.status === "fulfilled" && contextUsageResult.value.ok && contextUsageResult.value.data) {
+        setContextUsage(contextUsageResult.value.data);
+      }
+      if (auditResult.status === "fulfilled" && auditResult.value.ok && auditResult.value.data) setAuditEntries(auditResult.value.data);
+      if (systemResult.status === "fulfilled" && systemResult.value.ok && systemResult.value.data) setSystemInfo(systemResult.value.data);
+      if (suggestionsResult.status === "fulfilled" && suggestionsResult.value.ok && suggestionsResult.value.data) {
+        setIntentSuggestions(suggestionsResult.value.data);
+      }
+      if (browserSessionsResult.status === "fulfilled" && browserSessionsResult.value.ok && browserSessionsResult.value.data) {
+        setBrowserSessions(browserSessionsResult.value.data);
+        if (!activeBrowserSessionId && browserSessionsResult.value.data[0]) {
+          setActiveBrowserSessionId(browserSessionsResult.value.data[0].id);
+        }
+      }
+      if (browserHostResult.status === "fulfilled") {
+        setBrowserHostSnapshot(browserHostResult.value);
+        if (browserHostResult.value.activeSessionId) {
+          setActiveBrowserSessionId(browserHostResult.value.activeSessionId);
+        }
+      }
 
-    const currentMode =
-      settingsResult.status === "fulfilled" && settingsResult.value.ok && settingsResult.value.data
-        ? settingsResult.value.data.mode
-        : mode;
-    if (requiresLocalLlmHealth(currentMode)) {
-      const localLlmResult = await api.getLocalLlmHealth();
-      if (localLlmResult.ok && localLlmResult.data) {
-        setLocalLlmHealth(localLlmResult.data);
+      const currentMode =
+        settingsResult.status === "fulfilled" && settingsResult.value.ok && settingsResult.value.data
+          ? settingsResult.value.data.mode
+          : mode;
+      if (requiresLocalLlmHealth(currentMode)) {
+        const localLlmResult = await api.getLocalLlmHealth();
+        if (localLlmResult.ok && localLlmResult.data) {
+          setLocalLlmHealth(localLlmResult.data);
+        } else {
+          setLocalLlmHealth({
+            available: false,
+            selectedBackend: null,
+            probeOrder: ["ollama", "lmstudio", "llamacpp"],
+            error: localLlmResult.error?.message ?? "无法读取本地模型健康状态"
+          });
+        }
       } else {
-        setLocalLlmHealth({
-          available: false,
-          selectedBackend: null,
-          probeOrder: ["ollama", "lmstudio", "llamacpp"],
-          error: localLlmResult.error?.message ?? "无法读取本地模型健康状态"
-        });
+        setLocalLlmHealth(null);
       }
-    } else {
-      setLocalLlmHealth(null);
+    } catch (error) {
+      setBackendStatus({
+        ...backendStatusRef.current,
+        state: "error",
+        message: readableError(error, "Workspace refresh failed"),
+        lastCheckedAt: new Date().toISOString()
+      });
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsLoading(false);
   }, [activeBrowserSessionId, api, mode]);
 
   useEffect(() => {
     void refreshWorkspace();
   }, [refreshWorkspace]);
 
-  const sendMessage = async (content: string) => {
+  useEffect(() => {
+    if (activeView !== "browser") {
+      void api.hideBrowserHost().catch(() => undefined);
+    }
+  }, [activeView, api]);
+
+  const sendMessage = async (content: string): Promise<{ ok: boolean; error?: string }> => {
     const userMessage: ChatMessage = {
       id: `local-${crypto.randomUUID()}`,
       role: "user",
@@ -318,34 +360,52 @@ export function App() {
     };
 
     setMessages((current) => [...current, userMessage]);
-    let result = await api.sendChat({ content, mode });
-    if (!result.ok) {
-      result = await api.startRun({ content, mode });
-    }
-
-    const response = result.data;
-    if (result.ok && response) {
-      setMessages((current) => [...current, response.message]);
-      if (response.taskUpdates?.length) {
-        response.taskUpdates.forEach((task) => chatStartedTaskIds.current.add(task.id));
-        setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
-        setFocusedTaskId(response.taskUpdates[0]?.id ?? null);
-        void refreshTaskSnapshot();
+    try {
+      let result = await api.sendChat({ content, mode });
+      if (!result.ok) {
+        result = await api.startRun({ content, mode });
       }
-      return;
-    }
 
-    setMessages((current) => [
-      ...current,
-      {
-        id: `local-${crypto.randomUUID()}`,
-        role: "assistant",
-        author: "Mavris",
-        content: result.error?.message ?? "Mavris 暂时不可用，请稍后再试。",
-        createdAt: new Date().toISOString(),
-        status: "failed"
+      const response = result.data;
+      if (result.ok && response) {
+        setMessages((current) => [...current, response.message]);
+        if (response.taskUpdates?.length) {
+          response.taskUpdates.forEach((task) => chatStartedTaskIds.current.add(task.id));
+          setTasks((current) => mergeTaskSnapshots(response.taskUpdates ?? [], current));
+          setFocusedTaskId(response.taskUpdates[0]?.id ?? null);
+          void refreshTaskSnapshot();
+        }
+        return { ok: true };
       }
-    ]);
+
+      const message = result.error?.message ?? "Mavris 暂时不可用，请稍后再试。";
+      setMessages((current) => [
+        ...current,
+        {
+          id: `local-${crypto.randomUUID()}`,
+          role: "assistant",
+          author: "Mavris",
+          content: message,
+          createdAt: new Date().toISOString(),
+          status: "failed"
+        }
+      ]);
+      return { ok: false, error: message };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Mavris 暂时不可用，请稍后再试。";
+      setMessages((current) => [
+        ...current,
+        {
+          id: `local-${crypto.randomUUID()}`,
+          role: "assistant",
+          author: "Mavris",
+          content: message,
+          createdAt: new Date().toISOString(),
+          status: "failed"
+        }
+      ]);
+      return { ok: false, error: message };
+    }
   };
 
   const executeSuggestion = async (suggestion: IntentSuggestion) => {
@@ -392,9 +452,24 @@ export function App() {
 
   const submitHeroPrompt = async () => {
     const value = draft.trim();
-    if (!value) return;
-    setDraft("");
-    await sendMessage(value);
+    if (!value || heroSubmitInFlight.current) return;
+    if (connectionState === "offline") {
+      setHeroSubmitError("Mavris 服务还没连上。请先刷新连接，输入内容我会保留。");
+      return;
+    }
+
+    heroSubmitInFlight.current = true;
+    setHeroSubmitting(true);
+    setHeroSubmitError(null);
+    const result = await sendMessage(value);
+    if (result.ok) {
+      setDraft("");
+    } else {
+      setDraft(value);
+      setHeroSubmitError(result.error ?? "任务没有启动成功，输入内容已保留，可以重试。");
+    }
+    setHeroSubmitting(false);
+    heroSubmitInFlight.current = false;
   };
 
   const searchFiles = async (query: string) => {
@@ -595,6 +670,11 @@ export function App() {
   }, [api, latestLegacyTaskId, scheduleTaskSnapshotRefresh]);
 
   useEffect(() => {
+    if (approvalSelectionContext !== "queue") return;
+    setApprovalQueueCursor((current) => Math.min(current, Math.max(pendingApprovals.length - 1, 0)));
+  }, [approvalSelectionContext, pendingApprovals.length]);
+
+  useEffect(() => {
     for (const task of tasks) {
       if (task.runId || !chatStartedTaskIds.current.has(task.id)) continue;
       if (task.state !== "completed" && task.state !== "failed") continue;
@@ -625,11 +705,19 @@ export function App() {
   ) => {
     const result = await api.submitApprovalDecision({ approvalId, decision, note });
     if (result.ok && result.data) {
-      setApprovalRequests((current) =>
-        current.map((approval) => (approval.id === approvalId ? result.data as ApprovalRequest : approval))
-      );
+      setApprovalRequests((current) => {
+        return current.map((approval) => (approval.id === approvalId ? result.data as ApprovalRequest : approval));
+      });
       setApprovalError(null);
-      setIsApprovalOpen(false);
+      if (approvalSelectionContext === "queue") {
+        const nextPendingCount = pendingApprovals.filter((approval) => approval.id !== approvalId).length;
+        setApprovalQueueCursor((current) => Math.min(current, Math.max(nextPendingCount - 1, 0)));
+        if (nextPendingCount === 0) {
+          setIsApprovalOpen(false);
+        }
+      } else {
+        setIsApprovalOpen(false);
+      }
       return;
     }
     setApprovalError(result.error?.message ?? "审批提交失败，请刷新后重试");
@@ -707,6 +795,34 @@ export function App() {
     setActiveView(item.targetView ?? "settings");
   };
 
+  const handleTaskPilotAction = (task: TaskEvent | null, action: "open" | "approve" | "compose") => {
+    if (action === "approve") {
+      if (task?.id) setFocusedTaskId(task.id);
+      const matchingApproval = selectedPendingApproval(pendingApprovals, task?.id ?? focusedTaskId);
+      if (matchingApproval) {
+        setApprovalError(null);
+        setApprovalSelectionContext("task");
+        setIsApprovalOpen(true);
+        return;
+      }
+      setApprovalError("这个任务当前没有可确认的审批，请刷新后再试。");
+      void api.listPendingApprovals().then((approvalsResult) => {
+        if (approvalsResult.ok && approvalsResult.data) setApprovalRequests(approvalsResult.data);
+      });
+      return;
+    }
+    if (action === "open") {
+      if (task?.id) setFocusedTaskId(task.id);
+      setActiveView("agents");
+      return;
+    }
+    setActiveView("home");
+    window.setTimeout(() => {
+      const input = document.querySelector<HTMLTextAreaElement>(".office-command-dock textarea");
+      input?.focus();
+    }, 0);
+  };
+
   const requestCleanupApproval = async (scope: string) => {
     await sendMessage(
       `请基于这个文件范围生成清理确认任务：${scope}。先生成可清理项预览和审批请求；在我明确批准前不要移动或删除任何文件。`
@@ -722,34 +838,48 @@ export function App() {
         isLoading={isLoading}
         onViewChange={setActiveView}
         onRefresh={() => void refreshWorkspace()}
-        onOpenApprovals={() => setIsApprovalOpen(true)}
-        hasPendingApproval={Boolean(pendingApproval)}
+        onOpenApprovals={() => {
+          setApprovalError(null);
+          setApprovalSelectionContext("queue");
+          setApprovalQueueCursor(0);
+          setFocusedTaskId(null);
+          setIsApprovalOpen(true);
+        }}
+        hasPendingApproval={pendingApprovals.length > 0}
         messages={messages}
         tasks={tasks}
         systemInfo={systemInfo}
       >
 
         {isLocalLibraryView ? (
-          <LocalLibraryView api={api} activeSection={sectionForView(activeView)} onUseDocument={openDocumentTool} />
+          <Suspense fallback={<RouteLoading />}>
+            <LocalLibraryView api={api} activeSection={sectionForView(activeView)} onUseDocument={openDocumentTool} />
+          </Suspense>
         ) : null}
 
         {activeView === "home" ? (
           <section className="marvis-home">
-            <OfficeScene
-              agents={officeAgents}
-              draft={draft}
-              onDraftChange={setDraft}
-              onSubmitPrompt={submitHeroPrompt}
-              onAgentSelect={(prompt) => setDraft(prompt)}
-              activeAgentId={activeOfficeAgentId}
-              recentTasks={tasks}
-              quickSkills={quickSkills}
-              readinessItems={homeReadinessItems}
-              trustItems={homeTrustItems}
-              onQuickSkill={handleQuickSkill}
-              onReadinessAction={handleReadinessAction}
-              safetyAlert={safetyAlert}
-            />
+            <Suspense fallback={<RouteLoading />}>
+              <OfficeScene
+                agents={officeAgents}
+                draft={draft}
+                onDraftChange={setDraft}
+                onSubmitPrompt={submitHeroPrompt}
+                onAgentSelect={(prompt) => setDraft(prompt)}
+                connectionState={connectionState}
+                isSubmitting={heroSubmitting}
+                submitError={heroSubmitError}
+                activeAgentId={activeOfficeAgentId}
+                recentTasks={tasks}
+                quickSkills={quickSkills}
+                readinessItems={homeReadinessItems}
+                trustItems={homeTrustItems}
+                onQuickSkill={handleQuickSkill}
+                onReadinessAction={handleReadinessAction}
+                onTaskPilotAction={handleTaskPilotAction}
+                safetyAlert={safetyAlert}
+              />
+            </Suspense>
           </section>
         ) : null}
 
@@ -777,38 +907,46 @@ export function App() {
               safetyReview={safetyReview}
               onDraftPrompt={setDraft}
               onOpenChat={() => setActiveView("chat")}
-              onOpenApprovals={() => setIsApprovalOpen(true)}
+              onOpenApprovals={() => {
+                setApprovalSelectionContext("task");
+                setIsApprovalOpen(true);
+              }}
             />
           </section>
         ) : null}
 
         {activeView === "files" ? (
           <section className="detail-grid">
-            <FileSearchPanel
-              results={fileResults}
-              searchMeta={fileSearchMeta}
-              isSearching={isSearching}
-              onSearch={searchFiles}
-              onClearResults={() => {
-                setFileResults([]);
-                setFileSearchMeta(null);
-                setFileSearchError(null);
-              }}
-              searchError={fileSearchError}
-              api={api}
-              connectionState={connectionState}
-              settings={settings}
-              onSaveSettings={saveSettings}
-              initialTool={fileToolTab}
-              onToolChange={setFileToolTab}
-              selectedDocumentPath={documentIntent?.path}
-              selectedDocumentAction={documentIntent?.action}
-              selectedDocumentIntentId={documentIntent?.nonce}
-              onDocumentIntentHandled={() => setDocumentIntent(null)}
-              hasPendingApproval={Boolean(pendingApproval)}
-              onOpenApprovals={() => setIsApprovalOpen(true)}
-              onRequestCleanupApproval={requestCleanupApproval}
-            />
+            <Suspense fallback={<RouteLoading />}>
+              <FileSearchPanel
+                results={fileResults}
+                searchMeta={fileSearchMeta}
+                isSearching={isSearching}
+                onSearch={searchFiles}
+                onClearResults={() => {
+                  setFileResults([]);
+                  setFileSearchMeta(null);
+                  setFileSearchError(null);
+                }}
+                searchError={fileSearchError}
+                api={api}
+                connectionState={connectionState}
+                settings={settings}
+                onSaveSettings={saveSettings}
+                initialTool={fileToolTab}
+                onToolChange={setFileToolTab}
+                selectedDocumentPath={documentIntent?.path}
+                selectedDocumentAction={documentIntent?.action}
+                selectedDocumentIntentId={documentIntent?.nonce}
+                onDocumentIntentHandled={() => setDocumentIntent(null)}
+                hasPendingApproval={Boolean(pendingApproval)}
+                onOpenApprovals={() => {
+                  setApprovalSelectionContext("task");
+                  setIsApprovalOpen(true);
+                }}
+                onRequestCleanupApproval={requestCleanupApproval}
+              />
+            </Suspense>
             <ChatPanel messages={recentReadableMessages} connectionState={connectionState} onSend={sendMessage} />
           </section>
         ) : null}
@@ -843,19 +981,21 @@ export function App() {
 
         {activeView === "browser" ? (
           <section className="browser-view">
-            <BrowserActivityPanel
-              api={api}
-              sessions={browserSessions}
-              events={browserEvents}
-              hostSnapshot={browserHostSnapshot}
-              activeSessionId={activeBrowserSessionId}
-              error={browserError}
-              onSessionsChange={setBrowserSessions}
-              onEventsChange={setBrowserEvents}
-              onHostSnapshotChange={setBrowserHostSnapshot}
-              onActiveSessionChange={setActiveBrowserSessionId}
-              onErrorChange={setBrowserError}
-            />
+            <Suspense fallback={<RouteLoading />}>
+              <BrowserActivityPanel
+                api={api}
+                sessions={browserSessions}
+                events={browserEvents}
+                hostSnapshot={browserHostSnapshot}
+                activeSessionId={activeBrowserSessionId}
+                error={browserError}
+                onSessionsChange={setBrowserSessions}
+                onEventsChange={setBrowserEvents}
+                onHostSnapshotChange={setBrowserHostSnapshot}
+                onActiveSessionChange={setActiveBrowserSessionId}
+                onErrorChange={setBrowserError}
+              />
+            </Suspense>
           </section>
         ) : null}
 
@@ -867,27 +1007,37 @@ export function App() {
 
         {activeView === "safety" ? (
           <section className="detail-grid">
-            <SafetyReviewPanel review={safetyReview} onOpenApproval={() => setIsApprovalOpen(true)} />
+            <SafetyReviewPanel
+              review={safetyReview}
+              onOpenApproval={() => {
+                setApprovalSelectionContext("task");
+                setIsApprovalOpen(true);
+              }}
+            />
             <AuditLogPanel entries={auditEntries} />
           </section>
         ) : null}
 
         {activeView === "settings" ? (
           <section className="detail-grid">
-            <SettingsPanel
-              settings={settings}
-              backendStatus={backendStatus}
-              localLlmHealth={localLlmHealth}
-              llmHealth={llmHealth}
-              llmCostSummary={llmCostSummary}
-              onLocalLlmHealthChange={setLocalLlmHealth}
-              onSave={saveSettings}
-              onStartBackend={async () => setBackendStatus(await api.startBackend())}
-              onStopBackend={async () => setBackendStatus(await api.stopBackend())}
-              api={api}
-              privacyIntentId={settingsIntent?.section === "privacy" ? settingsIntent.nonce : undefined}
-            />
-            <SkillsView api={api} />
+            <Suspense fallback={<RouteLoading />}>
+              <SettingsPanel
+                settings={settings}
+                backendStatus={backendStatus}
+                localLlmHealth={localLlmHealth}
+                llmHealth={llmHealth}
+                llmCostSummary={llmCostSummary}
+                onLocalLlmHealthChange={setLocalLlmHealth}
+                onSave={saveSettings}
+                onStartBackend={async () => setBackendStatus(await api.startBackend())}
+                onStopBackend={async () => setBackendStatus(await api.stopBackend())}
+                api={api}
+                privacyIntentId={settingsIntent?.section === "privacy" ? settingsIntent.nonce : undefined}
+              />
+            </Suspense>
+            <Suspense fallback={<RouteLoading />}>
+              <SkillsView api={api} />
+            </Suspense>
             <SystemInfoPanel
               info={systemInfo}
               onRefresh={async () => {
@@ -902,12 +1052,19 @@ export function App() {
 
       <ApprovalDialog
         approval={pendingApproval}
+        pendingCount={pendingApprovals.length}
+        selectionContext={approvalSelectionContext}
+        queueIndex={pendingApproval ? pendingApprovals.findIndex((approval) => approval.id === pendingApproval.id) + 1 : 0}
         isOpen={isApprovalOpen}
         error={approvalError}
+        canGoPrevious={approvalSelectionContext === "queue" && approvalQueueCursor > 0}
+        canGoNext={approvalSelectionContext === "queue" && approvalQueueCursor < pendingApprovals.length - 1}
         onClose={() => {
           setApprovalError(null);
           setIsApprovalOpen(false);
         }}
+        onPrevious={() => setApprovalQueueCursor((current) => Math.max(0, current - 1))}
+        onNext={() => setApprovalQueueCursor((current) => Math.min(pendingApprovals.length - 1, current + 1))}
         onDecision={submitApprovalDecision}
       />
     </>
@@ -931,6 +1088,23 @@ function mergeTaskSnapshots(runTasks: TaskEvent[], legacyTasks: TaskEvent[]): Ta
   });
 
   return [...merged, ...legacyById.values()];
+}
+
+function RouteLoading() {
+  return (
+    <div className="route-loading" role="status" aria-live="polite">
+      <span className="spin-icon" aria-hidden="true" />
+      <span>正在载入</span>
+    </div>
+  );
+}
+
+function selectedPendingApproval(approvals: ApprovalRequest[], taskId?: string | null): ApprovalRequest | null {
+  if (taskId) {
+    const taskApproval = approvals.find((approval) => approval.taskId === taskId);
+    if (taskApproval) return taskApproval;
+  }
+  return approvals[0] ?? null;
 }
 
 function latestLegacyTaskIdFromEvents(
@@ -1269,6 +1443,10 @@ function isMojibakeLike(value: string): boolean {
   const questionMarks = (compact.match(/\?/g) ?? []).length;
   if (questionMarks >= 3 && questionMarks / compact.length > 0.2) return true;
   return /�|Ã|Â|ä¸|ç®|å·|æ/.test(compact);
+}
+
+function readableError(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }
 
 function appendUniqueMessage(current: ChatMessage[], message: ChatMessage): ChatMessage[] {

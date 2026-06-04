@@ -35,6 +35,19 @@ class VectorIndex:
         candidates = self._candidate_chunks(query, candidate_limit)
         source = "fts_vector_rerank"
         if not candidates:
+            lexical_candidates = self._lexical_chunks(query, candidate_limit)
+            if lexical_candidates:
+                fallback_results = _collapse_by_file(
+                    _lexical_fallback_rows(lexical_candidates, query),
+                    limit,
+                )
+                return {
+                    "query": query,
+                    "results": fallback_results,
+                    "count": len(fallback_results),
+                    "candidate_count": len(lexical_candidates),
+                    "source": "fts_lexical_fallback",
+                }
             candidates = self._recent_chunks(scan_limit)
             source = "vector_scan"
 
@@ -59,6 +72,17 @@ class VectorIndex:
                     "lexical_score": lexical_score,
                 }
             )
+
+        lexical_candidates = self._lexical_chunks(query, candidate_limit)
+        embedded_chunk_ids = {row["chunk_id"] for row in candidates}
+        missing_embedding_candidates = [
+            row
+            for row in lexical_candidates
+            if row["chunk_id"] not in embedded_chunk_ids and not _loads_vector(row.get("embedding"))
+        ]
+        if missing_embedding_candidates:
+            ranked.extend(_lexical_fallback_rows(missing_embedding_candidates, query))
+            source = "fts_mixed_fallback"
 
         ranked.sort(key=lambda item: (-item["score"], item["path"], item["chunk_index"]))
         collapsed = _collapse_by_file(ranked, limit)
@@ -105,6 +129,51 @@ class VectorIndex:
             file_scores = {row["file_id"]: 1.0 for row in like_rows}
             return self._chunks_for_files(conn, file_scores, limit)
 
+    def _lexical_chunks(self, query: str, limit: int) -> list[dict[str, Any]]:
+        with db.connect() as conn:
+            try:
+                fts_rows = conn.execute(
+                    """
+                    SELECT file_id, bm25(document_chunks_fts) AS rank
+                    FROM document_chunks_fts
+                    WHERE document_chunks_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (_fts_query(query), limit),
+                ).fetchall()
+            except Exception:
+                fts_rows = []
+
+            if fts_rows:
+                file_scores: dict[str, float] = {}
+                for row in fts_rows:
+                    score = 1.0 / (1.0 + abs(float(row["rank"] or 0.0)))
+                    file_scores[row["file_id"]] = max(file_scores.get(row["file_id"], 0.0), score)
+                return self._chunks_for_files(
+                    conn,
+                    file_scores,
+                    limit,
+                    require_embeddings=False,
+                )
+
+            like_rows = conn.execute(
+                """
+                SELECT dc.file_id
+                FROM document_chunks dc
+                WHERE dc.text LIKE ?
+                LIMIT ?
+                """,
+                (f"%{query}%", limit),
+            ).fetchall()
+            file_scores = {row["file_id"]: 1.0 for row in like_rows}
+            return self._chunks_for_files(
+                conn,
+                file_scores,
+                limit,
+                require_embeddings=False,
+            )
+
     def _recent_chunks(self, limit: int) -> list[dict[str, Any]]:
         with db.connect() as conn:
             rows = conn.execute(
@@ -128,10 +197,20 @@ class VectorIndex:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def _chunks_for_files(self, conn, file_scores: dict[str, float], limit: int) -> list[dict[str, Any]]:
+    def _chunks_for_files(
+        self,
+        conn,
+        file_scores: dict[str, float],
+        limit: int,
+        *,
+        require_embeddings: bool = True,
+    ) -> list[dict[str, Any]]:
         if not file_scores:
             return []
         placeholders = ",".join("?" for _ in file_scores)
+        embedding_join = "JOIN document_chunk_embeddings e ON e.chunk_id = dc.id"
+        if not require_embeddings:
+            embedding_join = "LEFT JOIN document_chunk_embeddings e ON e.chunk_id = dc.id"
         rows = conn.execute(
             f"""
             SELECT
@@ -144,7 +223,7 @@ class VectorIndex:
                 e.embedding
             FROM document_chunks dc
             JOIN indexed_files f ON f.id = dc.file_id
-            JOIN document_chunk_embeddings e ON e.chunk_id = dc.id
+            {embedding_join}
             WHERE dc.file_id IN ({placeholders})
             ORDER BY dc.chunk_index ASC
             LIMIT ?
@@ -211,3 +290,24 @@ def _collapse_by_file(rows: list[dict[str, Any]], limit: int) -> list[dict[str, 
             best[row["file_id"]] = row
     collapsed = sorted(best.values(), key=lambda item: (-item["score"], item["path"]))
     return collapsed[: max(1, limit)]
+
+
+def _lexical_fallback_rows(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    ranked = []
+    for row in rows:
+        lexical_score = float(row.get("lexical_score") or 0.0)
+        ranked.append(
+            {
+                "file_id": row["file_id"],
+                "chunk_id": row["chunk_id"],
+                "chunk_index": row["chunk_index"],
+                "path": row["path"],
+                "name": row["name"],
+                "snippet": _snippet(row["text"], query),
+                "score": lexical_score,
+                "vector_score": 0.0,
+                "lexical_score": lexical_score,
+            }
+        )
+    ranked.sort(key=lambda item: (-item["score"], item["path"], item["chunk_index"]))
+    return ranked

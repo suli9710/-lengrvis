@@ -4,11 +4,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
 
-$PortablePath = Join-Path $Root $PortableDir
-$OutputPath = Join-Path $Root $OutputExe
+function Resolve-ProjectPath {
+    param([string]$Path)
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    return Join-Path $Root $Path
+}
+
+$PortablePath = Resolve-ProjectPath $PortableDir
+$OutputPath = Resolve-ProjectPath $OutputExe
 $BuildDir = Join-Path $Root "build\self-extracting"
 $PayloadZip = Join-Path $BuildDir "mavris-payload.zip"
 $LauncherCmd = Join-Path $BuildDir "launch.cmd"

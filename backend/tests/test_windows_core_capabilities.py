@@ -9,8 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import db
+from app.core.schemas import Approval, ApprovalStatus
 from app.main import create_app
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
+from app.policy.risk import RiskLevel
 from app.tools import app_tools, browser_tools, search_tools, system_tools
 
 
@@ -48,6 +52,70 @@ def test_app_launch_unknown_application_is_blocked(monkeypatch, tmp_path):
 
     assert result["ok"] is False
     assert "allowlisted" in result["error"]
+
+
+def test_uninstall_app_rejects_direct_uninstall_command(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+
+    result = app_tools.uninstall_app(
+        {"query": "anything", "uninstall_string": "powershell -NoProfile -Command calc.exe", "dry_run": True},
+        _settings_context(),
+    )
+
+    assert result["ok"] is False
+    assert "Direct uninstall commands" in result["error"]
+
+
+def test_uninstall_app_executes_scanned_entry_without_shell(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(
+        app_tools,
+        "_scan_registry_apps",
+        lambda: [
+            {
+                "id": "sample product",
+                "name": "Sample Product",
+                "publisher": "Vendor",
+                "uninstall_string": "MsiExec.exe /I {ABC-123}",
+                "source": "registry",
+            }
+        ],
+    )
+    launched: list[dict[str, object]] = []
+
+    def fake_popen(command, *, shell):  # noqa: ANN001
+        launched.append({"command": command, "shell": shell})
+
+    monkeypatch.setattr(app_tools.subprocess, "Popen", fake_popen)
+
+    result = app_tools.uninstall_app({"query": "Sample Product", "dry_run": False}, _settings_context())
+
+    assert result["ok"] is True
+    assert launched == [{"command": ["MsiExec.exe", "/X", "{ABC-123}"], "shell": False}]
+
+
+def test_uninstall_app_blocks_scanned_shell_host(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(
+        app_tools,
+        "_scan_registry_apps",
+        lambda: [
+            {
+                "id": "bad product",
+                "name": "Bad Product",
+                "publisher": "Vendor",
+                "uninstall_string": "cmd.exe /c calc.exe",
+                "source": "registry",
+            }
+        ],
+    )
+
+    result = app_tools.uninstall_app({"query": "Bad Product", "dry_run": False}, _settings_context())
+
+    assert result["ok"] is False
+    assert "shell/script host" in result["error"]
 
 
 def test_app_allowlist_supports_wildcards_and_categories(monkeypatch, tmp_path):
@@ -163,6 +231,110 @@ def test_public_api_routes_expose_windows_core(monkeypatch, tmp_path):
     assert client.get("/api/system/startup-items").status_code == 200
     assert client.get("/api/browser/read", params={"url": "https://example.com"}).json()["ok"] is False
     assert client.get("/api/browser/links", params={"url": "https://example.com"}).json()["ok"] is False
+    assert client.get("/api/ui-automation/active-window").status_code == 200
+    assert client.post("/api/ui-automation/observe", json={"max_depth": 0}).status_code == 200
+
+
+def test_ui_automation_api_dry_run_creates_bound_approval(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ui-automation/action",
+        json={"action": "click", "name": "OK", "control_type": "Button"},
+    )
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["status"] == "requires_approval"
+    assert payload["approval_id"]
+    approval = db.fetch_one("approvals", payload["approval_id"])
+    assert approval is not None
+    assert approval["tool_name"] == "ui_automation.click"
+    assert approval["status"] == "pending"
+    assert approval["args_binding_hmac"].startswith("args:")
+    assert approval["preview_hmac"].startswith("preview:")
+
+
+def test_ui_automation_api_revalidates_approval_after_claim(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    import app.api.routes_ui_automation as routes_ui_automation
+
+    calls: list[dict] = []
+
+    def fake_click(args, context):  # noqa: ANN001, ANN202
+        calls.append({"args": dict(args), "context": dict(context)})
+        return {"ok": True}
+
+    monkeypatch.setattr(routes_ui_automation.ui_automation_tools, "click", fake_click)
+    payload = {
+        "action": "click",
+        "name": "OK",
+        "control_type": "Button",
+        "dry_run": False,
+        "approved": True,
+    }
+    settings = _settings_context()["settings"]
+    preview = {"ok": True, "dry_run": True, "diff_preview": [{"action": "click", "name": "OK"}]}
+    approval = Approval(
+        task_id="direct_ui_automation_api",
+        step_id=None,
+        message="Approve GUI click",
+        status=ApprovalStatus.APPROVED,
+        tool_name="ui_automation.click",
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac(
+        "ui_automation.click",
+        {key: value for key, value in payload.items() if key not in {"approved", "approval_id", "dry_run"}},
+        task_id=approval.task_id,
+        step_id=approval.step_id,
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+    original_claim = db.claim_approval_for_execution
+
+    def claim_and_tamper(approval_id: str, consumed_at: str):
+        claimed = original_claim(approval_id, consumed_at)
+        if claimed:
+            claimed["tool_name"] = "ui_automation.hotkey"
+        return claimed
+
+    monkeypatch.setattr(routes_ui_automation.db, "claim_approval_for_execution", claim_and_tamper)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ui-automation/action", json=payload)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "tool name" in result["error"].lower()
+    assert calls == []
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at
+
+
+def test_ui_automation_api_blocks_unknown_and_sensitive_actions(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    client = TestClient(create_app())
+
+    unknown = client.post("/api/ui-automation/action", json={"action": "launch_missiles"}).json()
+    sensitive = client.post(
+        "/api/ui-automation/action",
+        json={"action": "type_text", "name": "password", "text": "hello"},
+    ).json()
+
+    assert unknown["ok"] is False
+    assert unknown["status"] == "denied"
+    assert sensitive["ok"] is False
+    assert sensitive["status"] == "denied"
+    assert sensitive["review"]["risk_level"] == RiskLevel.R4_FORBIDDEN_OR_HANDOFF.value
 
 
 def test_policy_rejects_chinese_sensitive_goal():

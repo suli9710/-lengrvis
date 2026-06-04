@@ -12,9 +12,15 @@ from app.core.schemas import AgentMessage, Plan, PlanStep, SafetyReview, ToolRes
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, settings_fingerprint, short_digest
 from app.policy.decision_cache import tool_decision_cache
 from app.policy.dynamic_risk import DynamicRiskAssessor
+from app.policy.permission_modes import (
+    is_modifying_risk,
+    permission_mode_from_context,
+    trusted_reversible_edit_allowed,
+)
 from app.policy.permissions import PermissionPolicy, PermissionStore
 from app.policy.privacy import can_use_browser_writes
 from app.policy.risk import RiskLevel, SafetyVerdict, max_risk
+from app.policy.sensitive_values import looks_sensitive_value
 
 
 FORBIDDEN_TERMS = {
@@ -71,6 +77,14 @@ BROWSER_WRITE_TOOLS = {
     "browser.cua_run",
     "browser.fill_form",
     "browser.submit_form",
+}
+UI_AUTOMATION_WRITE_TOOLS = {
+    "ui_automation.click",
+    "ui_automation.type_text",
+    "ui_automation.click_at",
+    "ui_automation.drag",
+    "ui_automation.key_press",
+    "ui_automation.hotkey",
 }
 BROWSER_ACTIVITY_READ_KINDS = {
     "open",
@@ -276,6 +290,22 @@ class PolicyEngine:
         cleanup_review = self._review_cleanup_tool_call(task_id, step_id, tool_name, args, static_risk)
         if cleanup_review is not None:
             return cleanup_review
+
+        ui_review = self._review_ui_automation_call(task_id, step_id, tool_name, args, static_risk)
+        if ui_review is not None:
+            return ui_review
+
+        mode_review = self._review_permission_mode(
+            task_id=task_id,
+            step_id=step_id,
+            tool_name=tool_name,
+            args=args,
+            static_risk=static_risk,
+            context=context,
+            tool_definition=tool_definition,
+        )
+        if mode_review is not None:
+            return mode_review
 
         cache_context = self._cache_context(args, context, tool_definition)
         cached = tool_decision_cache.get(tool_name, args, context=cache_context)
@@ -604,6 +634,41 @@ class PolicyEngine:
             )
         return None
 
+    def _review_ui_automation_call(
+        self,
+        task_id: str,
+        step_id: str | None,
+        tool_name: str,
+        args: dict[str, Any],
+        static_risk: RiskLevel,
+    ) -> SafetyReview | None:
+        if tool_name not in UI_AUTOMATION_WRITE_TOOLS:
+            return None
+        selector_text = _ui_selector_text(args)
+        if selector_text and any(term in selector_text for term in SENSITIVE_FIELD_NAMES):
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["GUI automation target appears to be a sensitive credential, payment, token, or one-time-code field."],
+                safe_alternative="Ask the user to handle sensitive UI fields manually.",
+            )
+        typed_text = str(args.get("text") or args.get("value") or "")
+        forbidden_in_text = self._forbidden_hits(typed_text.lower()) if typed_text else []
+        if typed_text and (forbidden_in_text or looks_sensitive_value(typed_text)):
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                reasons=["GUI automation text input looks sensitive and must be entered by the user."],
+                safe_alternative="Leave the field focused and ask the user to type the sensitive value manually.",
+            )
+        return None
+
     def _fast_path_tool_call(
         self,
         *,
@@ -674,6 +739,51 @@ class PolicyEngine:
             reasons=[f"Deterministic fast path allowed low-risk {tool_name} ({cache_id})."],
         )
 
+    def _review_permission_mode(
+        self,
+        *,
+        task_id: str,
+        step_id: str | None,
+        tool_name: str,
+        args: dict[str, Any],
+        static_risk: RiskLevel,
+        context: dict[str, Any] | None,
+        tool_definition: Any | None,
+    ) -> SafetyReview | None:
+        mode = permission_mode_from_context(context, self.settings)
+        if mode == "default":
+            return None
+        if mode == "plan" and is_modifying_risk(static_risk):
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=static_risk,
+                reasons=[f"Permission mode 'plan' blocks execution of modifying tool {tool_name}."],
+                safe_alternative="Stay in planning mode or switch permission mode before executing changes.",
+            )
+        if mode == "dont_ask" and is_modifying_risk(static_risk):
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.DENY,
+                risk_level=static_risk,
+                reasons=[f"Permission mode 'dont_ask' denies {tool_name} because it would require approval."],
+                safe_alternative="Add an explicit permission rule or switch to a mode that allows approval prompts.",
+            )
+        if mode in {"trusted_edits", "auto_review"} and trusted_reversible_edit_allowed(tool_definition, args):
+            return SafetyReview(
+                task_id=task_id,
+                step_id=step_id,
+                target_type="tool_call",
+                verdict=SafetyVerdict.ALLOW,
+                risk_level=static_risk,
+                reasons=[f"Permission mode '{mode}' auto-cleared trusted reversible edit {tool_name}."],
+            )
+        return None
+
     def _fast_path_cache_key(
         self,
         tool_name: str,
@@ -693,6 +803,7 @@ class PolicyEngine:
                 "risk": static_risk.value,
                 "settings": settings_fingerprint(settings, allowed_directories=allowed_directories),
                 "permission_policy_version": policy_version,
+                "permission_mode": permission_mode_from_context(context, settings),
                 "tool_version": getattr(tool_definition, "tool_version", "1"),
                 "fast_path_eligible": bool(getattr(tool_definition, "fast_path_eligible", False)),
                 "trust_tier": str(getattr(tool_definition, "trust_tier", "unknown") or "unknown").casefold(),
@@ -722,6 +833,7 @@ class PolicyEngine:
         allowed_directories = list(context.get("allowed_directories") or getattr(settings, "allowed_directories", []) or [])
         return {
             "policy": permission_policy_version(self.permission_store.updated_at()),
+            "permission_mode": permission_mode_from_context(context, settings),
             "settings": settings_fingerprint(settings, allowed_directories=allowed_directories),
             "tool": {
                 "version": getattr(tool_definition, "tool_version", ""),
@@ -922,6 +1034,31 @@ def _contains_sensitive_arg(value: Any, sensitive_keys: set[str]) -> bool:
         text = value.casefold()
         return any(term in text for term in {"password", "token", "cookie", "credential", "private key", "payment", "otp", "2fa"})
     return False
+
+
+def _ui_selector_text(args: dict[str, Any]) -> str:
+    selector = args.get("selector")
+    parts: list[Any] = []
+    if isinstance(selector, dict):
+        parts.extend(selector.values())
+    elif selector:
+        parts.append(selector)
+    for key in (
+        "name",
+        "name_contains",
+        "nameContains",
+        "text_contains",
+        "textContains",
+        "automation_id",
+        "automationId",
+        "class_name",
+        "className",
+        "control_type",
+        "controlType",
+    ):
+        if key in args:
+            parts.append(args.get(key))
+    return " ".join(str(part) for part in parts if part is not None).casefold()
 
 
 def _contains_system_path(args: dict[str, Any]) -> bool:

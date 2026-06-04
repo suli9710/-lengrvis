@@ -67,7 +67,10 @@ def rebuild_index():
 
 @router.post("/index/add-directory")
 def add_directory(payload: dict):
-    return file_service.add_directory(str(payload.get("path", "")))
+    return file_service.add_directory(
+        str(payload.get("path", "")),
+        confirmation_nonce=str(payload.get("confirmation_nonce") or ""),
+    )
 
 
 @router.get("/files/search")

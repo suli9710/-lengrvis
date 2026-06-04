@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from app.agents.browser_activity_review_agent import BrowserActivityReviewAgent
 from app.agents.safety_review_agent import SafetyReviewAgent
@@ -12,11 +12,13 @@ from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.tools import browser_tools
 from app.tools.registry import register_all_tools, registry as tool_registry
 
 
 router = APIRouter()
+ws_router = APIRouter()
 _browser_review_agent = BrowserActivityReviewAgent()
 
 
@@ -292,3 +294,22 @@ def links(url: str = Query(...), max_chars: int | None = None):
 @router.post("/browser/extract-links")
 def extract_links(payload: dict):
     return browser_tools.extract_links(payload, _context())
+
+
+@ws_router.websocket("/ws/browser-host")
+async def browser_host_bridge(websocket: WebSocket):
+    if await close_unauthorized_desktop_websocket(websocket):
+        return
+    await websocket.accept()
+    try:
+        await websocket.send_json({"type": "connected"})
+        while True:
+            message = await websocket.receive_json()
+            if not isinstance(message, dict):
+                await websocket.send_json({"type": "error", "message": "Browser host messages must be JSON objects."})
+                continue
+            message_type = str(message.get("type") or "")
+            if message_type == "ping":
+                await websocket.send_json({"type": "pong", "request_id": message.get("request_id")})
+    except WebSocketDisconnect:
+        return

@@ -94,8 +94,10 @@ class MemoryAgent(BaseAgent):
         k: int = 5,
         tags: list[str] | None = None,
     ) -> list[Memory]:
-        query_vector = await self._embed(query)
         rows = db.list_memories(tags=tags, limit=500)
+        if not rows:
+            return []
+        query_vector = await self._embed(query)
         scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
             vector = row.get("embedding") or []

@@ -8,13 +8,24 @@ from typing import Any
 import httpx
 import websockets
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 
+from app.api.routes_approvals import _deny_rejected_step, _reconcile_runs, approval_execution_response
 from app.api.routes_pair import PairRedeemRequest
 from app.core import db
-from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup
+from app.core.schemas import AgentMessage, Approval, ApprovalStatus, MessageType, RunCreateRequest, Wakeup
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
-from app.security.mobile_jwt import mobile_token_from_websocket, require_mobile_token
+from app.policy.redaction import redact_value
+from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.mobile_jwt import (
+    TOKEN_SCOPE,
+    mobile_token_from_websocket,
+    require_mobile_or_remote_input_token,
+    require_mobile_token,
+    validate_mobile_claims_active,
+)
 from app.services import mobile_pairing_service, wakeup_service
+from app.services.approval_event_service import get_approval_event_bus
 from app.services.guardian_runtime import runtime
 from app.services.notification_service import SYSTEM_TASK_ID
 from app.services.scheduler_service import get_scheduler
@@ -23,6 +34,10 @@ from app.services.scheduler_service import get_scheduler
 router = APIRouter()
 proxy_router = APIRouter()
 ws_router = APIRouter()
+
+
+class MobileApprovalDecision(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected|denied)$")
 
 
 @router.get("/health")
@@ -68,6 +83,24 @@ def list_paired_devices() -> dict:
     return {"devices": mobile_pairing_service.list_mobile_devices()}
 
 
+@router.delete("/api/pair/devices/{device_id}")
+def revoke_paired_device(device_id: str) -> dict:
+    return mobile_pairing_service.revoke_mobile_device(device_id)
+
+
+@router.post("/api/pair/devices/{device_id}/remote-input-grants")
+def create_remote_input_grant(device_id: str, payload: dict[str, Any] | None = Body(default=None)) -> dict:
+    return mobile_pairing_service.create_remote_input_grant(
+        device_id,
+        expires_in_seconds=(payload or {}).get("expires_in") or mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS,
+    )
+
+
+@router.delete("/api/pair/devices/{device_id}/remote-input-grants/{grant_id}")
+def revoke_remote_input_grant(device_id: str, grant_id: str) -> dict:
+    return mobile_pairing_service.revoke_remote_input_grant(device_id, grant_id)
+
+
 @router.get("/api/approvals/pending")
 def pending_approvals() -> list[dict]:
     return mobile_pairing_service.list_pending_approvals()
@@ -75,52 +108,63 @@ def pending_approvals() -> list[dict]:
 
 @router.post("/api/approvals/{approval_id}/approve")
 async def approve_approval(approval_id: str) -> dict:
-    approval = mobile_pairing_service.approve_approval(approval_id)
-    await _wake_full_backend_for_approval(approval)
-    return mobile_pairing_service.safe_approval_payload(approval)
+    approval = _load_approval_for_guardian_execution(approval_id)
+    approval = await _wake_full_backend_for_approval(approval) or approval
+    return approval_execution_response(approval)
 
 
 @router.post("/api/approvals/{approval_id}/reject")
 def reject_approval(approval_id: str) -> dict:
     approval = mobile_pairing_service.reject_approval(approval_id)
+    _deny_rejected_step(approval)
+    _reconcile_runs(approval.task_id)
     return mobile_pairing_service.safe_approval_payload(approval)
 
 
 @router.get("/api/mobile/approvals/pending")
-def pending_mobile_approvals(_token: dict = Depends(require_mobile_token)) -> list[dict]:
-    return mobile_pairing_service.list_pending_approvals()
+def pending_mobile_approvals(token: dict = Depends(require_mobile_token)) -> list[dict]:
+    return mobile_pairing_service.list_pending_approvals(token)
 
 
 @router.get("/api/mobile/approvals/{approval_id}")
-def mobile_approval_detail(approval_id: str, _token: dict = Depends(require_mobile_token)) -> dict:
-    return mobile_pairing_service.get_approval_detail(approval_id)
+def mobile_approval_detail(approval_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+    return mobile_pairing_service.get_approval_detail(approval_id, token)
 
 
 @router.post("/api/mobile/approvals/{approval_id}/approve")
-async def approve_mobile_approval(approval_id: str, _token: dict = Depends(require_mobile_token)) -> dict:
-    return await approve_approval(approval_id)
+async def approve_mobile_approval(approval_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+    approval = _load_approval_for_guardian_execution(approval_id, token)
+    approval = await _wake_full_backend_for_approval(approval) or approval
+    return approval_execution_response(approval)
 
 
 @router.post("/api/mobile/approvals/{approval_id}/reject")
-def reject_mobile_approval(approval_id: str, _token: dict = Depends(require_mobile_token)) -> dict:
-    return reject_approval(approval_id)
+def reject_mobile_approval(approval_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+    approval = mobile_pairing_service.reject_approval(approval_id, token)
+    _deny_rejected_step(approval)
+    _reconcile_runs(approval.task_id)
+    return mobile_pairing_service.safe_approval_payload(approval)
 
 
 @router.post("/api/mobile/approvals/{approval_id}/decision")
 async def decide_mobile_approval(
     approval_id: str,
-    request: dict = Body(...),
-    _token: dict = Depends(require_mobile_token),
+    request: MobileApprovalDecision = Body(...),
+    token: dict = Depends(require_mobile_or_remote_input_token),
 ) -> dict:
-    decision = str((request or {}).get("decision") or "").lower()
-    if decision == "approved":
-        return await approve_approval(approval_id)
-    return reject_approval(approval_id)
+    if request.decision == "approved":
+        return await approve_mobile_approval(approval_id, token)
+    return reject_mobile_approval(approval_id, token)
 
 
 @router.get("/api/mobile/devices")
-def list_mobile_devices(_token: dict = Depends(require_mobile_token)) -> dict:
-    return {"devices": mobile_pairing_service.list_mobile_devices()}
+def list_mobile_devices(token: dict = Depends(require_mobile_token)) -> dict:
+    return {"devices": mobile_pairing_service.list_mobile_devices(token)}
+
+
+@router.post("/api/mobile/remote-input-grants/{grant_id}/token")
+def claim_remote_input_grant_token(grant_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+    return mobile_pairing_service.claim_remote_input_grant_token(grant_id, token)
 
 
 @router.get("/api/schedules")
@@ -168,39 +212,69 @@ def enable_schedule(schedule_id: str, payload: dict[str, Any] = Body(...)) -> An
 
 @router.get("/api/wakeups/pending")
 def pending_wakeups() -> list[dict[str, Any]]:
-    return wakeup_service.list_pending_wakeups()
+    return [wakeup_service.safe_wakeup_payload(item) for item in wakeup_service.list_pending_wakeups()]
 
 
 @router.post("/api/wakeups/{wakeup_id}/approve")
 async def approve_wakeup(wakeup_id: str) -> dict[str, Any]:
     wakeup = wakeup_service.approve_wakeup(wakeup_id)
-    await _execute_wakeup(wakeup)
-    return wakeup.model_dump(mode="json")
+    try:
+        await _execute_wakeup(wakeup)
+    except Exception as exc:  # noqa: BLE001 - wakeup execution should settle into a failed wakeup instead of surfacing a stale approval.
+        wakeup_service.complete_wakeup(wakeup, error=str(exc))
+    refreshed = wakeup_service.get_wakeup(wakeup.id)
+    if refreshed.status == "failed":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Wakeup execution failed.",
+                "wakeup": wakeup_service.safe_wakeup_payload(refreshed),
+            },
+        )
+    return wakeup_service.safe_wakeup_payload(refreshed)
 
 
 @router.post("/api/wakeups/{wakeup_id}/reject")
 def reject_wakeup(wakeup_id: str) -> dict[str, Any]:
-    return wakeup_service.reject_wakeup(wakeup_id).model_dump(mode="json")
+    wakeup = wakeup_service.reject_wakeup(wakeup_id)
+    return wakeup_service.safe_wakeup_payload(wakeup_service.get_wakeup(wakeup.id))
 
 
 @router.get("/api/mobile/wakeups/pending")
 def pending_mobile_wakeups(_token: dict = Depends(require_mobile_token)) -> list[dict[str, Any]]:
-    return pending_wakeups()
+    return wakeup_service.list_pending_mobile_wakeups()
 
 
 @router.post("/api/mobile/wakeups/{wakeup_id}/approve")
 async def approve_mobile_wakeup(wakeup_id: str, _token: dict = Depends(require_mobile_token)) -> dict[str, Any]:
-    return await approve_wakeup(wakeup_id)
+    wakeup = wakeup_service.approve_wakeup(wakeup_id)
+    try:
+        await _execute_wakeup(wakeup)
+    except Exception as exc:  # noqa: BLE001 - wakeup execution should settle into a failed wakeup instead of surfacing a stale approval.
+        wakeup_service.complete_wakeup(wakeup, error=str(exc))
+    refreshed = wakeup_service.get_wakeup(wakeup.id)
+    if refreshed.status == "failed":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Wakeup execution failed.",
+                "wakeup": wakeup_service.safe_wakeup_payload(refreshed),
+            },
+        )
+    return wakeup_service.safe_wakeup_payload(refreshed)
 
 
 @router.post("/api/mobile/wakeups/{wakeup_id}/reject")
 def reject_mobile_wakeup(wakeup_id: str, _token: dict = Depends(require_mobile_token)) -> dict[str, Any]:
-    return reject_wakeup(wakeup_id)
+    wakeup = wakeup_service.reject_wakeup(wakeup_id)
+    return wakeup_service.safe_wakeup_payload(wakeup_service.get_wakeup(wakeup.id))
 
 
 @ws_router.websocket("/ws/notifications")
 @ws_router.websocket("/api/ws/notifications")
 async def notification_messages(websocket: WebSocket):
+    if await close_unauthorized_desktop_websocket(websocket):
+        return
     await websocket.accept()
     seen: set[str] = set()
     try:
@@ -224,36 +298,95 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
     from app.security.mobile_jwt import decode_mobile_token
 
     try:
-        claims = decode_mobile_token(mobile_token_from_websocket(websocket, token))
+        claims = decode_mobile_token(mobile_token_from_websocket(websocket, token), allowed_scopes={TOKEN_SCOPE})
     except HTTPException:
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    queue = get_approval_event_bus().subscribe()
     seen: set[str] = set()
     try:
-        await websocket.send_json({"type": "connected", "device_id": claims.get("device_id"), "pending": mobile_pairing_service.list_pending_approvals()})
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "device_id": claims.get("device_id"),
+                "pending": mobile_pairing_service.list_pending_approvals(claims),
+            }
+        )
         while True:
-            for approval in mobile_pairing_service.list_pending_approvals():
-                approval_id = str(approval.get("id") or "")
-                if not approval_id or approval_id in seen:
-                    continue
-                seen.add(approval_id)
+            if await _close_if_mobile_claims_inactive(websocket, claims):
+                return
+            await _send_guardian_pending_mobile_approvals(websocket, claims, seen)
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=25.0)
+            except asyncio.TimeoutError:
+                if await _close_if_mobile_claims_inactive(websocket, claims):
+                    return
+                await websocket.send_json({"type": "heartbeat"})
+                continue
+            if not _guardian_mobile_event_allowed(event, claims):
+                continue
+            if event.get("type") == "mobile_device_revoked":
+                await websocket.send_json(event)
+                await websocket.close(code=1008)
+                return
+            if await _close_if_mobile_claims_inactive(websocket, claims):
+                return
+            if event.get("type") == "approval_created":
+                approval = event.get("approval")
+                if isinstance(approval, dict):
+                    seen.add(str(approval.get("id") or ""))
                 await websocket.send_json({"type": "approval_notification", "approval": approval})
-            await asyncio.sleep(25.0)
-            await websocket.send_json({"type": "heartbeat"})
+            else:
+                await websocket.send_json(event)
     except WebSocketDisconnect:
         return
+    finally:
+        get_approval_event_bus().unsubscribe(queue)
+
+
+async def _close_if_mobile_claims_inactive(websocket: WebSocket, claims: dict[str, Any]) -> bool:
+    try:
+        validate_mobile_claims_active(claims)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return True
+    return False
+
+
+async def _send_guardian_pending_mobile_approvals(websocket: WebSocket, claims: dict[str, Any], seen: set[str]) -> None:
+    for approval in mobile_pairing_service.list_pending_approvals(claims):
+        approval_id = str(approval.get("id") or "")
+        if not approval_id or approval_id in seen:
+            continue
+        seen.add(approval_id)
+        await websocket.send_json({"type": "approval_notification", "approval": approval})
+
+
+def _guardian_mobile_event_allowed(event: dict[str, Any], claims: dict[str, Any]) -> bool:
+    if event.get("type") in {"remote_input_grant_created", "remote_input_grant_revoked", "mobile_device_revoked"}:
+        return str(event.get("device_id") or "") == str(claims.get("device_id") or "")
+    approval = event.get("approval")
+    if not isinstance(approval, dict):
+        return True
+    return mobile_pairing_service.mobile_claims_can_access_approval(approval, claims)
 
 
 @ws_router.websocket("/{path:path}")
 async def proxy_websocket(websocket: WebSocket, path: str):
+    if _is_mobile_ws_path(websocket.url.path):
+        await websocket.close(code=1008)
+        return
+    if await close_unauthorized_desktop_websocket(websocket):
+        return
     if runtime.shell_mode != "foreground":
+        await websocket.accept()
         await websocket.close(code=1013)
         return
-    await runtime.ensure_full_backend(reason=f"ws_proxy:/{path}")
-    target = _full_backend_ws_url(path, websocket.url.query)
     await websocket.accept()
     try:
+        await runtime.ensure_full_backend(reason=f"ws_proxy:/{path}")
+        target = _full_backend_ws_url(path, websocket.url.query)
         async with websockets.connect(target) as upstream:
             await asyncio.gather(
                 _client_to_upstream(websocket, upstream),
@@ -268,6 +401,8 @@ async def proxy_websocket(websocket: WebSocket, path: str):
 
 @proxy_router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def proxy_full_backend(path: str, request: Request) -> Response:
+    if _is_mobile_or_remote_proxy_path(path):
+        raise HTTPException(status_code=404, detail="Mobile and remote routes are handled by Guardian and are not proxied.")
     raw_body = await request.body()
     response = await runtime.proxy(
         request.method,
@@ -279,10 +414,107 @@ async def proxy_full_backend(path: str, request: Request) -> Response:
     return _proxy_response(response)
 
 
-async def _wake_full_backend_for_approval(approval: Approval) -> None:
-    await runtime.wake_transient(reason=f"approval:{approval.id}")
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        await client.post(f"{full_backend_url()}/api/runtime/approvals/{approval.id}/continue")
+async def _wake_full_backend_for_approval(approval: Approval) -> Approval | None:
+    try:
+        await runtime.wake_transient(reason=f"approval:{approval.id}")
+    except Exception as exc:  # noqa: BLE001 - guardian approval should surface wake failures clearly.
+        raise HTTPException(
+            status_code=503,
+            detail=_approval_continue_unavailable_detail(approval, exc),
+        ) from exc
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(f"{full_backend_url()}/api/runtime/approvals/{approval.id}/continue")
+    except Exception as exc:  # noqa: BLE001 - transport failures should be retryable approval errors.
+        raise HTTPException(
+            status_code=503,
+            detail=_approval_continue_unavailable_detail(approval, exc),
+        ) from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_approval_continue_response_error_detail(approval, response))
+    refreshed = db.fetch_one("approvals", approval.id)
+    return Approval.model_validate(refreshed) if refreshed else approval
+
+
+def _approval_continue_unavailable_detail(approval: Approval, exc: Exception) -> dict[str, Any]:
+    data = db.fetch_one("approvals", approval.id)
+    return {
+        "message": "Full backend is not ready to continue the approval.",
+        "approval_id": approval.id,
+        "approval": mobile_pairing_service.safe_approval_payload(data or approval),
+        "error": redact_value(str(exc)),
+    }
+
+
+def _approval_continue_response_error_detail(approval: Approval, response: Any) -> dict[str, Any]:
+    detail = _response_detail(response, include_text=False)
+    message = "Full backend did not continue the approval."
+    if isinstance(detail, dict):
+        message = str(detail.get("message") or message)
+    elif isinstance(detail, str) and detail:
+        message = detail
+    data = db.fetch_one("approvals", approval.id)
+    payload: dict[str, Any] = {
+        "message": redact_value(message),
+        "approval_id": approval.id,
+        "approval": mobile_pairing_service.safe_approval_payload(data or approval),
+    }
+    if isinstance(detail, dict):
+        payload["backend_detail"] = _safe_backend_detail(detail)
+    return payload
+
+
+def _safe_backend_detail(value: Any) -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            text_key = str(key)
+            if text_key == "approval" and isinstance(item, dict):
+                result[text_key] = _safe_backend_approval_payload(item)
+            elif text_key == "approvals" and isinstance(item, list):
+                result[text_key] = [
+                    _safe_backend_approval_payload(approval) if isinstance(approval, dict) else redact_value(approval)
+                    for approval in item
+                ]
+            else:
+                result[text_key] = _safe_backend_detail_value(text_key, item)
+        return result
+    if isinstance(value, list):
+        return [_safe_backend_detail(item) for item in value]
+    return redact_value(value)
+
+
+def _safe_backend_detail_value(key: str, value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple, set)):
+        return _safe_backend_detail(value)
+    redacted = redact_value({key: value})
+    return redacted.get(key) if isinstance(redacted, dict) else redact_value(value)
+
+
+def _safe_backend_approval_payload(value: dict[str, Any]) -> dict[str, Any]:
+    allowed = {key: item for key, item in value.items() if key in Approval.model_fields}
+    return mobile_pairing_service.safe_approval_payload(allowed)
+
+
+def _load_approval_for_guardian_execution(approval_id: str, claims: dict[str, Any] | None = None) -> Approval:
+    data = db.fetch_one("approvals", approval_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    approval = Approval.model_validate(data)
+    mobile_pairing_service.raise_if_mobile_claims_disallowed(approval, claims)
+    if approval.status == ApprovalStatus.APPROVED:
+        if approval.consumed_at:
+            raise HTTPException(status_code=409, detail="Approval has already been consumed.")
+        return approval
+    if approval.status != ApprovalStatus.PENDING:
+        raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}.")
+    try:
+        return mobile_pairing_service.approve_approval(approval_id, claims)
+    except HTTPException as exc:
+        refreshed = Approval.model_validate(db.fetch_one("approvals", approval_id) or data)
+        if exc.status_code == 409 and refreshed.status == ApprovalStatus.APPROVED and not refreshed.consumed_at:
+            return refreshed
+        raise
 
 
 async def _execute_wakeup(wakeup: Wakeup) -> None:
@@ -296,8 +528,16 @@ async def _execute_wakeup(wakeup: Wakeup) -> None:
         if response.status_code >= 400:
             wakeup_service.complete_wakeup(wakeup, error=response.text)
             return
-        data = response.json()
-        wakeup_service.complete_wakeup(wakeup, run_id=str(data.get("run_id") or ""))
+        try:
+            data = response.json()
+        except Exception as exc:  # noqa: BLE001
+            wakeup_service.complete_wakeup(wakeup, error=f"Invalid run creation response: {exc}")
+            return
+        run_id = str(data.get("run_id") or "").strip() if isinstance(data, dict) else ""
+        if not run_id:
+            wakeup_service.complete_wakeup(wakeup, error="Full backend did not return a run_id for the wakeup.")
+            return
+        wakeup_service.complete_wakeup(wakeup, run_id=run_id)
     except Exception as exc:  # noqa: BLE001
         wakeup_service.complete_wakeup(wakeup, error=str(exc))
 
@@ -308,12 +548,43 @@ def full_backend_url() -> str:
     return FULL_BACKEND_URL
 
 
+def _response_detail(response: Any, *, include_text: bool = True) -> Any:
+    try:
+        payload = response.json()
+    except Exception:
+        return response.text if include_text else ""
+    if isinstance(payload, dict) and "detail" in payload:
+        return payload["detail"]
+    return payload
+
+
 def _full_backend_ws_url(path: str, query: str) -> str:
     base = full_backend_url().replace("http://", "ws://").replace("https://", "wss://").rstrip("/")
     suffix = "/" + path.lstrip("/")
     if query:
         suffix += f"?{query}"
     return f"{base}{suffix}"
+
+
+def _is_mobile_ws_path(path: str) -> bool:
+    normalized = "/" + path.lstrip("/")
+    return normalized.startswith("/ws/mobile/") or normalized.startswith("/api/ws/mobile/") or normalized.startswith("/ws/remote/") or normalized.startswith("/api/ws/remote/")
+
+
+def _is_mobile_or_remote_proxy_path(path: str) -> bool:
+    normalized = "/" + path.lstrip("/")
+    return (
+        normalized == "/api/mobile"
+        or normalized.startswith("/api/mobile/")
+        or normalized == "/ws/mobile"
+        or normalized.startswith("/ws/mobile/")
+        or normalized == "/api/ws/mobile"
+        or normalized.startswith("/api/ws/mobile/")
+        or normalized == "/ws/remote"
+        or normalized.startswith("/ws/remote/")
+        or normalized == "/api/ws/remote"
+        or normalized.startswith("/api/ws/remote/")
+    )
 
 
 async def _client_to_upstream(websocket: WebSocket, upstream: Any) -> None:

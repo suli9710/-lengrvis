@@ -4,8 +4,10 @@ import logging
 import os
 import platform
 import re
+import shlex
 import subprocess
 from fnmatch import fnmatchcase
+from pathlib import PureWindowsPath
 from typing import Any
 
 from app.core.audit import record
@@ -17,6 +19,21 @@ from app.tools.schemas import ToolDefinition
 
 ALLOWLIST = {"notepad": "notepad.exe", "calculator": "calc.exe", "calc": "calc.exe"}
 logger = logging.getLogger(__name__)
+BLOCKED_UNINSTALL_EXECUTABLES = {
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+    "pwsh.exe",
+    "wscript",
+    "wscript.exe",
+    "cscript",
+    "cscript.exe",
+    "mshta",
+    "mshta.exe",
+}
+BLOCKED_UNINSTALL_EXTENSIONS = {".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta"}
 
 APP_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
     "browser": (
@@ -287,21 +304,27 @@ def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     query = str(args.get("query", "")).strip()
     uninstall_string = str(args.get("uninstall_string") or "").strip()
 
-    selected = None
     if uninstall_string:
-        selected = {"name": query or "selected app", "uninstall_string": uninstall_string}
-    else:
-        matches = find_uninstall_entries({"query": query}, context)["matches"]
-        if not matches:
-            return {"ok": False, "error": f"No uninstall entry found for: {query}"}
-        if len(matches) > 1:
-            return {
-                "ok": False,
-                "error": "Multiple uninstall entries matched; refine the app name.",
-                "matches": matches[:10],
-            }
-        selected = matches[0]
-        uninstall_string = str(selected.get("uninstall_string") or "")
+        return {
+            "ok": False,
+            "error": "Direct uninstall commands are not accepted. Search by app name and use a scanned uninstall entry.",
+        }
+
+    matches = find_uninstall_entries({"query": query}, context)["matches"]
+    if not matches:
+        return {"ok": False, "error": f"No uninstall entry found for: {query}"}
+    if len(matches) > 1:
+        return {
+            "ok": False,
+            "error": "Multiple uninstall entries matched; refine the app name.",
+            "matches": matches[:10],
+        }
+    selected = matches[0]
+    uninstall_string = str(selected.get("uninstall_string") or "")
+    try:
+        command_args = _safe_uninstall_args(uninstall_string)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
     preview = {
         "dry_run": True,
@@ -315,8 +338,7 @@ def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     if args.get("dry_run", True):
         return preview
 
-    command = _normalize_uninstall_command(uninstall_string)
-    subprocess.Popen(command, shell=True)
+    subprocess.Popen(command_args, shell=False)
     record("app.uninstall_app", "AppAgent", {"app": selected.get("name", query), "command": uninstall_string})
     return {
         "ok": True,
@@ -330,6 +352,41 @@ def _normalize_uninstall_command(command: str) -> str:
     if re.search(r"\bmsiexec(\.exe)?\b", command, flags=re.IGNORECASE) and re.search(r"\s/I\s*", command, flags=re.IGNORECASE):
         command = re.sub(r"\s/I\s*", " /X ", command, count=1, flags=re.IGNORECASE)
     return command
+
+
+def _safe_uninstall_args(command: str) -> list[str]:
+    normalized = _normalize_uninstall_command(command.strip())
+    if not normalized:
+        raise ValueError("Uninstall entry has no command.")
+    if re.search(r"[\r\n&|<>]", normalized):
+        raise ValueError("Uninstall entry contains shell control characters and cannot be launched safely.")
+    try:
+        parts = [part.strip().strip('"') for part in shlex.split(normalized, posix=False) if part.strip()]
+    except ValueError as exc:
+        raise ValueError("Uninstall entry could not be parsed safely.") from exc
+    if not parts:
+        raise ValueError("Uninstall entry has no executable.")
+
+    executable = PureWindowsPath(parts[0]).name.lower()
+    extension = PureWindowsPath(parts[0]).suffix.lower()
+    if executable in BLOCKED_UNINSTALL_EXECUTABLES or extension in BLOCKED_UNINSTALL_EXTENSIONS:
+        raise ValueError("Uninstall entry uses a shell/script host and requires manual removal.")
+    return _normalize_msiexec_args(parts)
+
+
+def _normalize_msiexec_args(parts: list[str]) -> list[str]:
+    if not parts or PureWindowsPath(parts[0]).name.lower() not in {"msiexec", "msiexec.exe"}:
+        return parts
+    normalized = list(parts)
+    for index, arg in enumerate(normalized[1:], start=1):
+        lower = arg.lower()
+        if lower == "/i":
+            normalized[index] = "/X"
+            break
+        if lower.startswith("/i"):
+            normalized[index] = "/X" + arg[2:]
+            break
+    return normalized
 
 
 def launch_allowlisted(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -415,7 +472,6 @@ def _input_schema(name: str) -> dict[str, Any]:
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
-                "uninstall_string": {"type": "string"},
                 "dry_run": {"type": "boolean"},
             },
             "additionalProperties": False,

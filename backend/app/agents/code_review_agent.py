@@ -10,6 +10,7 @@ Verdict = Literal["allow", "block"]
 
 RISK_MODEL_BREAK = "risk_model_break"
 APPROVAL_BYPASS = "approval_bypass"
+MODEL_BOUNDARY_ESCAPE = "model_boundary_escape"
 WRITE_CONCURRENCY = "write_concurrency"
 ORCHESTRATOR_BLOAT = "orchestrator_bloat"
 EXTERNAL_SOURCE_COPY = "external_source_copy"
@@ -18,6 +19,7 @@ MISSING_FAILURE_TESTS = "missing_failure_tests"
 REQUIRED_RISK_CATEGORIES: tuple[str, ...] = (
     RISK_MODEL_BREAK,
     APPROVAL_BYPASS,
+    MODEL_BOUNDARY_ESCAPE,
     WRITE_CONCURRENCY,
     ORCHESTRATOR_BLOAT,
     EXTERNAL_SOURCE_COPY,
@@ -136,6 +138,7 @@ class CodeReviewAgent(BaseAgent):
         findings: list[CodeReviewFinding] = []
         findings.extend(self._review_risk_model(files, corpus))
         findings.extend(self._review_approval_bypass(files, corpus))
+        findings.extend(self._review_model_boundary_escape(files, corpus))
         findings.extend(self._review_write_concurrency(files, corpus))
         findings.extend(self._review_orchestrator_bloat(files, corpus))
         findings.extend(self._review_external_source_copy(copied_source_flags, corpus))
@@ -200,6 +203,47 @@ class CodeReviewAgent(BaseAgent):
                     message="Change may execute write or remote actions without an explicit approval gate.",
                     evidence=bypass_terms or approval_paths,
                     recommendation="Require dry-run previews, pending approvals, and approved approval_id checks before execution.",
+                )
+            ]
+        return []
+
+    def _review_model_boundary_escape(self, files: list[_ChangedFile], corpus: str) -> list[CodeReviewFinding]:
+        model_boundary_paths = [
+            file.path
+            for file in files
+            if _path_contains(
+                file.path,
+                "planner_agent.py",
+                "agents/base.py",
+                "orchestrator_agent.py",
+                "tool_runtime.py",
+                "core/schemas.py",
+                "model_boundary.py",
+            )
+        ]
+        boundary_terms = _matching_terms(
+            corpus,
+            "model_boundary_escape",
+            "model boundary",
+            "model output",
+            "structured_chat",
+            "subagent args",
+            "planstep args",
+            "approval_id in plan",
+            "approved in args",
+            "tool args carry approval",
+        )
+        if boundary_terms or (
+            model_boundary_paths
+            and _contains_any(corpus, "approval_id", "approved=true", "approved in args", "model output", "subagent args")
+        ):
+            return [
+                CodeReviewFinding(
+                    category=MODEL_BOUNDARY_ESCAPE,
+                    severity="critical",
+                    message="Change may let model-authored plans or subagent args carry runtime approval/control fields.",
+                    evidence=boundary_terms or model_boundary_paths,
+                    recommendation="Strip or deny model-proposed approved/approval_id/private runtime fields before validation and execution, with negative tests.",
                 )
             ]
         return []

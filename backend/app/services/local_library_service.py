@@ -152,20 +152,6 @@ def _library_roots(allowed_directories: list[str], section: str | None = None) -
     for raw in allowed_directories:
         _add_existing_root(raw, roots)
 
-    user_bases: list[Path] = []
-    for env_key in USERPROFILE_ENV_KEYS:
-        raw_base = os.environ.get(env_key)
-        if raw_base:
-            user_bases.append(Path(raw_base).expanduser())
-    for env_key in ONEDRIVE_ENV_KEYS:
-        raw_base = os.environ.get(env_key)
-        if raw_base:
-            user_bases.append(Path(raw_base).expanduser())
-
-    for base in user_bases:
-        for dirname in _known_dir_names_for_section(section):
-            _add_existing_root(base / dirname, roots)
-
     return [str(root) for root in roots]
 
 

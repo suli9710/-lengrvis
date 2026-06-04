@@ -12,7 +12,7 @@
 
 这是一个 Windows 优先的本地电脑 AI 管家原型，定位更接近 Marvis 式个人 OS Agent：用户用自然语言描述目标，系统通过多 Agent 协作理解任务、规划步骤、调用本地工具，并在修改文件或系统设置前进行安全审核和用户确认。
 
-当前版本不是纯聊天机器人，也不是开发者控制台。桌面端第一屏已经改成消费级电脑助手体验：一句话任务入口、隐私/混合/效率模式、文件/文档/图片/电脑/应用/网页能力卡、手机远控预留入口、Agent 进度和安全审批。
+当前版本不是纯聊天机器人，也不是开发者控制台。桌面端第一屏已经改成消费级电脑助手体验：一句话任务入口、隐私/混合/效率模式、文件/文档/图片/电脑/应用/网页能力卡、手机审批与屏幕查看入口、Agent 进度和安全审批。
 
 ## 架构
 
@@ -40,7 +40,7 @@ test_data/               授权目录、策略和隐私测试数据
 - **Domain shell agents**：File、Document、Computer、App、Browser、Search 等领域 Agent 主要提供 owner/prompt/allowed tools 边界，并共享 `BaseAgent.act()`；多数正常成功路径会先走 deterministic fast path（tool owner、required args、schema、dry-run/approval 约束），不是每一步都调用 LLM 做自主推理。
 - **LLM 介入边界**：Planner/Supervisor、文档摘要/问答/报告、失败恢复、复杂改参或 fast path 无法确定时会调用 structured LLM；安全审查中低风险消息优先走确定性快速通道，高风险或模糊场景再进入完整审核。
 - **Step 级并行执行**：Plan 中无依赖的步骤通过 `asyncio.gather` 并发执行，有依赖的步骤按拓扑排序串行。
-- **38 个外部化 Prompt 文件**：Agent system prompt 和 LLM 任务模板存放在 `backend/app/llm/prompts/` 目录，可独立调整。
+- **38 个外部化 Prompt 模板**：Agent system prompt 和 LLM 任务模板以 `.md` 文件存放在 `backend/app/llm/prompts/` 目录，可独立调整。
 
 ### LLM 与推理
 - OpenAI-compatible 真实 AI 接入：`base_url`、`api_key`、`model`、`wire_api` 可配置；支持 `chat/completions` 与 `responses` 两种 OpenAI 格式。
@@ -149,12 +149,15 @@ npm --prefix desktop run dev
 .\scripts\run_tests.ps1
 ```
 
+主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket smoke。
+
 最近一次记录的验证结果（本轮文档审计未能重新核验完整测试数）：
 
 ```text
 backend: 1049 passed, 1 skipped
-desktop build passed
+desktop typecheck passed
 mobile typecheck passed
+mobile token smoke passed
 ```
 
 跳过项是当前 Windows shell 没有创建符号链接权限。
@@ -181,10 +184,22 @@ bash scripts/build_backend_mac.sh arm64
 
 可选架构参数为 `arm64`、`x86_64`、`universal2`；也可以用 `MAVRIS_BACKEND_TARGET_ARCH=arm64 bash scripts/build_backend_mac.sh`。产物：`dist/backend`，Electron Builder 会打进 `Mavris.app/Contents/Resources/backend/backend`。
 
-桌面端 installer/portable：
+桌面端 installer（Electron Builder）：
 
 ```powershell
 .\scripts\build_desktop.ps1
+```
+
+Windows portable 目录、portable zip 和自解压包由完整构建入口生成：
+
+```powershell
+.\scripts\build_all.ps1
+```
+
+默认产物为 `dist\Mavris-win-portable`、`dist\Mavris-win-portable.zip` 和 `dist\Mavris-0.1.0-x64-self-extracting.exe`。发布到自定义目录时，这些参数会贯穿 backend、portable、zip、SFX 和最终验证：
+
+```powershell
+.\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Mavris-win-portable -PortableZip release\win\Mavris-win-portable.zip -SelfExtractingExe release\win\Mavris-0.1.0-x64-self-extracting.exe
 ```
 
 macOS DMG：
@@ -196,21 +211,20 @@ npm --prefix desktop run dist:mac:arm64
 
 `dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Mavris-0.1.0-arm64.dmg`。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。
 
-完整构建：
+只验证已有发布产物：
+
+```powershell
+.\scripts\build_all.ps1 -VerifyOnly
+```
+
+默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。用户切换隐私模式后，Settings 会按需安装 Ollama 运行时、启动本地服务，并通过 `/api/settings/ollama/pull` 拉取推荐模型。
 
 ```powershell
 .\scripts\build_all.ps1
+.\scripts\build_all.ps1 -VerifyOnly
 ```
 
-发布隐私模式开箱包时，先准备 `vendor\ollama`、`vendor\ollama-models` 和 `vendor\ollama-bundle-manifest.json`，再打开强制门禁：
-
-```powershell
-.\scripts\prepare_ollama_release.ps1 -OllamaRuntimeDir <runtime-dir> -OllamaModelsDir <models-dir> -AcceptLicenses
-.\scripts\build_all.ps1 -RequireBundledOllama
-.\scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama
-```
-
-`prepare_ollama_release.ps1` 会调用 `bundle_ollama.ps1` 生成 vendor 资源，并用临时 portable 包跑一次 `verify_packaging.ps1 -RequireBundledOllama`。需要直接从已安装 Ollama 拉取推荐模型时，可追加 `-PullModel -OllamaExe <ollama.exe>`。`-RequireBundledOllama` 会校验 portable 目录和 zip 中的 Ollama runtime、模型目录、bundle manifest 及 SHA256 摘要；缺任何一项都会失败。
+`vendor\ollama`、`vendor\ollama-models` 和 `vendor\ollama-bundle-manifest.json` 已被视为本地缓存/实验发行资源，不应提交到 Git，也不会被默认 portable 构建自动打包。若确有特殊离线发行需求，只能显式传入外部资源目录给 `scripts\build_portable.ps1` 的 `-BundledOllamaDir`、`-BundledOllamaModelsDir`、`-BundledOllamaManifest`，并单独跑 `verify_packaging.ps1 -RequireBundledOllama`。
 
 ## API
 
@@ -227,7 +241,7 @@ npm --prefix desktop run dist:mac:arm64
 - `POST /api/pair/code` — 桌面端生成一次性 LAN 配对码
 - `POST /api/pair` — Android 伴侣 App 用配对码换取移动端 JWT
 - `GET /api/mobile/approvals/pending`、`POST /api/mobile/approvals/{approval_id}/decision` — Bearer JWT 保护的审批接口
-- `WebSocket /ws/mobile/approvals?token=...` — 手机端订阅审批创建/决策事件
+- `WebSocket /ws/mobile/approvals` — 手机端订阅审批创建/决策事件；令牌通过 `Sec-WebSocket-Protocol: mavris.mobile.token.<token>` 传递，避免进入 URL 日志。
 
 Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` 启动。手机真机访问时，后端需要监听局域网地址，例如 `.\scripts\start_app.ps1 -BackendHost 0.0.0.0`；远程 LAN 客户端默认只能访问移动端配对与审批接口，桌面端完整 API 仍限制为本机访问。
 
@@ -238,6 +252,7 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 系统与应用：
 - `GET /api/system/info`、`GET /api/system/diagnostics`、`GET /api/system/processes`、`GET /api/system/startup-items`
 - `GET /api/apps`
+- `/api/ui-automation/active-window`, `/api/ui-automation/observe`, `/api/ui-automation/action` - Windows GUI automation; click/type/drag/hotkey actions require dry-run approval binding before live execution.
 
 设置与诊断：
 - `GET /api/settings`、`POST /api/settings`
@@ -265,8 +280,8 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 
 - 真正的本地推理（Ollama / LM Studio / llama.cpp-compatible server）需用户自行安装并启动；隐私模式探测不到本地后端时会明确失败。
 - 硬件加速配置已接入桌面端 Settings：可设置 `onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference`，并通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 做可用性检查。
-- pywinauto / 复杂 GUI 自动化是预留接口。
-- 手机远控目前是产品入口预留，还没有真实跨端通道。
+- Windows GUI automation is implemented through UIAutomation COM, screenshots, window focus, semantic element lookup, and mouse/keyboard fallback input. Mutating GUI actions still require dry-run + user approval, and policy blocks credential, payment, one-time-code, and token text entry.
+- 手机端已支持移动审批和只读远程屏幕查看；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。手机端仍不能从远程屏幕页面控制电脑，所有远程输入继续走审批与安全策略。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
 
 ## Phase 5 AI OS Loop
@@ -284,7 +299,7 @@ Desktop settings now expose the ONNX acceleration fields for model path, runtime
 The installer helper is:
 
 ```powershell
-.\scripts\install_acceleration.ps1 -Runtime all
+.\scripts\install_acceleration.ps1 -Runtime auto
 ```
 
-It supports `-Runtime winml|directml|openvino|cpu|all`, `-ModelDir`, `-HfMirror`, `-HfSource`, and a dry-run friendly `-WhatIf`.
+It supports `-Runtime auto|winml|directml|openvino|cpu`, `-ModelsDir`, `-HfEndpoint`, `-HfMirror`, `-SkipModels`, `-SkipSmoke`, and `-Python`.

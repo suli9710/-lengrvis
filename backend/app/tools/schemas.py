@@ -54,6 +54,37 @@ class ToolDefinition:
     feature_flag: str = ""
     tool_version: str = "1"
 
+    def contract_errors(self) -> list[str]:
+        errors: list[str] = []
+        if not str(self.name or "").strip():
+            errors.append("name is required")
+        if not str(self.description or "").strip():
+            errors.append("description is required")
+        if not isinstance(self.input_schema, dict):
+            errors.append("input_schema must be a dict")
+        if not isinstance(self.output_schema, dict):
+            errors.append("output_schema must be a dict")
+        if not isinstance(self.risk_level, RiskLevel):
+            errors.append("risk_level must be declared")
+        if self.read_only is None:
+            errors.append("read_only must be declared")
+        if self.concurrency_safe is None:
+            errors.append("concurrency_safe must be declared")
+        if self.destructive is None:
+            errors.append("destructive must be declared")
+        if not self.effects:
+            errors.append("effects must be declared")
+        if not self.resource_kinds:
+            errors.append("resource_kinds must be declared")
+        if not str(self.trust_tier or "").strip() or self.trust_tier == "unknown":
+            errors.append("trust_tier must be authoritative")
+        if self.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM} and not self.supports_dry_run:
+            errors.append("R2/R3 tools must support dry_run")
+        return errors
+
+    def is_model_visible(self) -> bool:
+        return not self.contract_errors()
+
     def is_read_only(self) -> bool:
         if self.read_only is not None:
             return self.read_only
@@ -113,6 +144,8 @@ class ToolDefinition:
             "hooks": self.hooks,
             "progress_schema": self.progress_schema,
             "tool_version": self.tool_version,
+            "contract_valid": self.is_model_visible(),
+            "contract_errors": self.contract_errors(),
         }
         if include_schema:
             payload.update(

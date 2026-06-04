@@ -31,6 +31,7 @@ from app.api import (
     routes_skills,
     routes_system,
     routes_tasks,
+    routes_ui_automation,
 )
 from app.config import AppSettings
 from app.core import db
@@ -41,7 +42,8 @@ from app.llm.local_provider import health_snapshot
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
 from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_mobile_lan_http_path
-from app.security.mobile_jwt import decode_mobile_token
+from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
+from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token
 from app.services.scheduler_service import get_scheduler
 from app.tools.registry import register_all_tools
 from app.indexer.file_watcher import get_file_watcher
@@ -133,11 +135,17 @@ def create_app() -> FastAPI:
         if scheme.lower() != "bearer" or not token:
             return JSONResponse(status_code=401, content={"detail": "Missing mobile bearer token"})
         try:
-            decode_mobile_token(token)
+            decode_mobile_token(token, allowed_scopes={TOKEN_SCOPE, REMOTE_INPUT_SCOPE})
         except Exception as exc:  # noqa: BLE001
             status_code = getattr(exc, "status_code", 401)
             detail = getattr(exc, "detail", "Invalid mobile token")
             return JSONResponse(status_code=status_code, content={"detail": detail})
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def desktop_api_token_guard(request: Request, call_next):
+        if should_require_desktop_api_token(request) and not has_valid_desktop_api_token(request):
+            return JSONResponse(status_code=401, content={"detail": "Missing desktop API token"})
         return await call_next(request)
 
     @app.exception_handler(AppError)
@@ -168,6 +176,7 @@ def create_app() -> FastAPI:
         routes_settings.router,
         routes_audit.router,
         routes_browser.router,
+        routes_ui_automation.router,
         routes_schedules.router,
         routes_memories.router,
         routes_mcp.router,
@@ -188,6 +197,7 @@ def create_app() -> FastAPI:
     app.include_router(routes_mobile.ws_router, prefix="/api")
     app.include_router(routes_remote.ws_router)
     app.include_router(routes_remote.ws_router, prefix="/api")
+    app.include_router(routes_browser.ws_router, prefix="/api")
     app.include_router(routes_runs.ws_router)
     app.include_router(routes_runs.ws_router, prefix="/api")
     app.include_router(routes_settings.ws_router)

@@ -448,6 +448,33 @@ def test_context_aware_provider_compacts_before_chat():
     assert count_messages_tokens(provider.messages) < count_messages_tokens(messages)
 
 
+def test_context_aware_provider_attaches_request_snapshot_metadata():
+    class CapturingProvider(LLMProvider):
+        name = "snapshot_capture"
+
+        async def chat(self, messages, model=None, temperature=None, tools=None):  # noqa: ANN001, ARG002
+            return "ok"
+
+        async def structured_chat(self, messages, output_schema):  # noqa: ANN001, ARG002
+            return {"ok": True}
+
+    wrapped = ContextAwareProvider(
+        CapturingProvider(),
+        _settings(context_history_snip_enabled=False, context_micro_compact_enabled=False, permission_mode="plan"),
+        task="planner",
+    )
+    tools = [{"type": "function", "function": {"name": "file.read_text", "parameters": {}}}]
+
+    response = asyncio.run(wrapped.chat_result([{"role": "user", "content": "hello"}], tools=tools))
+
+    snapshot = response.metadata["request_snapshot"]
+    assert snapshot["prompt_hash"]
+    assert snapshot["visible_tool_ids"] == ["file.read_text"]
+    assert snapshot["routing"]["task"] == "planner"
+    assert snapshot["routing"]["permission_mode"] == "plan"
+    assert snapshot["context_projection"]["source"] == "planner:chat"
+
+
 def test_context_aware_provider_reactive_compacts_after_prompt_too_long():
     class FailingOnceProvider(LLMProvider):
         name = "failing"

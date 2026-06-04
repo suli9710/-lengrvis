@@ -12,6 +12,7 @@ from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatu
 from app.llm.registry import get_effective_settings
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.task_phase import TaskPhase
 from app.policy.approval_binding import (
     args_binding_hmac,
     binding_preview,
@@ -30,16 +31,6 @@ from app.tools.registry import register_all_tools, registry as tool_registry
 router = APIRouter()
 
 _GUI_ACTOR = "UIAutomation"
-_READ_TOOLS = {
-    "active-window": ("ui_automation.active_window", ui_automation_tools.active_window),
-    "observe": ("ui_automation.observe", ui_automation_tools.observe),
-    "find-element": ("ui_automation.find_element", ui_automation_tools.find_element),
-    "wait-for-element": ("ui_automation.wait_for_element", ui_automation_tools.wait_for_element),
-    "list-windows": ("ui_automation.list_windows", ui_automation_tools.list_windows),
-    "screenshot": ("ui_automation.screenshot", ui_automation_tools.screenshot),
-    "get-property": ("ui_automation.get_property", ui_automation_tools.get_property),
-    "get-children": ("ui_automation.get_children", ui_automation_tools.get_children),
-}
 _ACTION_TO_TOOL = {
     "focus": "ui_automation.focus",
     "focus_window": "ui_automation.focus_window",
@@ -111,10 +102,26 @@ def get_children(payload: dict | None = None):
 def action(payload: dict | None = None):
     payload = dict(payload or {})
     tool_name = _resolve_action_tool(payload)
+    if not tool_name:
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "Unknown GUI automation action. Supported actions: "
+            + ", ".join(sorted(key for key in _ACTION_TO_TOOL if not key.startswith("ui_automation."))),
+        }
     context = _context()
     tool = _tool_definition(tool_name)
+    if tool.risk_level in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
+        return tool.execute(payload, context)
     if payload.get("dry_run", True) is True:
         preview = tool.execute({**payload, "dry_run": True}, context)
+        if not preview.get("ok") or preview.get("dry_run") is not True:
+            return {
+                "ok": False,
+                "status": "preview_failed",
+                "error": preview.get("error") or "GUI automation dry-run preview failed.",
+                "preview": redacted_preview(binding_preview(preview)),
+            }
         review = _review_tool_call(tool_name, payload, context)
         if review.verdict == SafetyVerdict.DENY:
             return _blocked_response(review)
@@ -144,7 +151,7 @@ def _resolve_action_tool(payload: dict[str, Any]) -> str:
     if not tool_name and raw.startswith("ui_automation."):
         tool_name = raw
     if not tool_name or tool_name not in set(_ACTION_TO_TOOL.values()):
-        return "ui_automation.click"
+        return ""
     return tool_name
 
 
@@ -221,6 +228,8 @@ def _create_action_approval(
     db.upsert_model("approvals", approval)
     publish_approval_created(approval)
     set_step_status(step, StepStatus.WAITING_USER_APPROVAL, actor=_GUI_ACTOR)
+    task.status = TaskPhase.EXECUTION
+    task.phase = TaskPhase.EXECUTION
     safe_transition(task, TaskStatus.WAITING_USER_APPROVAL, actor=_GUI_ACTOR)
     db.upsert_model("tasks", task)
     db.upsert_model("plans", plan)

@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.core import db
+from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +54,8 @@ async def test_install_local_model_already_installed():
 
     with patch.object(ollama_service, "is_installed", return_value=True), \
          patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
+         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ollama_service, "_bundled_model_available", return_value=False), \
          patch.object(ollama_service, "pull_model_streaming") as mock_pull:
 
         async def fake_stream(model=None):
@@ -153,6 +156,8 @@ def test_install_local_model_endpoint():
 
     with patch.object(ollama_service, "is_installed", return_value=True), \
          patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
+         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ollama_service, "_bundled_model_available", return_value=False), \
          patch.object(ollama_service, "pull_model_streaming") as mock_pull:
 
         async def fake_stream(model=None):
@@ -161,10 +166,68 @@ def test_install_local_model_endpoint():
         mock_pull.side_effect = fake_stream
 
         client = TestClient(create_app())
-        resp = client.post("/api/settings/install-local-model", json={"model": "test"})
+        resp = client.post("/api/settings/install-local-model", json={"model": "qwen2.5:3b"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
+
+
+def test_install_local_model_endpoint_restricts_model_name():
+    """The install endpoint must not pass arbitrary model names to Ollama."""
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    resp = client.post("/api/settings/install-local-model", json={"model": "../huge:latest"})
+    assert resp.status_code == 400
+
+
+def test_install_local_model_websocket_requires_desktop_token(monkeypatch):
+    """The streaming endpoint is a mutating desktop operation and needs WS auth."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    from app.main import create_app
+
+    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/settings/install-local-model?model=qwen2.5:3b"):
+            raise AssertionError("install-local-model websocket should require desktop token")
+
+    assert exc_info.value.code == 1008
+
+
+def test_install_local_model_websocket_restricts_model_name(monkeypatch):
+    """Even authenticated WS clients can only install approved local models."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    from app.main import create_app
+
+    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/settings/install-local-model?model=not-approved:70b",
+            subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}desktop-secret"],
+        ) as websocket:
+            assert websocket.receive_json()["status"] == "error"
+
+    assert exc_info.value.code == 1008
+
+
+def test_install_local_model_endpoint_rejects_unsupported_model():
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    resp = client.post("/api/settings/install-local-model", json={"model": "arbitrary:latest"})
+
+    assert resp.status_code == 400
+    assert "restricted" in resp.json()["detail"]
 
 
 def test_local_model_readiness_endpoint():

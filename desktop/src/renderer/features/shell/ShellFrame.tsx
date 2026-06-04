@@ -305,7 +305,7 @@ function getWorkbenchState({
     return {
       state: "idle" as const,
       title: "暂无最近任务",
-      detail: "Mavris 服务未连接，任务还不会进入执行流；这不代表电脑本身有问题。",
+      detail: "助手暂时连不上，任务还不会进入执行流；这不代表电脑本身有问题。",
       activeTask: undefined
     };
   }
@@ -370,9 +370,9 @@ function getConnectionSummary(connectionState: ConnectionState, _isLoading: bool
     };
   }
   return {
-    state: "error",
+    state: "idle",
     text: "连接待恢复",
-    detail: "只是 Mavris 服务暂时不可用，不代表电脑本身有问题。"
+    detail: "助手暂时连不上，电脑本身没有因此变成故障。点右上角刷新可重新检查。"
   };
 }
 
@@ -403,7 +403,7 @@ function getComputerHealthSummary(info?: SystemInfo): StatusSummary {
     return {
       state: "completed",
       text: "未发现关键问题",
-      detail: "只读诊断未发现关键系统问题。部分“未知”只表示暂未读取到。"
+      detail: "只读诊断未发现关键系统问题。部分“暂未读取”不是异常。"
     };
   }
   return {
@@ -421,7 +421,7 @@ function workbenchGifForState(state: WorkbenchAgentState): string {
 }
 
 function stateLabel(state: WorkbenchAgentState, connectionState?: WorkbenchAgentState): string {
-  if (connectionState === "error") return "等待连接";
+  if (connectionState === "error" || (connectionState === "idle" && state === "idle")) return "待连接";
   if (connectionState === "running") return "连接中";
   if (state === "running") return "运行中";
   if (state === "completed") return "已完成";
@@ -492,16 +492,6 @@ function Sidebar({
 
       <div className="primary-nav-wrap">
         <nav className="primary-nav" aria-label="主导航">
-          {mobilePrimaryNavItems.map((item) => (
-            <SideButton
-              key={`mobile-${item.view}`}
-              icon={item.icon}
-              label={item.label}
-              active={activeView === item.view}
-              onClick={() => onViewChange(item.view)}
-              mobileOnly
-            />
-          ))}
           {primaryNavGroups.map((group, groupIndex) => (
             <div className="primary-nav__group" key={group.label ?? `group-${groupIndex}`}>
               {group.label ? <span className="primary-nav__label">{group.label}</span> : null}
@@ -517,7 +507,7 @@ function Sidebar({
             </div>
           ))}
         </nav>
-        <span className="primary-nav__more" aria-hidden="true">滑动查看更多</span>
+        <span className="primary-nav__more" aria-hidden="true">横向滑动查看全部入口</span>
       </div>
 
       <div className="sidebar-user">
@@ -530,11 +520,6 @@ function Sidebar({
     </aside>
   );
 }
-
-const mobilePrimaryNavOrder: ViewKey[] = ["home", "files", "documents", "computer", "chat", "settings"];
-const mobilePrimaryNavItems = mobilePrimaryNavOrder
-  .map((view) => primaryNavItems.find((item) => item.view === view))
-  .filter((item): item is NavItem => Boolean(item));
 
 function XiaoMaAvatar({ className }: { className: string }) {
   return (
@@ -575,12 +560,12 @@ function WindowBar({
         {showConnectionPill ? (
           <span className={`connection-pill connection-pill--${connectionState}`}>
             <span className="connection-pill__dot" />
-            {connectionState === "checking" ? "正在连接 Mavris" : "Mavris 服务未连接"}
+            {connectionState === "checking" ? "正在连接 Mavris" : "助手暂时连不上"}
           </span>
         ) : null}
         <button className="icon-button" aria-label="刷新" onClick={onRefresh} disabled={isLoading} type="button">
           {isLoading ? (
-            <Loader2 size={15} aria-hidden="true" style={{ animation: "dot-spin 1s linear infinite" }} />
+            <Loader2 className="spin-icon" size={15} aria-hidden="true" />
           ) : (
             <RefreshCw size={15} aria-hidden="true" />
           )}

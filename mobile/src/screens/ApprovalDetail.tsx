@@ -14,9 +14,10 @@ import {
 import { ArrowLeft, Check, X } from "lucide-react-native";
 
 import {
+  AuthExpiredError,
+  ForbiddenError,
   getApprovalDetail,
   submitApprovalDecision,
-  AuthExpiredError,
   type ApprovalDetail as ApprovalDetailData,
   type BackendApproval,
   type PairingSession,
@@ -103,7 +104,12 @@ export function ApprovalDetail({
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#f6f4ee" />
       <View style={styles.header}>
-        <Pressable onPress={onBack} style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}>
+        <Pressable
+          accessibilityLabel="返回审批列表"
+          accessibilityRole="button"
+          onPress={onBack}
+          style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
+        >
           <ArrowLeft size={20} color="#23313d" />
         </Pressable>
         <View style={styles.headerText}>
@@ -131,6 +137,8 @@ export function ApprovalDetail({
             <Text style={styles.body}>{currentApproval.message}</Text>
           </View>
 
+          <ApprovalBoundarySection approval={currentApproval} />
+
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>计划步骤</Text>
             {steps.length ? (
@@ -140,7 +148,14 @@ export function ApprovalDetail({
                   <View style={styles.stepBody}>
                     <Text style={styles.stepTitle}>{step.tool_name || step.agent_name}</Text>
                     <Text style={styles.stepText}>{step.description}</Text>
-                    <Text style={styles.meta}>{step.status}</Text>
+                    <Text style={styles.meta}>
+                      {[
+                        step.status,
+                        step.risk_level ? `risk: ${step.risk_level}` : "",
+                        step.trust_tier ? `trust: ${step.trust_tier}` : "",
+                        step.deferred_tool ? "deferred search" : "",
+                      ].filter(Boolean).join(" · ")}
+                    </Text>
                   </View>
                 </View>
               ))
@@ -158,11 +173,25 @@ export function ApprovalDetail({
 
       {pending ? (
         <View style={styles.decisionRow}>
-          <Pressable disabled={isBusy} onPress={() => void handleDecision("denied")} style={({ pressed }) => [styles.denyButton, pressed && styles.pressed]}>
+          <Pressable
+            accessibilityLabel="拒绝审批"
+            accessibilityRole="button"
+            accessibilityState={{ disabled: isBusy, busy: isBusy }}
+            disabled={isBusy}
+            onPress={() => void handleDecision("denied")}
+            style={({ pressed }) => [styles.denyButton, pressed && styles.pressed]}
+          >
             <X size={18} color="#8c2f39" />
             <Text style={styles.denyText}>拒绝</Text>
           </Pressable>
-          <Pressable disabled={isBusy} onPress={() => void handleDecision("approved")} style={({ pressed }) => [styles.approveButton, pressed && styles.pressed]}>
+          <Pressable
+            accessibilityLabel="批准审批"
+            accessibilityRole="button"
+            accessibilityState={{ disabled: isBusy, busy: isBusy }}
+            disabled={isBusy}
+            onPress={() => void handleDecision("approved")}
+            style={({ pressed }) => [styles.approveButton, pressed && styles.pressed]}
+          >
             {isBusy ? <ActivityIndicator color="#ffffff" /> : <Check size={18} color="#ffffff" />}
             <Text style={styles.approveText}>批准</Text>
           </Pressable>
@@ -172,8 +201,93 @@ export function ApprovalDetail({
   );
 }
 
+function ApprovalBoundarySection({ approval }: { approval: BackendApproval }) {
+  const boundary = objectValue(approval.engineering_boundary);
+  const tool = objectValue(boundary.tool);
+  const dryRun = objectValue(boundary.dry_run);
+  const policy = objectValue(boundary.policy);
+  const action = approval.tool_name || textValue(tool.name) || approval.approval_type;
+  const risk = approval.risk_level || textValue(tool.risk_level) || "未提供";
+  const trustTier = approval.tool_trust_tier || textValue(tool.trust_tier) || "未提供";
+  const policyMode = approval.policy_mode || approval.permission_mode || textValue(boundary.policy_mode) || "default";
+  const effects = approval.tool_effects?.length ? approval.tool_effects : stringList(tool.effects);
+  const resources = approval.resource_kinds?.length ? approval.resource_kinds : stringList(tool.resource_kinds);
+  const dryRunSummary = approval.dry_run_summary || textValue(dryRun.summary) || "暂无 dry-run 摘要";
+  const policyReason = textValue(boundary.policy_reason) || textValue(policy.reason) || approval.message;
+
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>工程边界</Text>
+      <View style={styles.boundaryGrid}>
+        <BoundaryFact label="动作" value={action} />
+        <BoundaryFact label="风险" value={risk} />
+        <BoundaryFact label="Trust tier" value={trustTier} />
+        <BoundaryFact label="权限模式" value={policyMode} />
+      </View>
+      <ChipRow label="Effects" values={effects} emptyText="未声明 effects" />
+      <ChipRow label="资源范围" values={resources} emptyText="未声明资源范围" />
+      <View style={styles.boundaryBlock}>
+        <Text style={styles.boundaryLabel}>Dry-run</Text>
+        <Text style={styles.boundaryText}>{dryRunSummary}</Text>
+      </View>
+      <View style={styles.boundaryBlock}>
+        <Text style={styles.boundaryLabel}>策略原因</Text>
+        <Text style={styles.boundaryText}>{policyReason}</Text>
+      </View>
+    </View>
+  );
+}
+
+function BoundaryFact({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.boundaryFact}>
+      <Text style={styles.boundaryLabel}>{label}</Text>
+      <Text style={styles.boundaryValue}>{value}</Text>
+    </View>
+  );
+}
+
+function ChipRow({ label, values, emptyText }: { label: string; values: string[]; emptyText: string }) {
+  const visible = values.length ? values : [emptyText];
+  return (
+    <View style={styles.chipRowBlock}>
+      <Text style={styles.boundaryLabel}>{label}</Text>
+      <View style={styles.chipRow}>
+        {visible.map((value) => (
+          <Text key={`${label}-${value}`} style={styles.chip}>{value}</Text>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "请求失败";
+  if (error instanceof ForbiddenError) {
+    return "这台手机没有权限查看或处理此审批。请在电脑端重新配对后再试。";
+  }
+  if (error instanceof Error && error.message.includes("Failed to fetch")) {
+    return "无法连接到电脑。请确认 Mavris 已打开，然后重试。";
+  }
+  if (error instanceof Error && error.message.toLowerCase().includes("network")) {
+    return "网络连接异常。请确认手机和电脑在同一网络后重试。";
+  }
+  return "请求失败。请返回列表刷新后重试。";
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function textValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "";
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(textValue).filter(Boolean);
 }
 
 const styles = StyleSheet.create({
@@ -287,6 +401,65 @@ const styles = StyleSheet.create({
     padding: 12,
     lineHeight: 20,
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: undefined }),
+  },
+  boundaryGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  boundaryFact: {
+    flexGrow: 1,
+    flexBasis: "46%",
+    minWidth: 130,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#f3f6f7",
+    padding: 10,
+    gap: 4,
+  },
+  boundaryLabel: {
+    color: "#65717c",
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  boundaryValue: {
+    color: "#1f2933",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+  boundaryBlock: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#f3f6f7",
+    padding: 10,
+    gap: 6,
+  },
+  boundaryText: {
+    color: "#46535f",
+    lineHeight: 20,
+  },
+  chipRowBlock: {
+    gap: 8,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  chip: {
+    maxWidth: "100%",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#f3f6f7",
+    color: "#27343f",
+    fontSize: 12,
+    fontWeight: "800",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
   errorBanner: {
     color: "#8c2f39",

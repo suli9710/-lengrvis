@@ -49,6 +49,7 @@ from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.perception.context_store import handle_perception_event
+from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error, strip_model_control_args
 from app.policy.risk import SafetyVerdict
 from app.services.task_recording_service import capture_step_screenshot, recording_enabled
 from app.tools.registry import register_all_tools
@@ -249,6 +250,25 @@ class OrchestratorAgent:
         step.args = proposed_args
         step.agent_name = getattr(tool, "agent_owner", "") or step.agent_name
         step.risk_level = tool.risk_level
+        step.tool_effects = list(getattr(tool, "effects", []) or [])
+        step.resource_kinds = list(getattr(tool, "resource_kinds", []) or [])
+        step.trust_tier = str(getattr(tool, "trust_tier", "") or "")
+        step.deferred_tool = bool(getattr(tool, "defer_loading", False))
+        step.model_action = ModelActionEnvelope(
+            action_type="subagent_action",
+            tool_name=step.tool_name,
+            args=dict(step.args or {}),
+            model_reason=action.rationale or action.follow_up_question or "",
+            visible_tool_ids=[],
+            source=step.agent_name,
+            task_id=task.id,
+            step_id=step.id,
+            runtime_metadata={
+                "derived_risk_level": tool.risk_level.value,
+                "tool_version": str(getattr(tool, "tool_version", "1") or "1"),
+                "boundary_error": model_control_arg_error(step.args),
+            },
+        ).to_metadata()
         step.requires_approval = (
             bool(step.requires_approval)
             or tool.risk_level.value.startswith(("R2", "R3"))
@@ -291,13 +311,13 @@ class OrchestratorAgent:
         properties = set((tool.input_schema.get("properties") or {}).keys())
         required = set(tool.input_schema.get("required") or [])
         if not properties and not required:
-            return proposed_args
+            return strip_model_control_args(proposed_args)
         allowed = properties | required
         merged = {key: value for key, value in proposed_args.items() if key in allowed}
         for key in required:
             if key in original_args and key not in merged:
                 merged[key] = original_args[key]
-        return merged
+        return strip_model_control_args(merged)
 
     def _handle_subagent_revision_request(self, task: Task, step: PlanStep, action: AgentAction) -> None:
         set_step_status(step, StepStatus.SKIPPED, actor=self.name)
@@ -465,13 +485,29 @@ class OrchestratorAgent:
         if rationale:
             summary_parts.append(rationale[:200])
         summary = " | ".join(summary_parts) or f"{agent.name} reasoned about {step.tool_name}"
+        model_action = ModelActionEnvelope(
+            action_type="subagent_action",
+            tool_name=action.tool_name or step.tool_name,
+            args=dict(action.args or {}),
+            model_reason=action.rationale or action.follow_up_question or summary,
+            visible_tool_ids=agent.allowed_tools(self.registry),
+            source=agent.name,
+            task_id=task.id,
+            step_id=step.id,
+            runtime_metadata={"boundary_error": model_control_arg_error(action.args or {})},
+        ).to_metadata()
         self.bus.publish_text(
             task.id,
             agent.name,
             summary,
             message_type=MessageType.PROPOSAL,
             step_id=step.id,
-            structured_payload={"subagent_action": action.model_dump(), "diverged": diverged, "plan_tool": step.tool_name},
+            structured_payload={
+                "subagent_action": action.model_dump(),
+                "model_action": model_action,
+                "diverged": diverged,
+                "plan_tool": step.tool_name,
+            },
         )
         if diverged:
             record(

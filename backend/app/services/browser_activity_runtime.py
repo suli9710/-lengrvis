@@ -111,7 +111,7 @@ class LocalBrowserActivityAdapter:
 
     def _observe(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         url = _validate_url(str(action.get("url") or ""))
-        max_chars = int(action.get("max_chars") or getattr(_settings(context), "browser_max_page_bytes", 250000))
+        max_chars = max(1, int(action.get("max_chars") or getattr(_settings(context), "browser_max_page_bytes", 250000)))
         try:
             from playwright.sync_api import sync_playwright
 
@@ -126,12 +126,12 @@ class LocalBrowserActivityAdapter:
             data["adapter"] = "playwright"
         except Exception as exc:
             with httpx.Client(timeout=30, follow_redirects=True) as client:
-                response = client.get(url, headers={"User-Agent": "MarvisAgent/0.1"})
-                response.raise_for_status()
-                html = response.text
-            data = _extract_page(html, str(response.url), max_chars)
+                html, final_url, response_truncated = _read_limited_http_response(client, url, max_chars)
+            data = _extract_page(html, final_url, max_chars)
             data["adapter"] = "httpx"
             data["playwright_error"] = str(exc)
+            if response_truncated:
+                data["response_truncated"] = True
         return data
 
     def _screenshot(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -581,6 +581,32 @@ def _network_allowed(context: dict[str, Any]) -> tuple[bool, str]:
 def _writes_allowed(context: dict[str, Any]) -> tuple[bool, str]:
     decision = can_use_browser_writes(_settings(context))
     return decision.allowed, decision.reason
+
+
+def _read_limited_http_response(client: httpx.Client, url: str, max_bytes: int) -> tuple[str, str, bool]:
+    limit = max(1, int(max_bytes or 1))
+    chunks = bytearray()
+    truncated = False
+    with client.stream("GET", url, headers={"User-Agent": "MarvisAgent/0.1"}) as response:
+        response.raise_for_status()
+        content_length = response.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > limit:
+            truncated = True
+        for chunk in response.iter_bytes():
+            if not chunk:
+                continue
+            remaining = limit - len(chunks)
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(chunk) > remaining:
+                chunks.extend(chunk[:remaining])
+                truncated = True
+                break
+            chunks.extend(chunk)
+        encoding = response.encoding or "utf-8"
+        final_url = str(response.url)
+    return bytes(chunks).decode(encoding, errors="replace"), final_url, truncated
 
 
 def _validate_url(url: str) -> str:

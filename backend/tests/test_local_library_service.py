@@ -9,7 +9,7 @@ from app.config import AppSettings
 from app.services import local_library_service
 
 
-def test_local_library_includes_common_user_folders(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_local_library_only_uses_explicitly_allowed_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     pictures = tmp_path / "user" / "Pictures"
     documents = tmp_path / "user" / "Documents"
@@ -33,13 +33,13 @@ def test_local_library_includes_common_user_folders(monkeypatch: pytest.MonkeyPa
     result = local_library_service.list_local_library(section="gallery", limit=20)
 
     names = {item["name"] for item in result["items"]}
-    assert names == {"holiday.png", "project-shot.png"}
+    assert names == {"project-shot.png"}
     assert str(workspace.resolve(strict=False)) in result["roots"]
-    assert str(pictures.resolve(strict=False)) in result["roots"]
+    assert str(pictures.resolve(strict=False)) not in result["roots"]
     assert str(documents.resolve(strict=False)) not in result["roots"]
 
 
-def test_local_library_preview_uses_same_common_folder_roots(
+def test_local_library_preview_requires_explicit_authorized_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -56,9 +56,10 @@ def test_local_library_preview_uses_same_common_folder_roots(
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(local_library_service, "get_effective_settings", lambda: AppSettings(allowed_directories=[]))
 
-    response = local_library_service.preview_local_image(str(image))
-    assert Path(response.path) == image.resolve(strict=False)
-
     with pytest.raises(HTTPException) as exc_info:
-        local_library_service.preview_local_image(str(outside))
+        local_library_service.preview_local_image(str(image))
     assert exc_info.value.status_code == 403
+
+    with pytest.raises(HTTPException) as outside_exc_info:
+        local_library_service.preview_local_image(str(outside))
+    assert outside_exc_info.value.status_code == 403
