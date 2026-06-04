@@ -130,7 +130,7 @@ async def test_windows_adapter_finds_and_clicks_native_element_with_policy():
     assert isinstance(found, UIAutomationElement)
     assert clicked["ok"] is True
     assert native.invoked is True
-    assert policy.calls == []
+    assert policy.calls[0][0] == "ui_automation.click"
     assert found.to_perception_element().attributes["automation_id"] == "send_button"
 
 
@@ -222,6 +222,16 @@ async def test_approved_keyboard_action_bypasses_policy_wait(monkeypatch):
     assert pressed == ["enter"]
 
 
+@pytest.mark.asyncio
+async def test_approved_gui_action_still_honors_policy_denial():
+    native = FakeNative()
+    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(SafetyVerdict.DENY), automation=FakeAutomation(native))
+
+    result = await target.key_press("enter", approved=True, approval_id="approval_denied")
+
+    assert result["denied"] is True
+
+
 def test_tool_previews_and_registry_cover_complete_gui_actions():
     registry = register_all_tools(load_skills=False)
 
@@ -246,3 +256,27 @@ def test_policy_classifies_gui_input_as_approval_gated():
     assert policy.classify_tool_call("ui_automation.focus_window") == RiskLevel.R1_OPEN_ONLY
     assert policy.classify_tool_call("ui_automation.click") == RiskLevel.R2_REVERSIBLE_MODIFY
     assert policy.classify_tool_call("ui_automation.key_press") == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+
+
+def test_policy_blocks_sensitive_gui_text_and_targets():
+    policy = PolicyEngine()
+
+    password_target = policy.review_tool_call(
+        "task_sensitive_gui",
+        "step_1",
+        "ui_automation.type_text",
+        {"name": "Password", "text": "hello", "dry_run": True},
+        RiskLevel.R2_REVERSIBLE_MODIFY,
+    )
+    token_text = policy.review_tool_call(
+        "task_sensitive_gui",
+        "step_2",
+        "ui_automation.type_text",
+        {"name": "Notes", "text": "token=abcdef1234567890", "dry_run": True},
+        RiskLevel.R2_REVERSIBLE_MODIFY,
+    )
+
+    assert password_target.verdict == SafetyVerdict.DENY
+    assert password_target.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+    assert token_text.verdict == SafetyVerdict.DENY
+    assert "sensitive" in " ".join(token_text.reasons).lower()

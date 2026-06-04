@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel as PydanticBaseModel
 
 from app.indexer.ocr_service import accelerated_ocr_health, accelerated_ocr_smoke
@@ -16,6 +16,15 @@ from app.llm.onnx_provider import (
 )
 from app.llm.registry import get_effective_settings
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
+from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.sensitive_confirmation import (
+    create_permission_policy_confirmation,
+    create_settings_confirmation,
+    permission_delete_relaxations,
+    permission_policy_relaxations,
+    permission_rule_relaxations,
+    require_permission_policy_confirmation,
+)
 from app.services import ollama_service
 from app.services.settings_service import (
     get_llm_cost_summary,
@@ -31,6 +40,12 @@ from app.tools.vision_tools import image_embedding_health, test_image_embedding
 
 router = APIRouter()
 ws_router = APIRouter()
+_INSTALLABLE_LOCAL_MODELS = {
+    ollama_service.RECOMMENDED_MODEL,
+    ollama_service.FALLBACK_SMALL_MODEL,
+    ollama_service.FALLBACK_MEDIUM_MODEL,
+    "llama3.2:3b",
+}
 
 
 @router.get("/settings")
@@ -41,6 +56,11 @@ def settings():
 @router.post("/settings")
 def update(payload: dict):
     return update_settings(payload)
+
+
+@router.post("/settings/confirm-sensitive-change")
+def confirm_sensitive_change(payload: dict):
+    return create_settings_confirmation(payload)
 
 
 @router.post("/settings/test-llm-provider")
@@ -54,19 +74,41 @@ def permission_policy():
 
 
 @router.put("/settings/permission-policy")
-def update_permission_policy(payload: PermissionPolicy):
-    return PermissionStore().save_policy(payload).model_dump(mode="json")
+def update_permission_policy(payload: PermissionPolicy, confirmation_nonce: str = Query("")):
+    store = PermissionStore()
+    relaxations = permission_policy_relaxations(store.get_policy(), payload)
+    require_permission_policy_confirmation(relaxations, confirmation_nonce)
+    return store.save_policy(payload).model_dump(mode="json")
 
 
 @router.post("/settings/permission-policy/rules")
-def upsert_permission_rule(payload: PermissionRule):
-    return PermissionStore().add_rule(payload).model_dump(mode="json")
+def upsert_permission_rule(payload: PermissionRule, confirmation_nonce: str = Query("")):
+    store = PermissionStore()
+    relaxations = permission_rule_relaxations(store.get_policy(), payload)
+    require_permission_policy_confirmation(relaxations, confirmation_nonce)
+    return store.add_rule(payload).model_dump(mode="json")
 
 
 @router.delete("/settings/permission-policy/rules/{rule_id}")
-def delete_permission_rule(rule_id: str):
-    policy, deleted = PermissionStore().delete_rule(rule_id)
+def delete_permission_rule(rule_id: str, confirmation_nonce: str = Query("")):
+    store = PermissionStore()
+    relaxations = permission_delete_relaxations(store.get_policy(), rule_id)
+    require_permission_policy_confirmation(relaxations, confirmation_nonce)
+    policy, deleted = store.delete_rule(rule_id)
     return {"ok": deleted, "policy": policy.model_dump(mode="json")}
+
+
+@router.post("/settings/permission-policy/confirm-relaxation")
+def confirm_permission_policy_relaxation(payload: dict):
+    store = PermissionStore()
+    action = str(payload.get("action") or "").strip().lower()
+    if action == "upsert_rule":
+        changes = permission_rule_relaxations(store.get_policy(), PermissionRule.model_validate(payload.get("rule") or {}))
+    elif action == "delete_rule":
+        changes = permission_delete_relaxations(store.get_policy(), str(payload.get("rule_id") or ""))
+    else:
+        changes = permission_policy_relaxations(store.get_policy(), PermissionPolicy.model_validate(payload.get("policy") or {}))
+    return create_permission_policy_confirmation(changes)
 
 
 @router.get("/settings/local-llm/health")
@@ -186,14 +228,18 @@ async def install_local_model(payload: InstallLocalModelRequest = InstallLocalMo
     """Install Ollama (if needed) and pull a local model.
     Returns final status. For streaming progress, use the WebSocket endpoint."""
     results = []
-    async for progress in ollama_service.install_local_model(payload.model):
+    try:
+        model = _allowed_install_model(payload.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    async for progress in ollama_service.install_local_model(model):
         results.append(progress)
 
     last = results[-1] if results else {"status": "error", "error": "No progress received"}
     ok = last.get("status") not in ("error",)
     return {
         "ok": ok,
-        "model": payload.model or ollama_service.RECOMMENDED_MODEL,
+        "model": model,
         "progress": results,
         "final": last,
     }
@@ -201,9 +247,26 @@ async def install_local_model(payload: InstallLocalModelRequest = InstallLocalMo
 
 @ws_router.websocket("/ws/settings/install-local-model")
 async def install_local_model_stream(websocket: WebSocket, model: str | None = None):
+    if await close_unauthorized_desktop_websocket(websocket):
+        return
+    try:
+        model = _allowed_install_model(model)
+    except ValueError:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     try:
         async for progress in ollama_service.install_local_model(model):
             await websocket.send_json(progress)
     except WebSocketDisconnect:
         return
+
+
+def _allowed_install_model(model: str | None) -> str:
+    normalized = str(model or "").strip()
+    if not normalized:
+        return ollama_service.RECOMMENDED_MODEL
+    if normalized not in _INSTALLABLE_LOCAL_MODELS:
+        allowed = ", ".join(sorted(_INSTALLABLE_LOCAL_MODELS))
+        raise ValueError(f"Local model install is restricted to supported models: {allowed}")
+    return normalized

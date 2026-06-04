@@ -111,7 +111,7 @@ def test_dependency_scheduler_runs_ready_steps_in_parallel_then_dependents():
     events: list[dict[str, Any]] = []
     orchestrator = OrchestratorAgent()
     orchestrator.subagents["FileAgent"] = PassthroughAgent()
-    orchestrator.registry.register(_recording_tool("test.parallel", events, sleep_seconds=0.08))
+    orchestrator.registry.register(_recording_tool("test.parallel", events, sleep_seconds=0.25))
     task, plan = _task_and_plan(
         [
             _step("A", "test.parallel", args={"label": "A"}),

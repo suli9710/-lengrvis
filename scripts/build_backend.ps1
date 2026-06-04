@@ -1,10 +1,32 @@
+param(
+    [string]$DistDir = "dist"
+)
+
 $ErrorActionPreference = "Stop"
-$Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
+
+function Resolve-ProjectPath {
+    param([string]$Path)
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    return Join-Path $Root $Path
+}
+
+function Get-CanonicalPath {
+    param([string]$Path)
+    return [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+}
 
 if (Test-Path ".venv\Scripts\Activate.ps1") {
     . ".venv\Scripts\Activate.ps1"
 }
+
+$DistPath = Resolve-ProjectPath $DistDir
+$DefaultDistPath = Join-Path $Root "dist"
+$DefaultBackendExe = Join-Path $DefaultDistPath "backend.exe"
+$TargetBackendExe = Join-Path $DistPath "backend.exe"
 
 python -m pip show pyinstaller *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -15,3 +37,12 @@ if ($LASTEXITCODE -ne 0) {
 python backend\build_backend.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+if (-not (Test-Path -LiteralPath $DefaultBackendExe -PathType Leaf)) {
+    throw "Backend executable was not created at $DefaultBackendExe"
+}
+
+if ((Get-CanonicalPath $DistPath) -ne (Get-CanonicalPath $DefaultDistPath)) {
+    New-Item -ItemType Directory -Path $DistPath -Force | Out-Null
+    Copy-Item -LiteralPath $DefaultBackendExe -Destination $TargetBackendExe -Force
+    Write-Host "Backend executable copied to $TargetBackendExe"
+}

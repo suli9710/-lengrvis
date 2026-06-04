@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const ALLOWED_API_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["https:", "http:", "mailto:"]);
+const DESKTOP_API_TOKEN_HEADER = "X-Mavris-Desktop-Token";
 
 export function registerIpcHandlers(backend: BackendProcessManager): void {
   ipcMain.handle(IPC_CHANNELS.backendStatus, (event) => {
@@ -133,7 +134,7 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.apiRequest, async (event, request: ApiRequest) => {
     assertTrustedRenderer(event);
-    return proxyApiRequest(backend.getBaseUrl(), request);
+    return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken());
   });
 
 }
@@ -158,7 +159,8 @@ async function getFileIconDataUrl(filePath: string): Promise<string | null> {
 
 async function proxyApiRequest<TData>(
   baseUrl: string,
-  request: ApiRequest
+  request: ApiRequest,
+  desktopApiToken: string
 ): Promise<ApiResponse<TData>> {
   const receivedAt = new Date().toISOString();
   let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -175,6 +177,7 @@ async function proxyApiRequest<TData>(
       method: request.method ?? "GET",
       headers: {
         Accept: "application/json",
+        [DESKTOP_API_TOKEN_HEADER]: desktopApiToken,
         ...(request.body ? { "Content-Type": "application/json" } : {})
       },
       body: request.body ? JSON.stringify(request.body) : undefined,

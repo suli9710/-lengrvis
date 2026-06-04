@@ -363,6 +363,62 @@ def test_direct_browser_act_api_allows_valid_bound_approval(monkeypatch):
     assert refreshed.consumed_at
 
 
+def test_direct_browser_act_api_revalidates_approval_after_claim(monkeypatch):
+    settings = AppSettings(provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True)
+    monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)
+    calls: list[dict[str, Any]] = []
+
+    def fake_act(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        calls.append({"args": dict(args), "context": dict(context)})
+        return {"ok": True, "event": {"type": "act.scroll"}}
+
+    monkeypatch.setattr(routes_browser.browser_tools, "act", fake_act)
+    payload = {
+        "action": {"kind": "scroll", "url": "https://example.com", "delta_y": 400},
+        "dry_run": False,
+        "approved": True,
+    }
+    preview = {
+        "ok": True,
+        "dry_run": True,
+        "diff_preview": [{"action": "scroll", "url": "https://example.com", "delta_y": 400}],
+    }
+    approval = Approval(
+        task_id="direct_browser_api",
+        step_id=None,
+        message="Approve browser scroll",
+        status=ApprovalStatus.APPROVED,
+        tool_name="browser.act",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    payload["approval_id"] = approval.id
+    approval.args_binding_hmac = args_binding_hmac("browser.act", payload, task_id=approval.task_id, step_id=approval.step_id)
+    db.upsert_model("approvals", approval, status=approval.status)
+    original_claim = db.claim_approval_for_execution
+
+    def claim_and_tamper(approval_id: str, consumed_at: str):
+        claimed = original_claim(approval_id, consumed_at)
+        if claimed:
+            claimed["tool_name"] = "browser.cua_run"
+        return claimed
+
+    monkeypatch.setattr(routes_browser.db, "claim_approval_for_execution", claim_and_tamper)
+
+    result = routes_browser.act(payload)
+
+    assert result["ok"] is False
+    assert result["status"] == "denied"
+    assert "tool name" in result["error"].lower()
+    assert calls == []
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at
+
+
 def test_direct_cua_run_api_rejects_forged_approval(monkeypatch):
     settings = AppSettings(provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True)
     monkeypatch.setattr(routes_browser, "get_effective_settings", lambda: settings)

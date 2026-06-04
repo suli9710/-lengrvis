@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import base64
+import json
 import sys
 import threading
 import time
@@ -150,6 +151,38 @@ def test_auto_routing_selects_developer_for_code_goal(monkeypatch, tmp_path):
     assert len(scheduled) == 1
 
 
+def test_run_start_failure_redacts_error_in_state_and_timeline(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    db.init_db()
+
+    class Router:
+        max_turns = 1
+
+        async def start_run(self, goal, mode, engine):  # noqa: ANN001, ANN202, ARG002
+            raise RuntimeError("provider failed token=run-start-secret-1234567890")
+
+    monkeypatch.setattr(run_service, "_engine_router", lambda settings: Router())
+
+    with TestClient(_test_app()) as client:
+        created = client.post(
+            "/api/runs",
+            json={"message": "start failure", "mode": "efficiency", "engine": "os"},
+        )
+        state = client.get(f"/api/runs/{created.json()['run_id']}")
+        timeline = client.get(f"/api/runs/{created.json()['run_id']}/timeline")
+
+    payload_text = json.dumps([created.json(), state.json(), timeline.json()], ensure_ascii=False)
+    assert created.status_code == 200
+    assert state.status_code == 200
+    assert timeline.status_code == 200
+    assert created.json()["phase"] == "failed"
+    assert state.json()["phase"] == "failed"
+    assert "provider failed" in state.json()["error"]
+    assert "run-start-secret-1234567890" not in payload_text
+    assert "[REDACTED]" in payload_text
+
+
 def test_os_run_keeps_r2_dry_run_approval(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
@@ -193,6 +226,16 @@ def test_os_run_keeps_r2_dry_run_approval(monkeypatch, tmp_path):
         approvals = db.fetch_many("approvals", limit=10)
         assert approvals and approvals[0]["status"] == "pending"
         assert target.exists(), "R2 dry-run must not delete before approval."
+        timeline = client.get(f"/api/runs/{run['run_id']}/timeline").json()
+        plan_events = [
+            event
+            for event in timeline["events"]
+            if event["name"] == "plan.generated" and event["payload"].get("structured_payload", {}).get("steps")
+        ]
+        assert plan_events
+        latest_step = plan_events[-1]["payload"]["structured_payload"]["steps"][0]
+        assert latest_step["risk_level"] == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value
+        assert latest_step["tool_effects"]
 
 
 def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
@@ -399,6 +442,55 @@ def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
     assert synced.state["phase"] == "awaiting_approval"
 
 
+def test_pause_run_expires_pending_approval_and_denies_waiting_step(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    task = Task(user_goal="pause approval", mode="efficiency", status=TaskPhase.EXECUTION)
+    task.execution_stage = ExecutionStage.AWAITING_APPROVAL
+    db.upsert_model("tasks", task)
+    step = PlanStep(
+        id="pause_waiting_step",
+        task_id=task.id,
+        order=1,
+        agent_name="FileAgent",
+        tool_name="file.trash",
+        description="Waiting for approval.",
+        status="waiting_user_approval",
+        requires_approval=True,
+    )
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[step])
+    approval = Approval(task_id=task.id, step_id=step.id, message="Approve pause test")
+    run = run_service.Run(
+        id="osrun_pause_approval",
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.AWAITING_APPROVAL,
+        task_id=task.id,
+        state={
+            "run_id": "osrun_pause_approval",
+            "engine": "os",
+            "phase": "awaiting_approval",
+            "goal": task.user_goal,
+            "mode": task.mode,
+            "task_id": task.id,
+        },
+    )
+    db.upsert_model("plans", plan)
+    db.upsert_model("approvals", approval)
+    db.upsert_model("runs", run)
+
+    paused = run_service.pause_run(run.id)
+
+    assert paused.phase == run_service.RunPhase.PAUSED
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+    assert refreshed_plan.steps[0].status == "denied"
+
+
 def test_active_running_run_is_not_synced_back_to_paused_task_state(monkeypatch, tmp_path):
     monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
@@ -579,8 +671,10 @@ def test_cancel_run_expires_pending_approval_and_blocks_late_approve(monkeypatch
         assert late_approve.status_code == 409
         assert target.exists()
         refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+        refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=1)[0])
         assert refreshed.status == ApprovalStatus.EXPIRED
         assert refreshed.consumed_at is None
+        assert refreshed_plan.steps[0].status == "denied"
 
 
 def test_pause_and_cancel_are_noops_for_terminal_runs(monkeypatch, tmp_path):

@@ -57,7 +57,7 @@ export function SystemInfoPanel({ info, onRefresh, onOpenSettings, isRefreshing 
         <Info size={16} aria-hidden="true" />
         <div>
           <strong>只读诊断，不改设置</strong>
-          <span>电脑健康、Mavris 连接、任务状态已经分开显示；“未知”通常表示暂未读取到，不代表电脑异常。</span>
+          <span>电脑健康、Mavris 连接、任务状态已经分开显示；“暂未读取”不代表电脑异常。</span>
         </div>
       </div>
 
@@ -68,10 +68,10 @@ export function SystemInfoPanel({ info, onRefresh, onOpenSettings, isRefreshing 
         <SystemMetric label="Node 版本" value={info.nodeVersion} />
         <SystemMetric label="系统平台" value={`${info.platform} ${info.arch}`} />
         <SystemMetric label="后端地址" value={info.backendBaseUrl} wide />
-        <SystemMetric label="内存" value={memoryTotal ? `已用 ${memoryUsedPercent}%` : "未知"} icon={Cpu} />
+        <SystemMetric label="内存" value={memoryTotal ? `已用 ${memoryUsedPercent}%` : "暂未读取"} icon={Cpu} />
         <SystemMetric
           label="磁盘"
-          value={largestDisk?.usage?.percent !== undefined ? `${largestDisk.mountpoint} 已用 ${largestDisk.usage.percent}%` : "未知"}
+          value={largestDisk?.usage?.percent !== undefined ? `${largestDisk.mountpoint} 已用 ${largestDisk.usage.percent}%` : "暂未读取"}
           icon={HardDrive}
         />
         <SystemMetric label="启动项" value={`${startupItems.length} 项`} icon={ListStart} />
@@ -81,7 +81,7 @@ export function SystemInfoPanel({ info, onRefresh, onOpenSettings, isRefreshing 
       <div className="system-section">
         <div className="system-section__head">
           <strong>诊断建议</strong>
-          {onOpenSettings ? (
+          {onOpenSettings && diagnostics?.suggestions?.length ? (
             <button
               className="button button--secondary"
               type="button"

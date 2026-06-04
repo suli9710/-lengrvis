@@ -7,6 +7,7 @@ don't spin up an actual orchestrator or wait for cron windows.
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -104,6 +105,161 @@ def test_tick_skips_not_due_schedules():
 
     fired = asyncio.run(runner())
     assert item.id not in fired
+
+
+def test_concurrent_ticks_claim_due_schedule_once(monkeypatch):
+    captured: list[tuple[str, str]] = []
+    captured_lock = threading.Lock()
+
+    async def executor(goal: str, mode: str) -> str:
+        with captured_lock:
+            captured.append((goal, mode))
+            return f"task-{len(captured)}"
+
+    sched_a = Scheduler(executor=executor)
+    sched_b = Scheduler(executor=executor)
+    item = sched_a.schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    far_future = _utc_now() + timedelta(days=1)
+    original_fetch_many = db.fetch_many
+    barrier = threading.Barrier(2)
+
+    def synchronized_fetch_many(table: str, where: str = "", args: tuple = (), limit: int = 200):
+        rows = original_fetch_many(table, where, args, limit)
+        if table == "scheduled_tasks" and where == "enabled = 1":
+            barrier.wait(timeout=5)
+        return rows
+
+    monkeypatch.setattr(db, "fetch_many", synchronized_fetch_many)
+
+    results: list[list[str]] = []
+    errors: list[BaseException] = []
+    results_lock = threading.Lock()
+
+    def run_tick(sched: Scheduler) -> None:
+        async def runner() -> list[str]:
+            fired = await sched.tick(now=far_future)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return fired
+
+        try:
+            fired = asyncio.run(runner())
+            with results_lock:
+                results.append(fired)
+        except BaseException as exc:  # noqa: BLE001
+            with results_lock:
+                errors.append(exc)
+
+    thread_a = threading.Thread(target=run_tick, args=(sched_a,))
+    thread_b = threading.Thread(target=run_tick, args=(sched_b,))
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=5)
+    thread_b.join(timeout=5)
+
+    assert not thread_a.is_alive()
+    assert not thread_b.is_alive()
+    assert errors == []
+    fired_ids = [schedule_id for fired in results for schedule_id in fired]
+    assert fired_ids == [item.id]
+    assert captured == [("scan downloads", "hybrid")]
+
+
+def test_execution_completion_does_not_reenable_cancelled_schedule():
+    sched: Scheduler
+    item_id = ""
+
+    async def executor(goal: str, mode: str) -> str:  # noqa: ARG001
+        assert sched.cancel(item_id) is True
+        return "task-1"
+
+    sched = Scheduler(executor=executor)
+    item = sched.schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    item_id = item.id
+    far_future = _utc_now() + timedelta(days=1)
+
+    async def runner():
+        fired = await sched.tick(now=far_future)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return fired
+
+    fired_ids = asyncio.run(runner())
+    assert item.id in fired_ids
+    refreshed = sched.get(item.id)
+    assert refreshed is not None
+    assert refreshed.enabled is False
+    assert refreshed.last_status == "completed"
+    assert refreshed.last_task_id == "task-1"
+
+
+def test_cancel_preserves_completed_run_metadata():
+    captured_schedule: dict[str, str] = {}
+    unblock = asyncio.Event()
+
+    async def executor(goal: str, mode: str) -> str:  # noqa: ARG001
+        await unblock.wait()
+        return "task-1"
+
+    sched = Scheduler(executor=executor)
+    item = sched.schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    far_future = _utc_now() + timedelta(days=1)
+
+    async def runner():
+        fired = await sched.tick(now=far_future)
+        await asyncio.sleep(0)
+        running = sched.get(item.id)
+        assert running is not None
+        captured_schedule["last_run_at"] = running.last_run_at
+        captured_schedule["next_run_at"] = running.next_run_at
+        assert sched.cancel(item.id) is True
+        unblock.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return fired
+
+    fired_ids = asyncio.run(runner())
+    assert item.id in fired_ids
+    refreshed = sched.get(item.id)
+    assert refreshed is not None
+    assert refreshed.enabled is False
+    assert refreshed.last_run_at == captured_schedule["last_run_at"]
+    assert refreshed.next_run_at == captured_schedule["next_run_at"]
+    assert refreshed.last_status == "completed"
+    assert refreshed.last_task_id == "task-1"
+
+
+def test_enable_preserves_existing_run_metadata():
+    sched = Scheduler()
+    item = sched.schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    last_run_at = _utc_now().replace(microsecond=0).isoformat()
+    item.last_run_at = last_run_at
+    item.last_status = "completed"
+    item.last_task_id = "task-1"
+    item.enabled = False
+    db.upsert_model("scheduled_tasks", item)
+
+    re_enabled = sched.enable(item.id, True)
+
+    assert re_enabled is not None
+    assert re_enabled.enabled is True
+    assert re_enabled.last_run_at == last_run_at
+    assert re_enabled.last_status == "completed"
+    assert re_enabled.last_task_id == "task-1"
+    assert re_enabled.next_run_at != ""
+
+
+def test_scheduler_singleton_can_restart_across_event_loops():
+    sched = Scheduler(tick_seconds=60, executor=lambda g, m: asyncio.sleep(0))  # type: ignore[arg-type]
+
+    async def run_once():
+        await sched.start()
+        await sched.stop()
+
+    asyncio.run(run_once())
+    asyncio.run(run_once())
+
+    assert sched.status()["status"] == "idle"
 
 
 def test_next_run_returns_iso_in_utc():

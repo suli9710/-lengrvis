@@ -110,6 +110,54 @@ def test_semantic_search_uses_fts_candidates_before_rerank(tmp_path: Path) -> No
     assert result["results"][0]["name"] == "slow-car.txt"
 
 
+def test_semantic_search_falls_back_to_lexical_candidate_when_embeddings_missing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    missing = workspace / "fresh-note.txt"
+    stale = workspace / "stale-note.txt"
+    missing.write_text("Fresh indexed spaceship orbit launch checklist.", encoding="utf-8")
+    stale.write_text("Old embedded sourdough starter kitchen notes.", encoding="utf-8")
+
+    def broken_embedder(_texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding provider unavailable")
+
+    FTSIndex(embedder=broken_embedder).index_file(str(missing), [str(workspace)])
+    FTSIndex(embedder=lambda texts: [[0.0, 1.0] for _ in texts]).index_file(str(stale), [str(workspace)])
+
+    result = VectorIndex(embedder=lambda texts: [[0.0, 1.0] for _ in texts]).search(
+        "spaceship orbit",
+        limit=3,
+    )
+
+    assert result["source"] == "fts_lexical_fallback"
+    assert result["results"]
+    assert result["results"][0]["name"] == "fresh-note.txt"
+
+
+def test_semantic_search_includes_missing_embedding_candidate_with_embedded_matches(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    missing = workspace / "fresh-note.txt"
+    stale = workspace / "stale-note.txt"
+    missing.write_text("Fresh indexed spaceship orbit launch checklist.", encoding="utf-8")
+    stale.write_text("Old embedded spaceship orbit archive.", encoding="utf-8")
+
+    def broken_embedder(_texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding provider unavailable")
+
+    FTSIndex(embedder=broken_embedder).index_file(str(missing), [str(workspace)])
+    FTSIndex(embedder=lambda texts: [[0.0, 1.0] for _ in texts]).index_file(str(stale), [str(workspace)])
+
+    result = VectorIndex(embedder=lambda texts: [[0.0, 1.0] for _ in texts]).search(
+        "spaceship orbit",
+        limit=3,
+    )
+
+    names = [item["name"] for item in result["results"]]
+    assert result["source"] == "fts_mixed_fallback"
+    assert "fresh-note.txt" in names
+
+
 def test_bounded_1000_document_indexing_perf(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

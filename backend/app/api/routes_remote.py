@@ -22,8 +22,15 @@ from app.policy.approval_binding import (
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
-from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, REMOTE_VIEW_SCOPE, decode_mobile_token, mobile_token_from_websocket
+from app.security.mobile_jwt import (
+    REMOTE_INPUT_SCOPE,
+    REMOTE_VIEW_SCOPE,
+    decode_mobile_token,
+    mobile_token_from_websocket,
+    validate_mobile_claims_active,
+)
 from app.services.approval_event_service import publish_approval_created
+from app.services import mobile_pairing_service
 from app.services.remote_desktop_service import (
     DEFAULT_CAPTURE_HEIGHT,
     DEFAULT_CAPTURE_WIDTH,
@@ -40,6 +47,10 @@ from app.tools.registry import register_all_tools
 ws_router = APIRouter()
 
 _REMOTE_ACTOR = "RemoteDesktop"
+_FRAME_ACK_MAX_WAIT_SECONDS = 1.5
+_FRAME_ACK_MIN_WAIT_SECONDS = 1.1
+_FRAME_ACK_POLL_SECONDS = 0.2
+_INPUT_ACTIVE_POLL_SECONDS = 0.2
 
 
 @ws_router.websocket("/ws/remote/screen")
@@ -51,6 +62,7 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
     await websocket.accept()
     fps = DEFAULT_FPS
     quality = DEFAULT_JPEG_QUALITY
+    frame_sequence = 0
     record("remote.screen.connected", _REMOTE_ACTOR, _claim_payload(claims))
     try:
         await websocket.send_json({"type": "connected", "fps": fps, "quality": quality})
@@ -65,7 +77,12 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
             except Exception:
                 await websocket.send_json({"type": "error", "message": "Invalid screen stream control message."})
 
+            if not _remote_session_still_active(claims):
+                await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
+                break
+
             try:
+                frame_sequence += 1
                 frame = await asyncio.to_thread(
                     capture_screen_frame,
                     max_width=DEFAULT_CAPTURE_WIDTH,
@@ -75,6 +92,7 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                 await websocket.send_json(
                     {
                         "type": "frame",
+                        "sequence": frame_sequence,
                         "image": f"data:image/jpeg;base64,{frame.image_base64}",
                         "timestamp": frame.timestamp,
                         "width": frame.width,
@@ -87,7 +105,25 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                 await websocket.send_json({"type": "error", "message": str(exc)})
                 await asyncio.sleep(frame_interval_seconds(fps))
                 continue
-            await asyncio.sleep(frame_interval_seconds(fps))
+
+            sent_at = asyncio.get_running_loop().time()
+            try:
+                fps, quality, device_active = await _wait_for_frame_ack_or_timeout(
+                    websocket,
+                    sequence=frame_sequence,
+                    fps=fps,
+                    quality=quality,
+                    is_device_active=lambda: _remote_session_still_active(claims),
+                )
+            except WebSocketDisconnect:
+                break
+            if not device_active:
+                await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
+                break
+
+            remaining_delay = frame_interval_seconds(fps) - (asyncio.get_running_loop().time() - sent_at)
+            if remaining_delay > 0:
+                await asyncio.sleep(remaining_delay)
     finally:
         record("remote.screen.disconnected", _REMOTE_ACTOR, _claim_payload(claims))
 
@@ -104,8 +140,16 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
         await websocket.send_json({"type": "connected"})
         while True:
             try:
-                event = await websocket.receive_json()
+                event = await asyncio.wait_for(websocket.receive_json(), timeout=_INPUT_ACTIVE_POLL_SECONDS)
+            except asyncio.TimeoutError:
+                if not _remote_session_still_active(claims):
+                    await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
+                    break
+                continue
             except WebSocketDisconnect:
+                break
+            if not _remote_session_still_active(claims):
+                await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
                 break
             try:
                 result = handle_remote_input_event(event, claims=claims)
@@ -181,6 +225,11 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version=getattr(tool, "tool_version", "1"),
+        source="remote_input",
+        source_device_id=str((claims or {}).get("device_id") or ""),
+        source_grant_id=str((claims or {}).get("grant_id") or ""),
+        allowed_device_ids=[str((claims or {}).get("device_id") or "")] if (claims or {}).get("device_id") else [],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
     )
     db.upsert_model("approvals", approval)
     publish_approval_created(approval)
@@ -223,6 +272,53 @@ def _apply_stream_controls(message: Any, *, fps: float, quality: int) -> tuple[f
     return next_fps, next_quality
 
 
+async def _wait_for_frame_ack_or_timeout(
+    websocket: WebSocket,
+    *,
+    sequence: int,
+    fps: float,
+    quality: int,
+    is_device_active: Any,
+) -> tuple[float, int, bool]:
+    deadline = asyncio.get_running_loop().time() + min(
+        _FRAME_ACK_MAX_WAIT_SECONDS,
+        max(_FRAME_ACK_MIN_WAIT_SECONDS, frame_interval_seconds(fps) * 2),
+    )
+    while True:
+        if not is_device_active():
+            return fps, quality, False
+
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return fps, quality, True
+
+        try:
+            message = await asyncio.wait_for(
+                websocket.receive_json(),
+                timeout=min(_FRAME_ACK_POLL_SECONDS, remaining),
+            )
+        except asyncio.TimeoutError:
+            continue
+        except WebSocketDisconnect:
+            raise
+        except Exception:
+            await websocket.send_json({"type": "error", "message": "Invalid screen stream control message."})
+            continue
+
+        fps, quality = _apply_stream_controls(message, fps=fps, quality=quality)
+        if _is_frame_ack(message, sequence):
+            return fps, quality, True
+
+
+def _is_frame_ack(message: Any, sequence: int) -> bool:
+    if not isinstance(message, dict) or message.get("type") != "frame_ack":
+        return False
+    try:
+        return int(message.get("sequence")) == sequence
+    except (TypeError, ValueError):
+        return False
+
+
 def _event_to_tool_call(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     event_type = str(event.get("type") or "").strip().lower()
     if event_type == "click":
@@ -244,5 +340,18 @@ def _claim_payload(claims: dict[str, Any]) -> dict[str, Any]:
     return {
         "device_id": claims.get("device_id"),
         "device_name": claims.get("device_name"),
+        "grant_id": claims.get("grant_id"),
         "subject": claims.get("sub"),
     }
+
+
+def _claims_still_active(claims: dict[str, Any]) -> bool:
+    try:
+        validate_mobile_claims_active(claims)
+    except HTTPException:
+        return False
+    return True
+
+
+def _remote_session_still_active(claims: dict[str, Any]) -> bool:
+    return get_effective_settings().remote_desktop_enabled and _claims_still_active(claims)

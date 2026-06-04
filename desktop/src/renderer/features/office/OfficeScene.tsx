@@ -12,7 +12,7 @@ import {
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 
 import type { TaskEvent } from "../../../shared/types";
-import type { ViewKey } from "../../store";
+import type { ConnectionState, ViewKey } from "../../store";
 import xiaomaWalkingGif from "../../assets/xiaoma-agent/fc_walking_h.gif";
 import xiaomaCoffeeGif from "../../assets/xiaoma-agent/fc_drink_coffee.gif";
 import xiaomaScreenAppGif from "../../assets/xiaoma-agent/fc_screen_working_apk_use.gif";
@@ -93,11 +93,15 @@ export interface OfficeSceneProps {
   readinessItems: HomeReadinessItem[];
   trustItems: HomeTrustItem[];
   activeAgentId: string;
+  connectionState: ConnectionState;
+  isSubmitting: boolean;
+  submitError: string | null;
   onDraftChange: (value: string) => void;
   onSubmitPrompt: () => void;
   onAgentSelect: (prompt: string) => void;
   onQuickSkill: (skill: OfficeQuickSkill) => void;
   onReadinessAction: (item: HomeReadinessItem) => void;
+  onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
   safetyAlert: boolean;
 }
 
@@ -135,6 +139,29 @@ interface CommandPreviewStep {
   detail: string;
   state: "idle" | "active" | "ready" | "blocked";
   icon: LucideIcon;
+}
+
+type CommandPreviewIntent = OfficeQuickSkill["id"] | null;
+
+type TaskPilotStepState = "idle" | "current" | "done" | "blocked" | "failed";
+
+interface TaskPilotStep {
+  id: "understand" | "route" | "execute" | "record";
+  label: string;
+  detail: string;
+  state: TaskPilotStepState;
+  icon: LucideIcon;
+}
+
+interface TaskPilotSummary {
+  title: string;
+  detail: string;
+  status: string;
+  tone: "idle" | "active" | "blocked" | "done" | "failed";
+  action: "open" | "approve" | "compose";
+  actionLabel: string;
+  task: TaskEvent | null;
+  steps: TaskPilotStep[];
 }
 
 const xiaomaPoseGifs: Record<OfficeAgentPose, string> = {
@@ -237,11 +264,15 @@ export function OfficeScene({
   readinessItems,
   trustItems,
   activeAgentId,
+  connectionState,
+  isSubmitting,
+  submitError,
   onDraftChange,
   onSubmitPrompt,
   onAgentSelect,
   onQuickSkill,
   onReadinessAction,
+  onTaskPilotAction,
   safetyAlert
 }: OfficeSceneProps) {
   const initialOfficeAgentId = activeAgentId || "pm";
@@ -262,6 +293,7 @@ export function OfficeScene({
   const commandInputRef = useRef<HTMLTextAreaElement | null>(null);
   const didSyncWorkingAgentsRef = useRef(false);
   const [quickSkillNotice, setQuickSkillNotice] = useState("");
+  const [quickSkillIntent, setQuickSkillIntent] = useState<CommandPreviewIntent>(null);
   const [sendHintPulse, setSendHintPulse] = useState(false);
 
   const refreshAgentState = (nextWorkingAgentIds: ReadonlySet<string>, refreshIdleAgents: boolean) => {
@@ -343,18 +375,19 @@ export function OfficeScene({
 
   const handleQuickSkillClick = (skill: OfficeQuickSkill) => {
     onQuickSkill(skill);
+    setQuickSkillIntent(skill.id);
 
     if (quickNoticeClearIdRef.current) {
       window.clearTimeout(quickNoticeClearIdRef.current);
     }
     if (skill.kind === "prompt") {
-      setQuickSkillNotice("已填好这句话，下一步点发送开始。");
+      setQuickSkillNotice("已填好这句话，下一步点“发送”开始；清理前不会删除任何文件。");
       setSendHintPulse(false);
       window.setTimeout(() => setSendHintPulse(true), 0);
       window.setTimeout(() => setSendHintPulse(false), 1800);
       window.requestAnimationFrame(() => commandInputRef.current?.focus());
     } else if (skill.kind === "view") {
-      setQuickSkillNotice(`正在打开「${skill.title}」。`);
+      setQuickSkillNotice(`正在打开「${skill.title}」，下一步选择文档。`);
     } else {
       setQuickSkillNotice("正在进行只读电脑检查，不会改动系统设置。");
     }
@@ -371,12 +404,25 @@ export function OfficeScene({
   const recentTaskLabel = displayedTasks.length > 0 ? `显示最近 ${displayedTasks.length} 项` : "还没有最近任务";
   const blockedTaskCount = currentTasks.filter((task) => task.state === "blocked").length;
   const runningTaskCount = currentTasks.filter((task) => task.state === "running" || task.state === "queued").length;
+  const draftReady = draft.trim().length > 0;
+  const canSubmit = draftReady && !isSubmitting && connectionState !== "offline";
+  const commandNote = commandFooterNote({
+    draftReady,
+    isSubmitting,
+    connectionState,
+    quickSkillNotice,
+    submitError
+  });
+  const commandNoteTone = submitError || connectionState === "offline" ? "warning" : quickSkillNotice || isSubmitting ? "ready" : "";
+  const taskPilot = useMemo(
+    () => buildTaskPilotSummary(recentTasks, draftReady),
+    [draftReady, recentTasks]
+  );
   const activeAgent = agents.find((agent) => agent.id === workingAgentId) ?? agents[0];
   const activeHelper = getFriendlyAgentCopy(activeAgent);
-  const draftReady = draft.trim().length > 0;
   const commandPreviewSteps = useMemo(
-    () => buildCommandPreviewSteps(draft, quickSkillNotice, safetyAlert),
-    [draft, quickSkillNotice, safetyAlert]
+    () => buildCommandPreviewSteps(draft, quickSkillNotice, safetyAlert, quickSkillIntent),
+    [draft, quickSkillIntent, quickSkillNotice, safetyAlert]
   );
   const isOfficeMapReady = officeMapSize.width > 0 && officeMapSize.height > 0;
   const officeScale = isOfficeMapReady
@@ -458,14 +504,20 @@ export function OfficeScene({
           <textarea
             ref={commandInputRef}
             value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
+            disabled={isSubmitting}
+            onChange={(event) => {
+              setQuickSkillIntent(null);
+              onDraftChange(event.target.value);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                 event.preventDefault();
-                onSubmitPrompt();
+                if (canSubmit) onSubmitPrompt();
               }
             }}
             placeholder="例如：帮我找一个文件、总结一份文档，或检查这台电脑。"
+            aria-invalid={Boolean(submitError)}
+            aria-describedby="office-command-status"
           />
           <div className={draftReady ? "command-preview command-preview--ready" : "command-preview"} aria-label="执行预览">
             {commandPreviewSteps.map((step) => {
@@ -482,12 +534,22 @@ export function OfficeScene({
             })}
           </div>
           <div className="command-footer">
-            <span className={`command-footer__note ${quickSkillNotice ? "command-footer__note--ready" : ""}`}>
-              {quickSkillNotice || (draftReady ? "准备好了，发送后会进入任务流。" : "涉及重要修改前，Mavris 会先征得你的确认。")}
+            <span
+              id="office-command-status"
+              className={`command-footer__note ${commandNoteTone ? `command-footer__note--${commandNoteTone}` : ""}`}
+              role={submitError ? "alert" : "status"}
+            >
+              {commandNote}
             </span>
-            <button className={sendHintPulse ? "button button--primary command-footer__send command-footer__send--hint" : "button button--primary command-footer__send"} onClick={() => onSubmitPrompt()} type="button">
-              <CornerDownLeft size={16} aria-hidden="true" />
-              发送
+            <button
+              className={sendHintPulse ? "button button--primary command-footer__send command-footer__send--hint" : "button button--primary command-footer__send"}
+              onClick={() => onSubmitPrompt()}
+              type="button"
+              disabled={!canSubmit}
+              aria-busy={isSubmitting}
+            >
+              {isSubmitting ? <Radio size={16} aria-hidden="true" /> : <CornerDownLeft size={16} aria-hidden="true" />}
+              {isSubmitting ? "启动中" : "发送"}
             </button>
           </div>
         </div>
@@ -583,6 +645,41 @@ export function OfficeScene({
           </div>
         </div>
 
+        <div className={`inspector-card task-pilot-card task-pilot-card--${taskPilot.tone}`}>
+          <div className="inspector-card__head">
+            <strong>任务驾驶舱</strong>
+            <span>{taskPilot.status}</span>
+          </div>
+          <div className="task-pilot-summary">
+            <strong>{taskPilot.title}</strong>
+            <p>{taskPilot.detail}</p>
+          </div>
+          <button
+            className="task-pilot-action"
+            type="button"
+            onClick={() => onTaskPilotAction?.(taskPilot.task, taskPilot.action)}
+          >
+            {taskPilot.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : taskPilot.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+            {taskPilot.actionLabel}
+          </button>
+          <div className="task-pilot-steps" aria-label="任务执行阶段">
+            {taskPilot.steps.map((step) => {
+              const Icon = step.icon;
+              return (
+                <div key={step.id} className={`task-pilot-step task-pilot-step--${step.state}`}>
+                  <span className="task-pilot-step__icon">
+                    <Icon size={13} aria-hidden="true" />
+                  </span>
+                  <span className="task-pilot-step__copy">
+                    <strong>{step.label}</strong>
+                    <em>{step.detail}</em>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="inspector-card task-list-card">
           <div className="inspector-card__head">
             <strong>最近任务</strong>
@@ -601,7 +698,13 @@ export function OfficeScene({
           <div className="task-list-card__list" style={{ marginTop: 14 }}>
             {displayedTasks.length ? (
               displayedTasks.map((task) => (
-                <button key={task.id} type="button" className="task-row">
+                <button
+                  key={task.id}
+                  type="button"
+                  className="task-row"
+                  onClick={() => onTaskPilotAction?.(task, task.state === "blocked" ? "approve" : "open")}
+                  aria-label={`${task.title}，${friendlyTaskState(task.state)}，${task.state === "blocked" ? "去确认" : "查看进度"}`}
+                >
                   <span className={"task-row__dot task-row__dot--" + task.state}>
                     {task.state === "completed" ? (
                       <CheckCircle2 size={14} aria-hidden="true" />
@@ -615,7 +718,7 @@ export function OfficeScene({
                   </span>
                   <div className="task-row__body">
                     <strong>{task.title}</strong>
-                    <em>{friendlyTaskState(task.state)}</em>
+                    <em>{friendlyTaskState(task.state)} · {task.state === "blocked" ? "点此确认" : "点此查看"}</em>
                   </div>
                   <time className="task-row__time">
                     {new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -892,9 +995,93 @@ function quickSkillHint(skill: OfficeQuickSkill): string {
   return skill.kind === "prompt" ? "填好后点发送" : "打开页面";
 }
 
-function buildCommandPreviewSteps(draft: string, notice: string, safetyAlert: boolean): CommandPreviewStep[] {
+function buildCommandPreviewSteps(
+  draft: string,
+  notice: string,
+  safetyAlert: boolean,
+  intent: CommandPreviewIntent
+): CommandPreviewStep[] {
   const hasDraft = draft.trim().length > 0;
   const hasQuickNotice = notice.trim().length > 0;
+
+  if (intent === "find-large-files") {
+    return [
+      {
+        id: "understand",
+        label: "理解目标",
+        detail: "查找可清理的大文件",
+        state: "ready",
+        icon: Sparkles
+      },
+      {
+        id: "guard",
+        label: "确认范围",
+        detail: safetyAlert ? "需要你批准" : "发送后先选文件夹",
+        state: safetyAlert ? "blocked" : "active",
+        icon: safetyAlert ? ShieldCheck : LockKeyhole
+      },
+      {
+        id: "execute",
+        label: "执行反馈",
+        detail: "清理前会确认",
+        state: hasDraft ? "active" : "idle",
+        icon: Radio
+      }
+    ];
+  }
+
+  if (intent === "summarize-document") {
+    return [
+      {
+        id: "understand",
+        label: "打开文档区",
+        detail: "直接进入文档操作",
+        state: "ready",
+        icon: Sparkles
+      },
+      {
+        id: "guard",
+        label: "选择文档",
+        detail: "只读取你选的文件",
+        state: "active",
+        icon: LockKeyhole
+      },
+      {
+        id: "execute",
+        label: "读取/总结/提问",
+        detail: "按钮按步骤可用",
+        state: "active",
+        icon: Radio
+      }
+    ];
+  }
+
+  if (intent === "check-computer") {
+    return [
+      {
+        id: "understand",
+        label: "只读读取",
+        detail: "读取系统快照",
+        state: "ready",
+        icon: Sparkles
+      },
+      {
+        id: "guard",
+        label: "不改设置",
+        detail: "不会动系统配置",
+        state: "ready",
+        icon: LockKeyhole
+      },
+      {
+        id: "execute",
+        label: "电脑健康",
+        detail: "暂未读取不等于故障",
+        state: "active",
+        icon: Radio
+      }
+    ];
+  }
+
   return [
     {
       id: "understand",
@@ -967,6 +1154,205 @@ function setupStepDetail(item: HomeReadinessItem): string {
   if (item.id === "scope") return "给文件工具一个明确范围，搜索不会卡在加载里。";
   if (item.id === "document") return "打开文档区后，可以读取、总结或继续提问。";
   return "本地 AI 就绪后，敏感文档可优先留在本机处理。";
+}
+
+function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilotSummary {
+  const latestTask = sortTasksByUpdatedAt(tasks)[0];
+
+  if (!latestTask) {
+    return {
+      title: hasDraft ? "准备发起任务" : "等待你的第一个目标",
+      detail: hasDraft
+        ? "发送后会先理解目标、判断范围和风险，再进入执行。"
+        : "输入一句话或使用快捷入口，Mavris 会把过程拆成可确认的步骤。",
+      status: hasDraft ? "待发送" : "空闲",
+      tone: hasDraft ? "active" : "idle",
+      action: "compose",
+      actionLabel: hasDraft ? "发送后开始" : "输入目标",
+      task: null,
+      steps: [
+        {
+          id: "understand",
+          label: "理解目标",
+          detail: hasDraft ? "已准备分析" : "等待输入",
+          state: hasDraft ? "current" : "idle",
+          icon: Sparkles
+        },
+        {
+          id: "route",
+          label: "确认范围",
+          detail: "先看权限和风险",
+          state: "idle",
+          icon: LockKeyhole
+        },
+        {
+          id: "execute",
+          label: "执行任务",
+          detail: "过程实时反馈",
+          state: "idle",
+          icon: Radio
+        },
+        {
+          id: "record",
+          label: "结果留痕",
+          detail: "完成后可追溯",
+          state: "idle",
+          icon: CheckCircle2
+        }
+      ]
+    };
+  }
+
+  const status = friendlyTaskState(latestTask.state);
+  const baseTitle = latestTask.title || "最近任务";
+  const baseDetail = latestTask.description || "Mavris 会把任务过程留在时间线里。";
+
+  if (latestTask.state === "blocked") {
+    return {
+      title: baseTitle,
+      detail: "任务正在等待你的确认；未批准前不会继续执行高风险操作。",
+      status,
+      tone: "blocked",
+      action: "approve",
+      actionLabel: "去确认",
+      task: latestTask,
+      steps: taskPilotSteps("blocked")
+    };
+  }
+
+  if (latestTask.state === "failed") {
+    return {
+      title: baseTitle,
+      detail: baseDetail,
+      status,
+      tone: "failed",
+      action: "open",
+      actionLabel: "查看原因",
+      task: latestTask,
+      steps: taskPilotSteps("failed")
+    };
+  }
+
+  if (latestTask.state === "completed") {
+    return {
+      title: baseTitle,
+      detail: baseDetail,
+      status,
+      tone: "done",
+      action: "open",
+      actionLabel: "查看留痕",
+      task: latestTask,
+      steps: taskPilotSteps("completed")
+    };
+  }
+
+  if (latestTask.state === "paused") {
+    return {
+      title: baseTitle,
+      detail: "任务已暂停，进度仍会保留；恢复前不会继续操作。",
+      status,
+      tone: "blocked",
+      action: "open",
+      actionLabel: "查看进度",
+      task: latestTask,
+      steps: taskPilotSteps("paused")
+    };
+  }
+
+  return {
+    title: baseTitle,
+    detail: baseDetail,
+    status,
+    tone: "active",
+    action: "open",
+    actionLabel: "查看进度",
+    task: latestTask,
+    steps: taskPilotSteps(latestTask.state === "queued" ? "queued" : "running")
+  };
+}
+
+function taskPilotSteps(stage: TaskEvent["state"] | "idle"): TaskPilotStep[] {
+  const states: Record<TaskPilotStep["id"], TaskPilotStepState> = {
+    understand: "idle",
+    route: "idle",
+    execute: "idle",
+    record: "idle"
+  };
+
+  if (stage === "queued") {
+    states.understand = "done";
+    states.route = "current";
+  } else if (stage === "running") {
+    states.understand = "done";
+    states.route = "done";
+    states.execute = "current";
+  } else if (stage === "blocked" || stage === "paused") {
+    states.understand = "done";
+    states.route = "blocked";
+    states.execute = "idle";
+  } else if (stage === "completed") {
+    states.understand = "done";
+    states.route = "done";
+    states.execute = "done";
+    states.record = "done";
+  } else if (stage === "failed") {
+    states.understand = "done";
+    states.route = "done";
+    states.execute = "failed";
+    states.record = "idle";
+  }
+
+  return [
+    {
+      id: "understand",
+      label: "理解目标",
+      detail: states.understand === "done" ? "已拆解" : "等待输入",
+      state: states.understand,
+      icon: Sparkles
+    },
+    {
+      id: "route",
+      label: "确认范围",
+      detail: states.route === "blocked" ? "需要你确认" : states.route === "done" ? "范围已确认" : "检查权限",
+      state: states.route,
+      icon: states.route === "blocked" ? ShieldCheck : LockKeyhole
+    },
+    {
+      id: "execute",
+      label: "执行任务",
+      detail: states.execute === "current" ? "正在处理" : states.execute === "failed" ? "未完成" : "实时反馈",
+      state: states.execute,
+      icon: states.execute === "failed" ? ShieldCheck : Radio
+    },
+    {
+      id: "record",
+      label: "结果留痕",
+      detail: states.record === "done" ? "可追溯" : "完成后记录",
+      state: states.record,
+      icon: CheckCircle2
+    }
+  ];
+}
+
+function commandFooterNote({
+  draftReady,
+  isSubmitting,
+  connectionState,
+  quickSkillNotice,
+  submitError
+}: {
+  draftReady: boolean;
+  isSubmitting: boolean;
+  connectionState: ConnectionState;
+  quickSkillNotice: string;
+  submitError: string | null;
+}): string {
+  if (submitError) return submitError;
+  if (connectionState === "offline") return "Mavris 服务还没连上。输入内容会保留，连接恢复后再发送。";
+  if (isSubmitting) return "正在启动任务，返回结果前不会重复创建。";
+  if (quickSkillNotice) return quickSkillNotice;
+  if (draftReady) return "准备好了，发送后会进入任务流。";
+  return "涉及重要修改前，Mavris 会先征得你的确认。";
 }
 
 function getHomeCurrentTasks(tasks: TaskEvent[]): TaskEvent[] {

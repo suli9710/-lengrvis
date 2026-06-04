@@ -3,11 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from app.config import AppSettings
 from app.core import db
-from app.services.browser_activity_runtime import BrowserActivityRuntime
+from app.services.browser_activity_runtime import BrowserActivityRuntime, _read_limited_http_response
 from app.tools import browser_tools
 
 
@@ -175,6 +176,21 @@ def test_legacy_read_page_uses_session_compatible_runtime_flow() -> None:
     assert adapter.calls[-1]["action"]["kind"] == "observe"
     assert any(event["type"] == "observe" and event["task_id"] == "task-4" for event in events)
     assert "secret-token" not in str(events)
+
+
+def test_httpx_observe_reads_response_with_hard_byte_limit() -> None:
+    body = b"<html><title>Example</title><main>" + (b"a" * 512) + b"</main></html>"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"Content-Length": str(len(body))}, content=body, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        html, final_url, truncated = _read_limited_http_response(client, "https://example.test/page", 64)
+
+    assert final_url == "https://example.test/page"
+    assert truncated is True
+    assert len(html.encode("utf-8")) <= 64
+    assert "a" * 128 not in html
 
 
 def test_open_url_defaults_to_isolated_session_without_system_browser(monkeypatch) -> None:

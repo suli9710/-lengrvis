@@ -2,7 +2,7 @@ param(
     [string]$OllamaRuntimeDir = "",
     [string]$OllamaModelsDir = "",
     [string]$OllamaExe = "",
-    [string]$OutputRoot = "vendor",
+    [string]$OutputRoot = ".marvis_data\ollama-release",
     [string]$Model = "qwen2.5:3b",
     [string]$PullDestination = "",
     [string]$PullHost = "127.0.0.1:11435",
@@ -65,6 +65,29 @@ function Invoke-Step {
     }
 }
 
+function New-SmokeExecutable {
+    param([string]$Path)
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    [System.IO.File]::WriteAllBytes($Path, [byte[]](0x4d,0x5a,0x90,0x00))
+}
+
+function New-SmokeSelfExtractingExecutable {
+    param([string]$Path)
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    [byte[]]$bytes = [byte[]]::new(131072)
+    $peOffset = 0x80
+    $bytes[0] = 0x4d
+    $bytes[1] = 0x5a
+    [System.BitConverter]::GetBytes([uint32]$peOffset).CopyTo($bytes, 0x3c)
+    $bytes[$peOffset] = 0x50
+    $bytes[$peOffset + 1] = 0x45
+    [System.BitConverter]::GetBytes([uint16]0x8664).CopyTo($bytes, $peOffset + 4)
+    [System.BitConverter]::GetBytes([uint16]3).CopyTo($bytes, $peOffset + 6)
+    [System.BitConverter]::GetBytes([uint16]0x00f0).CopyTo($bytes, $peOffset + 0x14)
+    [System.BitConverter]::GetBytes([uint16]0x020b).CopyTo($bytes, $peOffset + 0x18)
+    [System.IO.File]::WriteAllBytes($Path, $bytes)
+}
+
 $repoRoot = Resolve-RepoRoot
 $outputRootPath = Resolve-ProjectPath $OutputRoot
 $manifestPath = Join-Path $outputRootPath "ollama-bundle-manifest.json"
@@ -95,7 +118,7 @@ if ($PullModel) { $bundleArgs += "-PullModel" }
 if ($PullDestination) { $bundleArgs += @("-PullDestination", $PullDestination) }
 if ($PullHost) { $bundleArgs += @("-PullHost", $PullHost) }
 
-Invoke-Step -Label "Preparing vendor Ollama runtime and model resources" -ScriptPath (Join-Path $PSScriptRoot "bundle_ollama.ps1") -Arguments $bundleArgs
+Invoke-Step -Label "Preparing explicit Ollama runtime and model resources" -ScriptPath (Join-Path $PSScriptRoot "bundle_ollama.ps1") -Arguments $bundleArgs
 
 if (-not (Test-Path -LiteralPath $runtimeOut)) {
     throw "Prepared Ollama runtime directory is missing: $runtimeOut"
@@ -122,10 +145,10 @@ if (-not $SkipVerify) {
         Remove-Item -LiteralPath $verifyWorkspace -Recurse -Force
     }
     New-Item -ItemType Directory -Path $backendDir,$appDistDir,$distDir -Force | Out-Null
-    [System.IO.File]::WriteAllBytes((Join-Path $distDir "backend.exe"), [byte[]](0x4d,0x5a,0x90,0x00))
-    [System.IO.File]::WriteAllBytes((Join-Path $portableDir "Mavris.exe"), [byte[]](0x4d,0x5a,0x90,0x00))
-    [System.IO.File]::WriteAllBytes((Join-Path $backendDir "backend.exe"), [byte[]](0x4d,0x5a,0x90,0x00))
-    [System.IO.File]::WriteAllBytes($selfExtracting, [byte[]](0x4d,0x5a,0x90,0x00))
+    New-SmokeExecutable (Join-Path $distDir "backend.exe")
+    New-SmokeExecutable (Join-Path $portableDir "Mavris.exe")
+    New-SmokeExecutable (Join-Path $backendDir "backend.exe")
+    New-SmokeSelfExtractingExecutable $selfExtracting
     Set-Content -LiteralPath (Join-Path $appDir "package.json") -Value '{"name":"mavris-ollama-release-verify"}' -Encoding ASCII
     Copy-Item -LiteralPath $runtimeOut -Destination (Join-Path $resourcesDir "ollama") -Recurse -Force
     Copy-Item -LiteralPath $modelsOut -Destination (Join-Path $resourcesDir "ollama-models") -Recurse -Force
@@ -145,4 +168,4 @@ if (-not $SkipVerify) {
 
 Write-Host ""
 Write-Host "Ollama release resources are ready in $outputRootPath" -ForegroundColor Green
-Write-Host "Next: run scripts\build_all.ps1 -RequireBundledOllama"
+Write-Host "Next: run scripts\build_all.ps1 -BundledOllamaDir `"$runtimeOut`" -BundledOllamaModelsDir `"$modelsOut`" -BundledOllamaManifest `"$manifestPath`" -RequireBundledOllama"

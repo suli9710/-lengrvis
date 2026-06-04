@@ -96,8 +96,8 @@ def _merge_step_recording(
 
 
 @router.get("/tasks")
-def tasks() -> list[Task]:
-    return list_tasks()
+def tasks():
+    return [_task_payload(task) for task in list_tasks()]
 
 
 @router.get("/tasks/{task_id}")
@@ -110,11 +110,169 @@ def task(task_id: str) -> Task:
 
 @router.get("/tasks/{task_id}/timeline")
 def timeline(task_id: str):
+    messages = db.fetch_many("agent_messages", "task_id = ?", (task_id,))
+    reviews = db.fetch_many("safety_reviews", "task_id = ?", (task_id,))
     return {
         "task": task_id,
-        "messages": _openai_agent_messages(task_id),
-        "reviews": db.fetch_many("safety_reviews", "task_id = ?", (task_id,)),
+        "messages": [AgentMessage.model_validate(item).to_openai_dict() for item in messages],
+        "reviews": reviews,
         "recordings": _step_recordings(task_id),
+        "boundary_events": _boundary_events(task_id, messages=messages, reviews=reviews),
+    }
+
+
+def _task_payload(task: Task) -> dict:
+    payload = task.model_dump(mode="json")
+    payload["boundary_events"] = _boundary_events(task.id)
+    return payload
+
+
+def _boundary_events(
+    task_id: str,
+    *,
+    messages: list[dict] | None = None,
+    reviews: list[dict] | None = None,
+) -> list[dict]:
+    messages = messages if messages is not None else db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=500)
+    reviews = reviews if reviews is not None else db.fetch_many("safety_reviews", "task_id = ?", (task_id,), limit=500)
+    audits = db.fetch_many("audit_events", "task_id = ?", (task_id,), limit=500)
+    events: list[dict] = []
+
+    for message in messages:
+        payload = message.get("structured_payload") or (message.get("metadata") or {}).get("structured_payload") or {}
+        metadata = message.get("metadata") or {}
+        event_type = str(payload.get("event_type") or metadata.get("event_type") or metadata.get("message_type") or "")
+        content = str(message.get("content") or "")
+        created_at = str(message.get("created_at") or "")
+        if event_type == "tool.progress" or payload.get("kind") == "tool_progress":
+            status = str(payload.get("status") or metadata.get("tool_status") or "")
+            tool = str(payload.get("tool_name") or metadata.get("tool_name") or "")
+            events.append(
+                _boundary_event(
+                    message.get("id"),
+                    "tool_progress",
+                    "Tool progress",
+                    f"{tool} {status}".strip() or content,
+                    created_at,
+                    step_id=message.get("step_id"),
+                    severity="info",
+                    payload=payload,
+                )
+            )
+        elif event_type == "plan.contract_annotated":
+            events.append(
+                _boundary_event(
+                    message.get("id"),
+                    "tool_contract",
+                    "Tool contract boundary",
+                    content or "Planner steps were annotated with registry risk and tool metadata.",
+                    created_at,
+                    severity="info",
+                    payload=payload,
+                )
+            )
+        elif payload.get("kind") == "context_compact_boundary" or metadata.get("context_boundary"):
+            boundary = str(metadata.get("context_boundary") or payload.get("context_boundary") or "")
+            events.append(
+                _boundary_event(
+                    message.get("id"),
+                    "context_boundary",
+                    "Context boundary",
+                    boundary or content or "Context projection boundary persisted.",
+                    created_at,
+                    severity="info",
+                    payload=payload or metadata,
+                )
+            )
+        elif "model boundary" in content.lower() or event_type.startswith("model_boundary"):
+            events.append(
+                _boundary_event(
+                    message.get("id"),
+                    "model_boundary_denied",
+                    "Model boundary denied",
+                    content,
+                    created_at,
+                    step_id=message.get("step_id"),
+                    severity="danger",
+                    payload=payload or metadata,
+                )
+            )
+
+    for review in reviews:
+        target_type = str(review.get("target_type") or "")
+        verdict = str(review.get("verdict") or "")
+        if target_type == "tool_result" or verdict in {"deny", "needs_user_approval"}:
+            reasons = review.get("reasons") if isinstance(review.get("reasons"), list) else []
+            events.append(
+                _boundary_event(
+                    review.get("id"),
+                    "post_tool_review" if target_type == "tool_result" else "safety_review",
+                    "Post-tool review" if target_type == "tool_result" else "Safety review",
+                    " ".join(str(reason) for reason in reasons[:2]) or verdict,
+                    str(review.get("created_at") or ""),
+                    step_id=review.get("step_id"),
+                    severity="danger" if verdict == "deny" else "warning",
+                    payload=review,
+                )
+            )
+
+    for audit in audits:
+        event_type = str(audit.get("event_type") or "")
+        payload = audit.get("payload") if isinstance(audit.get("payload"), dict) else {}
+        if event_type.startswith("context."):
+            strategy = str(payload.get("strategy") or payload.get("source") or event_type)
+            saved = payload.get("tokens_saved")
+            detail = f"{strategy}; saved {saved} tokens" if saved is not None else strategy
+            events.append(
+                _boundary_event(
+                    audit.get("id"),
+                    "context_projection",
+                    "Context projection",
+                    detail,
+                    str(audit.get("created_at") or ""),
+                    severity="info",
+                    payload=payload,
+                )
+            )
+        elif event_type.startswith("model_boundary"):
+            events.append(
+                _boundary_event(
+                    audit.get("id"),
+                    "model_boundary_denied",
+                    "Model boundary denied",
+                    str(payload.get("error") or payload.get("reason") or event_type),
+                    str(audit.get("created_at") or ""),
+                    step_id=payload.get("step_id"),
+                    severity="danger",
+                    payload=payload,
+                )
+            )
+
+    deduped = {str(event["id"]): event for event in events if event.get("id")}
+    ordered = sorted(deduped.values(), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
+    return ordered[-20:]
+
+
+def _boundary_event(
+    event_id,
+    kind: str,
+    title: str,
+    detail: str,
+    created_at: str,
+    *,
+    step_id=None,
+    severity: str = "info",
+    payload: dict | None = None,
+) -> dict:
+    return {
+        "id": str(event_id or f"{kind}-{created_at}"),
+        "kind": kind,
+        "title": title,
+        "detail": detail,
+        "severity": severity,
+        "step_id": str(step_id or ""),
+        "created_at": created_at,
+        "payload": payload or {},
     }
 
 
@@ -126,11 +284,7 @@ def replay(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found") from None
     messages = sorted(_openai_agent_messages(task_id), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
     tool_calls = sorted(db.fetch_many("tool_calls", "task_id = ?", (task_id,), limit=1000), key=lambda item: item.get("created_at") or "")
-    results_by_call = {
-        result.get("tool_call_id"): result
-        for result in db.fetch_many("tool_results", limit=1000)
-        if result.get("tool_call_id")
-    }
+    results_by_call = _tool_results_by_call_id([str(call.get("id") or "") for call in tool_calls])
     return {
         "task": task.model_dump(mode="json"),
         "events": messages,
@@ -138,6 +292,24 @@ def replay(task_id: str):
         "tool_results": [results_by_call[call["id"]] for call in tool_calls if call.get("id") in results_by_call],
         "recordings": _step_recordings(task_id),
     }
+
+
+def _tool_results_by_call_id(call_ids: list[str]) -> dict[str, dict]:
+    results_by_call: dict[str, dict] = {}
+    unique_ids = [call_id for call_id in dict.fromkeys(call_ids) if call_id]
+    for start in range(0, len(unique_ids), 400):
+        chunk = unique_ids[start : start + 400]
+        placeholders = ", ".join("?" for _ in chunk)
+        for result in db.fetch_many(
+            "tool_results",
+            f"tool_call_id IN ({placeholders})",
+            tuple(chunk),
+            limit=len(chunk),
+        ):
+            tool_call_id = str(result.get("tool_call_id") or "")
+            if tool_call_id and tool_call_id not in results_by_call:
+                results_by_call[tool_call_id] = result
+    return results_by_call
 
 
 @router.get("/tasks/{task_id}/progress")

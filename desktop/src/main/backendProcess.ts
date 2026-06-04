@@ -1,5 +1,6 @@
 import { app } from "electron";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -12,6 +13,7 @@ const HEALTH_ENDPOINT = "/health";
 const RUNTIME_STATUS_ENDPOINT = "/api/runtime/status";
 const RUNTIME_FOREGROUND_ENDPOINT = "/api/runtime/foreground";
 const RUNTIME_BACKGROUND_ENDPOINT = "/api/runtime/background";
+const DESKTOP_API_TOKEN_HEADER = "X-Mavris-Desktop-Token";
 const DEFAULT_WINDOWS_SERVICE_NAMES = [
   "MavrisBackend",
   "Mavris Backend",
@@ -56,8 +58,11 @@ export class BackendProcessManager {
   private child: ChildProcessWithoutNullStreams | null = null;
   private status: BackendStatus;
   private managedWindowsServiceName: string | null = null;
+  private readonly desktopApiToken: string;
 
   constructor(private readonly options: BackendProcessOptions = {}) {
+    this.desktopApiToken = process.env.MAVRIS_DESKTOP_API_TOKEN || randomBytes(32).toString("hex");
+    process.env.MAVRIS_DESKTOP_API_TOKEN = this.desktopApiToken;
     this.status = {
       state: "stopped",
       baseUrl: this.getBaseUrl(),
@@ -67,6 +72,10 @@ export class BackendProcessManager {
 
   getBaseUrl(): string {
     return this.options.baseUrl ?? process.env.MAVRIS_BACKEND_URL ?? DEFAULT_BACKEND_URL;
+  }
+
+  getDesktopApiToken(): string {
+    return this.desktopApiToken;
   }
 
   async start(): Promise<BackendStatus> {
@@ -113,6 +122,7 @@ export class BackendProcessManager {
           MARVIS_CONFIG_DIR: process.env.MARVIS_CONFIG_DIR ?? resolveConfigDir(command),
           MAVRIS_FULL_BACKEND: process.env.MAVRIS_FULL_BACKEND ?? "1",
           MAVRIS_BACKEND_URL: this.getBaseUrl(),
+          MAVRIS_DESKTOP_API_TOKEN: this.desktopApiToken,
           ...bundledOllamaEnv
         },
         windowsHide: true
@@ -186,14 +196,16 @@ export class BackendProcessManager {
 
   async enterForeground(reason = "desktop_opened"): Promise<BackendStatus> {
     await this.start();
-    await postRuntimeMode(this.getBaseUrl(), RUNTIME_FOREGROUND_ENDPOINT, reason);
-    return this.getStatus();
+    const runtimeModeError = await postRuntimeMode(this.getBaseUrl(), RUNTIME_FOREGROUND_ENDPOINT, reason, this.desktopApiToken);
+    const status = await this.getStatus();
+    return runtimeModeError ? this.withRuntimeModeError(status, "foreground", runtimeModeError) : status;
   }
 
   async enterBackground(reason = "tray_background"): Promise<BackendStatus> {
     await this.start();
-    await postRuntimeMode(this.getBaseUrl(), RUNTIME_BACKGROUND_ENDPOINT, reason);
-    return this.getStatus();
+    const runtimeModeError = await postRuntimeMode(this.getBaseUrl(), RUNTIME_BACKGROUND_ENDPOINT, reason, this.desktopApiToken);
+    const status = await this.getStatus();
+    return runtimeModeError ? this.withRuntimeModeError(status, "background", runtimeModeError) : status;
   }
 
   private async connectToWindowsService(service: WindowsServiceProbe): Promise<BackendStatus> {
@@ -268,6 +280,15 @@ export class BackendProcessManager {
       message,
       health,
       ...runtime,
+      lastCheckedAt: new Date().toISOString()
+    };
+  }
+
+  private withRuntimeModeError(status: BackendStatus, mode: "foreground" | "background", error: Error): BackendStatus {
+    return {
+      ...status,
+      message: `Backend stayed available, but could not enter ${mode} runtime mode: ${error.message}`,
+      runtimeModeError: error.message,
       lastCheckedAt: new Date().toISOString()
     };
   }
@@ -503,15 +524,31 @@ async function probeRuntimeStatus(baseUrl: string): Promise<Partial<BackendStatu
   }
 }
 
-async function postRuntimeMode(baseUrl: string, endpoint: string, reason: string): Promise<void> {
-  const response = await fetch(new URL(endpoint, baseUrl), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason }),
-    signal: AbortSignal.timeout(35_000)
-  });
-  if (!response.ok) {
-    throw new Error(`Runtime mode request failed: ${response.status}`);
+async function postRuntimeMode(baseUrl: string, endpoint: string, reason: string, desktopApiToken: string): Promise<Error | null> {
+  try {
+    const response = await fetch(new URL(endpoint, baseUrl), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", [DESKTOP_API_TOKEN_HEADER]: desktopApiToken },
+      body: JSON.stringify({ reason }),
+      signal: AbortSignal.timeout(35_000)
+    });
+    if (!response.ok) {
+      throw new Error(`Runtime mode request failed: ${response.status} ${await runtimeModeErrorText(response)}`);
+    }
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error : new Error("Runtime mode request failed");
+  }
+}
+
+async function runtimeModeErrorText(response: Response): Promise<string> {
+  try {
+    const data = await response.clone().json() as Record<string, unknown>;
+    const detail = stringValue(data.detail) ?? stringValue(data.message) ?? stringValue(data.error);
+    return detail ? `(${detail})` : response.statusText;
+  } catch {
+    const text = await response.text().catch(() => "");
+    return text.trim() || response.statusText;
   }
 }
 

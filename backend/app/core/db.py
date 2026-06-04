@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hmac
 import json
+import os
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
@@ -15,6 +19,8 @@ from app.config import get_base_settings
 
 
 _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("marvis_data_dir_override", default=None)
+AUDIT_GENESIS_HASH = "0" * 64
+AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"
 
 
 def _now_iso() -> str:
@@ -198,6 +204,10 @@ def init_db() -> None:
                 task_id TEXT,
                 event_type TEXT NOT NULL,
                 actor TEXT NOT NULL,
+                sequence INTEGER NOT NULL DEFAULT 0,
+                prev_hash TEXT NOT NULL DEFAULT '',
+                event_hash TEXT NOT NULL DEFAULT '',
+                hmac TEXT NOT NULL DEFAULT '',
                 data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
@@ -350,6 +360,37 @@ def init_db() -> None:
             pass
         _ensure_columns(
             conn,
+            "audit_events",
+            {
+                "sequence": "INTEGER NOT NULL DEFAULT 0",
+                "prev_hash": "TEXT NOT NULL DEFAULT ''",
+                "event_hash": "TEXT NOT NULL DEFAULT ''",
+                "hmac": "TEXT NOT NULL DEFAULT ''",
+            },
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_sequence
+                ON audit_events(sequence)
+                WHERE sequence > 0
+            """
+        )
+        conn.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+            BEFORE UPDATE ON audit_events
+            BEGIN
+                SELECT RAISE(ABORT, 'audit_events is append-only');
+            END;
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+            BEFORE DELETE ON audit_events
+            BEGIN
+                SELECT RAISE(ABORT, 'audit_events is append-only');
+            END;
+            """
+        )
+        _ensure_columns(
+            conn,
             "llm_usage_events",
             {
                 "data": "TEXT NOT NULL DEFAULT '{}'",
@@ -484,15 +525,24 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
             )
             return
         if table == "audit_events":
+            conn.execute("BEGIN IMMEDIATE")
+            stored = _prepare_audit_event_locked(conn, data)
             conn.execute(
-                "INSERT OR REPLACE INTO audit_events (id, task_id, event_type, actor, data, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO audit_events (id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
-                    data["id"],
-                    data.get("task_id"),
-                    data["event_type"],
-                    data["actor"],
-                    _json(data),
-                    data.get("created_at", now),
+                    stored["id"],
+                    stored.get("task_id"),
+                    stored["event_type"],
+                    stored["actor"],
+                    stored["sequence"],
+                    stored["prev_hash"],
+                    stored["event_hash"],
+                    stored["hmac"],
+                    _json(stored),
+                    stored.get("created_at", now),
                 ),
             )
             return
@@ -605,6 +655,139 @@ def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: i
     return [json.loads(row["data"]) for row in rows]
 
 
+def claim_scheduled_task_run(
+    schedule_id: str,
+    *,
+    expected_next_run_at: str,
+    claimed_data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Atomically claim one due scheduled task before side effects run."""
+    stored = dict(claimed_data)
+    now = str(stored.get("updated_at") or _now_iso())
+    expected_next = expected_next_run_at or ""
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT enabled, next_run_at, data FROM scheduled_tasks WHERE id = ?",
+            (schedule_id,),
+        ).fetchone()
+        if not row or not bool(row["enabled"]):
+            return None
+
+        current = json.loads(row["data"])
+        if current.get("enabled") is False:
+            return None
+        current_next = str(row["next_run_at"] or current.get("next_run_at") or "")
+        if current_next != expected_next:
+            return None
+
+        cursor = conn.execute(
+            """
+            UPDATE scheduled_tasks
+            SET next_run_at = ?,
+                last_run_at = ?,
+                data = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND enabled = 1
+              AND COALESCE(next_run_at, '') = ?
+            """,
+            (
+                stored.get("next_run_at") or None,
+                stored.get("last_run_at") or None,
+                _json(stored),
+                now,
+                schedule_id,
+                expected_next,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+    return stored
+
+
+def complete_scheduled_task_run(
+    schedule_id: str,
+    *,
+    expected_last_run_at: str,
+    expected_next_run_at: str,
+    last_status: str,
+    last_task_id: str = "",
+    updated_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Persist a schedule execution result without overwriting newer schedule state."""
+    timestamp = updated_at or _now_iso()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT data FROM scheduled_tasks WHERE id = ?", (schedule_id,)).fetchone()
+        if not row:
+            return None
+
+        stored = json.loads(row["data"])
+        if str(stored.get("last_run_at") or "") != expected_last_run_at:
+            return None
+        if str(stored.get("next_run_at") or "") != expected_next_run_at:
+            return None
+        stored["last_status"] = last_status
+        stored["last_task_id"] = last_task_id
+        stored["updated_at"] = timestamp
+        conn.execute(
+            """
+            UPDATE scheduled_tasks
+            SET data = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (_json(stored), timestamp, schedule_id),
+        )
+    return stored
+
+
+def set_scheduled_task_enabled(
+    schedule_id: str,
+    enabled: bool,
+    *,
+    next_run_at: str | None = None,
+    updated_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Atomically toggle a scheduled task without overwriting run metadata."""
+    timestamp = updated_at or _now_iso()
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT data FROM scheduled_tasks WHERE id = ?",
+            (schedule_id,),
+        ).fetchone()
+        if not row:
+            return None
+
+        stored = json.loads(row["data"])
+        stored["enabled"] = bool(enabled)
+        if next_run_at is not None:
+            stored["next_run_at"] = next_run_at
+        stored["updated_at"] = timestamp
+        conn.execute(
+            """
+            UPDATE scheduled_tasks
+            SET enabled = ?,
+                next_run_at = ?,
+                last_run_at = ?,
+                data = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                1 if enabled else 0,
+                stored.get("next_run_at") or None,
+                stored.get("last_run_at") or None,
+                _json(stored),
+                timestamp,
+                schedule_id,
+            ),
+        )
+    return stored
+
+
 def insert_perception_observation(payload: dict[str, Any]) -> None:
     body = dict(payload)
     body.setdefault("id", f"pobs_{uuid4().hex}")
@@ -710,6 +893,160 @@ def _insert_run_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> 
     return stored
 
 
+def insert_audit_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
+    data = json.loads(model.model_dump_json()) if isinstance(model, BaseModel) else dict(model)
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        stored = _prepare_audit_event_locked(conn, data)
+        conn.execute(
+            """
+            INSERT INTO audit_events (id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                stored["id"],
+                stored.get("task_id"),
+                stored["event_type"],
+                stored["actor"],
+                stored["sequence"],
+                stored["prev_hash"],
+                stored["event_hash"],
+                stored["hmac"],
+                _json(stored),
+                stored["created_at"],
+            ),
+        )
+    return stored
+
+
+def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
+    query = """
+        SELECT id, sequence, prev_hash, event_hash, hmac, data
+        FROM audit_events
+        WHERE sequence > 0
+        ORDER BY sequence ASC, created_at ASC, id ASC
+    """
+    args: tuple[Any, ...] = ()
+    if limit is not None:
+        query += " LIMIT ?"
+        args = (max(1, int(limit)),)
+    else:
+        with connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS total, COALESCE(MAX(sequence), 0) AS max_sequence FROM audit_events WHERE sequence > 0").fetchone()
+        expected_total = int(row["total"] or 0)
+        max_sequence = int(row["max_sequence"] or 0)
+        if expected_total != max_sequence:
+            return {
+                "ok": False,
+                "checked": 0,
+                "last_hash": AUDIT_GENESIS_HASH,
+                "failures": [{"reason": "sequence_gap", "expected_events": expected_total, "max_sequence": max_sequence}],
+            }
+
+    expected_prev = AUDIT_GENESIS_HASH
+    checked = 0
+    failures: list[dict[str, Any]] = []
+    last_hash = expected_prev
+    with connect() as conn:
+        rows = conn.execute(query, args).fetchall()
+
+    for index, row in enumerate(rows, start=1):
+        try:
+            data = json.loads(row["data"])
+        except (TypeError, ValueError):
+            failures.append({"id": row["id"], "sequence": row["sequence"], "reason": "invalid_json"})
+            break
+
+        sequence = int(data.get("sequence") or row["sequence"] or 0)
+        prev_hash = str(data.get("prev_hash") or row["prev_hash"] or "")
+        event_hash = str(data.get("event_hash") or row["event_hash"] or "")
+        event_hmac = str(data.get("hmac") or row["hmac"] or "")
+
+        if sequence != index:
+            failures.append({"id": row["id"], "sequence": sequence, "reason": "sequence_gap", "expected": index})
+            break
+        if prev_hash != expected_prev:
+            failures.append({"id": row["id"], "sequence": sequence, "reason": "prev_hash_mismatch"})
+            break
+
+        unsigned = dict(data)
+        unsigned["sequence"] = sequence
+        unsigned["prev_hash"] = prev_hash
+        unsigned["event_hash"] = ""
+        unsigned["hmac"] = ""
+        computed_hash = _audit_event_hash(unsigned)
+        computed_hmac = _audit_event_hmac(computed_hash)
+        if not hmac.compare_digest(event_hash, computed_hash):
+            failures.append({"id": row["id"], "sequence": sequence, "reason": "event_hash_mismatch"})
+            break
+        if not hmac.compare_digest(event_hmac, computed_hmac):
+            failures.append({"id": row["id"], "sequence": sequence, "reason": "hmac_mismatch"})
+            break
+
+        checked += 1
+        last_hash = event_hash
+        expected_prev = event_hash
+
+    return {
+        "ok": not failures,
+        "checked": checked,
+        "last_hash": last_hash,
+        "failures": failures,
+    }
+
+
+def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+    stored = dict(data)
+    stored.setdefault("id", f"audit_{uuid4().hex}")
+    stored["created_at"] = stored.get("created_at") or _now_iso()
+
+    row = conn.execute(
+        "SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1"
+    ).fetchone()
+    sequence = int(row["sequence"] or 0) + 1 if row else 1
+    prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
+
+    stored["sequence"] = sequence
+    stored["prev_hash"] = prev_hash
+    stored["event_hash"] = ""
+    stored["hmac"] = ""
+    event_hash = _audit_event_hash(stored)
+    stored["event_hash"] = event_hash
+    stored["hmac"] = _audit_event_hmac(event_hash)
+    return stored
+
+
+def _audit_event_hash(event: dict[str, Any]) -> str:
+    canonical = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _audit_event_hmac(event_hash: str) -> str:
+    return hmac.new(_audit_hmac_secret().encode("utf-8"), event_hash.encode("utf-8"), sha256).hexdigest()
+
+
+def _audit_hmac_secret() -> str:
+    configured = (os.environ.get("MAVRIS_AUDIT_HMAC_SECRET") or os.environ.get("MARVIS_AUDIT_HMAC_SECRET") or "").strip()
+    if configured:
+        return configured
+
+    secret_path = db_path().parent / AUDIT_HMAC_SECRET_FILE
+    try:
+        if secret_path.exists():
+            value = secret_path.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        value = secrets.token_hex(32)
+        secret_path.write_text(value, encoding="utf-8")
+        try:
+            secret_path.chmod(0o600)
+        except OSError:
+            pass
+        return value
+    except OSError:
+        return ""
+
+
 def fetch_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
@@ -733,6 +1070,7 @@ def delete_run_events_before(cutoff_iso: str) -> int:
 def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str, Any] | None:
     """Atomically mark an approved approval as consumed before side effects run."""
     with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT data FROM approvals WHERE id = ? AND status = ?",
             (approval_id, "approved"),

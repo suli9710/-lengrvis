@@ -222,6 +222,11 @@ class PlanStep(BaseModel):
     step_phase: StepPhase = StepPhase.PENDING
     depends_on: list[str] = Field(default_factory=list)
     rollback_strategy: str = ""
+    tool_effects: list[str] = Field(default_factory=list)
+    resource_kinds: list[str] = Field(default_factory=list)
+    trust_tier: str = ""
+    deferred_tool: bool = False
+    model_action: dict[str, Any] = Field(default_factory=dict)
 
 
 class Plan(BaseModel):
@@ -423,11 +428,42 @@ class Approval(BaseModel):
     preview_hmac: str = ""
     settings_fingerprint: str = ""
     permission_policy_version: str = ""
+    policy_mode: str = "default"
+    permission_mode: str = "default"
     tool_version: str = ""
+    tool_trust_tier: str = ""
+    tool_effects: list[str] = Field(default_factory=list)
+    resource_kinds: list[str] = Field(default_factory=list)
+    dry_run_summary: str = ""
+    model_action: dict[str, Any] = Field(default_factory=dict)
+    runtime_control_fields: dict[str, Any] = Field(default_factory=dict)
+    runtime_fields: dict[str, Any] = Field(default_factory=dict)
+    engineering_boundary: dict[str, Any] = Field(default_factory=dict)
+    source: str = ""
+    source_device_id: str = ""
+    source_grant_id: str = ""
+    allowed_device_ids: list[str] = Field(default_factory=list)
+    required_mobile_scopes: list[str] = Field(default_factory=list)
     status: ApprovalStatus = ApprovalStatus.PENDING
     created_at: str = Field(default_factory=now_iso)
     decided_at: str | None = None
     consumed_at: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_boundary_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if "policy_mode" not in normalized and "permission_mode" in normalized:
+            normalized["policy_mode"] = normalized.get("permission_mode")
+        if "permission_mode" not in normalized and "policy_mode" in normalized:
+            normalized["permission_mode"] = normalized.get("policy_mode")
+        if "runtime_control_fields" not in normalized and "runtime_fields" in normalized:
+            normalized["runtime_control_fields"] = normalized.get("runtime_fields")
+        if "runtime_fields" not in normalized and "runtime_control_fields" in normalized:
+            normalized["runtime_fields"] = normalized.get("runtime_control_fields")
+        return normalized
 
 
 class AuditEvent(BaseModel):
@@ -436,6 +472,10 @@ class AuditEvent(BaseModel):
     event_type: str
     actor: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    sequence: int = 0
+    prev_hash: str = ""
+    event_hash: str = ""
+    hmac: str = ""
     created_at: str = Field(default_factory=now_iso)
 
 

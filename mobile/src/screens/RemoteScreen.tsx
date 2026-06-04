@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
+  type AppStateStatus,
   Image,
   Pressable,
   SafeAreaView,
@@ -8,15 +10,30 @@ import {
   StyleSheet,
   Text,
   View,
+  type GestureResponderEvent,
+  type LayoutChangeEvent,
 } from "react-native";
-import { ArrowLeft, Monitor, Pause, Play, RefreshCcw, Wifi, WifiOff } from "lucide-react-native";
+import { ArrowLeft, Monitor, MousePointer2, Pause, Play, RefreshCcw, Wifi, WifiOff } from "lucide-react-native";
 
-import { mobileAuthWebSocketProtocols, remoteScreenWebSocketUrl, type PairingSession, type RemoteScreenEvent } from "../api/client";
+import {
+  claimRemoteInputGrantToken,
+  mobileAuthWebSocketProtocols,
+  mobileTokenWebSocketProtocols,
+  remoteInputWebSocketUrl,
+  remoteScreenWebSocketUrl,
+  type PairingSession,
+  type RemoteInputGrant,
+  type RemoteScreenEvent,
+} from "../api/client";
 import { shortDate } from "../format";
+import { isRemoteInputGrantUsable, mapViewerPointToRemote } from "../remoteInputGrant";
 
 type ConnectionState = "offline" | "connecting" | "online" | "paused";
+type InputConnectionState = "disabled" | "ready" | "connecting" | "online" | "offline";
+const FRAME_ACK_FALLBACK_MS = 900;
 
 interface ScreenFrame {
+  sequence: number;
   image: string;
   timestamp: string;
   width: number;
@@ -26,22 +43,127 @@ interface ScreenFrame {
 }
 
 export function RemoteScreen({
+  grant,
   session,
   onBack,
 }: {
+  grant: RemoteInputGrant | null;
   session: PairingSession;
   onBack: () => void;
 }) {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [inputConnection, setInputConnection] = useState<InputConnectionState>(isRemoteInputGrantUsable(grant) ? "ready" : "disabled");
   const [frame, setFrame] = useState<ScreenFrame | null>(null);
   const [streamMeta, setStreamMeta] = useState({ fps: 0, quality: 0 });
   const [error, setError] = useState("");
+  const [inputError, setInputError] = useState("");
+  const [viewerSize, setViewerSize] = useState({ width: 0, height: 0 });
   const socketRef = useRef<WebSocket | null>(null);
+  const inputSocketRef = useRef<WebSocket | null>(null);
+  const inputConnectionGenerationRef = useRef(0);
+  const pausedByUserRef = useRef(false);
+  const pendingFrameRef = useRef<ScreenFrame | null>(null);
+  const frameRafRef = useRef<number | null>(null);
+  const frameAckFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentFrameSequenceRef = useRef(0);
+  const lastAcknowledgedSequenceRef = useRef(0);
+  const lastRenderedAtRef = useRef(0);
+  const degradedStreamRef = useRef(false);
+
+  const clearFrameAckFallback = useCallback(() => {
+    if (frameAckFallbackRef.current !== null) {
+      clearTimeout(frameAckFallbackRef.current);
+      frameAckFallbackRef.current = null;
+    }
+  }, []);
 
   const closeSocket = useCallback(() => {
+    if (frameRafRef.current !== null) {
+      cancelAnimationFrame(frameRafRef.current);
+      frameRafRef.current = null;
+    }
+    clearFrameAckFallback();
+    pendingFrameRef.current = null;
+    currentFrameSequenceRef.current = 0;
+    lastAcknowledgedSequenceRef.current = 0;
+    degradedStreamRef.current = false;
+    lastRenderedAtRef.current = 0;
     socketRef.current?.close();
     socketRef.current = null;
+  }, [clearFrameAckFallback]);
+
+  const closeInputSocket = useCallback(() => {
+    inputConnectionGenerationRef.current += 1;
+    inputSocketRef.current?.close();
+    inputSocketRef.current = null;
   }, []);
+
+  const resetInputConnection = useCallback(() => {
+    setInputConnection(isRemoteInputGrantUsable(grant) ? "ready" : "disabled");
+  }, [grant]);
+
+  const sendStreamConfig = useCallback((fps: number, quality: number) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== 1) {
+      return;
+    }
+    socket.send(JSON.stringify({ fps, quality }));
+    setStreamMeta({ fps, quality });
+  }, []);
+
+  const acknowledgeFrame = useCallback((sequence: number) => {
+    const socket = socketRef.current;
+    if (
+      !Number.isFinite(sequence) ||
+      sequence <= 0 ||
+      sequence !== currentFrameSequenceRef.current ||
+      sequence <= lastAcknowledgedSequenceRef.current ||
+      !socket ||
+      socket.readyState !== 1
+    ) {
+      return;
+    }
+    lastAcknowledgedSequenceRef.current = sequence;
+    clearFrameAckFallback();
+    socket.send(JSON.stringify({ type: "frame_ack", sequence }));
+  }, [clearFrameAckFallback]);
+
+  const scheduleFrameRender = useCallback(() => {
+    if (frameRafRef.current !== null) {
+      return;
+    }
+    frameRafRef.current = requestAnimationFrame(() => {
+      frameRafRef.current = null;
+      const nextFrame = pendingFrameRef.current;
+      pendingFrameRef.current = null;
+      if (!nextFrame) {
+        return;
+      }
+
+      const now = Date.now();
+      const elapsedMs = lastRenderedAtRef.current ? now - lastRenderedAtRef.current : 0;
+      lastRenderedAtRef.current = now;
+      currentFrameSequenceRef.current = nextFrame.sequence;
+      setFrame(nextFrame);
+
+      clearFrameAckFallback();
+      frameAckFallbackRef.current = setTimeout(() => {
+        if (lastAcknowledgedSequenceRef.current >= nextFrame.sequence) {
+          return;
+        }
+        if (!degradedStreamRef.current) {
+          degradedStreamRef.current = true;
+          sendStreamConfig(1, 42);
+        }
+        acknowledgeFrame(nextFrame.sequence);
+      }, FRAME_ACK_FALLBACK_MS);
+
+      if (elapsedMs > 900 && !degradedStreamRef.current) {
+        degradedStreamRef.current = true;
+        sendStreamConfig(1, 42);
+      }
+    });
+  }, [acknowledgeFrame, clearFrameAckFallback, sendStreamConfig]);
 
   const connect = useCallback(() => {
     closeSocket();
@@ -52,11 +174,13 @@ export function RemoteScreen({
     socketRef.current = socket;
 
     socket.onopen = () => {
+      if (socketRef.current !== socket) return;
       setConnection("online");
-      socket.send(JSON.stringify({ fps: 2, quality: 55 }));
+      sendStreamConfig(2, 55);
     };
 
     socket.onmessage = (event) => {
+      if (socketRef.current !== socket) return;
       try {
         const payload = JSON.parse(String(event.data)) as RemoteScreenEvent;
         if (payload.type === "connected") {
@@ -64,14 +188,16 @@ export function RemoteScreen({
           return;
         }
         if (payload.type === "frame") {
-          setFrame({
+          pendingFrameRef.current = {
+            sequence: payload.sequence,
             image: payload.image,
             timestamp: payload.timestamp,
             width: payload.width,
             height: payload.height,
             originalWidth: payload.original_width,
             originalHeight: payload.original_height,
-          });
+          };
+          scheduleFrameRender();
           return;
         }
         if (payload.type === "error") {
@@ -83,31 +209,143 @@ export function RemoteScreen({
     };
 
     socket.onerror = () => {
+      if (socketRef.current !== socket) return;
       setError("暂时无法显示屏幕。请确认 Mavris 已打开，然后点重试。");
     };
 
     socket.onclose = (event) => {
+      if (socketRef.current !== socket) return;
       if (event.code === 1008) {
-        setError("此手机暂不可查看屏幕。审批配对仍保持连接。");
+        setError("无法查看电脑屏幕。请在桌面端设置中确认已开启手机屏幕查看；如果仍失败，请在手机和电脑端重新配对。");
         setConnection("offline");
         return;
       }
       setConnection((current) => (current === "paused" ? current : "offline"));
     };
-  }, [closeSocket, session]);
+  }, [closeSocket, scheduleFrameRender, sendStreamConfig, session]);
+
+  const connectInput = useCallback(async () => {
+    closeInputSocket();
+    if (!isRemoteInputGrantUsable(grant)) {
+      setInputConnection("disabled");
+      setInputError("");
+      return;
+    }
+    const connectionGeneration = inputConnectionGenerationRef.current;
+    setInputConnection("connecting");
+    setInputError("");
+    try {
+      const grantToken = await claimRemoteInputGrantToken(session, grant.id);
+      if (connectionGeneration !== inputConnectionGenerationRef.current || !isRemoteInputGrantUsable(grant)) {
+        return;
+      }
+      const socket = new WebSocket(remoteInputWebSocketUrl(session), mobileTokenWebSocketProtocols(grantToken.token));
+      if (connectionGeneration !== inputConnectionGenerationRef.current) {
+        socket.close();
+        return;
+      }
+      inputSocketRef.current = socket;
+      socket.onopen = () => {
+        if (inputSocketRef.current !== socket) return;
+        setInputConnection("online");
+      };
+      socket.onmessage = (event) => {
+        if (inputSocketRef.current !== socket) return;
+        try {
+          const payload = JSON.parse(String(event.data)) as { type?: string; message?: string };
+          if (payload.type === "approval_required") {
+            setInputError("点击已发送到电脑端审批。");
+            return;
+          }
+          if (payload.type === "error" || payload.type === "denied") {
+            setInputError(payload.message || "电脑端拒绝了这次远程输入。");
+          }
+        } catch {
+          setInputError("电脑端返回了无法读取的远程输入结果。");
+        }
+      };
+      socket.onerror = () => {
+        if (inputSocketRef.current !== socket) return;
+        setInputConnection("offline");
+        setInputError("远程点击连接不可用。请在电脑端重新授权。");
+      };
+      socket.onclose = () => {
+        if (inputSocketRef.current !== socket) return;
+        setInputConnection("offline");
+      };
+    } catch (currentError) {
+      if (connectionGeneration !== inputConnectionGenerationRef.current) {
+        return;
+      }
+      setInputConnection("offline");
+      setInputError(inputErrorMessage(currentError));
+    }
+  }, [closeInputSocket, grant, session]);
+
+  useEffect(() => {
+    resetInputConnection();
+    setInputError("");
+    closeInputSocket();
+  }, [closeInputSocket, grant, resetInputConnection]);
 
   useEffect(() => {
     connect();
-    return closeSocket;
-  }, [closeSocket, connect]);
+    if (isRemoteInputGrantUsable(grant)) void connectInput();
+    return () => {
+      closeSocket();
+      closeInputSocket();
+    };
+  }, [closeInputSocket, closeSocket, connect, connectInput, grant]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
+      if (state === "active") {
+        if (!pausedByUserRef.current) {
+          setConnection("connecting");
+          connect();
+          if (isRemoteInputGrantUsable(grant)) void connectInput();
+        }
+        return;
+      }
+      setConnection("paused");
+      resetInputConnection();
+      closeSocket();
+      closeInputSocket();
+    });
+    return () => subscription.remove();
+  }, [closeInputSocket, closeSocket, connect, connectInput, grant, resetInputConnection]);
 
   const handleToggleStream = () => {
     if (connection === "online" || connection === "connecting") {
+      pausedByUserRef.current = true;
       setConnection("paused");
+      resetInputConnection();
       closeSocket();
+      closeInputSocket();
       return;
     }
+    pausedByUserRef.current = false;
     connect();
+    if (isRemoteInputGrantUsable(grant)) void connectInput();
+  };
+
+  const handleViewerLayout = (event: LayoutChangeEvent) => {
+    setViewerSize({
+      width: event.nativeEvent.layout.width,
+      height: event.nativeEvent.layout.height,
+    });
+  };
+
+  const handleRemotePress = (event: GestureResponderEvent) => {
+    const socket = inputSocketRef.current;
+    if (!frame || !viewerSize.width || !viewerSize.height || !socket || socket.readyState !== 1) {
+      if (isRemoteInputGrantUsable(grant) && inputConnection !== "online") void connectInput();
+      return;
+    }
+    const point = mapViewerPointToRemote(event.nativeEvent.locationX, event.nativeEvent.locationY, viewerSize, frame);
+    if (!point) return;
+    socket.send(JSON.stringify({ type: "click", x: point.x, y: point.y }));
+    setInputError("点击已发送，等待电脑端审批。");
   };
 
   const online = connection === "online";
@@ -119,14 +357,25 @@ export function RemoteScreen({
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor="#17222b" />
       <View style={styles.header}>
-        <Pressable onPress={onBack} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="返回审批列表"
+          onPress={onBack}
+          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+        >
           <ArrowLeft size={20} color="#f7faf8" />
         </Pressable>
         <View style={styles.headerText}>
           <Text style={styles.kicker}>仅查看</Text>
           <Text style={styles.headerTitle}>电脑屏幕</Text>
         </View>
-        <Pressable onPress={handleToggleStream} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={online || connection === "connecting" ? "暂停屏幕查看" : "继续屏幕查看"}
+          accessibilityState={{ busy: connection === "connecting", selected: online }}
+          onPress={handleToggleStream}
+          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+        >
           {online || connection === "connecting" ? <Pause size={20} color="#f7faf8" /> : <Play size={20} color="#f7faf8" />}
         </Pressable>
       </View>
@@ -137,9 +386,31 @@ export function RemoteScreen({
         {streamMeta.fps ? <Text style={styles.statusMeta}>低带宽模式</Text> : null}
       </View>
 
-      <View style={styles.viewer}>
+      <View style={styles.inputStatusRow}>
+        <MousePointer2 size={15} color={inputConnection === "online" ? "#75d39a" : "#ffcf72"} />
+        <Text style={styles.inputStatusText}>{inputStatusText(inputConnection)}</Text>
+        {isRemoteInputGrantUsable(grant) && inputConnection !== "online" ? (
+          <Pressable onPress={() => void connectInput()} style={({ pressed }) => [styles.inputReconnect, pressed && styles.pressed]}>
+            <Text style={styles.inputReconnectText}>连接</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="发送远程点击审批"
+        disabled={!isRemoteInputGrantUsable(grant)}
+        onLayout={handleViewerLayout}
+        onPress={handleRemotePress}
+        style={styles.viewer}
+      >
         {frame ? (
-          <Image resizeMode="contain" source={{ uri: frame.image }} style={[styles.screenImage, { aspectRatio }]} />
+          <Image
+            resizeMode="contain"
+            source={{ uri: frame.image }}
+            style={[styles.screenImage, { aspectRatio }]}
+            onLoadEnd={() => acknowledgeFrame(frame.sequence)}
+          />
         ) : (
           <View style={styles.emptyFrame}>
             {showLoading ? <ActivityIndicator color="#75d39a" /> : <Monitor size={42} color="#93a2ad" />}
@@ -147,10 +418,11 @@ export function RemoteScreen({
             <Text style={styles.emptyText}>屏幕共享可用时，你可以在这里查看电脑画面。</Text>
           </View>
         )}
-      </View>
+      </Pressable>
 
       <View style={styles.footer}>
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
+        {inputError ? <Text style={styles.inputHintText}>{inputError}</Text> : null}
         {canRetry ? (
           <Pressable onPress={connect} style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
             <RefreshCcw size={16} color="#17222b" />
@@ -175,8 +447,26 @@ function statusText(connection: ConnectionState): string {
 }
 
 function readableStreamError(message: string): string {
-  if (!message.trim()) return "暂时无法显示屏幕。请点重试重新连接。";
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return "暂时无法显示屏幕。请点重试重新连接。";
+  if (normalized.includes("disabled")) return "桌面端尚未开启远程屏幕。请在 Mavris 设置中打开手机屏幕查看。";
+  if (normalized.includes("unauthorized") || normalized.includes("token") || normalized.includes("scope")) {
+    return "这台手机没有屏幕查看权限。请在桌面端重新配对后再试。";
+  }
   return "暂时无法显示屏幕。请点重试重新连接。";
+}
+
+function inputStatusText(connection: InputConnectionState): string {
+  if (connection === "online") return "远程点击已授权，每次点击仍需电脑端审批";
+  if (connection === "connecting") return "正在连接远程点击";
+  if (connection === "ready") return "电脑端已授权远程点击";
+  if (connection === "offline") return "远程点击授权不可用";
+  return "仅查看，电脑端尚未授权远程点击";
+}
+
+function inputErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return "无法领取远程点击授权。请在电脑端重新授权。";
 }
 
 const styles = StyleSheet.create({
@@ -240,6 +530,38 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "700",
   },
+  inputStatusRow: {
+    marginHorizontal: 20,
+    marginTop: 8,
+    minHeight: 36,
+    borderRadius: 8,
+    backgroundColor: "#1d2a35",
+    borderWidth: 1,
+    borderColor: "#344856",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  inputStatusText: {
+    flex: 1,
+    color: "#d6e2dd",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  inputReconnect: {
+    minHeight: 28,
+    borderRadius: 8,
+    backgroundColor: "#ffcf72",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  inputReconnectText: {
+    color: "#17222b",
+    fontSize: 12,
+    fontWeight: "800",
+  },
   viewer: {
     flex: 1,
     paddingHorizontal: 12,
@@ -289,6 +611,10 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: "#ffcf72",
+    lineHeight: 20,
+  },
+  inputHintText: {
+    color: "#75d39a",
     lineHeight: 20,
   },
   retryButton: {

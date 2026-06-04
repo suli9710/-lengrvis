@@ -11,6 +11,7 @@ import {
   Layers,
   Loader2,
   MousePointerClick,
+  Route,
   RotateCcw,
   Search,
   ShieldCheck,
@@ -32,6 +33,7 @@ import type {
 } from "../../shared/types";
 import type { BackendClusterEntry, FileClusterOptions, MavrisApiClient } from "../lib/apiClient";
 import { isPathWithinScope, parentDirectory } from "../lib/documentScope";
+import { motionAwareScrollBehavior } from "../lib/motion";
 import { zhUserFacingError } from "../lib/zh";
 import type { ConnectionState } from "../store";
 import { Badge, Panel } from "./Panel";
@@ -121,6 +123,7 @@ const TOOL_TABS: Array<{ id: FileToolTab; label: string; description: string; ic
 ];
 
 const DEFAULT_SUMMARY_QUESTION = "请用简单的话总结这份文档的重点。";
+const SERVICE_OFFLINE_TEXT = "助手暂时连不上，本机文件没有问题。请先点右上角刷新或到设置里启动服务，连接恢复后再继续。";
 
 export function FileSearchPanel({
   results,
@@ -200,10 +203,14 @@ export function FileSearchPanel({
   const resultClusterDimension = clusterDimensionOption(clusterResultDimension);
   const selectedDocument = documentPath.trim() || documentResult?.title || "";
   const selectedDocumentPathValue = documentPath.trim();
+  const selectedDocumentPathParts = useMemo(
+    () => selectedDocumentPathValue ? displayFilePath(selectedDocumentPathValue) : null,
+    [selectedDocumentPathValue]
+  );
   const compareDocumentPathValue = comparePath.trim();
   const trimmedQuery = query.trim();
   const serviceUnavailable = connectionState === "offline";
-  const searchButtonLabel = !currentScope ? "先选择范围" : trimmedQuery ? "搜索" : "先输入关键词";
+  const searchButtonLabel = !currentScope ? "先选要找的文件夹" : trimmedQuery ? "搜索" : "先输入关键词";
   const cleanupBuckets = useMemo(() => splitCleanupItems(cleanupPlan), [cleanupPlan]);
   const executableCleanupCount = useMemo(
     () => cleanupPlan?.items.filter(isExecutableCleanupItem).length ?? 0,
@@ -300,7 +307,7 @@ export function FileSearchPanel({
     const nextPath = path?.trim();
     if (!nextPath) {
       setScopeNotice(null);
-      setScopeError("这个位置暂时不可用。请点“选择要整理的位置”，或在下方粘贴文件夹路径。");
+      setScopeError("这个位置暂时不可用。请点“选择要查找的文件夹”，或在下方粘贴文件夹路径。");
       return;
     }
 
@@ -428,8 +435,8 @@ export function FileSearchPanel({
   };
 
   const focusScopePicker = () => {
-    setScopeNotice("请先在这里选择一个文件夹范围；Mavris 不会默认扫描整台电脑。");
-    window.setTimeout(() => scopePanelRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 0);
+    setScopeNotice("请先在这里选择要查找的文件夹；Mavris 不会默认扫描整台电脑。");
+    window.setTimeout(() => scopePanelRef.current?.scrollIntoView({ block: "nearest", behavior: motionAwareScrollBehavior() }), 0);
   };
 
   const submit = async () => {
@@ -437,13 +444,13 @@ export function FileSearchPanel({
     if (serviceUnavailable) {
       onClearResults?.();
       setSearchStatus("error");
-      setSearchMessage("Mavris 服务未连接。请先刷新或重启服务，连接恢复后再搜索文件。");
+      setSearchMessage(`已保留你的关键词。${SERVICE_OFFLINE_TEXT}`);
       return;
     }
     if (!currentScope) {
       onClearResults?.();
       setSearchStatus("missing_scope");
-      setSearchMessage("请先选择搜索范围，再开始查找文件。");
+      setSearchMessage("请先选择要查找的文件夹，再开始查找文件。");
       focusScopePicker();
       return;
     }
@@ -610,7 +617,7 @@ export function FileSearchPanel({
       text: action === "read" ? "正在切到文档操作区并读取文件..." : "正在切到文档操作区并总结文件..."
     });
     clearDocumentOutput();
-    window.setTimeout(() => documentPaneRef.current?.scrollIntoView({ block: "start", behavior: "smooth" }), 0);
+    window.setTimeout(() => documentPaneRef.current?.scrollIntoView({ block: "start", behavior: motionAwareScrollBehavior() }), 0);
     try {
       if (action === "read") {
         setDocumentQuestion("");
@@ -672,7 +679,7 @@ export function FileSearchPanel({
     } else if (action === "summarize") {
       void askDocument(question || DEFAULT_SUMMARY_QUESTION, selectedDocumentPath, "正在总结这份文档...");
     } else {
-      setDocumentNotice("已选中文档，请在下方输入你的问题。");
+      setDocumentNotice("正在向这份文档提问：请在“问这个文档”输入框里写问题。");
       window.setTimeout(() => documentQuestionInputRef.current?.focus(), 0);
     }
 
@@ -803,16 +810,16 @@ export function FileSearchPanel({
   return (
     <Panel
       title="文件工具"
-      eyebrow="先选范围，再操作"
-      action={<Badge tone={currentScope ? "info" : "warning"}>{currentScope ? "已选范围" : "未选择范围"}</Badge>}
+      eyebrow="先选文件夹，再操作"
+      action={<Badge tone={currentScope ? "info" : "warning"}>{currentScope ? "已选文件夹" : "未选文件夹"}</Badge>}
     >
       {serviceUnavailable ? (
         <section className="file-service-gate" aria-label="Mavris 服务连接提示">
           <div>
-            <strong>先恢复 Mavris 服务连接</strong>
-            <p>文件搜索、范围保存和文档读取需要本机服务参与；这只是服务连接问题，不代表电脑或文件夹有故障。</p>
+            <strong>助手暂时连不上，电脑和文件夹没有问题</strong>
+            <p>文件搜索、范围保存和文档读取需要本机服务参与。请先点右上角刷新，或到设置里启动服务；连接恢复后，你已填的关键词和路径还可以继续用。</p>
           </div>
-          <Badge tone="warning">等待连接</Badge>
+          <Badge tone="warning">先恢复连接</Badge>
         </section>
       ) : null}
 
@@ -848,11 +855,11 @@ export function FileSearchPanel({
           </div>
           <button className="button button--secondary" type="button" onClick={() => void chooseFolder()} disabled={isSavingScope}>
             <FolderOpen size={16} aria-hidden="true" />
-            选择要整理的位置
+            选择要查找的文件夹
           </button>
         </div>
         {!currentScope ? (
-          <p className="file-status file-status--info">第一步：选择要整理的位置。Mavris 不会默认扫描整台电脑。</p>
+          <p className="file-status file-status--info">第一步：选择要查找的文件夹。Mavris 只会扫描你选择的文件夹，清理前不会删除任何文件。</p>
         ) : null}
         <div className="file-scope-shortcuts" aria-label="常用文件夹">
           {shortcuts.map((shortcut) => {
@@ -875,17 +882,18 @@ export function FileSearchPanel({
           })}
         </div>
         {knownFoldersChecked && !hasKnownFolderShortcuts ? (
-          <p className="file-scope-note">暂时读不到桌面、下载、文档、图片。可以点“选择要整理的位置”，或直接粘贴文件夹路径。</p>
+          <p className="file-scope-note">暂时读不到桌面、下载、文档、图片。可以点“选择要查找的文件夹”，或直接粘贴文件夹路径。</p>
         ) : null}
         {currentScope ? (
           <div className="file-scope-path-preview" aria-label="当前完整范围路径">
             <span>完整路径</span>
+            <strong title={currentScope}>{compactPath(currentScope)}</strong>
             <code>{currentScope}</code>
           </div>
         ) : null}
         <div className="file-scope-manual">
           <label className="field">
-            <span>手动范围</span>
+            <span>粘贴文件夹位置</span>
             <input
               value={manualScope}
               onChange={(event) => setManualScope(event.target.value)}
@@ -896,7 +904,7 @@ export function FileSearchPanel({
             />
           </label>
           <button className="button button--ghost" type="button" onClick={() => void applyManualScope()} disabled={isSavingScope}>
-            使用这个范围
+            使用这个文件夹
           </button>
         </div>
         {scopeNotice ? <p className="file-status file-status--info">{scopeNotice}</p> : null}
@@ -928,7 +936,7 @@ export function FileSearchPanel({
           {!currentScope ? (
             <div className="file-search-prereq" role="status">
               <div>
-                <strong>先选搜索范围</strong>
+                <strong>先选要找的文件夹</strong>
                 <p>从桌面、下载、文档、图片开始，或选择一个文件夹。选好后再输入关键词搜索。</p>
               </div>
               <button className="button button--secondary" type="button" onClick={focusScopePicker}>
@@ -1063,7 +1071,7 @@ export function FileSearchPanel({
                     ? `已检查 ${formatCount(searchMeta.scanned)} 个文件，但当前范围还没扫完。可以缩小范围，或换一个更具体的关键词再试。`
                     : hasKnownFolderShortcuts
                       ? "换个关键词，或切换到桌面、下载、文档、图片再试。"
-                      : "换个关键词，或点“选择要整理的位置”/粘贴路径后再试。"}
+                    : "换个关键词，或点“选择要查找的文件夹”/粘贴路径后再试。"}
                 </p>
               </div>
             ) : searchStatus === "error" ? (
@@ -1074,8 +1082,8 @@ export function FileSearchPanel({
               </div>
             ) : searchStatus === "missing_scope" ? (
               <div className="empty-state file-empty-guide">
-                <strong>还没有选择范围</strong>
-                <p>先点“选择要整理的位置”，或从桌面、下载、文档、图片里选一个位置。</p>
+                <strong>还没有选择要查找的文件夹</strong>
+                <p>先点“选择要查找的文件夹”，或从桌面、下载、文档、图片里选一个位置。</p>
               </div>
             ) : searchStatus === "missing_query" ? (
               <div className="empty-state file-empty-guide">
@@ -1084,11 +1092,11 @@ export function FileSearchPanel({
               </div>
             ) : (
               <div className="empty-state file-empty-guide">
-                <strong>{currentScope ? "已选择范围，输入关键词开始搜索" : "先选择范围，再输入关键词"}</strong>
+                <strong>{currentScope ? "已选择文件夹，输入关键词开始搜索" : "先选择文件夹，再输入关键词"}</strong>
                 <p>
                   {currentScope
                     ? "输入文件名、扩展名或内容关键词后，Mavris 只会在当前范围里查找。"
-                    : "可以从桌面、下载、文档、图片开始，也可以点“选择要整理的位置”指定位置。"}
+                    : "可以从桌面、下载、文档、图片开始，也可以点“选择要查找的文件夹”指定位置。"}
                 </p>
                 <p>搜索、分组和清理只会查看当前范围；移动、重命名或删除前都会再次确认。</p>
               </div>
@@ -1132,15 +1140,18 @@ export function FileSearchPanel({
             <div className="file-tool__head">
               <div>
                 <strong>文档操作区</strong>
-                <span className="muted">选中文档后，可以读取、总结、提问</span>
+                <span className="muted">选中文档后，可以读取预览、总结这份文档，或继续追问</span>
               </div>
               <Badge tone={selectedDocumentPathValue ? "info" : "neutral"}>{selectedDocumentPathValue ? "已选文档" : "未选文档"}</Badge>
             </div>
+            {serviceUnavailable ? (
+              <p className="file-status file-status--info">现在服务还没连上。你可以先粘贴文档路径；连接恢复后再读取预览、总结或提问。</p>
+            ) : null}
             {!selectedDocumentPathValue ? (
               <div className="document-start-hero">
                 <div>
                   <strong>先选择一份文档</strong>
-                  <p>直接选择文件即可开始；Mavris 会把它所在文件夹设为当前范围，再读取、总结或提问。</p>
+                  <p>直接选择文件即可开始；Mavris 会把它所在文件夹设为当前范围，只读取这份文档。</p>
                 </div>
                 <div className="document-start-hero__actions">
                   <button className="button button--primary" type="button" onClick={() => void chooseDocument("select")}>
@@ -1203,16 +1214,21 @@ export function FileSearchPanel({
             {!selectedDocumentPathValue ? (
               <p className="file-status file-status--info">当前还没有选中文档。点“选择文档”会同步当前范围；粘贴路径后，读取或总结前也会尝试同步所在文件夹。</p>
             ) : (
-              <p className="file-status file-status--success">当前文档：{selectedDocument || selectedDocumentPathValue}</p>
+              <div className="file-status file-status--success document-current-file" role="status">
+                <Route size={14} aria-hidden="true" />
+                <span>当前文档</span>
+                <strong title={selectedDocumentPathValue}>{selectedDocumentPathParts?.name || selectedDocument || selectedDocumentPathValue}</strong>
+                {selectedDocumentPathParts?.parent ? <code title={selectedDocumentPathValue}>{selectedDocumentPathParts.parent}</code> : null}
+              </div>
             )}
             <div className="file-tool__actions">
               <button className="button button--secondary document-action-button document-action-button--read" type="button" data-loading={documentWorkingAction === "read" ? "true" : undefined} onClick={() => void parseDocument(undefined, "正在读取这份文档...")} disabled={isDocumentWorking || !selectedDocumentPathValue}>
                 {documentWorkingAction === "read" ? <Loader2 size={16} aria-hidden="true" /> : <BookOpenText size={16} aria-hidden="true" />}
-                {documentWorkingAction === "read" ? "读取中" : "读取"}
+                {documentWorkingAction === "read" ? "读取中" : "读取预览"}
               </button>
               <button className="button button--secondary document-action-button document-action-button--summarize" type="button" data-loading={documentWorkingAction === "summarize" ? "true" : undefined} onClick={() => void summarizeDocument()} disabled={isDocumentWorking || !selectedDocumentPathValue}>
                 {documentWorkingAction === "summarize" ? <Loader2 size={16} aria-hidden="true" /> : <Sparkles size={16} aria-hidden="true" />}
-                {documentWorkingAction === "summarize" ? "总结中" : "总结"}
+                {documentWorkingAction === "summarize" ? "总结中" : "总结这份文档"}
               </button>
               <div className="input-with-icon">
                 <FileQuestion size={16} aria-hidden="true" />
@@ -1228,13 +1244,16 @@ export function FileSearchPanel({
               </div>
               <button className="button button--ghost document-action-button document-action-button--ask" type="button" data-loading={documentWorkingAction === "ask" ? "true" : undefined} onClick={() => void askDocument(undefined, undefined, "正在查找文档里的答案...")} disabled={isDocumentWorking || !selectedDocumentPathValue || !documentQuestion.trim()}>
                 {documentWorkingAction === "ask" ? <Loader2 size={16} aria-hidden="true" /> : <FileQuestion size={16} aria-hidden="true" />}
-                {documentWorkingAction === "ask" ? "提问中" : "提问"}
+                {documentWorkingAction === "ask" ? "提问中" : "向这份文档提问"}
               </button>
             </div>
             {!selectedDocumentPathValue ? (
-              <p className="file-action-hint">选择或粘贴文档后，“读取 / 总结 / 提问”会按顺序变为可用。</p>
+              <p className="file-action-hint">选择或粘贴文档后，“读取预览 / 总结这份文档 / 向这份文档提问”会按顺序变为可用。</p>
             ) : !documentQuestion.trim() ? (
-              <p className="file-action-hint">想追问这份文档时，先输入问题，再点“提问”。</p>
+              <p className="file-action-hint file-action-hint--info">
+                <FileQuestion size={14} aria-hidden="true" />
+                <span>想追问这份文档时，先在“问这个文档”输入框里写问题，再点“提问”。</span>
+              </p>
             ) : (
               <p className="file-action-hint">按 Enter 可直接提问。</p>
             )}
@@ -1620,7 +1639,7 @@ function buildFileOnboardingSteps({
             : "search";
 
   return [
-    { id: "scope", label: "选范围", state: stepState("scope", currentId, scopeDone), tool: "search" },
+    { id: "scope", label: "选文件夹", state: stepState("scope", currentId, scopeDone), tool: "search" },
     { id: "search", label: "找文件", state: stepState("search", currentId, searchDone), tool: "search" },
     { id: "document", label: "读文档", state: stepState("document", currentId, documentDone), tool: "document" },
     { id: "cleanup", label: "先预览", state: stepState("cleanup", currentId, cleanupReady), tool: "cleanup" }
@@ -1637,7 +1656,7 @@ function fileOnboardingHeadline(steps: FileOnboardingStep[]) {
   if (!current) return "文件工具已准备好";
   if (steps.some((step) => step.id === "cleanup" && step.state === "done")) return "清理预览已生成，下一步只等确认";
   if (current.id === "scope") return "先给 Mavris 一个明确文件夹";
-  if (current.id === "search") return "输入关键词，结果只在当前范围里找";
+  if (current.id === "search") return "输入关键词，只在已选文件夹里找";
   if (current.id === "document") return "选中文档后读取、总结或提问";
   return "清理前先预览，不直接删除";
 }
@@ -1699,11 +1718,11 @@ function noticeForSearchStatus(
 ): { tone: SearchNoticeTone; text: string } | null {
   switch (status) {
     case "missing_scope":
-      return { tone: "error", text: message || "请先选择搜索范围，再开始查找文件。" };
+      return { tone: "error", text: message || "请先选择要查找的文件夹，再开始查找文件。" };
     case "missing_query":
       return { tone: "error", text: message || "请输入要查找的文件名或关键词。" };
     case "loading":
-      return { tone: "info", text: "正在查找当前范围里的匹配文件..." };
+      return { tone: "info", text: "正在查找已选文件夹里的匹配文件..." };
     case "empty":
       return {
         tone: "empty",
@@ -1711,8 +1730,8 @@ function noticeForSearchStatus(
           meta?.truncated
             ? `已检查 ${formatCount(meta?.scanned)} 个文件，暂时没有找到匹配项；当前范围还没完全扫完，结果可能不完整。`
             : meta?.scanned
-              ? `已检查 ${formatCount(meta.scanned)} 个文件，没有找到匹配项。可以换个关键词，或换一个文件夹范围再试。`
-              : "没有找到匹配文件。可以换个关键词，或换一个文件夹范围再试。"
+              ? `已检查 ${formatCount(meta.scanned)} 个文件，没有找到匹配项。可以换个关键词，或换一个文件夹再试。`
+              : "没有找到匹配文件。可以换个关键词，或换一个文件夹再试。"
         )
       };
     case "success":
@@ -1722,8 +1741,8 @@ function noticeForSearchStatus(
           meta?.truncated
             ? `已显示 ${resultCount} 条结果，已检查 ${formatCount(meta?.scanned)} 个文件；当前范围还没完全扫完，结果可能不完整。`
             : meta?.scanned
-              ? `已在当前范围找到 ${resultCount} 条结果，检查了 ${formatCount(meta.scanned)} 个文件。`
-              : `已在当前范围找到 ${resultCount} 条结果。`
+              ? `已在已选文件夹找到 ${resultCount} 条结果，检查了 ${formatCount(meta.scanned)} 个文件。`
+              : `已在已选文件夹找到 ${resultCount} 条结果。`
         )
       };
     case "error":

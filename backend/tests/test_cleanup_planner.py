@@ -200,6 +200,45 @@ def test_cleanup_execute_trash_requires_valid_approval_and_uses_send2trash(monke
     assert refreshed.consumed_at
 
 
+def test_cleanup_execute_revalidates_approval_after_claim(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    root = _workspace(tmp_path)
+    cache_dir = root / "build"
+    cache_dir.mkdir()
+    target = cache_dir / "artifact.tmp"
+    target.write_text("cache", encoding="utf-8")
+    service = CleanupPlannerService()
+    args = {"roots": [str(root)]}
+    context = _context(root)
+    plan = service.create_plan(args, context)
+    selected = [item.id for item in plan.items if item.path == str(target.resolve())]
+    execute_args = {
+        **args,
+        "plan_id": plan.plan_id,
+        "content_hash": plan.content_hash,
+        "selected_item_ids": selected,
+        "dry_run": False,
+    }
+    preview = service.execute({**execute_args, "dry_run": True}, context)
+    approval = _approved_cleanup_execution(execute_args, context, preview)
+    execute_args = {**execute_args, "approved": True, "approval_id": approval.id}
+    original_claim = db.claim_approval_for_execution
+
+    def claim_and_tamper(approval_id: str, consumed_at: str):
+        claimed = original_claim(approval_id, consumed_at)
+        if claimed:
+            claimed["tool_name"] = "file.trash"
+        return claimed
+
+    monkeypatch.setattr("app.services.cleanup_planner_service.db.claim_approval_for_execution", claim_and_tamper)
+
+    with pytest.raises(SecurityError, match="tool name"):
+        service.execute(execute_args, context)
+
+    assert target.exists()
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at
+
+
 def test_cleanup_execute_route_requires_policy_and_bound_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     root = _workspace(tmp_path)
     cache_dir = root / "build"

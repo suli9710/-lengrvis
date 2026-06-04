@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Download, KeyRound, Loader2, Play, Plus, Save, ShieldCheck, Square, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, KeyRound, Loader2, MousePointer2, Play, Plus, Save, ShieldCheck, Square, Trash2, XCircle } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -14,7 +14,9 @@ import type {
   LocalModelSetupPlan,
   McpServerConfig
 } from "../../shared/types";
-import type { MavrisApiClient, MobileDevice, MobilePairingCode } from "../lib/apiClient";
+import type { MavrisApiClient, MobileDevice, MobilePairingCode, RemoteInputGrant } from "../lib/apiClient";
+import { motionAwareScrollBehavior } from "../lib/motion";
+import { activeRemoteInputGrantForDevice, mobileDeviceCanReceiveRemoteInputGrant } from "../lib/remoteInputGrant";
 import { zhBackendState } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 
@@ -26,6 +28,22 @@ function displayMode(mode: AppSettings["mode"]): string {
   if (mode === "efficiency") return "高效";
   if (mode === "hybrid") return "均衡";
   return "隐私";
+}
+
+const PERMISSION_MODE_OPTIONS: Array<{
+  value: AppSettings["permissionMode"];
+  label: string;
+  description: string;
+}> = [
+  { value: "plan", label: "计划", description: "只允许规划和读取。" },
+  { value: "default", label: "默认", description: "写操作需要试运行审批。" },
+  { value: "trusted_edits", label: "可信编辑", description: "放行可逆可信编辑。" },
+  { value: "auto_review", label: "自动审查", description: "规则和安全审查共同放行。" },
+  { value: "dont_ask", label: "不打扰", description: "只执行预授权动作。" },
+];
+
+function permissionModeLabel(mode: AppSettings["permissionMode"]): string {
+  return PERMISSION_MODE_OPTIONS.find((option) => option.value === mode)?.label ?? "默认";
 }
 
 function modeDescription(mode: AppSettings["mode"]): string {
@@ -50,6 +68,7 @@ const LOCAL_MODEL_OPTIONS = [
 const INSTALL_MODEL_WS_PATHS = ["/ws/settings/install-local-model", "/api/ws/settings/install-local-model"] as const;
 const INSTALL_MODEL_WS_RETRY_DELAY_MS = 2_500;
 const INSTALL_MODEL_WS_MAX_RETRIES = 4;
+const REMOTE_INPUT_GRANT_TTL_SECONDS = 5 * 60;
 type PermissionEffect = "allow" | "deny";
 type HardwareRuntime = "auto" | "winml" | "directml" | "openvino" | "cpu";
 
@@ -170,6 +189,9 @@ export function SettingsPanel({
   const [pairingError, setPairingError] = useState("");
   const [isPairing, setIsPairing] = useState(false);
   const [pairedDevices, setPairedDevices] = useState<MobileDevice[]>([]);
+  const [revokingDeviceId, setRevokingDeviceId] = useState("");
+  const [remoteInputGrantingDeviceId, setRemoteInputGrantingDeviceId] = useState("");
+  const [remoteInputRevokingGrantId, setRemoteInputRevokingGrantId] = useState("");
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>(DEFAULT_PERMISSION_POLICY);
   const [permissionDraft, setPermissionDraft] = useState(DEFAULT_PERMISSION_RULE_DRAFT);
   const [permissionStatus, setPermissionStatus] = useState("");
@@ -200,7 +222,7 @@ export function SettingsPanel({
   useEffect(() => {
     if (privacyIntentId === undefined) return;
     window.setTimeout(() => {
-      privacyEntryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      privacyEntryRef.current?.scrollIntoView({ behavior: motionAwareScrollBehavior(), block: "start" });
       privacyEntryRef.current?.focus({ preventScroll: true });
     }, 0);
   }, [privacyIntentId]);
@@ -339,6 +361,63 @@ export function SettingsPanel({
     }
   }, [api]);
 
+  const revokePairedDevice = async (device: MobileDevice) => {
+    const deviceId = device.device_id;
+    if (!deviceId || revokingDeviceId) return;
+    setRevokingDeviceId(deviceId);
+    setPairingError("");
+    try {
+      const response = await api.revokeMobileDevice(deviceId);
+      if (response.ok) {
+        await refreshPairedDevices();
+      } else {
+        setPairingError(response.error?.message ?? "无法断开这台手机。");
+      }
+    } catch (error) {
+      setPairingError(readableError(error, "无法断开这台手机。"));
+    } finally {
+      setRevokingDeviceId("");
+    }
+  };
+
+  const createRemoteInputGrant = async (device: MobileDevice) => {
+    const deviceId = device.device_id;
+    if (!deviceId || remoteInputGrantingDeviceId || revokingDeviceId) return;
+    setRemoteInputGrantingDeviceId(deviceId);
+    setPairingError("");
+    try {
+      const response = await api.createRemoteInputGrant(deviceId, REMOTE_INPUT_GRANT_TTL_SECONDS);
+      if (response.ok) {
+        await refreshPairedDevices();
+      } else {
+        setPairingError(response.error?.message ?? "无法授权这台手机远程点击。");
+      }
+    } catch (error) {
+      setPairingError(readableError(error, "无法授权这台手机远程点击。"));
+    } finally {
+      setRemoteInputGrantingDeviceId("");
+    }
+  };
+
+  const revokeRemoteInputGrant = async (device: MobileDevice, grant: RemoteInputGrant) => {
+    const deviceId = device.device_id;
+    if (!deviceId || !grant.id || remoteInputRevokingGrantId || revokingDeviceId) return;
+    setRemoteInputRevokingGrantId(grant.id);
+    setPairingError("");
+    try {
+      const response = await api.revokeRemoteInputGrant(deviceId, grant.id);
+      if (response.ok) {
+        await refreshPairedDevices();
+      } else {
+        setPairingError(response.error?.message ?? "无法撤销这次远程点击授权。");
+      }
+    } catch (error) {
+      setPairingError(readableError(error, "无法撤销这次远程点击授权。"));
+    } finally {
+      setRemoteInputRevokingGrantId("");
+    }
+  };
+
   const refreshPermissionPolicy = useCallback(async () => {
     const response = await api.request<BackendPermissionPolicy>({ endpoint: "/api/settings/permission-policy" });
     if (response.ok && response.data) {
@@ -361,10 +440,16 @@ export function SettingsPanel({
     setIsPermissionSaving(true);
     setPermissionStatus("");
     try {
+      const rule = buildPermissionRule(permissionDraft);
+      const confirmation = await api.confirmPermissionRuleChange(rule);
+      const query = confirmation.ok && confirmation.data?.required && confirmation.data.nonce
+        ? { confirmation_nonce: confirmation.data.nonce }
+        : undefined;
       const response = await api.request<BackendPermissionPolicy, BackendPermissionRule>({
         endpoint: "/api/settings/permission-policy/rules",
         method: "POST",
-        body: buildPermissionRule(permissionDraft)
+        query,
+        body: rule
       });
       if (response.ok && response.data) {
         setPermissionPolicy(mapPermissionPolicy(response.data));
@@ -381,9 +466,13 @@ export function SettingsPanel({
 
   const deletePermissionRule = async (ruleId: string) => {
     setPermissionStatus("");
+    const confirmation = await api.confirmPermissionRuleDelete(ruleId);
     const response = await api.request<{ ok: boolean; policy: BackendPermissionPolicy }>({
       endpoint: `/api/settings/permission-policy/rules/${encodeURIComponent(ruleId)}`,
-      method: "DELETE"
+      method: "DELETE",
+      query: confirmation.ok && confirmation.data?.required && confirmation.data.nonce
+        ? { confirmation_nonce: confirmation.data.nonce }
+        : undefined
     });
     if (response.ok && response.data) {
       setPermissionPolicy(mapPermissionPolicy(response.data.policy));
@@ -485,6 +574,26 @@ export function SettingsPanel({
                   已保留 {Number(draft.allowedDirectories?.length ?? 1) - 1} 个额外授权文件夹。
                 </small>
               ) : null}
+            </label>
+            <label className="field settings-grid__full">
+              <span>权限模式：{permissionModeLabel(draft.permissionMode)}</span>
+              <div className="mode-radio-row permission-mode-row">
+                {PERMISSION_MODE_OPTIONS.map((option) => (
+                  <label key={option.value} className="mode-radio">
+                    <input
+                      type="radio"
+                      name="mavris-permission-mode"
+                      value={option.value}
+                      checked={draft.permissionMode === option.value}
+                      onChange={() => setDraft((current) => ({ ...current, permissionMode: option.value }))}
+                    />
+                    <span>
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
+                    </span>
+                  </label>
+                ))}
+              </div>
             </label>
           </div>
           <div className="toggle-list">
@@ -944,10 +1053,91 @@ export function SettingsPanel({
                 </small>
               ) : null}
               {pairedDevices.length ? (
-                <small>已配对：{pairedDevices.map((device) => device.device_name || device.device_id).join(", ")}</small>
+                <ul className="mobile-pairing__devices" aria-label="已配对手机">
+                  {pairedDevices.map((device) => {
+                    const activeGrant = activeRemoteInputGrantForDevice(device);
+                    return (
+                      <li key={device.device_id}>
+                        <div className="mobile-pairing__device-main">
+                          <span>{device.device_name || device.device_id}</span>
+                          <small>{device.device_id}</small>
+                          <div className="mobile-pairing__chips" aria-label="设备权限和状态">
+                            {mobileDevicePermissionChips(device, draft.remoteDesktopEnabled).map((chip) => (
+                              <em key={chip}>{chip}</em>
+                            ))}
+                          </div>
+                          {activeGrant ? (
+                            <small className="mobile-pairing__grant-status">
+                              远程点击授权至 {formatDeviceDate(activeGrant.expires_at)}
+                            </small>
+                          ) : null}
+                          <small>
+                            {device.revoked_at
+                              ? `已于 ${formatDeviceDate(device.revoked_at)} 断开`
+                              : `最后同步 ${formatDeviceDate(device.updated_at)}`}
+                          </small>
+                        </div>
+                        <div className="mobile-pairing__device-actions">
+                          {activeGrant ? (
+                            <button
+                              type="button"
+                              className="button button--ghost mobile-pairing__action mobile-pairing__action--remote"
+                              onClick={() => void revokeRemoteInputGrant(device, activeGrant)}
+                              disabled={remoteInputRevokingGrantId === activeGrant.id || revokingDeviceId === device.device_id}
+                              aria-label={`撤销手机 ${device.device_name || device.device_id} 的远程点击授权`}
+                              title="撤销远程点击授权"
+                            >
+                              {remoteInputRevokingGrantId === activeGrant.id ? (
+                                <Loader2 className="settings-spinner" size={14} aria-hidden="true" />
+                              ) : (
+                                <XCircle size={14} aria-hidden="true" />
+                              )}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="button button--ghost mobile-pairing__action mobile-pairing__action--remote"
+                              onClick={() => void createRemoteInputGrant(device)}
+                              disabled={
+                                !mobileDeviceCanReceiveRemoteInputGrant(device, draft.remoteDesktopEnabled) ||
+                                remoteInputGrantingDeviceId === device.device_id ||
+                                revokingDeviceId === device.device_id
+                              }
+                              aria-label={`授权手机 ${device.device_name || device.device_id} 远程点击`}
+                              title="授权远程点击"
+                            >
+                              {remoteInputGrantingDeviceId === device.device_id ? (
+                                <Loader2 className="settings-spinner" size={14} aria-hidden="true" />
+                              ) : (
+                                <MousePointer2 size={14} aria-hidden="true" />
+                              )}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="button button--ghost mobile-pairing__action mobile-pairing__action--revoke"
+                            onClick={() => void revokePairedDevice(device)}
+                            disabled={revokingDeviceId === device.device_id}
+                            aria-label={`断开手机 ${device.device_name || device.device_id}`}
+                            title="断开手机"
+                          >
+                            {revokingDeviceId === device.device_id ? (
+                              <Loader2 className="settings-spinner" size={14} aria-hidden="true" />
+                            ) : (
+                              <Trash2 size={14} aria-hidden="true" />
+                            )}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
               ) : (
                 <small>暂无已配对设备。</small>
               )}
+              <small>
+                指针按钮会给该手机 5 分钟远程点击授权；每次点击仍会在电脑端生成审批。断开设备会立即撤销它的审批、屏幕查看和远程输入令牌；重新使用需要重新配对。
+              </small>
               {pairingError ? <small className="mobile-pairing__error">{pairingError}</small> : null}
             </div>
             <PairingVisualCode code={pairing?.code} />
@@ -2071,7 +2261,7 @@ function OllamaSetup() {
           <strong>Ollama 未运行</strong>
         </div>
         <p>
-          Ollama 已安装但服务未启动。请启动 Ollama 应用，然后点击刷新。
+          Ollama 已安装但服务未启动。请从开始菜单搜索并打开 Ollama，等待托盘图标出现后点击刷新。
         </p>
         <button
           type="button"
@@ -2300,6 +2490,32 @@ function buildPermissionRule(draft: PermissionRuleDraft): BackendPermissionRule 
     reason: draft.reason.trim(),
     enabled: true
   };
+}
+
+function mobileDeviceStatusLabel(device: MobileDevice): string {
+  if (device.revoked_at || device.status === "revoked") return "已断开";
+  if (device.status === "active" || !device.status) return "已连接";
+  return device.status;
+}
+
+function mobileDevicePermissionChips(device: MobileDevice, remoteDesktopEnabled: boolean): string[] {
+  if (device.revoked_at || device.status === "revoked") {
+    return [mobileDeviceStatusLabel(device), "无有效权限"];
+  }
+  const activeGrant = activeRemoteInputGrantForDevice(device);
+  return [
+    mobileDeviceStatusLabel(device),
+    "审批",
+    `全局屏幕查看：${remoteDesktopEnabled ? "开" : "关"}`,
+    activeGrant ? "远程点击：临时开" : "远程点击：关"
+  ];
+}
+
+function formatDeviceDate(value?: string): string {
+  if (!value) return "未知";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未知";
+  return date.toLocaleString();
 }
 
 function mapPermissionPolicy(policy: BackendPermissionPolicy): PermissionPolicy {

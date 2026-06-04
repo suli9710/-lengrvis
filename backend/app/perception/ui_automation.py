@@ -358,6 +358,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             "ui_automation.type_text",
             {
                 "selector": normalized.as_query(),
+                "text": text,
                 "text_length": len(text),
                 "dry_run": False,
                 "approved": approved,
@@ -747,6 +748,15 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         risk_level: RiskLevel,
     ) -> SafetyReview:
         if args.get("approved") and args.get("approval_id"):
+            review = self.policy_engine.review_tool_call(
+                task_id or "ui_automation",
+                step_id,
+                tool_name,
+                args,
+                risk_level,
+            )
+            if review.verdict == SafetyVerdict.DENY:
+                return review
             return SafetyReview(
                 task_id=task_id or "ui_automation",
                 step_id=step_id,

@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
+const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 const { chromium } = require("@playwright/test");
 
@@ -66,6 +67,34 @@ const systemDiagnostics = {
 
 const smokeDocumentPath = "C:\\Users\\Smoke\\Documents\\Quarterly Plan.md";
 const smokeCompareDocumentPath = "C:\\Users\\Smoke\\Documents\\Quarterly Plan v2.md";
+const pilotTask = {
+  id: "task-pilot-smoke",
+  user_goal: "清理下载目录的大文件",
+  status: "waiting_user_approval",
+  mode: "efficiency",
+  final_summary: "已生成清理预览，等待用户确认后再继续。",
+  created_at: "2026-05-27T00:02:00.000Z",
+  updated_at: "2026-05-27T00:03:00.000Z"
+};
+const pilotApproval = {
+  id: "approval-pilot-smoke",
+  approval_type: "cleanup",
+  message: "准备清理下载目录的大文件，执行前需要你确认。",
+  diff_preview: {
+    summary: "将把 1 个大文件移入回收站。",
+    items: [
+      {
+        path: "C:\\Users\\Smoke\\Downloads\\large-video.mp4",
+        size_bytes: 734003200,
+        disposition: "recycle_bin",
+        reason: "体积较大且位于下载目录"
+      }
+    ],
+    risk_warnings: ["执行前需要人工确认"]
+  },
+  status: "pending",
+  created_at: "2026-05-27T00:03:30.000Z"
+};
 
 const forbiddenPlaceholderTexts = [
   "sample_contract.txt",
@@ -75,6 +104,24 @@ const forbiddenPlaceholderTexts = [
   "C:\\Users\\Suli\\Desktop\\mavris",
   "审批队列里有一个待处理的高风险请求"
 ];
+
+function releasePreviewPort() {
+  if (process.platform !== "win32") return;
+  try {
+    const output = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Command",
+        "$connections = Get-NetTCPConnection -LocalPort 4173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; foreach ($processId in $connections) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }"
+      ],
+      { stdio: "pipe" }
+    );
+    if (String(output).trim()) process.stdout.write(output);
+  } catch {
+    // Port cleanup is best-effort; Vite strictPort will still fail loudly if another service remains.
+  }
+}
 
 function assertNoSecretPayload(value, label) {
   const text = JSON.stringify(value);
@@ -86,6 +133,7 @@ function assertNoSecretPayload(value, label) {
 
 function startPreview() {
   console.log("starting Vite preview on 127.0.0.1:4173");
+  releasePreviewPort();
   const viteBin = path.join(desktopRoot, "node_modules", "vite", "bin", "vite.js");
   const child = spawn(process.execPath, [viteBin, "preview", "--host", "127.0.0.1", "--port", "4173", "--strictPort"], {
     cwd: desktopRoot,
@@ -115,6 +163,8 @@ async function installApiMocks(page, options = {}) {
   const allowedDirectories = options.allowedDirectories ?? ["C:\\Users\\Smoke\\Documents"];
   const counters = options.counters;
   const fileSearchMode = options.fileSearchMode ?? "error";
+  const tasks = options.tasks ?? [];
+  const approvals = options.approvals ?? [];
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -139,7 +189,7 @@ async function installApiMocks(page, options = {}) {
       return json({ message: { id: "mock-response", role: "assistant", author: "Mavris", content: "mock", created_at: new Date().toISOString() } });
     }
     if (url.pathname === "/api/chat/messages") return json([]);
-    if (url.pathname === "/api/tasks") return json([]);
+    if (url.pathname === "/api/tasks") return json(tasks);
     if (url.pathname === "/api/runs") return json([]);
     if (url.pathname === "/api/library") return json({
       section: url.searchParams.get("section") ?? "documents",
@@ -168,7 +218,7 @@ async function installApiMocks(page, options = {}) {
     if (url.pathname === "/api/chat/proactive-suggestions") return json([]);
     if (url.pathname.endsWith("/agent-messages")) return json([]);
     if (url.pathname.endsWith("/safety-reviews")) return json([]);
-    if (url.pathname === "/api/approvals/pending") return json([]);
+    if (url.pathname === "/api/approvals/pending") return json(approvals);
     if (url.pathname === "/api/files/search") {
       if (counters) counters.fileSearchRequests = (counters.fileSearchRequests ?? 0) + 1;
       if (fileSearchMode === "empty") {
@@ -271,12 +321,12 @@ async function assertDocumentQuickEntry(page) {
   await page.getByText(/文档操作区|鏂囨。鎿嶄綔鍖?/).waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择文档|閫夋嫨鏂囨。/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择并总结|閫夋嫨骞舵€荤粨/ }).first().waitFor({ timeout: 10_000 });
-  await page.getByRole("button", { name: /^读取$/ }).first().waitFor({ timeout: 10_000 });
-  await page.getByRole("button", { name: /^总结$/ }).first().waitFor({ timeout: 10_000 });
-  await page.getByRole("button", { name: /^提问$/ }).first().waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: /读取预览|^读取$/ }).first().waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: /总结这份文档|^总结$/ }).first().waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: /向这份文档提问|^提问$/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /^选择第二份$/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /^对比$/ }).first().waitFor({ timeout: 10_000 });
-  for (const label of [/^读取$/, /^总结$/, /^提问$/, /^对比$/]) {
+  for (const label of [/读取预览|^读取$/, /总结这份文档|^总结$/, /向这份文档提问|^提问$/, /^对比$/]) {
     const actionButton = page.getByRole("button", { name: label }).first();
     assert.equal(await actionButton.isDisabled(), true, "document action should be disabled before a document is selected");
     assert.equal(await actionButton.getAttribute("data-loading"), null, "disabled document action should not be presented as loading");
@@ -312,9 +362,10 @@ async function assertQuickPromptEntry(page, counters) {
   await page.getByRole("button", { name: /查找大文件|鏌ユ壘澶ф枃浠?/ }).click();
   const commandInput = page.locator("textarea").first();
   await expectTextareaValue(commandInput, /找出这台电脑上最大的文件|鎵惧嚭/);
-  await page.getByText(/已填好这句话，下一步点发送开始|宸插～濂借繖鍙ヨ瘽/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/已填好这句话|宸插～濂借繖鍙ヨ瘽/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/实时显示进度|瀹炴椂鏄剧ず杩涘害/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/清理前会确认|实时显示进度|瀹炴椂鏄剧ず杩涘害/).first().waitFor({ timeout: 10_000 });
+  await assertRootTextIncludes(page, /发送后先选文件夹|清理前会确认|清理前不会删除任何文件/, "large-file quick entry should explain scope and deletion safety");
   assert.equal(counters.taskLaunchRequests ?? 0, 0, "quick prompt should fill the command box without starting a task");
   await assertNoHorizontalOverflow(page, "quick prompt entry");
 }
@@ -327,6 +378,7 @@ async function assertComputerCheckEntry(page, counters) {
   await page.getByText(/只读诊断，不改设置|鍙璇婃柇锛屼笉鏀硅缃?/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/Mavris 连接|Mavris 杩炴帴/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/任务状态|浠诲姟鐘舵€?/).first().waitFor({ timeout: 10_000 });
+  await assertRootTextIncludes(page, /暂未读取.*不代表电脑异常|暂未读取不等于故障|未知.*不代表电脑异常|未知不等于故障/, "computer quick entry should explain unknown health state");
   assert.ok(
     (counters.systemInfoRequests ?? 0) > systemInfoRequestsBefore,
     "computer quick entry should refresh read-only system info"
@@ -334,6 +386,41 @@ async function assertComputerCheckEntry(page, counters) {
   assert.equal(counters.taskLaunchRequests ?? 0, 0, "computer quick entry should not start a chat or run task");
   await assertNoPlaceholderContent(page, "computer check quick entry");
   await assertNoHorizontalOverflow(page, "computer check quick entry");
+}
+
+async function assertTaskPilotCard(page) {
+  await page.getByText(/任务驾驶舱|浠诲姟椹鹃┒鑸?/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/清理下载目录的大文件|娓呯悊涓嬭浇鐩綍/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/待审批|等待你的确认|需要你确认|寰呭鎵?/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/确认范围|纭鑼冨洿/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/结果留痕|缁撴灉鐣欑棔/).first().waitFor({ timeout: 10_000 });
+  await assertNoPlaceholderContent(page, "task pilot card");
+  await assertNoHorizontalOverflow(page, "task pilot card");
+}
+
+async function assertTaskPilotApprovalAction(page) {
+  await page.getByRole("button", { name: /去确认|查看审批|鍘荤‘璁?/ }).first().click();
+  await page.getByRole("dialog").waitFor({ timeout: 10_000 });
+  await page.getByText(/清理计划审批|审批|准备清理下载目录的大文件/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/决策总览|鍐崇瓥鎬昏/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/影响范围|褰卞搷鑼冨洿/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/恢复方式|鎭㈠鏂瑰紡/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/批准前不会移动或删除任何文件|等待你批准|鎵瑰噯鍓嶄笉浼氱Щ鍔ㄦ垨鍒犻櫎|绛夊緟浣犳壒鍑?/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/large-video\.mp4|下载目录的大文件|涓嬭浇鐩綍/).first().waitFor({ timeout: 10_000 });
+  await assertNoHorizontalOverflow(page, "task pilot approval action");
+}
+
+async function assertRecentTaskRowAction(page) {
+  const taskRow = page.locator(".task-row").filter({ hasText: /清理下载目录的大文件|娓呯悊涓嬭浇鐩綍/ }).first();
+  if (await taskRow.count()) {
+    await taskRow.click();
+  } else {
+    await page.getByRole("button", { name: /去确认|查看审批|鍘荤‘璁?/ }).first().click();
+  }
+  await page.getByRole("dialog").waitFor({ timeout: 10_000 });
+  await page.getByText(/清理计划审批|审批|准备清理下载目录的大文件/).first().waitFor({ timeout: 10_000 });
+  await assertNoHorizontalOverflow(page, "recent task row action");
 }
 
 async function assertFileSearchFailureState(page) {
@@ -412,8 +499,9 @@ async function assertMissingScopeSearchIsLocal(page, counters) {
   await page.goto(`${previewUrl}/?view=files`, { waitUntil: "networkidle" });
   await assertRootRendered(page);
   await page.getByPlaceholder(/搜索文件|鎼滅储鏂囦欢/).fill("anything");
-  await page.getByRole("button", { name: /先选择范围|鍏堥€夋嫨鑼冨洿/ }).click();
-  await page.getByText(/还没有选择范围|请先选择搜索范围|杩樻病鏈夐€夋嫨鑼冨洿/).first().waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: /先选要找的文件夹|先选择范围|鍏堥€夋嫨鑼冨洿/ }).click();
+  await page.getByText(/还没有选择要查找的文件夹|请先选择要查找的文件夹|还没有选择范围|请先选择搜索范围|杩樻病鏈夐€夋嫨鑼冨洿/).first().waitFor({ timeout: 10_000 });
+  await assertRootTextIncludes(page, /只会扫描你选择的文件夹|清理前不会删除任何文件/, "missing scope guide should reassure users about scope and deletion");
   assert.equal(counters.fileSearchRequests ?? 0, 0, "missing scope search should not call files search API");
   await assertNoPlaceholderContent(page, "file search missing scope");
   await assertNoHorizontalOverflow(page, "file search missing scope");
@@ -497,6 +585,27 @@ async function returnToSearchTab(page) {
       await assertNoHorizontalOverflow(page, `${viewport.label} home`);
       console.log(`viewport smoke passed: ${viewport.label} ${viewport.width}x${viewport.height}`);
       await page.close();
+    }
+
+    console.log("checking task pilot lifecycle card");
+    for (const viewport of [
+      { width: 1366, height: 768, label: "desktop" },
+      { width: 390, height: 844, label: "mobile" }
+    ]) {
+      const pilotPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      await installApiMocks(pilotPage, { tasks: [pilotTask], approvals: [pilotApproval] });
+      await pilotPage.goto(previewUrl, { waitUntil: "networkidle" });
+      await assertRootRendered(pilotPage);
+      await assertTaskPilotCard(pilotPage);
+      await assertTaskPilotApprovalAction(pilotPage);
+      await pilotPage.close();
+
+      const rowPage = await browser.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+      await installApiMocks(rowPage, { tasks: [pilotTask], approvals: [pilotApproval] });
+      await rowPage.goto(previewUrl, { waitUntil: "networkidle" });
+      await assertRootRendered(rowPage);
+      await assertRecentTaskRowAction(rowPage);
+      await rowPage.close();
     }
 
     console.log("checking placeholder-free entry points");
@@ -597,6 +706,7 @@ async function returnToSearchTab(page) {
     console.log("checking BrowserHost output redaction");
     const Module = require("node:module");
     const originalLoad = Module._load;
+    let openedExternalUrls = 0;
     Module._load = function patchedLoad(request, parent, isMain) {
       if (request === "electron") {
         return {
@@ -606,13 +716,19 @@ async function returnToSearchTab(page) {
           BrowserView: class BrowserView {},
           WebContentsView: class WebContentsView {},
           ipcMain: { handle: () => undefined },
-          shell: { openExternal: async () => undefined }
+          shell: { openExternal: async () => { openedExternalUrls += 1; } }
         };
       }
       return originalLoad.call(this, request, parent, isMain);
     };
     try {
-      const { BrowserHost } = require("../dist/main/browserHost.js");
+      const {
+        BrowserHost,
+        BrowserHostWebSocketBridge,
+        buildBrowserHostWebSocketUrl,
+        hardenEmbeddedWebContents,
+        isLoopbackBackendUrl
+      } = require("../dist/main/browserHost.js");
       const host = new BrowserHost(() => null);
       host.sessions = new Map([
         [
@@ -650,6 +766,78 @@ async function returnToSearchTab(page) {
       ]);
       const redactedSnapshot = host.getSnapshot();
       assertNoSecretPayload(redactedSnapshot, "BrowserHost snapshot");
+
+      let windowOpenHandler;
+      const hardenedWebContents = {
+        setWindowOpenHandler: (handler) => {
+          windowOpenHandler = handler;
+        },
+        on: () => undefined,
+        session: {
+          setPermissionRequestHandler: () => undefined,
+          setPermissionCheckHandler: () => undefined
+        },
+        setAudioMuted: () => undefined
+      };
+      hardenEmbeddedWebContents(hardenedWebContents);
+      assert.ok(windowOpenHandler, "embedded BrowserHost webContents should install a window.open handler");
+      assert.deepEqual(
+        windowOpenHandler({ url: "https://example.test" }),
+        { action: "deny" },
+        "embedded BrowserHost window.open should be denied by default"
+      );
+      assert.equal(openedExternalUrls, 0, "embedded BrowserHost window.open must not shell.openExternal automatically");
+
+      assert.equal(isLoopbackBackendUrl("http://127.0.0.1:8000"), true);
+      assert.equal(isLoopbackBackendUrl("http://localhost:8000"), true);
+      assert.equal(isLoopbackBackendUrl("http://[::1]:8000"), true);
+      assert.equal(isLoopbackBackendUrl("http://192.168.1.10:8000"), false);
+      const wsUrl = new URL(buildBrowserHostWebSocketUrl("http://127.0.0.1:8000"));
+      assert.equal(wsUrl.protocol, "ws:");
+      assert.equal(wsUrl.pathname, "/api/ws/browser-host");
+      assert.equal(wsUrl.searchParams.get("desktop_token"), null);
+      assert.throws(
+        () => buildBrowserHostWebSocketUrl("https://control.example.test"),
+        /loopback/
+      );
+
+      const originalWebSocket = global.WebSocket;
+      const sentMessages = [];
+      class FakeWebSocket {
+        static OPEN = 1;
+        readyState = FakeWebSocket.OPEN;
+        listeners = {};
+
+        constructor(url, protocols) {
+          this.url = url;
+          this.protocols = protocols;
+          FakeWebSocket.last = this;
+        }
+
+        addEventListener(name, handler) {
+          this.listeners[name] = handler;
+        }
+
+        send(payload) {
+          sentMessages.push(JSON.parse(payload));
+        }
+
+        close() {
+          this.readyState = 3;
+        }
+      }
+      global.WebSocket = FakeWebSocket;
+      try {
+        const bridge = new BrowserHostWebSocketBridge(host, () => "http://127.0.0.1:8000", () => "desktop-secret");
+        bridge.start();
+        assert.equal(new URL(FakeWebSocket.last.url).searchParams.get("desktop_token"), null);
+        assert.deepEqual(FakeWebSocket.last.protocols, ["mavris.desktop.token.desktop-secret"]);
+        FakeWebSocket.last.listeners.open();
+        assert.equal(sentMessages[0].type, "snapshot", "BrowserHost WS bridge should send snapshots after protocol auth");
+        bridge.stop();
+      } finally {
+        global.WebSocket = originalWebSocket;
+      }
       console.log("BrowserHost redaction smoke passed");
     } finally {
       Module._load = originalLoad;
@@ -657,6 +845,7 @@ async function returnToSearchTab(page) {
   } finally {
     if (browser) await browser.close();
     preview.kill("SIGTERM");
+    releasePreviewPort();
   }
 })().catch((error) => {
   console.error(error);

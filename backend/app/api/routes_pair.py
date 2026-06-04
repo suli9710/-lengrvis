@@ -14,6 +14,10 @@ class PairRedeemRequest(BaseModel):
     device_name: str = Field(default="Android device", max_length=80)
 
 
+class RemoteInputGrantRequest(BaseModel):
+    expires_in: int = Field(default=mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS, ge=1)
+
+
 @router.post("/pair/request")
 def create_pairing_code() -> dict:
     return mobile_pairing_service.create_pairing_request()
@@ -32,6 +36,22 @@ def confirm_pairing(payload: PairRedeemRequest, request: Request) -> dict:
 @router.get("/pair/devices")
 def list_paired_devices() -> dict:
     return {"devices": mobile_pairing_service.list_mobile_devices()}
+
+
+@router.delete("/pair/devices/{device_id}")
+def revoke_paired_device(device_id: str) -> dict:
+    return mobile_pairing_service.revoke_mobile_device(device_id)
+
+
+@router.post("/pair/devices/{device_id}/remote-input-grants")
+def create_remote_input_grant(device_id: str, payload: RemoteInputGrantRequest | None = None) -> dict:
+    expires_in = payload.expires_in if payload else mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS
+    return mobile_pairing_service.create_remote_input_grant(device_id, expires_in_seconds=expires_in)
+
+
+@router.delete("/pair/devices/{device_id}/remote-input-grants/{grant_id}")
+def revoke_remote_input_grant(device_id: str, grant_id: str) -> dict:
+    return mobile_pairing_service.revoke_remote_input_grant(device_id, grant_id)
 
 
 @router.post("/pair/code")

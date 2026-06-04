@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.agents import memory_agent as memory_agent_module
 from app.agents.memory_agent import MemoryAgent
 from app.core import db
 
@@ -58,7 +59,15 @@ def test_recall_tag_filter_excludes_other_kinds():
     assert len(results) == 1
 
 
-def test_recall_without_memories_returns_empty():
+def test_recall_without_memories_returns_empty(monkeypatch):
+    embed_calls = []
+
+    async def fake_embed_texts(texts):
+        embed_calls.append(list(texts))
+        return [[1.0]]
+
+    monkeypatch.setattr(memory_agent_module, "embed_texts", fake_embed_texts)
     agent = MemoryAgent()
     results = asyncio.run(agent.recall("anything", k=5))
     assert results == []
+    assert embed_calls == []

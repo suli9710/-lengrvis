@@ -36,18 +36,15 @@ _BUNDLED_MODEL_ENV_KEYS = ("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", "MARVIS_BUNDLED_O
 _BUNDLED_RELATIVE_DIRS = (
     ("resources", "ollama"),
     ("ollama",),
-    ("vendor", "ollama"),
 )
 _BUNDLED_MODEL_RELATIVE_DIRS = (
     ("resources", "ollama-models"),
     ("ollama-models",),
-    ("vendor", "ollama-models"),
 )
 _BUNDLED_MANIFEST_ENV_KEYS = ("MAVRIS_OLLAMA_BUNDLE_MANIFEST", "MARVIS_OLLAMA_BUNDLE_MANIFEST")
 _BUNDLED_MANIFEST_RELATIVE_PATHS = (
     ("resources", "ollama-bundle-manifest.json"),
     ("ollama-bundle-manifest.json",),
-    ("vendor", "ollama-bundle-manifest.json"),
 )
 
 

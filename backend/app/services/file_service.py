@@ -12,12 +12,12 @@ def rebuild_index() -> dict:
     return FTSIndex().rebuild(get_effective_settings().allowed_directories)
 
 
-def add_directory(path: str) -> dict:
+def add_directory(path: str, *, confirmation_nonce: str | None = None) -> dict:
     settings = get_effective_settings()
     dirs = list(dict.fromkeys([*settings.allowed_directories, path]))
     from app.services.settings_service import update_settings
 
-    update_settings({"allowed_directories": dirs})
+    update_settings({"allowed_directories": dirs, "confirmation_nonce": confirmation_nonce})
     return {"allowed_directories": dirs}
 
 

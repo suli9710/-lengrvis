@@ -17,6 +17,7 @@ const modelsDir = path.join(resources, "ollama-models");
 const manifestPath = path.join(resources, "ollama-bundle-manifest.json");
 const backendExe = path.join(backendDir, process.platform === "win32" ? "backend.exe" : "backend");
 let spawnCall = null;
+let runtimeModeRequest = null;
 
 fs.mkdirSync(backendDir, { recursive: true });
 fs.mkdirSync(ollamaDir, { recursive: true });
@@ -54,10 +55,32 @@ childProcess.spawn = function patchedSpawn(command, args, options) {
   };
 };
 
-global.fetch = async () => ({
-  ok: false,
-  json: async () => ({})
-});
+global.fetch = async (url, options = {}) => {
+  const pathname = new URL(String(url)).pathname;
+  if (pathname === "/api/runtime/foreground" || pathname === "/api/runtime/background") {
+    runtimeModeRequest = { url: String(url), options };
+    return {
+      ok: false,
+      status: 503,
+      statusText: "Service Unavailable",
+      clone() {
+        return this;
+      },
+      json: async () => ({ detail: "guardian not ready" }),
+      text: async () => "guardian not ready"
+    };
+  }
+  return {
+    ok: false,
+    status: 503,
+    statusText: "Service Unavailable",
+    clone() {
+      return this;
+    },
+    json: async () => ({}),
+    text: async () => ""
+  };
+};
 
 (async () => {
   try {
@@ -74,6 +97,13 @@ global.fetch = async () => ({
     assert.equal(spawnCall.options.env.MAVRIS_OLLAMA_BUNDLE_MANIFEST, manifestPath);
     assert.equal(spawnCall.options.env.MARVIS_OLLAMA_BUNDLE_MANIFEST, manifestPath);
     assert.equal(spawnCall.options.env.OLLAMA_MODELS, modelsDir);
+
+    const foregroundStatus = await manager.enterForeground("smoke_foreground");
+    assert.equal(foregroundStatus.state, "running", "runtime mode POST failure should not stop the backend lifecycle");
+    assert.match(foregroundStatus.runtimeModeError, /503.*guardian not ready/);
+    assert.match(foregroundStatus.message, /could not enter foreground runtime mode/);
+    assert.ok(runtimeModeRequest, "foreground runtime mode should be attempted");
+    assert.equal(runtimeModeRequest.options.headers["X-Mavris-Desktop-Token"], manager.getDesktopApiToken());
 
     console.log("Backend bundled Ollama env smoke passed");
   } finally {

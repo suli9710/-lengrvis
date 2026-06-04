@@ -81,7 +81,10 @@ export function BrowserActivityPanel({
       }
     });
     void refreshBrowserState();
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      void api.hideBrowserHost().catch(() => undefined);
+    };
   }, [api]);
 
   useEffect(() => {
@@ -230,7 +233,7 @@ export function BrowserActivityPanel({
       if (result.ok && result.data) {
         setExportResult(formatReplayExport(result.data));
       } else if (result.status === 404) {
-        setExportResult("回放导出接口暂不可用。");
+        setExportResult("当前会话没有可导出的回放数据。请先打开内置浏览器并完成一次观察，或选择已有浏览器会话后重试。");
       } else {
         onErrorChange(result.error?.message ?? "回放导出失败");
       }

@@ -13,8 +13,17 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { CleanupPlan, TaskEvent, TaskExplain, TaskExplainEvidence, TaskState, TaskStepRecording } from "../../shared/types";
+import type {
+  CleanupPlan,
+  TaskBoundaryEvent,
+  TaskEvent,
+  TaskExplain,
+  TaskExplainEvidence,
+  TaskState,
+  TaskStepRecording
+} from "../../shared/types";
 import { MavrisApiClient } from "../lib/apiClient";
+import { motionAwareScrollBehavior } from "../lib/motion";
 import {
   zhAgentName,
   zhBackendTaskStatus,
@@ -69,7 +78,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
 
   useEffect(() => {
     if (!focusedTaskId || !focusedTaskRef.current) return;
-    focusedTaskRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    focusedTaskRef.current.scrollIntoView({ behavior: motionAwareScrollBehavior(), block: "center" });
   }, [focusedTaskId, tasks]);
 
   const openPreview = async (taskId: string) => {
@@ -200,6 +209,7 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
                   </div>
                 ) : null}
                 {task.cleanupPlan ? <TimelineCleanupPlan plan={task.cleanupPlan} /> : null}
+                {task.boundaryEvents?.length ? <TimelineBoundaryEvents events={task.boundaryEvents} /> : null}
                 <span className="muted">{zhAgentName(task.agent)} 更新于 {zhRelativeTime(task.updatedAt)}</span>
                 {task.state === "completed" && api ? (
                   <div className="row" style={{ marginTop: 8 }}>
@@ -358,6 +368,26 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
   );
 }
 
+function TimelineBoundaryEvents({ events }: { events: TaskBoundaryEvent[] }) {
+  return (
+    <div className="timeline-boundary" aria-label="工程边界事件">
+      {events.slice(-5).map((event) => (
+        <article className="timeline-boundary__item" key={event.id}>
+          <div className="row row--between">
+            <strong>{event.title}</strong>
+            <Badge tone={toneForBoundary(event.severity)}>{boundaryKindLabel(event.kind)}</Badge>
+          </div>
+          <p>{event.detail}</p>
+          <span className="muted">
+            {event.stepId ? `step ${event.stepId} · ` : ""}
+            {zhRelativeTime(event.createdAt)}
+          </span>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function TimelineCleanupPlan({ plan }: { plan: CleanupPlan }) {
   const permanent = plan.items.filter((item) => item.disposition === "permanent_delete");
   const trash = plan.items.filter((item) => item.disposition === "trash");
@@ -510,6 +540,22 @@ function formatSources(sources: Record<string, number>) {
   return Object.entries(sources)
     .map(([name, count]) => `${name}: ${count}`)
     .join(" / ");
+}
+
+function boundaryKindLabel(kind: string) {
+  if (kind === "model_boundary_denied") return "模型边界";
+  if (kind === "context_boundary" || kind === "context_projection") return "上下文";
+  if (kind === "tool_progress") return "工具进度";
+  if (kind === "post_tool_review") return "工具审查";
+  if (kind === "tool_contract") return "工具契约";
+  return "边界";
+}
+
+function toneForBoundary(severity: string): "neutral" | "success" | "warning" | "danger" | "info" {
+  if (severity === "danger" || severity === "critical" || severity === "high") return "danger";
+  if (severity === "warning" || severity === "medium") return "warning";
+  if (severity === "success" || severity === "low") return "success";
+  return "info";
 }
 
 function phaseLabel(phase: string) {

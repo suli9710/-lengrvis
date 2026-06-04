@@ -213,6 +213,7 @@ class AppSettings:
     llm_api_circuit_failure_threshold: int = 5
     llm_api_circuit_cooldown_seconds: float = 30.0
     mode: str = "efficiency"
+    permission_mode: str = "default"
     allow_cloud_context: bool = False
     allow_file_content_upload: bool = False
     allow_browser_network: bool = False
@@ -519,6 +520,7 @@ class AppSettings:
                 30.0,
             ),
             mode=str(value("MARVIS_MODE", "mode", "efficiency")),
+            permission_mode=_normalize_permission_mode(value("MARVIS_PERMISSION_MODE", "permission_mode", "default")),
             allow_cloud_context=flag("MARVIS_ALLOW_CLOUD_CONTEXT", "allow_cloud_context", False),
             allow_file_content_upload=flag("MARVIS_ALLOW_FILE_CONTENT_UPLOAD", "allow_file_content_upload", False),
             allow_browser_network=flag("MARVIS_ALLOW_BROWSER_NETWORK", "allow_browser_network", False),
@@ -602,6 +604,8 @@ class AppSettings:
         data = asdict(self)
         data["api_key"] = "***" if self.api_key else ""
         data["jwt_secret"] = "***" if self.jwt_secret else ""
+        data["mcp_servers"] = _redact_secret_fields(data.get("mcp_servers"))
+        data = _redact_secret_fields(data)
         return data
 
     def merged(self, overrides: dict[str, Any] | None) -> "AppSettings":
@@ -618,6 +622,21 @@ def get_base_settings() -> AppSettings:
     settings = AppSettings.from_sources()
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
     return settings
+
+
+def _normalize_permission_mode(value: Any) -> str:
+    candidate = str(value or "default").strip().lower()
+    aliases = {
+        "accept_edits": "trusted_edits",
+        "trusted": "trusted_edits",
+        "auto": "auto_review",
+        "dontask": "dont_ask",
+        "deny": "dont_ask",
+    }
+    candidate = aliases.get(candidate, candidate)
+    if candidate not in {"plan", "default", "trusted_edits", "auto_review", "dont_ask"}:
+        return "default"
+    return candidate
 
 
 def _normalize_mcp_servers(value: Any) -> list[dict]:
@@ -648,3 +667,26 @@ def _normalize_mcp_servers(value: Any) -> list[dict]:
                 )
         return result
     return []
+
+
+_SECRET_FIELD_TOKENS = ("auth", "authorization", "api_key", "token", "password", "secret", "credential")
+_SECRET_CONTAINER_KEYS = {"headers"}
+
+
+def _redact_secret_fields(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_redact_secret_fields(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_secret_fields(item) for item in value]
+    if isinstance(value, set):
+        return [_redact_secret_fields(item) for item in sorted(value, key=str)]
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key).replace("-", "_").casefold()
+            if key_text in _SECRET_CONTAINER_KEYS:
+                redacted[key] = _redact_secret_fields(item)
+            else:
+                redacted[key] = "***" if item and any(token in key_text for token in _SECRET_FIELD_TOKENS) else _redact_secret_fields(item)
+        return redacted
+    return value

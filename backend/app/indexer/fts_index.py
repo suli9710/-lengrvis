@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core import db
+from app.core.audit import record
 from app.core.paths import resolve_authorized
 from app.core.schemas import DocumentChunk, IndexedFile, now_iso
 from app.indexer.chunker import chunk_text
@@ -173,11 +174,14 @@ class FTSIndex:
         # Check if file already indexed with the same hash — skip if unchanged
         with db.connect() as conn:
             existing = conn.execute(
-                "SELECT sha256 FROM indexed_files WHERE normalized_path = ?",
+                "SELECT id, sha256 FROM indexed_files WHERE normalized_path = ?",
                 (str(normalized),),
             ).fetchone()
             if existing and existing["sha256"] == file_hash:
-                return False
+                return self._backfill_missing_embeddings(
+                    str(existing["id"]),
+                    normalized,
+                ) > 0
 
         # Remove old entries for this path if they exist
         self.remove_file(str(normalized))
@@ -205,9 +209,6 @@ class FTSIndex:
             doc_chunk.embedding_id = f"emb_{doc_chunk.id}"
             chunks_data.append(_PendingChunk(doc_chunk, str(normalized), chunk))
 
-        embedding_model = get_effective_settings().embedding_model
-        vectors = embed_texts_sync([item.text for item in chunks_data], embedder=self.embedder)
-
         with db.connect() as conn:
             conn.execute(
                 """
@@ -227,8 +228,7 @@ class FTSIndex:
                     indexed.indexed_at,
                 ),
             )
-            for index, item in enumerate(chunks_data):
-                vector = vectors[index] if index < len(vectors) else []
+            for item in chunks_data:
                 doc_chunk = item.chunk
                 conn.execute(
                     "INSERT OR REPLACE INTO document_chunks (id, file_id, chunk_index, text, data) VALUES (?, ?, ?, ?, ?)",
@@ -247,7 +247,64 @@ class FTSIndex:
                     )
                 except Exception as exc:
                     logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
-                if vector:
+
+        self._store_embeddings(chunks_data, normalized)
+        return True
+
+    def _backfill_missing_embeddings(self, file_id: str, normalized: Path) -> int:
+        with db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT dc.id, dc.file_id, dc.chunk_index, dc.text, dc.data
+                FROM document_chunks dc
+                LEFT JOIN document_chunk_embeddings e ON e.chunk_id = dc.id
+                WHERE dc.file_id = ? AND e.chunk_id IS NULL
+                ORDER BY dc.chunk_index ASC
+                """,
+                (file_id,),
+            ).fetchall()
+
+        chunks_data: list[_PendingChunk] = []
+        for row in rows:
+            try:
+                doc_chunk = DocumentChunk.model_validate(json.loads(row["data"]))
+            except (TypeError, ValueError):
+                doc_chunk = DocumentChunk(
+                    id=row["id"],
+                    file_id=row["file_id"],
+                    chunk_index=int(row["chunk_index"]),
+                    text=row["text"],
+                    token_count=max(1, len(str(row["text"])) // 4),
+                )
+            if not doc_chunk.embedding_id:
+                doc_chunk.embedding_id = f"emb_{doc_chunk.id}"
+            chunks_data.append(_PendingChunk(doc_chunk, str(normalized), doc_chunk.text))
+
+        return self._store_embeddings(chunks_data, normalized)
+
+    def _store_embeddings(self, chunks_data: list[_PendingChunk], normalized: Path) -> int:
+        if not chunks_data:
+            return 0
+        try:
+            embedding_model = get_effective_settings().embedding_model
+            vectors = embed_texts_sync([item.text for item in chunks_data], embedder=self.embedder)
+        except Exception as exc:  # noqa: BLE001 - lexical indexing should survive embedding outages.
+            logger.warning("embedding generation failed for %s: %s", normalized, exc)
+            record(
+                "index.embedding_failed",
+                "FTSIndex",
+                {"path": str(normalized), "error": str(exc)},
+            )
+            return 0
+
+        inserted = 0
+        if vectors:
+            with db.connect() as conn:
+                for index, item in enumerate(chunks_data):
+                    vector = vectors[index] if index < len(vectors) else []
+                    if not vector:
+                        continue
+                    doc_chunk = item.chunk
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO document_chunk_embeddings
@@ -265,7 +322,8 @@ class FTSIndex:
                             now_iso(),
                         ),
                     )
-        return True
+                    inserted += 1
+        return inserted
 
     def remove_file(self, normalized_path: str) -> bool:
         """Remove a file and all its chunks from the index. Returns True if something was removed."""

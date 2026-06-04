@@ -13,6 +13,11 @@ dist/
 build/
 .turbo/
 
+# Ollama runtime/model artifacts are downloaded on demand and must not be committed.
+vendor/ollama/
+vendor/ollama-models/
+vendor/ollama-bundle-manifest.json
+
 # Local configuration and runtime data
 .env
 config.yaml
@@ -21,6 +26,9 @@ workspace/
 *.sqlite
 *.sqlite3
 logs/
+output/
+.codex-vite-*.pid
+.codex-vite-*.out.log
 # Canonical local runtime data directory is .marvis_data.
 .marvis_data/
 # Historical typo/staging path; keep ignored so local runtime data does not split.

@@ -1,6 +1,6 @@
 import { AlertTriangle, ShieldCheck } from "lucide-react";
 
-import type { SafetyFinding, SafetyReview, SafetySeverity } from "../../shared/types";
+import type { SafetyFinding, SafetyReview, SafetySeverity, TaskBoundaryEvent } from "../../shared/types";
 import { zhFindingStatus, zhSafetyStatus, zhSeverity } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 
@@ -30,11 +30,31 @@ export function SafetyReviewPanel({ review, onOpenApproval }: SafetyReviewPanelP
           <FindingRow finding={finding} key={finding.id} />
         ))}
       </div>
+      {review.boundaryEvents?.length ? (
+        <div className="finding-list">
+          {review.boundaryEvents.slice(-4).map((event) => (
+            <BoundaryFinding event={event} key={event.id} />
+          ))}
+        </div>
+      ) : null}
       <button className="button button--secondary button--full" onClick={onOpenApproval}>
         <AlertTriangle size={16} aria-hidden="true" />
         查看审批
       </button>
     </Panel>
+  );
+}
+
+function BoundaryFinding({ event }: { event: TaskBoundaryEvent }) {
+  return (
+    <article className="finding-row finding-row--boundary">
+      <div className="row row--between">
+        <strong>{event.title}</strong>
+        <Badge tone={toneForBoundary(event.severity)}>{boundaryKindLabel(event.kind)}</Badge>
+      </div>
+      <p>{event.detail}</p>
+      <span className="muted">{new Date(event.createdAt).toLocaleTimeString()}</span>
+    </article>
   );
 }
 
@@ -49,6 +69,22 @@ function FindingRow({ finding }: { finding: SafetyFinding }) {
       <span className="muted">{zhFindingStatus(finding.status)}</span>
     </article>
   );
+}
+
+function boundaryKindLabel(kind: string) {
+  if (kind === "model_boundary_denied") return "模型边界";
+  if (kind === "context_boundary" || kind === "context_projection") return "上下文";
+  if (kind === "tool_progress") return "工具进度";
+  if (kind === "post_tool_review") return "工具审查";
+  if (kind === "tool_contract") return "工具契约";
+  return "边界";
+}
+
+function toneForBoundary(severity: string): "neutral" | "success" | "warning" | "danger" | "info" {
+  if (severity === "danger" || severity === "critical" || severity === "high") return "danger";
+  if (severity === "warning" || severity === "medium") return "warning";
+  if (severity === "success" || severity === "low") return "success";
+  return "info";
 }
 
 function toneForSeverity(severity: SafetySeverity): "neutral" | "success" | "warning" | "danger" | "info" {

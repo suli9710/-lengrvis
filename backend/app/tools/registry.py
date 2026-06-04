@@ -74,9 +74,13 @@ class ToolRegistry:
         return [tool for _score, _name, tool in scored[: max(1, max_results)]]
 
     def _is_planning_visible(self, tool: ToolDefinition) -> bool:
+        if not tool.is_model_visible():
+            return False
         return tool.name == "tool.search" or not tool.defer_loading
 
     def _tool_in_search_scope(self, tool: ToolDefinition, *, include_deferred: bool, deferred_only: bool) -> bool:
+        if not tool.is_model_visible():
+            return False
         if deferred_only:
             return tool.defer_loading
         if include_deferred:
@@ -127,7 +131,6 @@ def register_all_tools(
     tool_search.register(registry)
     vision_tools.register(registry)
     cluster_tools.register(registry)
-    _mark_builtin_tools_authoritative()
     adapter_tools.register(registry)
     for definition in extra_definitions or ():
         registry.register(definition)
@@ -143,12 +146,79 @@ def register_all_tools(
         except Exception as exc:  # noqa: BLE001
             record("skills.load_failed", "ToolRegistry", {"error": str(exc)})
             raise SkillLoadError(f"Could not load configured skills: {exc}") from exc
+    _mark_builtin_tools_authoritative()
     return registry
 
 
 def _mark_builtin_tools_authoritative() -> None:
     for tool in registry.list():
-        if tool.trust_tier == "unknown":
+        if tool.trust_tier == "unknown" and getattr(tool, "origin", "builtin") == "builtin":
             tool.trust_tier = "builtin"
-        if tool.risk_level in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY} and not tool.effects:
-            tool.effects = ["read"] if tool.risk_level == RiskLevel.R0_READ_ONLY else ["open"]
+        if tool.read_only is None:
+            tool.read_only = tool.risk_level == RiskLevel.R0_READ_ONLY and not tool.supports_dry_run
+        if tool.concurrency_safe is None:
+            tool.concurrency_safe = tool.is_read_only() and not tool.concurrency_key and not tool.destructive
+        if not tool.effects:
+            tool.effects = _infer_effects(tool)
+        if not tool.resource_kinds:
+            tool.resource_kinds = _infer_resource_kinds(tool)
+
+
+def _infer_effects(tool: ToolDefinition) -> list[str]:
+    name = tool.name
+    if tool.risk_level == RiskLevel.R0_READ_ONLY:
+        if name.startswith(("search.", "tool.search")):
+            return ["search", "read"]
+        if name.startswith(("vision.", "image.", "file.cluster", "app.cluster")):
+            return ["inspect", "read"]
+        return ["read"]
+    if tool.risk_level == RiskLevel.R1_OPEN_ONLY:
+        if name.startswith(("remote.", "ui_automation.")):
+            return ["observe", "open"]
+        if name.startswith("browser."):
+            return ["navigate", "open"]
+        return ["open"]
+    if name.endswith(("click", "click_at")) or ".click" in name:
+        return ["click", "write"]
+    if "type" in name or "write" in name:
+        return ["type", "write"]
+    if "drag" in name:
+        return ["drag", "write"]
+    if "key_press" in name or "hotkey" in name:
+        return ["key", "write"]
+    if "uninstall" in name:
+        return ["system", "delete"]
+    if "trash" in name or "delete" in name or "cleanup_execute" in name:
+        return ["delete", "write"]
+    if "workflow" in name:
+        return ["workflow", "write"]
+    return ["write"]
+
+
+def _infer_resource_kinds(tool: ToolDefinition) -> list[str]:
+    name = tool.name
+    if name.startswith("file."):
+        return ["file"]
+    if name.startswith("document."):
+        return ["document"]
+    if name.startswith("browser."):
+        return ["browser"]
+    if name.startswith("remote."):
+        return ["remote_screen"]
+    if name.startswith("ui_automation."):
+        return ["desktop_ui"]
+    if name.startswith("app.excel."):
+        return ["spreadsheet"]
+    if name.startswith("app."):
+        return ["application"]
+    if name.startswith("search."):
+        return ["web"]
+    if name.startswith(("vision.", "image.")):
+        return ["image"]
+    if name.startswith("system."):
+        return ["system"]
+    if name.startswith("workflow."):
+        return ["workflow"]
+    if name.startswith("tool."):
+        return ["tool"]
+    return ["runtime"]

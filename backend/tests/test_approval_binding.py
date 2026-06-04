@@ -6,16 +6,21 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from app.agents.orchestrator_agent import OrchestratorAgent
+from app.api import routes_approvals
+from app.api import routes_runtime
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.policy.approval_binding import approval_secret, args_binding_hmac, binding_preview, permission_policy_version, preview_hmac, redacted_preview, settings_fingerprint
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
+from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
+from app.services import mobile_pairing_service
 from app.services.mobile_pairing_service import approve_approval
 from app.tools.schemas import ToolDefinition
 
@@ -40,7 +45,25 @@ class DoneAgent:
         return "reflected"
 
 
-def _setup_bound_approval(*, args: dict[str, Any] | None = None, preview: dict[str, Any] | None = None):
+class ActionAgent:
+    name = "FileAgent"
+
+    def __init__(self, action: AgentAction) -> None:
+        self.action = action
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
+        return self.action
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "reflected"
+
+
+def _setup_bound_approval(
+    *,
+    args: dict[str, Any] | None = None,
+    preview: dict[str, Any] | None = None,
+    status: ApprovalStatus = ApprovalStatus.APPROVED,
+):
     calls: list[dict[str, Any]] = []
 
     def execute(tool_args, context):  # noqa: ANN001, ANN202, ARG001
@@ -82,7 +105,7 @@ def _setup_bound_approval(*, args: dict[str, Any] | None = None, preview: dict[s
         task_id=task.id,
         step_id=step.id,
         message="approve",
-        status=ApprovalStatus.APPROVED,
+        status=status,
         tool_name=tool.name,
         risk_level=tool.risk_level.value,
         args_binding_hmac=args_binding_hmac(tool.name, step.args, task_id=task.id, step_id=step.id),
@@ -104,6 +127,34 @@ def test_bound_approval_executes_once_and_marks_consumed():
 
     assert calls and calls[0]["approved"] is True
     assert refreshed.consumed_at
+
+
+def test_approval_for_execution_preserves_mobile_claim_denial_reason():
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_missing_grant", device_name="Missing Grant")
+    approval = Approval(
+        task_id="task_missing_grant_binding",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input without grant binding",
+        source_device_id="mobile_missing_grant",
+        allowed_device_ids=["mobile_missing_grant"],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes_approvals.approval_for_execution(
+            approval.id,
+            {
+                "device_id": "mobile_missing_grant",
+                "scope": REMOTE_INPUT_SCOPE,
+                "source": "remote_input_grant",
+                "grant_id": "rig_claimed",
+            },
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Remote input approval is missing a grant binding."
 
 
 @pytest.mark.parametrize("terminal_status", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED])
@@ -166,6 +217,239 @@ def test_consumed_approval_cannot_execute_twice():
     assert "already been consumed" in refreshed.final_summary.lower()
 
 
+@pytest.mark.parametrize(
+    ("action", "reason_fragment"),
+    [
+        (AgentAction(kind="done", rationale="Already done."), "already done"),
+        (AgentAction(kind="request_revision", follow_up_question="Revise this."), "plan revision"),
+        (AgentAction(kind="propose_tool", tool_name="test.bound_write", args={"path": "changed.txt"}), "different tool call"),
+    ],
+)
+def test_preexecution_subagent_stop_expires_approved_approval(action, reason_fragment):
+    orchestrator, _task, _plan, _step, approval, calls = _setup_bound_approval()
+    orchestrator.subagents["FileAgent"] = ActionAgent(action)
+
+    asyncio.run(orchestrator.execute_approved_step(approval))
+
+    refreshed_approval_data = db.fetch_one("approvals", approval.id)
+    refreshed_approval = Approval.model_validate(refreshed_approval_data)
+    assert calls == []
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+    assert reason_fragment in (refreshed_approval_data.get("expired_reason") or "").lower()
+
+
+def test_approval_route_returns_conflict_when_execution_expires_approval(monkeypatch: pytest.MonkeyPatch):
+    orchestrator, _task, _plan, _step, approval, calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+    orchestrator.subagents["FileAgent"] = ActionAgent(AgentAction(kind="done", rationale="Already done."))
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/approvals/{approval.id}/approve")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.EXPIRED
+    assert calls == []
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+
+
+def test_approval_route_can_retry_approved_unconsumed_approval(monkeypatch: pytest.MonkeyPatch):
+    orchestrator, _task, _plan, _step, approval, calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+    attempts = {"count": 0}
+
+    async def execute_once_then_retry(approval_arg):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return None
+        return await original_execute(approval_arg)
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
+    original_execute = orchestrator.execute_approved_step
+    monkeypatch.setattr(orchestrator, "execute_approved_step", execute_once_then_retry)
+
+    with TestClient(app) as client:
+        first = client.post(f"/api/approvals/{approval.id}/approve")
+        second = client.post(f"/api/approvals/{approval.id}/approve")
+
+    assert first.status_code == 503
+    assert first.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
+    assert first.json()["detail"]["approval"]["consumed_at"] is None
+    assert second.status_code == 200
+    assert len(calls) == 1
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed_approval.status == ApprovalStatus.APPROVED
+    assert refreshed_approval.consumed_at is not None
+
+
+def test_approved_step_retry_keeps_waiting_state_when_execution_raises(monkeypatch: pytest.MonkeyPatch):
+    orchestrator, task, plan, _step, approval, calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+    attempts = {"count": 0}
+
+    original_execute_step = orchestrator.step_execution_handler.execute_approved_step
+
+    async def execute_once_then_retry(approval_arg):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("transient execution failure")
+        return await original_execute_step(approval_arg)
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
+    monkeypatch.setattr(orchestrator.step_execution_handler, "execute_approved_step", execute_once_then_retry)
+
+    with TestClient(app) as client:
+        first = client.post(f"/api/approvals/{approval.id}/approve")
+        retry_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+        refreshed_task = Task.model_validate(db.fetch_one("tasks", task.id))
+        refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
+        second = client.post(f"/api/approvals/{approval.id}/approve")
+
+    assert first.status_code == 503
+    assert first.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
+    assert first.json()["detail"]["approval"]["consumed_at"] is None
+    assert retry_approval.status == ApprovalStatus.APPROVED
+    assert retry_approval.consumed_at is None
+    assert refreshed_task.status == TaskStatus.EXECUTION
+    assert refreshed_task.execution_stage == ExecutionStage.AWAITING_APPROVAL
+    assert refreshed_plan.steps[0].status == StepStatus.WAITING_USER_APPROVAL
+    assert second.status_code == 200
+    assert len(calls) == 1
+
+
+def test_runtime_continue_returns_conflict_when_execution_expires_approval(monkeypatch: pytest.MonkeyPatch):
+    orchestrator, _task, _plan, _step, approval, calls = _setup_bound_approval()
+    orchestrator.subagents["FileAgent"] = ActionAgent(AgentAction(kind="done", rationale="Already done."))
+
+    app = FastAPI()
+    app.include_router(routes_runtime.router, prefix="/api")
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/runtime/approvals/{approval.id}/continue")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.EXPIRED
+    assert calls == []
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+
+
+def test_runtime_continue_requires_consumed_approval_after_execution(monkeypatch: pytest.MonkeyPatch):
+    orchestrator, task, _plan, _step, approval, calls = _setup_bound_approval()
+
+    async def execute_without_consuming(approval_arg):  # noqa: ARG001
+        return None
+
+    app = FastAPI()
+    app.include_router(routes_runtime.router, prefix="/api")
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
+    monkeypatch.setattr(orchestrator, "execute_approved_step", execute_without_consuming)
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/runtime/approvals/{approval.id}/continue")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["approval"]["id"] == approval.id
+    assert response.json()["detail"]["approval"]["task_id"] == task.id
+    assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
+    assert calls == []
+    refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed_approval.status == ApprovalStatus.APPROVED
+    assert refreshed_approval.consumed_at is None
+
+
+def test_approval_route_reports_consumed_execution_failure(monkeypatch: pytest.MonkeyPatch):
+    orchestrator, task, _plan, _step, approval, calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+
+    def fail_execute(tool_args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(tool_args))
+        return {"error": "disk write failed"}
+
+    orchestrator.registry.get("test.bound_write").execute = fail_execute
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/approvals/{approval.id}/approve")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
+    assert response.json()["detail"]["approval"]["consumed_at"] is not None
+    assert calls and calls[0]["approved"] is True
+    refreshed_task = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert refreshed_task.status == TaskStatus.FAILED
+    assert "disk write failed" in refreshed_task.final_summary
+
+
+def test_runtime_continue_reports_consumed_execution_failure(monkeypatch: pytest.MonkeyPatch):
+    orchestrator, task, _plan, _step, approval, calls = _setup_bound_approval()
+
+    def fail_execute(tool_args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(tool_args))
+        return {"error": "runtime write failed"}
+
+    orchestrator.registry.get("test.bound_write").execute = fail_execute
+
+    app = FastAPI()
+    app.include_router(routes_runtime.router, prefix="/api")
+    monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/runtime/approvals/{approval.id}/continue")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["approval"]["id"] == approval.id
+    assert response.json()["detail"]["approval"]["task_id"] == task.id
+    assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
+    assert calls and calls[0]["approved"] is True
+    refreshed_task = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert refreshed_task.status == TaskStatus.FAILED
+    assert "runtime write failed" in refreshed_task.final_summary
+
+
+@pytest.mark.parametrize("status", [ApprovalStatus.PENDING, ApprovalStatus.REJECTED, ApprovalStatus.EXPIRED])
+def test_runtime_continue_rejects_nonapproved_approval_without_execution(status: ApprovalStatus):
+    _orchestrator, _task, _plan, _step, approval, calls = _setup_bound_approval(status=status)
+
+    app = FastAPI()
+    app.include_router(routes_runtime.router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/runtime/approvals/{approval.id}/continue")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["approval"]["status"] == status
+    assert calls == []
+
+
+def test_runtime_continue_rejects_consumed_approval_without_reporting_ok():
+    _orchestrator, _task, _plan, _step, approval, calls = _setup_bound_approval()
+    approval.consumed_at = "2026-06-01T00:00:00+00:00"
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    app = FastAPI()
+    app.include_router(routes_runtime.router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/runtime/approvals/{approval.id}/continue")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
+    assert response.json()["detail"]["approval"]["consumed_at"] == approval.consumed_at
+    assert calls == []
+
+
 def test_approval_args_mismatch_blocks_execution():
     orchestrator, task, plan, step, approval, calls = _setup_bound_approval()
     step.args = {"path": "different.txt"}
@@ -173,9 +457,14 @@ def test_approval_args_mismatch_blocks_execution():
 
     asyncio.run(orchestrator.execute_approved_step(approval))
     refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
+    refreshed_approval_data = db.fetch_one("approvals", approval.id)
+    refreshed_approval = Approval.model_validate(refreshed_approval_data)
 
     assert calls == []
     assert "fresh preview" in refreshed.final_summary.lower()
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+    assert "approved arguments" in (refreshed_approval_data.get("expired_reason") or "").lower()
     events = db.fetch_many("audit_events", "task_id = ?", (task.id,), limit=10)
     assert any(event["event_type"] == "approval.binding_mismatch" for event in events)
 
@@ -365,5 +654,10 @@ def test_approval_resource_state_mismatch_blocks_execution():
     asyncio.run(orchestrator.execute_approved_step(approval))
 
     assert calls == []
+    refreshed_approval_data = db.fetch_one("approvals", approval.id)
+    refreshed_approval = Approval.model_validate(refreshed_approval_data)
+    assert refreshed_approval.status == ApprovalStatus.EXPIRED
+    assert refreshed_approval.consumed_at is None
+    assert "resource state" in (refreshed_approval_data.get("expired_reason") or "").lower()
     refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
     assert "file state changed" in refreshed.final_summary.lower()

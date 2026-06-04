@@ -34,29 +34,23 @@
 
 #### 要构建什么
 
-让用户安装 Mavris 后无需额外操作即可使用隐私模式。当前本地 provider 探测链已完整（Ollama/LM Studio/llama.cpp），但需用户自行安装运行时和拉取模型。
+让用户安装 Mavris 后能清晰进入隐私模式准备流程。当前本地 provider 探测链已完整（Ollama/LM Studio/llama.cpp），Ollama 运行时和模型默认不随包携带，需要在设置页按需安装/拉取。
 
 #### 当前进展
 
 - 已新增本地模型 `setup-plan` 后端接口，能返回硬件条件、运行时、服务、模型四步状态和下一步动作。
 - 设置页已产品化为“隐私模式开箱检查”，普通用户能看到一键开启隐私模式、本机条件、Ollama/模型准备步骤，以及“不会静默退回云端”的边界说明。
 - 隐私检查清单已串联主行动作：开启隐私模式后，下一步直接变成“一键准备本地 AI”，复用安装 Ollama、启动服务、下载模型的完整进度流。
-- 已打通随包资源通道：后端优先发现 bundled Ollama runtime/model 目录，启动 Ollama 时会指向随包模型目录；portable 构建可复制 `vendor/ollama` 和 `vendor/ollama-models`。
-- Electron 主进程启动随包后端时会显式注入 `MAVRIS_BUNDLED_OLLAMA_DIR`、`MAVRIS_BUNDLED_OLLAMA_MODELS_DIR`、`MAVRIS_OLLAMA_BUNDLE_MANIFEST` 和 `OLLAMA_MODELS`，并由 `desktop/scripts/backend-ollama-env-smoke.cjs` 验证。
-- 已新增 `scripts/bundle_ollama.ps1`：从已准备好的 Ollama runtime/model 目录生成 `vendor/ollama`、`vendor/ollama-models` 和 SHA256 manifest，并要求显式确认再分发许可。
-- 已新增 `scripts/prepare_ollama_release.ps1`：面向发布人员的一步式入口，会准备 vendor 资源，并用临时 portable 包执行 `verify_packaging.ps1 -RequireBundledOllama` 证明这些资源可被发布门禁消费。
-- portable 构建会校验 `vendor/ollama-bundle-manifest.json` 与当前 runtime/model 文件摘要一致，复制 manifest 到发布包；后端 setup-plan 会暴露 manifest 状态，设置页可显示随包资源已校验。
-- `scripts\build_all.ps1 -RequireBundledOllama` 已接入发布验证门禁，会检查 portable 目录和 zip 中的 Ollama runtime、models、bundle manifest 及摘要；当前真实 `dist` 包会被该门禁拦下，因为还没有实际随包资源。
-- 仍未完成真正的 Ollama 二进制/模型资源入库或自动下载，因此“全新机器无需额外下载即可隐私模式可用”仍是开放验收项。
+- 已明确默认发布策略：不在 Git 或普通安装包中携带 Ollama 离线模型、GPU 运行库或 bundle manifest。
+- 后端 setup-plan 会引导用户检查硬件、安装 Ollama、启动服务、拉取推荐模型；隐私模式不会静默回退云端。
+- portable 构建不再自动发现 `vendor/ollama` 或 `vendor/ollama-models`；只有显式传入外部目录时才允许构建特殊离线包。
+- `vendor/ollama`、`vendor/ollama-models` 和 `vendor/ollama-bundle-manifest.json` 已作为本地缓存/实验发行资源忽略，避免大二进制进入仓库。
 
 #### 方案
 
-- 安装包中内嵌 Ollama 二进制 + 预下载 `qwen2.5:3b-instruct-q4`（~2GB）
-- 首次启动检测 Ollama 缺失时引导一键安装（winget 或解压内嵌包）
-- Settings 面板加"一键拉取推荐模型"按钮 + 进度条
-- portable 构建从 `vendor/ollama` 和 `vendor/ollama-models` 复制随包 runtime/model，并校验/复制 `vendor/ollama-bundle-manifest.json`；发布前由下载/许可校验脚本填充这两个目录。
-- 使用 `scripts/prepare_ollama_release.ps1 -OllamaRuntimeDir <dir> -OllamaModelsDir <dir> -AcceptLicenses` 准备随包资源；manifest 保留来源、大小、文件数和 SHA256。需要拉取模型到 staging 时追加 `-PullModel -OllamaExe <ollama.exe>`。
-- 发布隐私模式开箱包时使用 `scripts\build_all.ps1 -RequireBundledOllama`；只检查已有产物时使用 `scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama`。
+- 首次启动或切换隐私模式时检测 Ollama 缺失，并引导一键安装（Windows 使用 winget，其他平台提示手动安装）。
+- Settings 面板保留“一键拉取推荐模型”按钮 + 进度条，模型仅在用户需要隐私模式时下载。
+- portable 构建默认不复制 Ollama runtime/model；特殊离线发行必须显式提供外部目录与 manifest，并单独执行 `verify_packaging.ps1 -RequireBundledOllama`。
 
 #### 预计涉及文件
 
@@ -64,12 +58,12 @@
 - `desktop/src/renderer/components/SettingsPanel.tsx`（UI 引导）
 - `backend/app/main.py`（启动时 Ollama 健康检查）
 - `scripts/bundle_ollama.ps1`（准备随包 Ollama runtime/model + manifest）
-- `scripts/prepare_ollama_release.ps1`（发布准备入口 + vendor 资源门禁验证）
+- `scripts/prepare_ollama_release.ps1`（特殊离线资源准备入口 + 显式门禁验证）
 - `scripts/build_portable.ps1`（复制随包 Ollama runtime/model）
 
 #### 验收标准
 
-- [ ] 全新 Windows 系统上安装 → 首次启动 → 切隐私模式 → 输入任务 → 无需手动安装额外软件
+- [ ] 全新 Windows 系统上安装 → 首次启动 → 切隐私模式 → 设置页引导安装 Ollama 并下载推荐模型
 - [ ] Ollama 已存在时跳过安装步骤
 - [ ] 安装失败时有明确错误提示，不影响效率模式
 

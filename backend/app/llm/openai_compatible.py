@@ -74,6 +74,10 @@ class OpenAICompatibleProvider(LLMProvider):
 
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
+        self._last_transport_metadata: dict[str, Any] = {}
+
+    def transport_metadata(self) -> dict[str, Any]:
+        return dict(self._last_transport_metadata)
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -100,18 +104,38 @@ class OpenAICompatibleProvider(LLMProvider):
 
     async def _post_json(self, endpoint: str, payload: dict[str, Any], *, endpoint_kind: str, model: str) -> dict[str, Any]:
         circuit_key = self._circuit_key(endpoint_kind, model)
-        self._ensure_circuit_allows_request(circuit_key)
         attempts = max(0, self.settings.llm_api_max_retries) + 1
         last_error: Exception | None = None
+        trace: dict[str, Any] = {
+            "endpoint_kind": endpoint_kind,
+            "endpoint": endpoint,
+            "model": model,
+            "attempts": 0,
+            "max_attempts": attempts,
+            "retry_events": [],
+            "circuit_before": circuit_snapshot(self.settings),
+            "ok": False,
+        }
+        self._last_transport_metadata = trace
+        try:
+            self._ensure_circuit_allows_request(circuit_key)
+        except Exception as exc:
+            trace["error_type"] = exc.__class__.__name__
+            trace["error"] = str(exc)
+            trace["circuit_open"] = isinstance(exc, LLMApiCircuitOpen)
+            self._last_transport_metadata = trace
+            raise
 
         for attempt in range(attempts):
             try:
+                trace["attempts"] = attempt + 1
                 async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
                     response = await client.post(
                         endpoint,
                         headers=self._headers(),
                         json=payload,
                     )
+                    trace["last_status_code"] = response.status_code
                     response.raise_for_status()
                     try:
                         data = response.json()
@@ -121,20 +145,43 @@ class OpenAICompatibleProvider(LLMProvider):
                             f"LLM provider returned non-JSON response with content-type {content_type or 'unknown'}."
                         ) from exc
                 self._record_success(circuit_key)
+                trace["ok"] = True
+                trace["circuit_after"] = circuit_snapshot(self.settings)
+                self._last_transport_metadata = trace
                 return data
             except Exception as exc:
                 last_error = exc
                 if is_prompt_too_long_error(exc):
-                    raise prompt_too_long_error_from_exception(
+                    prompt_error = prompt_too_long_error_from_exception(
                         exc,
                         provider=self.settings.provider_name,
                         model=model,
-                    ) from exc
+                    )
+                    trace["error_type"] = prompt_error.__class__.__name__
+                    trace["prompt_too_long"] = prompt_error.to_dict()
+                    trace["circuit_after"] = circuit_snapshot(self.settings)
+                    self._last_transport_metadata = trace
+                    raise prompt_error from exc
                 if not self._should_retry(exc) or attempt == attempts - 1:
                     self._record_failure(circuit_key, exc)
+                    trace["error_type"] = exc.__class__.__name__
+                    trace["error"] = str(exc)
+                    trace["circuit_after"] = circuit_snapshot(self.settings)
+                    self._last_transport_metadata = trace
                     raise
+                trace["retry_events"].append(
+                    {
+                        "attempt": attempt + 1,
+                        "error_type": exc.__class__.__name__,
+                        "status_code": _status_code(exc),
+                        "retry": True,
+                    }
+                )
+                self._last_transport_metadata = trace
                 await self._sleep_before_retry(attempt, last_error)
 
+        trace["error"] = str(last_error or RuntimeError("LLM API request failed."))
+        self._last_transport_metadata = trace
         raise last_error or RuntimeError("LLM API request failed.")
 
     def _ensure_circuit_allows_request(self, circuit_key: tuple[str, str, str, str]) -> None:
@@ -261,6 +308,7 @@ class OpenAICompatibleProvider(LLMProvider):
             metadata={
                 "wire_api": "chat_completions",
                 "tool_calls": message.get("tool_calls") or [],
+                "api_trace": self.transport_metadata(),
             },
         )
 
@@ -314,7 +362,7 @@ class OpenAICompatibleProvider(LLMProvider):
             model=target_model,
             usage=self._usage_from_responses(data, messages, content),
             finish_reason=str(data.get("status") or ""),
-            metadata={"wire_api": "responses", "response_id": data.get("id")},
+            metadata={"wire_api": "responses", "response_id": data.get("id"), "api_trace": self.transport_metadata()},
         )
 
     def _extract_responses_text(self, data: dict[str, Any]) -> str:
@@ -654,6 +702,12 @@ def _join_schema_path(path: str, part: Any) -> str:
     if key.isidentifier():
         return f"{path}.{key}"
     return f"{path}[{key!r}]"
+
+
+def _status_code(exc: Exception) -> int | None:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return int(status_code) if isinstance(status_code, int) else None
 
 
 def _chat_message_payload(message: dict[str, Any]) -> dict[str, Any]:

@@ -209,12 +209,14 @@ class StepExecutionHandler:
                 if review_outcome.kind != "allowed":
                     return StepExecutionOutcome(review_outcome.kind, review_outcome.result)
         await self._yield_if_parallel(threaded_tools)
+        auto_approved_args = self.tool_runtime.auto_approved_args(tool, step.args, runtime)
         execution = await self.tool_runtime.execute_allowed(
             task,
             step,
             tool,
             runtime,
             threaded_tools=threaded_tools,
+            approved_args=auto_approved_args,
         )
         return StepExecutionOutcome(execution.kind, execution.result)
 
@@ -248,11 +250,13 @@ class StepExecutionHandler:
 
         action = None if approval.approval_type == "remote_input" else await orchestrator._consult_subagent(task, step, observation=None)
         if action and action.kind == "done":
+            db.expire_approval_if_unconsumed(approval.id, now_iso(), "Subagent marked approved step already done.")
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             orchestrator._persist_plan_update(plan, "Approved step skipped after subagent marked it done.")
             orchestrator._set_status(task, TaskStatus.COMPLETED, final_summary="Approved step was already complete.")
             return task
         if action and action.kind == "request_revision":
+            db.expire_approval_if_unconsumed(approval.id, now_iso(), "Subagent requested plan revision before approved execution.")
             orchestrator._handle_subagent_revision_request(task, step, action)
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             orchestrator._persist_plan_update(plan, "Approved step paused after subagent requested plan revision.")
@@ -268,6 +272,7 @@ class StepExecutionHandler:
             proposed_tool_name = action.tool_name or step.tool_name
             merged_args = {**dict(step.args or {}), **dict(action.args or {})}
             if proposed_tool_name != step.tool_name or merged_args != step.args:
+                db.expire_approval_if_unconsumed(approval.id, now_iso(), "Subagent proposed a different tool call before approved execution.")
                 orchestrator._handle_subagent_revision_request(task, step, action)
                 set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
                 orchestrator._persist_plan_update(plan, "Approved step paused because subagent proposed a different tool call.")
@@ -283,6 +288,7 @@ class StepExecutionHandler:
         runtime = self._runtime_context_for_step(task, step)
         resource_error = await self._approval_resource_state_error(approval, step, tool, runtime)
         if resource_error:
+            db.expire_approval_if_unconsumed(approval.id, now_iso(), resource_error)
             set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
             orchestrator._persist_plan_update(plan, "Approved step denied because the reviewed resource state changed.")
             orchestrator._set_status(
@@ -389,6 +395,10 @@ class StepExecutionHandler:
     def _deny_approved_step(self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str) -> Task:
         orchestrator = self.orchestrator
         replay = "already been consumed" in reason.casefold()
+        if not replay and not approval.consumed_at:
+            expired = db.expire_approval_if_unconsumed(approval.id, now_iso(), reason)
+            if expired:
+                approval = Approval.model_validate(expired)
         set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
         orchestrator._persist_plan_update(
             plan,

@@ -8,7 +8,7 @@ import { Badge, Panel } from "./Panel";
 interface ChatPanelProps {
   messages: ChatMessage[];
   connectionState: "online" | "offline" | "checking";
-  onSend: (content: string) => Promise<void>;
+  onSend: (content: string) => Promise<unknown>;
   onExecuteSuggestion?: (suggestion: IntentSuggestion) => Promise<void>;
   initialDraft?: string;
   autoFocus?: boolean;
@@ -76,7 +76,7 @@ export function ChatPanel({
       eyebrow="Mavris"
       className="panel--chat"
       action={connectionState === "online" ? null : (
-        <Badge tone="warning">{connectionState === "checking" ? "正在连接 Mavris" : "Mavris 服务未连接"}</Badge>
+        <Badge tone="warning">{connectionState === "checking" ? "正在连接 Mavris" : "助手暂时连不上"}</Badge>
       )}
     >
       <div className="chat-log" aria-live="polite">

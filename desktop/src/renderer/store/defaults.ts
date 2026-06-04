@@ -57,6 +57,7 @@ export const defaultSettings: AppSettings = {
   ocrMinConfidence: 0,
   ocrBatchSize: 1,
   mode: "efficiency",
+  permissionMode: "default",
   allowCloudContext: false,
   allowFileContentUpload: false,
   mcpServers: []

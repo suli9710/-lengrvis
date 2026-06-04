@@ -8,7 +8,7 @@ from typing import Any
 
 from app.config import AppSettings
 from app.core import db
-from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase, now_iso
+from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase, StepStatus, now_iso
 from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.engine_router import EngineRouter
@@ -21,6 +21,7 @@ from app.orchestration.execution_models import (
 )
 from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_event
 from app.orchestration.task_phase import TaskPhase
+from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel
 from app.services.task_service import get_task, set_task_status
 
@@ -60,16 +61,17 @@ async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Ru
     try:
         state = await router.start_run(message, mode, _engine_selection(requested_engine))
     except Exception as exc:  # noqa: BLE001
+        error = _redacted_error(exc)
         run = Run(
             message=message,
             mode=mode,
             requested_engine=requested_engine,
             engine=RunEngine.DEVELOPER if requested_engine == RunEngine.DEVELOPER else RunEngine.OS,
             phase=RunPhase.FAILED,
-            error=str(exc),
+            error=error,
         )
         db.upsert_model("runs", run)
-        run_event_bus.publish(run.id, "run.failed", {"error": str(exc), "message": message, "mode": mode})
+        run_event_bus.publish(run.id, "run.failed", {"error": error, "message": message, "mode": mode})
         return run
 
     run = _run_from_state(state, requested_engine=requested_engine)
@@ -115,6 +117,9 @@ def list_runs(limit: int = 100) -> list[Run]:
 
 def get_timeline(run_id: str) -> dict[str, Any]:
     run = get_run(run_id)
+    if run.task_id:
+        reconcile_task_runs(run.task_id)
+        run = get_run(run_id)
     events = [event.model_dump(mode="json") for event in list_run_events(run_id)]
     return {"run": run.model_dump(mode="json"), "events": events, "count": len(events)}
 
@@ -178,7 +183,8 @@ def pause_run(run_id: str) -> Run:
     if run.phase in TERMINAL_PHASES:
         return run
     if run.task_id:
-        _expire_pending_approvals(run.task_id, "pause_requested")
+        expired = _expire_pending_approvals(run.task_id, "pause_requested")
+        _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
         try:
             set_task_status(run.task_id, "paused")
         except Exception as exc:
@@ -218,8 +224,9 @@ def _schedule_resume(run: Run) -> Run:
     try:
         state = _state_from_run(run)
     except Exception as exc:  # noqa: BLE001
-        _update_run(run, phase=RunPhase.FAILED, error=str(exc))
-        run_event_bus.publish(run.id, "run.failed", {"error": str(exc), "task_id": run.task_id})
+        error = _redacted_error(exc)
+        _update_run(run, phase=RunPhase.FAILED, error=error)
+        run_event_bus.publish(run.id, "run.failed", {"error": error, "task_id": run.task_id})
         return run
     if run.phase == RunPhase.RUNNING and _run_active(run.id):
         return run
@@ -243,7 +250,8 @@ def cancel_run(run_id: str) -> Run:
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to schedule developer run cancellation for %s: %s", run.id, exc, exc_info=True)
     if run.task_id:
-        _expire_pending_approvals(run.task_id, "cancel_requested")
+        expired = _expire_pending_approvals(run.task_id, "cancel_requested")
+        _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
         try:
             set_task_status(run.task_id, TaskPhase.CANCELLED)
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
@@ -253,22 +261,39 @@ def cancel_run(run_id: str) -> Run:
     return run
 
 
-def _expire_pending_approvals(task_id: str, reason: str) -> None:
+def _expire_pending_approvals(task_id: str, reason: str) -> list[Approval]:
     try:
         expired = db.expire_pending_approvals_for_task(task_id, now_iso(), reason)
     except Exception as exc:  # noqa: BLE001 - approval expiry is best effort during state transitions.
         logger.warning("Failed to expire pending approvals for task %s: %s", task_id, exc, exc_info=True)
-        return
+        return []
     if not expired:
-        return
+        return []
+    approvals = [Approval.model_validate(item) for item in expired]
     try:
         from app.services.approval_event_service import publish_approval_decided
 
-        for item in expired:
-            publish_approval_decided(Approval.model_validate(item))
+        for approval in approvals:
+            publish_approval_decided(approval)
     except Exception as exc:  # noqa: BLE001 - expiry already persisted; event fanout is best effort.
         logger.warning("Failed to publish expired approval events for task %s: %s", task_id, exc, exc_info=True)
+    return approvals
+
+
+def _deny_waiting_steps_for_expired_approvals(task_id: str, approvals: list[Approval]) -> None:
+    step_ids = {approval.step_id for approval in approvals if approval.step_id}
+    if not step_ids:
         return
+    plan = _latest_plan_for_task(task_id)
+    if plan is None:
+        return
+    changed = False
+    for step in plan.steps:
+        if step.id in step_ids and step.status == StepStatus.WAITING_USER_APPROVAL:
+            step.status = StepStatus.DENIED
+            changed = True
+    if changed:
+        db.upsert_model("plans", plan)
 
 
 def reconcile_task_runs(task_id: str) -> list[Run]:
@@ -351,8 +376,9 @@ async def _run_engine_loop(
         run = get_run(run_id)
         if run.phase == RunPhase.CANCELLED:
             return
-        _update_run(run, phase=RunPhase.FAILED, error=str(exc))
-        run_event_bus.publish(run_id, "run.failed", {"error": str(exc)})
+        error = _redacted_error(exc)
+        _update_run(run, phase=RunPhase.FAILED, error=error)
+        run_event_bus.publish(run_id, "run.failed", {"error": error})
     finally:
         if stop_event is not None:
             stop_event.set()
@@ -488,6 +514,10 @@ def _engine_router(settings: AppSettings) -> EngineRouter:
 
 def _engine_selection(engine: RunEngine) -> str:
     return engine.value if engine.value in {"auto", "os", "developer"} else "auto"
+
+
+def _redacted_error(error: BaseException | str) -> str:
+    return str(redact_value(str(error)))
 
 
 def _run_from_state(state: RunState, *, requested_engine: RunEngine) -> Run:

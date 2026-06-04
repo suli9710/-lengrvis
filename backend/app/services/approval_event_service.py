@@ -60,6 +60,38 @@ def publish_approval_decided(approval: Approval) -> None:
     _bus.publish({"type": "approval_decided", "approval": _safe_approval(approval)})
 
 
+def publish_remote_input_grant_created(device_id: str, grant: dict) -> None:
+    _bus.publish({"type": "remote_input_grant_created", "device_id": device_id, "grant": _safe_remote_input_grant(grant)})
+
+
+def publish_remote_input_grant_revoked(device_id: str, grant: dict) -> None:
+    _bus.publish({"type": "remote_input_grant_revoked", "device_id": device_id, "grant": _safe_remote_input_grant(grant)})
+
+
+def publish_mobile_device_revoked(device: dict) -> None:
+    device_id = str(device.get("device_id") or device.get("id") or "")
+    safe_device = {
+        "device_id": device_id,
+        "device_name": str(device.get("device_name") or "Android device"),
+        "status": str(device.get("status") or "revoked"),
+        "revoked_at": str(device.get("revoked_at") or ""),
+        "updated_at": str(device.get("updated_at") or ""),
+    }
+    _bus.publish({"type": "mobile_device_revoked", "device_id": device_id, "device": safe_device})
+
+
+def _safe_remote_input_grant(grant: dict) -> dict:
+    safe_grant = {
+        "id": str(grant.get("id") or grant.get("grant_id") or ""),
+        "status": str(grant.get("status") or "active"),
+        "scope": str(grant.get("scope") or "remote:input"),
+        "created_at": str(grant.get("created_at") or ""),
+        "expires_at": str(grant.get("expires_at") or ""),
+        "revoked_at": str(grant.get("revoked_at") or ""),
+    }
+    return safe_grant
+
+
 def _safe_approval(approval: Approval) -> dict:
     payload = approval.model_dump(mode="json")
     payload["message"] = redact_value(payload.get("message") or "")

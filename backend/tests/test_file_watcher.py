@@ -59,6 +59,52 @@ def test_index_file_skips_unchanged(allowed_dir: Path):
     assert second is False
 
 
+def test_index_file_keeps_fts_available_when_embeddings_fail(allowed_dir: Path):
+    """Lexical indexing should not fail just because semantic embeddings are down."""
+    test_file = allowed_dir / "embedding_down.txt"
+    test_file.write_text("lexical fallback content remains searchable", encoding="utf-8")
+
+    def broken_embedder(_texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding provider unavailable")
+
+    fts = FTSIndex(embedder=broken_embedder)
+    result = fts.index_file(str(test_file), [str(allowed_dir)])
+
+    assert result is True
+    assert fts.search("lexical fallback content remains searchable")
+    with db.connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM document_chunk_embeddings"
+        ).fetchone()["count"]
+    assert count == 0
+
+
+def test_index_file_backfills_missing_embeddings_for_unchanged_file(allowed_dir: Path):
+    """A transient embedding outage should not permanently skip semantic backfill."""
+    test_file = allowed_dir / "embedding_retry.txt"
+    test_file.write_text("semantic retry content stays stable", encoding="utf-8")
+
+    def broken_embedder(_texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding provider unavailable")
+
+    first = FTSIndex(embedder=broken_embedder).index_file(
+        str(test_file),
+        [str(allowed_dir)],
+    )
+    second = FTSIndex(embedder=lambda texts: [[1.0, 0.0] for _ in texts]).index_file(
+        str(test_file),
+        [str(allowed_dir)],
+    )
+
+    assert first is True
+    assert second is True
+    with db.connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS count FROM document_chunk_embeddings"
+        ).fetchone()["count"]
+    assert count == 1
+
+
 def test_remove_file_clears_from_index(allowed_dir: Path):
     """Index a file, then remove it, verify it no longer appears."""
     test_file = allowed_dir / "removeme.txt"

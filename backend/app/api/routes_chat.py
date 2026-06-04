@@ -6,7 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.schemas import AgentMessage, ChatMessage, ChatRequest, ChatResponse
 from app.orchestration.agent_bus import AgentBus
-from app.security.lan import allow_lan_desktop_api, is_loopback_host
+from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.services.notification_service import SYSTEM_TASK_ID
 from app.services import perception_suggestion_service
 from app.services.task_service import handle_chat, list_chat_messages
@@ -44,9 +44,7 @@ async def notification_messages(websocket: WebSocket):
 
 
 async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
-    client_host = websocket.client.host if websocket.client else ""
-    if not is_loopback_host(client_host) and not allow_lan_desktop_api():
-        await websocket.close(code=1008)
+    if await close_unauthorized_desktop_websocket(websocket):
         return
     await websocket.accept()
     queue = bus.subscribe(task_id)

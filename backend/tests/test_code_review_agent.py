@@ -4,6 +4,7 @@ from app.agents.code_review_agent import (
     APPROVAL_BYPASS,
     EXTERNAL_SOURCE_COPY,
     MISSING_FAILURE_TESTS,
+    MODEL_BOUNDARY_ESCAPE,
     ORCHESTRATOR_BLOAT,
     RISK_MODEL_BREAK,
     WRITE_CONCURRENCY,
@@ -52,6 +53,7 @@ def test_code_review_agent_blocks_all_required_supervisor_risks():
         ],
         review_notes=(
             "Risk model update sets dry_run=False and approved=True to skip approval. "
+            "Model output injects approval_id in PlanStep args before ToolRuntime. "
             "It introduces a race condition from parallel write paths with no lock. "
             "Large orchestrator bloat was added directly in orchestrator. "
             "Tests are happy path only; no failure test was added."
@@ -66,6 +68,7 @@ def test_code_review_agent_blocks_all_required_supervisor_risks():
     assert _categories(report) == set(REQUIRED_RISK_CATEGORIES)
     assert RISK_MODEL_BREAK in _categories(report)
     assert APPROVAL_BYPASS in _categories(report)
+    assert MODEL_BOUNDARY_ESCAPE in _categories(report)
     assert WRITE_CONCURRENCY in _categories(report)
     assert ORCHESTRATOR_BLOAT in _categories(report)
     assert EXTERNAL_SOURCE_COPY in _categories(report)
@@ -87,3 +90,18 @@ def test_code_review_agent_does_not_flag_clean_room_no_copy_note():
     )
 
     assert EXTERNAL_SOURCE_COPY not in _categories(report)
+
+
+def test_code_review_agent_blocks_model_boundary_escape_without_negative_tests():
+    agent = CodeReviewAgent()
+
+    report = agent.review(
+        changed_files=[{"path": "backend/app/orchestration/tool_runtime.py", "added_lines": 20}],
+        review_notes="Model output may pass approval_id in PlanStep args and approved in args.",
+        test_evidence="pytest backend/tests/test_tool_runtime.py passed; happy path only",
+        copied_source_flags=[],
+    )
+
+    assert report.verdict == "block"
+    assert MODEL_BOUNDARY_ESCAPE in _categories(report)
+    assert MISSING_FAILURE_TESTS in _categories(report)

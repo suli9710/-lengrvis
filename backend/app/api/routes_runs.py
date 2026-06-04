@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.core.schemas import Run, RunCreateRequest, RunCreateResponse, RunStateResponse
 from app.orchestration.run_event_bus import run_event_bus, run_event_to_wire
-from app.security.lan import allow_lan_desktop_api, is_loopback_host
+from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.services import run_service
 
 
@@ -72,9 +72,7 @@ def cancel(run_id: str) -> RunStateResponse:
 
 @ws_router.websocket("/ws/runs/{run_id}")
 async def run_events(websocket: WebSocket, run_id: str):
-    client_host = websocket.client.host if websocket.client else ""
-    if not is_loopback_host(client_host) and not allow_lan_desktop_api():
-        await websocket.close(code=1008)
+    if await close_unauthorized_desktop_websocket(websocket):
         return
     try:
         run = run_service.get_run(run_id)

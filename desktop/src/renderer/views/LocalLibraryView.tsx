@@ -16,21 +16,8 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import type { LocalLibraryItem, LocalLibraryResponse } from "../../shared/types";
-import type { ViewKey } from "../store";
 import type { MavrisApiClient } from "../lib/apiClient";
-
-export type LocalLibrarySection =
-  | "apps"
-  | "documents"
-  | "documentOcr"
-  | "papers"
-  | "courseware"
-  | "reports"
-  | "gallery"
-  | "imageOcr"
-  | "people"
-  | "places"
-  | "timeline";
+import { sectionForView, type LocalLibrarySection } from "./localLibrarySections";
 
 interface LocalLibraryViewProps {
   api: MavrisApiClient;
@@ -150,13 +137,7 @@ const SECTIONS: LibrarySectionMeta[] = [
   }
 ];
 
-export const localLibraryViewKeys = new Set<ViewKey>(SECTIONS.map((section) => section.id as ViewKey));
-
-export function sectionForView(view: ViewKey): LocalLibrarySection {
-  return localLibraryViewKeys.has(view) ? view as LocalLibrarySection : "gallery";
-}
-
-export function libraryMetaForView(view: ViewKey): LibrarySectionMeta {
+export function libraryMetaForView(view: LocalLibrarySection): LibrarySectionMeta {
   const section = SECTIONS.find((item) => item.id === sectionForView(view));
   return section ?? SECTIONS[6];
 }

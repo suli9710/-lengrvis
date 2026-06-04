@@ -16,6 +16,19 @@ export interface BackendApproval {
   approval_type: string;
   message: string;
   diff_preview: unknown;
+  tool_name?: string;
+  risk_level?: string;
+  tool_trust_tier?: string;
+  tool_effects?: string[];
+  resource_kinds?: string[];
+  policy_mode?: string;
+  permission_mode?: string;
+  permission_policy_version?: string;
+  dry_run_summary?: string;
+  model_action?: unknown;
+  runtime_control_fields?: unknown;
+  runtime_fields?: unknown;
+  engineering_boundary?: unknown;
   status: "pending" | "approved" | "rejected" | "expired";
   created_at: string;
   decided_at?: string | null;
@@ -38,7 +51,12 @@ export interface BackendPlanStep {
   tool_name: string;
   description: string;
   status: string;
+  risk_level?: string;
   requires_approval: boolean;
+  tool_effects?: string[];
+  resource_kinds?: string[];
+  trust_tier?: string;
+  deferred_tool?: boolean;
   args?: Record<string, unknown>;
   expected_observation?: string;
 }
@@ -62,12 +80,16 @@ export type ApprovalEvent =
   | { type: "heartbeat" }
   | { type: "approval_notification"; approval: BackendApproval }
   | { type: "approval_created"; approval: BackendApproval }
-  | { type: "approval_decided"; approval: BackendApproval };
+  | { type: "approval_decided"; approval: BackendApproval }
+  | { type: "remote_input_grant_created"; device_id: string; grant: RemoteInputGrant }
+  | { type: "remote_input_grant_revoked"; device_id: string; grant: RemoteInputGrant }
+  | { type: "mobile_device_revoked"; device_id: string; device: MobileDevice };
 
 export type RemoteScreenEvent =
   | { type: "connected"; fps: number; quality: number }
   | {
       type: "frame";
+      sequence: number;
       image: string;
       timestamp: string;
       width: number;
@@ -83,12 +105,46 @@ export interface PairingSession {
   deviceId: string;
 }
 
+export interface RemoteInputGrant {
+  id: string;
+  status: string;
+  scope: "remote:input";
+  created_at: string;
+  expires_at: string;
+  revoked_at?: string;
+}
+
+export interface RemoteInputGrantToken {
+  token: string;
+  token_type: "Bearer";
+  grant_id: string;
+  device_id: string;
+  expires_at: string;
+  expires_in: number;
+  grant: RemoteInputGrant;
+}
+
+export interface MobileDevice {
+  device_id: string;
+  device_name: string;
+  status: string;
+  revoked_at?: string;
+  updated_at?: string;
+}
+
 const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "mavris.mobile.token.";
 
 export class AuthExpiredError extends Error {
   constructor(message = "这台手机已断开连接。请在 Mavris 中重新连接。") {
     super(message);
     this.name = "AuthExpiredError";
+  }
+}
+
+export class ForbiddenError extends Error {
+  constructor(message = "这台手机没有权限执行该操作。") {
+    super(message);
+    this.name = "ForbiddenError";
   }
 }
 
@@ -137,6 +193,22 @@ export async function submitApprovalDecision(
   return parseJson<BackendApproval>(response);
 }
 
+export async function disconnectMobileDevice(session: PairingSession): Promise<void> {
+  const response = await fetch(`${session.baseUrl}/api/mobile/devices/${encodeURIComponent(session.deviceId)}`, {
+    method: "DELETE",
+    headers: authHeaders(session.token),
+  });
+  await parseJson<unknown>(response);
+}
+
+export async function claimRemoteInputGrantToken(session: PairingSession, grantId: string): Promise<RemoteInputGrantToken> {
+  const response = await fetch(`${session.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}/token`, {
+    method: "POST",
+    headers: authHeaders(session.token),
+  });
+  return parseJson<RemoteInputGrantToken>(response);
+}
+
 export function approvalWebSocketUrl(session: PairingSession): string {
   const url = new URL("/ws/mobile/approvals", session.baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -149,8 +221,18 @@ export function remoteScreenWebSocketUrl(session: PairingSession): string {
   return url.toString();
 }
 
+export function remoteInputWebSocketUrl(session: PairingSession): string {
+  const url = new URL("/ws/remote/input", session.baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
 export function mobileAuthWebSocketProtocols(session: PairingSession): string[] {
   return [`${MOBILE_AUTH_WS_PROTOCOL_PREFIX}${session.token}`];
+}
+
+export function mobileTokenWebSocketProtocols(token: string): string[] {
+  return [`${MOBILE_AUTH_WS_PROTOCOL_PREFIX}${token}`];
 }
 
 export function normalizeBaseUrl(value: string): string {
@@ -173,8 +255,11 @@ async function parseJson<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => undefined);
   if (!response.ok) {
     const detail = data && typeof data === "object" && "detail" in data ? String((data as { detail?: unknown }).detail) : "";
-    if (response.status === 401 || response.status === 403) {
+    if (response.status === 401) {
       throw new AuthExpiredError(detail || undefined);
+    }
+    if (response.status === 403) {
+      throw new ForbiddenError(detail || undefined);
     }
     throw new Error(detail || "Mavris 未能完成该请求，请重试。");
   }
