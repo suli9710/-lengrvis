@@ -286,7 +286,7 @@ class EnvironmentStream:
         if self.app_context_interval_seconds > 0 and self._app_context_task is None:
             self._app_context_task = asyncio.create_task(
                 self._poll_app_context_loop(),
-                name="mavris-environment-app-context",
+                name="lengrvis-environment-app-context",
             )
 
     async def stop(self) -> None:
@@ -718,8 +718,14 @@ def get_environment_stream(
     return _instance
 
 
-def load_rules_from_env(env_var: str = "MAVRIS_ENVIRONMENT_RULES") -> list[EnvironmentRule]:
-    raw = os.getenv(env_var) or os.getenv("MARVIS_ENVIRONMENT_RULES") or ""
+def load_rules_from_env(env_var: str = "LENGRVIS_ENVIRONMENT_RULES") -> list[EnvironmentRule]:
+    raw = (
+        os.getenv(env_var)
+        or os.getenv("LENGRVIS_ENVIRONMENT_RULES")
+        or os.getenv("LENGRVIS_ENVIRONMENT_RULES")
+        or os.getenv("LENGRVIS_ENVIRONMENT_RULES")
+        or ""
+    )
     if not raw.strip():
         return []
     text = raw

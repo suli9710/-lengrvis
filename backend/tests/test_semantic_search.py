@@ -9,11 +9,12 @@ from app.core import db
 from app.indexer.fts_index import FTSIndex
 from app.indexer.vector_index import VectorIndex
 from app.main import create_app
+from app.services import file_service
 
 
 @pytest.fixture(autouse=True)
 def isolated_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
 
 
 def semantic_embedder(texts: list[str]) -> list[list[float]]:
@@ -68,7 +69,10 @@ def test_rebuild_persists_embeddings_and_semantic_search_reranks(tmp_path: Path)
     assert result["results"][0]["vector_score"] > result["results"][1]["vector_score"]
 
 
-def test_semantic_search_route_no_longer_returns_reserved_placeholder(tmp_path: Path) -> None:
+def test_semantic_search_route_no_longer_returns_reserved_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "garage.txt").write_text("Vehicle engine and automobile repair notes.", encoding="utf-8")
@@ -76,6 +80,11 @@ def test_semantic_search_route_no_longer_returns_reserved_placeholder(tmp_path: 
     (workspace / "cat.txt").write_text("Feline kitten care and cat toys.", encoding="utf-8")
 
     FTSIndex(embedder=semantic_embedder).rebuild([str(workspace)])
+    monkeypatch.setattr(
+        file_service,
+        "get_effective_settings",
+        lambda: type("Settings", (), {"allowed_directories": [str(workspace)]})(),
+    )
     client = TestClient(create_app())
 
     response = client.get("/api/files/semantic-search", params={"q": "automobile"})
@@ -84,6 +93,45 @@ def test_semantic_search_route_no_longer_returns_reserved_placeholder(tmp_path: 
     payload = response.json()
     assert "reserved" not in str(payload).lower()
     assert payload["results"][0]["name"] == "garage.txt"
+
+
+def test_semantic_search_route_filters_stale_index_after_allowed_directories_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    indexed_workspace = tmp_path / "indexed"
+    current_workspace = tmp_path / "current"
+    indexed_workspace.mkdir()
+    current_workspace.mkdir()
+    stale_file = indexed_workspace / "garage.txt"
+    stale_file.write_text(
+        "Vehicle engine and automobile repair notes with stale garage clue.",
+        encoding="utf-8",
+    )
+    allowed_directories = [str(indexed_workspace)]
+
+    def current_settings():
+        return type("Settings", (), {"allowed_directories": list(allowed_directories)})()
+
+    FTSIndex(embedder=semantic_embedder).rebuild([str(indexed_workspace)])
+    monkeypatch.setattr(file_service, "get_effective_settings", current_settings)
+    client = TestClient(create_app())
+
+    indexed_response = client.get("/api/files/semantic-search", params={"q": "automobile"})
+
+    assert indexed_response.status_code == 200
+    indexed_payload = indexed_response.json()
+    assert indexed_payload["results"]
+    assert indexed_payload["results"][0]["path"] == str(stale_file)
+
+    allowed_directories[:] = [str(current_workspace)]
+    filtered_response = client.get("/api/files/semantic-search", params={"q": "automobile"})
+
+    assert filtered_response.status_code == 200
+    filtered_payload = filtered_response.json()
+    assert filtered_payload["results"] == []
+    assert str(stale_file) not in str(filtered_payload)
+    assert "stale garage clue" not in str(filtered_payload)
 
 
 def test_semantic_search_uses_fts_candidates_before_rerank(tmp_path: Path) -> None:

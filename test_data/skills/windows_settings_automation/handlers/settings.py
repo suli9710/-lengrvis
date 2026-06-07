@@ -72,7 +72,7 @@ def _night_light_plan(args: dict[str, Any]) -> list[dict[str, Any]]:
     script = (
         "Start-Process 'ms-settings:nightlight'; "
         f"Write-Output 'Night light requested: {state}. Windows stores this in CloudStore binary state; "
-        "Mavris opens the native settings page instead of mutating undocumented binary data.'"
+        "Lengrvis opens the native settings page instead of mutating undocumented binary data.'"
     )
     return [
         {

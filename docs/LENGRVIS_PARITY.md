@@ -1,15 +1,15 @@
-# Mavris vs 腾讯 Marvis 差距审计报告
+# Lengrvis vs 腾讯同类 OS Agent 差距审计报告
 
 > 版本：2026-05-25 实证修订版
-> 审计方法：对 `backend/`、`desktop/`、`scripts/` 全部源码逐模块静态分析，与腾讯 Marvis 公开能力做逐项对比
+> 审计方法：对 `backend/`、`desktop/`、`scripts/` 全部源码逐模块静态分析，与腾讯同类 OS Agent 公开能力做逐项对比
 > 审计范围：backend（Python 多 Agent runtime）+ desktop（Electron 桌面端）+ scripts（构建打包）；测试数量以 README 当前验证结果为准
 
-## 一、对标对象速览：腾讯 Marvis（2026/05/20 上线）
+## 一、对标对象速览：腾讯同类 OS Agent（2026/05/20 上线）
 
-| 维度 | Marvis 公开事实 |
+| 维度 | 腾讯同类产品公开事实 |
 |---|---|
 | 定位 | 操作系统级个人 AI 助手，深度嵌入 OS 层 |
-| 团队 | 腾讯应用宝团队；https://marvis.qq.com |
+| 团队 | 腾讯应用宝团队；腾讯同类产品官网 |
 | 平台 | Windows / macOS / Android 已发布；iOS 推进中 |
 | 智能体 | **1 PM Agent + 5 专项 Agent**（File / Computer / App / Browser / Search） |
 | 模型 | 云端 Hunyuan + DeepSeek V4；端侧 Qwen 自研 |
@@ -24,7 +24,7 @@
 
 ---
 
-## 二、Mavris 当前实证盘点（2026-05-25 代码状态）
+## 二、Lengrvis 当前实证盘点（2026-05-25 代码状态）
 
 ### A. 已生产可用（38 项能力）
 
@@ -78,9 +78,9 @@
 | 3 | `document.analyze_xlsx` | `document_tools.py:138-141` | 仅 `text[:2000]` 预览 | 未接 LLM 分析 |
 | 4 | `human_gate_agent.py` | 类壳 | HITL 通过 `Approval` 模型已走通 | 无实际影响 |
 
-### C. 完全缺失（与 Marvis 存在量级差距）
+### C. 完全缺失（与 Lengrvis 存在量级差距）
 
-| # | 维度 | Marvis | Mavris | 缺口规模 |
+| # | 维度 | Lengrvis | Lengrvis | 缺口规模 |
 |---|---|---|---|---|
 | 1 | **端侧模型开箱即用** | 内置 Qwen 端侧，装完即用 | 需用户自行安装 Ollama + 拉取模型 | **体验差距大** |
 | 2 | **NPU 硬件加速** | WinML + OpenVINO + DirectML | ONNX 框架在，无实际量化模型集成 | 大 |
@@ -91,23 +91,23 @@
 | 7 | **第三方 App 深度授权** | 4+ 商业 App 已对接 | 仅 Excel COM + notepad/calc | 中 |
 | 8 | **实时桌面视觉控制** | 手机端看 PC 桌面 | 无 | 大 |
 
-### D. Mavris 反而占优
+### D. Lengrvis 反而占优
 
-| 维度 | Mavris 实现 | 备注 |
+| 维度 | Lengrvis 实现 | 备注 |
 |---|---|---|
-| 5 级精细风险分级（R0-R4） | `policy_engine.py` | Marvis 只到 L2 硬垂询 |
-| SQLite 全链路审计 + 自动 PII 脱敏 | `audit.py` + `redaction.py` | Marvis 未公开同等审计 |
-| 7 只 PonyAgent 办公室可视化 | `App.tsx` | 比 Marvis 6 只更细（多 DocumentAgent） |
-| 路径沙盒 + 符号链接逃逸拦截 | `paths.py` | Marvis 未公开 |
-| Skill 安全审查（R4 阻断 / 路径逃逸 / 敏感 header） | `skills/loader.py:138-206` | Marvis 未公开同等审查 |
-| 文档 QA 带引用（chunk citation labels） | `document_service.py` | Marvis 未公开引用机制 |
-| MockProvider 离线兜底（保证演示和测试不崩） | `llm/mock_provider.py` | Marvis 无（依赖云端） |
+| 5 级精细风险分级（R0-R4） | `policy_engine.py` | Lengrvis 只到 L2 硬垂询 |
+| SQLite 全链路审计 + 自动 PII 脱敏 | `audit.py` + `redaction.py` | Lengrvis 未公开同等审计 |
+| 7 只 PonyAgent 办公室可视化 | `App.tsx` | 比腾讯同类产品 6 只更细（多 DocumentAgent） |
+| 路径沙盒 + 符号链接逃逸拦截 | `paths.py` | Lengrvis 未公开 |
+| Skill 安全审查（R4 阻断 / 路径逃逸 / 敏感 header） | `skills/loader.py:138-206` | Lengrvis 未公开同等审查 |
+| 文档 QA 带引用（chunk citation labels） | `document_service.py` | Lengrvis 未公开引用机制 |
+| MockProvider 离线兜底（保证演示和测试不崩） | `llm/mock_provider.py` | Lengrvis 无（依赖云端） |
 
 ---
 
 ## 三、对比矩阵
 
-| 维度 | Marvis | Mavris 实证 | 差距 | 优先级 |
+| 维度 | Lengrvis | Lengrvis 实证 | 差距 | 优先级 |
 |---|---|---|---|---|
 | 主 Agent 编排 | 1+5 | Orchestrator/Planner/Supervisor/SafetyReview/OSExecutionEngine + Memory + 6 个领域 shell agent | 机制相近但口径不同 | — |
 | 副 Agent 推理 | 公开口径的 5 个专项 Agent | `_consult_subagent()` + 共享 `BaseAgent.act()`；多数成功路径是 deterministic/schema validation | 弱于“完全自主”宣传 | P1 |
@@ -127,8 +127,8 @@
 | **App 深度接入** | 4+ 商业 App | Excel COM + notepad/calc | **大** | **P1** |
 | Skill 包系统 | 一键安装 | YAML manifest + 安全审查 + 沙盒 | 相当 | — |
 | HITL 硬垂询 | L2 强制弹窗 | Approval 表 + 前端弹窗 | 相当 | — |
-| 安全沙盒 | 路径+敏感词 | 5 级 + 路径沙盒 + 浏览器二审 | mavris 占优 | — |
-| 审计日志 | 未公开 | 自动脱敏 + SQLite + 全事件 | mavris 占优 | — |
+| 安全沙盒 | 路径+敏感词 | 5 级 + 路径沙盒 + 浏览器二审 | lengrvis 占优 | — |
+| 审计日志 | 未公开 | 自动脱敏 + SQLite + 全事件 | lengrvis 占优 | — |
 | 隐私模式 | 断网可用 | 需安装 Ollama，不再静默 Mock | 中 | P0 |
 | 向量搜索 | AI 文档库/图库 | FTS5 + embedding rerank | 相当 | — |
 | Step 并行 | 多 Agent 并行 | 拓扑 + asyncio.gather | 相当 | — |
@@ -141,7 +141,7 @@
 | PC 操作手机 | 安卓 VM | 完全无 | 大 | P2 |
 | **文件监视器** | 实时索引 | 占位 | **中** | **P1** |
 | **通知服务** | 桌面/推送通知 | 占位 | **中** | **P1** |
-| 任务可视化 | 6 小马办公室 | 7 PonyAgent 办公室 | mavris 占优 | — |
+| 任务可视化 | 6 小马办公室 | 7 PonyAgent 办公室 | lengrvis 占优 | — |
 | 回滚 | 未公开 | rollback_tools | 相当 | — |
 | 监督性能 | 未公开 | BatchMessageReview 批量审查 | 相当 | — |
 
@@ -153,7 +153,7 @@
 
 #### P0-1 端侧模型开箱即用体验
 
-**问题**：Marvis 内置 Qwen 端侧模型，装完即用。Mavris 本地 provider 探测链已完整，但需用户自行安装 Ollama + 拉取模型。这是**体验差距**而非技术差距。
+**问题**：Lengrvis 内置 Qwen 端侧模型，装完即用。Lengrvis 本地 provider 探测链已完整，但需用户自行安装 Ollama + 拉取模型。这是**体验差距**而非技术差距。
 
 **方案**：
 - 安装包中内嵌 Ollama 二进制 + 预下载 `qwen2.5:3b-instruct-q4` 模型（~2GB）
@@ -196,9 +196,9 @@
 
 ### 自动化
 - 测试数量以 README 当前验证结果为准；重点关注 backend pytest、desktop typecheck/build、mobile typecheck。
-- 重点回归：`test_marvis_parity_e2e.py`
+- 重点回归：`test_lengrvis_parity_e2e.py`
 
-### 手动验证（按 Marvis 公开 demo 复现）
+### 手动验证（按腾讯同类产品 公开 demo 复现）
 1. 启动 `pnpm dev` → "帮我整理下载夹" → 验证副 Agent 路由 + 并行执行
 2. 切隐私模式 → 断网 → 输入任务 → 期望：明确报错"未检测到本地模型"
 3. "总结这份 PDF 的要点" → 验证文档 AI 摘要（LLM + 引用）
@@ -218,9 +218,9 @@
 | 指标 | 评分 | 说明 |
 |---|---|---|
 | 架构完整度 | **A-** | 编排、状态机、安全审查、PolicyEngine、ToolRuntime 和工具注册链路完整；领域 Agent 多为 shell + 共享 `act()`，不应按“12 个自主推理 Agent”宣传 |
-| 功能覆盖率（vs Marvis） | **B** | 多项底层能力对齐，但跨端、硬件加速、应用生态和独立领域推理仍有差距 |
+| 功能覆盖率（vs 腾讯同类产品） | **B** | 多项底层能力对齐，但跨端、硬件加速、应用生态和独立领域推理仍有差距 |
 | 代码质量 | **A-** | Pydantic v2 类型完备，测试覆盖较多，清晰模块边界 |
-| 安全机制 | **A+** | 5 级风险 + 路径沙盒 + PII 脱敏 + Skill 安全审查，**优于 Marvis 公开标准** |
+| 安全机制 | **A+** | 5 级风险 + 路径沙盒 + PII 脱敏 + Skill 安全审查，**优于腾讯同类产品 公开标准** |
 | 开箱即用体验 | **C** | 隐私模式需用户自装 Ollama |
 
-> 数据来源：Marvis 公开信息来自 marvis.qq.com、AIBase、TechNode、科技日报、中关村在线等（2026 年 5 月）；Mavris 实现细节来自仓库全量源码静态分析。
+> 数据来源：腾讯同类产品公开信息来自 腾讯同类产品官网、AIBase、TechNode、科技日报、中关村在线等（2026 年 5 月）；Lengrvis 实现细节来自仓库全量源码静态分析。

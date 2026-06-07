@@ -1,6 +1,6 @@
-param(
-    [string]$PortableZip = "dist\Mavris-win-portable.zip",
-    [string]$OutputExe = "dist\Mavris-0.1.0-x64-self-extracting.exe"
+﻿param(
+    [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
+    [string]$OutputExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +18,7 @@ function Resolve-ProjectPath {
 $ZipPath = Resolve-ProjectPath $PortableZip
 $OutputPath = Resolve-ProjectPath $OutputExe
 $BuildDir = Join-Path $Root "build\csharp-sfx"
-$SourcePath = Join-Path $BuildDir "MavrisSfx.cs"
+$SourcePath = Join-Path $BuildDir "LengrvisSfx.cs"
 $PayloadPath = Join-Path $BuildDir "payload.zip"
 $Csc = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 
@@ -57,10 +57,10 @@ internal static class Program
         {
             string target = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Mavris"
+                "Lengrvis"
             );
             Directory.CreateDirectory(target);
-            Directory.CreateDirectory(Path.Combine(target, ".marvis_data"));
+            Directory.CreateDirectory(Path.Combine(target, ".lengrvis_data"));
             Directory.CreateDirectory(Path.Combine(target, "logs"));
             string appTarget = Path.Combine(target, "app");
             if (Directory.Exists(appTarget))
@@ -69,12 +69,12 @@ internal static class Program
             }
             Directory.CreateDirectory(appTarget);
 
-            string tempZip = Path.Combine(Path.GetTempPath(), "mavris-payload-" + Guid.NewGuid().ToString("N") + ".zip");
+            string tempZip = Path.Combine(Path.GetTempPath(), "lengrvis-payload-" + Guid.NewGuid().ToString("N") + ".zip");
             using (Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip"))
             {
                 if (resource == null)
                 {
-                    throw new InvalidOperationException("Embedded Mavris payload was not found.");
+                    throw new InvalidOperationException("Embedded Lengrvis payload was not found.");
                 }
                 using (FileStream file = File.Create(tempZip))
                 {
@@ -85,10 +85,10 @@ internal static class Program
             ZipFile.ExtractToDirectory(tempZip, appTarget);
             File.Delete(tempZip);
 
-            string exe = Path.Combine(appTarget, "Mavris.exe");
+            string exe = Path.Combine(appTarget, "Lengrvis.exe");
             if (!File.Exists(exe))
             {
-                throw new FileNotFoundException("Mavris.exe was not extracted.", exe);
+                throw new FileNotFoundException("Lengrvis.exe was not extracted.", exe);
             }
 
             ProcessStartInfo startInfo = new ProcessStartInfo
@@ -97,16 +97,15 @@ internal static class Program
                 WorkingDirectory = appTarget,
                 UseShellExecute = false
             };
-            startInfo.EnvironmentVariables["MARVIS_CONFIG_DIR"] = target;
-            startInfo.EnvironmentVariables["MAVRIS_CONFIG_DIR"] = target;
-            startInfo.EnvironmentVariables["MARVIS_DATA_DIR"] = Path.Combine(target, ".marvis_data");
+            startInfo.EnvironmentVariables["LENGRVIS_CONFIG_DIR"] = target;
+            startInfo.EnvironmentVariables["LENGRVIS_DATA_DIR"] = Path.Combine(target, ".lengrvis_data");
             Process.Start(startInfo);
             return 0;
         }
         catch (Exception ex)
         {
             File.WriteAllText(
-                Path.Combine(Path.GetTempPath(), "mavris-sfx-error.txt"),
+                Path.Combine(Path.GetTempPath(), "lengrvis-sfx-error.txt"),
                 ex.ToString()
             );
             return 1;

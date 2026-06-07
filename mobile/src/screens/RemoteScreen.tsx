@@ -210,7 +210,7 @@ export function RemoteScreen({
 
     socket.onerror = () => {
       if (socketRef.current !== socket) return;
-      setError("暂时无法显示屏幕。请确认 Mavris 已打开，然后点重试。");
+      setError("暂时无法显示屏幕。请确认 Lengrvis 已打开，然后点重试。");
     };
 
     socket.onclose = (event) => {
@@ -449,7 +449,7 @@ function statusText(connection: ConnectionState): string {
 function readableStreamError(message: string): string {
   const normalized = message.trim().toLowerCase();
   if (!normalized) return "暂时无法显示屏幕。请点重试重新连接。";
-  if (normalized.includes("disabled")) return "桌面端尚未开启远程屏幕。请在 Mavris 设置中打开手机屏幕查看。";
+  if (normalized.includes("disabled")) return "桌面端尚未开启远程屏幕。请在 Lengrvis 设置中打开手机屏幕查看。";
   if (normalized.includes("unauthorized") || normalized.includes("token") || normalized.includes("scope")) {
     return "这台手机没有屏幕查看权限。请在桌面端重新配对后再试。";
   }

@@ -39,7 +39,7 @@ class ModelActionEnvelope(BaseModel):
 
     The model is allowed to propose intent and arguments only. Runtime state,
     approvals, risk/trust classification, and policy decisions are attached by
-    Mavris after boundary validation.
+    Lengrvis after boundary validation.
     """
 
     model_config = ConfigDict(extra="forbid")

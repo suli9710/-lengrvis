@@ -163,7 +163,35 @@ tools:
     assert package.tool_definitions[0].requires_authorized_path is True
 
 
-def test_loader_scans_skill_directory_and_runtime_registers_tool(tmp_path: Path):
+def test_local_process_skill_handlers_are_blocked_by_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.delenv("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", raising=False)
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _write_demo_skill(skills_dir)
+    registry = register_all_tools(
+        settings=AppSettings(provider_name="mock", skill_directories=[str(skills_dir)]),
+    )
+
+    python_result = registry.get("skill.demo.echo").execute({"text": "blocked"}, {})
+    shell_result = registry.get("skill.demo.shell_pid").execute({}, {})
+
+    for result in (python_result, shell_result):
+        assert result["policy"] == "local_skill_execution_disabled"
+        assert "normal local subprocesses" in result["error"]
+
+
+def test_local_python_handler_can_be_enabled_with_env_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", "1")
+    skill_root = _write_demo_skill(tmp_path)
+    package = load_skill_package(skill_root)
+
+    result = package.tool_definitions[0].execute({"text": "dev"}, {})
+
+    assert result["ok"] is True
+    assert result["echo"] == "dev"
+
+
+def test_loader_scans_skill_directory_and_runtime_registers_tool_with_settings_opt_in(tmp_path: Path):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     _write_demo_skill(skills_dir)
@@ -171,6 +199,7 @@ def test_loader_scans_skill_directory_and_runtime_registers_tool(tmp_path: Path)
         provider_name="mock",
         data_dir=str(tmp_path / "data"),
         skill_directories=[str(skills_dir)],
+        allow_unsafe_local_skill_execution=True,
     )
 
     packages = scan_skill_directories([skills_dir])
@@ -203,7 +232,11 @@ def test_shell_handler_runs_in_bounded_child_process(tmp_path: Path):
     skills_dir.mkdir()
     _write_demo_skill(skills_dir)
     registry = register_all_tools(
-        settings=AppSettings(provider_name="mock", skill_directories=[str(skills_dir)]),
+        settings=AppSettings(
+            provider_name="mock",
+            skill_directories=[str(skills_dir)],
+            allow_unsafe_local_skill_execution=True,
+        ),
     )
 
     result = registry.get("skill.demo.shell_pid").execute({}, {})
@@ -276,7 +309,7 @@ tools:
         encoding="utf-8",
     )
 
-    package = load_skill_package(skill_root)
+    package = load_skill_package(skill_root, allow_unsafe_local_skill_execution=True)
     result = package.tool_definitions[0].execute({}, {})
 
     assert "timed out" in result["error"]
@@ -327,7 +360,7 @@ tools:
 
 
 def test_repository_demo_skill_loads_and_executes(test_data_dir: Path):
-    packages = scan_skill_directories([test_data_dir / "skills"])
+    packages = scan_skill_directories([test_data_dir / "skills"], allow_unsafe_local_skill_execution=True)
     demo = next(package for package in packages if package.definition.name == "demo-echo")
     result = demo.tool_definitions[0].execute({"text": "from fixture"}, {})
 

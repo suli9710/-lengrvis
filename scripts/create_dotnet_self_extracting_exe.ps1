@@ -1,6 +1,6 @@
-param(
-    [string]$PortableZip = "dist\Mavris-win-portable.zip",
-    [string]$OutputExe = "dist\Mavris-0.1.0-x64-self-extracting.exe"
+﻿param(
+    [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
+    [string]$OutputExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +18,7 @@ function Resolve-ProjectPath {
 $ZipPath = Resolve-ProjectPath $PortableZip
 $OutputPath = Resolve-ProjectPath $OutputExe
 $BuildDir = Join-Path $Root "build\dotnet-sfx"
-$ProjectDir = Join-Path $BuildDir "MavrisSfx"
+$ProjectDir = Join-Path $BuildDir "LengrvisSfx"
 
 if (-not (Test-Path $ZipPath)) {
     throw "Portable zip was not found at $ZipPath. Run scripts\build_portable.ps1 and compress it first."
@@ -46,14 +46,14 @@ Copy-Item -LiteralPath $ZipPath -Destination (Join-Path $ProjectDir "payload.zip
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <AssemblyName>Mavris</AssemblyName>
+    <AssemblyName>Lengrvis</AssemblyName>
     <Version>0.1.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="payload.zip" LogicalName="payload.zip" />
   </ItemGroup>
 </Project>
-'@ | Set-Content -LiteralPath (Join-Path $ProjectDir "MavrisSfx.csproj") -Encoding UTF8
+'@ | Set-Content -LiteralPath (Join-Path $ProjectDir "LengrvisSfx.csproj") -Encoding UTF8
 
 @'
 using System.Diagnostics;
@@ -62,16 +62,16 @@ using System.Reflection;
 
 var target = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-    "Mavris"
+    "Lengrvis"
 );
 Directory.CreateDirectory(target);
 
-var tempZip = Path.Combine(Path.GetTempPath(), $"mavris-payload-{Guid.NewGuid():N}.zip");
+var tempZip = Path.Combine(Path.GetTempPath(), $"lengrvis-payload-{Guid.NewGuid():N}.zip");
 await using (var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip"))
 {
     if (resource is null)
     {
-        throw new InvalidOperationException("Embedded Mavris payload was not found.");
+        throw new InvalidOperationException("Embedded Lengrvis payload was not found.");
     }
     await using var file = File.Create(tempZip);
     await resource.CopyToAsync(file);
@@ -80,10 +80,10 @@ await using (var resource = Assembly.GetExecutingAssembly().GetManifestResourceS
 ZipFile.ExtractToDirectory(tempZip, target, overwriteFiles: true);
 File.Delete(tempZip);
 
-var exe = Path.Combine(target, "Mavris.exe");
+var exe = Path.Combine(target, "Lengrvis.exe");
 if (!File.Exists(exe))
 {
-    throw new FileNotFoundException("Mavris.exe was not extracted.", exe);
+    throw new FileNotFoundException("Lengrvis.exe was not extracted.", exe);
 }
 
 Process.Start(new ProcessStartInfo
@@ -99,7 +99,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$PublishedExe = Join-Path $ProjectDir "bin\Release\net8.0-windows\win-x64\publish\Mavris.exe"
+$PublishedExe = Join-Path $ProjectDir "bin\Release\net8.0-windows\win-x64\publish\Lengrvis.exe"
 if (-not (Test-Path $PublishedExe)) {
     throw "Published launcher was not created at $PublishedExe"
 }

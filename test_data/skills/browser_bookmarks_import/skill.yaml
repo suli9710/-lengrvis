@@ -32,7 +32,7 @@ tools:
       entry: handlers/bookmarks.py
       timeout_seconds: 10
   - name: skill.browser_bookmarks.import_to_memory
-    description: Import Chrome or Edge bookmark JSON files into Mavris Memory as searchable bookmark facts.
+    description: Import Chrome or Edge bookmark JSON files into Lengrvis Memory as searchable bookmark facts.
     risk: R2_REVERSIBLE_MODIFY
     supports_dry_run: true
     input_schema:

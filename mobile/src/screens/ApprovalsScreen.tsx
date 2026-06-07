@@ -175,7 +175,7 @@ export function ApprovalsScreen({
     };
 
     socket.onerror = () => {
-      setError("无法保持与电脑的连接。请确认 Mavris 已打开，然后点刷新。");
+      setError("无法保持与电脑的连接。请确认 Lengrvis 已打开，然后点刷新。");
     };
 
     socket.onclose = (event) => {
@@ -235,7 +235,7 @@ export function ApprovalsScreen({
   };
 
   const handleUnpair = () => {
-    Alert.alert("断开手机连接？", "之后仍可在电脑端 Mavris 重新连接。", [
+    Alert.alert("断开手机连接？", "之后仍可在电脑端 Lengrvis 重新连接。", [
       { text: "取消", style: "cancel" },
       { text: "断开连接", onPress: () => void disconnectPhone(), style: "destructive" },
     ]);
@@ -343,7 +343,7 @@ function IconButton({
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.includes("Failed to fetch")) {
-    return "无法连接到电脑。请确认 Mavris 已打开，然后点刷新。";
+    return "无法连接到电脑。请确认 Lengrvis 已打开，然后点刷新。";
   }
   if (error instanceof ForbiddenError) {
     return "这台手机没有权限查看这些审批。请在电脑端重新配对后再试。";

@@ -14,9 +14,12 @@ import service_wrapper
 
 
 def test_get_backend_config_uses_backend_main_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MAVRIS_BACKEND_HOST", "0.0.0.0")
-    monkeypatch.setenv("MAVRIS_BACKEND_PORT", "8123")
-    monkeypatch.setenv("MAVRIS_BACKEND_LOG_LEVEL", "debug")
+    monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "0.0.0.0")
+    monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "8123")
+    monkeypatch.setenv("LENGRVIS_BACKEND_LOG_LEVEL", "debug")
 
     config = service_wrapper.get_backend_config()
 
@@ -26,9 +29,9 @@ def test_get_backend_config_uses_backend_main_environment(monkeypatch: pytest.Mo
 
 
 def test_get_backend_config_can_read_service_options(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("MAVRIS_BACKEND_HOST", raising=False)
-    monkeypatch.delenv("MAVRIS_BACKEND_PORT", raising=False)
-    monkeypatch.delenv("MAVRIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
     fake_util = SimpleNamespace(
         GetServiceCustomOption=MagicMock(
             side_effect=lambda _name, key, default=None: {
@@ -52,7 +55,7 @@ def test_get_backend_config_can_read_service_options(monkeypatch: pytest.MonkeyP
 
 
 def test_get_backend_config_falls_back_when_port_is_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MAVRIS_BACKEND_PORT", "not-a-port")
+    monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "not-a-port")
 
     config = service_wrapper.get_backend_config()
 
@@ -61,10 +64,14 @@ def test_get_backend_config_falls_back_when_port_is_invalid(monkeypatch: pytest.
 
 def test_apply_service_runtime_options_sets_cwd_and_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("MARVIS_CONFIG_DIR", raising=False)
-    monkeypatch.delenv("MAVRIS_BACKEND_HOST", raising=False)
-    monkeypatch.delenv("MAVRIS_BACKEND_PORT", raising=False)
-    monkeypatch.delenv("MAVRIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LENGRVIS_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("LENGRVIS_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
     project_root = tmp_path / "project"
     project_root.mkdir()
     fake_util = SimpleNamespace(
@@ -86,10 +93,14 @@ def test_apply_service_runtime_options_sets_cwd_and_environment(tmp_path: Path, 
         service_wrapper.apply_service_runtime_options()
 
     assert Path.cwd() == project_root
-    assert os.environ["MARVIS_CONFIG_DIR"] == str(project_root)
-    assert os.environ["MAVRIS_BACKEND_HOST"] == "127.0.0.8"
-    assert os.environ["MAVRIS_BACKEND_PORT"] == "8124"
-    assert os.environ["MAVRIS_BACKEND_LOG_LEVEL"] == "error"
+    assert os.environ["LENGRVIS_CONFIG_DIR"] == str(project_root)
+    assert os.environ["LENGRVIS_CONFIG_DIR"] == str(project_root)
+    assert os.environ["LENGRVIS_BACKEND_HOST"] == "127.0.0.8"
+    assert os.environ["LENGRVIS_BACKEND_HOST"] == "127.0.0.8"
+    assert os.environ["LENGRVIS_BACKEND_PORT"] == "8124"
+    assert os.environ["LENGRVIS_BACKEND_PORT"] == "8124"
+    assert os.environ["LENGRVIS_BACKEND_LOG_LEVEL"] == "error"
+    assert os.environ["LENGRVIS_BACKEND_LOG_LEVEL"] == "error"
 
 
 def test_logs_directory_defaults_to_project_logs() -> None:
@@ -123,9 +134,18 @@ def test_configure_logging_skips_event_log_when_pywin32_missing(tmp_path: Path) 
 
 
 def test_create_uvicorn_server_loads_backend_app_after_runtime_options(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MAVRIS_BACKEND_HOST", "127.0.0.2")
-    monkeypatch.setenv("MAVRIS_BACKEND_PORT", "9001")
-    monkeypatch.setenv("MAVRIS_BACKEND_LOG_LEVEL", "warning")
+    monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "127.0.0.2")
+    monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "9001")
+    monkeypatch.setenv("LENGRVIS_BACKEND_LOG_LEVEL", "warning")
     app = object()
 
     fake_config = MagicMock(name="Config")
@@ -135,7 +155,9 @@ def test_create_uvicorn_server_loads_backend_app_after_runtime_options(monkeypat
         Server=MagicMock(return_value=fake_server),
     )
 
-    with patch.object(service_wrapper, "load_backend_app", return_value=app) as load_app:
+    with patch.object(service_wrapper, "load_backend_app", return_value=app) as load_app, patch.object(
+        service_wrapper, "import_pywin32_service_modules", return_value=None
+    ):
         server = service_wrapper.create_uvicorn_server(uvicorn_module=uvicorn_module)
 
     assert server is fake_server
@@ -331,7 +353,7 @@ def test_main_persists_install_options() -> None:
                 "--startup",
                 "auto",
                 "--project-root",
-                "C:/work/mavris",
+                "C:/work/lengrvis",
                 "--backend-host",
                 "0.0.0.0",
                 "--backend-port",
@@ -347,7 +369,7 @@ def test_main_persists_install_options() -> None:
         serviceClassString=service_wrapper.SERVICE_CLASS_STRING,
         argv=["service_wrapper.py", "--startup", "auto", "install"],
     )
-    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "ProjectRoot", "C:/work/mavris")
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "ProjectRoot", "C:/work/lengrvis")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendHost", "0.0.0.0")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendPort", "9000")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendLogLevel", "debug")

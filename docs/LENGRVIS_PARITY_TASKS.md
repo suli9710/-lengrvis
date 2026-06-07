@@ -1,6 +1,6 @@
-# Mavris 对齐 Marvis 任务拆分
+# Lengrvis 对齐腾讯同类产品 任务拆分
 
-> 来源审计报告：`docs/MARVIS_PARITY.md`（2026-05-25 实证修订版）
+> 来源审计报告：`docs/LENGRVIS_PARITY.md`（2026-05-25 实证修订版）
 > 更新日期：2026-05-25
 > 状态：基于代码实证重新评估，原 T01-T10、T12 已在代码中实现
 
@@ -34,7 +34,7 @@
 
 #### 要构建什么
 
-让用户安装 Mavris 后能清晰进入隐私模式准备流程。当前本地 provider 探测链已完整（Ollama/LM Studio/llama.cpp），Ollama 运行时和模型默认不随包携带，需要在设置页按需安装/拉取。
+让用户安装 Lengrvis 后能清晰进入隐私模式准备流程。当前本地 provider 探测链已完整（Ollama/LM Studio/llama.cpp），Ollama 运行时和模型默认不随包携带，需要在设置页按需安装/拉取。
 
 #### 当前进展
 
@@ -76,7 +76,7 @@
 
 #### 要构建什么
 
-把图片聚类从 hash + 简单标签升级为语义标签驱动的多维度分组，对齐 Marvis "AI 图库"能力。
+把图片聚类从 hash + 简单标签升级为语义标签驱动的多维度分组，对齐腾讯同类产品 "AI 图库"能力。
 
 #### 方案
 
@@ -173,7 +173,7 @@
 #### 预计涉及文件
 
 - `backend/app/tools/app_tools.py`
-- 新建 Skill 包（`.marvis_data/skills/`）
+- 新建 Skill 包（`.lengrvis_data/skills/`）
 
 ---
 

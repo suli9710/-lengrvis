@@ -5,6 +5,7 @@ import json
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -18,6 +19,7 @@ from app.guardian import create_guardian_app
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import StepPhase
 from app.orchestration.task_phase import TaskPhase
+from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
 from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_INPUT_SCOPE, decode_mobile_token, issue_mobile_token
 from app.security import mobile_jwt
 from app.security.sensitive_confirmation import create_settings_confirmation
@@ -36,8 +38,18 @@ async def _backend_available() -> bool:
     return True
 
 
+def _require_desktop_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+    token: str = "guardian-desktop-secret",
+) -> str:
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", token)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    return token
+
+
 def test_guardian_health_is_lightweight(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     import app.guardian as guardian_module
@@ -57,9 +69,9 @@ def test_guardian_health_is_lightweight(monkeypatch, tmp_path: Path):
 
 
 def test_guardian_rejects_remote_desktop_websocket_proxy(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MARVIS_ALLOW_LAN_DESKTOP_API", raising=False)
-    monkeypatch.delenv("MAVRIS_ALLOW_LAN_DESKTOP_API", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
+    monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
     db.init_db()
 
     client = TestClient(create_guardian_app(), client=("192.168.1.44", 50100))
@@ -76,17 +88,18 @@ def test_import_backend_main_keeps_full_backend_lazy():
     sys.modules.pop("app.main", None)
     import backend.main as backend_entry
 
-    assert backend_entry.app.title == "Mavris Guardian Backend"
+    assert backend_entry.app.title == "Lengrvis Guardian Backend"
     assert "app.main" not in sys.modules
 
 
 def test_guardian_full_backend_probe_uses_runtime_status(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    token = _require_desktop_api_token(monkeypatch)
     db.init_db()
 
     import app.services.guardian_runtime as guardian_runtime
 
-    requested_urls: list[str] = []
+    requested: list[tuple[str, dict[str, str]]] = []
 
     class FakeResponse:
         status_code = 200
@@ -101,21 +114,29 @@ def test_guardian_full_backend_probe_uses_runtime_status(monkeypatch, tmp_path: 
         async def __aexit__(self, *args):  # noqa: ANN002
             return None
 
-        async def get(self, url: str):
-            requested_urls.append(url)
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            requested.append((url, dict(kwargs.get("headers") or {})))
             return FakeResponse()
 
     monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", FakeClient)
 
     assert asyncio.run(guardian_runtime.runtime._is_full_backend_healthy()) is True
-    assert requested_urls == [f"{guardian_runtime.FULL_BACKEND_URL}/api/runtime/status"]
+    assert requested == [
+        (
+            f"{guardian_runtime.FULL_BACKEND_URL}/api/runtime/status",
+            {DESKTOP_API_TOKEN_HEADER: token},
+        )
+    ]
 
 
 def test_guardian_idle_recycle_treats_active_runs_as_busy(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    token = _require_desktop_api_token(monkeypatch)
     db.init_db()
 
     import app.services.guardian_runtime as guardian_runtime
+
+    requested_headers: list[dict[str, str]] = []
 
     class FakeResponse:
         status_code = 200
@@ -133,16 +154,86 @@ def test_guardian_idle_recycle_treats_active_runs_as_busy(monkeypatch, tmp_path:
         async def __aexit__(self, *args):  # noqa: ANN002
             return None
 
-        async def get(self, url: str):  # noqa: ARG002
+        async def get(self, url: str, **kwargs):  # noqa: ANN003, ARG002
+            requested_headers.append(dict(kwargs.get("headers") or {}))
             return FakeResponse()
 
     monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", FakeClient)
 
     assert asyncio.run(guardian_runtime.runtime._full_backend_has_active_runs()) is True
+    assert requested_headers == [{DESKTOP_API_TOKEN_HEADER: token}]
+
+
+def test_guardian_runtime_internal_http_calls_send_desktop_token(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    token = _require_desktop_api_token(monkeypatch)
+    db.init_db()
+
+    import app.services.guardian_runtime as guardian_runtime
+
+    calls: list[tuple[str, str, dict[str, str]]] = []
+
+    class FakeResponse:
+        status_code = 200
+        content = b"{}"
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"activeRunIds": []}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):  # noqa: ANN002
+            return None
+
+        async def get(self, url: str, **kwargs):  # noqa: ANN003
+            calls.append(("get", url, dict(kwargs.get("headers") or {})))
+            return FakeResponse()
+
+        async def post(self, url: str, **kwargs):  # noqa: ANN003
+            calls.append(("post", url, dict(kwargs.get("headers") or {})))
+            return FakeResponse()
+
+        async def request(self, method: str, url: httpx.URL, **kwargs):  # noqa: ANN003
+            calls.append((method.lower(), str(url), dict(kwargs.get("headers") or {})))
+            return FakeResponse()
+
+    monkeypatch.setattr(guardian_runtime.httpx, "AsyncClient", FakeClient)
+
+    guardian = guardian_runtime.GuardianRuntime()
+    guardian.shell_mode = "foreground"
+
+    async def runner() -> httpx.Response:
+        await guardian._notify_full_foreground()
+        await guardian._notify_full_background()
+        return await guardian.proxy(
+            "GET",
+            "/api/tasks",
+            headers={
+                "Host": "127.0.0.1:8000",
+                "Content-Length": "10",
+                "X-Lengrvis-Desktop-Token": "stale-token",
+            },
+        )
+
+    response = asyncio.run(runner())
+
+    assert response.status_code == 200
+    assert [call[0] for call in calls] == ["post", "post", "get", "get"]
+    assert all(headers.get(DESKTOP_API_TOKEN_HEADER) == token for _method, _url, headers in calls)
+    proxy_headers = calls[-1][2]
+    assert all(key.lower() not in {"host", "content-length"} for key in proxy_headers)
+    assert sum(1 for key in proxy_headers if key.lower() == DESKTOP_API_TOKEN_HEADER) == 1
+    assert "stale-token" not in proxy_headers.values()
 
 
 def test_guardian_scheduler_creates_wakeup_without_orchestrator(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     scheduler_service._scheduler = None
     guardian_scheduler._scheduler = None
@@ -171,7 +262,7 @@ def test_guardian_scheduler_creates_wakeup_without_orchestrator(monkeypatch, tmp
 
 
 def test_guardian_scheduler_skips_when_full_backend_is_available(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     scheduler_service._scheduler = None
     guardian_scheduler._scheduler = None
@@ -192,7 +283,7 @@ def test_guardian_scheduler_skips_when_full_backend_is_available(monkeypatch, tm
 
 
 def test_guardian_scheduler_concurrent_ticks_create_one_wakeup(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     scheduler_service._scheduler = None
     guardian_scheduler._scheduler = None
@@ -241,7 +332,7 @@ def test_guardian_scheduler_concurrent_ticks_create_one_wakeup(monkeypatch, tmp_
 
 
 def test_schedule_wakeup_creation_is_atomic_under_concurrent_callers(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     scheduler_service._scheduler = None
     schedule = Scheduler().schedule("*/5 * * * *", "scan downloads", mode="hybrid")
@@ -286,7 +377,7 @@ def test_schedule_wakeup_creation_is_atomic_under_concurrent_callers(monkeypatch
 
 
 def test_wakeup_decision_is_atomic_under_concurrent_submitters(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     wakeup = Wakeup(goal="scan downloads", mode="hybrid")
     db.upsert_model("wakeups", wakeup)
@@ -320,7 +411,7 @@ def test_wakeup_decision_is_atomic_under_concurrent_submitters(monkeypatch, tmp_
 
 
 def test_mobile_wakeup_payload_redacts_sensitive_fields(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup", device_name="Wakeup Phone")
@@ -356,7 +447,7 @@ def test_mobile_wakeup_payload_redacts_sensitive_fields(monkeypatch, tmp_path: P
 
 
 def test_guardian_wakeup_approve_returns_refreshed_failed_payload(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
     db.upsert_model("wakeups", wakeup)
@@ -399,7 +490,7 @@ def test_guardian_wakeup_approve_returns_refreshed_failed_payload(monkeypatch, t
 
 
 def test_guardian_wakeup_run_response_without_run_id_fails(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
     db.upsert_model("wakeups", wakeup)
@@ -444,7 +535,7 @@ def test_guardian_wakeup_run_response_without_run_id_fails(monkeypatch, tmp_path
 
 
 def test_guardian_wakeup_run_failure_redacts_persisted_upstream_error(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
     db.upsert_model("wakeups", wakeup)
@@ -488,7 +579,7 @@ def test_guardian_wakeup_run_failure_redacts_persisted_upstream_error(monkeypatc
 
 
 def test_guardian_wakeup_approve_returns_completed_payload_with_run_id(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
     db.upsert_model("wakeups", wakeup)
@@ -533,8 +624,62 @@ def test_guardian_wakeup_approve_returns_completed_payload_with_run_id(monkeypat
     assert stored.error == ""
 
 
+def test_guardian_approval_and_wakeup_internal_posts_send_desktop_token(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    token = _require_desktop_api_token(monkeypatch)
+    db.init_db()
+    approval = Approval(task_id="task_guardian_internal_token", step_id="step_1", message="Approve")
+    wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
+    db.upsert_model("approvals", approval, status=approval.status)
+    db.upsert_model("wakeups", wakeup)
+
+    import app.api.routes_guardian as routes_guardian
+
+    posts: list[tuple[str, dict[str, str], dict[str, Any] | None]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict[str, Any]):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = json.dumps(payload, ensure_ascii=False)
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):  # noqa: ANN001, ANN002
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001, ANN201, ARG002
+            return None
+
+        async def post(self, url: str, **kwargs):  # noqa: ANN003
+            posts.append((url, dict(kwargs.get("headers") or {}), kwargs.get("json")))
+            if url.endswith("/api/runs"):
+                return FakeResponse(200, {"run_id": "osrun_internal_token"})
+            return FakeResponse(200, {"ok": True})
+
+    async def fake_wake_transient(*args, **kwargs):  # noqa: ANN001, ANN002
+        return None
+
+    monkeypatch.setattr(routes_guardian.runtime, "wake_transient", fake_wake_transient)
+    monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
+
+    asyncio.run(routes_guardian._wake_full_backend_for_approval(approval))
+    asyncio.run(routes_guardian._execute_wakeup(wakeup))
+
+    assert [url.rsplit("/", 1)[-1] for url, _headers, _json in posts] == ["continue", "runs"]
+    assert all(headers == {DESKTOP_API_TOKEN_HEADER: token} for _url, headers, _json in posts)
+    stored = wakeup_service.get_wakeup(wakeup.id)
+    assert stored.status == "completed"
+    assert stored.run_id == "osrun_internal_token"
+
+
 def test_guardian_mobile_wakeup_reject_returns_refreshed_payload(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup_guardian", device_name="Wakeup Guardian")
     token = issue_mobile_token(device_id="mobile_wakeup_guardian", device_name="Wakeup Guardian")
@@ -554,7 +699,7 @@ def test_guardian_mobile_wakeup_reject_returns_refreshed_payload(monkeypatch, tm
 
 
 def test_wakeup_approval_requires_enabled_source_schedule(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     scheduler_service._scheduler = None
     schedule = Scheduler().schedule("*/5 * * * *", "scan downloads", mode="hybrid")
@@ -571,7 +716,7 @@ def test_wakeup_approval_requires_enabled_source_schedule(monkeypatch, tmp_path:
 
 
 def test_wakeup_approval_requires_existing_source_schedule(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     scheduler_service._scheduler = None
     schedule = Scheduler().schedule("*/5 * * * *", "scan downloads", mode="hybrid")
@@ -589,7 +734,7 @@ def test_wakeup_approval_requires_existing_source_schedule(monkeypatch, tmp_path
 
 
 def test_guardian_approval_does_not_execute_step(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_approval",
@@ -636,7 +781,7 @@ def test_guardian_approval_does_not_execute_step(monkeypatch, tmp_path: Path):
 
 
 def test_guardian_approval_surfaces_full_backend_failure(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_approval_failure",
@@ -693,7 +838,7 @@ def test_guardian_approval_surfaces_full_backend_failure(monkeypatch, tmp_path: 
 
 
 def test_guardian_approval_surfaces_full_backend_continue_transport_failure(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_approval_continue_transport_failure",
@@ -759,7 +904,7 @@ def test_guardian_approval_surfaces_full_backend_continue_transport_failure(monk
 
 
 def test_guardian_mobile_approval_surfaces_full_backend_continue_transport_failure(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_continue_transport_failure", device_name="Mobile")
     token = issue_mobile_token(device_id="mobile_continue_transport_failure", device_name="Mobile")
@@ -835,7 +980,7 @@ def test_guardian_mobile_approval_surfaces_full_backend_continue_transport_failu
 
 
 def test_guardian_approval_wraps_non_json_full_backend_continue_failure(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_non_json_continue_failure",
@@ -911,7 +1056,7 @@ def test_guardian_approval_wraps_non_json_full_backend_continue_failure(monkeypa
 
 
 def test_guardian_approval_redacts_json_full_backend_continue_failure_detail(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_json_continue_failure_redaction",
@@ -983,7 +1128,7 @@ def test_guardian_approval_redacts_json_full_backend_continue_failure_detail(mon
 
 
 def test_guardian_approval_redacts_nested_backend_approval_preview(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_backend_approval_preview_redaction",
@@ -1060,7 +1205,7 @@ def test_guardian_approval_redacts_nested_backend_approval_preview(monkeypatch, 
 
 
 def test_guardian_approval_can_retry_after_transient_execute_failure(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_approval_retry",
@@ -1138,7 +1283,7 @@ def test_guardian_approval_can_retry_after_transient_execute_failure(monkeypatch
 
 
 def test_guardian_approval_requires_full_backend_to_consume_approval(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
         id="task_guardian_unconsumed_approval",
@@ -1204,7 +1349,7 @@ def test_guardian_approval_requires_full_backend_to_consume_approval(monkeypatch
 
 
 def test_guardian_mobile_routes_enforce_device_bound_approval(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_first", device_name="First")
@@ -1235,7 +1380,7 @@ def test_guardian_mobile_routes_enforce_device_bound_approval(monkeypatch, tmp_p
 
 
 def test_guardian_mobile_device_list_only_returns_calling_device(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
 
@@ -1257,7 +1402,7 @@ def test_guardian_mobile_device_list_only_returns_calling_device(monkeypatch, tm
 
 
 def test_guardian_mobile_routes_enforce_remote_input_scope(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     _enable_remote_desktop()
@@ -1298,7 +1443,7 @@ def test_guardian_mobile_routes_enforce_remote_input_scope(monkeypatch, tmp_path
 
 
 def test_guardian_mobile_decision_rejects_invalid_decision_without_mutating_approval(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_invalid_decision", device_name="Invalid Decision")
@@ -1323,7 +1468,7 @@ def test_guardian_mobile_decision_rejects_invalid_decision_without_mutating_appr
 
 
 def test_guardian_mobile_reject_denies_step_and_cancels_task(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_reject_lifecycle", device_name="Reject Lifecycle")
@@ -1366,7 +1511,7 @@ def test_guardian_mobile_reject_denies_step_and_cancels_task(monkeypatch, tmp_pa
 
 
 def test_guardian_desktop_reject_denies_step_and_cancels_task(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     task = Task(user_goal="Desktop reject lifecycle", status=TaskStatus.WAITING_USER_APPROVAL)
@@ -1402,7 +1547,7 @@ def test_guardian_desktop_reject_denies_step_and_cancels_task(monkeypatch, tmp_p
 
 
 def test_guardian_mobile_approval_preserves_remote_input_denial_reason(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     _enable_remote_desktop()
@@ -1436,7 +1581,7 @@ def test_guardian_mobile_approval_preserves_remote_input_denial_reason(monkeypat
 
 
 def test_guardian_mobile_websocket_streams_grant_events_and_closes_on_revoke(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     _enable_remote_desktop()
@@ -1479,7 +1624,7 @@ def test_guardian_mobile_websocket_streams_grant_events_and_closes_on_revoke(mon
 
 
 def test_guardian_mobile_websocket_closes_after_token_expires(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="guardian_expiring_ws", device_name="Guardian Phone")

@@ -103,7 +103,7 @@ const officeWorkSeats: Record<string, OfficeFootPoint> = {
 export const officeAgents: OfficeAgentDefinition[] = [
   {
     id: "pm",
-    name: "Marvis",
+    name: "Lengrvis",
     role: "主控调度",
     icon: Sparkles,
     prompt: "帮我把今天的电脑任务拆成一个安全执行计划",

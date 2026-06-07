@@ -438,7 +438,7 @@ function buildDecisionSummary(
   if (!plan) {
     return {
       title: "批准前请确认动作内容",
-      detail: "这不是自动执行。只有你点“批准”后，Mavris 才会继续这项操作。",
+      detail: "这不是自动执行。只有你点“批准”后，Lengrvis 才会继续这项操作。",
       scope: "查看动作说明",
       recovery: "按动作决定",
       guard: "等待你批准",

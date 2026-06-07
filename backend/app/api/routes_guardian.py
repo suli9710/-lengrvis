@@ -16,7 +16,7 @@ from app.core import db
 from app.core.schemas import AgentMessage, Approval, ApprovalStatus, MessageType, RunCreateRequest, Wakeup
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.policy.redaction import redact_value
-from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_api_token_headers
 from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     mobile_token_from_websocket,
@@ -424,7 +424,10 @@ async def _wake_full_backend_for_approval(approval: Approval) -> Approval | None
         ) from exc
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(f"{full_backend_url()}/api/runtime/approvals/{approval.id}/continue")
+            response = await client.post(
+                f"{full_backend_url()}/api/runtime/approvals/{approval.id}/continue",
+                headers=desktop_api_token_headers(),
+            )
     except Exception as exc:  # noqa: BLE001 - transport failures should be retryable approval errors.
         raise HTTPException(
             status_code=503,
@@ -523,6 +526,7 @@ async def _execute_wakeup(wakeup: Wakeup) -> None:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 f"{full_backend_url()}/api/runs",
+                headers=desktop_api_token_headers(),
                 json=RunCreateRequest(message=wakeup.goal, mode=wakeup.mode).model_dump(mode="json"),
             )
         if response.status_code >= 400:

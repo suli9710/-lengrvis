@@ -17,7 +17,7 @@ from app.tools.registry import register_all_tools
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     yield
 
@@ -48,8 +48,8 @@ def test_mock_provider_ocr_returns_string():
 
 
 def test_describe_image_tool_uses_provider(sample_png, monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
     context = {"allowed_directories": [str(tmp_path)]}
     result = vision_tools.describe_image({"path": str(sample_png)}, context)
@@ -59,8 +59,8 @@ def test_describe_image_tool_uses_provider(sample_png, monkeypatch, tmp_path):
 
 
 def test_ocr_image_tool_returns_text(sample_png, monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
     context = {"allowed_directories": [str(tmp_path)]}
     result = vision_tools.ocr_image({"path": str(sample_png)}, context)
@@ -163,7 +163,7 @@ def test_embed_image_runs_local_onnx_session(sample_png, monkeypatch, tmp_path):
 
 
 def test_unsupported_extension_rejected(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     fake = tmp_path / "note.txt"
     fake.write_text("hello", encoding="utf-8")
     context = {"allowed_directories": [str(tmp_path)]}
@@ -185,7 +185,7 @@ def test_indexer_parser_runs_ocr_on_images(sample_png, monkeypatch):
     """B3: indexer/parsers must route image files through ocr_service."""
     from app.indexer import parsers
 
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setattr("app.llm.registry.detect_local_backend", lambda: None)
     text = parsers.parse_file(sample_png)
     assert isinstance(text, str)

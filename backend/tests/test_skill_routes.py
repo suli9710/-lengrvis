@@ -37,9 +37,10 @@ tools:
 
 def test_skill_routes_list_import_and_refresh(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("MARVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.delenv("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", raising=False)
     db.init_db()
 
     source = _write_skill(tmp_path / "source")
@@ -54,7 +55,8 @@ def test_skill_routes_list_import_and_refresh(monkeypatch, tmp_path: Path):
     payload = import_response.json()
     assert payload["skill"]["name"] == "route-demo"
     assert payload["refresh"]["tool_count"] > 0
-    assert tool_registry.get("skill.route_demo.echo").execute({"text": "ok"}, {})["echo"] == "ok"
+    execution_result = tool_registry.get("skill.route_demo.echo").execute({"text": "ok"}, {})
+    assert execution_result["policy"] == "local_skill_execution_disabled"
 
     list_response = client.get("/api/skills")
     assert list_response.status_code == 200
@@ -68,8 +70,8 @@ def test_skill_routes_list_import_and_refresh(monkeypatch, tmp_path: Path):
 
 def test_skill_route_imports_zip(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("MARVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
     db.init_db()
 
     source = _write_skill(tmp_path / "source", name="zip-demo")
@@ -86,8 +88,8 @@ def test_skill_route_imports_zip(monkeypatch, tmp_path: Path):
 
 def test_skill_route_reports_invalid_import(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("MARVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
     db.init_db()
 
     bad = tmp_path / "bad"

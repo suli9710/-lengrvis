@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 from string import Template
 from typing import Any, Mapping
 
-from app.config import AppSettings, get_base_settings
+from app.config import AppSettings, get_base_settings, get_env
 
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent
@@ -114,9 +113,9 @@ def hot_reload_enabled() -> bool:
 
 
 def _dev_mode(settings: AppSettings | None = None) -> bool:
-    if _truthy(os.environ.get("MAVRIS_DEV")) or _truthy(os.environ.get("MARVIS_DEV")):
+    if _truthy(get_env("LENGRVIS_DEV")):
         return True
-    env_mode = os.environ.get("MARVIS_MODE") or os.environ.get("MAVRIS_MODE")
+    env_mode = get_env("LENGRVIS_MODE")
     if env_mode is not None:
         return env_mode.strip().lower() == "dev"
     global _DEV_MODE_CACHE

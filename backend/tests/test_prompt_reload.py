@@ -53,14 +53,14 @@ def test_render_prompt_substitution(monkeypatch, tmp_path: Path):
     _write_prompt(monkeypatch, tmp_path, "template.md", "Hello $name from $place")
 
     assert (
-        prompts.render_prompt("template.md", {"name": "Mavris", "place": "dev"})
-        == "Hello Mavris from dev"
+        prompts.render_prompt("template.md", {"name": "Lengrvis", "place": "dev"})
+        == "Hello Lengrvis from dev"
     )
 
 
 def test_prompt_list_api(monkeypatch, tmp_path: Path):
     _write_prompt(monkeypatch, tmp_path, "listed.md", "API prompt")
-    monkeypatch.setenv("MAVRIS_DEV", "1")
+    monkeypatch.setenv("LENGRVIS_DEV", "1")
 
     response = TestClient(create_app()).get("/api/dev/prompts")
 
@@ -73,8 +73,8 @@ def test_prompt_list_api(monkeypatch, tmp_path: Path):
 
 
 def test_prompt_list_api_not_registered_in_production(monkeypatch):
-    monkeypatch.delenv("MAVRIS_DEV", raising=False)
-    monkeypatch.setenv("MARVIS_MODE", "privacy")
+    monkeypatch.delenv("LENGRVIS_DEV", raising=False)
+    monkeypatch.setenv("LENGRVIS_MODE", "privacy")
 
     response = TestClient(create_app()).get("/api/dev/prompts")
 

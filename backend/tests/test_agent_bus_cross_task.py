@@ -8,7 +8,7 @@ from app.orchestration.agent_bus import GLOBAL_TASK_ID, AgentBus
 
 
 def test_publish_cross_task_persists_global_message(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     bus = AgentBus()
 
@@ -27,7 +27,7 @@ def test_publish_cross_task_persists_global_message(monkeypatch, tmp_path):
 
 
 def test_global_subscription_receives_matching_event_type(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     async def run() -> None:
@@ -53,7 +53,7 @@ def test_global_subscription_receives_matching_event_type(monkeypatch, tmp_path)
 
 
 def test_global_subscription_does_not_replace_task_scoped_subscription(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     async def run() -> None:
@@ -77,7 +77,7 @@ def test_global_subscription_does_not_replace_task_scoped_subscription(monkeypat
 
 
 def test_unsubscribe_global_without_event_type_removes_specific_subscription(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     async def run() -> None:

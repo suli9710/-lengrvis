@@ -885,7 +885,7 @@ def _lan_ip() -> str:
 def _backend_port() -> int:
     import os
 
-    return int(os.environ.get("MAVRIS_BACKEND_PORT") or os.environ.get("MARVIS_BACKEND_PORT") or "8000")
+    return int(os.environ.get("LENGRVIS_BACKEND_PORT") or os.environ.get("LENGRVIS_BACKEND_PORT") or os.environ.get("LENGRVIS_BACKEND_PORT") or "8000")
 
 
 def _iso(value: float) -> str:

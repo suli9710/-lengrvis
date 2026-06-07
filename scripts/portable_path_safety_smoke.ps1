@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$SafeOutputDir = ".tmp\portable-path-safety-ok"
 )
 
@@ -51,7 +51,7 @@ function Assert-FailsWith {
 
 Assert-Passes -Label "safe child output" -OutputDir $SafeOutputDir
 Assert-FailsWith -Label "repo root output refused" -OutputDir "." -Expected "not the root itself"
-Assert-FailsWith -Label "sibling prefix output refused" -OutputDir "..\mavris-evil" -Expected "must stay under"
+Assert-FailsWith -Label "sibling prefix output refused" -OutputDir "..\lengrvis-evil" -Expected "must stay under"
 Assert-FailsWith -Label "renderer build input refused" -OutputDir "desktop\dist" -Expected "must not be the same directory or nested"
 Assert-FailsWith -Label "dist input file parent refused" -OutputDir "dist" -Expected "must not contain input file"
 

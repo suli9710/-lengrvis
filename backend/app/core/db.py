@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hmac
 import json
-import os
 import re
 import secrets
 import sqlite3
@@ -16,10 +15,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from app.config import get_base_settings
+from app.config import get_base_settings, get_env
 
 
-_DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("marvis_data_dir_override", default=None)
+_DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_override", default=None)
 AUDIT_GENESIS_HASH = "0" * 64
 AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"
 DATA_TABLES = frozenset(
@@ -92,7 +91,8 @@ def _now_iso() -> str:
 
 def db_path() -> Path:
     override = _DATA_DIR_OVERRIDE.get()
-    path = Path(override or get_base_settings().data_dir) / "marvis.db"
+    data_dir = Path(override or get_base_settings().data_dir)
+    path = data_dir / "lengrvis.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -1200,7 +1200,7 @@ def _audit_event_hmac(event_hash: str) -> str:
 
 
 def _audit_hmac_secret() -> str:
-    configured = (os.environ.get("MAVRIS_AUDIT_HMAC_SECRET") or os.environ.get("MARVIS_AUDIT_HMAC_SECRET") or "").strip()
+    configured = str(get_env("LENGRVIS_AUDIT_HMAC_SECRET") or "").strip()
     if configured:
         return configured
 

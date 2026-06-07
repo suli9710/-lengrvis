@@ -15,12 +15,13 @@ from app.orchestration.execution_models import (
     RunState,
     TERMINAL_RUN_PHASES,
 )
+from app.config import env_aliases
 
 
-DEFAULT_ENGINE_ENV = "MARVIS_DEFAULT_ENGINE"
-LEGACY_DEFAULT_ENGINE_ENVS = ("MARVIS_AGENT_LOOP_DEFAULT_ENGINE", "MARVIS_EXECUTION_DEFAULT_ENGINE")
-EXECUTION_ENGINES_ENV = "MARVIS_EXECUTION_ENGINES"
-MAX_TURNS_ENV = "MARVIS_AGENT_LOOP_MAX_TURNS"
+DEFAULT_ENGINE_ENV = "LENGRVIS_DEFAULT_ENGINE"
+LEGACY_DEFAULT_ENGINE_ENVS = ("LENGRVIS_AGENT_LOOP_DEFAULT_ENGINE", "LENGRVIS_EXECUTION_DEFAULT_ENGINE")
+EXECUTION_ENGINES_ENV = "LENGRVIS_EXECUTION_ENGINES"
+MAX_TURNS_ENV = "LENGRVIS_AGENT_LOOP_MAX_TURNS"
 DEFAULT_MAX_TURNS = 30
 
 _DEVELOPER_GOAL_RE = re.compile(
@@ -43,10 +44,10 @@ _OS_GOAL_RE = re.compile(
 
 def configured_default_engine(environ: Mapping[str, str] | None = None) -> EngineSelection:
     source = environ or os.environ
-    raw = source.get(DEFAULT_ENGINE_ENV, "").strip().casefold()
+    raw = _env(source, DEFAULT_ENGINE_ENV).strip().casefold()
     if not raw:
         for env_key in LEGACY_DEFAULT_ENGINE_ENVS:
-            raw = source.get(env_key, "").strip().casefold()
+            raw = _env(source, env_key).strip().casefold()
             if raw:
                 break
     raw = raw or "auto"
@@ -54,11 +55,19 @@ def configured_default_engine(environ: Mapping[str, str] | None = None) -> Engin
 
 
 def configured_max_turns(environ: Mapping[str, str] | None = None) -> int:
-    raw = (environ or os.environ).get(MAX_TURNS_ENV, str(DEFAULT_MAX_TURNS))
+    raw = _env(environ or os.environ, MAX_TURNS_ENV, str(DEFAULT_MAX_TURNS))
     try:
         return max(1, int(raw))
     except (TypeError, ValueError):
         return DEFAULT_MAX_TURNS
+
+
+def _env(source: Mapping[str, str], key: str, default: str = "") -> str:
+    for alias in env_aliases(key):
+        raw = source.get(alias)
+        if raw:
+            return raw
+    return default
 
 
 def route_engine(

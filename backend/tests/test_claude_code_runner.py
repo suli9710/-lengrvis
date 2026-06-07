@@ -108,7 +108,7 @@ print(json.dumps({"type": "result", "subtype": "success", "duration_ms": 1, "dur
 
 
 @pytest.mark.asyncio
-async def test_fake_claude_code_stream_json_becomes_mavris_result(tmp_path, fake_claude_cli) -> None:
+async def test_fake_claude_code_stream_json_becomes_lengrvis_result(tmp_path, fake_claude_cli) -> None:
     record_path = tmp_path / "record.json"
     settings = AppSettings(
         base_url="https://openai-compatible.example/v1",
@@ -136,9 +136,9 @@ async def test_fake_claude_code_stream_json_becomes_mavris_result(tmp_path, fake
     assert result.state.observations[0].source == "claude_code.stream_json"
     assert result.outputs["claude_code"]["error_classification"] is None
     assert {"agent.message", "tool.proposed", "tool.progress", "tool.result", "run.completed"}.issubset(
-        {event["name"] for event in result.outputs["claude_code"]["mavris_events"]}
+        {event["name"] for event in result.outputs["claude_code"]["lengrvis_events"]}
     )
-    tool_proposed = next(event for event in result.outputs["claude_code"]["mavris_events"] if event["name"] == "tool.proposed")
+    tool_proposed = next(event for event in result.outputs["claude_code"]["lengrvis_events"] if event["name"] == "tool.proposed")
     assert tool_proposed["payload"]["claude_event_index"] == 2
     assert tool_proposed["payload"]["source_event_type"] == "assistant"
     assert tool_proposed["payload"]["tool_name"] == "Read"
@@ -187,7 +187,7 @@ async def test_cancel_terminates_fake_claude_code_process(tmp_path, fake_claude_
     assert result.state.phase == RunPhase.CANCELLED
     assert result.outputs["claude_code"]["cancelled"] is True
     assert result.outputs["claude_code"]["error_classification"] == "cancelled"
-    assert any(event["name"] == "run.cancelled" for event in result.outputs["claude_code"]["mavris_events"])
+    assert any(event["name"] == "run.cancelled" for event in result.outputs["claude_code"]["lengrvis_events"])
 
 
 @pytest.mark.asyncio
@@ -236,7 +236,7 @@ async def test_claude_code_error_classification_modes(tmp_path, fake_claude_cli,
     assert result.state.phase == phase
     assert result.outputs["claude_code"]["ok"] is False
     assert result.outputs["claude_code"]["error_classification"] == expected
-    assert any(event["name"] == "run.failed" for event in result.outputs["claude_code"]["mavris_events"])
+    assert any(event["name"] == "run.failed" for event in result.outputs["claude_code"]["lengrvis_events"])
     if expected == "permission_denial":
         assert result.outputs["claude_code"]["permission_denials"][0]["tool_name"] == "Write"
         assert result.outputs["claude_code"]["usage"] == {"input_tokens": 1}
@@ -254,8 +254,8 @@ def test_bad_ndjson_summary_is_classified_as_error() -> None:
 
 @pytest.mark.asyncio
 async def test_launch_failure_returns_health_diagnostic(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("MARVIS_CLAUDE_CODE_COMMAND", raising=False)
-    monkeypatch.setenv("MARVIS_CLAUDE_CODE_VENDOR_ROOT", str(tmp_path / "missing-vendor"))
+    monkeypatch.delenv("LENGRVIS_CLAUDE_CODE_COMMAND", raising=False)
+    monkeypatch.setenv("LENGRVIS_CLAUDE_CODE_VENDOR_ROOT", str(tmp_path / "missing-vendor"))
     settings = AppSettings(api_key="test-api-key", model="openai/gpt-5")
 
     summary = await run_claude_code("launch", cwd=tmp_path, settings=settings, config=ClaudeCodeConfig())
@@ -265,4 +265,4 @@ async def test_launch_failure_returns_health_diagnostic(tmp_path, monkeypatch) -
     assert result.state.phase == RunPhase.FAILED
     assert result.outputs["claude_code"]["error_classification"] == "launch_failure"
     assert result.outputs["claude_code"]["runtime_health"]["build_required"] is True
-    assert "MARVIS_CLAUDE_CODE_COMMAND" in result.outputs["claude_code"]["diagnostics"][1]
+    assert "LENGRVIS_CLAUDE_CODE_COMMAND" in result.outputs["claude_code"]["diagnostics"][1]

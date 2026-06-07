@@ -25,10 +25,10 @@ from app.tools.schemas import ToolDefinition
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_MODE", "efficiency")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
     db.init_db()
     register_all_tools()
     yield
@@ -173,7 +173,7 @@ def test_recording_frames_are_stored_as_sqlite_blobs(fake_capture):
 def test_capture_step_screenshot_persists_png_blob(monkeypatch: pytest.MonkeyPatch):
     from PIL import Image
 
-    monkeypatch.setenv("MARVIS_TASK_RECORDING_FORCE", "1")
+    monkeypatch.setenv("LENGRVIS_TASK_RECORDING_FORCE", "1")
     monkeypatch.setattr(task_recording_service, "_grab_screen", lambda: Image.new("RGB", (2, 1), "red"))
 
     frame = task_recording_service.capture_step_screenshot("task_capture", "step_capture", "before")

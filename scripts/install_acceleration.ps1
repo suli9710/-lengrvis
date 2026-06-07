@@ -31,7 +31,7 @@ function Resolve-RepoRoot {
 $repoRoot = Resolve-RepoRoot
 $backendPath = Join-Path $repoRoot "backend"
 if (-not $ModelsDir) {
-    $ModelsDir = Join-Path $repoRoot ".marvis_data\models"
+    $ModelsDir = Join-Path $repoRoot ".lengrvis_data\models"
 }
 $manifestPath = Join-Path $repoRoot "backend\app\acceleration\model_manifest.json"
 
@@ -55,11 +55,11 @@ if ($Runtime -eq "cpu") {
 if (-not $SkipModels) {
     Write-Step "Downloading model manifests into $ModelsDir"
     New-Item -ItemType Directory -Force -Path $ModelsDir | Out-Null
-    $env:HF_HOME = Join-Path $repoRoot ".marvis_data\hf"
+    $env:HF_HOME = Join-Path $repoRoot ".lengrvis_data\hf"
     if ($HfEndpoint) { $env:HF_ENDPOINT = $HfEndpoint }
     if ($HfMirror) { $env:HF_ENDPOINT = $HfMirror }
-    $env:MARVIS_MODELS_DIR = $ModelsDir
-    $env:MARVIS_MODEL_MANIFEST = $manifestPath
+    $env:LENGRVIS_MODELS_DIR = $ModelsDir
+    $env:LENGRVIS_MODEL_MANIFEST = $manifestPath
     @'
 import json
 import os
@@ -67,8 +67,8 @@ from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
-manifest = json.loads(Path(os.environ["MARVIS_MODEL_MANIFEST"]).read_text(encoding="utf-8"))
-models_dir = Path(os.environ["MARVIS_MODELS_DIR"])
+manifest = json.loads(Path(os.environ["LENGRVIS_MODEL_MANIFEST"]).read_text(encoding="utf-8"))
+models_dir = Path(os.environ["LENGRVIS_MODELS_DIR"])
 for item in manifest["models"]:
     repo = item.get("repo") or ""
     if not repo or not item.get("recommended", False):
@@ -88,9 +88,9 @@ for item in manifest["models"]:
 
 if (-not $SkipSmoke) {
     Write-Step "Running acceleration smoke"
-    $env:MARVIS_DATA_DIR = Join-Path $repoRoot ".marvis_data"
-    $env:MARVIS_ONNX_MODELS_DIR = $ModelsDir
-    $env:MARVIS_ONNX_PROVIDER_PREFERENCE = "winml,directml,openvino,cpu"
+    $env:LENGRVIS_DATA_DIR = Join-Path $repoRoot ".lengrvis_data"
+    $env:LENGRVIS_ONNX_MODELS_DIR = $ModelsDir
+    $env:LENGRVIS_ONNX_PROVIDER_PREFERENCE = "winml,directml,openvino,cpu"
     $env:PYTHONPATH = if ($env:PYTHONPATH) { "$backendPath;$env:PYTHONPATH" } else { $backendPath }
     @'
 from app.config import AppSettings

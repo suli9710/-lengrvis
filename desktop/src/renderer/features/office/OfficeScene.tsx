@@ -432,7 +432,7 @@ export function OfficeScene({
   const officeMapStyle = { "--office-scale": officeScale } as CSSProperties;
 
   return (
-    <div className="office-workspace" aria-label="Mavris 办公室">
+    <div className="office-workspace" aria-label="Lengrvis 办公室">
       <div className="office-stage">
         <div className="office-headline">
           <div className="office-headline__title">
@@ -440,7 +440,7 @@ export function OfficeScene({
               <Sparkles size={13} aria-hidden="true" />
               本机优先的个人 AI 工作台
             </span>
-            <h1>问问 Mavris</h1>
+            <h1>问问 Lengrvis</h1>
             <p>一句话处理文件、文档、应用和这台电脑上的事务。</p>
           </div>
           <div className="office-headline__status" aria-label="当前工作状态">
@@ -497,7 +497,7 @@ export function OfficeScene({
 
         <div className="office-command-dock">
           <div className="office-command-dock__hint">
-            <span>说出目标，Mavris 会先判断范围和风险</span>
+            <span>说出目标，Lengrvis 会先判断范围和风险</span>
             <span>·</span>
             <span><CornerDownLeft size={11} aria-hidden="true" /> Ctrl + Enter 发送</span>
           </div>
@@ -847,8 +847,8 @@ function resolveOfficeAgentRuntime(
     return state;
   }
 
-  const marvisState = allAgentState.pm;
-  if (!marvisState || !isSameOfficePoint(state, marvisState)) {
+  const lengrvisState = allAgentState.pm;
+  if (!lengrvisState || !isSameOfficePoint(state, lengrvisState)) {
     return state;
   }
 
@@ -985,7 +985,7 @@ function getFriendlyAgentCopy(agent: OfficeAgentDefinition | undefined) {
       return { name: "审批", role: "修改前确认" };
     case "pm":
     default:
-      return { name: "Mavris", role: "随时待命" };
+      return { name: "Lengrvis", role: "随时待命" };
   }
 }
 
@@ -1142,7 +1142,7 @@ function buildHomeSetupSteps(items: HomeReadinessItem[]) {
 }
 
 function setupStepTitle(item: HomeReadinessItem): string {
-  if (item.id === "connection") return "确认 Mavris 可用";
+  if (item.id === "connection") return "确认 Lengrvis 可用";
   if (item.id === "scope") return "选择文件范围";
   if (item.id === "document") return "试一次文档操作";
   return "准备隐私模式";
@@ -1164,7 +1164,7 @@ function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilot
       title: hasDraft ? "准备发起任务" : "等待你的第一个目标",
       detail: hasDraft
         ? "发送后会先理解目标、判断范围和风险，再进入执行。"
-        : "输入一句话或使用快捷入口，Mavris 会把过程拆成可确认的步骤。",
+        : "输入一句话或使用快捷入口，Lengrvis 会把过程拆成可确认的步骤。",
       status: hasDraft ? "待发送" : "空闲",
       tone: hasDraft ? "active" : "idle",
       action: "compose",
@@ -1205,7 +1205,7 @@ function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilot
 
   const status = friendlyTaskState(latestTask.state);
   const baseTitle = latestTask.title || "最近任务";
-  const baseDetail = latestTask.description || "Mavris 会把任务过程留在时间线里。";
+  const baseDetail = latestTask.description || "Lengrvis 会把任务过程留在时间线里。";
 
   if (latestTask.state === "blocked") {
     return {
@@ -1348,11 +1348,11 @@ function commandFooterNote({
   submitError: string | null;
 }): string {
   if (submitError) return submitError;
-  if (connectionState === "offline") return "Mavris 服务还没连上。输入内容会保留，连接恢复后再发送。";
+  if (connectionState === "offline") return "Lengrvis 服务还没连上。输入内容会保留，连接恢复后再发送。";
   if (isSubmitting) return "正在启动任务，返回结果前不会重复创建。";
   if (quickSkillNotice) return quickSkillNotice;
   if (draftReady) return "准备好了，发送后会进入任务流。";
-  return "涉及重要修改前，Mavris 会先征得你的确认。";
+  return "涉及重要修改前，Lengrvis 会先征得你的确认。";
 }
 
 function getHomeCurrentTasks(tasks: TaskEvent[]): TaskEvent[] {

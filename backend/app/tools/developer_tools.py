@@ -243,7 +243,7 @@ def pytest_inventory(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
 
 def worktree_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
-    name = str(args.get("name") or "mavris-worktree").strip()
+    name = str(args.get("name") or "lengrvis-worktree").strip()
     branch = str(args.get("branch") or f"codex/{name}").strip()
     target = resolve_authorized(args.get("target_path") or root / ".worktrees" / name, _allowed(context))
     return {

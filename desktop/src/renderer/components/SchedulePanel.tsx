@@ -1,7 +1,7 @@
 import { CalendarClock, Plus, Power, PowerOff, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { MavrisApiClient } from "../lib/apiClient";
+import { LengrvisApiClient } from "../lib/apiClient";
 import { Badge, Panel } from "./Panel";
 
 interface ScheduledTask {
@@ -16,7 +16,7 @@ interface ScheduledTask {
 }
 
 interface SchedulePanelProps {
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
 }
 
 export function SchedulePanel({ api }: SchedulePanelProps) {

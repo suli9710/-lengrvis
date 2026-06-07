@@ -19,7 +19,7 @@ PDF_FIXTURE_TEXT = "SCANNED PDF OCR FALLBACK 314"
 
 @pytest.fixture(autouse=True)
 def isolated_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
 
 
@@ -188,7 +188,7 @@ def _write_metadata_png(path: Path, text: str) -> None:
     draw.text((12, 24), text or "NO OCR TEXT", fill="black")
     metadata = PngImagePlugin.PngInfo()
     if text:
-        metadata.add_text("marvis_ocr_text", text)
+        metadata.add_text("lengrvis_ocr_text", text)
     image.save(path, pnginfo=metadata)
 
 
@@ -216,7 +216,7 @@ def _write_image_only_pdf(path: Path, ocr_text: str) -> None:
             (
                 f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} "
                 f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode "
-                f"/Length {len(compressed)} /MarvisOCRText ({ocr_text}) >>\nstream\n"
+                f"/Length {len(compressed)} /LengrvisOCRText ({ocr_text}) >>\nstream\n"
             ).encode()
             + compressed
             + b"\nendstream",

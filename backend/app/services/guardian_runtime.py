@@ -11,12 +11,18 @@ from typing import Any
 
 import httpx
 
+from app.config import get_env
+from app.security.desktop_api import (
+    DESKTOP_API_TOKEN_HEADER,
+    desktop_api_token_headers,
+)
 
-GUARDIAN_PORT = int(os.getenv("MAVRIS_GUARDIAN_PORT") or os.getenv("MAVRIS_BACKEND_PORT") or "8000")
+
+GUARDIAN_PORT = int(get_env("LENGRVIS_GUARDIAN_PORT") or get_env("LENGRVIS_BACKEND_PORT") or "8000")
 FULL_BACKEND_HOST = "127.0.0.1"
-FULL_BACKEND_PORT = int(os.getenv("MAVRIS_FULL_BACKEND_PORT") or "8001")
-FULL_BACKEND_URL = os.getenv("MAVRIS_FULL_BACKEND_URL") or f"http://{FULL_BACKEND_HOST}:{FULL_BACKEND_PORT}"
-FULL_BACKEND_IDLE_TIMEOUT_SECONDS = int(os.getenv("MAVRIS_FULL_BACKEND_IDLE_TIMEOUT_SECONDS") or "300")
+FULL_BACKEND_PORT = int(get_env("LENGRVIS_FULL_BACKEND_PORT") or "8001")
+FULL_BACKEND_URL = get_env("LENGRVIS_FULL_BACKEND_URL") or f"http://{FULL_BACKEND_HOST}:{FULL_BACKEND_PORT}"
+FULL_BACKEND_IDLE_TIMEOUT_SECONDS = int(get_env("LENGRVIS_FULL_BACKEND_IDLE_TIMEOUT_SECONDS") or "300")
 
 
 class ForegroundKind(StrEnum):
@@ -41,7 +47,7 @@ class GuardianRuntime:
         self._idle_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        self._idle_task = asyncio.create_task(self._idle_loop(), name="mavris-guardian-idle")
+        self._idle_task = asyncio.create_task(self._idle_loop(), name="lengrvis-guardian-idle")
 
     async def stop(self) -> None:
         if self._idle_task is not None:
@@ -85,10 +91,10 @@ class GuardianRuntime:
             command = self._full_backend_command()
             env = {
                 **os.environ,
-                "MAVRIS_FULL_BACKEND": "1",
-                "MAVRIS_BACKEND_HOST": FULL_BACKEND_HOST,
-                "MAVRIS_BACKEND_PORT": str(FULL_BACKEND_PORT),
-                "MAVRIS_BACKEND_URL": FULL_BACKEND_URL,
+                "LENGRVIS_FULL_BACKEND": "1",
+                "LENGRVIS_BACKEND_HOST": FULL_BACKEND_HOST,
+                "LENGRVIS_BACKEND_PORT": str(FULL_BACKEND_PORT),
+                "LENGRVIS_BACKEND_URL": FULL_BACKEND_URL,
             }
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -137,7 +143,7 @@ class GuardianRuntime:
                 json={
                     "error": {
                         "code": "full_backend_required",
-                        "message": "This endpoint requires the full backend. Open Mavris to continue.",
+                        "message": "This endpoint requires the full backend. Open Lengrvis to continue.",
                     }
                 },
             )
@@ -148,27 +154,28 @@ class GuardianRuntime:
         filtered_headers = {
             key: value
             for key, value in (headers or {}).items()
-            if key.lower() not in {"host", "content-length", "connection"}
+            if key.lower() not in {"host", "content-length", "connection", DESKTOP_API_TOKEN_HEADER}
         }
+        filtered_headers.update(desktop_api_token_headers())
         async with httpx.AsyncClient(timeout=120.0) as client:
             return await client.request(method, url, headers=filtered_headers, content=body)
 
     async def _notify_full_foreground(self) -> None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(f"{FULL_BACKEND_URL}/api/runtime/foreground")
+                await client.post(f"{FULL_BACKEND_URL}/api/runtime/foreground", headers=desktop_api_token_headers())
         except Exception:
             return
 
     async def _notify_full_background(self) -> None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(f"{FULL_BACKEND_URL}/api/runtime/background")
+                await client.post(f"{FULL_BACKEND_URL}/api/runtime/background", headers=desktop_api_token_headers())
         except Exception:
             return
 
     def _full_backend_command(self) -> list[str]:
-        raw = os.getenv("MAVRIS_FULL_BACKEND_COMMAND")
+        raw = get_env("LENGRVIS_FULL_BACKEND_COMMAND")
         if raw:
             return _split_command(raw)
         if getattr(sys, "frozen", False):
@@ -189,7 +196,7 @@ class GuardianRuntime:
     async def _is_full_backend_healthy(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=1.0) as client:
-                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status")
+                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers())
             return 200 <= response.status_code < 300
         except Exception:
             return False
@@ -228,7 +235,7 @@ class GuardianRuntime:
     async def _full_backend_has_active_runs(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=1.5) as client:
-                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status")
+                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers())
             if not 200 <= response.status_code < 300:
                 return False
             data = response.json()

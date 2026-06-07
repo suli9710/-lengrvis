@@ -22,7 +22,7 @@ import type {
   TaskState,
   TaskStepRecording
 } from "../../shared/types";
-import { MavrisApiClient } from "../lib/apiClient";
+import { LengrvisApiClient } from "../lib/apiClient";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import {
   zhAgentName,
@@ -37,7 +37,7 @@ import { Badge, Panel } from "./Panel";
 
 interface TaskTimelineProps {
   tasks: TaskEvent[];
-  api?: MavrisApiClient;
+  api?: LengrvisApiClient;
   focusedTaskId?: string | null;
 }
 

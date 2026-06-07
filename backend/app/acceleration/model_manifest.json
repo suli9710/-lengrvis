@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "models_root": ".marvis_data/models",
+  "models_root": ".lengrvis_data/models",
   "models": [
     {
       "id": "qwen2.5-3b-instruct-onnx-genai",

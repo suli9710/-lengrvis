@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 
-import type { MavrisDesktopBridge } from "../shared/types";
+import type { LengrvisDesktopBridge } from "../shared/types";
 
 declare global {
   interface Window {
-    mavris: MavrisDesktopBridge;
+    lengrvis: LengrvisDesktopBridge;
   }
 }

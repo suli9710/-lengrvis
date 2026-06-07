@@ -29,10 +29,8 @@ logs/
 output/
 .codex-vite-*.pid
 .codex-vite-*.out.log
-# Canonical local runtime data directory is .marvis_data.
-.marvis_data/
-# Historical typo/staging path; keep ignored so local runtime data does not split.
-.mavris_data/
+# Canonical local runtime data directory is .lengrvis_data.
+.lengrvis_data/
 approval_hmac.secret
 # Accidental pip/glob and agent screenshot artifacts.
 =4.0

@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 echo.
-echo 正在以调试模式启动 Mavris，请保持此窗口打开...
+echo 正在以调试模式启动 Lengrvis，请保持此窗口打开...
 echo 日志位置：%~dp0logs
 echo.
 
@@ -12,7 +12,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_app.ps1"
 set EXITCODE=%ERRORLEVEL%
 
 echo.
-echo Mavris 已退出，退出代码：%EXITCODE%
+echo Lengrvis 已退出，退出代码：%EXITCODE%
 echo.
 echo ---- 最近的后端错误日志 ----
 for /f "delims=" %%F in ('dir /b /a-d /o-d "%~dp0logs\backend*.err.log" 2^>nul') do (

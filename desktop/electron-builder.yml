@@ -1,6 +1,6 @@
-appId: com.mavris.desktop
-productName: Mavris
-copyright: Copyright (c) 2026 Mavris
+appId: com.lengrvis.desktop
+productName: Lengrvis
+copyright: Copyright (c) 2026 Lengrvis
 
 directories:
   output: release

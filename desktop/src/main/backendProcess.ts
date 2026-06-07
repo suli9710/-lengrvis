@@ -1,31 +1,46 @@
 import { app } from "electron";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { cwd as getCwd } from "node:process";
 
 import type { BackendStatus } from "../shared/types";
+import { resolveDesktopApiToken } from "./desktopApiToken";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
 const HEALTH_ENDPOINT = "/health";
 const RUNTIME_STATUS_ENDPOINT = "/api/runtime/status";
 const RUNTIME_FOREGROUND_ENDPOINT = "/api/runtime/foreground";
 const RUNTIME_BACKGROUND_ENDPOINT = "/api/runtime/background";
-const DESKTOP_API_TOKEN_HEADER = "X-Mavris-Desktop-Token";
+const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
 const DEFAULT_WINDOWS_SERVICE_NAMES = [
-  "MavrisBackend",
-  "Mavris Backend",
-  "MavrisService",
-  "Mavris Service",
-  "Mavris",
-  "MarvisBackend",
-  "Marvis Backend",
-  "MarvisService",
-  "Marvis Service",
-  "Marvis"
+  "LengrvisBackend",
+  "Lengrvis Backend",
+  "LengrvisService",
+  "Lengrvis Service",
+  "Lengrvis"
 ] as const;
+
+function envAliases(name: string): string[] {
+  return [name];
+}
+
+function env(name: string): string | undefined {
+  for (const alias of envAliases(name)) {
+    const value = process.env[alias];
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function envList(name: string): string[] {
+  return envAliases(name).flatMap((alias) => splitList(process.env[alias]));
+}
+
+function envWithAliases(name: string, value: string): NodeJS.ProcessEnv {
+  return Object.fromEntries(envAliases(name).map((alias) => [alias, process.env[alias] ?? value]));
+}
 
 export interface BackendProcessOptions {
   baseUrl?: string;
@@ -59,10 +74,27 @@ export class BackendProcessManager {
   private status: BackendStatus;
   private managedWindowsServiceName: string | null = null;
   private readonly desktopApiToken: string;
+  private readonly backendConfigDir: string;
+  private readonly backendDataDir: string;
 
   constructor(private readonly options: BackendProcessOptions = {}) {
-    this.desktopApiToken = process.env.MAVRIS_DESKTOP_API_TOKEN || randomBytes(32).toString("hex");
-    process.env.MAVRIS_DESKTOP_API_TOKEN = this.desktopApiToken;
+    const command = this.resolveBackendCommand();
+    const tokenResolution = resolveDesktopApiToken({ command });
+    this.desktopApiToken = tokenResolution.token;
+    this.backendConfigDir = tokenResolution.configDir;
+    this.backendDataDir = tokenResolution.dataDir;
+    for (const alias of envAliases("LENGRVIS_DESKTOP_API_TOKEN")) {
+      process.env[alias] = process.env[alias] ?? this.desktopApiToken;
+    }
+    for (const alias of envAliases("LENGRVIS_CONFIG_DIR")) {
+      process.env[alias] = process.env[alias] ?? this.backendConfigDir;
+    }
+    for (const alias of envAliases("LENGRVIS_DATA_DIR")) {
+      process.env[alias] = process.env[alias] ?? this.backendDataDir;
+    }
+    if (tokenResolution.source === "memory") {
+      void writeBackendLog("desktop API token could not be persisted; Windows Service authentication may fail");
+    }
     this.status = {
       state: "stopped",
       baseUrl: this.getBaseUrl(),
@@ -71,7 +103,7 @@ export class BackendProcessManager {
   }
 
   getBaseUrl(): string {
-    return this.options.baseUrl ?? process.env.MAVRIS_BACKEND_URL ?? DEFAULT_BACKEND_URL;
+    return this.options.baseUrl ?? env("LENGRVIS_BACKEND_URL") ?? DEFAULT_BACKEND_URL;
   }
 
   getDesktopApiToken(): string {
@@ -101,7 +133,7 @@ export class BackendProcessManager {
     }
 
     const command = this.resolveBackendCommand();
-    const args = this.options.args ?? splitArgs(process.env.MAVRIS_BACKEND_ARGS);
+    const args = this.options.args ?? splitArgs(env("LENGRVIS_BACKEND_ARGS"));
     await writeBackendLog(`start requested; command=${command ?? "<none>"} args=${JSON.stringify(args)} resourcesPath=${process.resourcesPath} appPath=${app.getAppPath()} isPackaged=${app.isPackaged} defaultApp=${String(process.defaultApp)}`);
 
     if (!command) {
@@ -116,13 +148,14 @@ export class BackendProcessManager {
     try {
       const bundledOllamaEnv = resolveBundledOllamaEnv(command);
       this.child = spawn(command, args, {
-        cwd: this.options.cwd ?? process.env.MAVRIS_BACKEND_CWD ?? dirname(command),
+        cwd: this.options.cwd ?? env("LENGRVIS_BACKEND_CWD") ?? dirname(command),
         env: {
           ...process.env,
-          MARVIS_CONFIG_DIR: process.env.MARVIS_CONFIG_DIR ?? resolveConfigDir(command),
-          MAVRIS_FULL_BACKEND: process.env.MAVRIS_FULL_BACKEND ?? "1",
-          MAVRIS_BACKEND_URL: this.getBaseUrl(),
-          MAVRIS_DESKTOP_API_TOKEN: this.desktopApiToken,
+          ...envWithAliases("LENGRVIS_CONFIG_DIR", this.backendConfigDir),
+          ...envWithAliases("LENGRVIS_DATA_DIR", this.backendDataDir),
+          ...envWithAliases("LENGRVIS_FULL_BACKEND", "1"),
+          ...envWithAliases("LENGRVIS_BACKEND_URL", this.getBaseUrl()),
+          ...envWithAliases("LENGRVIS_DESKTOP_API_TOKEN", this.desktopApiToken),
           ...bundledOllamaEnv
         },
         windowsHide: true
@@ -298,8 +331,9 @@ export class BackendProcessManager {
       return this.options.command;
     }
 
-    if (process.env.MAVRIS_BACKEND_COMMAND) {
-      return process.env.MAVRIS_BACKEND_COMMAND;
+    const configuredCommand = env("LENGRVIS_BACKEND_COMMAND");
+    if (configuredCommand) {
+      return configuredCommand;
     }
 
     const packagedBackend = join(process.resourcesPath, "backend", process.platform === "win32" ? "backend.exe" : "backend");
@@ -316,7 +350,7 @@ export class BackendProcessManager {
   }
 
   private async detectRunningWindowsService(serviceNames = this.getWindowsServiceNames()): Promise<WindowsServiceProbe> {
-    if (process.platform !== "win32" || process.env.MAVRIS_BACKEND_SERVICE_DISABLED === "1") {
+    if (process.platform !== "win32" || env("LENGRVIS_BACKEND_SERVICE_DISABLED") === "1") {
       return { checked: false, exists: false, running: false };
     }
 
@@ -354,8 +388,8 @@ export class BackendProcessManager {
 
   private getWindowsServiceNames(): string[] {
     const configuredNames = [
-      ...splitList(process.env.MAVRIS_BACKEND_SERVICE_NAME),
-      ...splitList(process.env.MAVRIS_SERVICE_NAME)
+      ...envList("LENGRVIS_BACKEND_SERVICE_NAME"),
+      ...envList("LENGRVIS_SERVICE_NAME")
     ];
 
     return [...new Set([...configuredNames, ...this.options.windowsServiceNames ?? [], ...DEFAULT_WINDOWS_SERVICE_NAMES])];
@@ -366,18 +400,6 @@ function formatServiceState(service: WindowsServiceProbe): string {
   return service.stateName ? `处于 ${service.stateName}` : "未就绪";
 }
 
-function resolveConfigDir(command: string): string {
-  const candidates = [
-    getCwd(),
-    app.getAppPath(),
-    join(process.resourcesPath, "..", ".."),
-    join(dirname(command), "..", "..", "..", "..")
-  ];
-
-  const match = candidates.find((candidate) => existsSync(join(candidate, ".env")) || existsSync(join(candidate, "config.yaml")));
-  return match ?? getCwd();
-}
-
 function resolveBundledOllamaEnv(command: string): NodeJS.ProcessEnv {
   const resourcesDir = resolveResourcesDir(command);
   const ollamaDir = join(resourcesDir, "ollama");
@@ -386,19 +408,16 @@ function resolveBundledOllamaEnv(command: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
 
   if (existsSync(ollamaDir)) {
-    env.MAVRIS_BUNDLED_OLLAMA_DIR = process.env.MAVRIS_BUNDLED_OLLAMA_DIR ?? ollamaDir;
-    env.MARVIS_BUNDLED_OLLAMA_DIR = process.env.MARVIS_BUNDLED_OLLAMA_DIR ?? ollamaDir;
+    Object.assign(env, envWithAliases("LENGRVIS_BUNDLED_OLLAMA_DIR", ollamaDir));
   }
 
   if (existsSync(modelsDir)) {
-    env.MAVRIS_BUNDLED_OLLAMA_MODELS_DIR = process.env.MAVRIS_BUNDLED_OLLAMA_MODELS_DIR ?? modelsDir;
-    env.MARVIS_BUNDLED_OLLAMA_MODELS_DIR = process.env.MARVIS_BUNDLED_OLLAMA_MODELS_DIR ?? modelsDir;
+    Object.assign(env, envWithAliases("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", modelsDir));
     env.OLLAMA_MODELS = process.env.OLLAMA_MODELS ?? modelsDir;
   }
 
   if (existsSync(manifestPath)) {
-    env.MAVRIS_OLLAMA_BUNDLE_MANIFEST = process.env.MAVRIS_OLLAMA_BUNDLE_MANIFEST ?? manifestPath;
-    env.MARVIS_OLLAMA_BUNDLE_MANIFEST = process.env.MARVIS_OLLAMA_BUNDLE_MANIFEST ?? manifestPath;
+    Object.assign(env, envWithAliases("LENGRVIS_OLLAMA_BUNDLE_MANIFEST", manifestPath));
   }
 
   return env;

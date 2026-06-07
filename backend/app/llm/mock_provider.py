@@ -213,7 +213,7 @@ class MockProvider(LLMProvider):
                 )
             elif "什么模型" in user or "是什么模型" in user or "你是什么" in user or "你是谁" in user:
                 reply = (
-                    "我是 Mavris 里的主管 Agent。我的工作是先和你自然对话，理解你要什么；"
+                    "我是 Lengrvis 里的主管 Agent。我的工作是先和你自然对话，理解你要什么；"
                     "如果需要查文件、操作电脑、打开网页或处理文档，我再把具体工作交给对应 Agent。"
                 )
             elif "你好" in user:

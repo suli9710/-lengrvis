@@ -78,10 +78,10 @@ def test_local_library_preview_uses_short_lived_signed_url(
     image = workspace / "preview.png"
     image.write_bytes(b"image")
 
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.setattr(
         local_library_service,
         "get_effective_settings",

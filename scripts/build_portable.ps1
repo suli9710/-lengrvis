@@ -1,5 +1,5 @@
-param(
-    [string]$OutputDir = "dist\Mavris-win-portable",
+﻿param(
+    [string]$OutputDir = "dist\Lengrvis-win-portable",
     [string]$BackendExe = "dist\backend.exe",
     [string]$BundledOllamaDir = "",
     [string]$BundledOllamaModelsDir = "",
@@ -225,11 +225,11 @@ New-Item -ItemType Directory -Path $Out | Out-Null
 Copy-Item -Path (Join-Path $ElectronDist "*") -Destination $Out -Recurse -Force
 
 $ElectronExe = Join-Path $Out "electron.exe"
-$MavrisExe = Join-Path $Out "Mavris.exe"
-if (Test-Path $MavrisExe) {
-    Remove-Item -LiteralPath $MavrisExe -Force
+$LengrvisExe = Join-Path $Out "Lengrvis.exe"
+if (Test-Path $LengrvisExe) {
+    Remove-Item -LiteralPath $LengrvisExe -Force
 }
-Rename-Item -LiteralPath $ElectronExe -NewName "Mavris.exe"
+Rename-Item -LiteralPath $ElectronExe -NewName "Lengrvis.exe"
 
 $Resources = Join-Path $Out "resources"
 $AppDir = Join-Path $Resources "app"
@@ -270,7 +270,7 @@ if ($ResolvedOllamaDir -and $ResolvedOllamaModelsDir) {
     Test-OllamaBundleManifest -ManifestPath $OllamaManifestOut -RuntimeDir $OllamaOutDir -ModelsDir $OllamaModelsOutDir
     Write-Host "Bundled Ollama manifest copied and verified at $OllamaManifestOut"
 } else {
-    Write-Host "Ollama runtime and models are not bundled; Mavris will install/pull them on demand."
+    Write-Host "Ollama runtime and models are not bundled; Lengrvis will install/pull them on demand."
 }
 
 Write-Host "Portable build created at $Out"

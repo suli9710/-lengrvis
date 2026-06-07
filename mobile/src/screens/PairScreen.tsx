@@ -27,15 +27,15 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const handlePair = async () => {
     const code = pairCode.replace(/[^a-z0-9]/gi, "").toLowerCase();
     if (code.length !== 6) {
-      Alert.alert("配对码", "请输入电脑端 Mavris 显示的 6 位配对码。");
+      Alert.alert("配对码", "请输入电脑端 Lengrvis 显示的 6 位配对码。");
       return;
     }
     if (!baseUrl.trim()) {
-      Alert.alert("电脑地址", "请输入电脑端 Mavris 显示的地址，例如 http://192.168.1.20:8000。");
+      Alert.alert("电脑地址", "请输入电脑端 Lengrvis 显示的地址，例如 http://192.168.1.20:8000。");
       return;
     }
     if (isLoopbackBaseUrl(baseUrl)) {
-      Alert.alert("电脑地址", "这个地址指向手机本机，请使用电脑端 Mavris 显示的地址。");
+      Alert.alert("电脑地址", "这个地址指向手机本机，请使用电脑端 Lengrvis 显示的地址。");
       return;
     }
     setIsBusy(true);
@@ -59,7 +59,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
         <View style={styles.pairIcon}>
           <Smartphone size={34} color="#1f2933" />
         </View>
-        <Text style={styles.title}>连接 Mavris</Text>
+        <Text style={styles.title}>连接 Lengrvis</Text>
         <Text style={styles.subtitle}>使用电脑端显示的地址和 6 位配对码。</Text>
 
         <View style={styles.form}>
@@ -103,10 +103,10 @@ function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return "无法连接。请检查地址和配对码后重试。";
   const message = error.message.toLowerCase();
   if (message.includes("fetch") || message.includes("network")) {
-    return "无法连接到电脑。请确认 Mavris 已打开，且地址正确。";
+    return "无法连接到电脑。请确认 Lengrvis 已打开，且地址正确。";
   }
   if (message.includes("code") || message.includes("invalid") || message.includes("expired")) {
-    return "配对码无效。请检查 Mavris 中显示的配对码后重试。";
+    return "配对码无效。请检查 Lengrvis 中显示的配对码后重试。";
   }
   return "无法连接。请检查地址和配对码后重试。";
 }

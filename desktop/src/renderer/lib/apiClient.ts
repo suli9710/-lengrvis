@@ -118,19 +118,19 @@ export interface JsonRealtimeHandlers<TMessage> {
   onBadMessage?: (status: RealtimeConnectionStatus & { state: "bad_message"; rawMessage: string }) => void;
 }
 
-export class MavrisApiClient {
+export class LengrvisApiClient {
   private lastLoadedSettings: AppSettings | null = null;
 
   async request<TResponse, TBody = unknown>(request: ApiRequest<TBody>): Promise<ApiResponse<TResponse>> {
-    if (!window.mavris) {
+    if (!window.lengrvis) {
       return requestBackendDirect<TResponse, TBody>(FALLBACK_BACKEND_URL, request);
     }
 
-    return window.mavris.api.request<TResponse, TBody>(request);
+    return window.lengrvis.api.request<TResponse, TBody>(request);
   }
 
   async getBackendStatus(): Promise<BackendStatus> {
-    if (!window.mavris) {
+    if (!window.lengrvis) {
       const startedAt = Date.now();
       const health = await this.request<{ status: string }>({ endpoint: "/api/health", timeoutMs: 1500 });
       return {
@@ -144,21 +144,21 @@ export class MavrisApiClient {
         }
       };
     }
-    return window.mavris.backend.getStatus();
+    return window.lengrvis.backend.getStatus();
   }
 
   startBackend(): Promise<BackendStatus> {
-    if (!window.mavris) {
+    if (!window.lengrvis) {
       return this.getBackendStatus();
     }
-    return window.mavris.backend.start();
+    return window.lengrvis.backend.start();
   }
 
   stopBackend(): Promise<BackendStatus> {
-    if (!window.mavris) {
+    if (!window.lengrvis) {
       return this.getBackendStatus();
     }
-    return window.mavris.backend.stop();
+    return window.lengrvis.backend.stop();
   }
 
   listChatMessages(): Promise<ApiResponse<ChatMessage[]>> {
@@ -241,7 +241,7 @@ export class MavrisApiClient {
         message: {
           id: `${data.run_id}-run-started`,
           role: "assistant" as const,
-          author: "Mavris",
+          author: "Lengrvis",
           content: `已开始处理任务，当前状态：${zhBackendTaskStatus(data.phase)}。`,
           createdAt: new Date().toISOString(),
           status: "sent" as const
@@ -711,11 +711,11 @@ export class MavrisApiClient {
       this.request<BackendAppsResponse>({ endpoint: "/api/apps" })
     ]).then(([infoResponse, diagnosticsResponse, processesResponse, startupResponse, appsResponse]) =>
       mapResponse(infoResponse, (info) => ({
-        appVersion: window.mavris?.versions.app ?? "0.1.0",
-        electronVersion: window.mavris?.versions.electron ?? "未知",
-        chromeVersion: window.mavris?.versions.chrome ?? "未知",
-        nodeVersion: window.mavris?.versions.node ?? "未知",
-        platform: info.system ?? info.platform ?? window.mavris?.platform ?? "未知",
+        appVersion: window.lengrvis?.versions.app ?? "0.1.0",
+        electronVersion: window.lengrvis?.versions.electron ?? "未知",
+        chromeVersion: window.lengrvis?.versions.chrome ?? "未知",
+        nodeVersion: window.lengrvis?.versions.node ?? "未知",
+        platform: info.system ?? info.platform ?? window.lengrvis?.platform ?? "未知",
         arch: info.machine ?? "未知",
         backendBaseUrl: "http://127.0.0.1:8000",
         diagnostics: diagnosticsResponse.ok && diagnosticsResponse.data
@@ -1016,11 +1016,11 @@ export class MavrisApiClient {
   }
 
   getBrowserHostSnapshot(): Promise<BrowserHostSnapshot> {
-    return window.mavris?.browserHost.getSnapshot() ?? Promise.resolve(emptyBrowserHostSnapshot(false));
+    return window.lengrvis?.browserHost.getSnapshot() ?? Promise.resolve(emptyBrowserHostSnapshot(false));
   }
 
   openBrowserHost(request: BrowserHostOpenRequest): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.open(request) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.open(request) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1028,7 +1028,7 @@ export class MavrisApiClient {
   }
 
   showBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.show(sessionId) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.show(sessionId) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1036,7 +1036,7 @@ export class MavrisApiClient {
   }
 
   hideBrowserHost(): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.hide() ?? Promise.resolve({
+    return window.lengrvis?.browserHost.hide() ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1044,7 +1044,7 @@ export class MavrisApiClient {
   }
 
   setBrowserHostBounds(bounds: { x: number; y: number; width: number; height: number }): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.setBounds(bounds) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.setBounds(bounds) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1052,7 +1052,7 @@ export class MavrisApiClient {
   }
 
   pauseBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.pause(sessionId) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.pause(sessionId) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1060,7 +1060,7 @@ export class MavrisApiClient {
   }
 
   resumeBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.resume(sessionId) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.resume(sessionId) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1068,7 +1068,7 @@ export class MavrisApiClient {
   }
 
   takeoverBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.takeover(sessionId) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.takeover(sessionId) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1076,7 +1076,7 @@ export class MavrisApiClient {
   }
 
   releaseBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.release(sessionId) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.release(sessionId) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1084,7 +1084,7 @@ export class MavrisApiClient {
   }
 
   stopBrowserHost(sessionId: string): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.stop(sessionId) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.stop(sessionId) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1092,7 +1092,7 @@ export class MavrisApiClient {
   }
 
   performBrowserHostAction(sessionId: string, action: BrowserAction): Promise<BrowserHostActionResult> {
-    return window.mavris?.browserHost.performAction({ sessionId, action }) ?? Promise.resolve({
+    return window.lengrvis?.browserHost.performAction({ sessionId, action }) ?? Promise.resolve({
       ok: false,
       snapshot: emptyBrowserHostSnapshot(false),
       error: "Desktop browser host is unavailable"
@@ -1100,11 +1100,11 @@ export class MavrisApiClient {
   }
 
   subscribeBrowserHostSnapshots(handler: (snapshot: BrowserHostSnapshot) => void): () => void {
-    return window.mavris?.browserHost.onSnapshot(handler) ?? (() => undefined);
+    return window.lengrvis?.browserHost.onSnapshot(handler) ?? (() => undefined);
   }
 
   private async exportBrowserHostReplay(sessionId: string): Promise<ApiResponse<BrowserReplayExport> | null> {
-    if (!window.mavris?.browserHost) return null;
+    if (!window.lengrvis?.browserHost) return null;
     const receivedAt = new Date().toISOString();
     try {
       const snapshot = await this.getBrowserHostSnapshot();
@@ -1134,7 +1134,7 @@ export class MavrisApiClient {
   }
 
   private async hasBrowserHostSession(sessionId: string): Promise<boolean> {
-    if (!window.mavris?.browserHost) return false;
+    if (!window.lengrvis?.browserHost) return false;
     try {
       const snapshot = await this.getBrowserHostSnapshot();
       return snapshot.sessions.some((session) => session.id === sessionId);
@@ -1391,14 +1391,14 @@ function buildRequestUrl(baseUrl: string, request: ApiRequest): URL {
 }
 
 function getBackendBaseUrl(): string {
-  return window.mavris?.backendBaseUrl ?? FALLBACK_BACKEND_URL;
+  return window.lengrvis?.backendBaseUrl ?? FALLBACK_BACKEND_URL;
 }
 
 function subscribeJsonRealtime<TMessage>(
   request: DesktopWebSocketSubscribeRequest,
   handlers: JsonRealtimeHandlers<TMessage>
 ): () => void {
-  if (window.mavris?.realtime) {
+  if (window.lengrvis?.realtime) {
     return subscribeDesktopJsonStream(request, handlers);
   }
 
@@ -1417,7 +1417,7 @@ function subscribeJsonRealtime<TMessage>(
 }
 
 function isWebOnlyDevRealtimeFallbackEnabled(): boolean {
-  return !window.mavris?.realtime && import.meta.env.DEV;
+  return !window.lengrvis?.realtime && import.meta.env.DEV;
 }
 
 function subscribeDesktopJsonStream<TMessage>(
@@ -1436,7 +1436,7 @@ function subscribeDesktopJsonStream<TMessage>(
       retryInMs: reconnectAttempt > 0 ? WS_RETRY_DELAY_MS : undefined
     });
 
-    unsubscribeSocket = window.mavris!.realtime.subscribe(request, {
+    unsubscribeSocket = window.lengrvis!.realtime.subscribe(request, {
       onOpen: () => {
         reconnectAttempt = 0;
         emitRealtimeStatus(request, handlers, "open");
@@ -1738,7 +1738,7 @@ function mapRunCreateResponse(data: BackendRunCreateResponse | BackendSuggestion
     message: {
       id: `${runId}-suggestion-started`,
       role: "assistant",
-      author: "Mavris",
+      author: "Lengrvis",
       content: `已开始处理建议任务，当前状态：${zhBackendTaskStatus(phase)}。`,
       createdAt: new Date().toISOString(),
       status: "sent"
@@ -3160,7 +3160,7 @@ function mapSuggestionLaunchResponse(
     message: {
       id: `${runId ?? crypto.randomUUID()}-suggestion-launched`,
       role: "assistant" as const,
-      author: "Mavris",
+      author: "Lengrvis",
       content: runId ? `已根据建议启动任务：${zhBackendText(message)}` : zhBackendText(message),
       createdAt: new Date().toISOString(),
       status: "sent" as const

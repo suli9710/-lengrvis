@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("install", "update", "start", "stop", "restart", "query")]
     [string]$Action = "install",
     [string]$BackendHost = "127.0.0.1",
@@ -69,7 +69,7 @@ function Wait-BackendHealth {
 
 $IsWindowsPlatform = ($PSVersionTable.PSEdition -eq "Desktop") -or $IsWindows
 if (-not $IsWindowsPlatform) {
-    throw "Mavris Windows Service can only be installed or controlled on Windows."
+    throw "Lengrvis Windows Service can only be installed or controlled on Windows."
 }
 
 Set-Location $Root
@@ -84,10 +84,10 @@ if ($Action -ne "query" -and -not (Test-Admin)) {
     throw "Administrator privileges are required for Windows Service installation/control. Re-run PowerShell as Administrator."
 }
 
-$env:MAVRIS_BACKEND_HOST = $BackendHost
-$env:MAVRIS_BACKEND_PORT = [string]$BackendPort
-$env:MAVRIS_BACKEND_LOG_LEVEL = $LogLevel
-$env:MARVIS_CONFIG_DIR = $Root
+$env:LENGRVIS_BACKEND_HOST = $BackendHost
+$env:LENGRVIS_BACKEND_PORT = [string]$BackendPort
+$env:LENGRVIS_BACKEND_LOG_LEVEL = $LogLevel
+$env:LENGRVIS_CONFIG_DIR = $Root
 
 $serviceArgs = @()
 switch ($Action) {

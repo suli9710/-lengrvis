@@ -97,7 +97,7 @@ def start_background_process(
     )
     with _LOCK:
         _TASKS[task.id] = task
-    thread = threading.Thread(target=_watch_process, args=(task,), name=f"mavris-{task.id}", daemon=True)
+    thread = threading.Thread(target=_watch_process, args=(task,), name=f"lengrvis-{task.id}", daemon=True)
     thread.start()
     return task
 

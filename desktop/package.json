@@ -1,8 +1,8 @@
 {
-  "name": "mavris-desktop",
+  "name": "lengrvis-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Mavris desktop frontend shell",
+  "description": "Lengrvis desktop frontend shell",
   "main": "dist/main/main.js",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"tsc -p tsconfig.node.json --watch --preserveWatchOutput\" \"wait-on tcp:5173 dist/main/main.js dist/preload/preload.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
@@ -14,9 +14,10 @@
     "smoke:document-scope": "node scripts/document-scope-smoke.cjs",
     "smoke:remote-input-grant": "node scripts/remote-input-grant-smoke.cjs",
     "smoke:desktop-ws": "npm run build:electron && node scripts/desktop-websocket-token-smoke.cjs",
+    "smoke:desktop-token": "npm run build:electron && node scripts/desktop-api-token-lifecycle-smoke.cjs",
     "smoke:ipc": "npm run build:electron && node scripts/ipc-security-smoke.cjs && node scripts/backend-ollama-env-smoke.cjs",
     "smoke:browser-activity": "npm run build && node scripts/browser-activity-smoke.cjs",
-    "smoke": "npm run smoke:document-scope && npm run smoke:remote-input-grant && npm run smoke:desktop-ws && npm run smoke:ipc && npm run smoke:browser-activity",
+    "smoke": "npm run smoke:document-scope && npm run smoke:remote-input-grant && npm run smoke:desktop-ws && npm run smoke:desktop-token && npm run smoke:ipc && npm run smoke:browser-activity",
     "verify:backend-resource": "node scripts/verify-backend-resource.cjs",
     "dist": "npm run build && npm run verify:backend-resource && electron-builder --config electron-builder.yml",
     "dist:mac": "npm run build && node scripts/verify-backend-resource.cjs darwin && electron-builder --config electron-builder.yml --mac dmg",

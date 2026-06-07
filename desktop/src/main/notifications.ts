@@ -158,7 +158,7 @@ export class NotificationBridge {
   }
 
   private currentBackendNotificationWebSocketPath(): string {
-    const configuredPath = process.env.MAVRIS_NOTIFICATION_WS_PATH;
+    const configuredPath = envValue("LENGRVIS_NOTIFICATION_WS_PATH");
     if (configuredPath) {
       return configuredPath;
     }
@@ -204,7 +204,7 @@ export class NotificationBridge {
 }
 
 function buildBackendNotificationWebSocketUrl(baseUrl: string, path: string): string {
-  const configuredUrl = process.env.MAVRIS_NOTIFICATION_WS_URL;
+  const configuredUrl = envValue("LENGRVIS_NOTIFICATION_WS_URL");
   if (configuredUrl && /^wss?:\/\//i.test(configuredUrl)) {
     return normalizeConfiguredNotificationWebSocketUrl(baseUrl, configuredUrl);
   }
@@ -228,7 +228,11 @@ function normalizeConfiguredNotificationWebSocketUrl(baseUrl: string, configured
 }
 
 function hasConfiguredNotificationWebSocket(): boolean {
-  return Boolean(process.env.MAVRIS_NOTIFICATION_WS_URL || process.env.MAVRIS_NOTIFICATION_WS_PATH);
+  return Boolean(envValue("LENGRVIS_NOTIFICATION_WS_URL") || envValue("LENGRVIS_NOTIFICATION_WS_PATH"));
+}
+
+function envValue(name: string): string | undefined {
+  return process.env[name] || undefined;
 }
 
 function getWebSocketConstructor(): NotificationSocketConstructor {
@@ -491,7 +495,7 @@ function normalizeNotificationPayload(payload: unknown, legacyBody?: unknown): N
 }
 
 function makeNotificationPayload(raw: Record<string, unknown>): NotificationPayload | null {
-  const title = stringValue(raw.title) || "Mavris";
+  const title = stringValue(raw.title) || "Lengrvis";
   const body = stringValue(raw.body);
 
   if (!title || !body) {

@@ -10,7 +10,7 @@ from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
 
 
@@ -188,9 +188,9 @@ def test_install_local_model_websocket_requires_desktop_token(monkeypatch):
     from starlette.websockets import WebSocketDisconnect
     from app.main import create_app
 
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
     client = TestClient(create_app(), client=("127.0.0.1", 50100))
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -206,9 +206,9 @@ def test_install_local_model_websocket_restricts_model_name(monkeypatch):
     from starlette.websockets import WebSocketDisconnect
     from app.main import create_app
 
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
     client = TestClient(create_app(), client=("127.0.0.1", 50100))
 
     with pytest.raises(WebSocketDisconnect) as exc_info:

@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_guardian_app() -> FastAPI:
-    app = FastAPI(title="Mavris Guardian Backend", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Lengrvis Guardian Backend", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "app://local"],

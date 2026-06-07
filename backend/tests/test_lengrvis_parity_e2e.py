@@ -1,4 +1,4 @@
-"""End-to-end parity tests covering 3 Marvis demo scenarios.
+"""End-to-end parity tests covering 3 Lengrvis demo scenarios.
 
 Scenario 1 — Subagent + Memory + Schedule wiring: a pre-seeded memory feeds
 the planner, the orchestrator runs a step, the subagent reflects, and on
@@ -42,7 +42,7 @@ from app.tools.registry import register_all_tools, registry as tool_registry
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     yield
 

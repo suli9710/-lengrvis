@@ -1,4 +1,4 @@
-"""MCP server registry & adapter to mavris ToolDefinition objects."""
+"""MCP server registry & adapter to Lengrvis ToolDefinition objects."""
 
 from __future__ import annotations
 

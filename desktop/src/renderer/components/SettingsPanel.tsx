@@ -14,7 +14,7 @@ import type {
   LocalModelSetupPlan,
   McpServerConfig
 } from "../../shared/types";
-import type { MavrisApiClient, MobileDevice, MobilePairingCode, RealtimeConnectionStatus, RemoteInputGrant } from "../lib/apiClient";
+import type { LengrvisApiClient, MobileDevice, MobilePairingCode, RealtimeConnectionStatus, RemoteInputGrant } from "../lib/apiClient";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import { activeRemoteInputGrantForDevice, mobileDeviceCanReceiveRemoteInputGrant } from "../lib/remoteInputGrant";
 import { zhBackendState, zhRealtimeConnectionStatus, zhRealtimeShortStatus } from "../lib/zh";
@@ -166,7 +166,7 @@ interface SettingsPanelProps {
   onLocalLlmHealthChange?: (health: LocalLLMHealth | null) => void;
   onStartBackend: () => Promise<void>;
   onStopBackend: () => Promise<void>;
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
   privacyIntentId?: number;
 }
 
@@ -557,7 +557,7 @@ export function SettingsPanel({
                   <label key={value} className="mode-radio">
                     <input
                       type="radio"
-                      name="mavris-mode"
+                      name="lengrvis-mode"
                       value={value}
                       checked={draft.mode === value}
                       disabled={isSaving && value === "privacy"}
@@ -593,7 +593,7 @@ export function SettingsPanel({
                   <label key={option.value} className="mode-radio">
                     <input
                       type="radio"
-                      name="mavris-permission-mode"
+                      name="lengrvis-permission-mode"
                       value={option.value}
                       checked={draft.permissionMode === option.value}
                       onChange={() => setDraft((current) => ({ ...current, permissionMode: option.value }))}
@@ -650,7 +650,7 @@ export function SettingsPanel({
             </label>
           </div>
           <div className="settings-status-grid">
-            <p className="muted">Mavris: {aiStatus}</p>
+            <p className="muted">Lengrvis: {aiStatus}</p>
             <p className="muted">本地 AI: {localAiStatus}</p>
             {realtimeStatusText ? (
               <p className={realtimeStatusProblem ? "settings-status settings-status--error" : "muted"}>
@@ -1190,7 +1190,7 @@ function LocalModelInstaller({
   mode,
   onHealthRefresh
 }: {
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
   apiBaseUrl: string;
   readiness?: LocalModelReadiness;
   health: LocalLLMHealth | null;
@@ -1263,7 +1263,7 @@ function LocalModelInstaller({
       if (!response.ok) {
         setStatus("error");
         setProgress({
-          stage: response.error?.message ?? "安装请求失败，请确认 Mavris 正在运行。",
+          stage: response.error?.message ?? "安装请求失败，请确认 Lengrvis 正在运行。",
           percent: 0,
           error: response.error?.message ?? "安装请求失败"
         });
@@ -1670,7 +1670,7 @@ function privacyReadinessSummary(
   checking: boolean
 ): string {
   if (checking) return "正在确认本地模型、运行时和电脑条件。";
-  if (mode === "efficiency") return "对标开箱即用体验：一键切换后，Mavris 会关闭云端辅助并检查本地 AI。";
+  if (mode === "efficiency") return "对标开箱即用体验：一键切换后，Lengrvis 会关闭云端辅助并检查本地 AI。";
   if (health?.available || setupPlan?.ready) return "本地 AI 已可用，隐私任务会优先留在这台电脑上完成。";
   if (setupPlan?.nextAction === "install_runtime") return "这台电脑条件已通过，下一步安装本地 AI 运行时。";
   if (setupPlan?.nextAction === "start_runtime") return "本地 AI 已安装，下一步启动本地服务。";
@@ -1776,9 +1776,9 @@ function zhLocalModelSetupDetail(
     if (state === "blocked") return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
     return fallback || "会检查内存、磁盘空间和 CPU 是否适合本地模型。";
   }
-  if (key === "runtime") return state === "done" ? "Ollama 已安装。" : "Mavris 可以在 Windows 上自动安装 Ollama。";
-  if (key === "server") return state === "done" ? "Ollama 服务正在运行。" : "安装完成后，Mavris 会启动本地 AI 服务。";
-  if (key === "model" && fallback.includes("included with Mavris")) return `${model || "推荐模型"} 已随安装包提供，服务启动后会直接读取。`;
+  if (key === "runtime") return state === "done" ? "Ollama 已安装。" : "Lengrvis 可以在 Windows 上自动安装 Ollama。";
+  if (key === "server") return state === "done" ? "Ollama 服务正在运行。" : "安装完成后，Lengrvis 会启动本地 AI 服务。";
+  if (key === "model" && fallback.includes("included with Lengrvis")) return `${model || "推荐模型"} 已随安装包提供，服务启动后会直接读取。`;
   if (key === "model" && state === "current" && fallback.includes("bundled")) return `${model || "推荐模型"} 已随安装包提供，启用后无需下载。`;
   if (key === "model") return state === "done" ? `${model || "推荐模型"} 已就绪。` : `下载 ${model || "推荐模型"} 后即可进入隐私任务。`;
   return fallback;
@@ -1828,8 +1828,8 @@ function subscribeInstallModelProgressSocket(
   model: string,
   handlers: InstallModelProgressSocketHandlers
 ): (() => void) | null {
-  if (window.mavris?.realtime) {
-    return window.mavris.realtime.subscribe(
+  if (window.lengrvis?.realtime) {
+    return window.lengrvis.realtime.subscribe(
       { endpoint: path, query: { model } },
       {
         onOpen: handlers.onOpen,
@@ -1852,7 +1852,7 @@ function subscribeInstallModelProgressSocket(
 }
 
 function isInstallModelWebOnlyDevFallbackEnabled(): boolean {
-  return !window.mavris?.realtime && import.meta.env.DEV;
+  return !window.lengrvis?.realtime && import.meta.env.DEV;
 }
 
 function subscribeInstallModelWebOnlyDevSocket(
@@ -1881,7 +1881,7 @@ function buildInstallModelWebSocketUrl(baseUrl: string, path: string, model: str
 }
 
 function getInstallModelBackendBaseUrl(baseUrl: string): string {
-  const candidate = window.mavris?.backendBaseUrl || baseUrl || "http://127.0.0.1:8000";
+  const candidate = window.lengrvis?.backendBaseUrl || baseUrl || "http://127.0.0.1:8000";
   return /^https?:\/\//i.test(candidate) ? candidate : "http://127.0.0.1:8000";
 }
 
@@ -2038,7 +2038,7 @@ interface OllamaStatus {
 }
 
 interface HardwareAccelerationCardProps {
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
   settings: AppSettings;
   status: HardwareAccelerationStatusPayload | null;
   loading: boolean;
@@ -2073,9 +2073,9 @@ function HardwareAccelerationCard({
     onSmokeStatusChange(`正在运行 ${hardwareSmokeLabel(operation)}...`);
     const response = await api.runHardwareAccelerationSmoke({
       operation,
-      prompt: "用中文说一句来自 Mavris 硬件加速的问候。",
+      prompt: "用中文说一句来自 Lengrvis 硬件加速的问候。",
       maxTokens: 16,
-      texts: ["Mavris 本地向量模型冒烟测试。"],
+      texts: ["Lengrvis 本地向量模型冒烟测试。"],
       modelPath: status?.modelPath
     });
     if (response.ok && response.data) {
@@ -2238,8 +2238,8 @@ function OllamaSetup() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const doRequest = window.mavris
-        ? window.mavris.api.request<OllamaStatus>
+      const doRequest = window.lengrvis
+        ? window.lengrvis.api.request<OllamaStatus>
         : async (req: { endpoint: string }) => {
             const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`);
             const data = await resp.json();
@@ -2263,8 +2263,8 @@ function OllamaSetup() {
     setInstalling(true);
     setError(null);
     try {
-      const doRequest = window.mavris
-        ? window.mavris.api.request<{ ok: boolean; message?: string; error?: string }>
+      const doRequest = window.lengrvis
+        ? window.lengrvis.api.request<{ ok: boolean; message?: string; error?: string }>
         : async (req: { endpoint: string; method?: string }) => {
             const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`, { method: req.method ?? "GET" });
             const data = await resp.json();
@@ -2278,7 +2278,7 @@ function OllamaSetup() {
       }
       await fetchStatus();
     } catch {
-      setError("安装请求失败，请确认 Mavris 正在运行。");
+      setError("安装请求失败，请确认 Lengrvis 正在运行。");
     } finally {
       setInstalling(false);
     }
@@ -2288,8 +2288,8 @@ function OllamaSetup() {
     setPulling(true);
     setError(null);
     try {
-      const doRequest = window.mavris
-        ? window.mavris.api.request<{ ok: boolean; model?: string; message?: string; error?: string }, { model?: string }>
+      const doRequest = window.lengrvis
+        ? window.lengrvis.api.request<{ ok: boolean; model?: string; message?: string; error?: string }, { model?: string }>
         : async (req: { endpoint: string; method?: string; body?: unknown }) => {
             const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`, {
               method: req.method ?? "GET",
@@ -2307,7 +2307,7 @@ function OllamaSetup() {
       }
       await fetchStatus();
     } catch {
-      setError("模型下载失败，请确认 Mavris 正在运行。");
+      setError("模型下载失败，请确认 Lengrvis 正在运行。");
     } finally {
       setPulling(false);
     }

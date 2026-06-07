@@ -1,8 +1,8 @@
-param(
+﻿param(
     [string]$DistDir = "dist",
-    [string]$PortableDir = "dist\Mavris-win-portable",
-    [string]$PortableZip = "dist\Mavris-win-portable.zip",
-    [string]$SelfExtractingExe = "dist\Mavris-0.1.0-x64-self-extracting.exe",
+    [string]$PortableDir = "dist\Lengrvis-win-portable",
+    [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
+    [string]$SelfExtractingExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe",
     [switch]$RequireBundledOllama
 )
 
@@ -248,7 +248,7 @@ $PortableOllamaManifest = Join-Path $PortablePath "resources\ollama-bundle-manif
 Test-RequiredDirectory "dist directory" $DistPath
 Test-RequiredFile "backend executable" (Join-Path $DistPath "backend.exe")
 Test-RequiredDirectory "portable directory" $PortablePath
-Test-RequiredFile "portable launcher" (Join-Path $PortablePath "Mavris.exe")
+Test-RequiredFile "portable launcher" (Join-Path $PortablePath "Lengrvis.exe")
 Test-RequiredFile "portable backend executable" (Join-Path $PortablePath "resources\backend\backend.exe")
 Test-RequiredDirectory "portable app resources" (Join-Path $PortablePath "resources\app")
 Test-RequiredDirectory "portable renderer dist" (Join-Path $PortablePath "resources\app\dist")
@@ -266,7 +266,7 @@ if ($RequireBundledOllama) {
 if (Test-Path -LiteralPath $PortableZipPath -PathType Leaf) {
     $Zip = [System.IO.Compression.ZipFile]::OpenRead($PortableZipPath)
     try {
-        Test-ZipEntry $Zip "Mavris.exe"
+        Test-ZipEntry $Zip "Lengrvis.exe"
         Test-ZipEntry $Zip "resources/backend/backend.exe"
         Test-ZipEntry $Zip "resources/app/package.json"
         if ($RequireBundledOllama) {

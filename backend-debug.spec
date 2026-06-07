@@ -1,9 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+project_root = Path.cwd()
 
 a = Analysis(
-    ['C:\\Users\\Suli\\Desktop\\mavris\\backend\\main.py'],
-    pathex=['C:\\Users\\Suli\\Desktop\\mavris\\backend'],
+    [str(project_root / 'backend' / 'main.py')],
+    pathex=[str(project_root / 'backend')],
     binaries=[],
     datas=[],
     hiddenimports=['app.main'],

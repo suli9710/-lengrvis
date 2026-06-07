@@ -10,7 +10,7 @@ const desktopRoot = path.resolve(__dirname, "..");
 const session = {
   id: "backend-only-session",
   task_id: "task-browser",
-  current_url: "https://example.com/search?q=mavris",
+  current_url: "https://example.com/search?q=lengrvis",
   title: "Backend-only Browser Session",
   status: "running",
   mode: "agent",
@@ -56,7 +56,7 @@ const systemDiagnostics = {
   top_processes: [
     {
       pid: 4120,
-      name: "Mavris.exe",
+      name: "Lengrvis.exe",
       cpu_percent: 2.4,
       memory_bytes: 268435456,
       status: "running"
@@ -101,7 +101,7 @@ const forbiddenPlaceholderTexts = [
   "desktop/src/renderer/App.tsx",
   "desktop/src/main/ipc.ts",
   "approval-1",
-  "C:\\Users\\Suli\\Desktop\\mavris",
+  "C:\\Users\\Suli\\Desktop\\lengrvis",
   "审批队列里有一个待处理的高风险请求"
 ];
 
@@ -186,7 +186,7 @@ async function installApiMocks(page, options = {}) {
     if (url.pathname === "/api/browser/replay-export") return json({ ok: true, events: [event], session });
     if ((url.pathname === "/api/chat" || url.pathname === "/api/runs") && request.method().toUpperCase() === "POST") {
       if (counters) counters.taskLaunchRequests = (counters.taskLaunchRequests ?? 0) + 1;
-      return json({ message: { id: "mock-response", role: "assistant", author: "Mavris", content: "mock", created_at: new Date().toISOString() } });
+      return json({ message: { id: "mock-response", role: "assistant", author: "Lengrvis", content: "mock", created_at: new Date().toISOString() } });
     }
     if (url.pathname === "/api/chat/messages") return json([]);
     if (url.pathname === "/api/tasks") return json(tasks);
@@ -376,7 +376,7 @@ async function assertComputerCheckEntry(page, counters) {
   await page.getByText(/系统信息|绯荤粺淇℃伅/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/一键只读检查|涓€閿彧璇绘鏌?/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/只读诊断，不改设置|鍙璇婃柇锛屼笉鏀硅缃?/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/Mavris 连接|Mavris 杩炴帴/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/Lengrvis 连接|Lengrvis 杩炴帴/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/任务状态|浠诲姟鐘舵€?/).first().waitFor({ timeout: 10_000 });
   await assertRootTextIncludes(page, /暂未读取.*不代表电脑异常|暂未读取不等于故障|未知.*不代表电脑异常|未知不等于故障/, "computer quick entry should explain unknown health state");
   assert.ok(
@@ -831,7 +831,7 @@ async function returnToSearchTab(page) {
         const bridge = new BrowserHostWebSocketBridge(host, () => "http://127.0.0.1:8000", () => "desktop-secret");
         bridge.start();
         assert.equal(new URL(FakeWebSocket.last.url).searchParams.get("desktop_token"), null);
-        assert.deepEqual(FakeWebSocket.last.protocols, ["mavris.desktop.token.desktop-secret"]);
+        assert.deepEqual(FakeWebSocket.last.protocols, ["lengrvis.desktop.token.desktop-secret"]);
         FakeWebSocket.last.listeners.open();
         assert.equal(sentMessages[0].type, "snapshot", "BrowserHost WS bridge should send snapshots after protocol auth");
         bridge.stop();

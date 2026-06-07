@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("stop", "uninstall", "remove", "query")]
     [string]$Action = "uninstall",
     [int]$WaitSeconds = 30,
@@ -37,7 +37,7 @@ function Test-Admin {
 
 $IsWindowsPlatform = ($PSVersionTable.PSEdition -eq "Desktop") -or $IsWindows
 if (-not $IsWindowsPlatform) {
-    throw "Mavris Windows Service can only be removed or controlled on Windows."
+    throw "Lengrvis Windows Service can only be removed or controlled on Windows."
 }
 
 Set-Location $Root
@@ -56,7 +56,7 @@ if (-not (Test-Admin)) {
     throw "Administrator privileges are required for Windows Service removal/control. Re-run PowerShell as Administrator."
 }
 
-$env:MARVIS_CONFIG_DIR = $Root
+$env:LENGRVIS_CONFIG_DIR = $Root
 
 if ($Action -eq "stop") {
     Write-Step "Stopping service"

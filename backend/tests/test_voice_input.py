@@ -47,9 +47,9 @@ def test_voice_input_event_is_event_compatible():
 def test_deterministic_fallback_extracts_text_like_audio():
     transcriber = DeterministicFallbackTranscriber()
 
-    result = transcriber.transcribe(b"  hello   mavris  ")
+    result = transcriber.transcribe(b"  hello   lengrvis  ")
 
-    assert result.text == "hello mavris"
+    assert result.text == "hello lengrvis"
     assert result.confidence == 1.0
     assert result.metadata["provider"] == "deterministic_fallback"
     assert result.metadata["sha256"]
@@ -80,24 +80,24 @@ async def test_processor_buffers_realtime_chunks_until_final():
 @pytest.mark.asyncio
 async def test_processor_applies_wake_word_gate_and_strips_phrase():
     processor = VoiceInputProcessor(
-        transcriber=FakeTranscriber("hey mavris summarize this page"),
-        wake_words=["hey mavris"],
+        transcriber=FakeTranscriber("hey lengrvis summarize this page"),
+        wake_words=["hey lengrvis"],
     )
 
     event = await processor.process_utterance(b"text-like audio")
 
     assert event is not None
     assert event.wake_word_detected is True
-    assert event.wake_word == "hey mavris"
+    assert event.wake_word == "hey lengrvis"
     assert event.transcript == "summarize this page"
-    assert event.raw_transcript == "hey mavris summarize this page"
+    assert event.raw_transcript == "hey lengrvis summarize this page"
 
 
 @pytest.mark.asyncio
 async def test_processor_suppresses_transcript_without_wake_word():
     processor = VoiceInputProcessor(
         transcriber=FakeTranscriber("summarize this page"),
-        wake_words=["hey mavris"],
+        wake_words=["hey lengrvis"],
     )
 
     assert await processor.process_utterance(b"text-like audio") is None

@@ -25,26 +25,33 @@ from app.acceleration.onnx_sessions import (
     run_session,
     session_input_names,
 )
-from app.config import AppSettings
+from app.config import AppSettings, get_env
 
 
 _MODEL_ENV_KEYS = (
-    "MARVIS_EMBEDDING_ONNX_MODEL_PATH",
-    "MAVRIS_EMBEDDING_ONNX_MODEL_PATH",
-    "MARVIS_LOCAL_EMBEDDING_MODEL_PATH",
-    "MAVRIS_LOCAL_EMBEDDING_MODEL_PATH",
-    "MARVIS_ONNX_EMBEDDING_MODEL_PATH",
-    "MAVRIS_ONNX_EMBEDDING_MODEL_PATH",
+    "LENGRVIS_EMBEDDING_ONNX_MODEL_PATH",
+    "LENGRVIS_EMBEDDING_ONNX_MODEL_PATH",
+    "LENGRVIS_EMBEDDING_ONNX_MODEL_PATH",
+    "LENGRVIS_LOCAL_EMBEDDING_MODEL_PATH",
+    "LENGRVIS_LOCAL_EMBEDDING_MODEL_PATH",
+    "LENGRVIS_LOCAL_EMBEDDING_MODEL_PATH",
+    "LENGRVIS_ONNX_EMBEDDING_MODEL_PATH",
+    "LENGRVIS_ONNX_EMBEDDING_MODEL_PATH",
+    "LENGRVIS_ONNX_EMBEDDING_MODEL_PATH",
 )
 _EXECUTION_PROVIDER_ENV_KEYS = (
-    "MARVIS_EMBEDDING_ONNX_EXECUTION_PROVIDER",
-    "MAVRIS_EMBEDDING_ONNX_EXECUTION_PROVIDER",
-    "MARVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER",
-    "MAVRIS_ONNX_EMBEDDING_EXECUTION_PROVIDER",
-    "MARVIS_LOCAL_EMBEDDING_EXECUTION_PROVIDER",
-    "MAVRIS_LOCAL_EMBEDDING_EXECUTION_PROVIDER",
-    "MARVIS_ONNX_EXECUTION_PROVIDER",
-    "MAVRIS_ONNX_EXECUTION_PROVIDER",
+    "LENGRVIS_EMBEDDING_ONNX_EXECUTION_PROVIDER",
+    "LENGRVIS_EMBEDDING_ONNX_EXECUTION_PROVIDER",
+    "LENGRVIS_EMBEDDING_ONNX_EXECUTION_PROVIDER",
+    "LENGRVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER",
+    "LENGRVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER",
+    "LENGRVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER",
+    "LENGRVIS_LOCAL_EMBEDDING_EXECUTION_PROVIDER",
+    "LENGRVIS_LOCAL_EMBEDDING_EXECUTION_PROVIDER",
+    "LENGRVIS_LOCAL_EMBEDDING_EXECUTION_PROVIDER",
+    "LENGRVIS_ONNX_EXECUTION_PROVIDER",
+    "LENGRVIS_ONNX_EXECUTION_PROVIDER",
+    "LENGRVIS_ONNX_EXECUTION_PROVIDER",
 )
 _MODEL_SUFFIXES = {".onnx", ".ort"}
 _TOKENIZER_FILE = "tokenizer.json"
@@ -194,7 +201,7 @@ def health_snapshot(settings: AppSettings | None = None) -> dict[str, Any]:
 
 
 def test_embedding(settings: AppSettings | None = None, texts: list[str] | None = None) -> dict[str, Any]:
-    sample = [str(text or "") for text in (texts or ["Mavris local embedding smoke test."])]
+    sample = [str(text or "") for text in (texts or ["Lengrvis local embedding smoke test."])]
     health = health_snapshot(settings)
     provider = get_local_embedding_provider(settings)
     if provider is None:
@@ -391,7 +398,7 @@ def _l2_normalize(embeddings: np.ndarray) -> np.ndarray:
 
 
 def _normalize_embeddings() -> bool:
-    raw = os.environ.get("MARVIS_EMBEDDING_NORMALIZE", "true")
+    raw = get_env("LENGRVIS_EMBEDDING_NORMALIZE", "true") or "true"
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -399,7 +406,7 @@ def _unavailable_reason(settings: AppSettings | None) -> str:
     raw_model_path = _configured_model_path(settings)
     if not raw_model_path:
         return (
-            "No local ONNX embedding model configured. Set MARVIS_EMBEDDING_ONNX_MODEL_PATH "
+            "No local ONNX embedding model configured. Set LENGRVIS_EMBEDDING_ONNX_MODEL_PATH "
             "or point embedding_model at a local ONNX embedding bundle."
         )
     if _resolve_raw_model_path(raw_model_path) is None:

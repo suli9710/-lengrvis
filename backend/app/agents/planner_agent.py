@@ -119,23 +119,39 @@ class PlannerAgent(BaseAgent):
                 ),
             },
         ]
+        settings = self._settings_for_mode(mode)
+        effective_mode = (settings.mode or "efficiency").lower()
+        allow_mock_fallback = bool(getattr(settings, "allow_mock_fallback", False))
         try:
-            provider = self._provider_for_mode(mode)
+            provider = self._provider_for_settings(settings)
             payload = await provider.structured_chat(messages, PLAN_SCHEMA)
         except LocalBackendUnavailable as exc:
+            message = (
+                f"Local LLM unavailable in privacy mode: {exc}"
+                if effective_mode == "privacy"
+                else f"Provider unavailable and MockProvider fallback is disabled: {exc}"
+            )
             self.bus.publish_text(
                 task_id,
                 self.name,
-                f"Local LLM unavailable in privacy mode: {exc}",
+                message,
                 message_type=MessageType.REVISION,
             )
             raise
         except Exception as exc:
-            if (mode or "privacy").lower() == "privacy":
+            if effective_mode == "privacy":
                 self.bus.publish_text(
                     task_id,
                     self.name,
                     f"Local provider failed in privacy mode: {exc}",
+                    message_type=MessageType.REVISION,
+                )
+                raise
+            if not allow_mock_fallback:
+                self.bus.publish_text(
+                    task_id,
+                    self.name,
+                    f"Primary provider failed and MockProvider fallback is disabled: {exc}",
                     message_type=MessageType.REVISION,
                 )
                 raise
@@ -150,11 +166,19 @@ class PlannerAgent(BaseAgent):
         try:
             plan = self._payload_to_plan(task_id, payload)
         except (ValidationError, ValueError, KeyError, TypeError) as exc:
-            if (mode or "privacy").lower() == "privacy":
+            if effective_mode == "privacy":
                 self.bus.publish_text(
                     task_id,
                     self.name,
                     f"Local provider returned an invalid plan in privacy mode: {exc}",
+                    message_type=MessageType.REVISION,
+                )
+                raise
+            if not allow_mock_fallback:
+                self.bus.publish_text(
+                    task_id,
+                    self.name,
+                    f"Provider returned invalid plan and MockProvider fallback is disabled: {exc}",
                     message_type=MessageType.REVISION,
                 )
                 raise
@@ -170,8 +194,10 @@ class PlannerAgent(BaseAgent):
         self._publish_plan(task_id, plan)
         return plan
 
-    def _provider_for_mode(self, mode: str):
-        settings = dataclasses.replace(get_effective_settings(), mode=mode or "efficiency")
+    def _settings_for_mode(self, mode: str):
+        return dataclasses.replace(get_effective_settings(), mode=mode or "efficiency")
+
+    def _provider_for_settings(self, settings):
         try:
             parameters = inspect.signature(get_provider).parameters
         except (TypeError, ValueError):

@@ -12,23 +12,23 @@ from app.services import ollama_service
 
 @pytest.fixture
 def no_bundled_ollama(monkeypatch, tmp_path: Path):
-    monkeypatch.delenv("MAVRIS_BUNDLED_OLLAMA_DIR", raising=False)
-    monkeypatch.delenv("MARVIS_BUNDLED_OLLAMA_DIR", raising=False)
-    monkeypatch.delenv("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", raising=False)
-    monkeypatch.delenv("MARVIS_BUNDLED_OLLAMA_MODELS_DIR", raising=False)
-    monkeypatch.delenv("MAVRIS_OLLAMA_BUNDLE_MANIFEST", raising=False)
-    monkeypatch.delenv("MARVIS_OLLAMA_BUNDLE_MANIFEST", raising=False)
+    monkeypatch.delenv("LENGRVIS_BUNDLED_OLLAMA_DIR", raising=False)
+    monkeypatch.delenv("LENGRVIS_BUNDLED_OLLAMA_DIR", raising=False)
+    monkeypatch.delenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", raising=False)
+    monkeypatch.delenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", raising=False)
+    monkeypatch.delenv("LENGRVIS_OLLAMA_BUNDLE_MANIFEST", raising=False)
+    monkeypatch.delenv("LENGRVIS_OLLAMA_BUNDLE_MANIFEST", raising=False)
     monkeypatch.setattr(ollama_service, "_bundle_anchor_dirs", lambda: [tmp_path / "empty-bundle-anchor"])
 
 
 def test_repository_vendor_ollama_is_not_a_bundled_source(monkeypatch, tmp_path: Path):
     for key in (
-        "MAVRIS_BUNDLED_OLLAMA_DIR",
-        "MARVIS_BUNDLED_OLLAMA_DIR",
-        "MAVRIS_BUNDLED_OLLAMA_MODELS_DIR",
-        "MARVIS_BUNDLED_OLLAMA_MODELS_DIR",
-        "MAVRIS_OLLAMA_BUNDLE_MANIFEST",
-        "MARVIS_OLLAMA_BUNDLE_MANIFEST",
+        "LENGRVIS_BUNDLED_OLLAMA_DIR",
+        "LENGRVIS_BUNDLED_OLLAMA_DIR",
+        "LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",
+        "LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",
+        "LENGRVIS_OLLAMA_BUNDLE_MANIFEST",
+        "LENGRVIS_OLLAMA_BUNDLE_MANIFEST",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -230,7 +230,7 @@ def test_bundled_runtime_takes_precedence_over_winget(monkeypatch, tmp_path: Pat
     runtime_dir.mkdir()
     executable = runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")
     executable.write_text("fake", encoding="utf-8")
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
 
     with patch("shutil.which", return_value=None), \
          patch("asyncio.create_subprocess_exec") as subprocess_exec:
@@ -257,9 +257,9 @@ def test_setup_plan_reports_bundled_runtime_and_model(monkeypatch, tmp_path: Pat
         '"models":{"summary":{"sha256":"models-hash","files":1}}}',
         encoding="utf-8",
     )
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
-    monkeypatch.setenv("MAVRIS_OLLAMA_BUNDLE_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("LENGRVIS_OLLAMA_BUNDLE_MANIFEST", str(manifest_path))
     monkeypatch.setattr(
         ollama_service,
         "hardware_readiness",
@@ -282,7 +282,7 @@ def test_setup_plan_reports_bundled_runtime_and_model(monkeypatch, tmp_path: Pat
     assert result["bundle_manifest"]["present"] is True
     assert result["bundle_manifest"]["valid"] is True
     assert result["bundle_manifest"]["models_sha256"] == "models-hash"
-    assert "included with Mavris" in result["steps"][3]["detail"]
+    assert "included with Lengrvis" in result["steps"][3]["detail"]
 
 
 def test_setup_plan_accepts_bom_encoded_bundle_manifest(monkeypatch, tmp_path: Path):
@@ -300,9 +300,9 @@ def test_setup_plan_accepts_bom_encoded_bundle_manifest(monkeypatch, tmp_path: P
         '"models":{"summary":{"sha256":"models-hash","files":1}}}',
         encoding="utf-8-sig",
     )
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
-    monkeypatch.setenv("MAVRIS_OLLAMA_BUNDLE_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("LENGRVIS_OLLAMA_BUNDLE_MANIFEST", str(manifest_path))
     monkeypatch.setattr(
         ollama_service,
         "hardware_readiness",
@@ -331,8 +331,8 @@ def test_setup_plan_prefers_bundled_model_action_when_service_is_running(monkeyp
     manifest.parent.mkdir(parents=True)
     (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
     manifest.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
     monkeypatch.setattr(
         ollama_service,
         "hardware_readiness",
@@ -377,7 +377,7 @@ def test_start_server_launches_ollama_when_available():
 def test_start_server_uses_bundled_models_dir(monkeypatch, tmp_path: Path):
     models_dir = tmp_path / "ollama-models"
     models_dir.mkdir()
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
 
     with patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False), \
          patch.object(ollama_service, "is_installed", return_value=True), \
@@ -531,8 +531,8 @@ async def test_install_local_model_uses_bundled_model_without_pull(monkeypatch, 
     manifest.parent.mkdir(parents=True)
     (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
     manifest.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
     monkeypatch.setattr(
         ollama_service,
         "hardware_readiness",
@@ -573,8 +573,8 @@ async def test_install_local_model_does_not_pull_when_bundled_model_needs_servic
     manifest.parent.mkdir(parents=True)
     (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
     manifest.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
-    monkeypatch.setenv("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
     monkeypatch.setattr(
         ollama_service,
         "hardware_readiness",

@@ -1,4 +1,4 @@
-llm:
+﻿llm:
   provider_name: openai_compatible
   base_url: https://api.openai.com/v1
   api_key: ""
@@ -6,8 +6,8 @@ llm:
   model_context_window: 128000
   model_auto_compact_token_limit: 96000
   # Privacy mode automatically prefers an ONNX GenAI model bundle when present.
-  # Set onnx_model_path or MARVIS_ONNX_MODEL_PATH to a Qwen2.5-3B ONNX GenAI directory/config,
-  # or place the bundle under ./.marvis_data/models. onnx_execution_provider may be WinML,
+  # Set onnx_model_path or LENGRVIS_ONNX_MODEL_PATH to a Qwen2.5-3B ONNX GenAI directory/config,
+  # or place the bundle under ./.lengrvis_data/models. onnx_execution_provider may be WinML,
   # DirectML, OpenVINO, CPU, or blank for automatic preference.
   onnx_model_path: ""
   onnx_runtime: auto
@@ -45,9 +45,9 @@ llm:
   llm_api_circuit_cooldown_seconds: 30.0
 
 paths:
-  data_dir: ./.marvis_data
+  data_dir: ./.lengrvis_data
   skill_directories:
-    - ./.marvis_data/skills
+    - ./.lengrvis_data/skills
   allowed_directories:
     - ./test_data/files/workspace
   app_allowlist:
@@ -60,9 +60,12 @@ privacy:
   allow_cloud_context: false
   allow_file_content_upload: false
   allow_browser_network: false
+  # Local Python/Shell skill handlers run as normal subprocesses, not an OS sandbox.
+  # Enable only for trusted development skill packages.
+  allow_unsafe_local_skill_execution: false
   strict_state_machine: false
   # Leave blank to persist a generated secret in paths.data_dir/mobile_jwt.secret.
-  # MARVIS_JWT_SECRET or a non-empty jwt_secret value overrides that local file.
+  # LENGRVIS_JWT_SECRET or a non-empty jwt_secret value overrides that local file.
   jwt_secret: ""
   browser_max_page_bytes: 250000
   document_max_chars_to_llm: 30000

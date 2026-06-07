@@ -1,7 +1,7 @@
 import { Brain, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { MavrisApiClient } from "../lib/apiClient";
+import { LengrvisApiClient } from "../lib/apiClient";
 import { Badge, Panel } from "./Panel";
 
 interface MemoryItem {
@@ -17,7 +17,7 @@ interface MemoryItem {
 }
 
 interface MemoryPanelProps {
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
 }
 
 export function MemoryPanel({ api }: MemoryPanelProps) {

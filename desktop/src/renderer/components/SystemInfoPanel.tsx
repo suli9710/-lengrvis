@@ -45,7 +45,7 @@ export function SystemInfoPanel({ info, onRefresh, onOpenSettings, isRefreshing 
         <div>
           <span className="system-check-hero__eyebrow">一键只读检查</span>
           <strong>{isRefreshing ? "正在读取电脑健康快照" : healthSummary.title}</strong>
-          <p>{isRefreshing ? "Mavris 只读取 CPU、内存、磁盘、启动项和进程信息，不会更改系统设置。" : healthSummary.detail}</p>
+          <p>{isRefreshing ? "Lengrvis 只读取 CPU、内存、磁盘、启动项和进程信息，不会更改系统设置。" : healthSummary.detail}</p>
         </div>
         <button className="button button--primary" type="button" onClick={() => void onRefresh()} disabled={isRefreshing}>
           {isRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
@@ -57,7 +57,7 @@ export function SystemInfoPanel({ info, onRefresh, onOpenSettings, isRefreshing 
         <Info size={16} aria-hidden="true" />
         <div>
           <strong>只读诊断，不改设置</strong>
-          <span>电脑健康、Mavris 连接、任务状态已经分开显示；“暂未读取”不代表电脑异常。</span>
+          <span>电脑健康、Lengrvis 连接、任务状态已经分开显示；“暂未读取”不代表电脑异常。</span>
         </div>
       </div>
 
@@ -157,14 +157,14 @@ function buildHealthSummary({
   if (memoryUsedPercent >= 85 || (diskPercent !== undefined && diskPercent >= 90) || hasSuggestion) {
     return {
       title: "发现需要留意的项目",
-      detail: "下面列出了内存、磁盘、启动项和进程快照。Mavris 只给建议，不会自动修改系统。",
+      detail: "下面列出了内存、磁盘、启动项和进程快照。Lengrvis 只给建议，不会自动修改系统。",
       tone: "warning"
     };
   }
 
   return {
     title: "未发现关键问题",
-    detail: "电脑只读诊断已完成，可以继续让 Mavris 处理文件、文档或其他任务。",
+    detail: "电脑只读诊断已完成，可以继续让 Lengrvis 处理文件、文档或其他任务。",
     tone: "ready"
   };
 }

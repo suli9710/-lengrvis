@@ -717,7 +717,7 @@ def _publish_turn_result(run_id: str, result: EngineTurnResult) -> None:
             {"tool_name": source, "output": payload, "engine": state.engine, "turn": state.turn_count},
         )
         if isinstance(payload, dict):
-            for event in [*(payload.get("mavris_events") or []), *(payload.get("events") or [])]:
+            for event in [*(payload.get("lengrvis_events") or []), *(payload.get("events") or [])]:
                 if not isinstance(event, dict):
                     continue
                 name = event.get("name") or event.get("event")

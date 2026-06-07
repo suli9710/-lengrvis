@@ -48,8 +48,8 @@ def test_index_can_ingest_and_search_text(workspace: Path):
         search = getattr(index, "search", None) or getattr(index, "query", None)
         if add is None or search is None:
             pytest.skip(f"{index_cls_or_func.__name__} lacks add/search APIs")
-        add("notes/safe.txt", "project notes about mavris")
-        results = search("mavris")
+        add("notes/safe.txt", "project notes about lengrvis")
+        results = search("lengrvis")
     else:
         results = index_cls_or_func(workspace)
 

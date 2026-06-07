@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$BackendHost = "127.0.0.1",
     [int]$BackendPort = 8000
 )
@@ -11,14 +11,15 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
     . ".venv\Scripts\Activate.ps1"
 }
 
-$env:MAVRIS_ENV = if ($env:MAVRIS_ENV) { $env:MAVRIS_ENV } else { "development" }
-$env:MAVRIS_FULL_BACKEND = "1"
+$env:LENGRVIS_ENV = if ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } else { "development" }
+$env:LENGRVIS_ENV = $env:LENGRVIS_ENV
+$env:LENGRVIS_FULL_BACKEND = "1"
 
 $Candidates = @(
     "backend.main:full_app",
     "backend.api:app",
-    "mavris.main:app",
-    "mavris.api:app"
+    "lengrvis.main:app",
+    "lengrvis.api:app"
 )
 
 foreach ($App in $Candidates) {

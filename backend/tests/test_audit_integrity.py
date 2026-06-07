@@ -8,7 +8,7 @@ from app.core.audit import record, verify_chain
 
 
 def test_audit_events_are_append_only_and_verifiable(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     first = record("test.first", "pytest", {"secret": "token"})
@@ -21,7 +21,7 @@ def test_audit_events_are_append_only_and_verifiable(monkeypatch, tmp_path):
 
 
 def test_audit_verify_detects_tampering(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     event = record("test.tamper", "pytest", {"ok": True})
 

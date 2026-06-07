@@ -12,7 +12,7 @@ from app.policy.risk import RiskLevel, SafetyVerdict
 
 
 def test_task_replay_fetches_results_for_current_task_beyond_global_recent_limit(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(id="task_replay_old", user_goal="Replay old task")
     tool_call = ToolCall(
@@ -55,7 +55,7 @@ def test_task_replay_fetches_results_for_current_task_beyond_global_recent_limit
 
 
 def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(id="task_boundary_events", user_goal="Expose boundary events")
     db.upsert_model("tasks", task)
@@ -97,7 +97,7 @@ def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
 
 
 def test_tasks_list_batches_boundary_events(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task_ids = [f"task_boundary_batch_{index}" for index in range(3)]
     for task_id in task_ids:
@@ -150,7 +150,7 @@ def test_tasks_list_batches_boundary_events(monkeypatch, tmp_path):
 
 
 def test_tasks_list_boundary_events_use_table_task_id_when_json_task_id_is_stale(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     target = Task(id="task_boundary_table_source", user_goal="Use table task id")
     stale_json_target = Task(id="task_boundary_json_stale", user_goal="Stale JSON task id")

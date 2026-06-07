@@ -94,7 +94,7 @@ export const primaryNavItems: NavItem[] = primaryNavGroups.flatMap((group) => gr
 
 export const viewTitles: Record<ViewKey, ViewTitle> = {
   browser: { title: "浏览器监看", subtitle: "查看浏览器活动，并在需要时接管控制" },
-  home: { title: "首页", subtitle: "让 Mavris 帮你处理电脑上的事务" },
+  home: { title: "首页", subtitle: "让 Lengrvis 帮你处理电脑上的事务" },
   chat: { title: "对话", subtitle: "自然对话，全程 Agent 协作" },
   agentOps: { title: "Agent 总览", subtitle: "查看真实协作状态，并从对话或审批继续" },
   apps: { title: "应用", subtitle: "直接查看本地应用和脚本" },
@@ -111,7 +111,7 @@ export const viewTitles: Record<ViewKey, ViewTitle> = {
   files: { title: "文件工具", subtitle: "查找、整理和分析你的文件" },
   computer: { title: "此电脑", subtitle: "检查这台设备并打开常用工具" },
   agents: { title: "进度", subtitle: "当前正在处理的工作" },
-  memories: { title: "记忆", subtitle: "Mavris 后续可使用的本地信息" },
+  memories: { title: "记忆", subtitle: "Lengrvis 后续可使用的本地信息" },
   safety: { title: "审批", subtitle: "等待你确认的项目" },
   settings: { title: "设置", subtitle: "隐私模式、本地 AI、技能、安全权限和运行配置" }
 };
@@ -148,11 +148,11 @@ export function ShellFrame({
   const recentReadableMessages = getRecentReadableMessages(messages);
 
   return (
-    <div className="marvis-shell">
+    <div className="lengrvis-shell">
       <Sidebar activeView={activeView} onViewChange={onViewChange} />
 
-      <div className="marvis-workbench-layout">
-        <main className="marvis-main">
+      <div className="lengrvis-workbench-layout">
+        <main className="lengrvis-main">
           <WindowBar
             activeView={activeView}
             viewMeta={viewMeta}
@@ -207,7 +207,7 @@ function WorkbenchPanel({
   const image = workbenchGifForState(state);
 
   return (
-    <aside className={`workbench-panel workbench-panel--${state}`} aria-label="Mavris 当前状态">
+    <aside className={`workbench-panel workbench-panel--${state}`} aria-label="Lengrvis 当前状态">
       <section className="workbench-card workbench-card--agent">
         <div className="workbench-card__head">
           <span>
@@ -220,7 +220,7 @@ function WorkbenchPanel({
           <img className="workbench-agent-gif" src={image} alt="" draggable={false} />
         </div>
         <div className="workbench-status-stack">
-          <StatusLine title="Mavris 连接" summary={connection} />
+          <StatusLine title="Lengrvis 连接" summary={connection} />
           <StatusLine title="最近任务" summary={{ state, text: title, detail }} />
           <StatusLine title="电脑健康" summary={health} />
         </div>
@@ -314,7 +314,7 @@ function getWorkbenchState({
     return {
       state: "running" as const,
       title: "正在连接服务",
-      detail: "正在确认 Mavris 服务状态，还没有开始新的用户任务。",
+      detail: "正在确认 Lengrvis 服务状态，还没有开始新的用户任务。",
       activeTask: undefined
     };
   }
@@ -359,7 +359,7 @@ function getConnectionSummary(connectionState: ConnectionState, _isLoading: bool
     return {
       state: "completed",
       text: "已连接",
-      detail: "Mavris 服务可用，可以继续发起任务。"
+      detail: "Lengrvis 服务可用，可以继续发起任务。"
     };
   }
   if (connectionState === "checking") {
@@ -449,7 +449,7 @@ function getRecentReadableMessages(messages: ChatMessage[]): ChatMessage[] {
 }
 
 function friendlyMessageAuthor(message: ChatMessage): string {
-  return message.role === "user" ? "你" : "Mavris";
+  return message.role === "user" ? "你" : "Lengrvis";
 }
 
 function friendlyPreviewText(text: string): string {
@@ -481,11 +481,11 @@ function Sidebar({
   onViewChange: (view: ViewKey) => void;
 }) {
   return (
-    <aside className="marvis-sidebar">
+    <aside className="lengrvis-sidebar">
       <div className="sidebar-brand">
         <XiaoMaAvatar className="sidebar-brand__logo" />
         <span className="sidebar-brand__text">
-          <strong>Mavris</strong>
+          <strong>Lengrvis</strong>
           <small>电脑助手</small>
         </span>
       </div>
@@ -513,7 +513,7 @@ function Sidebar({
       <div className="sidebar-user">
         <XiaoMaAvatar className="mini-avatar" />
         <span className="sidebar-user__meta">
-          <strong>Mavris</strong>
+          <strong>Lengrvis</strong>
           <em>电脑助手</em>
         </span>
       </div>
@@ -560,7 +560,7 @@ function WindowBar({
         {showConnectionPill ? (
           <span className={`connection-pill connection-pill--${connectionState}`}>
             <span className="connection-pill__dot" />
-            {connectionState === "checking" ? "正在连接 Mavris" : "助手暂时连不上"}
+            {connectionState === "checking" ? "正在连接 Lengrvis" : "助手暂时连不上"}
           </span>
         ) : null}
         <button className="icon-button" aria-label="刷新" onClick={onRefresh} disabled={isLoading} type="button">

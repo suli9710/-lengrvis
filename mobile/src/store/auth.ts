@@ -3,8 +3,8 @@ import * as SecureStore from "expo-secure-store";
 
 import type { PairingSession } from "../api/client";
 
-const SESSION_KEY = "mavris.mobile.session";
-const TOKEN_KEY = "mavris.mobile.session.token";
+const SESSION_KEY = "lengrvis.mobile.session";
+const TOKEN_KEY = "lengrvis.mobile.session.token";
 
 type StoredSessionMetadata = Partial<Omit<PairingSession, "token">> & {
   token?: string;
@@ -20,6 +20,8 @@ export async function loadSession(): Promise<PairingSession | null> {
     let token = await SecureStore.getItemAsync(TOKEN_KEY);
     if (!token && parsed.token) {
       token = parsed.token;
+      await saveSession({ baseUrl: parsed.baseUrl, deviceId: parsed.deviceId, token });
+    } else if (token) {
       await saveSession({ baseUrl: parsed.baseUrl, deviceId: parsed.deviceId, token });
     }
     return token ? { baseUrl: parsed.baseUrl, deviceId: parsed.deviceId, token } : null;
@@ -38,5 +40,8 @@ export async function saveSession(session: PairingSession): Promise<void> {
 }
 
 export async function clearSession(): Promise<void> {
-  await Promise.all([AsyncStorage.removeItem(SESSION_KEY), SecureStore.deleteItemAsync(TOKEN_KEY)]);
+  await Promise.all([
+    AsyncStorage.removeItem(SESSION_KEY),
+    SecureStore.deleteItemAsync(TOKEN_KEY),
+  ]);
 }

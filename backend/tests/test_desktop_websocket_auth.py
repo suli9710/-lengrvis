@@ -16,7 +16,7 @@ DESKTOP_SECRET = "desktop-secret"
     ("headers", "subprotocols"),
     [
         ({}, []),
-        ({"X-Mavris-Desktop-Token": "wrong-secret"}, []),
+        ({"X-Lengrvis-Desktop-Token": "wrong-secret"}, []),
         ({}, [f"{DESKTOP_API_WS_PROTOCOL_PREFIX}wrong-secret"]),
         ({}, [DESKTOP_SECRET]),
     ],
@@ -51,14 +51,14 @@ def test_production_desktop_websocket_accepts_prefixed_token_among_subprotocols(
 
     with client.websocket_connect(
         "/ws/tasks/task_ws_auth",
-        subprotocols=["mavris.client.v1", f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"],
+        subprotocols=["lengrvis.client.v1", f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"],
     ) as websocket:
         assert websocket.receive_json() == {"type": "connected", "task_id": "task_ws_auth"}
 
 
 def _configure_production_desktop_token(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     db.init_db()

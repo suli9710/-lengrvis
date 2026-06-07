@@ -19,8 +19,8 @@ DESKTOP_SECRET = "desktop-secret"
 
 
 def test_remote_lan_client_can_redeem_but_not_create_pairing_codes_or_use_desktop_apis(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MARVIS_ALLOW_LAN_DESKTOP_API", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
     db.init_db()
     loopback = TestClient(app, client=("127.0.0.1", 50100))
     remote = TestClient(app, client=("192.168.1.22", 50100))
@@ -38,7 +38,7 @@ def test_remote_lan_client_can_redeem_but_not_create_pairing_codes_or_use_deskto
 
 
 def test_remote_lan_client_cannot_open_desktop_task_websocket(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app, client=("192.168.1.22", 50100))
 
@@ -50,9 +50,9 @@ def test_remote_lan_client_cannot_open_desktop_task_websocket(monkeypatch, tmp_p
 
 
 def test_remote_lan_client_cannot_open_guardian_catch_all_websocket_without_desktop_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
-    monkeypatch.setenv("MARVIS_ALLOW_LAN_DESKTOP_API", "1")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
     db.init_db()
 
     import app.api.routes_guardian as routes_guardian
@@ -71,9 +71,9 @@ def test_remote_lan_client_cannot_open_guardian_catch_all_websocket_without_desk
 
 
 def test_remote_lan_client_with_desktop_token_can_reach_guardian_catch_all_websocket(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
-    monkeypatch.setenv("MARVIS_ALLOW_LAN_DESKTOP_API", "1")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
     db.init_db()
 
     import app.api.routes_guardian as routes_guardian
@@ -100,8 +100,8 @@ def test_remote_lan_client_with_desktop_token_can_reach_guardian_catch_all_webso
 
 
 def test_guardian_http_proxy_rejects_mobile_and_remote_namespaces(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_ALLOW_LAN_DESKTOP_API", "1")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
     db.init_db()
 
     import app.api.routes_guardian as routes_guardian
@@ -129,7 +129,7 @@ def test_guardian_http_proxy_rejects_mobile_and_remote_namespaces(monkeypatch, t
 
 
 def test_remote_lan_client_cannot_trigger_local_model_install_websocket(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app, client=("192.168.1.22", 50100))
 
@@ -191,8 +191,8 @@ def test_loopback_desktop_websockets_require_subprotocol_token_in_production_con
 
 
 def test_browser_host_websocket_requires_desktop_authorization(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
     db.init_db()
     remote = TestClient(app, client=("192.168.1.22", 50100))
 
@@ -210,9 +210,9 @@ def test_browser_host_websocket_requires_desktop_authorization(monkeypatch, tmp_
 
 
 def test_loopback_client_keeps_desktop_api_access(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_TEST", "1")
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_TEST", "1")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
     db.init_db()
     client = TestClient(app, client=("127.0.0.1", 50100))
 
@@ -221,33 +221,33 @@ def test_loopback_client_keeps_desktop_api_access(monkeypatch, tmp_path):
 
 
 def test_desktop_get_requires_desktop_token_when_enabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_ALLOW_LAN_DESKTOP_API", "1")
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     db.init_db()
     remote = TestClient(app, client=("192.168.1.22", 50100))
     loopback = TestClient(app, client=("127.0.0.1", 50100))
 
     blocked = remote.get("/api/tasks")
-    allowed = remote.get("/api/tasks", headers={"X-Mavris-Desktop-Token": "desktop-secret"})
+    allowed = remote.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"})
 
     assert blocked.status_code == 401
     assert allowed.status_code == 200
     assert loopback.get("/api/tasks").status_code == 401
-    assert loopback.get("/api/tasks", headers={"X-Mavris-Desktop-Token": "desktop-secret"}).status_code == 200
+    assert loopback.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"}).status_code == 200
 
 
 def test_loopback_state_changes_require_desktop_token_when_configured(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
     db.init_db()
     client = TestClient(app, client=("127.0.0.1", 50100))
 
     blocked = client.post("/api/pair/code")
-    allowed = client.post("/api/pair/code", headers={"X-Mavris-Desktop-Token": "desktop-secret"})
+    allowed = client.post("/api/pair/code", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"})
     redeem = client.post("/api/pair", json={"code": allowed.json()["code"], "device_name": "Phone"})
 
     assert blocked.status_code == 401
@@ -256,9 +256,9 @@ def test_loopback_state_changes_require_desktop_token_when_configured(monkeypatc
 
 
 def test_remote_input_grant_creation_requires_desktop_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
     db.init_db()
     import app.services.mobile_pairing_service as pairing_module
 
@@ -269,7 +269,7 @@ def test_remote_input_grant_creation_requires_desktop_token(monkeypatch, tmp_pat
     blocked = client.post("/api/pair/devices/mobile_input_guard/remote-input-grants")
     allowed = client.post(
         "/api/pair/devices/mobile_input_guard/remote-input-grants",
-        headers={"X-Mavris-Desktop-Token": "desktop-secret"},
+        headers={"X-Lengrvis-Desktop-Token": "desktop-secret"},
     )
 
     assert blocked.status_code == 401
@@ -282,21 +282,21 @@ def test_remote_input_grant_creation_requires_desktop_token(monkeypatch, tmp_pat
 
 
 def test_loopback_state_changes_require_persisted_desktop_token_by_default(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MAVRIS_DEV", raising=False)
-    monkeypatch.delenv("MAVRIS_TEST", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DEV", raising=False)
+    monkeypatch.delenv("LENGRVIS_TEST", raising=False)
     db.init_db()
     client = TestClient(app, client=("127.0.0.1", 50100))
 
     blocked = client.post("/api/pair/code")
     blocked_read = client.get("/api/tasks")
     token = (tmp_path / "desktop_api.secret").read_text(encoding="utf-8").strip()
-    allowed = client.post("/api/pair/code", headers={"X-Mavris-Desktop-Token": token})
-    allowed_read = client.get("/api/tasks", headers={"X-Mavris-Desktop-Token": token})
+    allowed = client.post("/api/pair/code", headers={"X-Lengrvis-Desktop-Token": token})
+    allowed_read = client.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": token})
 
     assert blocked.status_code == 401
     assert blocked_read.status_code == 401
@@ -306,11 +306,11 @@ def test_loopback_state_changes_require_persisted_desktop_token_by_default(monke
 
 
 def test_signed_desktop_resource_is_bound_to_http_method(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     image_path = tmp_path / "preview.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
     db.init_db()
@@ -326,30 +326,30 @@ def test_signed_desktop_resource_is_bound_to_http_method(monkeypatch, tmp_path):
     assert client.post(f"/api/library/preview?{query}").status_code == 401
 
 
-def test_mavris_dev_does_not_disable_desktop_token_guard(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MAVRIS_TEST", raising=False)
-    monkeypatch.setenv("MAVRIS_DEV", "1")
+def test_lengrvis_dev_does_not_disable_desktop_token_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_TEST", raising=False)
+    monkeypatch.setenv("LENGRVIS_DEV", "1")
     db.init_db()
     client = TestClient(app, client=("127.0.0.1", 50100))
 
     blocked = client.post("/api/pair/code")
     token = (tmp_path / "desktop_api.secret").read_text(encoding="utf-8").strip()
-    allowed = client.post("/api/pair/code", headers={"X-Mavris-Desktop-Token": token})
+    allowed = client.post("/api/pair/code", headers={"X-Lengrvis-Desktop-Token": token})
 
     assert blocked.status_code == 401
     assert allowed.status_code == 200
 
 
 def _configure_production_desktop_token(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
-    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     db.init_db()
 
 

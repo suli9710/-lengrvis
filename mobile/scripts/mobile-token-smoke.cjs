@@ -4,7 +4,7 @@ const path = require("node:path");
 
 const clientSource = readFileSync(path.resolve(__dirname, "../src/api/client.ts"), "utf8");
 
-assert.match(clientSource, /const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "mavris\.mobile\.token\."/);
+assert.match(clientSource, /const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis\.mobile\.token\."/);
 assert.doesNotMatch(
   clientSource,
   /url\.searchParams\.set\("token"/,

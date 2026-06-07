@@ -24,11 +24,11 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
-SERVICE_LOG_FILENAME = "mavris-service.log"
-SERVICE_NAME = "MavrisBackend"
-SERVICE_DISPLAY_NAME = "Mavris Backend Service"
-SERVICE_DESCRIPTION = "Runs the Mavris FastAPI backend as a Windows service."
-SERVICE_CLASS_STRING = "backend.service_wrapper.MavrisBackendService"
+SERVICE_LOG_FILENAME = "lengrvis-service.log"
+SERVICE_NAME = "LengrvisBackend"
+SERVICE_DISPLAY_NAME = "Lengrvis Backend Service"
+SERVICE_DESCRIPTION = "Runs the Lengrvis FastAPI backend as a Windows service."
+SERVICE_CLASS_STRING = "backend.service_wrapper.LengrvisBackendService"
 EVENT_LOG_SOURCE = SERVICE_DISPLAY_NAME
 DEFAULT_STOP_TIMEOUT_SECONDS = 30
 DEFAULT_START_TIMEOUT_SECONDS = 30
@@ -60,7 +60,18 @@ PYWIN32_OPTIONS_WITH_VALUE = {
 }
 PYWIN32_FLAG_OPTIONS = {"--interactive"}
 
-LOGGER = logging.getLogger("mavris.service")
+LOGGER = logging.getLogger("lengrvis.service")
+
+
+def _env(name: str, default: str = "") -> str:
+    value = os.environ.get(name)
+    if value not in (None, ""):
+        return str(value)
+    return default
+
+
+def _set_env(name: str, value: str) -> None:
+    os.environ[name] = value
 
 
 @dataclass(frozen=True)
@@ -93,19 +104,19 @@ def _service_exe_args() -> str:
 
 
 def get_backend_config() -> BackendConfig:
-    host = os.environ.get("MAVRIS_BACKEND_HOST") or _get_service_option(
+    host = _env("LENGRVIS_BACKEND_HOST") or _get_service_option(
         SERVICE_OPTION_BACKEND_HOST,
         "127.0.0.1",
     )
     try:
         port = int(
-            os.environ.get("MAVRIS_BACKEND_PORT")
+            _env("LENGRVIS_BACKEND_PORT")
             or _get_service_option(SERVICE_OPTION_BACKEND_PORT, "8000")
         )
     except ValueError:
-        LOGGER.warning("Invalid MAVRIS_BACKEND_PORT; falling back to 8000.")
+        LOGGER.warning("Invalid LENGRVIS_BACKEND_PORT; falling back to 8000.")
         port = 8000
-    log_level = os.environ.get("MAVRIS_BACKEND_LOG_LEVEL") or _get_service_option(
+    log_level = _env("LENGRVIS_BACKEND_LOG_LEVEL") or _get_service_option(
         SERVICE_OPTION_BACKEND_LOG_LEVEL,
         "info",
     )
@@ -162,12 +173,12 @@ def apply_service_runtime_options() -> None:
         for import_root in (root_path / "backend", root_path):
             if str(import_root) not in sys.path:
                 sys.path.insert(0, str(import_root))
-        os.environ["MARVIS_CONFIG_DIR"] = str(root_path)
+        _set_env("LENGRVIS_CONFIG_DIR", str(root_path))
 
     option_to_env = {
-        SERVICE_OPTION_BACKEND_HOST: "MAVRIS_BACKEND_HOST",
-        SERVICE_OPTION_BACKEND_PORT: "MAVRIS_BACKEND_PORT",
-        SERVICE_OPTION_BACKEND_LOG_LEVEL: "MAVRIS_BACKEND_LOG_LEVEL",
+        SERVICE_OPTION_BACKEND_HOST: "LENGRVIS_BACKEND_HOST",
+        SERVICE_OPTION_BACKEND_PORT: "LENGRVIS_BACKEND_PORT",
+        SERVICE_OPTION_BACKEND_LOG_LEVEL: "LENGRVIS_BACKEND_LOG_LEVEL",
     }
     for option, env_key in option_to_env.items():
         try:
@@ -175,7 +186,7 @@ def apply_service_runtime_options() -> None:
         except Exception:  # noqa: BLE001
             continue
         if value not in (None, ""):
-            os.environ[env_key] = str(value)
+            _set_env(env_key, str(value))
 
 
 def _set_windows_event_source(source: str) -> None:
@@ -266,46 +277,46 @@ class ServiceRunner:
         self.server = self._server_factory()
         self._startup_error = None
         self._server_exited = False
-        self.thread = threading.Thread(target=self._run_server, name="mavris-uvicorn", daemon=True)
+        self.thread = threading.Thread(target=self._run_server, name="lengrvis-uvicorn", daemon=True)
         self.thread.start()
         self._wait_until_started(timeout=timeout)
 
     def _run_server(self) -> None:
         assert self.server is not None
         config = get_backend_config()
-        self._logger.info("Starting Mavris backend on %s:%s.", config.host, config.port)
+        self._logger.info("Starting Lengrvis backend on %s:%s.", config.host, config.port)
         try:
             self.server.run()
         except Exception as exc:  # noqa: BLE001
             self._startup_error = exc
-            self._logger.exception("Mavris backend server failed.")
+            self._logger.exception("Lengrvis backend server failed.")
         finally:
             self._server_exited = True
-            self._logger.info("Mavris backend server stopped.")
+            self._logger.info("Lengrvis backend server stopped.")
 
     def _wait_until_started(self, *, timeout: int) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._startup_error is not None:
-                raise RuntimeError("Mavris backend failed during startup.") from self._startup_error
+                raise RuntimeError("Lengrvis backend failed during startup.") from self._startup_error
             if self.server is not None and bool(getattr(self.server, "started", False)):
                 return
             if self._server_exited:
-                raise RuntimeError("Mavris backend exited before startup completed.")
+                raise RuntimeError("Lengrvis backend exited before startup completed.")
             time.sleep(0.1)
 
         self.stop(timeout=5)
-        raise TimeoutError(f"Mavris backend did not start within {timeout} seconds.")
+        raise TimeoutError(f"Lengrvis backend did not start within {timeout} seconds.")
 
     def stop(self, *, timeout: int = DEFAULT_STOP_TIMEOUT_SECONDS) -> bool:
-        self._logger.info("Stopping Mavris backend service.")
+        self._logger.info("Stopping Lengrvis backend service.")
         if self.server is not None:
             self.server.should_exit = True
         if self.thread is None:
             return True
         self.thread.join(timeout=timeout)
         if self.thread.is_alive():
-            self._logger.warning("Mavris backend did not stop within %s seconds.", timeout)
+            self._logger.warning("Lengrvis backend did not stop within %s seconds.", timeout)
             return False
         return True
 
@@ -325,7 +336,7 @@ def get_service_class(
     if modules is None:
         return UnsupportedService
 
-    class MavrisBackendServiceImpl(modules.win32serviceutil.ServiceFramework):  # type: ignore[name-defined]
+    class LengrvisBackendServiceImpl(modules.win32serviceutil.ServiceFramework):  # type: ignore[name-defined]
         _svc_name_ = SERVICE_NAME
         _svc_display_name_ = SERVICE_DISPLAY_NAME
         _svc_description_ = SERVICE_DESCRIPTION
@@ -368,10 +379,10 @@ def get_service_class(
             finally:
                 self.ReportServiceStatus(modules.win32service.SERVICE_STOPPED)
 
-    MavrisBackendServiceImpl.__name__ = "MavrisBackendService"
-    MavrisBackendServiceImpl.__qualname__ = "MavrisBackendService"
-    MavrisBackendServiceImpl.__module__ = __name__
-    return MavrisBackendServiceImpl
+    LengrvisBackendServiceImpl.__name__ = "LengrvisBackendService"
+    LengrvisBackendServiceImpl.__qualname__ = "LengrvisBackendService"
+    LengrvisBackendServiceImpl.__module__ = __name__
+    return LengrvisBackendServiceImpl
 
 
 def _split_command(argv: list[str]) -> tuple[str, list[str]]:
@@ -404,9 +415,9 @@ def _normalize_command(command: str) -> str:
 def _persist_service_options(args: Namespace, modules: Pywin32ServiceModules) -> None:
     options = {
         SERVICE_OPTION_PROJECT_ROOT: args.project_root,
-        SERVICE_OPTION_BACKEND_HOST: args.backend_host or os.environ.get("MAVRIS_BACKEND_HOST", "127.0.0.1"),
-        SERVICE_OPTION_BACKEND_PORT: args.backend_port or os.environ.get("MAVRIS_BACKEND_PORT", "8000"),
-        SERVICE_OPTION_BACKEND_LOG_LEVEL: args.backend_log_level or os.environ.get("MAVRIS_BACKEND_LOG_LEVEL", "info"),
+        SERVICE_OPTION_BACKEND_HOST: args.backend_host or _env("LENGRVIS_BACKEND_HOST", "127.0.0.1"),
+        SERVICE_OPTION_BACKEND_PORT: args.backend_port or _env("LENGRVIS_BACKEND_PORT", "8000"),
+        SERVICE_OPTION_BACKEND_LOG_LEVEL: args.backend_log_level or _env("LENGRVIS_BACKEND_LOG_LEVEL", "info"),
     }
     for key, value in options.items():
         modules.win32serviceutil.SetServiceCustomOption(SERVICE_NAME, key, str(value))
@@ -499,7 +510,7 @@ def main(argv: list[str] | None = None) -> int:
     return result
 
 
-MavrisBackendService = get_service_class()
+LengrvisBackendService = get_service_class()
 
 
 if __name__ == "__main__":

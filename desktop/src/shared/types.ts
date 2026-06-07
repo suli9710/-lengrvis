@@ -1287,7 +1287,7 @@ export interface SystemInfo {
   installedApps?: InstalledApp[];
 }
 
-export interface MavrisDesktopBridge {
+export interface LengrvisDesktopBridge {
   api: {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>

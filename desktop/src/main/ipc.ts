@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const ALLOWED_API_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["https:", "http:", "mailto:"]);
-const DESKTOP_API_TOKEN_HEADER = "X-Mavris-Desktop-Token";
+const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
 
 export function registerIpcHandlers(backend: BackendProcessManager): void {
   ipcMain.handle(IPC_CHANNELS.backendStatus, (event) => {
@@ -334,7 +334,7 @@ function getErrorMessage(data: unknown, fallback: string): string {
 function userFacingBackendError(message: string): string {
   const normalized = message.toLowerCase();
   if (normalized.includes("missing desktop api token") || normalized.includes("unauthorized")) {
-    return "Mavris 正在保护本机接口。请重启桌面应用后再试；未授权页面不能直接读取本机数据。";
+    return "Lengrvis 正在保护本机接口。请重启桌面应用后再试；未授权页面不能直接读取本机数据。";
   }
   return message;
 }

@@ -46,7 +46,7 @@ function createMainWindow(): BrowserWindow {
     height: 960,
     minWidth: 1120,
     minHeight: 720,
-    title: "Mavris",
+    title: "Lengrvis",
     backgroundColor: "#f4f6f8",
     show: false,
     webPreferences: {
@@ -109,7 +109,7 @@ function createTray(): void {
 
   const image = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL).resize({ width: 16, height: 16 });
   tray = new Tray(image);
-  tray.setToolTip("Mavris");
+  tray.setToolTip("Lengrvis");
   tray.on("click", showMainWindow);
   rebuildTrayMenu();
 }
@@ -165,7 +165,7 @@ function rebuildTrayMenu(): void {
       enabled: false
     },
     {
-      label: "打开 Mavris",
+      label: "打开 Lengrvis",
       click: showMainWindow
     },
     {
@@ -184,7 +184,7 @@ function rebuildTrayMenu(): void {
     }
   ];
 
-  tray.setToolTip(`Mavris - ${statusText}`);
+  tray.setToolTip(`Lengrvis - ${statusText}`);
   tray.setContextMenu(Menu.buildFromTemplate(template));
 }
 
@@ -238,9 +238,9 @@ function backendStateLabel(state: BackendStatus["state"]): string {
   }
 }
 
-app.setName("Mavris");
+app.setName("Lengrvis");
 if (process.platform === "win32") {
-  app.setAppUserModelId("Mavris");
+  app.setAppUserModelId("Lengrvis");
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -262,7 +262,7 @@ if (!gotSingleInstanceLock) {
     createTray();
     notifications.startBackendListener();
 
-    if (!process.defaultApp || app.isPackaged || isPortableMode() || process.env.MAVRIS_BACKEND_AUTOSTART === "1") {
+    if (!process.defaultApp || app.isPackaged || isPortableMode() || backendAutostartEnabled()) {
       latestBackendStatus = await backend.start();
       rebuildTrayMenu();
     }
@@ -290,4 +290,8 @@ if (!gotSingleInstanceLock) {
     browserHost.destroy();
     await backend.stop();
   });
+}
+
+function backendAutostartEnabled(): boolean {
+  return process.env.LENGRVIS_BACKEND_AUTOSTART === "1";
 }
