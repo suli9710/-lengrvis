@@ -57,8 +57,8 @@ import {
   type OfficeQuickSkill
 } from "./features/office";
 import { ShellFrame } from "./features/shell";
-import { MavrisApiClient } from "./lib/apiClient";
-import { zhBackendText } from "./lib/zh";
+import { MavrisApiClient, type RealtimeConnectionStatus } from "./lib/apiClient";
+import { zhBackendText, zhRealtimeBadMessageSummary, zhRealtimeConnectionStatus } from "./lib/zh";
 import { useMavrisStore, type AssistantMode, type ConnectionState, type ViewKey } from "./store";
 
 const quickSkills: OfficeQuickSkill[] = [
@@ -150,8 +150,14 @@ export function App() {
   const [heroSubmitError, setHeroSubmitError] = useState<string | null>(null);
   const [approvalSelectionContext, setApprovalSelectionContext] = useState<"task" | "queue">("task");
   const [approvalQueueCursor, setApprovalQueueCursor] = useState(0);
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeConnectionStatus | null>(null);
   const heroSubmitInFlight = useRef(false);
   const backendStatusRef = useRef(backendStatus);
+  const realtimeBadMessageNotice = useRef<RealtimeBadMessageNotice>({
+    count: 0,
+    messageId: `realtime-bad-message-${crypto.randomUUID()}`,
+    samples: []
+  });
 
   const pendingApprovals = useMemo(
     () => approvalRequests.filter((approval) => approval.status === "pending"),
@@ -166,7 +172,7 @@ export function App() {
     },
     [approvalQueueCursor, approvalSelectionContext, focusedTaskId, pendingApprovals]
   );
-  const connectionState = backendStatus.state === "running" ? "online" : backendStatus.state === "starting" ? "checking" : "offline";
+  const connectionState = connectionStateFromBackendAndRealtime(backendStatus, realtimeStatus);
   const activeOfficeAgentId = useMemo(
     () => inferActiveOfficeAgentId(tasks, plan, agentConversations, safetyReview.status),
     [agentConversations, plan, safetyReview.status, tasks]
@@ -175,12 +181,13 @@ export function App() {
   const homeReadinessItems = useMemo(
     () => buildHomeReadinessItems({
       connectionState,
+      realtimeStatus,
       mode,
       localLlmHealth,
       allowedDirectories: settings.allowedDirectories,
       workspaceRoot: settings.workspaceRoot
     }),
-    [connectionState, localLlmHealth, mode, settings.allowedDirectories, settings.workspaceRoot]
+    [connectionState, localLlmHealth, mode, realtimeStatus, settings.allowedDirectories, settings.workspaceRoot]
   );
   const homeTrustItems = useMemo(
     () =>
@@ -217,6 +224,24 @@ export function App() {
   useEffect(() => {
     backendStatusRef.current = backendStatus;
   }, [backendStatus]);
+
+  const handleRealtimeStatus = useCallback((status: RealtimeConnectionStatus) => {
+    setRealtimeStatus(status);
+    if (shouldShowRealtimeStatusMessage(status)) {
+      setMessages((current) => appendUniqueMessage(current, realtimeStatusChatMessage(status)));
+    }
+  }, [setMessages]);
+
+  const handleRealtimeBadMessage = useCallback((status: RealtimeConnectionStatus & { state: "bad_message"; rawMessage: string }) => {
+    setRealtimeStatus(status);
+    setMessages((current) => upsertRealtimeBadMessageNotice(current, realtimeBadMessageNotice.current, status));
+  }, [setMessages]);
+
+  useEffect(() => {
+    if (!latestTaskId && !latestLegacyTaskId) {
+      setRealtimeStatus(null);
+    }
+  }, [latestLegacyTaskId, latestTaskId]);
 
   const refreshWorkspace = useCallback(async () => {
     setIsLoading(true);
@@ -637,13 +662,15 @@ export function App() {
           }
           scheduleTaskSnapshotRefresh();
         }
-      }
+      },
+      onStatus: handleRealtimeStatus,
+      onBadMessage: handleRealtimeBadMessage
     });
 
     return () => {
       unsubscribe();
     };
-  }, [api, latestTaskId, scheduleTaskSnapshotRefresh]);
+  }, [api, handleRealtimeBadMessage, handleRealtimeStatus, latestTaskId, scheduleTaskSnapshotRefresh]);
 
   useEffect(() => {
     if (!latestLegacyTaskId) return;
@@ -661,13 +688,15 @@ export function App() {
           setMessages((current) => appendUniqueMessage(current, chatMessage));
         }
         scheduleTaskSnapshotRefresh();
-      }
+      },
+      onStatus: handleRealtimeStatus,
+      onBadMessage: handleRealtimeBadMessage
     });
 
     return () => {
       unsubscribe();
     };
-  }, [api, latestLegacyTaskId, scheduleTaskSnapshotRefresh]);
+  }, [api, handleRealtimeBadMessage, handleRealtimeStatus, latestLegacyTaskId, scheduleTaskSnapshotRefresh]);
 
   useEffect(() => {
     if (approvalSelectionContext !== "queue") return;
@@ -1024,6 +1053,7 @@ export function App() {
               <SettingsPanel
                 settings={settings}
                 backendStatus={backendStatus}
+                realtimeStatus={realtimeStatus}
                 localLlmHealth={localLlmHealth}
                 llmHealth={llmHealth}
                 llmCostSummary={llmCostSummary}
@@ -1131,12 +1161,14 @@ function requiresLocalLlmHealth(mode: AssistantMode): boolean {
 
 function buildHomeReadinessItems({
   connectionState,
+  realtimeStatus,
   mode,
   localLlmHealth,
   allowedDirectories,
   workspaceRoot
 }: {
   connectionState: ConnectionState;
+  realtimeStatus: RealtimeConnectionStatus | null;
   mode: AssistantMode;
   localLlmHealth: LocalLLMHealth | null;
   allowedDirectories?: string[];
@@ -1145,13 +1177,18 @@ function buildHomeReadinessItems({
   const primaryScope = allowedDirectories?.[0] || workspaceRoot || "";
   const privacyReady = mode === "privacy" && Boolean(localLlmHealth?.available);
   const privacyAction = mode === "efficiency" ? "开启" : localLlmHealth?.available ? "查看" : "准备";
+  const realtimeDetail =
+    realtimeStatus && realtimeStatus.state !== "open" ? zhRealtimeConnectionStatus(realtimeStatus) : "";
+  const realtimeNeedsAction = Boolean(
+    realtimeStatus && ["unauthorized", "policy_violation", "error", "closed"].includes(realtimeStatus.state)
+  );
 
   return [
     {
       id: "connection",
       label: "Mavris 连接",
-      detail: connectionState === "online" ? "服务已连接，可以直接开始任务" : connectionState === "checking" ? "正在确认后端服务" : "服务离线，先恢复连接",
-      state: connectionState === "online" ? "ready" : connectionState === "checking" ? "warning" : "action",
+      detail: realtimeDetail || (connectionState === "online" ? "服务已连接，可以直接开始任务" : connectionState === "checking" ? "正在确认后端服务" : "服务离线，先恢复连接"),
+      state: realtimeNeedsAction ? "action" : connectionState === "online" ? "ready" : connectionState === "checking" ? "warning" : "action",
       actionLabel: connectionState === "online" ? "刷新连接" : "检查连接"
     },
     {
@@ -1250,6 +1287,60 @@ function compactPath(path: string): string {
   const parts = normalized.split("/").filter(Boolean);
   if (parts.length <= 2) return path;
   return `${parts.at(-2)}/${parts.at(-1)}`;
+}
+
+interface RealtimeBadMessageNotice {
+  count: number;
+  messageId: string;
+  samples: string[];
+}
+
+function connectionStateFromBackendAndRealtime(
+  backendStatus: { state: string },
+  realtimeStatus: RealtimeConnectionStatus | null
+): ConnectionState {
+  if (backendStatus.state === "starting") return "checking";
+  if (backendStatus.state !== "running") return "offline";
+  if (!realtimeStatus) return "online";
+  if (realtimeStatus.state === "connecting" || realtimeStatus.state === "reconnecting") return "checking";
+  if (["unauthorized", "policy_violation", "error", "closed"].includes(realtimeStatus.state)) return "offline";
+  return "online";
+}
+
+function shouldShowRealtimeStatusMessage(status: RealtimeConnectionStatus): boolean {
+  return ["reconnecting", "error", "unauthorized", "policy_violation"].includes(status.state);
+}
+
+function realtimeStatusChatMessage(status: RealtimeConnectionStatus): ChatMessage {
+  return {
+    id: `realtime-status-${status.endpoint}-${status.state}`,
+    role: "assistant",
+    author: "Mavris",
+    content: zhRealtimeConnectionStatus(status),
+    createdAt: status.at,
+    status: status.state === "reconnecting" ? "streaming" : "failed"
+  };
+}
+
+function upsertRealtimeBadMessageNotice(
+  current: ChatMessage[],
+  notice: RealtimeBadMessageNotice,
+  status: RealtimeConnectionStatus & { state: "bad_message"; rawMessage: string }
+): ChatMessage[] {
+  notice.count += 1;
+  const sample = status.rawMessage.trim();
+  if (sample && !notice.samples.includes(sample)) {
+    notice.samples = [sample, ...notice.samples].slice(0, 3);
+  }
+  const nextMessage: ChatMessage = {
+    id: notice.messageId,
+    role: "assistant",
+    author: "Mavris",
+    content: zhRealtimeBadMessageSummary(notice.count, notice.samples),
+    createdAt: status.at,
+    status: "streaming"
+  };
+  return [...current.filter((message) => message.id !== notice.messageId), nextMessage];
 }
 
 function isActiveTask(task: TaskEvent): boolean {

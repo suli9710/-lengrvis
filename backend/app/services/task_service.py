@@ -148,12 +148,12 @@ async def _run_task_background(task: Task) -> None:
 def list_chat_messages() -> list[ChatMessage]:
     return [
         ChatMessage.model_validate(item)
-        for item in reversed(db.fetch_many("chat_messages", limit=500))
+        for item in reversed(db.fetch_many_by_fields("chat_messages", limit=500))
     ]
 
 
 def list_tasks() -> list[Task]:
-    return [Task.model_validate(item) for item in db.fetch_many("tasks")]
+    return [Task.model_validate(item) for item in db.fetch_many_by_fields("tasks")]
 
 
 def get_task(task_id: str) -> Task:

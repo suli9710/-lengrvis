@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 from contextlib import contextmanager
@@ -51,6 +52,38 @@ DATA_TABLES = frozenset(
     }
 )
 UNSAFE_WHERE_TOKENS = (";", "--", "/*", "*/", "\x00")
+WHERE_CONDITION_JOINER_RE = re.compile(r"\s+AND\s+", re.IGNORECASE)
+WHERE_OR_RE = re.compile(r"\bOR\b", re.IGNORECASE)
+WHERE_COMPARISON_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(=|>=|>|<=|<)\s*(\?|[0-9]+)$", re.IGNORECASE)
+WHERE_IN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\(\s*\?(?:\s*,\s*\?)*\s*\)$", re.IGNORECASE)
+WHERE_NULL_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s+IS\s+(?:NOT\s+)?NULL$", re.IGNORECASE)
+WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
+    "approvals": frozenset({"id", "task_id", "step_id", "status", "created_at"}),
+    "agent_messages": frozenset({"id", "task_id", "step_id", "created_at"}),
+    "audit_events": frozenset({"id", "task_id", "event_type", "actor", "sequence", "created_at"}),
+    "chat_messages": frozenset({"id", "created_at"}),
+    "document_chunks": frozenset({"id", "file_id", "chunk_index"}),
+    "goals": frozenset({"id", "scope", "parent_goal_id", "status", "depth", "created_at", "updated_at"}),
+    "indexed_files": frozenset({"id", "normalized_path", "sha256", "name", "extension", "size", "modified_at", "indexed_at"}),
+    "llm_usage_events": frozenset({"id", "provider", "model", "mode", "task", "purpose", "created_at"}),
+    "memories": frozenset({"id", "kind", "task_id", "created_at", "last_used_at"}),
+    "mobile_devices": frozenset({"id", "created_at", "updated_at"}),
+    "mobile_pairings": frozenset({"id", "status", "created_at", "expires_at", "used_at", "updated_at"}),
+    "perception_observations": frozenset({"id", "task_id", "event_id", "event_type", "suppressed", "created_at"}),
+    "perception_suggestions": frozenset({"id", "task_id", "suggestion_id", "status", "severity", "suppressed", "created_at"}),
+    "permission_policies": frozenset({"id", "updated_at"}),
+    "plans": frozenset({"id", "task_id", "created_at"}),
+    "run_events": frozenset({"id", "run_id", "name", "sequence", "created_at"}),
+    "runs": frozenset({"id", "task_id", "engine", "phase", "created_at", "updated_at"}),
+    "safety_reviews": frozenset({"id", "task_id", "step_id", "created_at"}),
+    "scheduled_tasks": frozenset({"id", "enabled", "next_run_at", "last_run_at", "created_at", "updated_at"}),
+    "session_contexts": frozenset({"id", "created_at", "updated_at"}),
+    "task_recordings": frozenset({"id", "task_id", "step_id", "phase", "captured_at", "created_at"}),
+    "tasks": frozenset({"id", "created_at", "updated_at"}),
+    "tool_calls": frozenset({"id", "task_id", "step_id", "created_at"}),
+    "tool_results": frozenset({"id", "tool_call_id", "created_at"}),
+    "wakeups": frozenset({"id", "source", "source_id", "status", "due_at", "created_at", "updated_at"}),
+}
 
 
 def _now_iso() -> str:
@@ -684,15 +717,53 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
-def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
+def fetch_many_by_fields(
+    table: str,
+    filters: dict[str, Any] | None = None,
+    *,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
     table_name = _data_table_name(table)
-    where_clause = _where_clause(where, args)
+    clauses: list[str] = []
+    args: list[Any] = []
+    for column, value in dict(filters or {}).items():
+        column_name = _where_column(table_name, column)
+        if value is None:
+            clauses.append(f"{column_name} IS NULL")
+        else:
+            clauses.append(f"{column_name} = ?")
+            args.append(value)
+    return _fetch_many_data(table_name, " AND ".join(clauses), tuple(args), limit)
+
+
+def fetch_many_in(table: str, column: str, values: list[Any] | tuple[Any, ...], *, limit: int = 200) -> list[dict[str, Any]]:
+    table_name = _data_table_name(table)
+    column_name = _where_column(table_name, column)
+    args = tuple(values)
+    if not args:
+        return []
+    placeholders = ", ".join("?" for _ in args)
+    return _fetch_many_data(table_name, f"{column_name} IN ({placeholders})", args, limit)
+
+
+def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
+    """Compatibility fetch with a narrow WHERE grammar.
+
+    Prefer ``fetch_many_by_fields`` and ``fetch_many_in`` for new code so SQL
+    fragments do not spread beyond this module.
+    """
+    table_name = _data_table_name(table)
+    where_clause = _where_clause(table_name, where, args)
+    return _fetch_many_data(table_name, where_clause, args, limit)
+
+
+def _fetch_many_data(table_name: str, where_clause: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
     query = f"SELECT data FROM {table_name}"
     if where_clause:
         query += f" WHERE {where_clause}"
     query += " ORDER BY created_at DESC LIMIT ?"
     with connect() as conn:
-        rows = conn.execute(query, (*args, limit)).fetchall()
+        rows = conn.execute(query, (*args, _query_limit(limit))).fetchall()
     return [json.loads(row["data"]) for row in rows]
 
 
@@ -703,7 +774,7 @@ def _data_table_name(table: str) -> str:
     return table_name
 
 
-def _where_clause(where: str, args: tuple[Any, ...]) -> str:
+def _where_clause(table_name: str, where: str, args: tuple[Any, ...]) -> str:
     clause = str(where or "").strip()
     if not clause:
         if args:
@@ -711,9 +782,51 @@ def _where_clause(where: str, args: tuple[Any, ...]) -> str:
         return ""
     if any(token in clause for token in UNSAFE_WHERE_TOKENS):
         raise ValueError("Unsafe WHERE clause")
+    if WHERE_OR_RE.search(clause):
+        raise ValueError("Unsupported WHERE clause")
     if clause.count("?") != len(args):
         raise ValueError("WHERE placeholder count does not match arguments")
+    _validate_where_conditions(table_name, clause)
     return clause
+
+
+def _validate_where_conditions(table_name: str, clause: str) -> None:
+    allowed_columns = WHERE_ALLOWED_COLUMNS.get(table_name, frozenset())
+    if not allowed_columns:
+        raise ValueError(f"WHERE clauses are not supported for table: {table_name}")
+    if not re.fullmatch(r"[A-Za-z0-9_?\s().,=<>!]+", clause):
+        raise ValueError("Unsafe WHERE clause")
+
+    parts = [part.strip() for part in WHERE_CONDITION_JOINER_RE.split(clause) if part.strip()]
+    if not parts:
+        raise ValueError("Unsafe WHERE clause")
+    for part in parts:
+        _validate_where_condition_part(table_name, allowed_columns, part)
+
+
+def _validate_where_condition_part(table_name: str, allowed_columns: frozenset[str], part: str) -> None:
+    match = WHERE_COMPARISON_RE.fullmatch(part) or WHERE_IN_RE.fullmatch(part) or WHERE_NULL_RE.fullmatch(part)
+    if not match:
+        raise ValueError("Unsupported WHERE clause")
+    column = match.group(1)
+    _where_column(table_name, column, allowed_columns=allowed_columns)
+
+
+def _where_column(table_name: str, column: str, *, allowed_columns: frozenset[str] | None = None) -> str:
+    column_name = str(column or "").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column_name):
+        raise ValueError(f"Unsupported WHERE column for {table_name}: {column}")
+    allowed = allowed_columns if allowed_columns is not None else WHERE_ALLOWED_COLUMNS.get(table_name, frozenset())
+    if column_name not in allowed:
+        raise ValueError(f"Unsupported WHERE column for {table_name}: {column_name}")
+    return column_name
+
+
+def _query_limit(limit: int) -> int:
+    value = int(limit)
+    if value < 1:
+        raise ValueError("Limit must be positive")
+    return value
 
 
 def claim_scheduled_task_run(

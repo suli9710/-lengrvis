@@ -11,6 +11,7 @@ import type { BackendProcessManager } from "./backendProcess";
 import { assertTrustedRenderer } from "./ipc";
 
 export const DESKTOP_WS_PROTOCOL_PREFIX = "mavris.desktop.token.";
+const WEB_SOCKET_PROTOCOL_TOKEN_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 interface DesktopSocketEntry {
   sender: WebContents;
@@ -91,9 +92,18 @@ export function createDesktopWebSocket(url: string, desktopApiToken: string): We
   return new WebSocket(url, desktopWebSocketProtocols(desktopApiToken));
 }
 
-export function desktopWebSocketProtocols(desktopApiToken: string): string[] | undefined {
+export function desktopWebSocketProtocols(desktopApiToken: string): [string] {
   const token = desktopApiToken.trim();
-  return token ? [`${DESKTOP_WS_PROTOCOL_PREFIX}${token}`] : undefined;
+  if (!token) {
+    throw new Error("Desktop WebSocket token is required");
+  }
+
+  const protocol = `${DESKTOP_WS_PROTOCOL_PREFIX}${token}`;
+  if (!WEB_SOCKET_PROTOCOL_TOKEN_REGEX.test(protocol)) {
+    throw new Error("Desktop WebSocket token cannot be used as a WebSocket subprotocol");
+  }
+
+  return [protocol];
 }
 
 export function buildBackendWebSocketUrl(
