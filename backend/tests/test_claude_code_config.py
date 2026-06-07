@@ -18,7 +18,7 @@ from app.orchestration.claude_code_runner import parse_claude_code_ndjson_lines
 def test_openai_compatible_settings_map_to_claude_code_env() -> None:
     settings = AppSettings(
         base_url="https://llm.example.test/v1",
-        api_key="mavris-key",
+        api_key="lengrvis-key",
         model="openai/gpt-5-mini",
     )
     env = build_claude_code_env(
@@ -31,7 +31,7 @@ def test_openai_compatible_settings_map_to_claude_code_env() -> None:
     )
 
     assert env["CLAUDE_CODE_USE_OPENAI"] == "1"
-    assert env["OPENAI_API_KEY"] == "mavris-key"
+    assert env["OPENAI_API_KEY"] == "lengrvis-key"
     assert env["OPENAI_BASE_URL"] == "https://llm.example.test/v1"
     assert env["OPENAI_MODEL"] == "openai/gpt-5-mini"
     assert env["OPENAI_DEFAULT_SONNET_MODEL"] == "openai/gpt-5-mini"
@@ -125,17 +125,17 @@ def test_unbuilt_vendor_runtime_does_not_fallback_to_path(tmp_path, monkeypatch)
     fake_exe = fake_path / ("claude.cmd")
     fake_exe.write_text("@echo off\necho wrong-runtime\n", encoding="utf-8")
     monkeypatch.setenv("PATH", str(fake_path))
-    monkeypatch.setenv("MARVIS_CLAUDE_CODE_VENDOR_ROOT", str(tmp_path / "vendor" / "claude-code"))
-    monkeypatch.delenv("MARVIS_CLAUDE_CODE_COMMAND", raising=False)
+    monkeypatch.setenv("LENGRVIS_CLAUDE_CODE_VENDOR_ROOT", str(tmp_path / "vendor" / "claude-code"))
+    monkeypatch.delenv("LENGRVIS_CLAUDE_CODE_COMMAND", raising=False)
 
     runtime = resolve_claude_code_runtime()
 
     assert runtime.command == ()
-    assert "MARVIS_CLAUDE_CODE_COMMAND" in runtime.reason
+    assert "LENGRVIS_CLAUDE_CODE_COMMAND" in runtime.reason
 
 
 def test_explicit_runtime_command_is_allowed(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARVIS_CLAUDE_CODE_COMMAND", "python fake_claude.py")
+    monkeypatch.setenv("LENGRVIS_CLAUDE_CODE_COMMAND", "python fake_claude.py")
 
     runtime = resolve_claude_code_runtime()
 

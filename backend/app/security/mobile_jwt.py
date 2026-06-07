@@ -11,12 +11,12 @@ from fastapi import Header, HTTPException, Query, WebSocket
 from app.core import db
 from app.llm.registry import get_effective_settings
 
-TOKEN_AUDIENCE = "mavris-mobile"
-TOKEN_ISSUER = "mavris-backend"
+TOKEN_AUDIENCE = "lengrvis-mobile"
+TOKEN_ISSUER = "lengrvis-backend"
 TOKEN_SCOPE = "mobile:approval"
 REMOTE_VIEW_SCOPE = "remote:view"
 REMOTE_INPUT_SCOPE = "remote:input"
-MOBILE_AUTH_WS_PROTOCOL_PREFIX = "mavris.mobile.token."
+MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token."
 
 
 def issue_mobile_token(
@@ -53,18 +53,7 @@ def decode_mobile_token(
     allowed_scopes: set[str] | None = None,
     require_active_device: bool = True,
 ) -> dict[str, Any]:
-    try:
-        payload = jwt.decode(
-            token,
-            _secret(),
-            algorithms=["HS256"],
-            audience=TOKEN_AUDIENCE,
-            issuer=TOKEN_ISSUER,
-        )
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Mobile token expired") from None
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid mobile token") from None
+    payload = _decode_mobile_token_payload(token)
 
     accepted_scopes = allowed_scopes or {TOKEN_SCOPE}
     scopes = mobile_token_scopes(payload)
@@ -168,6 +157,22 @@ def _scope_values(raw_scope: Any) -> list[str]:
 def _websocket_protocols(websocket: WebSocket) -> list[str]:
     raw_header = websocket.headers.get("sec-websocket-protocol", "")
     return [item.strip() for item in raw_header.split(",") if item.strip()]
+
+
+def _decode_mobile_token_payload(token: str) -> dict[str, Any]:
+    try:
+        return jwt.decode(
+            token,
+            _secret(),
+            algorithms=["HS256"],
+            audience=TOKEN_AUDIENCE,
+            issuer=TOKEN_ISSUER,
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Mobile token expired") from None
+    except jwt.PyJWTError:
+        pass
+    raise HTTPException(status_code=401, detail="Invalid mobile token") from None
 
 
 def _raise_if_device_inactive(device_id: str) -> None:

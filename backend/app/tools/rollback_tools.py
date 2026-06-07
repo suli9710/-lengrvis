@@ -181,7 +181,7 @@ def _cleanup_rollback_steps(info: dict[str, Any], context: dict[str, Any]) -> li
                 "action": "permanent_delete_unrecoverable",
                 "path": str(authorized),
                 "requires_user_action": False,
-                "detail": "This direct cleanup deletion cannot be recovered by Mavris.",
+                "detail": "This direct cleanup deletion cannot be recovered by Lengrvis.",
             }
         )
     return steps

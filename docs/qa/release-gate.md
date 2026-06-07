@@ -1,4 +1,4 @@
-# Mavris Release Gate
+# Lengrvis Release Gate
 
 Last reviewed: 2026-06-07
 
@@ -62,8 +62,8 @@ npm run qa:gate
 Pass criteria:
 
 - The preflight gate passes on the same candidate.
-- `dist\backend.exe`, `dist\Mavris-win-portable`, `dist\Mavris-win-portable.zip`, and `dist\Mavris-0.1.0-x64-self-extracting.exe` exist unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
-- The portable package contains `Mavris.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
+- `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-0.1.0-x64-self-extracting.exe` exist unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
+- The portable package contains `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
 - The self-extracting executable has a valid PE header and is above the minimum release size enforced by `scripts\verify_packaging.ps1`.
 - If a special offline Ollama release is being prepared, rerun verification with `-RequireBundledOllama` and confirm the runtime, models, and bundle manifest summaries match the packaged files.
 

@@ -103,7 +103,7 @@ def test_microcompact_records_boundary_metadata_and_tool_summary():
                 {
                     "id": "tool_search",
                     "type": "function",
-                    "function": {"name": "search.query", "arguments": {"query": "mavris context compaction"}},
+                    "function": {"name": "search.query", "arguments": {"query": "lengrvis context compaction"}},
                 }
             ],
         },
@@ -128,7 +128,7 @@ def test_microcompact_records_boundary_metadata_and_tool_summary():
     assert projection.compact_metadata["micro_compact"]["collapsed_tool_results"][0]["kind"] == "search"
     tool_message = next(message for message in projection.messages if message.get("role") == "tool")
     assert "Tool result collapsed for projection" in tool_message["content"]
-    assert "query: mavris context compaction" in tool_message["content"]
+    assert "query: lengrvis context compaction" in tool_message["content"]
 
 
 def test_microcompact_clears_attachment_blocks_in_projection_only():

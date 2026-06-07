@@ -22,7 +22,7 @@ from app.acceleration.onnx_sessions import (
     run_session,
     session_input_names,
 )
-from app.config import AppSettings
+from app.config import AppSettings, get_env
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.registry import get_effective_settings, get_provider
 from app.policy.privacy import can_use_cloud_model
@@ -187,11 +187,11 @@ def accelerated_ocr_smoke(settings: AppSettings | None = None) -> dict[str, Any]
         payload["error"] = f"Synthetic OCR smoke image unavailable: {exc}"
         return payload
 
-    with tempfile.TemporaryDirectory(prefix="marvis_ocr_smoke_") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="lengrvis_ocr_smoke_") as tmp_dir:
         image_path = Path(tmp_dir) / "ocr-smoke.png"
         image = Image.new("RGB", (220, 64), "white")
         draw = ImageDraw.Draw(image)
-        draw.text((12, 22), "MAVRIS OCR SMOKE", fill="black")
+        draw.text((12, 22), "LENGRVIS OCR SMOKE", fill="black")
         image.save(image_path)
         result = accelerated_ocr_image(image_path, settings=settings)
     payload["ok"] = result.ok
@@ -323,7 +323,7 @@ def _ocr_pdf_image(
     suffix = Path(getattr(image_file, "name", "") or "").suffix.lower() or ".png"
     if suffix not in IMAGE_EXTENSIONS:
         suffix = ".png"
-    with tempfile.TemporaryDirectory(prefix="marvis_pdf_ocr_") as tmp_dir:
+    with tempfile.TemporaryDirectory(prefix="lengrvis_pdf_ocr_") as tmp_dir:
         temp_image = Path(tmp_dir) / f"{pdf_path.stem}-p{page_index}-i{image_index}{suffix}"
         pil_image = getattr(image_file, "image", None)
         if pil_image is not None:
@@ -339,7 +339,7 @@ def _pdf_image_ocr_hint(image_file: Any) -> str:
         obj = image_file.indirect_reference.get_object()
     except Exception:
         return ""
-    for key in ("/MarvisOCRText", "/OCRText"):
+    for key in ("/LengrvisOCRText", "/LengrvisOCRText", "/OCRText"):
         value = obj.get(key)
         if value is not None and str(value).strip():
             return str(value).strip()
@@ -354,7 +354,7 @@ def _ocr_text_from_image_metadata(image_path: Path) -> str:
             info = dict(getattr(image, "info", {}) or {})
     except Exception:
         return ""
-    for key in ("marvis_ocr_text", "ocr_text", "Description", "Comment"):
+    for key in ("lengrvis_ocr_text", "lengrvis_ocr_text", "ocr_text", "Description", "Comment"):
         value = info.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -373,12 +373,12 @@ def _ocr_text_with_tesseract(image_path: Path) -> str:
 
 
 def _ocr_text_with_paddleocr(image_path: Path) -> str:
-    if os.environ.get("MARVIS_ENABLE_PADDLEOCR", "").strip().lower() not in {"1", "true", "yes"}:
+    if (get_env("LENGRVIS_ENABLE_PADDLEOCR") or "").strip().lower() not in {"1", "true", "yes"}:
         return ""
     try:
         from paddleocr import PaddleOCR
 
-        ocr = PaddleOCR(use_angle_cls=True, lang=os.environ.get("MARVIS_PADDLEOCR_LANG", "en"))
+        ocr = PaddleOCR(use_angle_cls=True, lang=get_env("LENGRVIS_PADDLEOCR_LANG", "en"))
         result = ocr.ocr(str(image_path), cls=True)
     except Exception:
         return ""
@@ -530,7 +530,7 @@ def _load_ocr_vocab(model_dir: Path) -> dict[int, str]:
 
 
 def _ocr_input_size() -> int:
-    raw = os.environ.get("MARVIS_OCR_IMAGE_SIZE", "224")
+    raw = get_env("LENGRVIS_OCR_IMAGE_SIZE", "224")
     try:
         return max(32, int(raw))
     except ValueError:

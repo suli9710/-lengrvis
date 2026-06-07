@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any
 
+from app.config import get_env
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 
@@ -384,7 +384,7 @@ def _read_state_for_path(key: str, context: dict[str, Any]) -> dict[str, Any] | 
 
 def _read_state_is_recent(cached: dict[str, Any]) -> bool:
     try:
-        ttl = max(0, int(os.environ.get("MARVIS_READ_STATE_TTL_SECONDS", READ_STATE_TTL_SECONDS)))
+        ttl = max(0, int(get_env("LENGRVIS_READ_STATE_TTL_SECONDS", str(READ_STATE_TTL_SECONDS)) or READ_STATE_TTL_SECONDS))
         if ttl <= 0:
             return True
         return (time.time() - float(cached.get("read_at") or 0)) <= ttl

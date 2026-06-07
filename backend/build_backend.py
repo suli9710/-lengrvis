@@ -14,7 +14,7 @@ MAC_TARGET_ARCHES = {"x86_64", "arm64", "universal2"}
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build the Mavris backend as a PyInstaller binary.")
+    parser = argparse.ArgumentParser(description="Build the Lengrvis backend as a PyInstaller binary.")
     parser.add_argument(
         "--target-arch",
         choices=sorted(MAC_TARGET_ARCHES),
@@ -31,7 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     root = Path(__file__).resolve().parents[1]
     backend_dir = root / "backend"
-    source_dir = Path(tempfile.mkdtemp(prefix="marvis-backend-src-"))
+    source_dir = Path(tempfile.mkdtemp(prefix="lengrvis-backend-src-"))
     shutil.copy2(backend_dir / "main.py", source_dir / "main.py")
     shutil.copytree(
         backend_dir / "app",

@@ -1,8 +1,8 @@
-# Mavris End-to-End QA Acceptance Matrix
+# Lengrvis End-to-End QA Acceptance Matrix
 
 Last reviewed: 2026-06-07
 
-This matrix defines the release-facing QA coverage for Mavris across backend, desktop, and mobile. A release candidate should not ship until every P0/P1 row is either passing with recorded evidence or explicitly waived in the release notes with an owner and follow-up. P2/P3 rows keep optional, platform-specific, and demo-polish risk visible without turning every release into a full-platform certification run.
+This matrix defines the release-facing QA coverage for Lengrvis across backend, desktop, and mobile. A release candidate should not ship until every P0/P1 row is either passing with recorded evidence or explicitly waived in the release notes with an owner and follow-up. P2/P3 rows keep optional, platform-specific, and demo-polish risk visible without turning every release into a full-platform certification run.
 
 ## Gate Levels
 

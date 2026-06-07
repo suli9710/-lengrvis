@@ -68,10 +68,18 @@ def capture_step_screenshot(
 
 
 def recording_enabled() -> bool:
-    raw = os.environ.get("MARVIS_TASK_RECORDING_ENABLED") or os.environ.get("MAVRIS_TASK_RECORDING_ENABLED")
+    raw = (
+        os.environ.get("LENGRVIS_TASK_RECORDING_ENABLED")
+        or os.environ.get("LENGRVIS_TASK_RECORDING_ENABLED")
+        or os.environ.get("LENGRVIS_TASK_RECORDING_ENABLED")
+    )
     if raw is not None:
         return raw.strip().lower() in {"1", "true", "yes", "on"}
-    if os.environ.get("PYTEST_CURRENT_TEST") and not os.environ.get("MARVIS_TASK_RECORDING_FORCE"):
+    if os.environ.get("PYTEST_CURRENT_TEST") and not (
+        os.environ.get("LENGRVIS_TASK_RECORDING_FORCE")
+        or os.environ.get("LENGRVIS_TASK_RECORDING_FORCE")
+        or os.environ.get("LENGRVIS_TASK_RECORDING_FORCE")
+    ):
         return False
     return True
 

@@ -15,9 +15,9 @@ from app.config import AppSettings
 
 @pytest.fixture(autouse=True)
 def isolated_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.delenv("MARVIS_EMBEDDING_ONNX_MODEL_PATH", raising=False)
-    monkeypatch.delenv("MAVRIS_EMBEDDING_ONNX_MODEL_PATH", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("LENGRVIS_EMBEDDING_ONNX_MODEL_PATH", raising=False)
+    monkeypatch.delenv("LENGRVIS_EMBEDDING_ONNX_MODEL_PATH", raising=False)
     local_embedding_provider._CACHED_PROVIDER = None
 
 

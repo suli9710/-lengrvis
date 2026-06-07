@@ -73,10 +73,10 @@ export function ChatPanel({
   return (
     <Panel
       title="对话"
-      eyebrow="Mavris"
+      eyebrow="Lengrvis"
       className="panel--chat"
       action={connectionState === "online" ? null : (
-        <Badge tone="warning">{connectionState === "checking" ? "正在连接 Mavris" : "助手暂时连不上"}</Badge>
+        <Badge tone="warning">{connectionState === "checking" ? "正在连接 Lengrvis" : "助手暂时连不上"}</Badge>
       )}
     >
       <div className="chat-log" aria-live="polite">
@@ -143,7 +143,7 @@ export function ChatPanel({
               void submit();
             }
           }}
-          placeholder="让 Mavris 帮你找文件、总结文档，或检查这台电脑。"
+          placeholder="让 Lengrvis 帮你找文件、总结文档，或检查这台电脑。"
           rows={3}
         />
         <button
@@ -251,14 +251,14 @@ function messagePartLabel(type: ChatMessagePart["type"]): string {
 
 function friendlyAuthor(message: ChatMessage): string {
   if (message.role === "user") return "你";
-  if (message.role === "assistant") return friendlyAgentName(message.author || "Mavris");
+  if (message.role === "assistant") return friendlyAgentName(message.author || "Lengrvis");
   return friendlyAgentName(message.author || "工具");
 }
 
 function friendlyAgentName(value: string): string {
   return value
-    .replace(/主管\s*Agent/gi, "Mavris")
-    .replace(/Orchestrator\s*Agent/gi, "Mavris")
+    .replace(/主管\s*Agent/gi, "Lengrvis")
+    .replace(/Orchestrator\s*Agent/gi, "Lengrvis")
     .replace(/Planner\s*Agent/gi, "规划助手")
     .replace(/File\s*Agent|文件\s*Agent/gi, "文件助手")
     .replace(/Document\s*Agent|文档\s*Agent/gi, "文档助手")

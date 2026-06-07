@@ -1,16 +1,16 @@
-# Mavris
+# Lengrvis
 
 ## 普通用户快速开始
 
-1. 双击 `启动 Mavris.cmd` 启动 Mavris。
+1. 双击 `启动 Lengrvis.cmd` 启动 Lengrvis。
 2. 第一次启动可能会安装依赖，通常需要 1-5 分钟；之后启动一般在 20-60 秒内完成。命令行窗口会显示“正在启动”“已启动”或失败原因。
-3. 启动成功后会打开 Mavris 桌面窗口。如果没看到窗口，请手动打开 `http://127.0.0.1:5173`，或查看系统托盘里的 Mavris。
-4. 如果启动失败，请先双击 `Start-Mavris-Debug.cmd`，它会把最近的错误日志打印出来；完整日志在 `logs` 文件夹。
+3. 启动成功后会打开 Lengrvis 桌面窗口。如果没看到窗口，请手动打开 `http://127.0.0.1:5173`，或查看系统托盘里的 Lengrvis。
+4. 如果启动失败，请先双击 `Start-Lengrvis-Debug.cmd`，它会把最近的错误日志打印出来；完整日志在 `logs` 文件夹。
 5. 开发者说明保留在下面；普通使用只需要优先看这一节。
 
 ## 产品说明
 
-这是一个 Windows 优先的本地电脑 AI 管家原型，定位更接近 Marvis 式个人 OS Agent：用户用自然语言描述目标，系统通过多 Agent 协作理解任务、规划步骤、调用本地工具，并在修改文件或系统设置前进行安全审核和用户确认。
+这是一个 Windows 优先的本地电脑 AI 管家原型，定位更接近腾讯同类 OS Agent 式个人 OS Agent：用户用自然语言描述目标，系统通过多 Agent 协作理解任务、规划步骤、调用本地工具，并在修改文件或系统设置前进行安全审核和用户确认。
 
 当前版本不是纯聊天机器人，也不是开发者控制台。桌面端第一屏已经改成消费级电脑助手体验：一句话任务入口、隐私/混合/效率模式、文件/文档/图片/电脑/应用/网页能力卡、手机审批与屏幕查看入口、Agent 进度和安全审批。
 
@@ -50,7 +50,7 @@ test_data/               授权目录、策略和隐私测试数据
 - `MockProvider` 仅用于开发、测试和非隐私路径的演示兜底。
 - ONNX Runtime Provider 框架（WinML / DirectML / OpenVINO / CPU）。
 - 上下文管理运行时：所有 `get_provider()` 返回的 LLM provider 都会先经过统一 ContextManager，按 `tool result budget -> history snip -> micro-compact -> session memory -> auto-compact -> LLM call -> prompt-too-long reactive retry` 控制模型可见上下文；原始 AgentBus/DB 历史不删除。
-- Token 预算配置：`MARVIS_MODEL_CONTEXT_WINDOW`、`MARVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT`、`MARVIS_CONTEXT_*`。默认保留输出预算，接近阈值时自动摘要旧消息并保留最近消息尾部。
+- Token 预算配置：`LENGRVIS_MODEL_CONTEXT_WINDOW`、`LENGRVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT`、`LENGRVIS_CONTEXT_*`。默认保留输出预算，接近阈值时自动摘要旧消息并保留最近消息尾部。
 
 ### 安全
 - 风险等级：`R0_READ_ONLY`、`R1_OPEN_ONLY`、`R2_REVERSIBLE_MODIFY`、`R3_DESTRUCTIVE_OR_SYSTEM`、`R4_FORBIDDEN_OR_HANDOFF`。
@@ -104,28 +104,28 @@ notepad .env
 设置：
 
 ```text
-MARVIS_PROVIDER_NAME=openai_compatible
-MARVIS_BASE_URL=https://api.openai.com/v1
-MARVIS_API_KEY=your-key
-MARVIS_MODEL=gpt-4o-mini
-MARVIS_WIRE_API=chat_completions
+LENGRVIS_PROVIDER_NAME=openai_compatible
+LENGRVIS_BASE_URL=https://api.openai.com/v1
+LENGRVIS_API_KEY=your-key
+LENGRVIS_MODEL=gpt-4o-mini
+LENGRVIS_WIRE_API=chat_completions
 ```
 
 OpenAI-compatible 网关也可以写裸域名：
 
 ```text
-MARVIS_BASE_URL=https://api.example.com
+LENGRVIS_BASE_URL=https://api.example.com
 ```
 
 运行时会自动请求 `https://api.example.com/v1/chat/completions`。如果网关支持 OpenAI Responses API，可改为：
 
 ```text
-MARVIS_WIRE_API=responses
+LENGRVIS_WIRE_API=responses
 ```
 
-`MARVIS_API_KEY`、`MARVIS_JWT_SECRET` 等敏感值应通过 `.env`、环境变量或外部配置提供，不要提交到仓库，也不要通过 Settings API 持久化。
+`LENGRVIS_API_KEY`、`LENGRVIS_JWT_SECRET` 等敏感值应通过 `.env`、环境变量或外部配置提供，不要提交到仓库，也不要通过 Settings API 持久化。
 
-不配置 `MARVIS_API_KEY` 时，效率/混合模式可按 `MARVIS_ALLOW_MOCK_FALLBACK` 使用 `MockProvider` 做开发演示。隐私模式始终需要真实本地 LLM 后端。
+不配置 `LENGRVIS_API_KEY` 时，效率/混合模式可按 `LENGRVIS_ALLOW_MOCK_FALLBACK` 使用 `MockProvider` 做开发演示。隐私模式始终需要真实本地 LLM 后端。
 
 ## 运行
 
@@ -135,7 +135,7 @@ MARVIS_WIRE_API=responses
 python -m uvicorn backend.main:full_app --reload --host 127.0.0.1 --port 8000
 ```
 
-`backend.main:app` 是 Guardian 瘦身入口；桌面端自启动后端时会注入 `MAVRIS_FULL_BACKEND=1`。手动开发完整功能时请使用 `backend.main:full_app`。
+`backend.main:app` 是 Guardian 瘦身入口；桌面端自启动后端时会注入 `LENGRVIS_FULL_BACKEND=1`。手动开发完整功能时请使用 `backend.main:full_app`。
 
 启动桌面端：
 
@@ -201,7 +201,7 @@ python -m pip install -r requirements-dev.txt
 bash scripts/build_backend_mac.sh arm64
 ```
 
-可选架构参数为 `arm64`、`x86_64`、`universal2`；也可以用 `MAVRIS_BACKEND_TARGET_ARCH=arm64 bash scripts/build_backend_mac.sh`。产物：`dist/backend`，Electron Builder 会打进 `Mavris.app/Contents/Resources/backend/backend`。
+可选架构参数为 `arm64`、`x86_64`、`universal2`；也可以用 `LENGRVIS_BACKEND_TARGET_ARCH=arm64 bash scripts/build_backend_mac.sh`。产物：`dist/backend`，Electron Builder 会打进 `Lengrvis.app/Contents/Resources/backend/backend`。
 
 桌面端 installer（Electron Builder）：
 
@@ -215,10 +215,10 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 .\scripts\build_all.ps1
 ```
 
-默认产物为 `dist\Mavris-win-portable`、`dist\Mavris-win-portable.zip` 和 `dist\Mavris-0.1.0-x64-self-extracting.exe`。发布到自定义目录时，这些参数会贯穿 backend、portable、zip、SFX 和最终验证：
+默认产物为 `dist\Lengrvis-win-portable`、`dist\Lengrvis-win-portable.zip` 和 `dist\Lengrvis-0.1.0-x64-self-extracting.exe`。发布到自定义目录时，这些参数会贯穿 backend、portable、zip、SFX 和最终验证：
 
 ```powershell
-.\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Mavris-win-portable -PortableZip release\win\Mavris-win-portable.zip -SelfExtractingExe release\win\Mavris-0.1.0-x64-self-extracting.exe
+.\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Lengrvis-win-portable -PortableZip release\win\Lengrvis-win-portable.zip -SelfExtractingExe release\win\Lengrvis-0.1.0-x64-self-extracting.exe
 ```
 
 macOS DMG：
@@ -228,7 +228,7 @@ npm --prefix desktop install
 npm --prefix desktop run dist:mac:arm64
 ```
 
-`dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Mavris-0.1.0-arm64.dmg`。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。
+`dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Lengrvis-0.1.0-arm64.dmg`。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。
 
 只验证已有发布产物：
 
@@ -260,7 +260,7 @@ npm --prefix desktop run dist:mac:arm64
 - `POST /api/pair/code` — 桌面端生成一次性 LAN 配对码
 - `POST /api/pair` — Android 伴侣 App 用配对码换取移动端 JWT
 - `GET /api/mobile/approvals/pending`、`POST /api/mobile/approvals/{approval_id}/decision` — Bearer JWT 保护的审批接口
-- `WebSocket /ws/mobile/approvals` — 手机端订阅审批创建/决策事件；令牌通过 `Sec-WebSocket-Protocol: mavris.mobile.token.<token>` 传递，避免进入 URL 日志。
+- `WebSocket /ws/mobile/approvals` — 手机端订阅审批创建/决策事件；令牌通过 `Sec-WebSocket-Protocol: lengrvis.mobile.token.<token>` 传递，避免进入 URL 日志。
 
 Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` 启动。手机真机访问时，后端需要监听局域网地址，例如 `.\scripts\start_app.ps1 -BackendHost 0.0.0.0`；远程 LAN 客户端默认只能访问移动端配对与审批接口，桌面端完整 API 仍限制为本机访问。
 
@@ -309,7 +309,7 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 - Rule-based intent suggestions are available through `backend/app/perception/intent_predictor.py`: `ScreenState` + `AppContext` + `SessionContext` become 1-3 proactive suggestions, filtered at confidence `> 0.8`, with `source="rules"` and `model_enabled=false` when no optional model hook is injected.
 - External service adapters live under `backend/app/adapters/`: email send, calendar event creation, and webhook post share `AdapterBase.connect()`, `execute()`, and `health_check()`, and are registered as `external.*` tools with dry-run previews and R2 approval flow. Live execution requires injecting real service clients or credentials in deployment; default registry instances are dry-run/test-safe.
 - The intended loop is: voice or text input -> perception/context -> rule-based suggestions or optional model-backed suggestions -> supervisor/planner -> tool execution -> safety review -> observations and session learning.
-- Production local acceleration is configured through the ONNX Runtime provider settings (`MARVIS_ONNX_MODEL_PATH`, `MARVIS_ONNX_EXECUTION_PROVIDER`, `MARVIS_ONNX_PROVIDER_PREFERENCE`). WinML / DirectML / OpenVINO availability still depends on the installed runtime and hardware.
+- Production local acceleration is configured through the ONNX Runtime provider settings (`LENGRVIS_ONNX_MODEL_PATH`, `LENGRVIS_ONNX_EXECUTION_PROVIDER`, `LENGRVIS_ONNX_PROVIDER_PREFERENCE`). WinML / DirectML / OpenVINO availability still depends on the installed runtime and hardware.
 
 ### Hardware acceleration
 

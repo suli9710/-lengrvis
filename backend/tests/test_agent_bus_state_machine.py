@@ -9,14 +9,14 @@ BUS_MODULES = (
     "backend.agent.bus",
     "backend.agents.bus",
     "backend.core.agent_bus",
-    "mavris.agent.bus",
+    "lengrvis.agent.bus",
 )
 
 STATE_MODULES = (
     "backend.agent.state_machine",
     "backend.agents.state_machine",
     "backend.core.state_machine",
-    "mavris.agent.state_machine",
+    "lengrvis.agent.state_machine",
 )
 
 

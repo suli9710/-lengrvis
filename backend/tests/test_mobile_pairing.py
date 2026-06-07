@@ -30,7 +30,7 @@ from app.tools.registry import register_all_tools
 
 
 def test_pair_request_generates_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
 
@@ -44,7 +44,7 @@ def test_pair_request_generates_code(monkeypatch, tmp_path):
 
 
 def test_pair_confirm_valid_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     code = client.post("/api/pair/request").json()["code"]
@@ -59,7 +59,7 @@ def test_pair_confirm_valid_code(monkeypatch, tmp_path):
 
 
 def test_pair_confirm_expired_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     code = client.post("/api/pair/request").json()["code"]
@@ -84,7 +84,7 @@ def test_pair_confirm_expired_code(monkeypatch, tmp_path):
 
 
 def test_mobile_endpoint_requires_jwt(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
 
@@ -94,7 +94,7 @@ def test_mobile_endpoint_requires_jwt(monkeypatch, tmp_path):
 
 
 def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
 
@@ -115,7 +115,7 @@ def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
 
 
 def test_pair_code_includes_remote_view_scope_only_when_remote_desktop_enabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     patch = {"remote_desktop_enabled": True}
     confirmation = create_settings_confirmation(patch)
@@ -144,10 +144,10 @@ def test_mobile_token_survives_backend_process_restart(tmp_path):
             (
                 "import json, os; "
                 "from app.security.mobile_jwt import decode_mobile_token; "
-                "print(json.dumps(decode_mobile_token(os.environ['MAVRIS_TEST_TOKEN'], require_active_device=False), sort_keys=True))"
+                "print(json.dumps(decode_mobile_token(os.environ['LENGRVIS_TEST_TOKEN'], require_active_device=False), sort_keys=True))"
             ),
         data_dir,
-        {"MAVRIS_TEST_TOKEN": token},
+        {"LENGRVIS_TEST_TOKEN": token},
     )
     claims = json.loads(claims_json)
 
@@ -157,7 +157,7 @@ def test_mobile_token_survives_backend_process_restart(tmp_path):
 
 
 def test_pair_code_redeem_is_atomic_under_concurrent_submitters(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _clear_pairing_failures()
     code = mobile_pairing_service.create_pairing_request()["code"]
@@ -187,7 +187,7 @@ def test_pair_code_redeem_is_atomic_under_concurrent_submitters(monkeypatch, tmp
 
 
 def test_pair_confirm_rate_limits_failed_attempts_by_client(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _clear_pairing_failures()
     client = TestClient(app, client=("192.0.2.88", 50100))
@@ -202,7 +202,7 @@ def test_pair_confirm_rate_limits_failed_attempts_by_client(monkeypatch, tmp_pat
 
 
 def test_mobile_approval_routes_require_bearer_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
 
@@ -212,7 +212,7 @@ def test_mobile_approval_routes_require_bearer_token(monkeypatch, tmp_path):
 
 
 def test_revoked_mobile_device_token_cannot_use_mobile_api_or_remote_screen(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -235,7 +235,7 @@ def test_revoked_mobile_device_token_cannot_use_mobile_api_or_remote_screen(monk
 
 
 def test_mobile_device_list_only_returns_calling_device(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     first_token = _paired_token(client)
@@ -251,7 +251,7 @@ def test_mobile_device_list_only_returns_calling_device(monkeypatch, tmp_path):
 
 
 def test_mobile_device_can_only_revoke_itself(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     first_token = _paired_token(client)
@@ -275,7 +275,7 @@ def test_mobile_device_can_only_revoke_itself(monkeypatch, tmp_path):
 
 
 def test_mobile_can_list_and_decide_pending_approvals(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -299,7 +299,7 @@ def test_mobile_can_list_and_decide_pending_approvals(monkeypatch, tmp_path):
 
 
 def test_mobile_filters_and_blocks_cross_device_approvals(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     first_token = _paired_token(client)
@@ -345,7 +345,7 @@ def test_mobile_filters_and_blocks_cross_device_approvals(monkeypatch, tmp_path)
 
 
 def test_mobile_approval_scope_cannot_decide_remote_input(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -374,7 +374,7 @@ def test_mobile_approval_scope_cannot_decide_remote_input(monkeypatch, tmp_path)
 
 
 def test_same_device_mobile_approval_scope_cannot_decide_remote_input(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -407,7 +407,7 @@ def test_same_device_mobile_approval_scope_cannot_decide_remote_input(monkeypatc
 
 
 def test_remote_input_scope_can_decide_remote_input(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -438,7 +438,7 @@ def test_remote_input_scope_can_decide_remote_input(monkeypatch, tmp_path):
 
 
 def test_remote_input_grant_cannot_decide_approval_from_other_grant(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -470,7 +470,7 @@ def test_remote_input_grant_cannot_decide_approval_from_other_grant(monkeypatch,
 
 
 def test_remote_input_grant_cannot_decide_approval_missing_grant_binding(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -500,7 +500,7 @@ def test_remote_input_grant_cannot_decide_approval_missing_grant_binding(monkeyp
 
 
 def test_remote_input_scope_cannot_decide_after_remote_desktop_disabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -532,7 +532,7 @@ def test_remote_input_scope_cannot_decide_after_remote_desktop_disabled(monkeypa
 
 
 def test_remote_input_scope_cannot_decide_unbound_remote_input(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -559,7 +559,7 @@ def test_remote_input_scope_cannot_decide_unbound_remote_input(monkeypatch, tmp_
 
 
 def test_remote_input_scope_cannot_decide_other_device_remote_input(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -591,7 +591,7 @@ def test_remote_input_scope_cannot_decide_other_device_remote_input(monkeypatch,
 
 
 def test_remote_input_scope_requires_grant_source_for_approval_claims(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     paired_token = _paired_token(client)
@@ -619,7 +619,7 @@ def test_remote_input_scope_requires_grant_source_for_approval_claims(monkeypatc
 
 
 def test_remote_input_approval_policy_requires_grant_backed_claims(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_policy", device_name="Policy Phone")
     approval = Approval(
@@ -645,7 +645,7 @@ def test_remote_input_approval_policy_requires_grant_backed_claims(monkeypatch, 
 
 
 def test_desktop_can_issue_short_lived_remote_input_grant_for_paired_device(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -664,7 +664,7 @@ def test_desktop_can_issue_short_lived_remote_input_grant_for_paired_device(monk
 
 
 def test_remote_input_grant_creation_requires_remote_desktop_enabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     paired_token = _paired_token(client)
@@ -677,7 +677,7 @@ def test_remote_input_grant_creation_requires_remote_desktop_enabled(monkeypatch
 
 
 def test_remote_input_grant_claim_requires_remote_desktop_enabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -699,7 +699,7 @@ def test_remote_input_grant_claim_requires_remote_desktop_enabled(monkeypatch, t
 
 
 def test_revoking_remote_input_grant_invalidates_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -722,7 +722,7 @@ def test_revoking_remote_input_grant_invalidates_token(monkeypatch, tmp_path):
 
 
 def test_revoking_mobile_device_invalidates_remote_input_grant(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -751,7 +751,7 @@ def test_revoking_mobile_device_invalidates_remote_input_grant(monkeypatch, tmp_
 
 
 def test_mobile_device_revoke_is_atomic_with_remote_input_grant_creation(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_atomic_revoke", device_name="Atomic")
@@ -802,7 +802,7 @@ def test_mobile_device_revoke_is_atomic_with_remote_input_grant_creation(monkeyp
 
 
 def test_expired_remote_input_grant_token_is_rejected(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -837,7 +837,7 @@ def test_expired_remote_input_grant_token_is_rejected(monkeypatch, tmp_path):
 
 
 def test_remote_input_grant_can_decide_remote_input(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -868,7 +868,7 @@ def test_remote_input_grant_can_decide_remote_input(monkeypatch, tmp_path):
 
 
 def test_mobile_websocket_receives_remote_input_grant_without_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -893,7 +893,7 @@ def test_mobile_websocket_receives_remote_input_grant_without_token(monkeypatch,
 
 
 def test_mobile_websocket_receives_remote_input_grant_revoked_without_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -920,7 +920,7 @@ def test_mobile_websocket_receives_remote_input_grant_revoked_without_token(monk
 
 
 def test_remote_input_grant_full_websocket_lifecycle(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
@@ -987,7 +987,7 @@ def test_remote_input_grant_full_websocket_lifecycle(monkeypatch, tmp_path):
 
 
 def test_mobile_websocket_filters_other_device_remote_input_grant_revoked(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -1007,7 +1007,7 @@ def test_mobile_websocket_filters_other_device_remote_input_grant_revoked(monkey
 
 
 def test_mobile_device_can_claim_remote_input_grant_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -1029,7 +1029,7 @@ def test_mobile_device_can_claim_remote_input_grant_token(monkeypatch, tmp_path)
 
 
 def test_mobile_device_cannot_claim_other_device_remote_input_grant(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -1047,7 +1047,7 @@ def test_mobile_device_cannot_claim_other_device_remote_input_grant(monkeypatch,
 
 
 def test_mobile_device_cannot_claim_revoked_remote_input_grant(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -1065,7 +1065,7 @@ def test_mobile_device_cannot_claim_revoked_remote_input_grant(monkeypatch, tmp_
 
 
 def test_mobile_device_cannot_claim_expired_remote_input_grant(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -1090,7 +1090,7 @@ def test_mobile_device_cannot_claim_expired_remote_input_grant(monkeypatch, tmp_
 
 
 def test_remote_input_scope_cannot_use_general_mobile_resources(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -1119,7 +1119,7 @@ def test_remote_input_scope_cannot_use_general_mobile_resources(monkeypatch, tmp
 
 
 def test_remote_input_grant_token_cannot_use_general_mobile_resources_even_with_mobile_scope(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _enable_remote_desktop()
     client = TestClient(app)
@@ -1159,7 +1159,7 @@ def test_remote_input_grant_token_cannot_use_general_mobile_resources_even_with_
 
 
 def test_mobile_approval_payload_redacts_sensitive_preview(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1203,7 +1203,7 @@ def test_mobile_approval_payload_redacts_sensitive_preview(monkeypatch, tmp_path
 
 
 def test_mobile_approval_payload_redacts_sensitive_message(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1232,7 +1232,7 @@ def test_mobile_approval_payload_redacts_sensitive_message(monkeypatch, tmp_path
 
 
 def test_desktop_approval_payload_hides_binding_resource_state(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     approval = Approval(
@@ -1265,7 +1265,7 @@ def test_desktop_approval_payload_hides_binding_resource_state(monkeypatch, tmp_
 
 
 def test_mobile_decision_response_hides_binding_resource_state(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1295,7 +1295,7 @@ def test_mobile_decision_response_hides_binding_resource_state(monkeypatch, tmp_
 
 
 def test_approval_decision_is_atomic_under_concurrent_submitters(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     approval = Approval(task_id="task_atomic", step_id="step_1", message="Approve atomically")
     db.upsert_model("approvals", approval)
@@ -1323,7 +1323,7 @@ def test_approval_decision_is_atomic_under_concurrent_submitters(monkeypatch, tm
 
 
 def test_approved_approval_execution_claim_is_atomic_under_concurrent_callers(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     approval = Approval(
         task_id="task_claim_atomic",
@@ -1367,7 +1367,7 @@ def test_approved_approval_execution_claim_is_atomic_under_concurrent_callers(mo
 
 
 def test_mobile_detail_redacts_task_and_omits_plan_args(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1402,7 +1402,7 @@ def test_mobile_detail_redacts_task_and_omits_plan_args(monkeypatch, tmp_path):
 
 
 def test_mobile_approval_websocket_receives_created_event(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1425,7 +1425,7 @@ def test_mobile_approval_websocket_receives_created_event(monkeypatch, tmp_path)
 
 
 def test_mobile_approval_websocket_accepts_token_subprotocol(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1440,7 +1440,7 @@ def test_mobile_approval_websocket_accepts_token_subprotocol(monkeypatch, tmp_pa
 
 
 def test_mobile_approval_websocket_closes_when_device_revoked(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1469,7 +1469,7 @@ def test_mobile_approval_websocket_closes_when_device_revoked(monkeypatch, tmp_p
 
 
 def test_mobile_approval_websocket_closes_after_token_expires(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_expiring_ws", device_name="Expiring Phone")
     token = issue_mobile_token(device_id="mobile_expiring_ws", device_name="Expiring Phone", expires_in_seconds=60)
@@ -1496,7 +1496,7 @@ def test_mobile_approval_websocket_closes_after_token_expires(monkeypatch, tmp_p
 
 
 def test_mobile_approval_websocket_rejects_remote_input_scope(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_remote_ws", device_name="Remote Phone")
     token = issue_mobile_token(device_id="mobile_remote_ws", device_name="Remote Phone", scope=REMOTE_INPUT_SCOPE)
@@ -1513,7 +1513,7 @@ def test_mobile_approval_websocket_rejects_remote_input_scope(monkeypatch, tmp_p
 
 
 def test_mobile_approval_websocket_rejects_query_token(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1526,7 +1526,7 @@ def test_mobile_approval_websocket_rejects_query_token(monkeypatch, tmp_path):
 
 
 def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
@@ -1581,13 +1581,13 @@ def _run_mobile_jwt_subprocess(script: str, data_dir: Path, extra_env: dict[str,
     env = os.environ.copy()
     env.update(
         {
-            "MARVIS_DATA_DIR": str(data_dir),
-            "MARVIS_ENV_FILE": str(data_dir.parent / "missing.env"),
-            "MARVIS_CONFIG_FILE": str(data_dir.parent / "missing.yaml"),
+            "LENGRVIS_DATA_DIR": str(data_dir),
+            "LENGRVIS_ENV_FILE": str(data_dir.parent / "missing.env"),
+            "LENGRVIS_CONFIG_FILE": str(data_dir.parent / "missing.yaml"),
         }
     )
-    env.pop("MARVIS_JWT_SECRET", None)
-    env.pop("MAVRIS_JWT_SECRET", None)
+    env.pop("LENGRVIS_JWT_SECRET", None)
+    env.pop("LENGRVIS_JWT_SECRET", None)
     if extra_env:
         env.update(extra_env)
     return subprocess.check_output(

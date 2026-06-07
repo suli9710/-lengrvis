@@ -100,7 +100,7 @@ def test_webhook_dry_run_redacts_sensitive_headers():
 
     result = tool.execute(
         {
-            "url": "https://hooks.example.test/mavris",
+            "url": "https://hooks.example.test/lengrvis",
             "payload": {"text": "hello"},
             "headers": {"Authorization": "Bearer secret-token", "X-Trace": "trace-1"},
             "dry_run": True,
@@ -119,7 +119,7 @@ def test_webhook_dry_run_redacts_sensitive_payload_fields_recursively():
 
     result = tool.execute(
         {
-            "url": "https://hooks.example.test/mavris",
+            "url": "https://hooks.example.test/lengrvis",
             "payload": {
                 "message": "hello",
                 "api_key": "payload-secret",

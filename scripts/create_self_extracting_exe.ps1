@@ -1,6 +1,6 @@
-param(
-    [string]$PortableDir = "dist\Mavris-win-portable",
-    [string]$OutputExe = "dist\Mavris-0.1.0-x64-self-extracting.exe"
+﻿param(
+    [string]$PortableDir = "dist\Lengrvis-win-portable",
+    [string]$OutputExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,12 +18,12 @@ function Resolve-ProjectPath {
 $PortablePath = Resolve-ProjectPath $PortableDir
 $OutputPath = Resolve-ProjectPath $OutputExe
 $BuildDir = Join-Path $Root "build\self-extracting"
-$PayloadZip = Join-Path $BuildDir "mavris-payload.zip"
+$PayloadZip = Join-Path $BuildDir "lengrvis-payload.zip"
 $LauncherCmd = Join-Path $BuildDir "launch.cmd"
-$SedPath = Join-Path $BuildDir "mavris-sfx.sed"
+$SedPath = Join-Path $BuildDir "lengrvis-sfx.sed"
 
-if (-not (Test-Path (Join-Path $PortablePath "Mavris.exe"))) {
-    throw "Portable Mavris.exe was not found. Run scripts\build_portable.ps1 first."
+if (-not (Test-Path (Join-Path $PortablePath "Lengrvis.exe"))) {
+    throw "Portable Lengrvis.exe was not found. Run scripts\build_portable.ps1 first."
 }
 
 if (Test-Path $BuildDir) {
@@ -44,10 +44,10 @@ Compress-Archive -Path (Join-Path $PortablePath "*") -DestinationPath $PayloadZi
 @'
 @echo off
 setlocal
-set "TARGET=%LOCALAPPDATA%\Mavris"
+set "TARGET=%LOCALAPPDATA%\Lengrvis"
 if not exist "%TARGET%" mkdir "%TARGET%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%~dp0mavris-payload.zip' -DestinationPath '%TARGET%' -Force"
-start "" "%TARGET%\Mavris.exe"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%~dp0lengrvis-payload.zip' -DestinationPath '%TARGET%' -Force"
+start "" "%TARGET%\Lengrvis.exe"
 endlocal
 '@ | Set-Content -LiteralPath $LauncherCmd -Encoding ASCII
 
@@ -68,7 +68,7 @@ InstallPrompt=
 DisplayLicense=
 FinishMessage=
 TargetName=$OutputPath
-FriendlyName=Mavris
+FriendlyName=Lengrvis
 AppLaunched=launch.cmd
 PostInstallCmd=<None>
 AdminQuietInstCmd=launch.cmd
@@ -76,7 +76,7 @@ UserQuietInstCmd=launch.cmd
 SourceFiles=SourceFiles
 [Strings]
 FILE0="launch.cmd"
-FILE1="mavris-payload.zip"
+FILE1="lengrvis-payload.zip"
 [SourceFiles]
 SourceFiles0=$BuildDir
 [SourceFiles0]

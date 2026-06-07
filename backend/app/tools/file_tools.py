@@ -100,7 +100,7 @@ def semantic_search(args: dict[str, Any], context: dict[str, Any]) -> dict[str, 
     query = str(args.get("query", ""))
     limit = int(args.get("limit") or 10)
     vector_module = importlib.import_module("app.indexer.vector_index")
-    return vector_module.VectorIndex().search(query, limit=limit)
+    return vector_module.VectorIndex().search(query, limit=limit, allowed_directories=_allowed(context))
 
 
 def list_directory(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -350,7 +350,7 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 def generate_markdown_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     allowed = _allowed(context)
     path = resolve_authorized(args["path"], allowed)
-    title = args.get("title", "Marvis Report")
+    title = args.get("title", "Lengrvis Report")
     body = args.get("body", "")
     text = f"# {title}\n\n{body}\n"
     if args.get("dry_run", True):

@@ -395,7 +395,7 @@ def is_direct_delete_allowed(path: str | Path) -> bool:
             return not any(candidate.iterdir())
         except OSError:
             return False
-    return _is_recreatable_artifact(candidate) or _is_mavris_manifest_temp(candidate)
+    return _is_recreatable_artifact(candidate) or _is_lengrvis_manifest_temp(candidate)
 
 
 def _resolve_roots(raw_roots: Any, context: dict[str, Any]) -> list[Path]:
@@ -479,7 +479,7 @@ def _classify_path(path: Path, options: dict[str, Any]) -> CleanupItem | None:
                 action="delete_direct",
                 risk="low",
                 confidence=0.94,
-                reason="Re-creatable cache, temp, build, or Mavris manifest temporary file.",
+                reason="Re-creatable cache, temp, build, or Lengrvis manifest temporary file.",
             )
         if _high_risk_file(path):
             return _item_for_path(
@@ -660,12 +660,20 @@ def _is_recreatable_artifact(path: Path) -> bool:
     )
 
 
-def _is_mavris_manifest_temp(path: Path) -> bool:
+def _is_lengrvis_manifest_temp(path: Path) -> bool:
     name = path.name.casefold()
+    parent = _normalized_key(path.parent)
     return (
         path.suffix.casefold() in {".tmp", ".temp"}
         and ("manifest" in name or "skill.yaml" in name)
-        and ("mavris" in name or "marvis" in name or ".mavris" in _normalized_key(path.parent) or ".marvis" in _normalized_key(path.parent))
+        and (
+            "lengrvis" in name
+            or "lengrvis" in name
+            or "lengrvis" in name
+            or ".lengrvis" in parent
+            or ".lengrvis" in parent
+            or ".lengrvis" in parent
+        )
     )
 
 
@@ -682,8 +690,8 @@ def _high_risk_category(path: Path) -> str:
 
 
 def _direct_category(path: Path) -> str:
-    if _is_mavris_manifest_temp(path):
-        return "mavris_manifest_temp"
+    if _is_lengrvis_manifest_temp(path):
+        return "lengrvis_manifest_temp"
     if path.suffix.casefold() in {".pyc", ".pyo"}:
         return "cache"
     return "recreatable_artifact"

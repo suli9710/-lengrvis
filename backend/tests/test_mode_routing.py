@@ -108,8 +108,8 @@ def test_default_settings_are_cloud_first(monkeypatch):
     assert provider.settings.api_key == "sk-test-token"
 
 
-def test_efficiency_without_api_key_drops_to_mock():
-    settings = _cloud_settings(api_key="")
+def test_efficiency_without_api_key_uses_mock_when_explicitly_allowed():
+    settings = _cloud_settings(api_key="", allow_mock_fallback=True)
     provider = get_provider_for_mode(settings, task="planner")
     assert isinstance(provider, MockProvider)
 

@@ -15,7 +15,7 @@ from app.tools.registry import register_all_tools
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     yield
 

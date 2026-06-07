@@ -31,12 +31,12 @@ def _mock_onnx_modules(monkeypatch, *, providers: list[str] | None = None):
 
 def _clear_onnx_env(monkeypatch):
     for key in (
-        "MARVIS_ONNX_MODEL_PATH",
-        "MAVRIS_ONNX_MODEL_PATH",
-        "MARVIS_ONNX_MODELS_DIR",
-        "MAVRIS_ONNX_MODELS_DIR",
-        "MARVIS_ONNX_EXECUTION_PROVIDER",
-        "MARVIS_ONNX_DIRECTML_DEVICE_ID",
+        "LENGRVIS_ONNX_MODEL_PATH",
+        "LENGRVIS_ONNX_MODEL_PATH",
+        "LENGRVIS_ONNX_MODELS_DIR",
+        "LENGRVIS_ONNX_MODELS_DIR",
+        "LENGRVIS_ONNX_EXECUTION_PROVIDER",
+        "LENGRVIS_ONNX_DIRECTML_DEVICE_ID",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -58,7 +58,7 @@ def test_detect_onnx_backend_without_package(monkeypatch, tmp_path: Path):
 def test_detect_onnx_backend_without_model(monkeypatch, tmp_path: Path):
     _clear_onnx_env(monkeypatch)
     _mock_onnx_modules(monkeypatch)
-    monkeypatch.setenv("MARVIS_ONNX_MODELS_DIR", str(tmp_path / "empty-models"))
+    monkeypatch.setenv("LENGRVIS_ONNX_MODELS_DIR", str(tmp_path / "empty-models"))
     (tmp_path / "empty-models").mkdir()
 
     backend = onnx_provider.detect_onnx_backend()
@@ -181,11 +181,11 @@ llm:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv("MARVIS_CONFIG_FILE", str(config_file))
-    monkeypatch.setenv("MARVIS_ENV_FILE", str(tmp_path / "missing.env"))
-    monkeypatch.setenv("MAVRIS_ONNX_MODEL_PATH", "C:/models/from-env")
-    monkeypatch.setenv("MAVRIS_ONNX_RUNTIME", "winml")
-    monkeypatch.setenv("MAVRIS_ONNX_EXECUTION_PROVIDER", "CPU")
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(config_file))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("LENGRVIS_ONNX_MODEL_PATH", "C:/models/from-env")
+    monkeypatch.setenv("LENGRVIS_ONNX_RUNTIME", "winml")
+    monkeypatch.setenv("LENGRVIS_ONNX_EXECUTION_PROVIDER", "CPU")
 
     settings = AppSettings.from_sources()
 
@@ -408,7 +408,7 @@ def test_detect_onnx_backend_discovers_quantized_qwen_bundle(monkeypatch, tmp_pa
         model_file="model.int4.onnx",
     )
 
-    monkeypatch.setenv("MARVIS_ONNX_MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setenv("LENGRVIS_ONNX_MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
     monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
 
@@ -451,8 +451,8 @@ def test_detect_onnx_backend_rejects_bare_onnx_file(monkeypatch, tmp_path: Path)
 def test_detect_onnx_backend_honors_forced_directml_provider(monkeypatch, tmp_path: Path):
     model = _write_genai_bundle(tmp_path / "model")
 
-    monkeypatch.setenv("MARVIS_ONNX_EXECUTION_PROVIDER", "directml")
-    monkeypatch.setenv("MARVIS_ONNX_DIRECTML_DEVICE_ID", "2")
+    monkeypatch.setenv("LENGRVIS_ONNX_EXECUTION_PROVIDER", "directml")
+    monkeypatch.setenv("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "2")
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
     monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["CPUExecutionProvider"])
     monkeypatch.setattr(onnx_provider, "_genai_reports_provider_available", lambda kind: kind == "onnx-directml")
@@ -469,7 +469,7 @@ def test_detect_onnx_backend_honors_forced_directml_provider(monkeypatch, tmp_pa
 def test_openvino_backend_does_not_use_directml_device_option(monkeypatch, tmp_path: Path):
     model = _write_genai_bundle(tmp_path / "model")
 
-    monkeypatch.setenv("MARVIS_ONNX_DIRECTML_DEVICE_ID", "2")
+    monkeypatch.setenv("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "2")
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
     monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["OpenVINOExecutionProvider", "CPUExecutionProvider"])
 
@@ -511,7 +511,7 @@ def test_local_health_snapshot_includes_onnx_probe(monkeypatch):
 def test_settings_onnx_status_route_reports_snapshot(monkeypatch, tmp_path: Path):
     model = _write_genai_bundle(tmp_path / "model")
 
-    monkeypatch.setenv("MARVIS_ONNX_MODEL_PATH", str(model))
+    monkeypatch.setenv("LENGRVIS_ONNX_MODEL_PATH", str(model))
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
     monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
 
@@ -530,7 +530,7 @@ def test_settings_onnx_status_route_reports_snapshot(monkeypatch, tmp_path: Path
 def test_settings_onnx_test_generate_route_returns_unavailable_without_runtime(monkeypatch, tmp_path: Path):
     model = _write_genai_bundle(tmp_path / "model")
 
-    monkeypatch.setenv("MARVIS_ONNX_MODEL_PATH", str(model))
+    monkeypatch.setenv("LENGRVIS_ONNX_MODEL_PATH", str(model))
     monkeypatch.setitem(sys.modules, "onnxruntime_genai", None)
     monkeypatch.setitem(sys.modules, "onnxruntime_genai_winml", None)
 
@@ -548,7 +548,7 @@ def test_settings_onnx_test_generate_route_returns_unavailable_without_runtime(m
 def test_settings_onnx_status_includes_embedding_ocr_and_image_sections(monkeypatch, tmp_path: Path):
     model = _write_genai_bundle(tmp_path / "model")
 
-    monkeypatch.setenv("MARVIS_ONNX_MODEL_PATH", str(model))
+    monkeypatch.setenv("LENGRVIS_ONNX_MODEL_PATH", str(model))
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
     monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["CPUExecutionProvider"])
 
@@ -564,7 +564,7 @@ def test_settings_onnx_status_includes_embedding_ocr_and_image_sections(monkeypa
 
 
 def test_settings_onnx_new_smoke_routes_return_structured_unavailable(monkeypatch):
-    monkeypatch.setenv("MARVIS_ONNX_MODEL_PATH", "")
+    monkeypatch.setenv("LENGRVIS_ONNX_MODEL_PATH", "")
     monkeypatch.setattr("app.acceleration.onnx_sessions.available_execution_providers", lambda: [])
 
     from app.main import create_app

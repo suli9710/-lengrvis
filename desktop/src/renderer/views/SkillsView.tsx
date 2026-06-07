@@ -2,11 +2,11 @@ import { AlertTriangle, CheckCircle2, FolderPlus, PackagePlus, RefreshCw, Shield
 import { useEffect, useState } from "react";
 
 import type { InstalledSkill, SkillsCatalog } from "../../shared/types";
-import { MavrisApiClient } from "../lib/apiClient";
+import { LengrvisApiClient } from "../lib/apiClient";
 import { Badge, Panel } from "../components/Panel";
 
 interface SkillsViewProps {
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
 }
 
 export function SkillsView({ api }: SkillsViewProps) {
@@ -63,12 +63,12 @@ export function SkillsView({ api }: SkillsViewProps) {
   };
 
   const importDirectory = async () => {
-    const path = await window.mavris?.dialog.chooseSkillDirectory();
+    const path = await window.lengrvis?.dialog.chooseSkillDirectory();
     await importFromPath(path ?? null);
   };
 
   const importZip = async () => {
-    const path = await window.mavris?.dialog.chooseSkillZip();
+    const path = await window.lengrvis?.dialog.chooseSkillZip();
     await importFromPath(path ?? null);
   };
 

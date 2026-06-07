@@ -17,7 +17,7 @@ def _test_app() -> FastAPI:
 
 
 def test_task_websocket_receives_agent_bus_messages(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     app = _test_app()
     task_id = "task_ws_stream"
@@ -46,7 +46,7 @@ def test_task_websocket_receives_agent_bus_messages(monkeypatch, tmp_path):
 
 
 def test_task_websocket_replays_persisted_messages(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     app = _test_app()
     task_id = "task_ws_replay"
@@ -69,7 +69,7 @@ def test_task_websocket_replays_persisted_messages(monkeypatch, tmp_path):
 
 
 def test_task_websocket_is_scoped_to_task(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     app = _test_app()
 
@@ -88,7 +88,7 @@ def test_task_websocket_is_scoped_to_task(monkeypatch, tmp_path):
 
 
 def test_task_websocket_is_also_available_under_api_prefix(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     app = _test_app()
 
@@ -98,7 +98,7 @@ def test_task_websocket_is_also_available_under_api_prefix(monkeypatch, tmp_path
 
 
 def test_notification_websocket_streams_system_notifications(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     app = _test_app()
 

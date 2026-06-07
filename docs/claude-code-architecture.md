@@ -1,10 +1,10 @@
-# Claude Code Vendor Runtime And Architecture Borrowing
+﻿# Claude Code Vendor Runtime And Architecture Borrowing
 
-Mavris vendors an authorized fixed Claude Code 2.6.5 source snapshot at
+Lengrvis vendors an authorized fixed Claude Code 2.6.5 source snapshot at
 `vendor/claude-code`. The source was copied from
 `C:\Users\Suli\Documents\claude-code-2.6.5\claude-code-2.6.5` without changing
 Claude Code internals. The local provenance record is
-`vendor/claude-code/MAVRIS_VENDOR_MANIFEST.md`.
+`vendor/claude-code/LENGRVIS_VENDOR_MANIFEST.md`.
 
 The snapshot currently contains source, package metadata, tests, docs, and
 workspace packages, but no built `dist/` directory. `package.json` exposes the
@@ -14,7 +14,7 @@ public CLI bins as:
 - `claude-code-best` -> `dist/cli-node.js`
 - `ccb-bun` -> `dist/cli-bun.js`
 
-Mavris should treat those package bin entries as the runtime boundary. Backend
+Lengrvis should treat those package bin entries as the runtime boundary. Backend
 code must not import or call vendored files such as `src/QueryEngine.ts`,
 `src/main.tsx`, or tool implementation modules directly.
 
@@ -22,30 +22,30 @@ code must not import or call vendored files such as `src/QueryEngine.ts`,
 
 QueryEngine: Claude Code uses a conversation-scoped query engine that owns the
 message lifecycle, tool calls, streaming events, compaction, and final assistant
-messages. Mavris borrows the shape of a single orchestration owner per
+messages. Lengrvis borrows the shape of a single orchestration owner per
 conversation, but keeps the boundary at the CLI or a future stable adapter.
 
 Tool orchestration: Claude Code composes built-in tools, MCP tools, agent tools,
-permission checks, and filtered tool schemas before each query. Mavris should
+permission checks, and filtered tool schemas before each query. Lengrvis should
 borrow the pipeline idea: collect tools, filter by policy and workspace state,
-then expose only the resulting tool surface to the model. Do not bind Mavris
+then expose only the resulting tool surface to the model. Do not bind Lengrvis
 tool routing to Claude Code's internal `Tool` TypeScript types.
 
 Permission mode: Claude Code exposes CLI permission modes including `default`,
-`acceptEdits`, `dontAsk`, `plan`, and `auto`. Mavris defaults developer runs to
+`acceptEdits`, `dontAsk`, `plan`, and `auto`. Lengrvis defaults developer runs to
 `acceptEdits` while constraining the workspace and `allowedTools` from the
-Mavris adapter. Mavris must not default to `--dangerously-skip-permissions` or
+Lengrvis adapter. Lengrvis must not default to `--dangerously-skip-permissions` or
 `bypassPermissions`.
 
 AgentTool: Claude Code models subagent delegation as a tool. The useful design
 to borrow is that an agent task is explicit, scoped, and observable like any
-other tool use. Mavris should keep subagent execution under its own task and
+other tool use. Lengrvis should keep subagent execution under its own task and
 review model rather than importing Claude Code's `AgentTool` internals.
 
 Headless stream-json: Claude Code supports non-interactive streaming with
 `--print --verbose --output-format stream-json`. Streaming input uses
 `--input-format stream-json`, and permission prompts can be delegated over stdio
-with `--permission-prompt-tool stdio`. Mavris should consume stdout as NDJSON and
+with `--permission-prompt-tool stdio`. Lengrvis should consume stdout as NDJSON and
 treat stderr as diagnostics.
 
 ## Runtime Resolver
@@ -55,7 +55,7 @@ The backend adapter lives at `backend/app/integrations/claude_code.py`.
 Responsibilities:
 
 - resolve the vendored source root, defaulting to `vendor/claude-code`;
-- allow the vendor root to be overridden with `MARVIS_CLAUDE_CODE_VENDOR_ROOT`;
+- allow the vendor root to be overridden with `LENGRVIS_CLAUDE_CODE_VENDOR_ROOT`;
 - prefer the Node CLI (`dist/cli-node.js`) when a built dist exists;
 - build a subprocess command for headless stream-json mode;
 - build a child-process environment for OpenAI-compatible mode.
@@ -76,7 +76,7 @@ default and does not provide an Anthropic-key fallback path.
 If no built CLI exists, the adapter fails with a diagnostic instead of silently
 falling back to a `claude`, `ccb`, or `claude-code-best` executable from `PATH`.
 External commands are allowed only when explicitly configured with
-`MARVIS_CLAUDE_CODE_COMMAND`. Generated `dist/` output may be ignored by the repo
+`LENGRVIS_CLAUDE_CODE_COMMAND`. Generated `dist/` output may be ignored by the repo
 root `.gitignore`, so review whether distribution artifacts should stay local or
 need an explicit tracking exception.
 

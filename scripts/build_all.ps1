@@ -1,12 +1,12 @@
-param(
+﻿param(
     [switch]$SkipTests,
     [switch]$SkipInstaller,
     [switch]$RequireBundledOllama,
     [switch]$VerifyOnly,
     [string]$DistDir = "dist",
-    [string]$PortableDir = "dist\Mavris-win-portable",
-    [string]$PortableZip = "dist\Mavris-win-portable.zip",
-    [string]$SelfExtractingExe = "dist\Mavris-0.1.0-x64-self-extracting.exe",
+    [string]$PortableDir = "dist\Lengrvis-win-portable",
+    [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
+    [string]$SelfExtractingExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe",
     [string]$BundledOllamaDir = "",
     [string]$BundledOllamaModelsDir = "",
     [string]$BundledOllamaManifest = ""

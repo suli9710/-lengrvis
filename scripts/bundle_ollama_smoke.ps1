@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Workspace = ".tmp\ollama-bundle-smoke"
 )
 
@@ -105,7 +105,7 @@ Assert-FailsWith -Label "sibling output root refused" -Arguments @(
     "-AcceptLicenses",
     "-SkipRuntime",
     "-SkipModels",
-    "-OutputRoot", "..\mavris-bundle-evil"
+    "-OutputRoot", "..\lengrvis-bundle-evil"
 ) -Expected "must stay under"
 
 $overlapRoot = Join-Path $workspacePath "overlap"

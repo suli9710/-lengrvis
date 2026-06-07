@@ -24,11 +24,11 @@ from app.tools.schemas import ToolDefinition
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_MODE", "efficiency")
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir(parents=True, exist_ok=True)
     db.init_db()
     register_all_tools()

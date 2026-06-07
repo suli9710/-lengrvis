@@ -36,7 +36,8 @@ _GPS_EXIF_TAG = 34853
 logger = logging.getLogger(__name__)
 
 _DESCRIPTION_METADATA_KEYS = (
-    "marvis_description",
+    "lengrvis_description",
+    "lengrvis_description",
     "description",
     "Description",
     "comment",
@@ -44,7 +45,8 @@ _DESCRIPTION_METADATA_KEYS = (
     "ImageDescription",
 )
 _CAPTURED_AT_METADATA_KEYS = (
-    "marvis_captured_at",
+    "lengrvis_captured_at",
+    "lengrvis_captured_at",
     "captured_at",
     "date",
     "DateTime",
@@ -52,9 +54,15 @@ _CAPTURED_AT_METADATA_KEYS = (
     "date:modify",
     "creation_time",
 )
-_PEOPLE_METADATA_KEYS = ("marvis_people_count", "people_count", "PeopleCount")
-_SCENE_METADATA_KEYS = ("marvis_scene_type", "scene_type", "SceneType")
-_OBJECT_METADATA_KEYS = ("marvis_visible_objects", "visible_objects", "VisibleObjects", "objects")
+_PEOPLE_METADATA_KEYS = ("lengrvis_people_count", "lengrvis_people_count", "people_count", "PeopleCount")
+_SCENE_METADATA_KEYS = ("lengrvis_scene_type", "lengrvis_scene_type", "scene_type", "SceneType")
+_OBJECT_METADATA_KEYS = (
+    "lengrvis_visible_objects",
+    "lengrvis_visible_objects",
+    "visible_objects",
+    "VisibleObjects",
+    "objects",
+)
 
 _NUMBER_WORDS = {
     "zero": 0,
@@ -631,12 +639,12 @@ def _synthetic_image_for_smoke() -> Path:
 
     from PIL import Image, ImageDraw
 
-    temp_dir = Path(tempfile.mkdtemp(prefix="marvis_image_embedding_smoke_"))
+    temp_dir = Path(tempfile.mkdtemp(prefix="lengrvis_image_embedding_smoke_"))
     path = temp_dir / "image-embedding-smoke.png"
     image = Image.new("RGB", (224, 224), "white")
     draw = ImageDraw.Draw(image)
     draw.rectangle((24, 24, 200, 200), outline="black")
-    draw.text((44, 104), "Mavris", fill="black")
+    draw.text((44, 104), "Lengrvis", fill="black")
     image.save(path)
     return path
 
@@ -858,8 +866,10 @@ def _get_gps_ifd(exif: Any) -> dict[int, Any]:
 
 
 def _gps_from_metadata(info: dict[str, Any]) -> dict[str, float]:
-    lat = _coerce_float(_first_text_value(info, ("marvis_gps_latitude", "gps_latitude", "latitude")))
-    lon = _coerce_float(_first_text_value(info, ("marvis_gps_longitude", "gps_longitude", "longitude")))
+    lat = _coerce_float(_first_text_value(info, ("lengrvis_gps_latitude", "lengrvis_gps_latitude", "gps_latitude", "latitude")))
+    lon = _coerce_float(
+        _first_text_value(info, ("lengrvis_gps_longitude", "lengrvis_gps_longitude", "gps_longitude", "longitude"))
+    )
     if lat is None or lon is None:
         return {}
     return {"latitude": lat, "longitude": lon}

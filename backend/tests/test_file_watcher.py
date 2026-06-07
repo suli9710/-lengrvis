@@ -16,7 +16,7 @@ from app.indexer.fts_index import FTSIndex
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     # Reset singleton
     file_watcher_module._instance = None
     db.init_db()

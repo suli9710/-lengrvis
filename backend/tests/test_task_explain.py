@@ -11,7 +11,7 @@ from app.services.task_explain_service import build_task_explain
 
 
 def test_build_task_explain_returns_full_decision_chain(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     task = _seed_complete_task()
@@ -42,7 +42,7 @@ def test_build_task_explain_returns_full_decision_chain(monkeypatch, tmp_path):
 
 
 def test_explain_route_returns_full_chain_after_task_completion(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = _seed_complete_task()
 
@@ -56,7 +56,7 @@ def test_explain_route_returns_full_chain_after_task_completion(monkeypatch, tmp
 
 
 def test_explain_route_returns_404_for_unknown_task(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     response = TestClient(create_app()).get("/api/tasks/missing/explain")

@@ -15,6 +15,7 @@ from app.skills.schemas import SkillExecution, SkillExecutionType
 
 MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 128 * 1024
+UNSAFE_LOCAL_SKILL_EXECUTION_ENV = "LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION"
 SENSITIVE_ENV_HINTS = ("api", "auth", "cookie", "credential", "key", "password", "secret", "token")
 WINDOWS_SCRIPT_EXTENSIONS = {".bat", ".cmd", ".ps1"}
 POSIX_SCRIPT_EXTENSIONS = {".sh"}
@@ -27,17 +28,32 @@ class SkillSandboxError(RuntimeError):
 class SkillSandbox:
     """Runs local skill handlers through bounded execution adapters."""
 
-    def __init__(self, skill_root: str | Path) -> None:
+    def __init__(self, skill_root: str | Path, *, allow_unsafe_local_skill_execution: bool | None = None) -> None:
         self.skill_root = Path(skill_root).resolve(strict=True)
+        self.allow_unsafe_local_skill_execution = allow_unsafe_local_skill_execution
 
     def execute(self, execution: SkillExecution, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         if execution.type == SkillExecutionType.PYTHON:
+            if not self._local_skill_execution_allowed(context):
+                return _local_skill_execution_disabled_error(execution)
             return self._execute_process(self._python_command(execution), execution, args, context)
         if execution.type == SkillExecutionType.SHELL:
+            if not self._local_skill_execution_allowed(context):
+                return _local_skill_execution_disabled_error(execution)
             return self._execute_process(self._shell_command(execution), execution, args, context)
         if execution.type == SkillExecutionType.HTTP:
             return self._execute_http(execution, args, context)
         return {"error": f"Unsupported skill execution type: {execution.type}"}
+
+    def _local_skill_execution_allowed(self, context: dict[str, Any]) -> bool:
+        if _truthy(os.environ.get(UNSAFE_LOCAL_SKILL_EXECUTION_ENV)):
+            return True
+        if self.allow_unsafe_local_skill_execution is True:
+            return True
+        if _truthy(context.get("allow_unsafe_local_skill_execution")):
+            return True
+        settings = context.get("settings")
+        return bool(getattr(settings, "allow_unsafe_local_skill_execution", False))
 
     def resolve_local_entry(self, execution: SkillExecution) -> Path:
         raw = Path(execution.entry)
@@ -169,6 +185,7 @@ def _safe_context(context: dict[str, Any]) -> dict[str, Any]:
             "allow_browser_network",
             "allow_cloud_context",
             "allow_file_content_upload",
+            "allow_unsafe_local_skill_execution",
             "allowed_directories",
             "data_dir",
         ):
@@ -194,13 +211,33 @@ def _sandbox_env() -> dict[str, str]:
         lower = key.lower()
         if key in env or any(hint in lower for hint in SENSITIVE_ENV_HINTS):
             continue
-        if key.startswith("MARVIS_SKILL_ENV_"):
-            env[key.removeprefix("MARVIS_SKILL_ENV_")] = value
+        if key.startswith("LENGRVIS_SKILL_ENV_"):
+            env[key.removeprefix("LENGRVIS_SKILL_ENV_")] = value
+        elif key.startswith("LENGRVIS_SKILL_ENV_"):
+            env[key.removeprefix("LENGRVIS_SKILL_ENV_")] = value
+        elif key.startswith("LENGRVIS_SKILL_ENV_"):
+            env[key.removeprefix("LENGRVIS_SKILL_ENV_")] = value
     return env
 
 
 def _creation_flags() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _local_skill_execution_disabled_error(execution: SkillExecution) -> dict[str, Any]:
+    return {
+        "error": (
+            f"Local {execution.type.value} skill execution is disabled by default because these handlers run as "
+            "normal local subprocesses, not an OS sandbox. Enable only trusted development skills with "
+            f"{UNSAFE_LOCAL_SKILL_EXECUTION_ENV}=1 or AppSettings.allow_unsafe_local_skill_execution=True."
+        ),
+        "policy": "local_skill_execution_disabled",
+        "execution_type": execution.type.value,
+    }
 
 
 def is_loopback_http_url(url: str) -> bool:

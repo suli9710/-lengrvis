@@ -12,13 +12,13 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, AsyncIterator, Iterable, Mapping, Sequence
 
-from app.config import AppSettings, PROJECT_ROOT
+from app.config import AppSettings, PROJECT_ROOT, get_env
 from app.orchestration.execution_models import EngineTurnResult, RunObservation, RunPhase, RunState
 
 
 VENDORED_CLAUDE_CODE_ROOT = PROJECT_ROOT / "vendor" / "claude-code"
-VENDOR_ROOT_ENV = "MARVIS_CLAUDE_CODE_VENDOR_ROOT"
-COMMAND_ENV = "MARVIS_CLAUDE_CODE_COMMAND"
+VENDOR_ROOT_ENV = "LENGRVIS_CLAUDE_CODE_VENDOR_ROOT"
+COMMAND_ENV = "LENGRVIS_CLAUDE_CODE_COMMAND"
 DEFAULT_PERMISSION_MODE = "acceptEdits"
 DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Read",
@@ -171,7 +171,7 @@ class ClaudeCodeStreamSummary:
 
 
 class ClaudeCodeProcessRegistry:
-    """Tracks Claude Code subprocesses by Mavris run_id for cancellation."""
+    """Tracks Claude Code subprocesses by Lengrvis run_id for cancellation."""
 
     def __init__(self) -> None:
         self._lock = RLock()
@@ -352,7 +352,7 @@ def diagnose_claude_code_runtime(
             reason="node runtime missing",
             diagnostic=(
                 f"Claude Code vendored dist exists at {node_cli}, but node was not found. "
-                "Install Node.js or set MARVIS_CLAUDE_CODE_COMMAND explicitly."
+                f"Install Node.js or set {COMMAND_ENV} explicitly."
             ),
             **base,
         )
@@ -373,7 +373,7 @@ def diagnose_claude_code_runtime(
             reason="bun runtime missing",
             diagnostic=(
                 f"Claude Code vendored Bun CLI exists at {bun_cli}, but bun was not found. "
-                "Install Bun, build dist/cli-node.js for Node, or set MARVIS_CLAUDE_CODE_COMMAND explicitly."
+                f"Install Bun, build dist/cli-node.js for Node, or set {COMMAND_ENV} explicitly."
             ),
             **base,
         )
@@ -392,7 +392,7 @@ def diagnose_claude_code_runtime(
 
 
 def claude_code_command_from_env() -> tuple[str, ...]:
-    raw = os.environ.get(COMMAND_ENV, "").strip()
+    raw = str(get_env(COMMAND_ENV) or "").strip()
     if not raw:
         return ()
     try:
@@ -402,7 +402,7 @@ def claude_code_command_from_env() -> tuple[str, ...]:
 
 
 def _vendor_source_root(source_root: str | Path | None = None) -> Path:
-    raw = source_root or os.environ.get(VENDOR_ROOT_ENV) or VENDORED_CLAUDE_CODE_ROOT
+    raw = source_root or get_env(VENDOR_ROOT_ENV) or VENDORED_CLAUDE_CODE_ROOT
     return Path(raw).expanduser().resolve(strict=False)
 
 
@@ -414,7 +414,7 @@ def _build_hint(root: Path) -> str:
 
 
 def build_claude_code_env(settings: AppSettings, *, base_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Map Mavris OpenAI-compatible settings into Claude Code's OpenAI provider env."""
+    """Map Lengrvis OpenAI-compatible settings into Claude Code's OpenAI provider env."""
 
     env = dict(os.environ if base_env is None else base_env)
     for key in BLOCKED_ENV_KEYS:
@@ -747,7 +747,7 @@ def _assert_no_forbidden_flags(command: Sequence[str]) -> None:
     for token in command:
         text = str(token)
         if any(text == flag or text.startswith(f"{flag}=") for flag in FORBIDDEN_CLI_FLAGS):
-            raise ValueError("--dangerously-skip-permissions must not be used for Mavris Claude Code runs.")
+            raise ValueError("--dangerously-skip-permissions must not be used for Lengrvis Claude Code runs.")
 
 
 def _parse_ndjson_line(raw_line: str) -> dict[str, Any] | None:
@@ -857,7 +857,7 @@ def _error_reason(summary: ClaudeCodeStreamSummary) -> str:
 
 def _summary_payload(summary: ClaudeCodeStreamSummary) -> dict[str, Any]:
     adapter_events = _adapter_events(summary)
-    mavris_events = _mavris_events(summary, adapter_events)
+    lengrvis_events = _lengrvis_events(summary, adapter_events)
     error_classification = classify_claude_code_error(summary)
     payload: dict[str, Any] = {
         "ok": error_classification is None,
@@ -874,7 +874,7 @@ def _summary_payload(summary: ClaudeCodeStreamSummary) -> dict[str, Any]:
         "invalid_line_count": len(summary.invalid_lines),
         "diagnostics": _diagnostics(summary),
         "adapter_events": adapter_events,
-        "mavris_events": mavris_events,
+        "lengrvis_events": lengrvis_events,
         "command": summary.command,
         "runtime_health": summary.runtime_health,
         "stderr_diagnostics": _stderr_diagnostics(summary),
@@ -919,7 +919,7 @@ def _adapter_events(summary: ClaudeCodeStreamSummary) -> list[dict[str, Any]]:
                 "sequence": offset,
                 "event_type": event_type,
                 "summary": message,
-                "mavris_events": _mavris_events_for_source_event(
+                "lengrvis_events": _lengrvis_events_for_source_event(
                     event,
                     message,
                     claude_event_index=offset,
@@ -930,16 +930,16 @@ def _adapter_events(summary: ClaudeCodeStreamSummary) -> list[dict[str, Any]]:
     return events
 
 
-def _mavris_events(summary: ClaudeCodeStreamSummary, adapter_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _lengrvis_events(summary: ClaudeCodeStreamSummary, adapter_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for adapter_event in adapter_events:
-        legacy_event = adapter_event.get("mavris_event")
-        if isinstance(legacy_event, dict):
-            events.append(legacy_event)
-        for event in adapter_event.get("mavris_events") or []:
+        event_payload = adapter_event.get("lengrvis_event")
+        if isinstance(event_payload, dict):
+            events.append(event_payload)
+        for event in adapter_event.get("lengrvis_events") or []:
             if isinstance(event, dict):
                 events.append(event)
-    events.append(_terminal_mavris_event(summary))
+    events.append(_terminal_lengrvis_event(summary))
     return events
 
 
@@ -978,7 +978,7 @@ def _event_summary(event: Mapping[str, Any]) -> str:
     return f"Claude Code event: {event_type}."
 
 
-def _mavris_events_for_source_event(
+def _lengrvis_events_for_source_event(
     event: Mapping[str, Any],
     message: str,
     *,
@@ -1121,7 +1121,7 @@ def _mavris_events_for_source_event(
     ]
 
 
-def _terminal_mavris_event(summary: ClaudeCodeStreamSummary) -> dict[str, Any]:
+def _terminal_lengrvis_event(summary: ClaudeCodeStreamSummary) -> dict[str, Any]:
     classification = classify_claude_code_error(summary)
     if classification == ERROR_CANCELLED:
         name = "run.cancelled"

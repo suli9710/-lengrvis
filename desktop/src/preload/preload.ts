@@ -12,7 +12,7 @@ import type {
   DesktopWebSocketOpenResult,
   DesktopWebSocketSubscribeHandlers,
   DesktopWebSocketSubscribeRequest,
-  MavrisDesktopBridge,
+  LengrvisDesktopBridge,
   NotificationPayload
 } from "../shared/types";
 
@@ -21,7 +21,13 @@ const env = preloadProcess?.env ?? {};
 const version = (name: keyof NodeJS.ProcessVersions): string => preloadProcess?.versions?.[name] ?? "";
 let desktopWebSocketSequence = 0;
 
-const bridge: MavrisDesktopBridge = {
+function envValue(name: string, fallback = ""): string {
+  const value = env[name];
+  if (value) return value;
+  return fallback;
+}
+
+const bridge: LengrvisDesktopBridge = {
   api: {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>
@@ -37,7 +43,7 @@ const bridge: MavrisDesktopBridge = {
     foreground: () => ipcRenderer.invoke(IPC_CHANNELS.backendForeground),
     background: () => ipcRenderer.invoke(IPC_CHANNELS.backendBackground)
   },
-  backendBaseUrl: env.MAVRIS_BACKEND_URL ?? "http://127.0.0.1:8000",
+  backendBaseUrl: envValue("LENGRVIS_BACKEND_URL", "http://127.0.0.1:8000"),
   dialog: {
     chooseDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.chooseDirectory),
     chooseDocument: () => ipcRenderer.invoke(IPC_CHANNELS.chooseDocument),
@@ -95,7 +101,7 @@ const bridge: MavrisDesktopBridge = {
   }
 };
 
-contextBridge.exposeInMainWorld("mavris", bridge);
+contextBridge.exposeInMainWorld("lengrvis", bridge);
 
 function subscribeDesktopWebSocket(
   request: DesktopWebSocketSubscribeRequest,

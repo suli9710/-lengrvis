@@ -9,7 +9,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 2
 fi
 
-TARGET_ARCH="${MAVRIS_BACKEND_TARGET_ARCH:-}"
+TARGET_ARCH="${LENGRVIS_BACKEND_TARGET_ARCH:-}"
 if [[ "${1:-}" == "--target-arch" ]]; then
   TARGET_ARCH="${2:?Missing value for --target-arch}"
   shift 2

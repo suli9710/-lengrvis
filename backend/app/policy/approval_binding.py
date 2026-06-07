@@ -13,7 +13,7 @@ from app.config import AppSettings, get_base_settings
 from app.policy.redaction import redact_value
 
 
-APPROVAL_HMAC_ENV_KEYS = ("MARVIS_APPROVAL_HMAC_SECRET", "MAVRIS_APPROVAL_HMAC_SECRET")
+APPROVAL_HMAC_ENV_KEYS = ("LENGRVIS_APPROVAL_HMAC_SECRET", "LENGRVIS_APPROVAL_HMAC_SECRET", "LENGRVIS_APPROVAL_HMAC_SECRET")
 APPROVAL_HMAC_SECRET_FILE = "approval_hmac.secret"
 logger = logging.getLogger(__name__)
 

@@ -69,7 +69,7 @@ class Scheduler:
         db.init_db()
         self._stop = asyncio.Event()
         self._stop.clear()
-        self._task = asyncio.create_task(self._run(), name="mavris-scheduler")
+        self._task = asyncio.create_task(self._run(), name="lengrvis-scheduler")
 
     async def stop(self) -> None:
         if self._stop is not None:

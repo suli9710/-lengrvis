@@ -279,7 +279,7 @@ export function zhUserFacingError(text?: string): string {
     lower.includes("status 401") ||
     lower.includes("unauthorized")
   ) {
-    return "Mavris 正在保护本机接口。请通过桌面应用连接，或重启 Mavris 后再试；未授权的浏览器页面不能直接读取本机数据。";
+    return "Lengrvis 正在保护本机接口。请通过桌面应用连接，或重启 Lengrvis 后再试；未授权的浏览器页面不能直接读取本机数据。";
   }
 
   if (
@@ -287,7 +287,7 @@ export function zhUserFacingError(text?: string): string {
     lower.includes("policy violation") ||
     lower.includes("policy_violation")
   ) {
-    return "实时连接被后端安全策略关闭（1008）。请确认桌面端和后端授权一致，必要时重启 Mavris 后再试。";
+    return "实时连接被后端安全策略关闭（1008）。请确认桌面端和后端授权一致，必要时重启 Lengrvis 后再试。";
   }
 
   if (
@@ -297,7 +297,7 @@ export function zhUserFacingError(text?: string): string {
     lower.includes("404") ||
     lower.includes("not found")
   ) {
-    return "这个功能入口暂时不可用。请确认 Mavris 正在运行并已更新，然后重试。";
+    return "这个功能入口暂时不可用。请确认 Lengrvis 正在运行并已更新，然后重试。";
   }
 
   if (
@@ -311,14 +311,14 @@ export function zhUserFacingError(text?: string): string {
     compact.includes("等待后端连接") ||
     compact.includes("后端连接失败")
   ) {
-    return "Mavris 暂时没连接上。请先启动或重启 Mavris，再重试。";
+    return "Lengrvis 暂时没连接上。请先启动或重启 Lengrvis，再重试。";
   }
 
   if (
     lower.includes("renderer api requests must use backend-relative endpoints") ||
     lower.includes("backend-relative")
   ) {
-    return "这个功能没有正确连接到 Mavris。请重启应用后再试。";
+    return "这个功能没有正确连接到 Lengrvis。请重启应用后再试。";
   }
 
   if (
@@ -541,7 +541,7 @@ export function zhRealtimeConnectionStatus(status: {
     return "正在连接实时通道。";
   }
   if (status.state === "unauthorized") {
-    return `实时连接未通过桌面授权${detail}。请重启 Mavris 桌面端后再试。`;
+    return `实时连接未通过桌面授权${detail}。请重启 Lengrvis 桌面端后再试。`;
   }
   if (status.state === "policy_violation") {
     return `实时连接被后端安全策略拒绝${detail}。请确认桌面端和后端使用同一个 desktop token。`;

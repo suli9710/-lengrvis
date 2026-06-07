@@ -85,12 +85,12 @@ function Test-WorkspaceProcess([string]$CommandLine) {
     return $CommandLine -and $CommandLine.ToLowerInvariant().Contains($Root.Path.ToLowerInvariant())
 }
 
-function Test-PackagedMavrisBackend([string]$CommandLine) {
+function Test-PackagedLengrvisBackend([string]$CommandLine) {
     $lower = if ($CommandLine) { $CommandLine.ToLowerInvariant() } else { "" }
-    return $lower.Contains("\mavris\resources\backend\backend.exe")
+    return $lower.Contains("\lengrvis\resources\backend\backend.exe")
 }
 
-function Test-UvicornMavrisBackend([string]$CommandLine) {
+function Test-UvicornLengrvisBackend([string]$CommandLine) {
     $lower = if ($CommandLine) { $CommandLine.ToLowerInvariant() } else { "" }
     return $lower.Contains("uvicorn") -and ($lower.Contains("backend.main:app") -or $lower.Contains("backend.main:full_app"))
 }
@@ -243,12 +243,12 @@ function Start-Backend([string]$Python) {
     $existing = Get-ListenProcess $BackendPort
     if ($existing) {
         $commandLine = [string]$existing.CommandLine
-        if (Test-PackagedMavrisBackend $commandLine) {
-            Write-Step "正在关闭已安装版 Mavris 后端，改用当前目录版本"
+        if (Test-PackagedLengrvisBackend $commandLine) {
+            Write-Step "正在关闭已安装版 Lengrvis 后端，改用当前目录版本"
             Stop-Process -Id $existing.ProcessId -Force -ErrorAction Stop
             Start-Sleep -Milliseconds 700
         }
-        elseif ((Test-WorkspaceProcess $commandLine) -or (Test-UvicornMavrisBackend $commandLine)) {
+        elseif ((Test-WorkspaceProcess $commandLine) -or (Test-UvicornLengrvisBackend $commandLine)) {
             if (Test-Health) {
                 Write-Step "后端服务已在运行：$BackendUrl"
                 return $null
@@ -263,7 +263,7 @@ function Start-Backend([string]$Python) {
 
     Write-Step "正在启动后端服务：$BackendUrl"
     Stop-FullBackendIfWorkspaceOwned
-    $env:MAVRIS_FULL_BACKEND = "1"
+    $env:LENGRVIS_FULL_BACKEND = "1"
     $process = Start-Process `
         -FilePath $Python `
         -ArgumentList @("-m", "uvicorn", "backend.main:full_app", "--host", $BackendHost, "--port", [string]$BackendPort) `
@@ -382,12 +382,12 @@ function Start-DesktopShell {
     Set-Variable -Name DesktopStdoutLog -Scope Script -Value $DesktopStdoutLog
     Set-Variable -Name DesktopStderrLog -Scope Script -Value $DesktopStderrLog
 
-    Write-Step "正在打开 Mavris 桌面窗口"
+    Write-Step "正在打开 Lengrvis 桌面窗口"
     $previousViteDevServerUrl = $env:VITE_DEV_SERVER_URL
     try {
         $env:VITE_DEV_SERVER_URL = $FrontendUrl
-        $env:MAVRIS_BACKEND_URL = $BackendUrl
-        $env:MARVIS_CONFIG_DIR = $Root
+        $env:LENGRVIS_BACKEND_URL = $BackendUrl
+        $env:LENGRVIS_CONFIG_DIR = $Root
         $process = Start-Process `
             -FilePath $electron `
             -ArgumentList @(".") `
@@ -417,7 +417,7 @@ function Start-DesktopShell {
         $process.Refresh()
         $exitCode = $process.ExitCode
         if ($null -eq $exitCode -or $exitCode -eq 0) {
-            Write-Step "Mavris 已交给现有窗口"
+            Write-Step "Lengrvis 已交给现有窗口"
             return $null
         }
 
@@ -439,9 +439,10 @@ try {
     Set-Location $Root
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
-    $env:MAVRIS_ENV = if ($env:MAVRIS_ENV) { $env:MAVRIS_ENV } else { "development" }
-    $env:MAVRIS_BACKEND_URL = $BackendUrl
-    $env:MARVIS_CONFIG_DIR = $Root
+    $env:LENGRVIS_ENV = if ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } else { "development" }
+    $env:LENGRVIS_ENV = $env:LENGRVIS_ENV
+    $env:LENGRVIS_BACKEND_URL = $BackendUrl
+    $env:LENGRVIS_CONFIG_DIR = $Root
 
     $python = Find-Python
     $npm = Find-Npm
@@ -461,14 +462,14 @@ try {
         $startedDesktop = Start-DesktopShell
     }
 
-    Write-Step "Mavris 已启动"
+    Write-Step "Lengrvis 已启动"
     Write-Host "访问地址：$FrontendUrl"
     if (-not $Desktop) {
         Start-Process $FrontendUrl | Out-Null
     }
     if ($Detached) {
         $leaveProcessesRunning = $true
-        Write-Host "Mavris 正在后台运行。可以关闭这个窗口。"
+        Write-Host "Lengrvis 正在后台运行。可以关闭这个窗口。"
         exit 0
     }
 
@@ -495,7 +496,7 @@ catch {
     Write-Host "启动失败：" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Host "日志文件夹：$LogDir" -ForegroundColor Yellow
-    Write-Host "也可以双击 Start-Mavris-Debug.cmd 查看最近错误。" -ForegroundColor Yellow
+    Write-Host "也可以双击 Start-Lengrvis-Debug.cmd 查看最近错误。" -ForegroundColor Yellow
     exit 1
 }
 finally {

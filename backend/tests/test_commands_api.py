@@ -19,10 +19,10 @@ from app.orchestration.task_phase import TaskPhase
 def _isolate_backend(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(workspace))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(workspace))
     reset_session_context_store()
     db.init_db()
     yield

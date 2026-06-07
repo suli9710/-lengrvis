@@ -11,7 +11,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from app.config import AppSettings
+from app.config import AppSettings, get_env
 
 
 WINML_PROVIDER = "WindowsMLExecutionProvider"
@@ -201,11 +201,7 @@ def preferred_execution_providers(
     if not raw and settings is not None:
         raw = str(getattr(settings, "onnx_provider_preference", "") or "").strip()
     if not raw:
-        raw = (
-            os.environ.get("MARVIS_ONNX_PROVIDER_PREFERENCE")
-            or os.environ.get("MAVRIS_ONNX_PROVIDER_PREFERENCE")
-            or ""
-        )
+        raw = get_env("LENGRVIS_ONNX_PROVIDER_PREFERENCE", "") or ""
     if not raw:
         return list(PREFERRED_EXECUTION_PROVIDERS)
 
@@ -251,27 +247,15 @@ def provider_options(execution_provider: str, *, settings: AppSettings | None = 
     if execution_provider == DIRECTML_PROVIDER:
         device_id = str(getattr(settings, "onnx_directml_device_id", "") or "").strip() if settings is not None else ""
         if not device_id:
-            device_id = (
-                os.environ.get("MARVIS_ONNX_DIRECTML_DEVICE_ID")
-                or os.environ.get("MAVRIS_ONNX_DIRECTML_DEVICE_ID")
-                or ""
-            )
+            device_id = get_env("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "") or ""
         return {"device_id": device_id.strip()} if device_id and device_id.strip() else {}
     if execution_provider == OPENVINO_PROVIDER:
         device = str(getattr(settings, "onnx_openvino_device", "") or "").strip() if settings is not None else ""
         cache_dir = str(getattr(settings, "onnx_openvino_cache_dir", "") or "").strip() if settings is not None else ""
         if not device:
-            device = (
-                os.environ.get("MARVIS_ONNX_OPENVINO_DEVICE")
-                or os.environ.get("MAVRIS_ONNX_OPENVINO_DEVICE")
-                or ""
-            )
+            device = get_env("LENGRVIS_ONNX_OPENVINO_DEVICE", "") or ""
         if not cache_dir:
-            cache_dir = (
-                os.environ.get("MARVIS_ONNX_OPENVINO_CACHE_DIR")
-                or os.environ.get("MAVRIS_ONNX_OPENVINO_CACHE_DIR")
-                or ""
-            )
+            cache_dir = get_env("LENGRVIS_ONNX_OPENVINO_CACHE_DIR", "") or ""
         options: dict[str, str] = {}
         if device and device.strip():
             options["device_type"] = device.strip()

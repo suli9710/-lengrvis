@@ -20,12 +20,12 @@ from app.llm import prompts
 
 @pytest.fixture(autouse=True)
 def _clear_prompt_state(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("MAVRIS_DEV", raising=False)
-    monkeypatch.delenv("MARVIS_DEV", raising=False)
-    monkeypatch.delenv("MARVIS_PROMPT_HOT_RELOAD", raising=False)
-    monkeypatch.delenv("MAVRIS_PROMPT_HOT_RELOAD", raising=False)
-    monkeypatch.delenv("MARVIS_ENV", raising=False)
-    monkeypatch.delenv("MAVRIS_ENV", raising=False)
+    monkeypatch.delenv("LENGRVIS_DEV", raising=False)
+    monkeypatch.delenv("LENGRVIS_DEV", raising=False)
+    monkeypatch.delenv("LENGRVIS_PROMPT_HOT_RELOAD", raising=False)
+    monkeypatch.delenv("LENGRVIS_PROMPT_HOT_RELOAD", raising=False)
+    monkeypatch.delenv("LENGRVIS_ENV", raising=False)
+    monkeypatch.delenv("LENGRVIS_ENV", raising=False)
     monkeypatch.delenv("APP_ENV", raising=False)
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     prompts.stop_prompt_watcher()
@@ -48,7 +48,7 @@ def test_development_prompt_hot_reload(monkeypatch: pytest.MonkeyPatch, tmp_path
     prompt = prompt_dir / "dynamic.md"
     prompt.write_text("first", encoding="utf-8")
     monkeypatch.setattr(prompts, "PROMPT_DIR", prompt_dir)
-    monkeypatch.setenv("MAVRIS_DEV", "1")
+    monkeypatch.setenv("LENGRVIS_DEV", "1")
 
     assert prompts.load_prompt("dynamic.md") == "first"
 
@@ -84,7 +84,7 @@ def test_production_prompt_cache_can_skip_reload(monkeypatch: pytest.MonkeyPatch
     prompt = prompt_dir / "cached.md"
     prompt.write_text("first", encoding="utf-8")
     monkeypatch.setattr(prompts, "PROMPT_DIR", prompt_dir)
-    monkeypatch.setenv("MARVIS_ENV", "production")
+    monkeypatch.setenv("LENGRVIS_ENV", "production")
 
     assert prompts.load_prompt("cached.md") == "first"
 

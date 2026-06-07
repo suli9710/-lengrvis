@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Mavris 桌面端 · 设计系统
+   Lengrvis 桌面端 · 设计系统
    - 灵感来源：办公感、轻盈、可爱、原创
    - 全部样式原创，无任何第三方素材
    ========================================================================== */
@@ -42,7 +42,7 @@
   --violet-soft: #efe9ff;
 
   /* 角色配色 */
-  --role-marvis: #ff5474;
+  --role-lengrvis: #ff5474;
   --role-file: #8b5cf6;
   --role-computer: #f5a623;
   --role-app: #ff7e3e;
@@ -417,7 +417,7 @@
   border-radius: 50%;
 }
 
-.marvis-home > .route-loading,
+.lengrvis-home > .route-loading,
 .browser-view > .route-loading,
 .detail-grid > .route-loading {
   min-height: min(620px, calc(100vh - 160px));
@@ -502,7 +502,7 @@ select:focus-visible,
    Shell 三栏布局
    ========================================================================== */
 
-.marvis-shell {
+.lengrvis-shell {
   height: 100vh;
   min-height: 100vh;
   display: grid;
@@ -513,7 +513,7 @@ select:focus-visible,
     var(--canvas);
 }
 
-.marvis-workbench-layout {
+.lengrvis-workbench-layout {
   min-width: 0;
   min-height: 0;
   display: grid;
@@ -527,7 +527,7 @@ select:focus-visible,
    侧边栏
    ========================================================================== */
 
-.marvis-sidebar {
+.lengrvis-sidebar {
   display: grid;
   grid-template-rows: auto auto auto auto 1fr auto;
   gap: 14px;
@@ -815,7 +815,7 @@ select:focus-visible,
    主区域
    ========================================================================== */
 
-.marvis-main {
+.lengrvis-main {
   min-width: 0;
   height: 100vh;
   display: grid;
@@ -1176,7 +1176,7 @@ select:focus-visible,
    首页：办公室工作台
    ========================================================================== */
 
-.marvis-home {
+.lengrvis-home {
   position: relative;
   height: 100%;
   min-height: 0;
@@ -8155,7 +8155,7 @@ select:focus-visible,
    ========================================================================== */
 
 @media (max-width: 1280px) {
-  .marvis-home {
+  .lengrvis-home {
     overflow: auto;
   }
 
@@ -8199,14 +8199,14 @@ select:focus-visible,
     min-width: 0;
   }
 
-  .marvis-shell {
+  .lengrvis-shell {
     height: auto;
     min-height: 100vh;
     grid-template-columns: 1fr;
     overflow: auto;
   }
 
-  .marvis-workbench-layout {
+  .lengrvis-workbench-layout {
     grid-template-columns: 1fr;
     padding-right: 0;
     overflow: visible;
@@ -8216,7 +8216,7 @@ select:focus-visible,
     display: none;
   }
 
-  .marvis-sidebar {
+  .lengrvis-sidebar {
     grid-template-rows: auto auto auto;
     height: auto;
     padding: 14px;
@@ -8310,13 +8310,13 @@ select:focus-visible,
     grid-template-columns: 1fr;
   }
 
-  .marvis-main {
+  .lengrvis-main {
     height: auto;
     min-height: calc(100vh - 112px);
     overflow: visible;
   }
 
-  .marvis-home {
+  .lengrvis-home {
     height: auto;
     overflow: visible;
   }
@@ -8331,7 +8331,7 @@ select:focus-visible,
     overflow-x: hidden;
   }
 
-  .marvis-sidebar {
+  .lengrvis-sidebar {
     position: sticky;
     top: 0;
     z-index: 20;
@@ -8414,7 +8414,7 @@ select:focus-visible,
     text-overflow: ellipsis;
   }
 
-  .marvis-main {
+  .lengrvis-main {
     padding: 12px 12px 10px;
   }
 

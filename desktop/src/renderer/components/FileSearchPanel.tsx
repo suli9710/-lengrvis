@@ -31,7 +31,7 @@ import type {
   FileSearchMeta,
   FileSearchResult
 } from "../../shared/types";
-import type { BackendClusterEntry, FileClusterOptions, MavrisApiClient } from "../lib/apiClient";
+import type { BackendClusterEntry, FileClusterOptions, LengrvisApiClient } from "../lib/apiClient";
 import { isPathWithinScope, parentDirectory } from "../lib/documentScope";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import { zhUserFacingError } from "../lib/zh";
@@ -45,7 +45,7 @@ interface FileSearchPanelProps {
   onSearch: (query: string) => Promise<void>;
   onClearResults?: () => void;
   searchError?: string | null;
-  api?: MavrisApiClient;
+  api?: LengrvisApiClient;
   connectionState?: ConnectionState;
   settings: AppSettings;
   onSaveSettings: (settings: AppSettings) => Promise<void>;
@@ -249,7 +249,7 @@ export function FileSearchPanel({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const knownFoldersBridge = window.mavris?.dialog.knownFolders;
+      const knownFoldersBridge = window.lengrvis?.dialog.knownFolders;
       if (!knownFoldersBridge) {
         if (!cancelled) setKnownFoldersChecked(true);
         return;
@@ -363,7 +363,7 @@ export function FileSearchPanel({
   }, [allowedDirectories, onSaveSettings, settings]);
 
   const chooseFolder = async () => {
-    const directoryChooser = window.mavris?.dialog.chooseDirectory;
+    const directoryChooser = window.lengrvis?.dialog.chooseDirectory;
     if (!directoryChooser) {
       setScopeError(null);
       setScopeNotice("这里暂时不能弹出文件夹窗口。请打开桌面应用，或先在下方粘贴完整文件夹路径。");
@@ -389,7 +389,7 @@ export function FileSearchPanel({
   };
 
   const chooseDocument = async (action: "select" | "summarize" = "select") => {
-    const documentChooser = window.mavris?.dialog.chooseDocument;
+    const documentChooser = window.lengrvis?.dialog.chooseDocument;
     if (!documentChooser) {
       setDocumentError(null);
       setDocumentNotice("当前环境不能打开文档选择器。可以直接粘贴完整文件路径。");
@@ -415,7 +415,7 @@ export function FileSearchPanel({
   };
 
   const chooseCompareDocument = async () => {
-    const documentChooser = window.mavris?.dialog.chooseDocument;
+    const documentChooser = window.lengrvis?.dialog.chooseDocument;
     if (!documentChooser) {
       setDocumentError(null);
       setDocumentNotice("这里暂时不能弹出文档窗口。可以先把第二份文档的完整位置粘贴到下方。");
@@ -435,7 +435,7 @@ export function FileSearchPanel({
   };
 
   const focusScopePicker = () => {
-    setScopeNotice("请先在这里选择要查找的文件夹；Mavris 不会默认扫描整台电脑。");
+    setScopeNotice("请先在这里选择要查找的文件夹；Lengrvis 不会默认扫描整台电脑。");
     window.setTimeout(() => scopePanelRef.current?.scrollIntoView({ block: "nearest", behavior: motionAwareScrollBehavior() }), 0);
   };
 
@@ -772,7 +772,7 @@ export function FileSearchPanel({
         const executableCount = response.data.items.filter(isExecutableCleanupItem).length;
         if (executableCount) {
           setCleanupApprovalStatus("ready");
-          setCleanupApprovalMessage("确认预览已生成。下一步发起确认任务，Mavris 会等待你批准后才执行。");
+          setCleanupApprovalMessage("确认预览已生成。下一步发起确认任务，Lengrvis 会等待你批准后才执行。");
         } else {
           setCleanupApprovalStatus("ready");
           setCleanupApprovalMessage("确认预览已生成，但当前只有建议项，没有可执行清理项。");
@@ -814,7 +814,7 @@ export function FileSearchPanel({
       action={<Badge tone={currentScope ? "info" : "warning"}>{currentScope ? "已选文件夹" : "未选文件夹"}</Badge>}
     >
       {serviceUnavailable ? (
-        <section className="file-service-gate" aria-label="Mavris 服务连接提示">
+        <section className="file-service-gate" aria-label="Lengrvis 服务连接提示">
           <div>
             <strong>助手暂时连不上，电脑和文件夹没有问题</strong>
             <p>文件搜索、范围保存和文档读取需要本机服务参与。请先点右上角刷新，或到设置里启动服务；连接恢复后，你已填的关键词和路径还可以继续用。</p>
@@ -859,7 +859,7 @@ export function FileSearchPanel({
           </button>
         </div>
         {!currentScope ? (
-          <p className="file-status file-status--info">第一步：选择要查找的文件夹。Mavris 只会扫描你选择的文件夹，清理前不会删除任何文件。</p>
+          <p className="file-status file-status--info">第一步：选择要查找的文件夹。Lengrvis 只会扫描你选择的文件夹，清理前不会删除任何文件。</p>
         ) : null}
         <div className="file-scope-shortcuts" aria-label="常用文件夹">
           {shortcuts.map((shortcut) => {
@@ -1095,7 +1095,7 @@ export function FileSearchPanel({
                 <strong>{currentScope ? "已选择文件夹，输入关键词开始搜索" : "先选择文件夹，再输入关键词"}</strong>
                 <p>
                   {currentScope
-                    ? "输入文件名、扩展名或内容关键词后，Mavris 只会在当前范围里查找。"
+                    ? "输入文件名、扩展名或内容关键词后，Lengrvis 只会在当前范围里查找。"
                     : "可以从桌面、下载、文档、图片开始，也可以点“选择要查找的文件夹”指定位置。"}
                 </p>
                 <p>搜索、分组和清理只会查看当前范围；移动、重命名或删除前都会再次确认。</p>
@@ -1151,7 +1151,7 @@ export function FileSearchPanel({
               <div className="document-start-hero">
                 <div>
                   <strong>先选择一份文档</strong>
-                  <p>直接选择文件即可开始；Mavris 会把它所在文件夹设为当前范围，只读取这份文档。</p>
+                  <p>直接选择文件即可开始；Lengrvis 会把它所在文件夹设为当前范围，只读取这份文档。</p>
                 </div>
                 <div className="document-start-hero__actions">
                   <button className="button button--primary" type="button" onClick={() => void chooseDocument("select")}>
@@ -1185,7 +1185,7 @@ export function FileSearchPanel({
                 <span>2</span>
                 <div>
                   <strong>读取内容</strong>
-                  <p>{documentResult ? "内容已读取，可查看预览。" : "点击读取，先确认 Mavris 能打开这份文档。"}</p>
+                  <p>{documentResult ? "内容已读取，可查看预览。" : "点击读取，先确认 Lengrvis 能打开这份文档。"}</p>
                 </div>
               </div>
               <div className={documentAnswer ? "document-step document-step--done" : selectedDocumentPathValue ? "document-step document-step--active" : "document-step"}>
@@ -1505,7 +1505,7 @@ function CleanupPlanPreview({
           <strong>{needsApproval ? "等待你确认后才会执行" : "当前只是安全预览"}</strong>
           <p>
             {needsApproval
-              ? "包含永久删除或风险项。Mavris 会先生成审批预览，确认后才允许执行。"
+              ? "包含永久删除或风险项。Lengrvis 会先生成审批预览，确认后才允许执行。"
               : "扫描不会移动或删除文件；你可以先看清单，再决定下一步。"}
           </p>
         </div>
@@ -1524,7 +1524,7 @@ function CleanupPlanPreview({
       </div>
       <CleanupBucket title="永久删除" tone="danger" items={permanent} emptyText="没有永久删除项" />
       <CleanupBucket title="进回收站" tone="warning" items={trash} emptyText="没有回收站项" />
-      <CleanupBucket title="仅建议" description="仅供你查看，Mavris 不会删除这些项目。" tone="neutral" items={suggestions} emptyText="没有建议项" />
+      <CleanupBucket title="仅建议" description="仅供你查看，Lengrvis 不会删除这些项目。" tone="neutral" items={suggestions} emptyText="没有建议项" />
       {plan.riskWarnings.length ? (
         <ul className="cleanup-risk">
           {plan.riskWarnings.map((warning) => (
@@ -1655,7 +1655,7 @@ function fileOnboardingHeadline(steps: FileOnboardingStep[]) {
   const current = steps.find((step) => step.state === "current") ?? steps.find((step) => step.state === "next");
   if (!current) return "文件工具已准备好";
   if (steps.some((step) => step.id === "cleanup" && step.state === "done")) return "清理预览已生成，下一步只等确认";
-  if (current.id === "scope") return "先给 Mavris 一个明确文件夹";
+  if (current.id === "scope") return "先给 Lengrvis 一个明确文件夹";
   if (current.id === "search") return "输入关键词，只在已选文件夹里找";
   if (current.id === "document") return "选中文档后读取、总结或提问";
   return "清理前先预览，不直接删除";
@@ -1773,7 +1773,7 @@ function fileActionError(error: unknown, action: "read" | "summarize" | "reveal"
     return `${prefix}。请稍后重试；如果仍失败，可以先换一份文档或重新选择文件夹范围。`;
   }
   if (/network|fetch|failed to fetch|connection|refused|aborted|timeout|超时|连接|后端|服务/i.test(raw)) {
-    return `${prefix}：Mavris 服务暂时没连接好。请先刷新或重启服务，连接恢复后再试。`;
+    return `${prefix}：Lengrvis 服务暂时没连接好。请先刷新或重启服务，连接恢复后再试。`;
   }
   if (
     lower.includes("no authorized directories configured") ||

@@ -85,7 +85,8 @@ def _within_allowed_directories(path: str, allowed_directories: list[str]) -> bo
 
 
 def semantic_search(query: str, *, limit: int = 10) -> dict:
-    return VectorIndex().search(query, limit=limit)
+    settings = get_effective_settings()
+    return VectorIndex().search(query, limit=limit, allowed_directories=settings.allowed_directories)
 
 
 def duplicates() -> dict:

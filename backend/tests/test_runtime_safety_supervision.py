@@ -68,7 +68,7 @@ def test_runtime_supervision_blocks_sensitive_agent_message():
 
 
 def test_safety_review_agent_accepts_tool_definition_metadata(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     orchestrator = OrchestratorAgent()
     tool = ToolDefinition(
@@ -102,9 +102,9 @@ def test_safety_review_agent_accepts_tool_definition_metadata(monkeypatch, tmp_p
 
 @pytest.mark.anyio
 async def test_orchestrator_records_full_safety_supervision(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     monkeypatch.setattr(planner_module, "get_provider", lambda: _system_info_plan_provider())
 
@@ -127,9 +127,9 @@ async def test_orchestrator_records_full_safety_supervision(monkeypatch, tmp_pat
 
 @pytest.mark.anyio
 async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
 
     async def app_plan(*args, **kwargs):
@@ -168,9 +168,9 @@ async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, t
 
 @pytest.mark.anyio
 async def test_tool_call_denial_keeps_task_denied(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
 
     orchestrator = OrchestratorAgent()

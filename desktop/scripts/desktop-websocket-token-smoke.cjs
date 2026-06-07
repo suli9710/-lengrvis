@@ -1,4 +1,4 @@
-const assert = require("node:assert/strict");
+﻿const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const Module = require("node:module");
 const path = require("node:path");
@@ -30,7 +30,7 @@ const {
 
 assert.deepEqual(
   desktopWebSocketProtocols(" desktop-secret "),
-  ["mavris.desktop.token.desktop-secret"],
+  ["lengrvis.desktop.token.desktop-secret"],
   "desktop WebSocket protocol must carry the desktop token"
 );
 
@@ -61,7 +61,7 @@ for (const endpoint of ["ws://127.0.0.1:8000/ws/tasks/1", "//evil.test/ws", "api
 const apiClientSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "lib", "apiClient.ts"), "utf8");
 assert.match(
   apiClientSource,
-  /function subscribeDesktopJsonStream[\s\S]*window\.mavris(?:!|\?)?\.realtime\.subscribe/,
+  /function subscribeDesktopJsonStream[\s\S]*window\.lengrvis(?:!|\?)?\.realtime\.subscribe/,
   "task/run streams should use preload realtime bridge in Electron"
 );
 assert.doesNotMatch(apiClientSource, /new WebSocket\(build(?:Task|Run)WebSocketUrl/, "task/run streams must not directly create protected WebSockets");
@@ -73,6 +73,6 @@ assert.doesNotMatch(settingsSource, /new WebSocket\(buildInstallModelWebSocketUr
 assert.match(settingsSource, /function isInstallModelWebOnlyDevFallbackEnabled[\s\S]*import\.meta\.env\.DEV/, "install progress fallback must be web-only dev gated");
 
 const preloadSource = fs.readFileSync(path.join(__dirname, "..", "src", "preload", "preload.ts"), "utf8");
-assert.doesNotMatch(preloadSource, /MAVRIS_DESKTOP_API_TOKEN/, "preload must not expose or read the desktop token");
+assert.doesNotMatch(preloadSource, /LENGRVIS_DESKTOP_API_TOKEN/, "preload must not expose or read the desktop token");
 
 console.log("desktop WebSocket token smoke passed");

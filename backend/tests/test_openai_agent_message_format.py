@@ -40,7 +40,7 @@ def test_legacy_agent_message_is_normalized_to_openai_fields():
 
 
 def test_agent_bus_can_publish_tool_call_message(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
 
     message = AgentBus().publish_text(
         "task_openai",

@@ -19,11 +19,11 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { BrowserActivityEvent, BrowserHostSnapshot, BrowserSession } from "../../shared/types";
-import type { MavrisApiClient, BrowserReplayExport, BackendBrowserSessionStreamEvent } from "../lib/apiClient";
+import type { LengrvisApiClient, BrowserReplayExport, BackendBrowserSessionStreamEvent } from "../lib/apiClient";
 import { Badge, Panel } from "./Panel";
 
 interface BrowserActivityPanelProps {
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
   sessions: BrowserSession[];
   events: BrowserActivityEvent[];
   hostSnapshot: BrowserHostSnapshot | null;

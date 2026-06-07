@@ -57,7 +57,10 @@ def test_example_app_skill_packages_load(test_data_dir: Path):
 
 
 def test_example_app_skill_dry_run_handler_returns_intent(test_data_dir: Path):
-    package = load_skill_package(test_data_dir / "skills" / "wechat_desktop_message")
+    package = load_skill_package(
+        test_data_dir / "skills" / "wechat_desktop_message",
+        allow_unsafe_local_skill_execution=True,
+    )
     result = package.tool_definitions[0].execute(
         {"contact": "Alice", "message": "hello", "dry_run": True},
         {},

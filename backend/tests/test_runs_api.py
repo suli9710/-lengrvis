@@ -60,8 +60,8 @@ def _wait_for_run_inactive(run_id: str) -> None:
 
 
 def test_run_api_routes_developer_engine_and_replays_events(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     fake_cli = tmp_path / "fake_claude_success.py"
     fake_cli.write_text(
         """
@@ -89,9 +89,9 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 """.lstrip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MARVIS_CLAUDE_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
-    monkeypatch.setenv("MARVIS_API_KEY", "test-api-key")
-    monkeypatch.setenv("MARVIS_MODEL", "openai/gpt-5")
+    monkeypatch.setenv("LENGRVIS_CLAUDE_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
+    monkeypatch.setenv("LENGRVIS_API_KEY", "test-api-key")
+    monkeypatch.setenv("LENGRVIS_MODEL", "openai/gpt-5")
     db.init_db()
     app = _test_app()
 
@@ -124,8 +124,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 
 
 def test_auto_routing_selects_developer_for_code_goal(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
     scheduled = []
 
@@ -152,8 +152,8 @@ def test_auto_routing_selects_developer_for_code_goal(monkeypatch, tmp_path):
 
 
 def test_run_start_failure_redacts_error_in_state_and_timeline(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
 
     class Router:
@@ -184,8 +184,8 @@ def test_run_start_failure_redacts_error_in_state_and_timeline(monkeypatch, tmp_
 
 
 def test_os_run_keeps_r2_dry_run_approval(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     target = tmp_path / "delete-me.txt"
     target.write_text("remove me", encoding="utf-8")
     db.init_db()
@@ -239,8 +239,8 @@ def test_os_run_keeps_r2_dry_run_approval(monkeypatch, tmp_path):
 
 
 def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     target = tmp_path / "approved-delete.txt"
     target.write_text("remove me", encoding="utf-8")
     db.init_db()
@@ -293,8 +293,8 @@ def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
 
 
 def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     target = tmp_path / "approved-multi-step.txt"
     target.write_text("remove me", encoding="utf-8")
     db.init_db()
@@ -351,7 +351,7 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
 
 
 def test_run_state_runtime_metadata_does_not_break_resume(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     run = run_service.Run(
         id="osrun_runtime_metadata",
@@ -381,7 +381,7 @@ def test_run_state_runtime_metadata_does_not_break_resume(monkeypatch, tmp_path)
 
 
 def test_pause_updates_persisted_run_state_phase(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     task = Task(user_goal="pause persisted state", mode="efficiency", status=TaskPhase.EXECUTION)
     db.upsert_model("tasks", task)
@@ -412,7 +412,7 @@ def test_pause_updates_persisted_run_state_phase(monkeypatch, tmp_path):
 
 
 def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     task = Task(user_goal="needs approval", mode="efficiency", status=TaskPhase.EXECUTION)
     task.execution_stage = ExecutionStage.AWAITING_APPROVAL
@@ -443,7 +443,7 @@ def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
 
 
 def test_pause_run_expires_pending_approval_and_denies_waiting_step(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     task = Task(user_goal="pause approval", mode="efficiency", status=TaskPhase.EXECUTION)
     task.execution_stage = ExecutionStage.AWAITING_APPROVAL
@@ -492,7 +492,7 @@ def test_pause_run_expires_pending_approval_and_denies_waiting_step(monkeypatch,
 
 
 def test_active_running_run_is_not_synced_back_to_paused_task_state(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     task = Task(user_goal="resume should stay running", mode="efficiency", status=TaskPhase.EXECUTION)
     task.execution_stage = ExecutionStage.PAUSED
@@ -531,8 +531,8 @@ def test_active_running_run_is_not_synced_back_to_paused_task_state(monkeypatch,
 
 
 def test_resume_does_not_bypass_waiting_approval(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     target = tmp_path / "resume-delete.txt"
     target.write_text("remove me", encoding="utf-8")
     db.init_db()
@@ -576,8 +576,8 @@ def test_resume_does_not_bypass_waiting_approval(monkeypatch, tmp_path):
 
 
 def test_reject_approval_moves_run_to_cancelled(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     target = tmp_path / "reject-delete.txt"
     target.write_text("remove me", encoding="utf-8")
     db.init_db()
@@ -627,8 +627,8 @@ def test_reject_approval_moves_run_to_cancelled(monkeypatch, tmp_path):
 
 
 def test_cancel_run_expires_pending_approval_and_blocks_late_approve(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     target = tmp_path / "late-approve-delete.txt"
     target.write_text("keep me", encoding="utf-8")
     db.init_db()
@@ -678,7 +678,7 @@ def test_cancel_run_expires_pending_approval_and_blocks_late_approve(monkeypatch
 
 
 def test_pause_and_cancel_are_noops_for_terminal_runs(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     run = run_service.Run(
         id="run_terminal_idempotent",
@@ -715,8 +715,8 @@ def test_pause_and_cancel_are_noops_for_terminal_runs(monkeypatch, tmp_path):
 
 
 def test_sync_resume_schedules_background_without_event_loop(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
 
     with TestClient(_test_app()) as client:
@@ -737,7 +737,7 @@ def test_sync_resume_schedules_background_without_event_loop(monkeypatch, tmp_pa
 
 
 def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     started = []
     scheduled = []
@@ -802,7 +802,7 @@ def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(
 
 
 def test_perception_capture_api_returns_sanitized_summary(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     from app.perception.schemas import AppContext
     from app.perception import context_store
 
@@ -875,7 +875,7 @@ def test_legacy_proactive_suggestions_route_uses_perception_service(monkeypatch)
 
 
 def test_run_event_publish_allocates_contiguous_sequences_concurrently(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     bus = RunEventBus()
     run_id = "run_concurrent_events"
@@ -894,10 +894,10 @@ def test_run_event_publish_allocates_contiguous_sequences_concurrently(monkeypat
 
 
 def test_os_run_denies_r4_tool_without_execution(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     calls: list[dict] = []
 
     forbidden_tool = ToolDefinition(
@@ -956,10 +956,10 @@ def test_broad_drive_cleanup_uses_cleanup_plan_not_trash_path(monkeypatch, tmp_p
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "old-installer.zip").write_bytes(b"0" * (2 * 1024 * 1024))
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(workspace))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(workspace))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
 
     with TestClient(_test_app()) as client:
@@ -978,7 +978,7 @@ def test_broad_drive_cleanup_uses_cleanup_plan_not_trash_path(monkeypatch, tmp_p
 
 
 def test_cancelled_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     started = threading.Event()
     release = threading.Event()
@@ -1025,10 +1025,10 @@ def test_cancelled_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, 
 
 
 def test_developer_cancel_terminates_fake_claude_and_publishes_diagnostics(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
-    monkeypatch.setenv("MARVIS_API_KEY", "test-api-key")
-    monkeypatch.setenv("MARVIS_MODEL", "openai/gpt-5")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_API_KEY", "test-api-key")
+    monkeypatch.setenv("LENGRVIS_MODEL", "openai/gpt-5")
     record_path = tmp_path / "fake-claude-started.json"
     fake_cli = tmp_path / "fake_claude_sleep.py"
     fake_cli.write_text(
@@ -1069,7 +1069,7 @@ time.sleep(30)
         encoding="utf-8",
     )
     monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record_path))
-    monkeypatch.setenv("MARVIS_CLAUDE_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
+    monkeypatch.setenv("LENGRVIS_CLAUDE_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
     db.init_db()
 
     with TestClient(_test_app()) as client:
@@ -1104,7 +1104,7 @@ time.sleep(30)
 
 
 def test_paused_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     started = threading.Event()
     release = threading.Event()

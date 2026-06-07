@@ -295,9 +295,9 @@ class SupervisorAgent:
         if "你会" in normalized or normalized in {"会啊", "会吗"}:
             return "会啊。我可以正常和你聊天，也可以在你明确要我做事时再调对应 Agent 去处理。"
         if "真人" in normalized:
-            return "不是真人，我是 Mavris 里的主管 Agent。你可以把我当成一个先陪你自然对话、再按需要调度其他 Agent 的 AI 助手。"
+            return "不是真人，我是 Lengrvis 里的主管 Agent。你可以把我当成一个先陪你自然对话、再按需要调度其他 Agent 的 AI 助手。"
         if "模型" in normalized or "ai" in normalized or "人工智能" in normalized:
-            return "我是 Mavris 的主管 Agent，底层可以接不同模型。对你来说，我会先和你自然对话，需要实际操作时再调其他 Agent。"
+            return "我是 Lengrvis 的主管 Agent，底层可以接不同模型。对你来说，我会先和你自然对话，需要实际操作时再调其他 Agent。"
         if "不是说" in normalized or "自然对话" in normalized or "对话" in normalized:
             return "对，这里应该先自然对话。我会先接住你的话，真的需要操作电脑、文件或网页时，再安排对应 Agent。"
         if "聊天" in normalized:

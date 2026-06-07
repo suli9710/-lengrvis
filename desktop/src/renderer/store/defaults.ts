@@ -76,7 +76,7 @@ export const disconnectedStatus: BackendStatus = {
 export const emptyPlan: Plan = {
   id: "plan-empty",
   title: "暂无执行计划",
-  objective: "发送任务后，Mavris 会在这里显示真实执行计划。",
+  objective: "发送任务后，Lengrvis 会在这里显示真实执行计划。",
   updatedAt: new Date().toISOString(),
   steps: []
 };
@@ -89,11 +89,11 @@ export const emptySafetyReview: SafetyReview = {
 };
 
 export const emptySystemInfo: SystemInfo = {
-  appVersion: window.mavris?.versions.app ?? "0.1.0",
-  electronVersion: window.mavris?.versions.electron ?? "未知",
-  chromeVersion: window.mavris?.versions.chrome ?? "未知",
-  nodeVersion: window.mavris?.versions.node ?? "未知",
-  platform: window.mavris?.platform ?? "win32",
+  appVersion: window.lengrvis?.versions.app ?? "0.1.0",
+  electronVersion: window.lengrvis?.versions.electron ?? "未知",
+  chromeVersion: window.lengrvis?.versions.chrome ?? "未知",
+  nodeVersion: window.lengrvis?.versions.node ?? "未知",
+  platform: window.lengrvis?.platform ?? "win32",
   arch: "",
   backendBaseUrl: defaultApiBaseUrl,
   diagnostics: {

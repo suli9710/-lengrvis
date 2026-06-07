@@ -1,8 +1,8 @@
-param(
+﻿param(
     [string]$OllamaRuntimeDir = "",
     [string]$OllamaModelsDir = "",
     [string]$OllamaExe = "",
-    [string]$OutputRoot = ".marvis_data\ollama-release",
+    [string]$OutputRoot = ".lengrvis_data\ollama-release",
     [string]$Model = "qwen2.5:3b",
     [string]$RuntimeSource = "",
     [string]$ModelSource = "",
@@ -570,7 +570,7 @@ Assert-ChildPath -Root $repoRoot -Candidate $outputRootPath -Label "OutputRoot"
 New-Item -ItemType Directory -Path $outputRootPath -Force | Out-Null
 
 if (-not $AcceptLicenses) {
-    throw "Pass -AcceptLicenses only after confirming the Ollama runtime and model '$Model' licenses allow redistribution with Mavris."
+    throw "Pass -AcceptLicenses only after confirming the Ollama runtime and model '$Model' licenses allow redistribution with Lengrvis."
 }
 
 if (-not $SkipRuntime) {
@@ -588,7 +588,7 @@ if (-not $SkipRuntime) {
 if (-not $SkipModels) {
     if ($PullModel) {
         if (-not $PullDestination) {
-            $PullDestination = Join-PathSegments -Root $repoRoot -Segments @(".marvis_data", "ollama-bundle-staging", "models")
+            $PullDestination = Join-PathSegments -Root $repoRoot -Segments @(".lengrvis_data", "ollama-bundle-staging", "models")
         } elseif (-not [System.IO.Path]::IsPathRooted($PullDestination)) {
             $PullDestination = Join-Path $repoRoot $PullDestination
         }

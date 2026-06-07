@@ -47,7 +47,11 @@ def skill_directories_from_settings(settings: AppSettings) -> list[Path]:
     return [Path(settings.data_dir) / "skills"]
 
 
-def scan_skill_directories(skill_directories: Iterable[str | Path]) -> list[LoadedSkillPackage]:
+def scan_skill_directories(
+    skill_directories: Iterable[str | Path],
+    *,
+    allow_unsafe_local_skill_execution: bool | None = None,
+) -> list[LoadedSkillPackage]:
     packages: list[LoadedSkillPackage] = []
     for raw_directory in skill_directories:
         directory = Path(raw_directory).expanduser()
@@ -57,11 +61,20 @@ def scan_skill_directories(skill_directories: Iterable[str | Path]) -> list[Load
             raise SkillLoadError("Configured skill path is not a directory", path=directory)
         manifests = _find_manifests(directory)
         for manifest in manifests:
-            packages.append(load_skill_package(manifest.parent))
+            packages.append(
+                load_skill_package(
+                    manifest.parent,
+                    allow_unsafe_local_skill_execution=allow_unsafe_local_skill_execution,
+                )
+            )
     return packages
 
 
-def load_skill_package(skill_root: str | Path) -> LoadedSkillPackage:
+def load_skill_package(
+    skill_root: str | Path,
+    *,
+    allow_unsafe_local_skill_execution: bool | None = None,
+) -> LoadedSkillPackage:
     root = Path(skill_root).expanduser().resolve(strict=True)
     if not root.is_dir():
         raise SkillLoadError("Skill package root is not a directory", path=root)
@@ -76,7 +89,11 @@ def load_skill_package(skill_root: str | Path) -> LoadedSkillPackage:
     if not safety_report.ok:
         raise SkillLoadError("Unsafe skill definition: " + "; ".join(safety_report.error_messages()), path=manifest)
 
-    tool_definitions = adapt_skill_to_tool_definitions(definition, root)
+    tool_definitions = adapt_skill_to_tool_definitions(
+        definition,
+        root,
+        allow_unsafe_local_skill_execution=allow_unsafe_local_skill_execution,
+    )
     return LoadedSkillPackage(
         root=root,
         manifest_path=manifest,
@@ -93,7 +110,12 @@ def register_skills(
     skill_directories: Iterable[str | Path] | None = None,
 ) -> list[LoadedSkillPackage]:
     directories = list(skill_directories) if skill_directories is not None else skill_directories_from_settings(settings or AppSettings.from_sources())
-    packages = scan_skill_directories(directories)
+    packages = scan_skill_directories(
+        directories,
+        allow_unsafe_local_skill_execution=(
+            getattr(settings, "allow_unsafe_local_skill_execution", None) if settings is not None else None
+        ),
+    )
     existing_names = {tool.name for tool in registry.list()}
     for package in packages:
         for definition in package.tool_definitions:
@@ -113,9 +135,17 @@ def register_skills(
     return packages
 
 
-def adapt_skill_to_tool_definitions(definition: SkillDefinition, root: str | Path) -> list[ToolDefinition]:
+def adapt_skill_to_tool_definitions(
+    definition: SkillDefinition,
+    root: str | Path,
+    *,
+    allow_unsafe_local_skill_execution: bool | None = None,
+) -> list[ToolDefinition]:
     skill_root = Path(root).resolve(strict=True)
-    sandbox = SkillSandbox(skill_root)
+    sandbox = SkillSandbox(
+        skill_root,
+        allow_unsafe_local_skill_execution=allow_unsafe_local_skill_execution,
+    )
     tool_definitions: list[ToolDefinition] = []
     for tool in definition.tools:
         risk = definition.effective_risk(tool)

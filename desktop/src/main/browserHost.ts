@@ -307,7 +307,7 @@ export class BrowserHost {
   }
 
   private createHostedSession(sessionId: string, request: BrowserHostOpenRequest): HostedBrowserSession {
-    const partition = `mavris-watch-${sessionId}-${Date.now()}`;
+    const partition = `lengrvis-watch-${sessionId}-${Date.now()}`;
     const container = createBrowserContainer(partition);
     const webContents = container.view.webContents;
     const now = timestamp();

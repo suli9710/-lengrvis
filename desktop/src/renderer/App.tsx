@@ -57,9 +57,9 @@ import {
   type OfficeQuickSkill
 } from "./features/office";
 import { ShellFrame } from "./features/shell";
-import { MavrisApiClient, type RealtimeConnectionStatus } from "./lib/apiClient";
+import { LengrvisApiClient, type RealtimeConnectionStatus } from "./lib/apiClient";
 import { zhBackendText, zhRealtimeBadMessageSummary, zhRealtimeConnectionStatus } from "./lib/zh";
-import { useMavrisStore, type AssistantMode, type ConnectionState, type ViewKey } from "./store";
+import { useLengrvisStore, type AssistantMode, type ConnectionState, type ViewKey } from "./store";
 
 const quickSkills: OfficeQuickSkill[] = [
   { id: "find-large-files", icon: FileSearch, title: "查找大文件", kind: "prompt", prompt: "找出这台电脑上最大的文件，并建议哪些可以安全清理。" },
@@ -75,63 +75,63 @@ const SkillsView = lazy(() => import("./views/SkillsView").then((module) => ({ d
 const LocalLibraryView = lazy(() => import("./views/LocalLibraryView").then((module) => ({ default: module.LocalLibraryView })));
 
 export function App() {
-  const api = useMemo(() => new MavrisApiClient(), []);
-  const messages = useMavrisStore((state) => state.messages);
-  const setMessages = useMavrisStore((state) => state.setMessages);
-  const tasks = useMavrisStore((state) => state.tasks);
-  const setTasks = useMavrisStore((state) => state.setTasks);
-  const plan = useMavrisStore((state) => state.plan);
-  const setPlan = useMavrisStore((state) => state.setPlan);
-  const agentConversations = useMavrisStore((state) => state.agentConversations);
-  const setAgentConversations = useMavrisStore((state) => state.setAgentConversations);
-  const safetyReview = useMavrisStore((state) => state.safetyReview);
-  const setSafetyReview = useMavrisStore((state) => state.setSafetyReview);
-  const approvalRequests = useMavrisStore((state) => state.approvalRequests);
-  const setApprovalRequests = useMavrisStore((state) => state.setApprovalRequests);
-  const fileResults = useMavrisStore((state) => state.fileResults);
-  const setFileResults = useMavrisStore((state) => state.setFileResults);
-  const settings = useMavrisStore((state) => state.settings);
-  const setSettings = useMavrisStore((state) => state.setSettings);
-  const auditEntries = useMavrisStore((state) => state.auditEntries);
-  const setAuditEntries = useMavrisStore((state) => state.setAuditEntries);
-  const systemInfo = useMavrisStore((state) => state.systemInfo);
-  const setSystemInfo = useMavrisStore((state) => state.setSystemInfo);
-  const intentSuggestions = useMavrisStore((state) => state.intentSuggestions);
-  const setIntentSuggestions = useMavrisStore((state) => state.setIntentSuggestions);
-  const backendStatus = useMavrisStore((state) => state.backendStatus);
-  const setBackendStatus = useMavrisStore((state) => state.setBackendStatus);
-  const localLlmHealth = useMavrisStore((state) => state.localLlmHealth);
-  const setLocalLlmHealth = useMavrisStore((state) => state.setLocalLlmHealth);
-  const llmHealth = useMavrisStore((state) => state.llmHealth);
-  const setLlmHealth = useMavrisStore((state) => state.setLlmHealth);
-  const llmCostSummary = useMavrisStore((state) => state.llmCostSummary);
-  const setLlmCostSummary = useMavrisStore((state) => state.setLlmCostSummary);
-  const contextUsage = useMavrisStore((state) => state.contextUsage);
-  const setContextUsage = useMavrisStore((state) => state.setContextUsage);
-  const isLoading = useMavrisStore((state) => state.isLoading);
-  const setIsLoading = useMavrisStore((state) => state.setIsLoading);
-  const isSearching = useMavrisStore((state) => state.isSearching);
-  const setIsSearching = useMavrisStore((state) => state.setIsSearching);
-  const isApprovalOpen = useMavrisStore((state) => state.isApprovalOpen);
-  const setIsApprovalOpen = useMavrisStore((state) => state.setIsApprovalOpen);
-  const approvalError = useMavrisStore((state) => state.approvalError);
-  const setApprovalError = useMavrisStore((state) => state.setApprovalError);
-  const mode = useMavrisStore((state) => state.mode);
-  const setMode = useMavrisStore((state) => state.setMode);
-  const activeView = useMavrisStore((state) => state.activeView);
-  const setActiveView = useMavrisStore((state) => state.setActiveView);
-  const focusedTaskId = useMavrisStore((state) => state.focusedTaskId);
-  const setFocusedTaskId = useMavrisStore((state) => state.setFocusedTaskId);
-  const browserSessions = useMavrisStore((state) => state.browserSessions);
-  const setBrowserSessions = useMavrisStore((state) => state.setBrowserSessions);
-  const browserEvents = useMavrisStore((state) => state.browserEvents);
-  const setBrowserEvents = useMavrisStore((state) => state.setBrowserEvents);
-  const browserHostSnapshot = useMavrisStore((state) => state.browserHostSnapshot);
-  const setBrowserHostSnapshot = useMavrisStore((state) => state.setBrowserHostSnapshot);
-  const activeBrowserSessionId = useMavrisStore((state) => state.activeBrowserSessionId);
-  const setActiveBrowserSessionId = useMavrisStore((state) => state.setActiveBrowserSessionId);
-  const browserError = useMavrisStore((state) => state.browserError);
-  const setBrowserError = useMavrisStore((state) => state.setBrowserError);
+  const api = useMemo(() => new LengrvisApiClient(), []);
+  const messages = useLengrvisStore((state) => state.messages);
+  const setMessages = useLengrvisStore((state) => state.setMessages);
+  const tasks = useLengrvisStore((state) => state.tasks);
+  const setTasks = useLengrvisStore((state) => state.setTasks);
+  const plan = useLengrvisStore((state) => state.plan);
+  const setPlan = useLengrvisStore((state) => state.setPlan);
+  const agentConversations = useLengrvisStore((state) => state.agentConversations);
+  const setAgentConversations = useLengrvisStore((state) => state.setAgentConversations);
+  const safetyReview = useLengrvisStore((state) => state.safetyReview);
+  const setSafetyReview = useLengrvisStore((state) => state.setSafetyReview);
+  const approvalRequests = useLengrvisStore((state) => state.approvalRequests);
+  const setApprovalRequests = useLengrvisStore((state) => state.setApprovalRequests);
+  const fileResults = useLengrvisStore((state) => state.fileResults);
+  const setFileResults = useLengrvisStore((state) => state.setFileResults);
+  const settings = useLengrvisStore((state) => state.settings);
+  const setSettings = useLengrvisStore((state) => state.setSettings);
+  const auditEntries = useLengrvisStore((state) => state.auditEntries);
+  const setAuditEntries = useLengrvisStore((state) => state.setAuditEntries);
+  const systemInfo = useLengrvisStore((state) => state.systemInfo);
+  const setSystemInfo = useLengrvisStore((state) => state.setSystemInfo);
+  const intentSuggestions = useLengrvisStore((state) => state.intentSuggestions);
+  const setIntentSuggestions = useLengrvisStore((state) => state.setIntentSuggestions);
+  const backendStatus = useLengrvisStore((state) => state.backendStatus);
+  const setBackendStatus = useLengrvisStore((state) => state.setBackendStatus);
+  const localLlmHealth = useLengrvisStore((state) => state.localLlmHealth);
+  const setLocalLlmHealth = useLengrvisStore((state) => state.setLocalLlmHealth);
+  const llmHealth = useLengrvisStore((state) => state.llmHealth);
+  const setLlmHealth = useLengrvisStore((state) => state.setLlmHealth);
+  const llmCostSummary = useLengrvisStore((state) => state.llmCostSummary);
+  const setLlmCostSummary = useLengrvisStore((state) => state.setLlmCostSummary);
+  const contextUsage = useLengrvisStore((state) => state.contextUsage);
+  const setContextUsage = useLengrvisStore((state) => state.setContextUsage);
+  const isLoading = useLengrvisStore((state) => state.isLoading);
+  const setIsLoading = useLengrvisStore((state) => state.setIsLoading);
+  const isSearching = useLengrvisStore((state) => state.isSearching);
+  const setIsSearching = useLengrvisStore((state) => state.setIsSearching);
+  const isApprovalOpen = useLengrvisStore((state) => state.isApprovalOpen);
+  const setIsApprovalOpen = useLengrvisStore((state) => state.setIsApprovalOpen);
+  const approvalError = useLengrvisStore((state) => state.approvalError);
+  const setApprovalError = useLengrvisStore((state) => state.setApprovalError);
+  const mode = useLengrvisStore((state) => state.mode);
+  const setMode = useLengrvisStore((state) => state.setMode);
+  const activeView = useLengrvisStore((state) => state.activeView);
+  const setActiveView = useLengrvisStore((state) => state.setActiveView);
+  const focusedTaskId = useLengrvisStore((state) => state.focusedTaskId);
+  const setFocusedTaskId = useLengrvisStore((state) => state.setFocusedTaskId);
+  const browserSessions = useLengrvisStore((state) => state.browserSessions);
+  const setBrowserSessions = useLengrvisStore((state) => state.setBrowserSessions);
+  const browserEvents = useLengrvisStore((state) => state.browserEvents);
+  const setBrowserEvents = useLengrvisStore((state) => state.setBrowserEvents);
+  const browserHostSnapshot = useLengrvisStore((state) => state.browserHostSnapshot);
+  const setBrowserHostSnapshot = useLengrvisStore((state) => state.setBrowserHostSnapshot);
+  const activeBrowserSessionId = useLengrvisStore((state) => state.activeBrowserSessionId);
+  const setActiveBrowserSessionId = useLengrvisStore((state) => state.setActiveBrowserSessionId);
+  const browserError = useLengrvisStore((state) => state.browserError);
+  const setBrowserError = useLengrvisStore((state) => state.setBrowserError);
   const [draft, setDraft] = useState("");
   const [fileSearchError, setFileSearchError] = useState<string | null>(null);
   const [fileSearchMeta, setFileSearchMeta] = useState<FileSearchMeta | null>(null);
@@ -403,13 +403,13 @@ export function App() {
         return { ok: true };
       }
 
-      const message = result.error?.message ?? "Mavris 暂时不可用，请稍后再试。";
+      const message = result.error?.message ?? "Lengrvis 暂时不可用，请稍后再试。";
       setMessages((current) => [
         ...current,
         {
           id: `local-${crypto.randomUUID()}`,
           role: "assistant",
-          author: "Mavris",
+          author: "Lengrvis",
           content: message,
           createdAt: new Date().toISOString(),
           status: "failed"
@@ -417,13 +417,13 @@ export function App() {
       ]);
       return { ok: false, error: message };
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Mavris 暂时不可用，请稍后再试。";
+      const message = error instanceof Error ? error.message : "Lengrvis 暂时不可用，请稍后再试。";
       setMessages((current) => [
         ...current,
         {
           id: `local-${crypto.randomUUID()}`,
           role: "assistant",
-          author: "Mavris",
+          author: "Lengrvis",
           content: message,
           createdAt: new Date().toISOString(),
           status: "failed"
@@ -467,7 +467,7 @@ export function App() {
       {
         id: `local-${crypto.randomUUID()}`,
         role: "assistant",
-        author: "Mavris",
+        author: "Lengrvis",
         content: result.error?.message ?? "建议任务启动失败，请稍后再试。",
         createdAt: new Date().toISOString(),
         status: "failed"
@@ -479,7 +479,7 @@ export function App() {
     const value = draft.trim();
     if (!value || heroSubmitInFlight.current) return;
     if (connectionState === "offline") {
-      setHeroSubmitError("Mavris 服务还没连上。请先刷新连接，输入内容我会保留。");
+      setHeroSubmitError("Lengrvis 服务还没连上。请先刷新连接，输入内容我会保留。");
       return;
     }
 
@@ -716,7 +716,7 @@ export function App() {
   }, [tasks, setMessages]);
 
   useEffect(() => {
-    const unsubscribe = window.mavris?.notifications.onOpenTask((taskId) => {
+    const unsubscribe = window.lengrvis?.notifications.onOpenTask((taskId) => {
       setFocusedTaskId(taskId);
       setActiveView("agents");
       void refreshTaskSnapshot();
@@ -887,7 +887,7 @@ export function App() {
         ) : null}
 
         {activeView === "home" ? (
-          <section className="marvis-home">
+          <section className="lengrvis-home">
             <Suspense fallback={<RouteLoading />}>
               <OfficeScene
                 agents={officeAgents}
@@ -1186,7 +1186,7 @@ function buildHomeReadinessItems({
   return [
     {
       id: "connection",
-      label: "Mavris 连接",
+      label: "Lengrvis 连接",
       detail: realtimeDetail || (connectionState === "online" ? "服务已连接，可以直接开始任务" : connectionState === "checking" ? "正在确认后端服务" : "服务离线，先恢复连接"),
       state: realtimeNeedsAction ? "action" : connectionState === "online" ? "ready" : connectionState === "checking" ? "warning" : "action",
       actionLabel: connectionState === "online" ? "刷新连接" : "检查连接"
@@ -1315,7 +1315,7 @@ function realtimeStatusChatMessage(status: RealtimeConnectionStatus): ChatMessag
   return {
     id: `realtime-status-${status.endpoint}-${status.state}`,
     role: "assistant",
-    author: "Mavris",
+    author: "Lengrvis",
     content: zhRealtimeConnectionStatus(status),
     createdAt: status.at,
     status: status.state === "reconnecting" ? "streaming" : "failed"
@@ -1335,7 +1335,7 @@ function upsertRealtimeBadMessageNotice(
   const nextMessage: ChatMessage = {
     id: notice.messageId,
     role: "assistant",
-    author: "Mavris",
+    author: "Lengrvis",
     content: zhRealtimeBadMessageSummary(notice.count, notice.samples),
     createdAt: status.at,
     status: "streaming"
@@ -1369,7 +1369,7 @@ function chatMessageFromRunTerminalEvent(event: {
   return {
     id: `${event.id}-chat`,
     role: "assistant",
-    author: "Mavris",
+    author: "Lengrvis",
     content,
     createdAt: event.created_at ?? new Date().toISOString(),
     status: name === "run.failed" ? "failed" : "sent"

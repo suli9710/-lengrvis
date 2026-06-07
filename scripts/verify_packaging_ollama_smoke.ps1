@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Workspace = ".tmp\verify-packaging-ollama-smoke"
 )
 
@@ -70,14 +70,14 @@ function New-SmokePackage {
         [switch]$IncludeOllama
     )
     $dist = Join-Path $RootPath "dist"
-    $portable = Join-Path $dist "Mavris-win-portable"
+    $portable = Join-Path $dist "Lengrvis-win-portable"
     $resources = Join-Path $portable "resources"
     New-SmokeExecutable (Join-Path $dist "backend.exe")
-    New-SmokeExecutable (Join-Path $portable "Mavris.exe")
+    New-SmokeExecutable (Join-Path $portable "Lengrvis.exe")
     New-SmokeExecutable (Join-Path $resources "backend\backend.exe")
     New-Item -ItemType Directory -Path (Join-Path $resources "app\dist") -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $resources "app\package.json") -Value '{"name":"mavris-smoke"}' -Encoding ASCII
-    New-SmokeSelfExtractingExecutable (Join-Path $dist "Mavris-0.1.0-x64-self-extracting.exe")
+    Set-Content -LiteralPath (Join-Path $resources "app\package.json") -Value '{"name":"lengrvis-smoke"}' -Encoding ASCII
+    New-SmokeSelfExtractingExecutable (Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe")
 
     if ($IncludeOllama) {
         $ollamaDir = Join-Path $resources "ollama"
@@ -101,7 +101,7 @@ function New-SmokePackage {
         $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $resources "ollama-bundle-manifest.json") -Encoding UTF8
     }
 
-    $zipPath = Join-Path $dist "Mavris-win-portable.zip"
+    $zipPath = Join-Path $dist "Lengrvis-win-portable.zip"
     if (Test-Path -LiteralPath $zipPath) {
         Remove-Item -LiteralPath $zipPath -Force
     }
@@ -110,7 +110,7 @@ function New-SmokePackage {
         dist = $dist
         portable = $portable
         zip = $zipPath
-        selfExtracting = Join-Path $dist "Mavris-0.1.0-x64-self-extracting.exe"
+        selfExtracting = Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe"
     }
 }
 

@@ -30,10 +30,15 @@ def test_app_skill_packages_load_from_test_data(test_data_dir: Path):
 
 
 def test_windows_settings_skill_previews_registry_and_powershell_plan(test_data_dir: Path):
-    registry = register_all_tools(skill_directories=[str(test_data_dir / "skills")])
+    settings = AppSettings(
+        provider_name="mock",
+        skill_directories=[str(test_data_dir / "skills")],
+        allow_unsafe_local_skill_execution=True,
+    )
+    registry = register_all_tools(settings=settings)
     tool = registry.get("skill.windows_settings.preview")
 
-    result = tool.execute({"action": "set_theme", "theme": "dark", "dry_run": True}, {})
+    result = tool.execute({"action": "set_theme", "theme": "dark", "dry_run": True}, {"settings": settings})
 
     assert result["ok"] is True
     assert result["dry_run"] is True
@@ -45,7 +50,7 @@ def test_windows_settings_skill_previews_registry_and_powershell_plan(test_data_
 
 def test_browser_bookmark_import_indexes_memory(monkeypatch, tmp_path: Path, test_data_dir: Path):
     data_dir = tmp_path / "data"
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     db.init_db()
     bookmarks_path = tmp_path / "Bookmarks"
     bookmarks_path.write_text(
@@ -57,9 +62,9 @@ def test_browser_bookmark_import_indexes_memory(monkeypatch, tmp_path: Path, tes
                         "type": "folder",
                         "children": [
                             {
-                                "name": "Mavris Docs",
+                                "name": "Lengrvis Docs",
                                 "type": "url",
-                                "url": "https://example.com/mavris",
+                                "url": "https://example.com/lengrvis",
                                 "date_added": "1337",
                             }
                         ],
@@ -69,7 +74,12 @@ def test_browser_bookmark_import_indexes_memory(monkeypatch, tmp_path: Path, tes
         ),
         encoding="utf-8",
     )
-    settings = AppSettings(provider_name="mock", data_dir=str(data_dir), skill_directories=[str(test_data_dir / "skills")])
+    settings = AppSettings(
+        provider_name="mock",
+        data_dir=str(data_dir),
+        skill_directories=[str(test_data_dir / "skills")],
+        allow_unsafe_local_skill_execution=True,
+    )
     registry = register_all_tools(settings=settings)
     tool = registry.get("skill.browser_bookmarks.import_to_memory")
 
@@ -81,7 +91,7 @@ def test_browser_bookmark_import_indexes_memory(monkeypatch, tmp_path: Path, tes
     assert dry_run["count"] == 1
     assert result["ok"] is True
     assert result["imported"] == 1
-    assert any("Mavris Docs" in row["content"] and "https://example.com/mavris" in row["content"] for row in rows)
+    assert any("Lengrvis Docs" in row["content"] and "https://example.com/lengrvis" in row["content"] for row in rows)
 
 
 def test_file_manager_skill_batch_rename_and_zip(tmp_path: Path, test_data_dir: Path):
@@ -89,7 +99,12 @@ def test_file_manager_skill_batch_rename_and_zip(tmp_path: Path, test_data_dir: 
     workspace.mkdir()
     (workspace / "alpha.txt").write_text("alpha", encoding="utf-8")
     (workspace / "beta.txt").write_text("beta", encoding="utf-8")
-    settings = AppSettings(provider_name="mock", allowed_directories=[str(workspace)], skill_directories=[str(test_data_dir / "skills")])
+    settings = AppSettings(
+        provider_name="mock",
+        allowed_directories=[str(workspace)],
+        skill_directories=[str(test_data_dir / "skills")],
+        allow_unsafe_local_skill_execution=True,
+    )
     registry = register_all_tools(settings=settings)
     context = {"settings": settings, "allowed_directories": settings.allowed_directories}
 
@@ -129,7 +144,12 @@ def test_file_manager_skill_archive_by_rules(tmp_path: Path, test_data_dir: Path
     downloads.mkdir(parents=True)
     (downloads / "invoice.pdf").write_text("invoice", encoding="utf-8")
     (downloads / "photo.jpg").write_text("photo", encoding="utf-8")
-    settings = AppSettings(provider_name="mock", allowed_directories=[str(workspace)], skill_directories=[str(test_data_dir / "skills")])
+    settings = AppSettings(
+        provider_name="mock",
+        allowed_directories=[str(workspace)],
+        skill_directories=[str(test_data_dir / "skills")],
+        allow_unsafe_local_skill_execution=True,
+    )
     registry = register_all_tools(settings=settings)
 
     result = registry.get("skill.file_manager.archive_by_rules").execute(

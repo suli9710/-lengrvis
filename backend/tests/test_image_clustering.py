@@ -12,7 +12,7 @@ from app.tools.registry import register_all_tools
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     yield
 
@@ -31,16 +31,16 @@ def _write_fixture_image(
 
     image = Image.new("RGB", (16, 16), "steelblue")
     info = PngImagePlugin.PngInfo()
-    info.add_text("marvis_description", description)
-    info.add_text("marvis_scene_type", scene_type)
-    info.add_text("marvis_people_count", str(people_count))
+    info.add_text("lengrvis_description", description)
+    info.add_text("lengrvis_scene_type", scene_type)
+    info.add_text("lengrvis_people_count", str(people_count))
     if visible_objects:
-        info.add_text("marvis_visible_objects", ",".join(visible_objects))
+        info.add_text("lengrvis_visible_objects", ",".join(visible_objects))
     if captured_at:
-        info.add_text("marvis_captured_at", captured_at)
+        info.add_text("lengrvis_captured_at", captured_at)
     if gps:
-        info.add_text("marvis_gps_latitude", str(gps[0]))
-        info.add_text("marvis_gps_longitude", str(gps[1]))
+        info.add_text("lengrvis_gps_latitude", str(gps[0]))
+        info.add_text("lengrvis_gps_longitude", str(gps[1]))
     image.save(path, pnginfo=info)
 
 

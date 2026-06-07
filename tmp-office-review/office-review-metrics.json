@@ -1,7 +1,7 @@
 [
   {
     "label": "desktop",
-    "screenshot": "C:\\Users\\Suli\\Desktop\\mavris\\tmp-office-review\\office-desktop.png",
+    "screenshot": "C:\\Users\\Suli\\Desktop\\lengrvis\\tmp-office-review\\office-desktop.png",
     "data": {
       "href": "http://127.0.0.1:5191/",
       "viewport": {
@@ -608,7 +608,7 @@
   },
   {
     "label": "mobile",
-    "screenshot": "C:\\Users\\Suli\\Desktop\\mavris\\tmp-office-review\\office-mobile.png",
+    "screenshot": "C:\\Users\\Suli\\Desktop\\lengrvis\\tmp-office-review\\office-mobile.png",
     "data": {
       "href": "http://127.0.0.1:5191/",
       "viewport": {

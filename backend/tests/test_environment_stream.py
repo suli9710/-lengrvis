@@ -24,7 +24,7 @@ from app.perception import storage as perception_storage
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     reset_environment_stream()
     db.init_db()
     yield
@@ -278,7 +278,7 @@ def test_environment_stream_screen_event_omits_image_base64_from_payload():
 
 
 def test_environment_stream_dispatches_sanitized_screen_event_to_bus_and_audit(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
 
     async def run() -> None:
@@ -303,7 +303,7 @@ def test_environment_stream_dispatches_sanitized_screen_event_to_bus_and_audit(m
 
 
 def test_environment_storage_suppresses_sensitive_window_suggestion(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     event = EnvironmentEvent(
         environment_type=EnvironmentEventType.APP_SWITCHED,
@@ -339,7 +339,7 @@ def test_environment_storage_suppresses_sensitive_window_suggestion(monkeypatch,
 
 
 def test_environment_storage_suppresses_sensitive_control(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     safe_elements = [UIElement(role="text", name=f"field-{index}") for index in range(12)]
     state = ScreenState(

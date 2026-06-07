@@ -1,2 +1,2 @@
-export { disconnectedStatus, useMavrisStore } from "./useMavrisStore";
-export type { AssistantMode, ConnectionState, MavrisStore, ViewKey } from "./types";
+export { disconnectedStatus, useLengrvisStore } from "./useLengrvisStore";
+export type { AssistantMode, ConnectionState, LengrvisStore, ViewKey } from "./types";

@@ -20,7 +20,7 @@ from app.services.scheduler_service import Scheduler, _next_run, _utc_now
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     # Reset singleton
     scheduler_service._scheduler = None
     db.init_db()

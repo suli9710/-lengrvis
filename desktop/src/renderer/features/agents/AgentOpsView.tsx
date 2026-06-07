@@ -18,7 +18,7 @@ type AgentOpsStatus = "active" | "waiting" | "idle";
 
 const agentOverviewCopy: Record<string, { title: string; helper: string; prompt: string }> = {
   pm: {
-    title: "Mavris",
+    title: "Lengrvis",
     helper: "待命，负责规划与协调",
     prompt: "帮我处理一个电脑任务"
   },

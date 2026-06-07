@@ -75,7 +75,7 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
         return await _finalize_import(destination, package, source)
 
     if source.is_file() and source.suffix.lower() == ".zip":
-        with tempfile.TemporaryDirectory(prefix="mavris-skill-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="lengrvis-skill-") as temp_dir:
             extracted_root = Path(temp_dir) / "extract"
             extracted_root.mkdir()
             _extract_zip_safely(source, extracted_root)

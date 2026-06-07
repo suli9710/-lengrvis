@@ -31,8 +31,12 @@ _MEDIUM_CPU_CORES = 6
 _MEDIUM_RAM_BYTES = 16 * _GIB
 _MEDIUM_DISK_BYTES = 12 * _GIB
 _TIMEOUT = 5.0
-_BUNDLED_ENV_KEYS = ("MAVRIS_BUNDLED_OLLAMA_DIR", "MARVIS_BUNDLED_OLLAMA_DIR")
-_BUNDLED_MODEL_ENV_KEYS = ("MAVRIS_BUNDLED_OLLAMA_MODELS_DIR", "MARVIS_BUNDLED_OLLAMA_MODELS_DIR")
+_BUNDLED_ENV_KEYS = ("LENGRVIS_BUNDLED_OLLAMA_DIR", "LENGRVIS_BUNDLED_OLLAMA_DIR", "LENGRVIS_BUNDLED_OLLAMA_DIR")
+_BUNDLED_MODEL_ENV_KEYS = (
+    "LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",
+    "LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",
+    "LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",
+)
 _BUNDLED_RELATIVE_DIRS = (
     ("resources", "ollama"),
     ("ollama",),
@@ -41,7 +45,11 @@ _BUNDLED_MODEL_RELATIVE_DIRS = (
     ("resources", "ollama-models"),
     ("ollama-models",),
 )
-_BUNDLED_MANIFEST_ENV_KEYS = ("MAVRIS_OLLAMA_BUNDLE_MANIFEST", "MARVIS_OLLAMA_BUNDLE_MANIFEST")
+_BUNDLED_MANIFEST_ENV_KEYS = (
+    "LENGRVIS_OLLAMA_BUNDLE_MANIFEST",
+    "LENGRVIS_OLLAMA_BUNDLE_MANIFEST",
+    "LENGRVIS_OLLAMA_BUNDLE_MANIFEST",
+)
 _BUNDLED_MANIFEST_RELATIVE_PATHS = (
     ("resources", "ollama-bundle-manifest.json"),
     ("ollama-bundle-manifest.json",),
@@ -136,7 +144,7 @@ async def setup_plan(model: str | None = None) -> dict[str, Any]:
                 "key": "server",
                 "label": "Start local AI service",
                 "state": "done" if running else "current" if installed else "pending",
-                "detail": "Ollama is running." if running else "Mavris will start Ollama after installation.",
+                "detail": "Ollama is running." if running else "Lengrvis will start Ollama after installation.",
             },
             {
                 "key": "model",
@@ -226,7 +234,7 @@ def is_installed() -> bool:
 
 
 def bundled_runtime_available() -> bool:
-    """Return whether Mavris can use an Ollama runtime shipped with the app."""
+    """Return whether Lengrvis can use an Ollama runtime shipped with the app."""
     return _bundled_ollama_executable() is not None
 
 
@@ -254,7 +262,7 @@ async def list_models() -> list[str]:
 
 
 async def install() -> dict[str, Any]:
-    """Make Ollama available, preferring a Mavris-bundled runtime over winget."""
+    """Make Ollama available, preferring a Lengrvis-bundled runtime over winget."""
     source = _ollama_runtime_source()
     if source == "bundled":
         return {
@@ -550,11 +558,11 @@ def _safe_runtime_path(runtime_source: str) -> str:
 
 def _runtime_setup_detail(installed: bool, bundled_available: bool) -> str:
     if installed and bundled_available:
-        return "Mavris bundled Ollama runtime is available."
+        return "Lengrvis bundled Ollama runtime is available."
     if installed:
         return "Ollama is installed."
     if bundled_available:
-        return "Mavris will use the bundled Ollama runtime."
+        return "Lengrvis will use the bundled Ollama runtime."
     return "Ollama will be installed automatically on Windows."
 
 
@@ -567,9 +575,9 @@ def _model_setup_detail(
     if has_model:
         return f"{target} is ready."
     if bundled_model_configured:
-        return f"{target} is included with Mavris and the local service is configured to read it."
+        return f"{target} is included with Lengrvis and the local service is configured to read it."
     if bundled_model_available:
-        return f"{target} is included with Mavris and will be used when the local service starts."
+        return f"{target} is included with Lengrvis and will be used when the local service starts."
     return f"{target} will be downloaded for privacy mode."
 
 
@@ -760,7 +768,7 @@ async def install_local_model(model: str | None = None):
 
     # Step 2: Check if Ollama is running
     running = await is_running()
-    started_with_mavris_models = False
+    started_with_lengrvis_models = False
     if not running:
         yield {"phase": "start", "status": "starting", "message": "Starting Ollama server..."}
         start_result = await start_server()
@@ -771,7 +779,7 @@ async def install_local_model(model: str | None = None):
                 "error": start_result.get("error") or start_result.get("message") or "Ollama server could not be started.",
             }
             return
-        started_with_mavris_models = bool(start_result.get("models_dir"))
+        started_with_lengrvis_models = bool(start_result.get("models_dir"))
         yield {"phase": "start", "status": "waiting", "message": "Waiting for Ollama server to start..."}
         for _ in range(10):
             await asyncio.sleep(2)
@@ -789,7 +797,7 @@ async def install_local_model(model: str | None = None):
         yield {"phase": "switch", "status": "done", "message": f"Local model {target} is ready.", "model": target}
         return
 
-    if started_with_mavris_models and _bundled_model_available(target):
+    if started_with_lengrvis_models and _bundled_model_available(target):
         yield {
             "phase": "pull",
             "status": "skipped",
@@ -805,7 +813,7 @@ async def install_local_model(model: str | None = None):
             "status": "error",
             "error": (
                 f"Bundled model {target} is available, but the running Ollama service is not using "
-                "the Mavris bundled model directory. Stop the existing Ollama service and try again."
+                "the Lengrvis bundled model directory. Stop the existing Ollama service and try again."
             ),
             "model": target,
         }

@@ -210,7 +210,7 @@ def test_root_health_omits_local_llm_snapshot_by_default(monkeypatch):
 
 
 def test_root_health_includes_local_llm_snapshot_for_privacy_mode(monkeypatch):
-    monkeypatch.setenv("MARVIS_MODE", "privacy")
+    monkeypatch.setenv("LENGRVIS_MODE", "privacy")
     monkeypatch.setattr("app.llm.local_provider.detect_onnx_backend", lambda settings=None: None)
     monkeypatch.setattr("app.llm.local_provider.onnx_health_snapshot", lambda settings=None: {"available": False})
     monkeypatch.setattr("app.llm.local_provider.detect_local_backend", lambda **kwargs: None)
@@ -227,8 +227,8 @@ def test_root_health_includes_local_llm_snapshot_for_privacy_mode(monkeypatch):
 
 
 def test_process_env_mode_overrides_persisted_settings(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_MODE", "privacy")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_MODE", "privacy")
 
     from app.core import db
     from app.llm.registry import get_effective_settings

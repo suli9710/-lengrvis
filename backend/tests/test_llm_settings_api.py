@@ -9,7 +9,7 @@ from app.services import settings_service
 
 
 def test_settings_rejects_remote_url_for_local_provider(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
 
     response = client.post(
@@ -22,7 +22,7 @@ def test_settings_rejects_remote_url_for_local_provider(tmp_path, monkeypatch):
 
 
 def test_settings_rejects_persisted_secrets(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
 
     response = client.post(
@@ -63,7 +63,7 @@ def test_settings_public_dict_redacts_mcp_auth():
 
 
 def test_llm_profile_and_cost_summary_routes(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
 
     profile = client.get("/api/settings/llm/profile")
@@ -76,7 +76,7 @@ def test_llm_profile_and_cost_summary_routes(tmp_path, monkeypatch):
 
 
 def test_llm_health_includes_active_provider_and_retry(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
 
     response = client.get("/api/settings/llm/health")
@@ -89,7 +89,7 @@ def test_llm_health_includes_active_provider_and_retry(tmp_path, monkeypatch):
 
 
 def test_llm_profile_redacts_provider_errors(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
 
     def fail_provider(settings):
         raise RuntimeError("provider failed token=supersecrettokenvalue1234567890")
@@ -106,7 +106,7 @@ def test_llm_profile_redacts_provider_errors(tmp_path, monkeypatch):
 
 
 def test_llm_health_redacts_provider_errors(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
 
     def fail_provider(settings):
         raise RuntimeError("provider failed https://api.example.test/v1?api_key=secretapikeyvalue123456")
@@ -123,7 +123,7 @@ def test_llm_health_redacts_provider_errors(tmp_path, monkeypatch):
 
 
 def test_llm_provider_test_redacts_errors(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
 
     class FailingProvider:
         name = "custom_http"
@@ -143,7 +143,7 @@ def test_llm_provider_test_redacts_errors(tmp_path, monkeypatch):
 
 
 def test_sensitive_settings_require_bound_confirmation(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
 
     blocked = client.post("/api/settings", json={"remote_desktop_enabled": True})
@@ -181,7 +181,7 @@ def test_sensitive_settings_require_bound_confirmation(tmp_path, monkeypatch):
 
 
 def test_sensitive_settings_confirmation_not_required_when_disabling(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     db.set_setting("remote_desktop_enabled", True)
     client = TestClient(create_app())
@@ -193,7 +193,7 @@ def test_sensitive_settings_confirmation_not_required_when_disabling(tmp_path, m
 
 
 def test_sensitive_settings_require_confirmation_for_auth_scope_and_mcp_expansion(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
     docs = str(tmp_path / "docs")
     mcp_server = {"name": "local-tools", "url": "http://127.0.0.1:8765/mcp", "transport": "http", "enabled": True}
@@ -235,7 +235,7 @@ def test_sensitive_settings_require_confirmation_for_auth_scope_and_mcp_expansio
 
 
 def test_sensitive_settings_confirmation_nonce_is_one_shot(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
 
     confirmation = client.post(
@@ -253,7 +253,7 @@ def test_sensitive_settings_confirmation_nonce_is_one_shot(tmp_path, monkeypatch
 
 
 def test_add_directory_route_requires_sensitive_confirmation(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
     scope = str(tmp_path / "workspace")
 

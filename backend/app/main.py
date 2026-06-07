@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -33,7 +32,7 @@ from app.api import (
     routes_tasks,
     routes_ui_automation,
 )
-from app.config import AppSettings
+from app.config import AppSettings, get_env
 from app.core import db
 from app.core.audit import record
 from app.core.errors import AppError
@@ -53,7 +52,7 @@ from app.perception.environment_stream import get_environment_stream
 
 
 def _dev_api_enabled(settings: AppSettings) -> bool:
-    return (settings.mode or "").lower() == "dev" or str(os.getenv("MAVRIS_DEV") or "").strip().lower() in {
+    return (settings.mode or "").lower() == "dev" or str(get_env("LENGRVIS_DEV") or "").strip().lower() in {
         "1",
         "true",
         "yes",
@@ -102,7 +101,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     db.init_db()
     settings = get_effective_settings()
-    app = FastAPI(title="Marvis Agent EXE Backend", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "app://local"],

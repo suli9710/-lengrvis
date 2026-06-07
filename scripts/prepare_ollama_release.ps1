@@ -1,8 +1,8 @@
-param(
+﻿param(
     [string]$OllamaRuntimeDir = "",
     [string]$OllamaModelsDir = "",
     [string]$OllamaExe = "",
-    [string]$OutputRoot = ".marvis_data\ollama-release",
+    [string]$OutputRoot = ".lengrvis_data\ollama-release",
     [string]$Model = "qwen2.5:3b",
     [string]$PullDestination = "",
     [string]$PullHost = "127.0.0.1:11435",
@@ -99,8 +99,8 @@ Assert-ChildPath -Root $repoRoot -Candidate $outputRootPath -Label "OutputRoot"
 if (-not $AcceptLicenses) {
     throw @"
 Pass -AcceptLicenses only after confirming these redistribution terms:
-  1. The Ollama runtime license permits shipping it with Mavris.
-  2. The model '$Model' license permits redistribution with Mavris.
+  1. The Ollama runtime license permits shipping it with Lengrvis.
+  2. The model '$Model' license permits redistribution with Lengrvis.
   3. Any required attribution or notice files are included in the release notes.
 "@
 }
@@ -133,23 +133,23 @@ if (-not (Test-Path -LiteralPath $manifestPath)) {
 if (-not $SkipVerify) {
     $verifyWorkspace = Join-Path $repoRoot ".tmp\ollama-release-verify"
     $distDir = Join-Path $verifyWorkspace "dist"
-    $portableDir = Join-Path $distDir "Mavris-win-portable"
+    $portableDir = Join-Path $distDir "Lengrvis-win-portable"
     $resourcesDir = Join-Path $portableDir "resources"
     $backendDir = Join-Path $resourcesDir "backend"
     $appDir = Join-Path $resourcesDir "app"
     $appDistDir = Join-Path $appDir "dist"
-    $zipPath = Join-Path $distDir "Mavris-win-portable.zip"
-    $selfExtracting = Join-Path $distDir "Mavris-0.1.0-x64-self-extracting.exe"
+    $zipPath = Join-Path $distDir "Lengrvis-win-portable.zip"
+    $selfExtracting = Join-Path $distDir "Lengrvis-0.1.0-x64-self-extracting.exe"
 
     if (Test-Path -LiteralPath $verifyWorkspace) {
         Remove-Item -LiteralPath $verifyWorkspace -Recurse -Force
     }
     New-Item -ItemType Directory -Path $backendDir,$appDistDir,$distDir -Force | Out-Null
     New-SmokeExecutable (Join-Path $distDir "backend.exe")
-    New-SmokeExecutable (Join-Path $portableDir "Mavris.exe")
+    New-SmokeExecutable (Join-Path $portableDir "Lengrvis.exe")
     New-SmokeExecutable (Join-Path $backendDir "backend.exe")
     New-SmokeSelfExtractingExecutable $selfExtracting
-    Set-Content -LiteralPath (Join-Path $appDir "package.json") -Value '{"name":"mavris-ollama-release-verify"}' -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $appDir "package.json") -Value '{"name":"lengrvis-ollama-release-verify"}' -Encoding ASCII
     Copy-Item -LiteralPath $runtimeOut -Destination (Join-Path $resourcesDir "ollama") -Recurse -Force
     Copy-Item -LiteralPath $modelsOut -Destination (Join-Path $resourcesDir "ollama-models") -Recurse -Force
     Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $resourcesDir "ollama-bundle-manifest.json") -Force

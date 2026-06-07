@@ -31,7 +31,7 @@ export async function notifyApproval(approval: BackendApproval): Promise<void> {
   await ensureNotificationChannel();
   await Notifications.scheduleNotificationAsync({
     content: {
-      title: "Mavris 需要你审批",
+      title: "Lengrvis 需要你审批",
       body: approval.message || "有一个任务正在等待你确认。",
       data: { approvalId: approval.id },
       sound: "default",

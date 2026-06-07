@@ -17,12 +17,37 @@ except Exception:  # pragma: no cover - optional dependency guard
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_ROOT = PROJECT_ROOT / "backend"
-DEFAULT_DATA_DIR = PROJECT_ROOT / ".marvis_data"
+DEFAULT_DATA_DIR = PROJECT_ROOT / ".lengrvis_data"
 CONFIG_PARENT_SEARCH_DEPTH = 5
 DPAPI_PREFIX = "dpapi:"
-MOBILE_JWT_SECRET_ENV_KEYS = ("MARVIS_JWT_SECRET", "MAVRIS_JWT_SECRET")
+ENV_PREFIX = "LENGRVIS"
+MOBILE_JWT_SECRET_ENV_KEYS = ("LENGRVIS_JWT_SECRET",)
 MOBILE_JWT_SECRET_FILE = "mobile_jwt.secret"
 logger = logging.getLogger(__name__)
+
+
+def _configured(raw: Any) -> bool:
+    return raw is not None and not (isinstance(raw, str) and raw == "")
+
+
+def env_aliases(env_key: str) -> tuple[str, ...]:
+    key = str(env_key or "").strip()
+    if not key:
+        return ()
+    return (key,)
+
+
+def env_value(source: dict[str, str] | os._Environ[str], env_key: str) -> str | None:
+    for alias in env_aliases(env_key):
+        raw = source.get(alias)
+        if _configured(raw):
+            return raw
+    return None
+
+
+def get_env(env_key: str, default: str | None = None) -> str | None:
+    raw = env_value(os.environ, env_key)
+    return raw if raw is not None else default
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -58,7 +83,7 @@ def _decrypt_windows_dpapi(value: str) -> str:
         blob = base64.b64decode(payload)
         return str(win32crypt.CryptUnprotectData(blob, None, None, None, 0)[1].decode("utf-8"))
     except Exception as exc:  # noqa: BLE001 - callers need a clear config failure.
-        raise RuntimeError("Failed to decrypt MARVIS_API_KEY_ENCRYPTED with Windows DPAPI.") from exc
+        raise RuntimeError("Failed to decrypt LENGRVIS_API_KEY_ENCRYPTED with Windows DPAPI.") from exc
 
 
 def _resolve_api_key(raw_plain: Any, raw_encrypted: Any) -> str:
@@ -100,8 +125,7 @@ def _local_mobile_jwt_secret(data_dir: Path) -> str:
 def _candidate_config_dirs() -> list[Path]:
     roots: list[Path] = []
     for value in (
-        os.environ.get("MARVIS_CONFIG_DIR"),
-        os.environ.get("MAVRIS_CONFIG_DIR"),
+        get_env("LENGRVIS_CONFIG_DIR"),
         os.getcwd(),
         PROJECT_ROOT,
     ):
@@ -129,7 +153,7 @@ def _candidate_config_dirs() -> list[Path]:
 
 
 def _find_config_file(file_name: str, explicit_env_key: str) -> Path | None:
-    explicit = os.environ.get(explicit_env_key)
+    explicit = get_env(explicit_env_key)
     if explicit:
         path = Path(explicit)
         return path if path.exists() else None
@@ -144,8 +168,12 @@ def _find_config_file(file_name: str, explicit_env_key: str) -> Path | None:
 def _external_data_dir(config_file: Path | None, env_file: Path | None) -> Path:
     anchor = env_file or config_file
     if anchor:
-        return anchor.parent / ".marvis_data"
-    return DEFAULT_DATA_DIR
+        return _preferred_data_dir(anchor.parent)
+    return _preferred_data_dir(PROJECT_ROOT)
+
+
+def _preferred_data_dir(parent: Path) -> Path:
+    return parent / ".lengrvis_data"
 
 
 @dataclass(slots=True)
@@ -217,6 +245,7 @@ class AppSettings:
     allow_cloud_context: bool = False
     allow_file_content_upload: bool = False
     allow_browser_network: bool = False
+    allow_unsafe_local_skill_execution: bool = False
     remote_desktop_enabled: bool = False
     app_allowlist: list[str] = field(default_factory=list)
     browser_max_page_bytes: int = 250000
@@ -226,7 +255,7 @@ class AppSettings:
     data_dir: str = str(DEFAULT_DATA_DIR)
     skill_directories: list[str] = field(default_factory=list)
     mcp_servers: list[dict] = field(default_factory=list)
-    allow_mock_fallback: bool = True
+    allow_mock_fallback: bool = False
     strict_state_machine: bool = False
     recovery_max_retries: int = 3
     execution_engines: str = "dual"
@@ -254,8 +283,8 @@ class AppSettings:
 
     @classmethod
     def from_sources(cls) -> "AppSettings":
-        config_path = _find_config_file("config.yaml", "MARVIS_CONFIG_FILE")
-        env_path = _find_config_file(".env", "MARVIS_ENV_FILE")
+        config_path = _find_config_file("config.yaml", "LENGRVIS_CONFIG_FILE")
+        env_path = _find_config_file(".env", "LENGRVIS_ENV_FILE")
         config = _load_yaml(config_path) if config_path else {}
         env_file = _load_dotenv(env_path) if env_path else {}
         env = {**env_file, **os.environ}
@@ -267,9 +296,6 @@ class AppSettings:
         orchestration = config.get("orchestration", {}) if isinstance(config.get("orchestration"), dict) else {}
         perception = config.get("perception", {}) if isinstance(config.get("perception"), dict) else {}
 
-        def _configured(raw: Any) -> bool:
-            return raw is not None and not (isinstance(raw, str) and raw == "")
-
         def _section_value(section: dict[str, Any], yaml_key: str) -> tuple[bool, Any]:
             if yaml_key not in section:
                 return False, None
@@ -277,7 +303,7 @@ class AppSettings:
             return _configured(raw), raw
 
         def value(env_key: str, yaml_key: str, default: Any) -> Any:
-            raw_env = env.get(env_key)
+            raw_env = env_value(env, env_key)
             if _configured(raw_env):
                 return raw_env
             for section in (llm, privacy, paths, orchestration, perception):
@@ -288,7 +314,7 @@ class AppSettings:
 
         def value_any(env_keys: tuple[str, ...], yaml_key: str, default: Any) -> Any:
             for env_key in env_keys:
-                raw = env.get(env_key)
+                raw = env_value(env, env_key)
                 if _configured(raw):
                     return raw
             for section in (llm, privacy, paths, orchestration, perception):
@@ -315,7 +341,7 @@ class AppSettings:
             except (TypeError, ValueError):
                 return default
 
-        allowed = value("MARVIS_ALLOWED_DIRECTORIES", "allowed_directories", [])
+        allowed = value("LENGRVIS_ALLOWED_DIRECTORIES", "allowed_directories", [])
         if isinstance(allowed, str):
             allowed_dirs = [p.strip() for p in allowed.split(";") if p.strip()]
         elif isinstance(allowed, list):
@@ -323,7 +349,7 @@ class AppSettings:
         else:
             allowed_dirs = []
 
-        skill_directories = value("MARVIS_SKILL_DIRECTORIES", "skill_directories", [])
+        skill_directories = value("LENGRVIS_SKILL_DIRECTORIES", "skill_directories", [])
         if isinstance(skill_directories, str):
             skill_dirs = [p.strip() for p in skill_directories.split(";") if p.strip()]
         elif isinstance(skill_directories, list):
@@ -331,7 +357,7 @@ class AppSettings:
         else:
             skill_dirs = []
 
-        app_allowlist = value("MARVIS_APP_ALLOWLIST", "app_allowlist", ["notepad", "calculator", "calc"])
+        app_allowlist = value("LENGRVIS_APP_ALLOWLIST", "app_allowlist", ["notepad", "calculator", "calc"])
         if isinstance(app_allowlist, str):
             app_allowlist_items = [item.strip().lower() for item in app_allowlist.split(";") if item.strip()]
         elif isinstance(app_allowlist, list):
@@ -340,13 +366,13 @@ class AppSettings:
             app_allowlist_items = ["notepad", "calculator", "calc"]
 
         sensitive_window_patterns = value(
-            "MARVIS_PERCEPTION_SENSITIVE_WINDOW_PATTERNS",
+            "LENGRVIS_PERCEPTION_SENSITIVE_WINDOW_PATTERNS",
             "sensitive_window_patterns",
             [],
         )
         if not sensitive_window_patterns:
             sensitive_window_patterns = value(
-                "MARVIS_ENVIRONMENT_SENSITIVE_WINDOW_TERMS",
+                "LENGRVIS_ENVIRONMENT_SENSITIVE_WINDOW_TERMS",
                 "environment_sensitive_window_terms",
                 [],
             )
@@ -358,7 +384,7 @@ class AppSettings:
             sensitive_window_items = []
 
         sensitive_field_names = value(
-            "MARVIS_PERCEPTION_SENSITIVE_FIELD_NAMES",
+            "LENGRVIS_PERCEPTION_SENSITIVE_FIELD_NAMES",
             "sensitive_field_names",
             [],
         )
@@ -369,229 +395,234 @@ class AppSettings:
         else:
             sensitive_field_items = []
 
-        environment_rules = value("MARVIS_ENVIRONMENT_RULES_CONFIG", "environment_rules", [])
+        environment_rules = value("LENGRVIS_ENVIRONMENT_RULES_CONFIG", "environment_rules", [])
         if not isinstance(environment_rules, list):
             environment_rules = []
 
         api_key = _resolve_api_key(
-            value("MARVIS_API_KEY", "api_key", ""),
-            value("MARVIS_API_KEY_ENCRYPTED", "api_key_encrypted", ""),
+            value("LENGRVIS_API_KEY", "api_key", ""),
+            value("LENGRVIS_API_KEY_ENCRYPTED", "api_key_encrypted", ""),
         )
-        data_dir = str(value("MARVIS_DATA_DIR", "data_dir", default_data_dir))
+        data_dir = str(value("LENGRVIS_DATA_DIR", "data_dir", default_data_dir))
         jwt_secret = _resolve_mobile_jwt_secret(value_any(MOBILE_JWT_SECRET_ENV_KEYS, "jwt_secret", ""), data_dir)
 
         return cls(
-            provider_name=str(value("MARVIS_PROVIDER_NAME", "provider_name", "openai_compatible")),
-            base_url=str(value("MARVIS_BASE_URL", "base_url", "https://api.openai.com/v1")),
+            provider_name=str(value("LENGRVIS_PROVIDER_NAME", "provider_name", "openai_compatible")),
+            base_url=str(value("LENGRVIS_BASE_URL", "base_url", "https://api.openai.com/v1")),
             api_key=api_key,
-            model=str(value("MARVIS_MODEL", "model", "gpt-4o-mini")),
-            review_model=str(value("MARVIS_REVIEW_MODEL", "review_model", "")),
-            wire_api=str(value("MARVIS_WIRE_API", "wire_api", "chat_completions")),
-            requires_openai_auth=flag("MARVIS_REQUIRES_OPENAI_AUTH", "requires_openai_auth", True),
-            model_reasoning_effort=str(value("MARVIS_MODEL_REASONING_EFFORT", "model_reasoning_effort", "medium")),
-            disable_response_storage=flag("MARVIS_DISABLE_RESPONSE_STORAGE", "disable_response_storage", False),
-            network_access=str(value("MARVIS_NETWORK_ACCESS", "network_access", "disabled")),
-            model_context_window=int_value("MARVIS_MODEL_CONTEXT_WINDOW", "model_context_window", 128000, minimum=1),
+            model=str(value("LENGRVIS_MODEL", "model", "gpt-4o-mini")),
+            review_model=str(value("LENGRVIS_REVIEW_MODEL", "review_model", "")),
+            wire_api=str(value("LENGRVIS_WIRE_API", "wire_api", "chat_completions")),
+            requires_openai_auth=flag("LENGRVIS_REQUIRES_OPENAI_AUTH", "requires_openai_auth", True),
+            model_reasoning_effort=str(value("LENGRVIS_MODEL_REASONING_EFFORT", "model_reasoning_effort", "medium")),
+            disable_response_storage=flag("LENGRVIS_DISABLE_RESPONSE_STORAGE", "disable_response_storage", False),
+            network_access=str(value("LENGRVIS_NETWORK_ACCESS", "network_access", "disabled")),
+            model_context_window=int_value("LENGRVIS_MODEL_CONTEXT_WINDOW", "model_context_window", 128000, minimum=1),
             model_auto_compact_token_limit=int_value(
-                "MARVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT", "model_auto_compact_token_limit", 96000
+                "LENGRVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT", "model_auto_compact_token_limit", 96000
             ),
             context_warning_buffer_tokens=int_value(
-                "MARVIS_CONTEXT_WARNING_BUFFER_TOKENS", "context_warning_buffer_tokens", 20000
+                "LENGRVIS_CONTEXT_WARNING_BUFFER_TOKENS", "context_warning_buffer_tokens", 20000
             ),
             context_error_buffer_tokens=int_value(
-                "MARVIS_CONTEXT_ERROR_BUFFER_TOKENS", "context_error_buffer_tokens", 20000
+                "LENGRVIS_CONTEXT_ERROR_BUFFER_TOKENS", "context_error_buffer_tokens", 20000
             ),
             context_manual_compact_buffer_tokens=int_value(
-                "MARVIS_CONTEXT_MANUAL_COMPACT_BUFFER_TOKENS", "context_manual_compact_buffer_tokens", 3000
+                "LENGRVIS_CONTEXT_MANUAL_COMPACT_BUFFER_TOKENS", "context_manual_compact_buffer_tokens", 3000
             ),
             context_auto_compact_enabled=flag(
-                "MARVIS_CONTEXT_AUTO_COMPACT_ENABLED", "context_auto_compact_enabled", True
+                "LENGRVIS_CONTEXT_AUTO_COMPACT_ENABLED", "context_auto_compact_enabled", True
             ),
             context_micro_compact_enabled=flag(
-                "MARVIS_CONTEXT_MICRO_COMPACT_ENABLED", "context_micro_compact_enabled", True
+                "LENGRVIS_CONTEXT_MICRO_COMPACT_ENABLED", "context_micro_compact_enabled", True
             ),
             context_history_snip_enabled=flag(
-                "MARVIS_CONTEXT_HISTORY_SNIP_ENABLED", "context_history_snip_enabled", True
+                "LENGRVIS_CONTEXT_HISTORY_SNIP_ENABLED", "context_history_snip_enabled", True
             ),
             context_session_memory_enabled=flag(
-                "MARVIS_CONTEXT_SESSION_MEMORY_ENABLED", "context_session_memory_enabled", True
+                "LENGRVIS_CONTEXT_SESSION_MEMORY_ENABLED", "context_session_memory_enabled", True
             ),
             context_session_summary_limit=int_value(
-                "MARVIS_CONTEXT_SESSION_SUMMARY_LIMIT", "context_session_summary_limit", 12000
+                "LENGRVIS_CONTEXT_SESSION_SUMMARY_LIMIT", "context_session_summary_limit", 12000
             ),
             context_recent_message_limit=int_value(
-                "MARVIS_CONTEXT_RECENT_MESSAGE_LIMIT", "context_recent_message_limit", 24, minimum=1
+                "LENGRVIS_CONTEXT_RECENT_MESSAGE_LIMIT", "context_recent_message_limit", 24, minimum=1
             ),
             context_micro_compact_age=int_value(
-                "MARVIS_CONTEXT_MICRO_COMPACT_AGE", "context_micro_compact_age", 8
+                "LENGRVIS_CONTEXT_MICRO_COMPACT_AGE", "context_micro_compact_age", 8
             ),
             context_micro_compact_tool_result_chars=int_value(
-                "MARVIS_CONTEXT_MICRO_COMPACT_TOOL_RESULT_CHARS", "context_micro_compact_tool_result_chars", 1200
+                "LENGRVIS_CONTEXT_MICRO_COMPACT_TOOL_RESULT_CHARS", "context_micro_compact_tool_result_chars", 1200
             ),
             context_history_snip_threshold=int_value(
-                "MARVIS_CONTEXT_HISTORY_SNIP_THRESHOLD", "context_history_snip_threshold", 160
+                "LENGRVIS_CONTEXT_HISTORY_SNIP_THRESHOLD", "context_history_snip_threshold", 160
             ),
             context_history_snip_keep_recent=int_value(
-                "MARVIS_CONTEXT_HISTORY_SNIP_KEEP_RECENT", "context_history_snip_keep_recent", 80, minimum=1
+                "LENGRVIS_CONTEXT_HISTORY_SNIP_KEEP_RECENT", "context_history_snip_keep_recent", 80, minimum=1
             ),
             context_min_summary_chars=int_value(
-                "MARVIS_CONTEXT_MIN_SUMMARY_CHARS", "context_min_summary_chars", 1200
+                "LENGRVIS_CONTEXT_MIN_SUMMARY_CHARS", "context_min_summary_chars", 1200
             ),
-            embedding_model=str(value("MARVIS_EMBEDDING_MODEL", "embedding_model", "text-embedding-3-small")),
-            vision_model=str(value("MARVIS_VISION_MODEL", "vision_model", "")),
-            onnx_enabled=flag("MARVIS_ONNX_ENABLED", "onnx_enabled", True),
+            embedding_model=str(value("LENGRVIS_EMBEDDING_MODEL", "embedding_model", "text-embedding-3-small")),
+            vision_model=str(value("LENGRVIS_VISION_MODEL", "vision_model", "")),
+            onnx_enabled=flag("LENGRVIS_ONNX_ENABLED", "onnx_enabled", True),
             onnx_model_path=str(
-                value_any(("MARVIS_ONNX_MODEL_PATH", "MAVRIS_ONNX_MODEL_PATH"), "onnx_model_path", "")
+                value_any(("LENGRVIS_ONNX_MODEL_PATH", "LENGRVIS_ONNX_MODEL_PATH"), "onnx_model_path", "")
             ),
-            onnx_runtime=str(value_any(("MARVIS_ONNX_RUNTIME", "MAVRIS_ONNX_RUNTIME"), "onnx_runtime", "auto")),
+            onnx_runtime=str(value_any(("LENGRVIS_ONNX_RUNTIME", "LENGRVIS_ONNX_RUNTIME"), "onnx_runtime", "auto")),
             onnx_execution_provider=str(
                 value_any(
-                    ("MARVIS_ONNX_EXECUTION_PROVIDER", "MAVRIS_ONNX_EXECUTION_PROVIDER"),
+                    ("LENGRVIS_ONNX_EXECUTION_PROVIDER", "LENGRVIS_ONNX_EXECUTION_PROVIDER"),
                     "onnx_execution_provider",
                     "",
                 )
             ),
             onnx_provider_preference=str(
-                value("MARVIS_ONNX_PROVIDER_PREFERENCE", "onnx_provider_preference", "winml,directml,openvino,cpu")
+                value("LENGRVIS_ONNX_PROVIDER_PREFERENCE", "onnx_provider_preference", "winml,directml,openvino,cpu")
             ),
             onnx_directml_device_id=str(
-                value("MARVIS_ONNX_DIRECTML_DEVICE_ID", "onnx_directml_device_id", "")
+                value("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "onnx_directml_device_id", "")
             ),
-            onnx_openvino_device=str(value("MARVIS_ONNX_OPENVINO_DEVICE", "onnx_openvino_device", "AUTO")),
-            onnx_openvino_cache_dir=str(value("MARVIS_ONNX_OPENVINO_CACHE_DIR", "onnx_openvino_cache_dir", "")),
-            onnx_warm_on_startup=flag("MARVIS_ONNX_WARM_ON_STARTUP", "onnx_warm_on_startup", False),
-            onnx_model_family=str(value("MARVIS_ONNX_MODEL_FAMILY", "onnx_model_family", "")),
-            embedding_backend=str(value("MARVIS_EMBEDDING_BACKEND", "embedding_backend", "auto")),
+            onnx_openvino_device=str(value("LENGRVIS_ONNX_OPENVINO_DEVICE", "onnx_openvino_device", "AUTO")),
+            onnx_openvino_cache_dir=str(value("LENGRVIS_ONNX_OPENVINO_CACHE_DIR", "onnx_openvino_cache_dir", "")),
+            onnx_warm_on_startup=flag("LENGRVIS_ONNX_WARM_ON_STARTUP", "onnx_warm_on_startup", False),
+            onnx_model_family=str(value("LENGRVIS_ONNX_MODEL_FAMILY", "onnx_model_family", "")),
+            embedding_backend=str(value("LENGRVIS_EMBEDDING_BACKEND", "embedding_backend", "auto")),
             onnx_embedding_model_path=str(
-                value("MARVIS_ONNX_EMBEDDING_MODEL_PATH", "onnx_embedding_model_path", "")
+                value("LENGRVIS_ONNX_EMBEDDING_MODEL_PATH", "onnx_embedding_model_path", "")
             ),
             onnx_embedding_execution_provider=str(
-                value("MARVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER", "onnx_embedding_execution_provider", "")
+                value("LENGRVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER", "onnx_embedding_execution_provider", "")
             ),
             onnx_embedding_model_id=str(
-                value("MARVIS_ONNX_EMBEDDING_MODEL_ID", "onnx_embedding_model_id", "intfloat/multilingual-e5-small")
+                value("LENGRVIS_ONNX_EMBEDDING_MODEL_ID", "onnx_embedding_model_id", "intfloat/multilingual-e5-small")
             ),
             onnx_embedding_max_batch_size=int_value(
-                "MARVIS_ONNX_EMBEDDING_MAX_BATCH_SIZE",
+                "LENGRVIS_ONNX_EMBEDDING_MAX_BATCH_SIZE",
                 "onnx_embedding_max_batch_size",
                 32,
                 minimum=1,
             ),
-            image_embedding_backend=str(value("MARVIS_IMAGE_EMBEDDING_BACKEND", "image_embedding_backend", "auto")),
+            image_embedding_backend=str(value("LENGRVIS_IMAGE_EMBEDDING_BACKEND", "image_embedding_backend", "auto")),
             onnx_image_embedding_model_path=str(
-                value("MARVIS_ONNX_IMAGE_EMBEDDING_MODEL_PATH", "onnx_image_embedding_model_path", "")
+                value("LENGRVIS_ONNX_IMAGE_EMBEDDING_MODEL_PATH", "onnx_image_embedding_model_path", "")
             ),
             onnx_image_embedding_execution_provider=str(
-                value("MARVIS_ONNX_IMAGE_EMBEDDING_EXECUTION_PROVIDER", "onnx_image_embedding_execution_provider", "")
+                value("LENGRVIS_ONNX_IMAGE_EMBEDDING_EXECUTION_PROVIDER", "onnx_image_embedding_execution_provider", "")
             ),
             onnx_image_embedding_model_id=str(
-                value("MARVIS_ONNX_IMAGE_EMBEDDING_MODEL_ID", "onnx_image_embedding_model_id", "openai/clip-vit-base-patch32")
+                value("LENGRVIS_ONNX_IMAGE_EMBEDDING_MODEL_ID", "onnx_image_embedding_model_id", "openai/clip-vit-base-patch32")
             ),
             onnx_image_embedding_max_batch_size=int_value(
-                "MARVIS_ONNX_IMAGE_EMBEDDING_MAX_BATCH_SIZE",
+                "LENGRVIS_ONNX_IMAGE_EMBEDDING_MAX_BATCH_SIZE",
                 "onnx_image_embedding_max_batch_size",
                 8,
                 minimum=1,
             ),
-            ocr_backend=str(value("MARVIS_OCR_BACKEND", "ocr_backend", "auto")),
-            ocr_execution_provider=str(value("MARVIS_OCR_EXECUTION_PROVIDER", "ocr_execution_provider", "")),
-            ocr_openvino_model_dir=str(value("MARVIS_OCR_OPENVINO_MODEL_DIR", "ocr_openvino_model_dir", "")),
-            ocr_openvino_device=str(value("MARVIS_OCR_OPENVINO_DEVICE", "ocr_openvino_device", "AUTO")),
-            ocr_lang=str(value("MARVIS_OCR_LANG", "ocr_lang", "multi")),
-            ocr_min_confidence=float_value("MARVIS_OCR_MIN_CONFIDENCE", "ocr_min_confidence", 0.0),
-            ocr_batch_size=int_value("MARVIS_OCR_BATCH_SIZE", "ocr_batch_size", 1, minimum=1),
-            temperature=float_value("MARVIS_TEMPERATURE", "temperature", 0.2),
-            max_tokens=int_value("MARVIS_MAX_TOKENS", "max_tokens", 1600, minimum=1),
-            timeout=int_value("MARVIS_TIMEOUT", "timeout", 30, minimum=1),
-            llm_api_max_retries=int_value("MARVIS_LLM_API_MAX_RETRIES", "llm_api_max_retries", 2),
+            ocr_backend=str(value("LENGRVIS_OCR_BACKEND", "ocr_backend", "auto")),
+            ocr_execution_provider=str(value("LENGRVIS_OCR_EXECUTION_PROVIDER", "ocr_execution_provider", "")),
+            ocr_openvino_model_dir=str(value("LENGRVIS_OCR_OPENVINO_MODEL_DIR", "ocr_openvino_model_dir", "")),
+            ocr_openvino_device=str(value("LENGRVIS_OCR_OPENVINO_DEVICE", "ocr_openvino_device", "AUTO")),
+            ocr_lang=str(value("LENGRVIS_OCR_LANG", "ocr_lang", "multi")),
+            ocr_min_confidence=float_value("LENGRVIS_OCR_MIN_CONFIDENCE", "ocr_min_confidence", 0.0),
+            ocr_batch_size=int_value("LENGRVIS_OCR_BATCH_SIZE", "ocr_batch_size", 1, minimum=1),
+            temperature=float_value("LENGRVIS_TEMPERATURE", "temperature", 0.2),
+            max_tokens=int_value("LENGRVIS_MAX_TOKENS", "max_tokens", 1600, minimum=1),
+            timeout=int_value("LENGRVIS_TIMEOUT", "timeout", 30, minimum=1),
+            llm_api_max_retries=int_value("LENGRVIS_LLM_API_MAX_RETRIES", "llm_api_max_retries", 2),
             llm_api_retry_backoff_seconds=float_value(
-                "MARVIS_LLM_API_RETRY_BACKOFF_SECONDS",
+                "LENGRVIS_LLM_API_RETRY_BACKOFF_SECONDS",
                 "llm_api_retry_backoff_seconds",
                 0.25,
             ),
             llm_api_circuit_failure_threshold=int_value(
-                "MARVIS_LLM_API_CIRCUIT_FAILURE_THRESHOLD",
+                "LENGRVIS_LLM_API_CIRCUIT_FAILURE_THRESHOLD",
                 "llm_api_circuit_failure_threshold",
                 5,
             ),
             llm_api_circuit_cooldown_seconds=float_value(
-                "MARVIS_LLM_API_CIRCUIT_COOLDOWN_SECONDS",
+                "LENGRVIS_LLM_API_CIRCUIT_COOLDOWN_SECONDS",
                 "llm_api_circuit_cooldown_seconds",
                 30.0,
             ),
-            mode=str(value("MARVIS_MODE", "mode", "efficiency")),
-            permission_mode=_normalize_permission_mode(value("MARVIS_PERMISSION_MODE", "permission_mode", "default")),
-            allow_cloud_context=flag("MARVIS_ALLOW_CLOUD_CONTEXT", "allow_cloud_context", False),
-            allow_file_content_upload=flag("MARVIS_ALLOW_FILE_CONTENT_UPLOAD", "allow_file_content_upload", False),
-            allow_browser_network=flag("MARVIS_ALLOW_BROWSER_NETWORK", "allow_browser_network", False),
-            remote_desktop_enabled=flag("MARVIS_REMOTE_DESKTOP_ENABLED", "remote_desktop_enabled", False),
+            mode=str(value("LENGRVIS_MODE", "mode", "efficiency")),
+            permission_mode=_normalize_permission_mode(value("LENGRVIS_PERMISSION_MODE", "permission_mode", "default")),
+            allow_cloud_context=flag("LENGRVIS_ALLOW_CLOUD_CONTEXT", "allow_cloud_context", False),
+            allow_file_content_upload=flag("LENGRVIS_ALLOW_FILE_CONTENT_UPLOAD", "allow_file_content_upload", False),
+            allow_browser_network=flag("LENGRVIS_ALLOW_BROWSER_NETWORK", "allow_browser_network", False),
+            allow_unsafe_local_skill_execution=flag(
+                "LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION",
+                "allow_unsafe_local_skill_execution",
+                False,
+            ),
+            remote_desktop_enabled=flag("LENGRVIS_REMOTE_DESKTOP_ENABLED", "remote_desktop_enabled", False),
             app_allowlist=app_allowlist_items,
             browser_max_page_bytes=int_value(
-                "MARVIS_BROWSER_MAX_PAGE_BYTES",
+                "LENGRVIS_BROWSER_MAX_PAGE_BYTES",
                 "browser_max_page_bytes",
                 250000,
                 minimum=1,
             ),
             document_max_chars_to_llm=int_value(
-                "MARVIS_DOCUMENT_MAX_CHARS_TO_LLM",
+                "LENGRVIS_DOCUMENT_MAX_CHARS_TO_LLM",
                 "document_max_chars_to_llm",
                 30000,
                 minimum=1,
             ),
             browser_screenshot_dir=str(
-                value("MARVIS_BROWSER_SCREENSHOT_DIR", "browser_screenshot_dir", default_data_dir / "browser_screenshots")
+                value("LENGRVIS_BROWSER_SCREENSHOT_DIR", "browser_screenshot_dir", default_data_dir / "browser_screenshots")
             ),
             allowed_directories=allowed_dirs,
             data_dir=data_dir,
             skill_directories=skill_dirs,
-            mcp_servers=_normalize_mcp_servers(value("MARVIS_MCP_SERVERS", "mcp_servers", [])),
-            allow_mock_fallback=flag("MARVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", True),
-            strict_state_machine=flag("MARVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
-            recovery_max_retries=int_value("MARVIS_RECOVERY_MAX_RETRIES", "recovery_max_retries", 3),
+            mcp_servers=_normalize_mcp_servers(value("LENGRVIS_MCP_SERVERS", "mcp_servers", [])),
+            allow_mock_fallback=flag("LENGRVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", False),
+            strict_state_machine=flag("LENGRVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
+            recovery_max_retries=int_value("LENGRVIS_RECOVERY_MAX_RETRIES", "recovery_max_retries", 3),
             execution_engines=str(
-                value_any(("MARVIS_EXECUTION_ENGINES", "MAVRIS_EXECUTION_ENGINES"), "execution_engines", "dual")
+                value_any(("LENGRVIS_EXECUTION_ENGINES", "LENGRVIS_EXECUTION_ENGINES"), "execution_engines", "dual")
             ),
-            default_engine=str(value_any(("MARVIS_DEFAULT_ENGINE", "MAVRIS_DEFAULT_ENGINE"), "default_engine", "auto")),
-            agent_loop_max_turns=int_value("MARVIS_AGENT_LOOP_MAX_TURNS", "agent_loop_max_turns", 30, minimum=1),
+            default_engine=str(value_any(("LENGRVIS_DEFAULT_ENGINE", "LENGRVIS_DEFAULT_ENGINE"), "default_engine", "auto")),
+            agent_loop_max_turns=int_value("LENGRVIS_AGENT_LOOP_MAX_TURNS", "agent_loop_max_turns", 30, minimum=1),
             run_event_retention_days=int_value(
-                "MARVIS_RUN_EVENT_RETENTION_DAYS",
+                "LENGRVIS_RUN_EVENT_RETENTION_DAYS",
                 "run_event_retention_days",
                 30,
                 minimum=0,
             ),
-            perception_enabled=flag("MARVIS_PERCEPTION_ENABLED", "enabled", False),
-            perception_interval_seconds=float_value("MARVIS_PERCEPTION_INTERVAL_SECONDS", "interval_seconds", 5.0),
-            perception_publish_events=flag("MARVIS_PERCEPTION_PUBLISH_EVENTS", "publish_events", True),
-            perception_max_width=int_value("MARVIS_PERCEPTION_MAX_WIDTH", "max_width", 1280, minimum=1),
-            perception_max_height=int_value("MARVIS_PERCEPTION_MAX_HEIGHT", "max_height", 720, minimum=1),
-            perception_jpeg_quality=int_value("MARVIS_PERCEPTION_JPEG_QUALITY", "jpeg_quality", 70, minimum=1),
+            perception_enabled=flag("LENGRVIS_PERCEPTION_ENABLED", "enabled", False),
+            perception_interval_seconds=float_value("LENGRVIS_PERCEPTION_INTERVAL_SECONDS", "interval_seconds", 5.0),
+            perception_publish_events=flag("LENGRVIS_PERCEPTION_PUBLISH_EVENTS", "publish_events", True),
+            perception_max_width=int_value("LENGRVIS_PERCEPTION_MAX_WIDTH", "max_width", 1280, minimum=1),
+            perception_max_height=int_value("LENGRVIS_PERCEPTION_MAX_HEIGHT", "max_height", 720, minimum=1),
+            perception_jpeg_quality=int_value("LENGRVIS_PERCEPTION_JPEG_QUALITY", "jpeg_quality", 70, minimum=1),
             perception_frame_diff_gate_enabled=flag(
-                "MARVIS_PERCEPTION_FRAME_DIFF_GATE_ENABLED",
+                "LENGRVIS_PERCEPTION_FRAME_DIFF_GATE_ENABLED",
                 "frame_diff_gate_enabled",
                 True,
             ),
-            perception_storage_enabled=flag("MARVIS_PERCEPTION_STORAGE_ENABLED", "storage_enabled", True),
-            perception_store_screenshots=flag("MARVIS_PERCEPTION_STORE_SCREENSHOTS", "store_screenshots", False),
+            perception_storage_enabled=flag("LENGRVIS_PERCEPTION_STORAGE_ENABLED", "storage_enabled", True),
+            perception_store_screenshots=flag("LENGRVIS_PERCEPTION_STORE_SCREENSHOTS", "store_screenshots", False),
             perception_local_ocr_enabled=flag(
-                "MARVIS_PERCEPTION_LOCAL_OCR_ENABLED",
+                "LENGRVIS_PERCEPTION_LOCAL_OCR_ENABLED",
                 "local_ocr_enabled",
                 False,
             ),
             perception_frame_diff_threshold=float_value(
-                "MARVIS_PERCEPTION_FRAME_DIFF_THRESHOLD",
+                "LENGRVIS_PERCEPTION_FRAME_DIFF_THRESHOLD",
                 "frame_diff_threshold",
                 0.001,
             ),
             perception_sensitive_window_patterns=sensitive_window_items,
             perception_sensitive_field_names=sensitive_field_items,
             environment_app_context_interval_seconds=float_value(
-                "MARVIS_ENVIRONMENT_APP_CONTEXT_INTERVAL_SECONDS",
+                "LENGRVIS_ENVIRONMENT_APP_CONTEXT_INTERVAL_SECONDS",
                 "app_context_interval_seconds",
                 2.0,
             ),
-            environment_store_screenshots=flag("MARVIS_ENVIRONMENT_STORE_SCREENSHOTS", "environment_store_screenshots", False),
+            environment_store_screenshots=flag("LENGRVIS_ENVIRONMENT_STORE_SCREENSHOTS", "environment_store_screenshots", False),
             environment_event_retention_days=int_value(
-                "MARVIS_ENVIRONMENT_EVENT_RETENTION_DAYS",
+                "LENGRVIS_ENVIRONMENT_EVENT_RETENTION_DAYS",
                 "environment_event_retention_days",
                 7,
                 minimum=0,

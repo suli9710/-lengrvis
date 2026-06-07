@@ -16,11 +16,11 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import type { LocalLibraryItem, LocalLibraryResponse } from "../../shared/types";
-import type { MavrisApiClient } from "../lib/apiClient";
+import type { LengrvisApiClient } from "../lib/apiClient";
 import { sectionForView, type LocalLibrarySection } from "./localLibrarySections";
 
 interface LocalLibraryViewProps {
-  api: MavrisApiClient;
+  api: LengrvisApiClient;
   activeSection: LocalLibrarySection;
   onUseDocument?: (path: string, action: "read" | "summarize" | "ask") => void;
 }
@@ -177,11 +177,11 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
   }, [sectionMeta.apiSection]);
 
   const items = library?.items ?? [];
-  const backendBaseUrl = window.mavris?.backendBaseUrl ?? "http://127.0.0.1:8000";
+  const backendBaseUrl = window.lengrvis?.backendBaseUrl ?? "http://127.0.0.1:8000";
   const selectedIconUrl = selectedItem ? fileIcons[selectedItem.path] || selectedItem.iconUrl || "" : "";
 
   useEffect(() => {
-    if (!window.mavris?.shell.getFileIcon) return;
+    if (!window.lengrvis?.shell.getFileIcon) return;
     const targets = items
       .filter((item) => item.kind === "app" || item.extension === ".lnk" || item.extension === ".exe")
       .filter((item) => !fileIcons[item.path])
@@ -191,7 +191,7 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
     let cancelled = false;
     void Promise.all(
       targets.map(async (item) => {
-        const iconUrl = await window.mavris.shell.getFileIcon(item.path).catch(() => null);
+        const iconUrl = await window.lengrvis.shell.getFileIcon(item.path).catch(() => null);
         return iconUrl ? [item.path, iconUrl] as const : null;
       })
     ).then((entries) => {

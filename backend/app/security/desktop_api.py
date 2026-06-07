@@ -11,13 +11,13 @@ from typing import Mapping
 
 from fastapi import Request, WebSocket, WebSocketException, status
 
-from app.config import get_base_settings
+from app.config import get_base_settings, get_env
 from app.security.lan import is_loopback_host
 
 
-DESKTOP_API_TOKEN_HEADER = "x-mavris-desktop-token"
+DESKTOP_API_TOKEN_HEADER = "x-lengrvis-desktop-token"
 DESKTOP_API_TOKEN_FILE = "desktop_api.secret"
-DESKTOP_API_WS_PROTOCOL_PREFIX = "mavris.desktop.token."
+DESKTOP_API_WS_PROTOCOL_PREFIX = "lengrvis.desktop.token."
 DESKTOP_SIGNED_RESOURCE_EXPIRES_QUERY = "expires"
 DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY = "signature"
 DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS = 10 * 60
@@ -26,10 +26,15 @@ logger = logging.getLogger(__name__)
 
 
 def desktop_api_token() -> str:
-    configured = (os.environ.get("MAVRIS_DESKTOP_API_TOKEN") or os.environ.get("MARVIS_DESKTOP_API_TOKEN") or "").strip()
+    configured = str(get_env("LENGRVIS_DESKTOP_API_TOKEN") or "").strip()
     if configured:
         return configured
     return _local_desktop_api_token()
+
+
+def desktop_api_token_headers() -> dict[str, str]:
+    token = desktop_api_token()
+    return {DESKTOP_API_TOKEN_HEADER: token} if token else {}
 
 
 def should_require_desktop_api_token(request: Request) -> bool:
@@ -44,8 +49,10 @@ def should_require_desktop_api_token(request: Request) -> bool:
 
 def has_valid_desktop_api_token(request: Request) -> bool:
     expected = desktop_api_token()
-    supplied = request.headers.get(DESKTOP_API_TOKEN_HEADER, "").strip()
-    return bool(expected and supplied and hmac.compare_digest(supplied, expected))
+    for supplied in _desktop_api_header_tokens(request):
+        if expected and supplied and hmac.compare_digest(supplied, expected):
+            return True
+    return False
 
 
 def has_valid_desktop_websocket_token(websocket: WebSocket) -> bool:
@@ -138,7 +145,7 @@ def _normalize_http_method(method: str) -> str:
 
 
 def _desktop_api_token_optional() -> bool:
-    raw = os.environ.get("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL") or os.environ.get("MARVIS_DESKTOP_API_TOKEN_OPTIONAL")
+    raw = get_env("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL")
     if str(raw or "").strip().lower() not in {"1", "true", "yes", "on"}:
         return False
     if _is_test_environment():
@@ -154,8 +161,21 @@ def desktop_api_token_optional_for_test() -> bool:
 def _is_test_environment() -> bool:
     return any(
         str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on", "test", "testing"}
-        for name in ("MAVRIS_TEST", "MARVIS_TEST", "PYTEST_CURRENT_TEST", "APP_ENV", "MAVRIS_ENV", "MARVIS_ENV")
+        for name in (
+            "LENGRVIS_TEST",
+            "PYTEST_CURRENT_TEST",
+            "APP_ENV",
+            "LENGRVIS_ENV",
+        )
     )
+
+
+def _desktop_api_header_tokens(request: Request) -> list[str]:
+    values: list[str] = []
+    supplied = request.headers.get(DESKTOP_API_TOKEN_HEADER, "").strip()
+    if supplied:
+        values.append(supplied)
+    return values
 
 
 def _desktop_websocket_tokens(websocket: WebSocket) -> list[str]:

@@ -178,7 +178,8 @@ def main() -> int:
     if not data_dir:
         print(json.dumps({"ok": False, "error": "settings.data_dir is required to index bookmarks into Memory."}))
         return 0
-    db_path = Path(data_dir) / "marvis.db"
+    data_path = Path(data_dir)
+    db_path = data_path / "lengrvis.db"
     _init_memory_db(db_path)
     for bookmark in bookmarks:
         _insert_memory(db_path, bookmark)

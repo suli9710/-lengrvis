@@ -266,7 +266,7 @@ function errorMessage(error: unknown): string {
     return "这台手机没有权限查看或处理此审批。请在电脑端重新配对后再试。";
   }
   if (error instanceof Error && error.message.includes("Failed to fetch")) {
-    return "无法连接到电脑。请确认 Mavris 已打开，然后重试。";
+    return "无法连接到电脑。请确认 Lengrvis 已打开，然后重试。";
   }
   if (error instanceof Error && error.message.toLowerCase().includes("network")) {
     return "网络连接异常。请确认手机和电脑在同一网络后重试。";

@@ -42,8 +42,8 @@ def workspace(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def desktop_api_token_optional_for_testclient(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MAVRIS_TEST", "1")
-    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
+    monkeypatch.setenv("LENGRVIS_TEST", "1")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
 
 
 def import_first(module_names: Iterable[str]) -> Any:

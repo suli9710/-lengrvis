@@ -40,8 +40,8 @@ def test_route_engine_explicit_override_wins() -> None:
 
 def test_default_engine_env_hooks_accept_agent_loop_names() -> None:
     env = {
-        "MARVIS_DEFAULT_ENGINE": "developer",
-        "MARVIS_AGENT_LOOP_MAX_TURNS": "5",
+        "LENGRVIS_DEFAULT_ENGINE": "developer",
+        "LENGRVIS_AGENT_LOOP_MAX_TURNS": "5",
     }
 
     assert configured_default_engine(env) == "developer"
@@ -49,7 +49,7 @@ def test_default_engine_env_hooks_accept_agent_loop_names() -> None:
 
 
 def test_default_engine_env_keeps_legacy_agent_loop_name() -> None:
-    assert configured_default_engine({"MARVIS_AGENT_LOOP_DEFAULT_ENGINE": "developer"}) == "developer"
+    assert configured_default_engine({"LENGRVIS_AGENT_LOOP_DEFAULT_ENGINE": "developer"}) == "developer"
 
 
 @pytest.mark.asyncio
@@ -237,9 +237,9 @@ def _task_plan(tool_name: str, *, risk: RiskLevel = RiskLevel.R0_READ_ONLY):
 
 @pytest.mark.asyncio
 async def test_os_engine_turn_emits_structured_outputs_and_uses_tool_runtime(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     calls: list[dict] = []
     events: list[tuple[str, dict]] = []
@@ -262,9 +262,9 @@ async def test_os_engine_turn_emits_structured_outputs_and_uses_tool_runtime(tmp
 
 @pytest.mark.asyncio
 async def test_os_engine_waiting_approval_stays_inside_tool_runtime_safety_path(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     calls: list[dict] = []
     events: list[str] = []
@@ -287,7 +287,7 @@ async def test_os_engine_waiting_approval_stays_inside_tool_runtime_safety_path(
 
 @pytest.mark.asyncio
 async def test_os_engine_preserves_cancelled_task_phase(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     task = Task(user_goal="cancelled task", mode="efficiency", status=TaskStatus.CANCELLED)
     plan = Plan(task_id=task.id, goal=task.user_goal, steps=[])
@@ -306,9 +306,9 @@ async def test_os_engine_preserves_cancelled_task_phase(tmp_path, monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_os_engine_recovery_step_runs_through_same_runtime_safety_path(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     calls: list[dict] = []
     orchestrator = OrchestratorAgent()
@@ -332,10 +332,10 @@ async def test_os_engine_recovery_step_runs_through_same_runtime_safety_path(tmp
 
 @pytest.mark.asyncio
 async def test_os_engine_reflection_adds_read_before_retry_for_resource_state_failure(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_RECOVERY_MAX_RETRIES", "0")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_RECOVERY_MAX_RETRIES", "0")
     db.init_db()
     target = tmp_path / "edit.txt"
     target.write_text("alpha beta", encoding="utf-8")
@@ -401,10 +401,10 @@ async def test_os_engine_reflection_adds_read_before_retry_for_resource_state_fa
 
 @pytest.mark.asyncio
 async def test_os_engine_reflection_limit_pauses_low_information_failure(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_RECOVERY_MAX_RETRIES", "0")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_RECOVERY_MAX_RETRIES", "0")
     db.init_db()
     calls: list[dict] = []
     orchestrator = OrchestratorAgent()

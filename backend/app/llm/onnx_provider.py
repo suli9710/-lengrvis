@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from app.config import PROJECT_ROOT, AppSettings
+from app.config import PROJECT_ROOT, AppSettings, get_env
 from app.llm.base import LLMProvider
 from app.llm.prompts import render_prompt
 from app.llm.types import LLMResponse
@@ -54,7 +54,7 @@ _PREFERRED_MODEL_DIR_NAMES = (
     "qwen2.5-3b-onnx",
     "qwen2.5-3b",
 )
-_MODEL_ROOT_ENV_KEYS = ("MARVIS_ONNX_MODELS_DIR", "MAVRIS_ONNX_MODELS_DIR")
+_MODEL_ROOT_ENV_KEYS = ("LENGRVIS_ONNX_MODELS_DIR", "LENGRVIS_ONNX_MODELS_DIR", "LENGRVIS_ONNX_MODELS_DIR")
 _GENAI_RUNTIME_MODULES = ("onnxruntime_genai_winml", "onnxruntime_genai")
 _RUNTIME_PACKAGE_MODULES = (
     "onnxruntime_genai_winml",
@@ -308,7 +308,7 @@ def _preferred_execution_providers(settings: AppSettings | None = None) -> list[
     if settings is not None:
         raw = str(getattr(settings, "onnx_provider_preference", "") or "").strip()
     if not raw:
-        raw = os.environ.get("MARVIS_ONNX_PROVIDER_PREFERENCE") or os.environ.get("MAVRIS_ONNX_PROVIDER_PREFERENCE") or ""
+        raw = get_env("LENGRVIS_ONNX_PROVIDER_PREFERENCE", "") or ""
     if not raw:
         return list(_PREFERRED_EXECUTION_PROVIDERS)
 
@@ -518,7 +518,7 @@ def _configured_model_path(settings: AppSettings | None, model_path: str | None 
         raw = str(getattr(settings, "onnx_model_path", "") or "").strip()
         if raw:
             return raw
-    return os.environ.get("MARVIS_ONNX_MODEL_PATH") or os.environ.get("MAVRIS_ONNX_MODEL_PATH")
+    return get_env("LENGRVIS_ONNX_MODEL_PATH")
 
 
 def _configured_execution_provider(settings: AppSettings | None = None) -> str | None:
@@ -526,7 +526,7 @@ def _configured_execution_provider(settings: AppSettings | None = None) -> str |
         raw = str(getattr(settings, "onnx_execution_provider", "") or "").strip()
         if raw:
             return raw
-    return os.environ.get("MARVIS_ONNX_EXECUTION_PROVIDER") or os.environ.get("MAVRIS_ONNX_EXECUTION_PROVIDER")
+    return get_env("LENGRVIS_ONNX_EXECUTION_PROVIDER")
 
 
 def _resolve_raw_model_path(raw: str) -> Path | None:
@@ -564,7 +564,8 @@ def _candidate_model_roots(settings: AppSettings | None) -> list[Path]:
         roots.extend([data_dir / "models", data_dir])
     roots.extend(
         [
-            PROJECT_ROOT / ".marvis_data" / "models",
+            PROJECT_ROOT / ".lengrvis_data" / "models",
+            PROJECT_ROOT / ".lengrvis_data" / "models",
             PROJECT_ROOT / "models",
             PROJECT_ROOT / "backend" / "models",
         ]
@@ -719,9 +720,9 @@ def _provider_options(execution_provider: str, settings: AppSettings | None = No
         device = str(getattr(settings, "onnx_openvino_device", "") or "").strip() if settings is not None else ""
         cache_dir = str(getattr(settings, "onnx_openvino_cache_dir", "") or "").strip() if settings is not None else ""
         if not device:
-            device = os.environ.get("MARVIS_ONNX_OPENVINO_DEVICE") or os.environ.get("MAVRIS_ONNX_OPENVINO_DEVICE") or ""
+            device = get_env("LENGRVIS_ONNX_OPENVINO_DEVICE", "") or ""
         if not cache_dir:
-            cache_dir = os.environ.get("MARVIS_ONNX_OPENVINO_CACHE_DIR") or os.environ.get("MAVRIS_ONNX_OPENVINO_CACHE_DIR") or ""
+            cache_dir = get_env("LENGRVIS_ONNX_OPENVINO_CACHE_DIR", "") or ""
         if device and device.strip():
             options["device_type"] = device.strip()
         if cache_dir and cache_dir.strip():
@@ -731,7 +732,7 @@ def _provider_options(execution_provider: str, settings: AppSettings | None = No
         return {}
     device_id = str(getattr(settings, "onnx_directml_device_id", "") or "").strip() if settings is not None else ""
     if not device_id:
-        device_id = os.environ.get("MARVIS_ONNX_DIRECTML_DEVICE_ID") or os.environ.get("MAVRIS_ONNX_DIRECTML_DEVICE_ID") or ""
+        device_id = get_env("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "") or ""
     if device_id is None or not device_id.strip():
         return {}
     return {"device_id": device_id.strip()}
@@ -793,7 +794,7 @@ def _configured_runtime(settings: AppSettings | None = None) -> str:
     if settings is not None:
         raw = str(getattr(settings, "onnx_runtime", "") or "").strip()
     if not raw:
-        raw = os.environ.get("MARVIS_ONNX_RUNTIME") or os.environ.get("MAVRIS_ONNX_RUNTIME") or ""
+        raw = get_env("LENGRVIS_ONNX_RUNTIME", "") or ""
     normalized = raw.lower().replace("-", "_").replace(" ", "_")
     return normalized if normalized else "auto"
 
@@ -887,8 +888,8 @@ def _unavailable_reason(
                 "Use a directory or config file with genai_config.json/config.json and ONNX weights."
             )
         return (
-            "No ONNX GenAI model path configured. Set MARVIS_ONNX_MODEL_PATH or place a Qwen2.5 ONNX GenAI "
-            "bundle under .marvis_data/models."
+            "No ONNX GenAI model path configured. Set LENGRVIS_ONNX_MODEL_PATH or place a Qwen2.5 ONNX GenAI "
+            "bundle under .lengrvis_data/models."
         )
     if not genai_available:
         return (

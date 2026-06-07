@@ -7,7 +7,7 @@ from app.core.schemas import Task, ToolResult
 
 
 def test_fetch_helpers_reject_unsupported_table(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     with pytest.raises(ValueError, match="Unsupported table"):
@@ -17,7 +17,7 @@ def test_fetch_helpers_reject_unsupported_table(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_fetch_many_rejects_unsafe_where_clause(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     with pytest.raises(ValueError, match="Unsafe WHERE clause"):
@@ -35,7 +35,7 @@ def test_fetch_many_rejects_unsafe_where_clause(monkeypatch: pytest.MonkeyPatch,
 
 
 def test_structured_fetch_helpers_validate_columns(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(id="task_fetch_helper", user_goal="Use structured helpers")
     result = ToolResult(id="result_fetch_helper", tool_call_id="call_fetch_helper", ok=True, output={})

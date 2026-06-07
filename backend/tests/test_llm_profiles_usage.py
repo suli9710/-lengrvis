@@ -54,7 +54,7 @@ def test_context_provider_rejects_tools_when_profile_does_not_support_them():
 
 
 def test_context_provider_adds_cost_to_chat_result(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     settings = AppSettings(
         provider_name="openai",
         model="gpt-4o-mini",
@@ -76,7 +76,7 @@ def test_context_provider_adds_cost_to_chat_result(tmp_path, monkeypatch):
 
 
 def test_context_provider_records_structured_chat_usage(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     settings = AppSettings(
         provider_name="openai",
         model="gpt-4o-mini",
@@ -107,7 +107,7 @@ def test_context_provider_records_structured_chat_usage(tmp_path, monkeypatch):
 
 
 def test_usage_summary_reads_stored_claude_usage(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     settings = AppSettings(
         provider_name="openai",
         model="gpt-4o-mini",
@@ -131,8 +131,8 @@ def test_usage_summary_reads_stored_claude_usage(tmp_path, monkeypatch):
 
 
 def test_usage_summary_migrates_legacy_events_without_data_column(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    db_path = tmp_path / "marvis.db"
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db_path = tmp_path / "lengrvis.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             """

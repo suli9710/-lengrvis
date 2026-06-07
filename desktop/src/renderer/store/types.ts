@@ -120,4 +120,4 @@ export interface ApprovalsSlice {
   setApprovalError: (approvalError: string | null) => void;
 }
 
-export type MavrisStore = BackendSettingsSlice & ChatRunsSlice & BrowserActivitySlice & OfficeUiSlice & ApprovalsSlice;
+export type LengrvisStore = BackendSettingsSlice & ChatRunsSlice & BrowserActivitySlice & OfficeUiSlice & ApprovalsSlice;

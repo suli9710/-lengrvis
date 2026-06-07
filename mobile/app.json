@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "Mavris Approval",
-    "slug": "mavris-approval",
+    "name": "Lengrvis Approval",
+    "slug": "lengrvis-approval",
     "version": "0.1.0",
     "orientation": "portrait",
-    "scheme": "mavrisapproval",
+    "scheme": "lengrvisapproval",
     "userInterfaceStyle": "light",
     "android": {
-      "package": "com.mavris.approval",
+      "package": "com.lengrvis.approval",
       "permissions": [
         "POST_NOTIFICATIONS"
       ],

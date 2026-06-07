@@ -174,7 +174,7 @@ class FileWatcher:
 
         self._observer.start()
         self._consumer_task = asyncio.create_task(
-            self._consume(), name="mavris-file-watcher"
+            self._consume(), name="lengrvis-file-watcher"
         )
         record(
             "file_watcher.started",

@@ -13,7 +13,7 @@ from app.tools import cluster_tools
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     yield
 
@@ -68,7 +68,7 @@ def test_suggest_folder_structure_groups_by_category(tmp_path: Path):
 
 
 def test_cluster_apps_buckets_installed_listing(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
     fake_apps = {

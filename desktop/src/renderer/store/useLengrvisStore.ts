@@ -7,7 +7,7 @@ import {
   emptySafetyReview,
   emptySystemInfo
 } from "./defaults";
-import type { AssistantMode, MavrisStore, ViewKey } from "./types";
+import type { AssistantMode, LengrvisStore, ViewKey } from "./types";
 
 export { disconnectedStatus };
 
@@ -41,7 +41,7 @@ function initialView(): ViewKey {
   return viewKeys.has(view as ViewKey) ? view as ViewKey : "home";
 }
 
-export const useMavrisStore = create<MavrisStore>((set) => ({
+export const useLengrvisStore = create<LengrvisStore>((set) => ({
   backendStatus: disconnectedStatus,
   settings: defaultSettings,
   localLlmHealth: null,

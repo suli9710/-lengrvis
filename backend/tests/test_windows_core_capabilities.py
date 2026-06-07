@@ -19,10 +19,10 @@ from app.tools import app_tools, browser_tools, search_tools, system_tools
 
 
 def _init_test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: str) -> None:
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_MODE", "efficiency")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     db.init_db()
@@ -36,7 +36,7 @@ def _settings_context():
 
 
 def test_app_list_and_allowlisted_launch_dry_run(monkeypatch, tmp_path):
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_APP_ALLOWLIST="notepad;calc")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_APP_ALLOWLIST="notepad;calc")
     context = _settings_context()
 
     apps = app_tools.list_installed({}, context)
@@ -47,7 +47,7 @@ def test_app_list_and_allowlisted_launch_dry_run(monkeypatch, tmp_path):
 
 
 def test_app_launch_unknown_application_is_blocked(monkeypatch, tmp_path):
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_APP_ALLOWLIST="notepad")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_APP_ALLOWLIST="notepad")
     result = app_tools.launch_installed({"app": "unknown-app", "dry_run": True}, _settings_context())
 
     assert result["ok"] is False
@@ -119,7 +119,7 @@ def test_uninstall_app_blocks_scanned_shell_host(monkeypatch, tmp_path):
 
 
 def test_app_allowlist_supports_wildcards_and_categories(monkeypatch, tmp_path):
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_APP_ALLOWLIST="visual*;category:browser")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_APP_ALLOWLIST="visual*;category:browser")
     monkeypatch.setattr(
         app_tools,
         "_scan_shortcuts",
@@ -152,7 +152,7 @@ def test_app_open_authorized_file_and_folder_dry_run(monkeypatch, tmp_path):
     workspace.mkdir()
     sample = workspace / "note.txt"
     sample.write_text("hello", encoding="utf-8")
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_ALLOWED_DIRECTORIES=str(workspace))
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOWED_DIRECTORIES=str(workspace))
     context = _settings_context()
 
     file_result = app_tools.open_file({"path": str(sample), "dry_run": True}, context)
@@ -173,7 +173,7 @@ def test_system_diagnostics_startup_and_settings_dry_run():
 
 
 def test_browser_network_gate_blocks_when_disabled(monkeypatch, tmp_path):
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_ALLOW_BROWSER_NETWORK="false")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOW_BROWSER_NETWORK="false")
 
     result = browser_tools.read_page({"url": "http://127.0.0.1:9"}, _settings_context())
 
@@ -185,11 +185,11 @@ def test_browser_read_page_and_extract_links_with_local_http(monkeypatch, tmp_pa
     site = tmp_path / "site"
     site.mkdir()
     (site / "index.html").write_text(
-        "<!doctype html><title>Marvis Test</title><main>Hello office agent</main>"
+        "<!doctype html><title>Lengrvis Test</title><main>Hello office agent</main>"
         '<a href="/docs">Docs</a><a href="https://example.com/ext">External</a>',
         encoding="utf-8",
     )
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_ALLOW_BROWSER_NETWORK="true")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOW_BROWSER_NETWORK="true")
 
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format: str, *args):  # noqa: A002
@@ -207,22 +207,22 @@ def test_browser_read_page_and_extract_links_with_local_http(monkeypatch, tmp_pa
         thread.join(timeout=2)
 
     assert page["ok"] is True
-    assert page["title"] == "Marvis Test"
+    assert page["title"] == "Lengrvis Test"
     assert "Hello office agent" in page["text"]
     assert any(link["url"].endswith("/docs") for link in links["links"])
 
 
 def test_search_query_delegates_to_browser_gate(monkeypatch, tmp_path):
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_ALLOW_BROWSER_NETWORK="false")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOW_BROWSER_NETWORK="false")
 
-    result = search_tools.query({"query": "marvis"}, _settings_context())
+    result = search_tools.query({"query": "lengrvis"}, _settings_context())
 
     assert result["ok"] is False
     assert "disabled" in result["error"].lower()
 
 
 def test_public_api_routes_expose_windows_core(monkeypatch, tmp_path):
-    _init_test_settings(monkeypatch, tmp_path, MARVIS_ALLOW_BROWSER_NETWORK="false")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOW_BROWSER_NETWORK="false")
     client = TestClient(create_app())
 
     assert client.get("/api/apps").status_code == 200

@@ -1,4 +1,4 @@
-const assert = require("node:assert/strict");
+﻿const assert = require("node:assert/strict");
 const Module = require("node:module");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -9,7 +9,7 @@ const originalLoad = Module._load;
 const originalResourcesPath = process.resourcesPath;
 const originalEnv = { ...process.env };
 const originalSpawn = childProcess.spawn;
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mavris-backend-env-"));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lengrvis-backend-env-"));
 const resources = path.join(tmpRoot, "resources");
 const backendDir = path.join(resources, "backend");
 const ollamaDir = path.join(resources, "ollama");
@@ -24,7 +24,9 @@ fs.mkdirSync(ollamaDir, { recursive: true });
 fs.mkdirSync(modelsDir, { recursive: true });
 fs.writeFileSync(backendExe, "fake backend");
 fs.writeFileSync(manifestPath, "{}");
-process.env.MAVRIS_BACKEND_SERVICE_DISABLED = "1";
+process.env.LENGRVIS_BACKEND_SERVICE_DISABLED = "1";
+process.env.LENGRVIS_CONFIG_DIR = tmpRoot;
+process.env.LENGRVIS_DATA_DIR = path.join(tmpRoot, "data");
 Object.defineProperty(process, "resourcesPath", {
   value: resources,
   configurable: true
@@ -90,20 +92,23 @@ global.fetch = async (url, options = {}) => {
 
     assert.ok(spawnCall, "backend process should be spawned");
     assert.equal(spawnCall.command, backendExe);
-    assert.equal(spawnCall.options.env.MAVRIS_BUNDLED_OLLAMA_DIR, ollamaDir);
-    assert.equal(spawnCall.options.env.MARVIS_BUNDLED_OLLAMA_DIR, ollamaDir);
-    assert.equal(spawnCall.options.env.MAVRIS_BUNDLED_OLLAMA_MODELS_DIR, modelsDir);
-    assert.equal(spawnCall.options.env.MARVIS_BUNDLED_OLLAMA_MODELS_DIR, modelsDir);
-    assert.equal(spawnCall.options.env.MAVRIS_OLLAMA_BUNDLE_MANIFEST, manifestPath);
-    assert.equal(spawnCall.options.env.MARVIS_OLLAMA_BUNDLE_MANIFEST, manifestPath);
+    assert.equal(spawnCall.options.env.LENGRVIS_BUNDLED_OLLAMA_DIR, ollamaDir);
+    assert.equal(spawnCall.options.env.LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR, modelsDir);
+    assert.equal(spawnCall.options.env.LENGRVIS_OLLAMA_BUNDLE_MANIFEST, manifestPath);
     assert.equal(spawnCall.options.env.OLLAMA_MODELS, modelsDir);
+    assert.equal(spawnCall.options.env.LENGRVIS_DATA_DIR, process.env.LENGRVIS_DATA_DIR);
+    assert.equal(spawnCall.options.env.LENGRVIS_DESKTOP_API_TOKEN, manager.getDesktopApiToken());
+    assert.equal(
+      fs.readFileSync(path.join(process.env.LENGRVIS_DATA_DIR, "desktop_api.secret"), "utf8").trim(),
+      manager.getDesktopApiToken()
+    );
 
     const foregroundStatus = await manager.enterForeground("smoke_foreground");
     assert.equal(foregroundStatus.state, "running", "runtime mode POST failure should not stop the backend lifecycle");
     assert.match(foregroundStatus.runtimeModeError, /503.*guardian not ready/);
     assert.match(foregroundStatus.message, /could not enter foreground runtime mode/);
     assert.ok(runtimeModeRequest, "foreground runtime mode should be attempted");
-    assert.equal(runtimeModeRequest.options.headers["X-Mavris-Desktop-Token"], manager.getDesktopApiToken());
+    assert.equal(runtimeModeRequest.options.headers["X-Lengrvis-Desktop-Token"], manager.getDesktopApiToken());
 
     console.log("Backend bundled Ollama env smoke passed");
   } finally {

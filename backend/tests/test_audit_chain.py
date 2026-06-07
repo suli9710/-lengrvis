@@ -11,8 +11,8 @@ from app.main import create_app
 
 
 def test_audit_events_are_append_only_hash_chained(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     db.init_db()
 
     first = record("security.first", "pytest", {"ok": True})
@@ -28,8 +28,8 @@ def test_audit_events_are_append_only_hash_chained(monkeypatch, tmp_path):
 
 
 def test_audit_verification_detects_tampering(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     db.init_db()
     event = record("security.tamper", "pytest", {"ok": True})
 
@@ -53,8 +53,8 @@ def test_audit_verification_detects_tampering(monkeypatch, tmp_path):
 
 
 def test_audit_events_cannot_be_updated_or_deleted(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     db.init_db()
     event = record("security.append_only", "pytest", {"ok": True})
 
@@ -79,8 +79,8 @@ def test_audit_events_cannot_be_updated_or_deleted(monkeypatch, tmp_path):
 
 
 def test_audit_verify_route(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MAVRIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     db.init_db()
     record("security.route", "pytest", {"ok": True})
 

@@ -138,7 +138,7 @@ class LocalBrowserActivityAdapter:
         url = _validate_url(str(action.get("url") or ""))
         out_dir = Path(
             getattr(_settings(context), "browser_screenshot_dir", "")
-            or Path.cwd() / ".marvis_data" / "browser_screenshots"
+            or Path.cwd() / ".lengrvis_data" / "browser_screenshots"
         )
         out_dir.mkdir(parents=True, exist_ok=True)
         filename = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16] + ".png"
@@ -587,7 +587,7 @@ def _read_limited_http_response(client: httpx.Client, url: str, max_bytes: int) 
     limit = max(1, int(max_bytes or 1))
     chunks = bytearray()
     truncated = False
-    with client.stream("GET", url, headers={"User-Agent": "MarvisAgent/0.1"}) as response:
+    with client.stream("GET", url, headers={"User-Agent": "LengrvisAgent/0.1"}) as response:
         response.raise_for_status()
         content_length = response.headers.get("content-length")
         if content_length and content_length.isdigit() and int(content_length) > limit:

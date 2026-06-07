@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from pathlib import Path
 from typing import Any
 
 from app.core import db
@@ -25,17 +26,21 @@ class VectorIndex:
         limit: int = DEFAULT_LIMIT,
         candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
         scan_limit: int = DEFAULT_SCAN_LIMIT,
+        allowed_directories: list[str] | None = None,
     ) -> dict[str, Any]:
         db.init_db()
         query = str(query or "").strip()
         if not query:
             return {"query": query, "results": [], "count": 0, "candidate_count": 0, "source": "vector"}
+        allowed_bases = _allowed_bases(allowed_directories)
+        if allowed_bases == []:
+            return {"query": query, "results": [], "count": 0, "candidate_count": 0, "source": "vector"}
 
         query_vector = embed_texts_sync([query], embedder=self.embedder)[0]
-        candidates = self._candidate_chunks(query, candidate_limit)
+        candidates = _filter_allowed_rows(self._candidate_chunks(query, candidate_limit), allowed_bases)
         source = "fts_vector_rerank"
         if not candidates:
-            lexical_candidates = self._lexical_chunks(query, candidate_limit)
+            lexical_candidates = _filter_allowed_rows(self._lexical_chunks(query, candidate_limit), allowed_bases)
             if lexical_candidates:
                 fallback_results = _collapse_by_file(
                     _lexical_fallback_rows(lexical_candidates, query),
@@ -48,7 +53,7 @@ class VectorIndex:
                     "candidate_count": len(lexical_candidates),
                     "source": "fts_lexical_fallback",
                 }
-            candidates = self._recent_chunks(scan_limit)
+            candidates = _filter_allowed_rows(self._recent_chunks(scan_limit), allowed_bases)
             source = "vector_scan"
 
         ranked = []
@@ -73,7 +78,7 @@ class VectorIndex:
                 }
             )
 
-        lexical_candidates = self._lexical_chunks(query, candidate_limit)
+        lexical_candidates = _filter_allowed_rows(self._lexical_chunks(query, candidate_limit), allowed_bases)
         embedded_chunk_ids = {row["chunk_id"] for row in candidates}
         missing_embedding_candidates = [
             row
@@ -236,6 +241,37 @@ class VectorIndex:
             item["lexical_score"] = file_scores.get(item["file_id"], 0.0)
             candidates.append(item)
         return candidates
+
+
+def _allowed_bases(allowed_directories: list[str] | None) -> list[Path] | None:
+    if allowed_directories is None:
+        return None
+    bases: list[Path] = []
+    for raw_base in allowed_directories:
+        try:
+            bases.append(Path(raw_base).expanduser().resolve(strict=False))
+        except OSError:
+            continue
+    return bases
+
+
+def _filter_allowed_rows(rows: list[dict[str, Any]], allowed_bases: list[Path] | None) -> list[dict[str, Any]]:
+    if allowed_bases is None:
+        return rows
+    return [row for row in rows if _within_allowed_bases(str(row.get("path") or ""), allowed_bases)]
+
+
+def _within_allowed_bases(path: str, allowed_bases: list[Path]) -> bool:
+    if not path or not allowed_bases:
+        return False
+    try:
+        resolved = Path(path).expanduser().resolve(strict=False)
+    except OSError:
+        return False
+    for base in allowed_bases:
+        if resolved == base or base in resolved.parents:
+            return True
+    return False
 
 
 def _loads_vector(raw: Any) -> list[float]:

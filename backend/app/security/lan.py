@@ -17,7 +17,12 @@ def is_loopback_host(host: str | None) -> bool:
 
 
 def allow_lan_desktop_api() -> bool:
-    return (os.environ.get("MARVIS_ALLOW_LAN_DESKTOP_API") or os.environ.get("MAVRIS_ALLOW_LAN_DESKTOP_API") or "").lower() in {
+    return (
+        os.environ.get("LENGRVIS_ALLOW_LAN_DESKTOP_API")
+        or os.environ.get("LENGRVIS_ALLOW_LAN_DESKTOP_API")
+        or os.environ.get("LENGRVIS_ALLOW_LAN_DESKTOP_API")
+        or ""
+    ).lower() in {
         "1",
         "true",
         "yes",

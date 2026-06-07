@@ -40,7 +40,7 @@ class StubEvent(BaseModel):
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
 
 

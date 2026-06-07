@@ -157,7 +157,7 @@ def test_context_compact_route_returns_api_ready_payload():
 
 
 def test_compact_task_context_persists_boundary_and_agent_bus_projection(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     bus = AgentBus()
     task_id = "task_compact_persist"
@@ -185,7 +185,7 @@ def test_compact_task_context_persists_boundary_and_agent_bus_projection(monkeyp
 
 
 def test_context_compact_route_can_persist_task_boundary(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     bus = AgentBus()
     task_id = "task_compact_route"

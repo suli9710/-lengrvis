@@ -34,7 +34,7 @@ def test_legacy_signature():
 
 
 def test_notify_publishes_persisted_notification_message(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     bus = AgentBus()
     notification_service.init_bus(bus)

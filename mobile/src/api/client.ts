@@ -132,10 +132,10 @@ export interface MobileDevice {
   updated_at?: string;
 }
 
-const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "mavris.mobile.token.";
+const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token.";
 
 export class AuthExpiredError extends Error {
-  constructor(message = "这台手机已断开连接。请在 Mavris 中重新连接。") {
+  constructor(message = "这台手机已断开连接。请在 Lengrvis 中重新连接。") {
     super(message);
     this.name = "AuthExpiredError";
   }
@@ -237,7 +237,7 @@ export function mobileTokenWebSocketProtocols(token: string): string[] {
 
 export function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, "");
-  if (!trimmed) throw new Error("请输入 Mavris 中显示的电脑地址。");
+  if (!trimmed) throw new Error("请输入 Lengrvis 中显示的电脑地址。");
   return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
 }
 
@@ -261,7 +261,7 @@ async function parseJson<T>(response: Response): Promise<T> {
     if (response.status === 403) {
       throw new ForbiddenError(detail || undefined);
     }
-    throw new Error(detail || "Mavris 未能完成该请求，请重试。");
+    throw new Error(detail || "Lengrvis 未能完成该请求，请重试。");
   }
   return data as T;
 }

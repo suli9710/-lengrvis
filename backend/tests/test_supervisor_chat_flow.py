@@ -54,9 +54,9 @@ def _no_local_backend(monkeypatch):
 
 @pytest.mark.anyio
 async def test_chat_only_turn_returns_supervisor_feedback_without_task(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
 
     response = await handle_chat("agent how do you work", "privacy")
@@ -71,9 +71,9 @@ async def test_chat_only_turn_returns_supervisor_feedback_without_task(monkeypat
 
 @pytest.mark.anyio
 async def test_complaint_about_chatting_gets_natural_chat_reply(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
 
     response = await handle_chat("你怎么不和我聊天", "efficiency")
@@ -86,7 +86,7 @@ async def test_complaint_about_chatting_gets_natural_chat_reply(monkeypatch, tmp
 
 @pytest.mark.anyio
 async def test_supervisor_calls_provider_even_for_chat_only_turn(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider()
     monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
@@ -101,7 +101,7 @@ async def test_supervisor_calls_provider_even_for_chat_only_turn(monkeypatch, tm
 
 @pytest.mark.anyio
 async def test_provider_delegation_can_start_task_without_frontend_run(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(
         {
@@ -124,12 +124,12 @@ async def test_provider_delegation_can_start_task_without_frontend_run(monkeypat
 
 @pytest.mark.anyio
 async def test_provider_chat_decision_is_not_overridden_by_keyword_heuristic(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(
         {
             "delegate": False,
-            "reply": "我是 Mavris 的主管 Agent，会先和你自然对话，再按需要调其他 Agent。",
+            "reply": "我是 Lengrvis 的主管 Agent，会先和你自然对话，再按需要调其他 Agent。",
             "agent_hint": "",
         }
     )
@@ -140,13 +140,13 @@ async def test_provider_chat_decision_is_not_overridden_by_keyword_heuristic(mon
     assert provider.calls == 1
     assert response.delegated is False
     assert response.task_id is None
-    assert response.message.startswith("我是 Mavris")
+    assert response.message.startswith("我是 Lengrvis")
     assert db.fetch_many("tasks") == []
 
 
 @pytest.mark.anyio
 async def test_short_conversation_uses_natural_fallback_when_model_is_unhelpful(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(
         {
@@ -168,7 +168,7 @@ async def test_short_conversation_uses_natural_fallback_when_model_is_unhelpful(
 
 @pytest.mark.anyio
 async def test_identity_chat_stays_conversational(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(
         {
@@ -190,7 +190,7 @@ async def test_identity_chat_stays_conversational(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_supervisor_uses_heuristic_when_provider_fails(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=TimeoutError("provider unavailable"))
     monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
@@ -206,9 +206,9 @@ async def test_supervisor_uses_heuristic_when_provider_fails(monkeypatch, tmp_pa
 
 @pytest.mark.anyio
 async def test_executable_turn_without_local_backend_fails_clearly(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
 
     response = await handle_chat(r"open C:\Temp\report.txt", "privacy")
@@ -227,9 +227,9 @@ async def test_executable_turn_without_local_backend_fails_clearly(monkeypatch, 
 
 @pytest.mark.anyio
 async def test_executable_turn_uses_local_provider_when_available(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     provider = RecordingPlanProvider()
     monkeypatch.setattr(planner_module, "get_provider", lambda: provider)
@@ -245,9 +245,9 @@ async def test_executable_turn_uses_local_provider_when_available(monkeypatch, t
 
 @pytest.mark.anyio
 async def test_privacy_provider_runtime_failure_does_not_fallback_to_mock(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     provider = RecordingSupervisorProvider(error=TimeoutError("local provider timeout"))
     monkeypatch.setattr(planner_module, "get_provider", lambda: provider)
@@ -263,7 +263,7 @@ async def test_privacy_provider_runtime_failure_does_not_fallback_to_mock(monkey
 
 @pytest.mark.anyio
 async def test_file_delete_turn_returns_immediate_file_agent_feedback(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=AssertionError("provider should not block clear execution requests"))
     monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
@@ -280,7 +280,7 @@ async def test_file_delete_turn_returns_immediate_file_agent_feedback(monkeypatc
 
 @pytest.mark.anyio
 async def test_windows_path_delete_delegates_to_file_agent(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=AssertionError("provider should not block clear execution requests"))
     monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
@@ -295,7 +295,7 @@ async def test_windows_path_delete_delegates_to_file_agent(monkeypatch, tmp_path
 
 @pytest.mark.anyio
 async def test_uninstall_app_turn_delegates_to_app_agent(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=AssertionError("provider should not block clear uninstall requests"))
     monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
@@ -315,10 +315,10 @@ async def test_file_delete_path_creates_trash_approval(monkeypatch, tmp_path):
     target = tmp_path / "workspace" / "old-folder"
     target.mkdir(parents=True)
     (target / "note.txt").write_text("remove me\n", encoding="utf-8")
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(target.parent))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(target.parent))
     db.init_db()
 
     response = await handle_chat(f"delete {target}", "privacy")
@@ -340,10 +340,10 @@ def test_approval_executes_trash_step_after_user_approval(monkeypatch, tmp_path)
     target = tmp_path / "workspace" / "old-folder"
     target.mkdir(parents=True)
     (target / "note.txt").write_text("remove me\n", encoding="utf-8")
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(target.parent))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(target.parent))
     db.init_db()
 
     client = TestClient(app)
@@ -369,10 +369,10 @@ def test_explicit_path_trash_can_run_without_global_authorized_directory(monkeyp
     target = tmp_path / "workspace" / "old-folder"
     target.mkdir(parents=True)
     (target / "note.txt").write_text("remove me\n", encoding="utf-8")
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
-    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", "")
     db.init_db()
 
     client = TestClient(app)
@@ -394,9 +394,9 @@ def test_explicit_path_trash_can_run_without_global_authorized_directory(monkeyp
 
 @pytest.mark.anyio
 async def test_domain_mention_without_action_stays_conversational(monkeypatch, tmp_path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("MARVIS_PROVIDER_NAME", "mock")
-    monkeypatch.setenv("MARVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
 
     response = await handle_chat("computer agent should explain responsibilities", "privacy")

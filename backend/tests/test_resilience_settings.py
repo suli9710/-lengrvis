@@ -27,9 +27,9 @@ def test_yaml_zero_values_are_preserved(monkeypatch, tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MARVIS_CONFIG_FILE", str(config_path))
-    monkeypatch.delenv("MARVIS_LLM_API_MAX_RETRIES", raising=False)
-    monkeypatch.delenv("MARVIS_RECOVERY_MAX_RETRIES", raising=False)
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("LENGRVIS_LLM_API_MAX_RETRIES", raising=False)
+    monkeypatch.delenv("LENGRVIS_RECOVERY_MAX_RETRIES", raising=False)
 
     settings = AppSettings.from_sources()
 
@@ -42,8 +42,8 @@ def test_yaml_zero_values_are_preserved(monkeypatch, tmp_path: Path):
 def test_env_values_override_yaml(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("llm:\n  llm_api_max_retries: 0\n", encoding="utf-8")
-    monkeypatch.setenv("MARVIS_CONFIG_FILE", str(config_path))
-    monkeypatch.setenv("MARVIS_LLM_API_MAX_RETRIES", "4")
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("LENGRVIS_LLM_API_MAX_RETRIES", "4")
 
     settings = AppSettings.from_sources()
 
@@ -52,11 +52,10 @@ def test_env_values_override_yaml(monkeypatch, tmp_path: Path):
 
 def test_default_jwt_secret_is_reused_across_config_reloads(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("MARVIS_ENV_FILE", str(tmp_path / "missing.env"))
-    monkeypatch.setenv("MARVIS_CONFIG_FILE", str(tmp_path / "missing.yaml"))
-    monkeypatch.delenv("MARVIS_JWT_SECRET", raising=False)
-    monkeypatch.delenv("MAVRIS_JWT_SECRET", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(tmp_path / "missing.yaml"))
+    monkeypatch.delenv("LENGRVIS_JWT_SECRET", raising=False)
 
     first = AppSettings.from_sources()
     second = AppSettings.from_sources()
@@ -70,9 +69,8 @@ def test_env_jwt_secret_overrides_local_secret(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     (data_dir / "mobile_jwt.secret").write_text("local-secret", encoding="utf-8")
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("MARVIS_JWT_SECRET", "env-secret")
-    monkeypatch.delenv("MAVRIS_JWT_SECRET", raising=False)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_JWT_SECRET", "env-secret")
 
     settings = AppSettings.from_sources()
 
@@ -95,13 +93,13 @@ def test_invalid_numeric_settings_fall_back_without_crashing(monkeypatch, tmp_pa
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MARVIS_CONFIG_FILE", str(config_path))
-    monkeypatch.setenv("MARVIS_ENV_FILE", str(tmp_path / "missing.env"))
-    monkeypatch.delenv("MARVIS_TEMPERATURE", raising=False)
-    monkeypatch.delenv("MARVIS_MAX_TOKENS", raising=False)
-    monkeypatch.delenv("MARVIS_TIMEOUT", raising=False)
-    monkeypatch.delenv("MARVIS_BROWSER_MAX_PAGE_BYTES", raising=False)
-    monkeypatch.delenv("MARVIS_DOCUMENT_MAX_CHARS_TO_LLM", raising=False)
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.delenv("LENGRVIS_TEMPERATURE", raising=False)
+    monkeypatch.delenv("LENGRVIS_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("LENGRVIS_TIMEOUT", raising=False)
+    monkeypatch.delenv("LENGRVIS_BROWSER_MAX_PAGE_BYTES", raising=False)
+    monkeypatch.delenv("LENGRVIS_DOCUMENT_MAX_CHARS_TO_LLM", raising=False)
 
     settings = AppSettings.from_sources()
 
@@ -124,10 +122,10 @@ def test_perception_yaml_keys_match_example_config(monkeypatch, tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MARVIS_CONFIG_FILE", str(config_path))
-    monkeypatch.setenv("MARVIS_ENV_FILE", str(tmp_path / "missing.env"))
-    monkeypatch.delenv("MARVIS_PERCEPTION_LOCAL_OCR_ENABLED", raising=False)
-    monkeypatch.delenv("MARVIS_PERCEPTION_FRAME_DIFF_THRESHOLD", raising=False)
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
+    monkeypatch.delenv("LENGRVIS_PERCEPTION_LOCAL_OCR_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_PERCEPTION_FRAME_DIFF_THRESHOLD", raising=False)
 
     settings = AppSettings.from_sources()
 
@@ -140,16 +138,16 @@ def test_encrypted_api_key_is_decrypted_when_plain_key_missing(monkeypatch, tmp_
     env_path.write_text(
         "\n".join(
             [
-                "MARVIS_PROVIDER_NAME=openai_compatible",
-                "MARVIS_BASE_URL=https://api.example.test",
-                "MARVIS_API_KEY_ENCRYPTED=dpapi:encrypted-test-key",
+                "LENGRVIS_PROVIDER_NAME=openai_compatible",
+                "LENGRVIS_BASE_URL=https://api.example.test",
+                "LENGRVIS_API_KEY_ENCRYPTED=dpapi:encrypted-test-key",
             ]
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MARVIS_ENV_FILE", str(env_path))
-    monkeypatch.delenv("MARVIS_API_KEY", raising=False)
-    monkeypatch.delenv("MARVIS_API_KEY_ENCRYPTED", raising=False)
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(env_path))
+    monkeypatch.delenv("LENGRVIS_API_KEY", raising=False)
+    monkeypatch.delenv("LENGRVIS_API_KEY_ENCRYPTED", raising=False)
     monkeypatch.setattr("app.config._decrypt_windows_dpapi", lambda value: f"decrypted:{value}")
 
     settings = AppSettings.from_sources()
@@ -158,7 +156,7 @@ def test_encrypted_api_key_is_decrypted_when_plain_key_missing(monkeypatch, tmp_
 
 
 def test_settings_endpoint_coerces_resilience_fields(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     client = TestClient(create_app())
 
@@ -183,7 +181,7 @@ def test_settings_endpoint_coerces_resilience_fields(monkeypatch, tmp_path: Path
 
 
 def test_settings_endpoint_rejects_invalid_numeric_fields(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
     client = TestClient(create_app())
 

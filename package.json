@@ -1,8 +1,8 @@
 {
-  "name": "mavris",
+  "name": "lengrvis",
   "private": true,
   "version": "0.1.0",
-  "description": "Mavris workspace packaging and QA scripts",
+  "description": "Lengrvis workspace packaging and QA scripts",
   "scripts": {
     "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1",
     "test": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1",

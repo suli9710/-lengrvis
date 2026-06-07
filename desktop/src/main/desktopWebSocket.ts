@@ -10,7 +10,7 @@ import type {
 import type { BackendProcessManager } from "./backendProcess";
 import { assertTrustedRenderer } from "./ipc";
 
-export const DESKTOP_WS_PROTOCOL_PREFIX = "mavris.desktop.token.";
+export const DESKTOP_WS_PROTOCOL_PREFIX = "lengrvis.desktop.token.";
 const WEB_SOCKET_PROTOCOL_TOKEN_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 interface DesktopSocketEntry {

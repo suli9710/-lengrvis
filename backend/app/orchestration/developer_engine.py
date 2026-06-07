@@ -47,7 +47,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
             mode=mode,
             transition_reason="developer Claude Code run created",
             current_plan={
-                "summary": "Run Claude Code headless with Mavris-controlled OpenAI config and tool permissions.",
+                "summary": "Run Claude Code headless with Lengrvis-controlled OpenAI config and tool permissions.",
                 "adapter": "claude_code_headless_stream_json",
                 "workspace": _default_workspace(self.settings),
                 "model": self.settings.model,
@@ -144,7 +144,7 @@ def _default_workspace(settings: AppSettings) -> str:
 
 def _prompt_from_goal(goal: str) -> str:
     return (
-        "You are the Mavris Developer Engine running through Claude Code headless mode. "
+        "You are the Lengrvis Developer Engine running through Claude Code headless mode. "
         "Work only inside the allowed workspace provided by --add-dir. "
         "Use the controlled tool allowlist and do not request bypass permissions. "
         "Complete the user's development task, verify when practical, and summarize changed files and checks.\n\n"
