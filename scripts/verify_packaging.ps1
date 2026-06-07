@@ -228,21 +228,38 @@ function Save-SmokeProcessLogs([object]$Run) {
     if ($null -eq $Run -or $Run.LogsSaved) {
         return
     }
-    try {
-        $StdOut = $Run.Process.StandardOutput.ReadToEnd()
-    }
-    catch {
-        $StdOut = "[unable to read stdout: $($_.Exception.Message)]"
-    }
-    try {
-        $StdErr = $Run.Process.StandardError.ReadToEnd()
-    }
-    catch {
-        $StdErr = "[unable to read stderr: $($_.Exception.Message)]"
-    }
+    $StdOut = if ($Run.StdOutBuffer) { $Run.StdOutBuffer.ToString() } else { "" }
+    $StdErr = if ($Run.StdErrBuffer) { $Run.StdErrBuffer.ToString() } else { "" }
     Set-Content -LiteralPath $Run.StdOut -Value $StdOut -Encoding UTF8
     Set-Content -LiteralPath $Run.StdErr -Value $StdErr -Encoding UTF8
     $Run.LogsSaved = $true
+}
+
+function Remove-SmokeProcessOutputHandlers([object]$Run) {
+    if ($null -eq $Run -or -not $Run.Started -or $Run.OutputHandlersRemoved) {
+        return
+    }
+    try {
+        $Run.Process.CancelOutputRead()
+    }
+    catch {
+    }
+    try {
+        $Run.Process.CancelErrorRead()
+    }
+    catch {
+    }
+    try {
+        if ($Run.StdOutHandler) {
+            $Run.Process.remove_OutputDataReceived($Run.StdOutHandler)
+        }
+        if ($Run.StdErrHandler) {
+            $Run.Process.remove_ErrorDataReceived($Run.StdErrHandler)
+        }
+    }
+    catch {
+    }
+    $Run.OutputHandlersRemoved = $true
 }
 
 function Start-SmokeProcess {
@@ -296,12 +313,36 @@ function Start-SmokeProcess {
         }
     }
 
+    $StdOutBuffer = New-Object System.Text.StringBuilder
+    $StdErrBuffer = New-Object System.Text.StringBuilder
+    $StdOutHandler = [System.Diagnostics.DataReceivedEventHandler]{
+        param($Sender, $EventArgs)
+        if ($null -ne $EventArgs.Data) {
+            [void]$StdOutBuffer.AppendLine($EventArgs.Data)
+        }
+    }.GetNewClosure()
+    $StdErrHandler = [System.Diagnostics.DataReceivedEventHandler]{
+        param($Sender, $EventArgs)
+        if ($null -ne $EventArgs.Data) {
+            [void]$StdErrBuffer.AppendLine($EventArgs.Data)
+        }
+    }.GetNewClosure()
+    $Process.add_OutputDataReceived($StdOutHandler)
+    $Process.add_ErrorDataReceived($StdErrHandler)
+    $Process.BeginOutputReadLine()
+    $Process.BeginErrorReadLine()
+
     return [pscustomobject]@{
         Started = $true
         Process = $Process
         StdOut = $Logs.StdOut
         StdErr = $Logs.StdErr
+        StdOutBuffer = $StdOutBuffer
+        StdErrBuffer = $StdErrBuffer
+        StdOutHandler = $StdOutHandler
+        StdErrHandler = $StdErrHandler
         LogsSaved = $false
+        OutputHandlersRemoved = $false
     }
 }
 
@@ -363,9 +404,11 @@ function Stop-SmokeProcess([object]$Run) {
         if (-not $Run.Process.HasExited) {
             Stop-SmokeProcessTree -Process $Run.Process
         }
+        Start-Sleep -Milliseconds 100
         Save-SmokeProcessLogs $Run
     }
     finally {
+        Remove-SmokeProcessOutputHandlers $Run
         $Run.Process.Dispose()
     }
 }
@@ -405,8 +448,10 @@ function Invoke-SmokeProcessAndWait {
     foreach ($ChildProcessId in $ChildProcessIds) {
         Stop-Process -Id $ChildProcessId -Force -ErrorAction SilentlyContinue
     }
+    Start-Sleep -Milliseconds 100
     Save-SmokeProcessLogs $Run
     $ExitCode = $Run.Process.ExitCode
+    Remove-SmokeProcessOutputHandlers $Run
     $Run.Process.Dispose()
     return [pscustomobject]@{
         Started = $true
