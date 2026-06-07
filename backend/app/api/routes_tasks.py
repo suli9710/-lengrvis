@@ -24,7 +24,7 @@ BOUNDARY_EVENT_QUERY_CHUNK_SIZE = 400
 def _openai_agent_messages(task_id: str) -> list[dict]:
     return [
         AgentMessage.model_validate(item).to_openai_dict()
-        for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,))
+        for item in db.fetch_many_by_fields("agent_messages", {"task_id": task_id})
     ]
 
 
@@ -36,7 +36,7 @@ def _step_recordings(task_id: str) -> list[dict]:
             continue
         _merge_step_recording(result, step_id, "", "", [frame])
 
-    for message in reversed(db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=1000)):
+    for message in reversed(db.fetch_many_by_fields("agent_messages", {"task_id": task_id}, limit=1000)):
         payload = message.get("structured_payload") or (message.get("metadata") or {}).get("structured_payload") or {}
         if not isinstance(payload, dict) or payload.get("kind") != task_recording_service.RECORDING_KIND:
             continue
@@ -116,8 +116,8 @@ def task(task_id: str) -> Task:
 
 @router.get("/tasks/{task_id}/timeline")
 def timeline(task_id: str):
-    messages = db.fetch_many("agent_messages", "task_id = ?", (task_id,))
-    reviews = db.fetch_many("safety_reviews", "task_id = ?", (task_id,))
+    messages = db.fetch_many_by_fields("agent_messages", {"task_id": task_id})
+    reviews = db.fetch_many_by_fields("safety_reviews", {"task_id": task_id})
     return {
         "task": task_id,
         "messages": [AgentMessage.model_validate(item).to_openai_dict() for item in messages],
@@ -163,7 +163,7 @@ def _recent_records_by_task(table: str, task_ids: list[str], *, limit_per_task: 
         chunk = task_ids[start : start + BOUNDARY_EVENT_QUERY_CHUNK_SIZE]
         placeholders = ", ".join("?" for _ in chunk)
         query = f"""
-            SELECT data
+            SELECT task_id, data
             FROM (
                 SELECT
                     task_id,
@@ -184,9 +184,10 @@ def _recent_records_by_task(table: str, task_ids: list[str], *, limit_per_task: 
             rows = conn.execute(query, (*chunk, limit_per_task)).fetchall()
         for row in rows:
             item = json.loads(row["data"])
-            task_id = str(item.get("task_id") or "")
-            if task_id in grouped:
-                grouped[task_id].append(item)
+            source_task_id = str(row["task_id"] or "")
+            if source_task_id in grouped:
+                item["task_id"] = source_task_id
+                grouped[source_task_id].append(item)
     return grouped
 
 
@@ -197,9 +198,21 @@ def _boundary_events(
     reviews: list[dict] | None = None,
     audits: list[dict] | None = None,
 ) -> list[dict]:
-    messages = messages if messages is not None else db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=500)
-    reviews = reviews if reviews is not None else db.fetch_many("safety_reviews", "task_id = ?", (task_id,), limit=500)
-    audits = audits if audits is not None else db.fetch_many("audit_events", "task_id = ?", (task_id,), limit=500)
+    messages = (
+        messages
+        if messages is not None
+        else db.fetch_many_by_fields("agent_messages", {"task_id": task_id}, limit=500)
+    )
+    reviews = (
+        reviews
+        if reviews is not None
+        else db.fetch_many_by_fields("safety_reviews", {"task_id": task_id}, limit=500)
+    )
+    audits = (
+        audits
+        if audits is not None
+        else db.fetch_many_by_fields("audit_events", {"task_id": task_id}, limit=500)
+    )
     events: list[dict] = []
 
     for message in messages:
@@ -347,7 +360,10 @@ def replay(task_id: str):
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
     messages = sorted(_openai_agent_messages(task_id), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
-    tool_calls = sorted(db.fetch_many("tool_calls", "task_id = ?", (task_id,), limit=1000), key=lambda item: item.get("created_at") or "")
+    tool_calls = sorted(
+        db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=1000),
+        key=lambda item: item.get("created_at") or "",
+    )
     results_by_call = _tool_results_by_call_id([str(call.get("id") or "") for call in tool_calls])
     return {
         "task": task.model_dump(mode="json"),
@@ -363,13 +379,7 @@ def _tool_results_by_call_id(call_ids: list[str]) -> dict[str, dict]:
     unique_ids = [call_id for call_id in dict.fromkeys(call_ids) if call_id]
     for start in range(0, len(unique_ids), 400):
         chunk = unique_ids[start : start + 400]
-        placeholders = ", ".join("?" for _ in chunk)
-        for result in db.fetch_many(
-            "tool_results",
-            f"tool_call_id IN ({placeholders})",
-            tuple(chunk),
-            limit=len(chunk),
-        ):
+        for result in db.fetch_many_in("tool_results", "tool_call_id", tuple(chunk), limit=len(chunk)):
             tool_call_id = str(result.get("tool_call_id") or "")
             if tool_call_id and tool_call_id not in results_by_call:
                 results_by_call[tool_call_id] = result
@@ -382,7 +392,7 @@ def progress(task_id: str):
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
-    messages = db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=1000)
+    messages = db.fetch_many_by_fields("agent_messages", {"task_id": task_id}, limit=1000)
     progress_events = []
     for message in messages:
         payload = message.get("structured_payload") or (message.get("metadata") or {}).get("structured_payload") or {}
@@ -433,7 +443,7 @@ def agent_messages(task_id: str):
 
 @router.get("/tasks/{task_id}/safety-reviews")
 def safety_reviews(task_id: str):
-    return db.fetch_many("safety_reviews", "task_id = ?", (task_id,))
+    return db.fetch_many_by_fields("safety_reviews", {"task_id": task_id})
 
 
 @router.post("/tasks/{task_id}/pause")

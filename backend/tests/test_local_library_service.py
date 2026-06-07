@@ -99,4 +99,5 @@ def test_local_library_preview_uses_short_lived_signed_url(
     client = TestClient(app, client=("127.0.0.1", 50100))
     assert client.get("/api/library/preview", params={"path": str(image)}).status_code == 401
     assert client.get(preview_url).status_code == 200
+    assert client.post(preview_url).status_code == 401
     assert client.get(preview_url.replace("signature=", "signature=bad")).status_code == 401

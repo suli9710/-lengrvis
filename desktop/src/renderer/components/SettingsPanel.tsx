@@ -14,10 +14,10 @@ import type {
   LocalModelSetupPlan,
   McpServerConfig
 } from "../../shared/types";
-import type { MavrisApiClient, MobileDevice, MobilePairingCode, RemoteInputGrant } from "../lib/apiClient";
+import type { MavrisApiClient, MobileDevice, MobilePairingCode, RealtimeConnectionStatus, RemoteInputGrant } from "../lib/apiClient";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import { activeRemoteInputGrantForDevice, mobileDeviceCanReceiveRemoteInputGrant } from "../lib/remoteInputGrant";
-import { zhBackendState } from "../lib/zh";
+import { zhBackendState, zhRealtimeConnectionStatus, zhRealtimeShortStatus } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
 
 function zhMode(mode: AppSettings["mode"]): string {
@@ -157,6 +157,7 @@ type InstallModelSocketStatus = "idle" | "connecting" | "connected" | "reconnect
 interface SettingsPanelProps {
   settings: AppSettings;
   backendStatus: BackendStatus;
+  realtimeStatus?: RealtimeConnectionStatus | null;
   localLlmHealth: LocalLLMHealth | null;
   llmHealth: LLMHealthStatus | null;
   llmCostSummary: LLMCostSummary | null;
@@ -172,6 +173,7 @@ interface SettingsPanelProps {
 export function SettingsPanel({
   settings,
   backendStatus,
+  realtimeStatus,
   localLlmHealth,
   llmHealth,
   llmCostSummary,
@@ -529,11 +531,20 @@ export function SettingsPanel({
     setDraft((current) => ({ ...current, mode: value }));
   };
   const hardwareRuntime = providerToRuntime(draft.onnxExecutionProvider);
+  const realtimeStatusText = realtimeStatus ? zhRealtimeConnectionStatus(realtimeStatus) : "";
+  const realtimeStatusNeedsAttention = Boolean(realtimeStatus && realtimeStatus.state !== "open");
+  const realtimeStatusProblem = Boolean(
+    realtimeStatus && ["unauthorized", "policy_violation", "error", "closed", "bad_message"].includes(realtimeStatus.state)
+  );
   return (
     <Panel
       title="设置"
       eyebrow="偏好"
-      action={<Badge tone={backendStatus.state === "running" ? "success" : "warning"}>{appStatusLabel(backendStatus.state)}</Badge>}
+      action={
+        <Badge tone={backendStatus.state === "running" && !realtimeStatusNeedsAttention ? "success" : "warning"}>
+          {realtimeStatusNeedsAttention && realtimeStatus ? zhRealtimeShortStatus(realtimeStatus) : appStatusLabel(backendStatus.state)}
+        </Badge>
+      }
     >
       <div className="settings-grid">
         <fieldset className="mcp-servers settings-grid__full">
@@ -641,6 +652,11 @@ export function SettingsPanel({
           <div className="settings-status-grid">
             <p className="muted">Mavris: {aiStatus}</p>
             <p className="muted">本地 AI: {localAiStatus}</p>
+            {realtimeStatusText ? (
+              <p className={realtimeStatusProblem ? "settings-status settings-status--error" : "muted"}>
+                实时通道：{realtimeStatusText}
+              </p>
+            ) : null}
           </div>
         </fieldset>
         {draft.mode === "privacy" || draft.mode === "hybrid" ? (
@@ -736,6 +752,11 @@ export function SettingsPanel({
               <p className="muted">当前：{llmHealth?.active.provider ?? "N/A"} / {llmHealth?.active.model ?? "N/A"} / {llmHealth?.active.profile.activeBackend ?? "N/A"}</p>
               <p className="muted">成本：{llmCostSummary ? `${llmCostSummary.calls} 次调用，${llmCostSummary.totalTokens} tokens，${llmCostSummary.totalCostUsd === null ? "N/A" : `$${llmCostSummary.totalCostUsd.toFixed(4)}`}` : "N/A"}</p>
               <p className="muted">运行状态：{zhBackendState(backendStatus.state)}</p>
+              {realtimeStatusText ? (
+                <p className={realtimeStatusProblem ? "settings-status settings-status--error" : "muted"}>
+                  实时状态：{realtimeStatusText}
+                </p>
+              ) : null}
             </div>
           </fieldset>
 
@@ -1823,7 +1844,15 @@ function subscribeInstallModelProgressSocket(
     return null;
   }
 
+  if (!isInstallModelWebOnlyDevFallbackEnabled()) {
+    return null;
+  }
+
   return subscribeInstallModelWebOnlyDevSocket(buildInstallModelWebSocketUrl(baseUrl, path, model), handlers);
+}
+
+function isInstallModelWebOnlyDevFallbackEnabled(): boolean {
+  return !window.mavris?.realtime && import.meta.env.DEV;
 }
 
 function subscribeInstallModelWebOnlyDevSocket(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -9,7 +11,7 @@ from app.core import db
 from app.core.schemas import Run, RunEngine, RunPhase
 from app.main import app
 from app.guardian import create_guardian_app
-from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX
+from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX, signed_desktop_resource_query
 from app.services import mobile_pairing_service
 
 
@@ -301,6 +303,27 @@ def test_loopback_state_changes_require_persisted_desktop_token_by_default(monke
     assert len(token) >= 32
     assert allowed.status_code == 200
     assert allowed_read.status_code == 200
+
+
+def test_signed_desktop_resource_is_bound_to_http_method(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MARVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
+    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    image_path = tmp_path / "preview.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    db.init_db()
+    client = TestClient(app, client=("127.0.0.1", 50100))
+    query = urlencode(
+        {
+            "path": str(image_path),
+            **signed_desktop_resource_query("/api/library/preview", str(image_path), method="GET"),
+        }
+    )
+
+    assert client.get(f"/api/library/preview?{query}").status_code == 200
+    assert client.post(f"/api/library/preview?{query}").status_code == 401
 
 
 def test_mavris_dev_does_not_disable_desktop_token_guard(monkeypatch, tmp_path):

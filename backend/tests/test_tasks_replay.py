@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from app.core import db
@@ -145,3 +147,47 @@ def test_tasks_list_batches_boundary_events(monkeypatch, tmp_path):
         kinds = {event["kind"] for event in listed[task_id]["boundary_events"]}
         assert {"tool_progress", "post_tool_review", "context_projection"}.issubset(kinds)
     assert event_fetches == {"agent_messages": 0, "safety_reviews": 0, "audit_events": 0}
+
+
+def test_tasks_list_boundary_events_use_table_task_id_when_json_task_id_is_stale(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    target = Task(id="task_boundary_table_source", user_goal="Use table task id")
+    stale_json_target = Task(id="task_boundary_json_stale", user_goal="Stale JSON task id")
+    db.upsert_model("tasks", target)
+    db.upsert_model("tasks", stale_json_target)
+
+    message = AgentMessage(
+        id="msg_stale_json_task_id",
+        task_id=stale_json_target.id,
+        step_id="step_1",
+        from_agent="ToolRuntime",
+        message_type=MessageType.NOTIFICATION,
+        content="Starting file.read_text.",
+        structured_payload={"kind": "tool_progress", "tool_name": "file.read_text", "status": "started"},
+        metadata={"event_type": "tool.progress", "tool_name": "file.read_text"},
+        created_at="2024-01-01T00:00:00Z",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_messages (id, task_id, step_id, data, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                message.id,
+                target.id,
+                message.step_id,
+                json.dumps(message.model_dump(mode="json"), ensure_ascii=False),
+                message.created_at,
+            ),
+        )
+
+    response = TestClient(app).get("/api/tasks")
+
+    assert response.status_code == 200
+    listed = {item["id"]: item for item in response.json() if item["id"] in {target.id, stale_json_target.id}}
+    target_events = listed[target.id]["boundary_events"]
+    stale_target_events = listed[stale_json_target.id]["boundary_events"]
+    assert any(event["id"] == message.id and event["kind"] == "tool_progress" for event in target_events)
+    assert all(event["id"] != message.id for event in stale_target_events)

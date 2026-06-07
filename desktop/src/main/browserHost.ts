@@ -666,7 +666,7 @@ export class BrowserHostWebSocketBridge {
   constructor(
     private readonly browserHost: BrowserHost,
     private readonly getBaseUrl: () => string,
-    private readonly getDesktopApiToken: () => string = () => ""
+    private readonly getDesktopApiToken: () => string
   ) {}
 
   start(): void {

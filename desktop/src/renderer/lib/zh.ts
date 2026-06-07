@@ -283,6 +283,14 @@ export function zhUserFacingError(text?: string): string {
   }
 
   if (
+    lower.includes("1008") ||
+    lower.includes("policy violation") ||
+    lower.includes("policy_violation")
+  ) {
+    return "实时连接被后端安全策略关闭（1008）。请确认桌面端和后端授权一致，必要时重启 Mavris 后再试。";
+  }
+
+  if (
     lower.includes("http_404") ||
     lower.includes("http 404") ||
     lower.includes("status 404") ||
@@ -516,4 +524,62 @@ export function zhRelativeTime(value: string) {
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours} 小时前`;
   return `${Math.round(hours / 24)} 天前`;
+}
+export function zhRealtimeConnectionStatus(status: {
+  state: string;
+  code?: number;
+  reason?: string;
+  retryInMs?: number;
+  message?: string;
+}): string {
+  const retry = status.retryInMs ? `，约 ${Math.round(status.retryInMs / 1000)} 秒后重试` : "";
+  const detail = status.code || status.reason ? `（${[status.code ? `code ${status.code}` : "", status.reason].filter(Boolean).join(" / ")}）` : "";
+  if (status.state === "open") {
+    return "实时连接已建立，任务进度会自动更新。";
+  }
+  if (status.state === "connecting") {
+    return "正在连接实时通道。";
+  }
+  if (status.state === "unauthorized") {
+    return `实时连接未通过桌面授权${detail}。请重启 Mavris 桌面端后再试。`;
+  }
+  if (status.state === "policy_violation") {
+    return `实时连接被后端安全策略拒绝${detail}。请确认桌面端和后端使用同一个 desktop token。`;
+  }
+  if (status.state === "reconnecting") {
+    return `实时连接暂时断开，正在恢复${retry}${detail}。期间会继续用轮询刷新任务状态。`;
+  }
+  if (status.state === "error") {
+    return `${status.message || "实时连接遇到错误，正在尝试恢复"}${retry}${detail}。`;
+  }
+  if (status.state === "bad_message") {
+    return "收到一条无法解析的实时消息，已保留原始内容并继续等待下一条。";
+  }
+  if (status.state === "closed") {
+    return `实时连接已断开${detail}。可以刷新连接，任务状态仍会通过轮询补齐。`;
+  }
+  return status.message || "实时连接状态已更新。";
+}
+
+export function zhRealtimeShortStatus(status: { state: string }): string {
+  if (status.state === "unauthorized") return "未授权";
+  if (status.state === "policy_violation") return "1008 拒绝";
+  if (status.state === "reconnecting") return "重连中";
+  if (status.state === "connecting") return "连接中";
+  if (status.state === "bad_message") return "消息异常";
+  if (status.state === "closed") return "已断线";
+  if (status.state === "error") return "实时异常";
+  return "就绪";
+}
+
+export function zhRealtimeBadMessageSummary(count: number, samples: string[]): string {
+  const sampleText = samples.length
+    ? ` 最近原文预览：${samples.map((sample) => `“${previewRealtimeSample(sample)}”`).join("；")}`
+    : "";
+  return `实时链路收到 ${count} 条无法解析的消息，已自动降噪并继续监听。${sampleText}`;
+}
+
+function previewRealtimeSample(sample: string): string {
+  const compact = sample.replace(/\s+/g, " ").trim();
+  return compact.length > 220 ? `${compact.slice(0, 220)}...` : compact;
 }

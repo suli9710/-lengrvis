@@ -69,20 +69,26 @@ def signed_desktop_resource_query(
     resource_path: str,
     payload: str,
     *,
+    method: str = "GET",
     expires_in_seconds: int = DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS,
 ) -> dict[str, str]:
     expires_in = max(1, min(int(expires_in_seconds), DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS))
     expires_at = str(int(time.time()) + expires_in)
     return {
         DESKTOP_SIGNED_RESOURCE_EXPIRES_QUERY: expires_at,
-        DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY: _desktop_resource_signature(resource_path, payload, expires_at),
+        DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY: _desktop_resource_signature(
+            resource_path,
+            payload,
+            expires_at,
+            method=method,
+        ),
     }
 
 
 async def close_unauthorized_desktop_websocket(websocket: WebSocket) -> bool:
     if is_authorized_desktop_websocket(websocket):
         return False
-    raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION)
+    raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason="unauthorized")
 
 
 def _is_desktop_api_token_exempt_path(path: str) -> bool:
@@ -109,7 +115,7 @@ def _has_valid_signed_desktop_resource(request: Request) -> bool:
     now = int(time.time())
     if expires_ts < now or expires_ts > now + DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS:
         return False
-    expected = _desktop_resource_signature(resource_path, payload, expires_at)
+    expected = _desktop_resource_signature(resource_path, payload, expires_at, method=request.method)
     return bool(expected and hmac.compare_digest(supplied, expected))
 
 
@@ -119,12 +125,16 @@ def _signed_desktop_resource_payload(resource_path: str, query_params: Mapping[s
     return ""
 
 
-def _desktop_resource_signature(resource_path: str, payload: str, expires_at: str) -> str:
+def _desktop_resource_signature(resource_path: str, payload: str, expires_at: str, *, method: str = "GET") -> str:
     secret = desktop_api_token()
     if not secret:
         return ""
-    body = f"{resource_path}\n{payload}\n{expires_at}".encode("utf-8")
+    body = f"{_normalize_http_method(method)}\n{resource_path}\n{payload}\n{expires_at}".encode("utf-8")
     return hmac.new(secret.encode("utf-8"), body, sha256).hexdigest()
+
+
+def _normalize_http_method(method: str) -> str:
+    return str(method or "GET").strip().upper() or "GET"
 
 
 def _desktop_api_token_optional() -> bool:

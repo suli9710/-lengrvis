@@ -164,6 +164,23 @@ mobile token smoke passed
 
 跳过项是当前 Windows shell 没有创建符号链接权限。
 
+端到端 QA 和发布门禁见：
+
+- `docs/qa/e2e-acceptance-matrix.md`：backend / desktop / mobile 的 P0-P2 验收矩阵。
+- `docs/qa/release-gate.md`：发布前 `qa:gate`、产物 `release:gate`、人工 P1 验收和 stop-ship 条件。
+
+快速发布前置门禁：
+
+```powershell
+npm run qa:gate
+```
+
+已有 Windows 发布产物时再跑产物门禁：
+
+```powershell
+npm run release:gate
+```
+
 ## 打包
 
 后端 binary：

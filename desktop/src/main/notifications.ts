@@ -206,10 +206,25 @@ export class NotificationBridge {
 function buildBackendNotificationWebSocketUrl(baseUrl: string, path: string): string {
   const configuredUrl = process.env.MAVRIS_NOTIFICATION_WS_URL;
   if (configuredUrl && /^wss?:\/\//i.test(configuredUrl)) {
-    return configuredUrl;
+    return normalizeConfiguredNotificationWebSocketUrl(baseUrl, configuredUrl);
   }
 
   return buildBackendWebSocketUrl(baseUrl, path);
+}
+
+function normalizeConfiguredNotificationWebSocketUrl(baseUrl: string, configuredUrl: string): string {
+  const backendUrl = new URL(baseUrl);
+  const notificationUrl = new URL(configuredUrl);
+  if (!["http:", "https:"].includes(backendUrl.protocol) || !["ws:", "wss:"].includes(notificationUrl.protocol)) {
+    throw new Error("Notification WebSocket URL must use the backend HTTP(S)/WS(S) protocols");
+  }
+
+  const notificationOriginProtocol = notificationUrl.protocol === "wss:" ? "https:" : "http:";
+  if (notificationOriginProtocol !== backendUrl.protocol || notificationUrl.host !== backendUrl.host) {
+    throw new Error("Notification WebSocket URL must stay on the configured backend origin");
+  }
+
+  return notificationUrl.toString();
 }
 
 function hasConfiguredNotificationWebSocket(): boolean {
