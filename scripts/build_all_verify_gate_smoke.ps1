@@ -21,7 +21,7 @@ function New-SmokeExecutable([string]$Path) {
     [System.IO.File]::WriteAllBytes($Path, $bytes)
 }
 
-function New-RunnableSmokeExecutable([string]$Path) {
+function New-BackendHealthSmokeExecutable([string]$Path) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Force
@@ -30,16 +30,113 @@ function New-RunnableSmokeExecutable([string]$Path) {
     $source = @"
 public static class $className {
     public static int Main(string[] args) {
-        if (args.Length > 0 && (args[0] == "--version" || args[0] == "--help")) {
-            System.Console.WriteLine("lengrvis packaging smoke 0.0.0");
-            return 0;
+        if (args.Length > 0) {
+            System.Console.Error.WriteLine("health fixture expects no command-line arguments; received: " + string.Join(" ", args));
+            return 2;
         }
-        System.Console.WriteLine("lengrvis packaging smoke executable");
-        return 0;
+        string rawPort = System.Environment.GetEnvironmentVariable("LENGRVIS_BACKEND_PORT");
+        int port;
+        if (string.IsNullOrWhiteSpace(rawPort)) {
+            port = 8000;
+        }
+        else if (!int.TryParse(rawPort, out port) || port < 1 || port > 65535) {
+            System.Console.Error.WriteLine("invalid LENGRVIS_BACKEND_PORT for health fixture: '" + rawPort + "'");
+            return 64;
+        }
+
+        const string host = "127.0.0.1";
+        System.Net.Sockets.TcpListener listener = null;
+        try {
+            listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Parse(host), port);
+            listener.Server.ExclusiveAddressUse = true;
+            listener.Start();
+            System.Console.Out.WriteLine("health fixture listening on http://" + host + ":" + port + "/health");
+            System.Console.Out.Flush();
+
+            while (true) {
+                try {
+                    using (System.Net.Sockets.TcpClient client = listener.AcceptTcpClient()) {
+                        client.ReceiveTimeout = 2000;
+                        client.SendTimeout = 2000;
+                        ServeClient(client);
+                    }
+                }
+                catch (System.IO.IOException ex) {
+                    System.Console.Error.WriteLine("health fixture closed stalled client: " + ex.Message);
+                    System.Console.Error.Flush();
+                }
+            }
+        }
+        catch (System.Exception ex) {
+            System.Console.Error.WriteLine("health fixture failed on " + host + ":" + port + ": " + ex.GetType().Name + ": " + ex.Message);
+            return 65;
+        }
+        finally {
+            if (listener != null) {
+                listener.Stop();
+            }
+        }
+    }
+
+    private static void ServeClient(System.Net.Sockets.TcpClient client) {
+        using (System.Net.Sockets.NetworkStream stream = client.GetStream()) {
+            stream.ReadTimeout = 2000;
+            stream.WriteTimeout = 2000;
+            string firstLine = ReadRequestLine(stream);
+            string[] parts = string.IsNullOrWhiteSpace(firstLine)
+                ? new string[0]
+                : firstLine.Split(new char[] { ' ' }, 3, System.StringSplitOptions.RemoveEmptyEntries);
+            string method = parts.Length > 0 ? parts[0] : "";
+            string path = parts.Length > 1 ? parts[1] : "";
+            bool isHealth = string.Equals(method, "GET", System.StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(path, "/health", System.StringComparison.OrdinalIgnoreCase)
+                    || path.StartsWith("/health?", System.StringComparison.OrdinalIgnoreCase));
+            int statusCode = isHealth ? 200 : 404;
+            string statusText = isHealth ? "OK" : "Not Found";
+            string bodyText = isHealth ? "{\"status\":\"ok\"}" : "{\"error\":\"not found\"}";
+            byte[] body = System.Text.Encoding.UTF8.GetBytes(bodyText);
+            string header = "HTTP/1.1 " + statusCode + " " + statusText + "\r\nContent-Type: application/json\r\nContent-Length: " + body.Length + "\r\nConnection: close\r\n\r\n";
+            byte[] headerBytes = System.Text.Encoding.ASCII.GetBytes(header);
+            stream.Write(headerBytes, 0, headerBytes.Length);
+            stream.Write(body, 0, body.Length);
+            System.Console.Out.WriteLine("health fixture " + (firstLine.Length == 0 ? "<empty request>" : firstLine) + " -> " + statusCode);
+            System.Console.Out.Flush();
+        }
+    }
+
+    private static string ReadRequestLine(System.Net.Sockets.NetworkStream stream) {
+        byte[] buffer = new byte[2048];
+        int count = 0;
+        while (count < buffer.Length) {
+            int read = stream.Read(buffer, count, buffer.Length - count);
+            if (read <= 0) {
+                break;
+            }
+            count += read;
+            for (int index = 0; index < count; index++) {
+                if (buffer[index] == 10) {
+                    int length = index;
+                    if (length > 0 && buffer[length - 1] == 13) {
+                        length--;
+                    }
+                    return System.Text.Encoding.ASCII.GetString(buffer, 0, length);
+                }
+            }
+        }
+        if (count == 0) {
+            return "";
+        }
+        string request = System.Text.Encoding.ASCII.GetString(buffer, 0, count);
+        int lineEnd = request.IndexOfAny(new char[] { '\r', '\n' });
+        return lineEnd >= 0 ? request.Substring(0, lineEnd) : request;
     }
 }
 "@
     Add-Type -TypeDefinition $source -OutputAssembly $Path -OutputType ConsoleApplication
+}
+
+function New-RunnableSmokeExecutable([string]$Path) {
+    New-BackendHealthSmokeExecutable -Path $Path
 }
 
 function New-SmokeSelfExtractingExecutable([string]$Path) {
@@ -178,7 +275,7 @@ function Assert-RunnableSmokeOutput {
         [string]$Label
     )
     $text = $Output | Out-String
-    if ($text -notmatch "backend executable runnable smoke exited 0" -or $text -notmatch "portable backend executable runnable smoke exited 0") {
+    if ($text -notmatch "backend executable runnable smoke served" -or $text -notmatch "portable backend executable runnable smoke served") {
         throw "Expected $Label output to include runnable executable smoke results:`n$text"
     }
 }
