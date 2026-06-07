@@ -73,13 +73,19 @@ else {
     npm --prefix desktop run build
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-    $portableArgs = @(
-        "-OutputDir", $PortableDir,
-        "-BackendExe", (Join-Path $DistPath "backend.exe")
-    )
-    if ($BundledOllamaDir) { $portableArgs += @("-BundledOllamaDir", $BundledOllamaDir) }
-    if ($BundledOllamaModelsDir) { $portableArgs += @("-BundledOllamaModelsDir", $BundledOllamaModelsDir) }
-    if ($BundledOllamaManifest) { $portableArgs += @("-BundledOllamaManifest", $BundledOllamaManifest) }
+    $portableArgs = @{
+        OutputDir = $PortableDir
+        BackendExe = (Join-Path $DistPath "backend.exe")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BundledOllamaDir)) {
+        $portableArgs.BundledOllamaDir = $BundledOllamaDir
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BundledOllamaModelsDir)) {
+        $portableArgs.BundledOllamaModelsDir = $BundledOllamaModelsDir
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BundledOllamaManifest)) {
+        $portableArgs.BundledOllamaManifest = $BundledOllamaManifest
+    }
     & "$PSScriptRoot\build_portable.ps1" @portableArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
