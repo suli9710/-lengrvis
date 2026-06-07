@@ -49,7 +49,7 @@
 
 - [ ] **部分完成：打包验证从“文件存在”升级为“可运行”。**
   - 证据：`release:smoke` 和 `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` 已提供 release runnable smoke；`docs/qa/release-gate.md` 与 E2E-012 已要求记录 structural verification、runnable smoke 和 `.tmp\packaging-smoke` 失败诊断。
-  - 剩余缺口：当前自动化主要证明后端可执行文件能短命令退出或在隔离 loopback 上响应 `/health`；portable GUI 启动到首屏仍保留为人工 P1 sign-off。
+  - 剩余缺口：当前自动化主要证明后端可执行文件能从隔离状态/数据目录启动，并在隔离 loopback 上响应 `/health`；portable GUI 启动到首屏仍保留为人工 P1 sign-off。
   - 验收：Windows release candidate 必须跑 `npm run release:smoke` 或等价命令；portable 首屏和读只诊断任务必须另行记录人工证据。
 
 - [x] **明确发布产物矩阵：Windows、macOS、Android 分别到什么完成度。**

@@ -52,7 +52,7 @@ Demo pass criteria:
 - The demo script covers first launch, one read-only natural-language task, one R2/R3 dry-run approval, one R4 blocked request, and one document QA answer with a citation label.
 - Platform positioning evidence is captured: Settings model boundary profile, local model readiness or smoke result, one Skill Product Manifest sample, and one template-driven demo path.
 - Mobile companion is included only if pairing, pending approvals, and approve/reject round trip were manually checked on the demo LAN or emulator setup.
-- LAN TLS readiness is recorded when a phone or emulator connects over LAN: either mark the run as HTTP dev/test-only, or record the HTTPS/WSS configuration plus the explicit certificate trust path used by that device. Do not claim system-level certificate trust chain completion unless it was manually verified on the target OS/device.
+- LAN TLS readiness is recorded when a phone or emulator connects over LAN: either mark the run as HTTP dev/test-only, or record the HTTPS/WSS configuration plus the explicit certificate trust path used by that device. The gate does not install certificates or prove system trust automatically; do not claim trust-chain completion unless it was manually verified on the target OS/device.
 - Any P2/P3 rows skipped for the demo are recorded as residual risks, not implied passes.
 
 ## 3. Release Artifact Gate
@@ -69,6 +69,15 @@ Run the executable smoke gate for release candidates that must prove packaged ba
 npm run release:smoke
 ```
 
+`release:check` and `release:smoke` both include `release:safety`. Enable the strict state machine through `config.yaml` or the shell environment before running them:
+
+```powershell
+$env:LENGRVIS_STRICT_STATE_MACHINE = "true"
+npm run release:smoke
+```
+
+If neither `LENGRVIS_STRICT_STATE_MACHINE=true` nor `privacy.strict_state_machine: true` is configured, `release:safety` is expected to fail before packaging verification starts. Treat that as the release gate doing its job, not as a runnable smoke failure.
+
 Equivalent expanded command:
 
 ```powershell
@@ -84,10 +93,10 @@ Pass criteria:
 - Release safety verification passes: `LENGRVIS_ALLOW_MOCK_FALLBACK` resolves to false, and `strict_state_machine` resolves to true through `LENGRVIS_STRICT_STATE_MACHINE=true` or `privacy.strict_state_machine: true` in `config.yaml`.
 - `release:check` is the default structural release gate. It runs `qa:gate`, `scripts\verify_release_safety.ps1`, and `scripts\build_all.ps1 -VerifyOnly`, but it does not force runnable executable smoke.
 - `release:smoke` is the explicit release-candidate runnable path. It runs `release:check`, then reruns packaging verification through `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`.
-- `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-0.1.0-x64-self-extracting.exe` exist unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
-- The portable package contains `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
+- The structural packaging verification performed by `scripts\verify_packaging.ps1` requires `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-0.1.0-x64-self-extracting.exe` unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
+- Structural verification also checks that the portable directory and portable zip contain `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
 - `scripts\verify_packaging.ps1` validates PE headers and minimum sizes for `dist\backend.exe`, the portable launcher, the portable backend, and the self-extracting executable.
-- Runnable packaging smoke passes when `release:smoke` or `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` is used: backend executables either exit successfully for `--version`/`--help` or answer `/health` on an isolated loopback port before the smoke timeout.
+- Runnable packaging smoke passes when `release:smoke` or `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` is used: `dist\backend.exe` and the portable backend are started from isolated state/data directories and must answer `http://127.0.0.1:<port>/health` before the smoke timeout. Successful `--version` or `--help` exits are not sufficient for this gate.
 - The portable launcher is not opened automatically during the gate; it must pass PE/header/size and packaged-resource preflight, with GUI launch left to manual sign-off.
 - If a special offline Ollama release is being prepared, rerun verification with `scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama -RunExecutableSmoke` and confirm the runtime, models, bundle manifest summaries, and backend runnable smoke match the packaged files.
 - Failed executable smoke writes diagnostics under `.tmp\packaging-smoke`; missing artifacts should be rebuilt with `.\scripts\build_all.ps1` before rerunning the gate.
@@ -105,7 +114,7 @@ Before tagging a release candidate, verify these user-visible flows against `doc
 | Local/hybrid model evidence | Settings shows quick/privacy/hybrid model boundary, recommended model, size, hardware status, speed estimate, and the privacy failure path that does not auto-fall back to cloud. |
 | Skill sample | Import or display one non-private Skill/App integration sample and verify Product Manifest cards for file read/write, UI, network, messaging, delete, preview, and rollback/handoff. |
 | Mobile companion | Pairing, pending approval list, and approve/reject round trip work on LAN or documented emulator setup. |
-| LAN TLS readiness | For mobile/LAN runs, record the configured `http/ws` or `https/wss` scheme, certificate source, and explicit device trust path. Treat HTTP LAN as dev/test-only evidence, not a production TLS pass. |
+| LAN TLS readiness | For mobile/LAN runs, record the configured `http/ws` or `https/wss` scheme, certificate source, and explicit device trust path. Treat HTTP LAN as dev/test-only evidence, not a production TLS pass, and do not imply automatic certificate installation or trust-chain validation. |
 | Template demo path | One scripted template path from `docs/demo-script.md` runs against disposable data or is recorded as residual risk. |
 | Portable artifact | The release portable starts from a clean directory and can run a read-only diagnostic task. |
 

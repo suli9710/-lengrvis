@@ -20,7 +20,9 @@ $MissingArtifacts = New-Object System.Collections.Generic.List[object]
 $MinimumSelfExtractingExeBytes = 65536
 $MinimumPortableLauncherBytes = 4096
 $MinimumBackendExecutableBytes = 4096
-$SmokeLogRoot = Join-Path $Root ".tmp\packaging-smoke"
+$SmokeRunGuid = ([guid]::NewGuid().ToString("N")).Substring(0, 8)
+$SmokeRunId = "run-{0}-{1}-{2}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $PID, $SmokeRunGuid
+$SmokeLogRoot = Join-Path (Join-Path $Root ".tmp\packaging-smoke") $SmokeRunId
 $script:SmokeRunIndex = 0
 
 function Resolve-ProjectPath([string]$Path) {
@@ -235,6 +237,80 @@ function Save-SmokeProcessLogs([object]$Run) {
     $Run.LogsSaved = $true
 }
 
+function Add-SmokeProcessLogNote {
+    param(
+        [object]$Run,
+        [string]$Message
+    )
+
+    if ($null -eq $Run -or $null -eq $Run.StdErrBuffer -or [string]::IsNullOrWhiteSpace($Message)) {
+        return
+    }
+    [void]$Run.StdErrBuffer.AppendLine("[smoke] $Message")
+}
+
+function Format-SmokeEnvironmentValue {
+    param(
+        [string]$Key,
+        [string]$Value
+    )
+
+    if ($Key -match '(?i)(TOKEN|SECRET|KEY|PASSWORD)') {
+        if ([string]::IsNullOrEmpty($Value)) {
+            return "<empty>"
+        }
+        return "<redacted>"
+    }
+    return $Value
+}
+
+function Add-SmokeProcessMetadata {
+    param(
+        [System.Text.StringBuilder]$Buffer,
+        [string]$ExecutablePath,
+        [string]$WorkingDirectory,
+        [string]$Arguments,
+        [hashtable]$Environment,
+        [int]$ProcessId,
+        [int[]]$BaselineProcessIds = @()
+    )
+
+    [void]$Buffer.AppendLine("[smoke] executable: $ExecutablePath")
+    [void]$Buffer.AppendLine("[smoke] process id: $ProcessId")
+    [void]$Buffer.AppendLine("[smoke] working directory: $WorkingDirectory")
+    if ([string]::IsNullOrWhiteSpace($Arguments)) {
+        [void]$Buffer.AppendLine("[smoke] arguments: <none>")
+    }
+    else {
+        [void]$Buffer.AppendLine("[smoke] arguments: $Arguments")
+    }
+    $BaselineText = if ($BaselineProcessIds.Count -gt 0) { $BaselineProcessIds -join "," } else { "<none>" }
+    [void]$Buffer.AppendLine("[smoke] baseline executable process ids: $BaselineText")
+    foreach ($Key in ($Environment.Keys | Sort-Object)) {
+        $Value = Format-SmokeEnvironmentValue -Key $Key -Value ([string]$Environment[$Key])
+        [void]$Buffer.AppendLine("[smoke] env $Key=$Value")
+    }
+}
+
+function Get-SmokeExecutableProcessIds {
+    param([string]$ExecutablePath)
+
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+        return @()
+    }
+
+    $FullPath = Resolve-ProjectPath $ExecutablePath
+    try {
+        return @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+                $_.ExecutablePath -and
+                $_.ExecutablePath.Equals($FullPath, [System.StringComparison]::OrdinalIgnoreCase)
+            } | ForEach-Object { [int]$_.ProcessId } | Select-Object -Unique)
+    }
+    catch {
+        return @()
+    }
+}
+
 function Remove-SmokeProcessOutputHandlers([object]$Run) {
     if ($null -eq $Run -or -not $Run.Started -or $Run.OutputHandlersRemoved) {
         return
@@ -272,6 +348,7 @@ function Start-SmokeProcess {
     )
 
     $FullPath = Resolve-ProjectPath $ExecutablePath
+    $BaselineExecutableProcessIds = @(Get-SmokeExecutableProcessIds -ExecutablePath $FullPath)
     $Logs = New-SmokeLogSet $Label
     if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
         return [pscustomobject]@{
@@ -293,8 +370,9 @@ function Start-SmokeProcess {
     }
     $StartInfo.UseShellExecute = $false
     $StartInfo.CreateNoWindow = $true
-    $StartInfo.RedirectStandardOutput = $true
-    $StartInfo.RedirectStandardError = $true
+    $CaptureOutput = $false
+    $StartInfo.RedirectStandardOutput = $CaptureOutput
+    $StartInfo.RedirectStandardError = $CaptureOutput
     foreach ($Key in $Environment.Keys) {
         $StartInfo.EnvironmentVariables[$Key] = [string]$Environment[$Key]
     }
@@ -315,26 +393,44 @@ function Start-SmokeProcess {
 
     $StdOutBuffer = New-Object System.Text.StringBuilder
     $StdErrBuffer = New-Object System.Text.StringBuilder
-    $StdOutHandler = [System.Diagnostics.DataReceivedEventHandler]{
-        param($Sender, $EventArgs)
-        if ($null -ne $EventArgs.Data) {
-            [void]$StdOutBuffer.AppendLine($EventArgs.Data)
-        }
-    }.GetNewClosure()
-    $StdErrHandler = [System.Diagnostics.DataReceivedEventHandler]{
-        param($Sender, $EventArgs)
-        if ($null -ne $EventArgs.Data) {
-            [void]$StdErrBuffer.AppendLine($EventArgs.Data)
-        }
-    }.GetNewClosure()
-    $Process.add_OutputDataReceived($StdOutHandler)
-    $Process.add_ErrorDataReceived($StdErrHandler)
-    $Process.BeginOutputReadLine()
-    $Process.BeginErrorReadLine()
+    $StdOutHandler = $null
+    $StdErrHandler = $null
+    if ($CaptureOutput) {
+        $StdOutHandler = [System.Diagnostics.DataReceivedEventHandler]{
+            param($Sender, $EventArgs)
+            if ($null -ne $EventArgs.Data) {
+                [void]$StdOutBuffer.AppendLine($EventArgs.Data)
+            }
+        }.GetNewClosure()
+        $StdErrHandler = [System.Diagnostics.DataReceivedEventHandler]{
+            param($Sender, $EventArgs)
+            if ($null -ne $EventArgs.Data) {
+                [void]$StdErrBuffer.AppendLine($EventArgs.Data)
+            }
+        }.GetNewClosure()
+        $Process.add_OutputDataReceived($StdOutHandler)
+        $Process.add_ErrorDataReceived($StdErrHandler)
+        $Process.BeginOutputReadLine()
+        $Process.BeginErrorReadLine()
+    }
+    else {
+        [void]$StdOutBuffer.AppendLine("[stdout capture disabled for executable smoke]")
+        [void]$StdErrBuffer.AppendLine("[stderr capture disabled for executable smoke]")
+    }
+    Add-SmokeProcessMetadata `
+        -Buffer $StdErrBuffer `
+        -ExecutablePath $FullPath `
+        -WorkingDirectory $StartInfo.WorkingDirectory `
+        -Arguments $StartInfo.Arguments `
+        -Environment $Environment `
+        -ProcessId $Process.Id `
+        -BaselineProcessIds $BaselineExecutableProcessIds
 
     return [pscustomobject]@{
         Started = $true
         Process = $Process
+        ExecutablePath = $FullPath
+        BaselineExecutableProcessIds = $BaselineExecutableProcessIds
         StdOut = $Logs.StdOut
         StdErr = $Logs.StdErr
         StdOutBuffer = $StdOutBuffer
@@ -379,8 +475,47 @@ function Get-SmokeProcessTreeIds {
     return @($ProcessIds | Select-Object -Unique)
 }
 
+function Stop-SmokeExecutableInstances {
+    param(
+        [string]$ExecutablePath,
+        [int[]]$ExceptProcessIds = @(),
+        [int[]]$BaselineProcessIds = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ExecutablePath)) {
+        return @()
+    }
+
+    $FullPath = Resolve-ProjectPath $ExecutablePath
+    $ExcludedProcessIds = New-Object System.Collections.Generic.HashSet[int]
+    foreach ($ProcessId in @($ExceptProcessIds + $BaselineProcessIds)) {
+        [void]$ExcludedProcessIds.Add([int]$ProcessId)
+    }
+    $StoppedProcessIds = New-Object System.Collections.Generic.List[int]
+    try {
+        $Processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+                $_.ExecutablePath -and
+                $_.ExecutablePath.Equals($FullPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+                -not $ExcludedProcessIds.Contains([int]$_.ProcessId)
+            })
+    }
+    catch {
+        return @()
+    }
+    foreach ($ProcessRow in $Processes) {
+        $ProcessId = [int]$ProcessRow.ProcessId
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        $StoppedProcessIds.Add($ProcessId)
+    }
+    return @($StoppedProcessIds | Select-Object -Unique)
+}
+
 function Stop-SmokeProcessTree {
-    param([System.Diagnostics.Process]$Process)
+    param(
+        [System.Diagnostics.Process]$Process,
+        [string]$ExecutablePath = "",
+        [int[]]$BaselineProcessIds = @()
+    )
 
     if ($null -eq $Process) {
         return
@@ -390,10 +525,21 @@ function Stop-SmokeProcessTree {
     foreach ($ChildProcessId in $ChildProcessIds) {
         Stop-Process -Id $ChildProcessId -Force -ErrorAction SilentlyContinue
     }
-    if (-not $Process.HasExited) {
-        $Process.Kill()
+    try {
+        if (-not $Process.HasExited) {
+            $Process.Kill()
+        }
     }
-    [void]$Process.WaitForExit(5000)
+    catch {
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExecutablePath)) {
+        Stop-SmokeExecutableInstances -ExecutablePath $ExecutablePath -ExceptProcessIds @($Process.Id) -BaselineProcessIds $BaselineProcessIds | Out-Null
+    }
+    try {
+        [void]$Process.WaitForExit(5000)
+    }
+    catch {
+    }
 }
 
 function Stop-SmokeProcess([object]$Run) {
@@ -402,7 +548,10 @@ function Stop-SmokeProcess([object]$Run) {
     }
     try {
         if (-not $Run.Process.HasExited) {
-            Stop-SmokeProcessTree -Process $Run.Process
+            Stop-SmokeProcessTree -Process $Run.Process -ExecutablePath $Run.ExecutablePath -BaselineProcessIds $Run.BaselineExecutableProcessIds
+        }
+        else {
+            Stop-SmokeExecutableInstances -ExecutablePath $Run.ExecutablePath -ExceptProcessIds @($Run.Process.Id) -BaselineProcessIds $Run.BaselineExecutableProcessIds | Out-Null
         }
         Start-Sleep -Milliseconds 100
         Save-SmokeProcessLogs $Run
@@ -448,6 +597,7 @@ function Invoke-SmokeProcessAndWait {
     foreach ($ChildProcessId in $ChildProcessIds) {
         Stop-Process -Id $ChildProcessId -Force -ErrorAction SilentlyContinue
     }
+    $ExecutableProcessIds = @(Stop-SmokeExecutableInstances -ExecutablePath $Run.ExecutablePath -ExceptProcessIds @($Run.Process.Id) -BaselineProcessIds $Run.BaselineExecutableProcessIds)
     Start-Sleep -Milliseconds 100
     Save-SmokeProcessLogs $Run
     $ExitCode = $Run.Process.ExitCode
@@ -457,7 +607,7 @@ function Invoke-SmokeProcessAndWait {
         Started = $true
         TimedOut = $false
         ExitCode = $ExitCode
-        HadChildProcesses = $ChildProcessIds.Count -gt 0
+        HadChildProcesses = ($ChildProcessIds.Count + $ExecutableProcessIds.Count) -gt 0
         StdOut = $Run.StdOut
         StdErr = $Run.StdErr
     }
@@ -496,41 +646,6 @@ function New-BackendSmokeEnvironment([string]$Label, [int]$BackendPort) {
     }
 }
 
-function Invoke-BackendShortCommandSmoke {
-    param(
-        [string]$Label,
-        [string]$ExecutablePath
-    )
-
-    $Diagnostics = New-Object System.Collections.Generic.List[string]
-    $ShortTimeoutSeconds = [Math]::Min(5, $SmokeTimeoutSeconds)
-    foreach ($Arguments in @(@("--version"), @("--help"))) {
-        $ArgumentLabel = $Arguments -join " "
-        $BackendPort = Get-FreeTcpPort
-        $Environment = New-BackendSmokeEnvironment -Label "$Label-$ArgumentLabel" -BackendPort $BackendPort
-        $Result = Invoke-SmokeProcessAndWait -Label "$Label $ArgumentLabel" -ExecutablePath $ExecutablePath -Arguments $Arguments -Environment $Environment -TimeoutSeconds $ShortTimeoutSeconds
-        if (-not $Result.Started) {
-            $Diagnostics.Add("$ArgumentLabel could not start: $($Result.Error) (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
-            continue
-        }
-        if ($Result.TimedOut) {
-            $Diagnostics.Add("$ArgumentLabel did not exit within $ShortTimeoutSeconds seconds and was stopped (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
-            continue
-        }
-        if ($Result.HadChildProcesses) {
-            $Diagnostics.Add("$ArgumentLabel exited but left child processes running, so it is not a short command (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
-            continue
-        }
-        if ($Result.ExitCode -eq 0) {
-            Write-Host "[ok] $Label runnable smoke exited 0 with $ArgumentLabel"
-            return [pscustomobject]@{ Passed = $true; Diagnostics = $Diagnostics }
-        }
-        $Diagnostics.Add("$ArgumentLabel exited $($Result.ExitCode) (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
-    }
-
-    return [pscustomobject]@{ Passed = $false; Diagnostics = $Diagnostics }
-}
-
 function Invoke-BackendHealthSmoke {
     param(
         [string]$Label,
@@ -539,16 +654,19 @@ function Invoke-BackendHealthSmoke {
 
     $BackendPort = Get-FreeTcpPort
     $Environment = New-BackendSmokeEnvironment -Label "$Label-health" -BackendPort $BackendPort
+    $HealthUrl = "http://127.0.0.1:$BackendPort/health"
     $Run = Start-SmokeProcess -Label "$Label health" -ExecutablePath $ExecutablePath -Environment $Environment
     if (-not $Run.Started) {
         return [pscustomobject]@{
             Passed = $false
-            Diagnostic = "health process could not start: $($Run.Error) (stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+            Diagnostic = "health process could not start for $HealthUrl`: $($Run.Error) (stdout log: $($Run.StdOut); stderr log: $($Run.StdErr))"
         }
     }
 
-    $HealthUrl = "http://127.0.0.1:$BackendPort/health"
+    Add-SmokeProcessLogNote -Run $Run -Message "health url: $HealthUrl"
+    Add-SmokeProcessLogNote -Run $Run -Message "smoke timeout seconds: $SmokeTimeoutSeconds"
     $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $LastProbeDiagnostic = "no probe attempted"
     try {
         while ($Stopwatch.Elapsed.TotalSeconds -lt $SmokeTimeoutSeconds) {
             if ($Run.Process.HasExited) {
@@ -557,24 +675,28 @@ function Invoke-BackendHealthSmoke {
                     Save-SmokeProcessLogs $Run
                     return [pscustomobject]@{
                         Passed = $false
-                        Diagnostic = "health process exited before $HealthUrl responded (exit $($Run.Process.ExitCode); stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+                        Diagnostic = "health process exited before $HealthUrl responded (exit $($Run.Process.ExitCode); last probe: $LastProbeDiagnostic; stdout log: $($Run.StdOut); stderr log: $($Run.StdErr))"
                     }
                 }
             }
             try {
-                $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2
+                $RemainingSeconds = [Math]::Max(1, [Math]::Ceiling($SmokeTimeoutSeconds - $Stopwatch.Elapsed.TotalSeconds))
+                $ProbeTimeoutSeconds = [Math]::Min(2, [int]$RemainingSeconds)
+                $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec $ProbeTimeoutSeconds
                 if ($Response.StatusCode -ge 200 -and $Response.StatusCode -lt 300) {
                     Write-Host "[ok] $Label runnable smoke served $HealthUrl"
                     return [pscustomobject]@{ Passed = $true; Diagnostic = "" }
                 }
+                $LastProbeDiagnostic = "HTTP $($Response.StatusCode)"
             }
             catch {
+                $LastProbeDiagnostic = $_.Exception.Message
                 Start-Sleep -Milliseconds 500
             }
         }
         return [pscustomobject]@{
             Passed = $false
-            Diagnostic = "health endpoint did not respond within $SmokeTimeoutSeconds seconds: $HealthUrl (stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+            Diagnostic = "health endpoint did not respond within $SmokeTimeoutSeconds seconds: $HealthUrl (last probe: $LastProbeDiagnostic; stdout log: $($Run.StdOut); stderr log: $($Run.StdErr))"
         }
     }
     finally {
@@ -593,16 +715,10 @@ function Invoke-BackendExecutableSmoke {
         return
     }
 
-    $ShortSmoke = Invoke-BackendShortCommandSmoke -Label $Label -ExecutablePath $FullPath
-    if ($ShortSmoke.Passed) {
-        return
-    }
-
-    Write-Host "[info] $Label did not expose a short --version/--help command; probing isolated /health instead."
+    Write-Host "[info] probing $Label through isolated /health"
     $HealthSmoke = Invoke-BackendHealthSmoke -Label $Label -ExecutablePath $FullPath
     if (-not $HealthSmoke.Passed) {
-        $ShortDiagnostics = $ShortSmoke.Diagnostics -join " | "
-        $Failures.Add("$Label runnable smoke failed. Short command attempts: $ShortDiagnostics. Health probe: $($HealthSmoke.Diagnostic). Smoke logs: $SmokeLogRoot")
+        $Failures.Add("$Label runnable smoke failed. Health probe: $($HealthSmoke.Diagnostic). Smoke logs: $SmokeLogRoot")
     }
 }
 
