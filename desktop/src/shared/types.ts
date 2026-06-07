@@ -1320,6 +1320,25 @@ export interface LengrvisDesktopBridge {
     foreground: () => Promise<BackendStatus>;
     background: () => Promise<BackendStatus>;
   };
+  commands: {
+    execute: (request: { name: string; args?: Record<string, unknown> }) => Promise<ApiResponse<unknown>>;
+  };
+  cleanup: {
+    execute: (body: Record<string, unknown>) => Promise<ApiResponse<unknown>>;
+    rollback: (body: Record<string, unknown>) => Promise<ApiResponse<unknown>>;
+  };
+  skills: {
+    importPackage: (path: string) => Promise<ApiResponse<unknown>>;
+    refresh: () => Promise<ApiResponse<unknown>>;
+  };
+  localModel: {
+    install: (request: { model?: string }) => Promise<ApiResponse<unknown>>;
+  };
+  ollama: {
+    install: () => Promise<ApiResponse<unknown>>;
+    pull: (request?: { model?: string }) => Promise<ApiResponse<unknown>>;
+    start: () => Promise<ApiResponse<unknown>>;
+  };
   mobilePairing: {
     createCode: () => Promise<ApiResponse<unknown>>;
     listDevices: () => Promise<ApiResponse<unknown>>;

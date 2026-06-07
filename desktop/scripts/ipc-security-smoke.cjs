@@ -162,6 +162,73 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     assert.equal(fetchCalls[0].init.headers["Content-Type"], "application/json");
     assert.equal(fetchCalls[0].init.body, JSON.stringify({ content: "hello" }));
 
+    const highRiskBridgeRequests = [
+      {
+        name: "command execute through generic API",
+        request: { endpoint: "/api/commands/execute", method: "POST", body: { name: "settings.show", args: {} } }
+      },
+      {
+        name: "cleanup execute through generic API",
+        request: { endpoint: "/api/files/cleanup/execute", method: "POST", body: { dry_run: false } }
+      },
+      {
+        name: "cleanup rollback through generic API",
+        request: { endpoint: "/api/files/cleanup/rollback", method: "POST", body: { execution_id: "cleanup-1" } }
+      },
+      {
+        name: "skill import through generic API",
+        request: { endpoint: "/api/skills/import", method: "POST", body: { path: "C:\\temp\\skill.zip" } }
+      },
+      {
+        name: "skill refresh through generic API",
+        request: { endpoint: "/api/skills/refresh", method: "POST" }
+      },
+      {
+        name: "local model install through generic API",
+        request: { endpoint: "/api/settings/install-local-model", method: "POST", body: { model: "qwen2.5:3b" } }
+      },
+      {
+        name: "ollama install through generic API",
+        request: { endpoint: "/api/settings/ollama/install", method: "POST" }
+      },
+      {
+        name: "ollama pull through generic API",
+        request: { endpoint: "/api/settings/ollama/pull", method: "POST", body: { model: "qwen2.5:3b" } }
+      },
+      {
+        name: "ollama start through generic API",
+        request: { endpoint: "/api/settings/ollama/start", method: "POST" }
+      },
+      {
+        name: "browser open URL through generic API",
+        request: { endpoint: "/api/browser/open-url", method: "POST", body: { url: "https://example.test" } }
+      },
+      {
+        name: "browser session start through generic API",
+        request: { endpoint: "/api/browser/session/start", method: "POST", body: { url: "https://example.test" } }
+      },
+      {
+        name: "browser session close through generic API",
+        request: { endpoint: "/api/browser/session/close", method: "POST", body: { session_id: "session-1" } }
+      },
+      {
+        name: "browser act through generic API",
+        request: { endpoint: "/api/browser/act", method: "POST", body: { action: "click", selector: "button" } }
+      },
+      {
+        name: "browser CUA through generic API",
+        request: { endpoint: "/api/browser/cua", method: "POST", body: { instruction: "click the button" } }
+      },
+      {
+        name: "browser CUA run through generic API",
+        request: { endpoint: "/api/browser/cua-run", method: "POST", body: { instruction: "click the button" } }
+      },
+      {
+        name: "browser screenshot through generic API",
+        request: { endpoint: "/api/browser/screenshot", method: "POST", body: { url: "https://example.test" } }
+      }
+    ];
+
     const blockedRequests = [
       {
         name: "absolute URL",
@@ -198,6 +265,10 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         request: { endpoint: "/api/pair/devices/phone-1", method: "DELETE" },
         pattern: /explicit desktop bridge/
       },
+      ...highRiskBridgeRequests.map((testCase) => ({
+        ...testCase,
+        pattern: /explicit desktop bridge/
+      })),
       {
         name: "custom headers",
         request: { endpoint: "/api/health", headers: { Authorization: "Bearer renderer-token" } },
@@ -220,6 +291,98 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       assert.equal(blocked.error && blocked.error.code, "INVALID_RENDERER_API_REQUEST", `${testCase.name} should fail validation`);
       assert.match(blocked.error && blocked.error.message, testCase.pattern, `${testCase.name} should explain the rejection`);
       assert.equal(fetchCalls.length, 0, `${testCase.name} must be rejected before fetch`);
+    }
+
+    const explicitBridgeRequests = [
+      {
+        name: "command execute",
+        channel: IPC_CHANNELS.commandsExecute,
+        args: [{ name: "settings.show", args: { pane: "privacy" } }],
+        expectedUrl: "http://127.0.0.1:8000/api/commands/execute",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ name: "settings.show", args: { pane: "privacy" } })
+      },
+      {
+        name: "cleanup execute",
+        channel: IPC_CHANNELS.cleanupExecute,
+        args: [{ dry_run: false, approval_id: "approval-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/files/cleanup/execute",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ dry_run: false, approval_id: "approval-1" })
+      },
+      {
+        name: "cleanup rollback",
+        channel: IPC_CHANNELS.cleanupRollback,
+        args: [{ execution_id: "cleanup-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/files/cleanup/rollback",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ execution_id: "cleanup-1" })
+      },
+      {
+        name: "skill import",
+        channel: IPC_CHANNELS.skillsImport,
+        args: ["C:\\temp\\skill.zip"],
+        expectedUrl: "http://127.0.0.1:8000/api/skills/import",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ path: "C:\\temp\\skill.zip" })
+      },
+      {
+        name: "skill refresh",
+        channel: IPC_CHANNELS.skillsRefresh,
+        args: [],
+        expectedUrl: "http://127.0.0.1:8000/api/skills/refresh",
+        expectedMethod: "POST",
+        expectedBody: undefined
+      },
+      {
+        name: "local model install",
+        channel: IPC_CHANNELS.localModelInstall,
+        args: [{ model: "qwen2.5:3b" }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/install-local-model",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ model: "qwen2.5:3b" })
+      },
+      {
+        name: "Ollama install",
+        channel: IPC_CHANNELS.ollamaInstall,
+        args: [],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/ollama/install",
+        expectedMethod: "POST",
+        expectedBody: undefined
+      },
+      {
+        name: "Ollama pull",
+        channel: IPC_CHANNELS.ollamaPull,
+        args: [{ model: "qwen2.5:3b" }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/ollama/pull",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ model: "qwen2.5:3b" })
+      },
+      {
+        name: "Ollama start",
+        channel: IPC_CHANNELS.ollamaStart,
+        args: [],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/ollama/start",
+        expectedMethod: "POST",
+        expectedBody: undefined
+      }
+    ];
+
+    for (const testCase of explicitBridgeRequests) {
+      const handler = ipcHandlers.get(testCase.channel);
+      assert.ok(handler, `${testCase.name} explicit bridge handler must be registered`);
+      fetchCalls = [];
+      const response = await Promise.resolve(handler(eventFor("http://127.0.0.1:5173/settings"), ...testCase.args));
+      assert.equal(response.ok, true, `${testCase.name} explicit bridge should call backend`);
+      assert.equal(fetchCalls.length, 1, `${testCase.name} explicit bridge should use fetch once`);
+      assert.equal(fetchCalls[0].url, testCase.expectedUrl);
+      assert.equal(fetchCalls[0].init.method, testCase.expectedMethod);
+      assert.equal(fetchCalls[0].init.body, testCase.expectedBody);
+      await assert.rejects(
+        async () => handler(eventFor("https://evil.example/app"), ...testCase.args),
+        /untrusted renderer/,
+        `${testCase.name} explicit bridge should reject untrusted renderers`
+      );
     }
 
     const mobilePairingCreateCodeHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingCreateCode);

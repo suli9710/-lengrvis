@@ -93,6 +93,26 @@ def test_pair_request_reports_lan_tls_ready(monkeypatch, tmp_path):
     assert security["trust_model"] == "local_certificate"
 
 
+def test_backend_port_defaults_to_8000_with_single_env_lookup(monkeypatch):
+    calls: list[str] = []
+
+    class TrackingEnviron(dict):
+        def get(self, key, default=None):
+            calls.append(key)
+            return super().get(key, default)
+
+    monkeypatch.setattr(os, "environ", TrackingEnviron())
+
+    assert mobile_pairing_service._backend_port() == 8000
+    assert calls == ["LENGRVIS_BACKEND_PORT"]
+
+
+def test_backend_port_uses_env_value(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "9137")
+
+    assert mobile_pairing_service._backend_port() == 9137
+
+
 def test_pair_confirm_valid_code(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()

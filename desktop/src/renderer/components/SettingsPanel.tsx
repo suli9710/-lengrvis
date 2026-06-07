@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   AppSettings,
+  ApiResponse,
   BackendStatus,
   LLMCostSummary,
   LLMHealthStatus,
@@ -1263,12 +1264,14 @@ function LocalModelInstaller({
         setProgress({ stage: fallbackStage, percent: 1 });
       }
 
-      const response = await api.request<InstallModelStartResponse, InstallModelRequest>({
-        endpoint: "/api/settings/install-local-model",
-        method: "POST",
-        body: { model },
-        timeoutMs: 30_000
-      });
+      const response = window.lengrvis?.localModel
+        ? (await window.lengrvis.localModel.install({ model }) as ApiResponse<InstallModelStartResponse>)
+        : await api.request<InstallModelStartResponse, InstallModelRequest>({
+            endpoint: "/api/settings/install-local-model",
+            method: "POST",
+            body: { model },
+            timeoutMs: 30_000
+          });
 
       if (!response.ok) {
         setStatus("error");
@@ -2468,8 +2471,8 @@ function OllamaSetup() {
     setInstalling(true);
     setError(null);
     try {
-      const doRequest = window.lengrvis
-        ? window.lengrvis.api.request<{ ok: boolean; message?: string; error?: string }>
+      const doRequest = window.lengrvis?.ollama
+        ? () => window.lengrvis.ollama.install() as Promise<ApiResponse<{ ok: boolean; message?: string; error?: string }>>
         : async (req: { endpoint: string; method?: string }) => {
             const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`, { method: req.method ?? "GET" });
             const data = await resp.json();
@@ -2493,8 +2496,9 @@ function OllamaSetup() {
     setPulling(true);
     setError(null);
     try {
-      const doRequest = window.lengrvis
-        ? window.lengrvis.api.request<{ ok: boolean; model?: string; message?: string; error?: string }, { model?: string }>
+      const doRequest = window.lengrvis?.ollama
+        ? (req: { body?: { model?: string } }) =>
+            window.lengrvis.ollama.pull(req.body) as Promise<ApiResponse<{ ok: boolean; model?: string; message?: string; error?: string }>>
         : async (req: { endpoint: string; method?: string; body?: unknown }) => {
             const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`, {
               method: req.method ?? "GET",

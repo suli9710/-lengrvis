@@ -845,7 +845,7 @@ if ($RunExecutableSmoke) {
     Invoke-BackendExecutableSmoke -Label "portable backend executable" -ExecutablePath $PortableBackendExePath
 }
 else {
-    Write-Host "[info] executable runnable smoke not requested; pass -RunExecutableSmoke for release-candidate packaging validation."
+    Write-Host "[info] executable runnable smoke not requested; this is a structural-only packaging check. Pass -RunExecutableSmoke for release-candidate packaging validation."
 }
 
 if ($Failures.Count -gt 0) {

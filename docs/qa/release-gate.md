@@ -57,23 +57,23 @@ Demo pass criteria:
 
 ## 3. Release Artifact Gate
 
-Run the structural release check after Windows release artifacts have been built:
+Run the formal release check after Windows release artifacts have been built:
 
 ```powershell
 npm run release:check
 ```
 
-Run the executable smoke gate for release candidates that must prove packaged backend executables can start:
+Use the structural-only quick check when you only need artifact presence, manifest, zip, and PE/header validation:
 
 ```powershell
-npm run release:smoke
+npm run release:quick
 ```
 
-`release:check` and `release:smoke` both include `release:safety`. Enable the strict state machine through `config.yaml` or the shell environment before running them:
+`release:check`, `release:gate`, `release:smoke`, and `release:quick` all include `release:safety`. Enable the strict state machine through `config.yaml` or the shell environment before running them:
 
 ```powershell
 $env:LENGRVIS_STRICT_STATE_MACHINE = "true"
-npm run release:smoke
+npm run release:check
 ```
 
 If neither `LENGRVIS_STRICT_STATE_MACHINE=true` nor `privacy.strict_state_machine: true` is configured, `release:safety` is expected to fail before packaging verification starts. Treat that as the release gate doing its job, not as a runnable smoke failure.
@@ -83,7 +83,6 @@ Equivalent expanded command:
 ```powershell
 npm run qa:gate
 .\scripts\verify_release_safety.ps1
-.\scripts\build_all.ps1 -VerifyOnly
 .\scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45
 ```
 
@@ -91,12 +90,13 @@ Pass criteria:
 
 - The preflight gate passes on the same candidate.
 - Release safety verification passes: `LENGRVIS_ALLOW_MOCK_FALLBACK` resolves to false, and `strict_state_machine` resolves to true through `LENGRVIS_STRICT_STATE_MACHINE=true` or `privacy.strict_state_machine: true` in `config.yaml`.
-- `release:check` is the default structural release gate. It runs `qa:gate`, `scripts\verify_release_safety.ps1`, and `scripts\build_all.ps1 -VerifyOnly`, but it does not force runnable executable smoke.
-- `release:smoke` is the explicit release-candidate runnable path. It runs `release:check`, then reruns packaging verification through `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`.
+- `release:check` is the default formal release gate. It runs `qa:gate`, `scripts\verify_release_safety.ps1`, and `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`, so packaged backend executables must start and answer `/health`.
+- `release:gate` and `release:smoke` are aliases for `release:check`, preserving the explicit gate/smoke command names without allowing a structural-only release pass.
+- `release:quick` is the structural-only artifact check. Use it for fast artifact validation, not for release-candidate sign-off.
 - The structural packaging verification performed by `scripts\verify_packaging.ps1` requires `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-0.1.0-x64-self-extracting.exe` unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
 - Structural verification also checks that the portable directory and portable zip contain `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
 - `scripts\verify_packaging.ps1` validates PE headers and minimum sizes for `dist\backend.exe`, the portable launcher, the portable backend, and the self-extracting executable.
-- Runnable packaging smoke passes when `release:smoke` or `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` is used: `dist\backend.exe` and the portable backend are started from isolated state/data directories and must answer `http://127.0.0.1:<port>/health` before the smoke timeout. Successful `--version` or `--help` exits are not sufficient for this gate.
+- Runnable packaging smoke passes when `release:check`, `release:gate`, `release:smoke`, or `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` is used: `dist\backend.exe` and the portable backend are started from isolated state/data directories and must answer `http://127.0.0.1:<port>/health` before the smoke timeout. Successful `--version` or `--help` exits are not sufficient for this gate.
 - The portable launcher is not opened automatically during the gate; it must pass PE/header/size and packaged-resource preflight, with GUI launch left to manual sign-off.
 - If a special offline Ollama release is being prepared, rerun verification with `scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama -RunExecutableSmoke` and confirm the runtime, models, bundle manifest summaries, and backend runnable smoke match the packaged files.
 - Failed executable smoke writes diagnostics under `.tmp\packaging-smoke`; missing artifacts should be rebuilt with `.\scripts\build_all.ps1` before rerunning the gate.
@@ -170,8 +170,8 @@ Demo-before-release gate:
 
 Artifact gate:
 - release safety verification:
-- release:check / build_all -VerifyOnly:
-- release:smoke / build_all -VerifyOnly -RunExecutableSmoke:
+- release:quick / build_all -VerifyOnly, if run:
+- release:check / build_all -VerifyOnly -RunExecutableSmoke:
 - executable smoke logs:
 - bundled Ollama verification, if applicable:
 

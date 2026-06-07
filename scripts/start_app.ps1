@@ -631,8 +631,9 @@ try {
         $env:LENGRVIS_LAN_TLS_ENABLED = "false"
     }
 
-    $env:LENGRVIS_ENV = if ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } else { "development" }
-    $env:LENGRVIS_ENV = $env:LENGRVIS_ENV
+    if (-not $env:LENGRVIS_ENV) {
+        $env:LENGRVIS_ENV = "development"
+    }
     $env:LENGRVIS_BACKEND_URL = $BackendUrl
     $env:LENGRVIS_BACKEND_HOST = $BackendHost
     $env:LENGRVIS_BACKEND_PORT = [string]$BackendPort

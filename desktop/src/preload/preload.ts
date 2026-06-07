@@ -52,6 +52,25 @@ const bridge: LengrvisDesktopBridge = {
     foreground: () => ipcRenderer.invoke(IPC_CHANNELS.backendForeground),
     background: () => ipcRenderer.invoke(IPC_CHANNELS.backendBackground)
   },
+  commands: {
+    execute: (request) => ipcRenderer.invoke(IPC_CHANNELS.commandsExecute, request)
+  },
+  cleanup: {
+    execute: (body) => ipcRenderer.invoke(IPC_CHANNELS.cleanupExecute, body),
+    rollback: (body) => ipcRenderer.invoke(IPC_CHANNELS.cleanupRollback, body)
+  },
+  skills: {
+    importPackage: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.skillsImport, path),
+    refresh: () => ipcRenderer.invoke(IPC_CHANNELS.skillsRefresh)
+  },
+  localModel: {
+    install: (request) => ipcRenderer.invoke(IPC_CHANNELS.localModelInstall, request)
+  },
+  ollama: {
+    install: () => ipcRenderer.invoke(IPC_CHANNELS.ollamaInstall),
+    pull: (request) => ipcRenderer.invoke(IPC_CHANNELS.ollamaPull, request ?? {}),
+    start: () => ipcRenderer.invoke(IPC_CHANNELS.ollamaStart)
+  },
   mobilePairing: {
     createCode: () => ipcRenderer.invoke(IPC_CHANNELS.mobilePairingCreateCode),
     listDevices: () => ipcRenderer.invoke(IPC_CHANNELS.mobilePairingListDevices),

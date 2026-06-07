@@ -457,6 +457,11 @@ export class LengrvisApiClient {
   }
 
   executeCommand(name: string, args: Record<string, unknown> = {}): Promise<ApiResponse<CommandExecutionResult>> {
+    if (window.lengrvis?.commands) {
+      return window.lengrvis.commands.execute({ name, args }).then((response) =>
+        mapResponse(response as ApiResponse<BackendCommandExecutionResult>, mapCommandExecutionResult)
+      );
+    }
     return this.request<BackendCommandExecutionResult, { name: string; args: Record<string, unknown> }>({
       endpoint: "/api/commands/execute",
       method: "POST",
@@ -828,32 +833,44 @@ export class LengrvisApiClient {
 
   executeCleanup(body: CleanupExecuteRequest): Promise<ApiResponse<CleanupExecutionResult>> {
     const selectedItemIds = body.selectedItemIds ?? body.items?.map((item) => item.id);
-    return this.request<BackendCleanupExecutionResult, BackendCleanupExecuteRequest>({
-      endpoint: "/api/files/cleanup/execute",
-      method: "POST",
-      body: {
-        roots: body.roots,
-        plan_id: body.planId,
-        content_hash: body.contentHash,
-        selected_item_ids: selectedItemIds,
-        dry_run: body.dryRun,
-        approved: body.approved,
-        approval_id: body.approvalId
-      },
-      timeoutMs: 60_000
-    }).then((response) => mapResponse(response, mapCleanupExecutionResult));
+    const requestBody: BackendCleanupExecuteRequest = {
+      roots: body.roots,
+      plan_id: body.planId,
+      content_hash: body.contentHash,
+      selected_item_ids: selectedItemIds,
+      dry_run: body.dryRun,
+      approved: body.approved,
+      approval_id: body.approvalId
+    };
+    const response = window.lengrvis?.cleanup
+      ? window.lengrvis.cleanup.execute(requestBody as Record<string, unknown>)
+      : this.request<BackendCleanupExecutionResult, BackendCleanupExecuteRequest>({
+          endpoint: "/api/files/cleanup/execute",
+          method: "POST",
+          body: requestBody,
+          timeoutMs: 60_000
+        });
+    return response.then((result) =>
+      mapResponse(result as ApiResponse<BackendCleanupExecutionResult>, mapCleanupExecutionResult)
+    );
   }
 
   rollbackCleanup(body: CleanupRollbackRequest): Promise<ApiResponse<CleanupExecutionResult>> {
-    return this.request<BackendCleanupExecutionResult, BackendCleanupRollbackRequest>({
-      endpoint: "/api/files/cleanup/rollback",
-      method: "POST",
-      body: {
-        plan_id: body.planId,
-        execution_id: body.executionId
-      },
-      timeoutMs: 60_000
-    }).then((response) => mapResponse(response, mapCleanupExecutionResult));
+    const requestBody: BackendCleanupRollbackRequest = {
+      plan_id: body.planId,
+      execution_id: body.executionId
+    };
+    const response = window.lengrvis?.cleanup
+      ? window.lengrvis.cleanup.rollback(requestBody as Record<string, unknown>)
+      : this.request<BackendCleanupExecutionResult, BackendCleanupRollbackRequest>({
+          endpoint: "/api/files/cleanup/rollback",
+          method: "POST",
+          body: requestBody,
+          timeoutMs: 60_000
+        });
+    return response.then((result) =>
+      mapResponse(result as ApiResponse<BackendCleanupExecutionResult>, mapCleanupExecutionResult)
+    );
   }
 
   readBrowserPage(url: string): Promise<ApiResponse<BrowserPageSnapshot>> {
@@ -1297,6 +1314,11 @@ export class LengrvisApiClient {
   }
 
   importSkill(path: string): Promise<ApiResponse<SkillImportResult>> {
+    if (window.lengrvis?.skills) {
+      return window.lengrvis.skills.importPackage(path).then((response) =>
+        mapResponse(response as ApiResponse<BackendSkillImportResult>, mapSkillImportResult)
+      );
+    }
     return this.request<BackendSkillImportResult, { path: string }>({
       endpoint: "/api/skills/import",
       method: "POST",
@@ -1306,6 +1328,15 @@ export class LengrvisApiClient {
   }
 
   refreshSkills(): Promise<ApiResponse<{ ok: boolean; toolCount: number; skillCount: number }>> {
+    if (window.lengrvis?.skills) {
+      return window.lengrvis.skills.refresh().then((response) =>
+        mapResponse(response as ApiResponse<BackendSkillRefresh>, (data) => ({
+          ok: Boolean(data.ok),
+          toolCount: Number(data.tool_count ?? 0),
+          skillCount: Number(data.skill_count ?? 0)
+        }))
+      );
+    }
     return this.request<BackendSkillRefresh>({ endpoint: "/api/skills/refresh", method: "POST" }).then((response) =>
       mapResponse(response, (data) => ({
         ok: Boolean(data.ok),
