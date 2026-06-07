@@ -174,6 +174,20 @@ function SkillRow({ skill }: { skill: InstalledSkill }) {
         </ul>
       ) : null}
 
+      <div className="skill-manifest-summary">
+        <strong>Skill Product Manifest</strong>
+        <span>{skillManifestSummary(skill)}</span>
+      </div>
+
+      <div className="skill-permissions" aria-label="Skill Product Manifest 权限卡">
+        {skillPermissionCards(skill).map((permission) => (
+          <span key={permission.label} className={`skill-permission skill-permission--${permission.tone}`}>
+            <strong>{permission.label}</strong>
+            <em>{permission.detail}</em>
+          </span>
+        ))}
+      </div>
+
       <div className="skill-tools">
         {skill.tools.map((tool) => (
           <div className="skill-tool" key={tool.name}>
@@ -194,4 +208,97 @@ function riskTone(risk: string): "neutral" | "success" | "warning" | "danger" | 
   if (risk.startsWith("R2")) return "warning";
   if (risk.startsWith("R3") || risk.startsWith("R4")) return "danger";
   return "neutral";
+}
+
+type ManifestCardTone = "safe" | "review" | "danger";
+
+interface SkillManifestCard {
+  label: string;
+  detail: string;
+  tone: ManifestCardTone;
+}
+
+function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
+  const text = skillManifestText(skill);
+  const executionTypes = new Set(skill.tools.map((tool) => tool.executionType));
+  const risky = hasRisk(skill, "R2") || hasRisk(skill, "R3") || hasRisk(skill, "R4");
+  const destructive = hasRisk(skill, "R3") || matches(text, /delete|remove|trash|unlink|purge|clear|drop|uninstall|erase|wipe|destroy|删除|卸载|清空/);
+  const handoff = hasRisk(skill, "R4");
+  const hasDryRunIssue = skill.safety.issues.some((issue) => /dry-run|preview|supports_dry_run/i.test(`${issue.location} ${issue.message}`));
+  const rollback = matches(text, /rollback|revert|restore|undo|recover|checkpoint|回滚|恢复|撤销/);
+
+  const readsFiles = matches(text, /file|document|path|pdf|docx|xlsx|pptx|csv|folder|directory|read|search|scan|index|image|photo|ocr|extract|文件|文档|图片/);
+  const writesFiles = matches(text, /write|save|create|copy|move|rename|archive|zip|edit|update|export|generate|download|append|写入|保存|创建|移动|重命名/);
+  const controlsUi = matches(text, /ui|automation|click|type|keyboard|mouse|screen|window|app|excel|browser|com|settings|launch|open|焦点|窗口|点击|输入/);
+  const network = executionTypes.has("http") || matches(text, /http|https|web|browser|url|api|mail|email|calendar|slack|teams|webhook|drive|sharepoint|github|notion|network|网页|网络/);
+  const messages = matches(text, /send|message|mail|email|calendar|invite|slack|teams|webhook|post|notify|notification|sms|wechat|chat|发送|通知|消息|微信|企业微信/);
+
+  return [
+    {
+      label: "读文件",
+      detail: readsFiles ? "可能读取授权目录或文档内容" : "未推断出文件读取",
+      tone: readsFiles ? "review" : "safe"
+    },
+    {
+      label: "写文件",
+      detail: writesFiles ? "可能创建、更新或导出文件" : "未推断出文件写入",
+      tone: writesFiles ? (destructive ? "danger" : "review") : "safe"
+    },
+    {
+      label: "操作 UI",
+      detail: controlsUi ? "可能操作窗口、浏览器或本地应用" : "未推断出 UI 控制",
+      tone: controlsUi ? (hasRisk(skill, "R3") ? "danger" : "review") : "safe"
+    },
+    {
+      label: "访问网络",
+      detail: network ? "可能访问本地服务或外部网络" : "未声明网络访问",
+      tone: network ? "review" : "safe"
+    },
+    {
+      label: "发送消息",
+      detail: messages ? "可能发送通知、邮件或聊天消息" : "未推断出消息发送",
+      tone: messages ? "danger" : "safe"
+    },
+    {
+      label: "删除数据",
+      detail: destructive ? "可能删除、卸载或清空数据" : "未推断出删除动作",
+      tone: destructive ? "danger" : "safe"
+    },
+    {
+      label: "Preview",
+      detail: hasDryRunIssue ? "缺少 dry-run preview，需修复" : risky ? "高风险执行前需要 preview/审批" : "低风险默认无需 preview",
+      tone: hasDryRunIssue ? "danger" : risky ? "review" : "safe"
+    },
+    {
+      label: "Rollback/Handoff",
+      detail: handoff ? "R4 必须转人工或拒绝" : rollback ? "推断存在回滚/恢复路径" : risky ? "需在 demo 中说明回滚或兜底" : "无高风险回滚要求",
+      tone: handoff ? "danger" : rollback ? "safe" : risky ? "review" : "safe"
+    }
+  ];
+}
+
+function skillManifestSummary(skill: InstalledSkill): string {
+  const executionTypes = [...new Set(skill.tools.map((tool) => tool.executionType))].filter(Boolean);
+  const risk = skill.risk || "未知风险";
+  const execution = executionTypes.length ? executionTypes.join(" / ") : "未声明执行方式";
+  return `${skill.tools.length} 个工具 · ${execution} · ${risk}`;
+}
+
+function skillManifestText(skill: InstalledSkill): string {
+  return [
+    skill.name,
+    skill.agentOwner,
+    skill.risk,
+    skill.error,
+    ...skill.tools.flatMap((tool) => [tool.name, tool.description, tool.agentOwner, tool.risk, tool.executionType, tool.entry]),
+    ...skill.safety.issues.flatMap((issue) => [issue.severity, issue.location, issue.message])
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function hasRisk(skill: InstalledSkill, riskPrefix: "R2" | "R3" | "R4"): boolean {
+  return skill.risk.startsWith(riskPrefix) || skill.tools.some((tool) => tool.risk.startsWith(riskPrefix));
+}
+
+function matches(text: string, pattern: RegExp): boolean {
+  return pattern.test(text);
 }

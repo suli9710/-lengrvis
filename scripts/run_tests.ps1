@@ -85,4 +85,7 @@ if (Test-Path "mobile\package.json") {
 
     npm --prefix mobile run smoke:token
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:remote-input-grant
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

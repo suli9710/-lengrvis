@@ -156,19 +156,44 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
     <Panel title="任务时间线" eyebrow="执行记录">
       {tasks.length ? (
         <ol className="timeline">
-          {tasks.map((task) => (
-            <li
-              className={task.id === focusedTaskId ? "timeline__item timeline__item--focused" : "timeline__item"}
-              key={task.id}
-              ref={task.id === focusedTaskId ? focusedTaskRef : undefined}
-            >
-              <span className={`timeline__marker timeline__marker--${task.state}`}>{iconForState(task.state)}</span>
-              <div className="timeline__content">
-                <div className="row row--between">
-                  <strong>{task.title}</strong>
-                  <Badge tone={toneForState(task.state)}>{zhTaskState(task.state)}</Badge>
-                </div>
-                <p>{task.description}</p>
+          {tasks.map((task) => {
+            const trustManifest = buildTaskTrustManifest(task);
+            const workspaceItems = buildTimelineWorkspace(task);
+            return (
+              <li
+                className={task.id === focusedTaskId ? "timeline__item timeline__item--focused" : "timeline__item"}
+                key={task.id}
+                ref={task.id === focusedTaskId ? focusedTaskRef : undefined}
+              >
+                <span className={`timeline__marker timeline__marker--${task.state}`}>{iconForState(task.state)}</span>
+                <div className="timeline__content">
+                  <div className="row row--between">
+                    <strong>{task.title}</strong>
+                    <Badge tone={toneForState(task.state)}>{zhTaskState(task.state)}</Badge>
+                  </div>
+                  <p>{task.description}</p>
+                  <div className="timeline-trust-manifest" aria-label="任务信任清单">
+                    {trustManifest.map((item) => (
+                      <span key={item.label} className={`timeline-trust-manifest__item timeline-trust-manifest__item--${item.tone}`}>
+                        <strong>{item.label}</strong>
+                        <em>{item.value}</em>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="timeline-workspace" aria-label="Task Workspace">
+                    <div className="timeline-workspace__head">
+                      <strong>Task Workspace</strong>
+                      <span>授权、工具、审批与接管状态</span>
+                    </div>
+                    <div className="timeline-workspace__grid">
+                      {workspaceItems.map((item) => (
+                        <span key={item.label} className={`timeline-workspace__item timeline-workspace__item--${item.tone}`}>
+                          <b>{item.label}</b>
+                          <em>{item.value}</em>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 {task.recordings?.length ? (
                   <div className="timeline-recordings">
                     {task.recordings.map((recording) => (
@@ -223,9 +248,10 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
                     </button>
                   </div>
                 ) : null}
-              </div>
-            </li>
-          ))}
+                </div>
+              </li>
+            );
+          })}
         </ol>
       ) : (
         <p className="empty-state">暂无任务记录。真实任务启动后会出现在这里。</p>
@@ -366,6 +392,64 @@ export function TaskTimeline({ tasks, api, focusedTaskId }: TaskTimelineProps) {
       ) : null}
     </Panel>
   );
+}
+
+function buildTaskTrustManifest(task: TaskEvent): Array<{ label: string; value: string; tone: "ready" | "warning" | "blocked" }> {
+  const hasBoundaryEvents = Boolean(task.boundaryEvents?.length);
+  const hasRollback = Boolean(task.cleanupPlan) || task.state === "completed";
+  const needsApproval = task.state === "blocked" || hasBoundaryEvents;
+  return [
+    { label: "处理位置", value: "本机任务空间", tone: "ready" },
+    { label: "文件范围", value: hasBoundaryEvents ? "按授权边界记录" : "遵循当前授权目录", tone: "ready" },
+    { label: "云端边界", value: "按当前模式执行", tone: "warning" },
+    { label: "审批", value: needsApproval ? "等待或已记录" : "暂无高风险动作", tone: needsApproval ? "blocked" : "ready" },
+    { label: "回滚", value: hasRollback ? "可查看预案" : "完成后生成", tone: hasRollback ? "ready" : "warning" }
+  ];
+}
+
+function buildTimelineWorkspace(task: TaskEvent): Array<{ label: string; value: string; tone: "ready" | "warning" | "blocked" }> {
+  const hasApproval = task.state === "blocked" || Boolean(task.boundaryEvents?.length);
+  const hasRollback = Boolean(task.cleanupPlan) || task.state === "completed";
+  return [
+    {
+      label: "当前动作",
+      value: workspaceAction(task),
+      tone: task.state === "failed" ? "blocked" : task.state === "queued" ? "warning" : "ready"
+    },
+    {
+      label: "工具权限",
+      value: workspaceTool(task),
+      tone: "ready"
+    },
+    {
+      label: "审批点",
+      value: hasApproval ? "等待或已记录" : "暂无待审批",
+      tone: hasApproval ? "blocked" : "ready"
+    },
+    {
+      label: "回滚/接管",
+      value: hasRollback ? "可查看留痕" : task.state === "paused" ? "已暂停" : "完成后生成",
+      tone: hasRollback ? "ready" : "warning"
+    }
+  ];
+}
+
+function workspaceAction(task: TaskEvent): string {
+  if (task.state === "queued") return "等待执行";
+  if (task.state === "running") return "正在执行";
+  if (task.state === "blocked") return "等待审批";
+  if (task.state === "paused") return "已暂停";
+  if (task.state === "completed") return "已完成";
+  return "需要复核";
+}
+
+function workspaceTool(task: TaskEvent): string {
+  const text = `${task.title} ${task.description} ${task.agent}`.toLowerCase();
+  if (task.cleanupPlan || /cleanup|清理|下载|大文件|file/.test(text)) return "文件工具";
+  if (/document|文档|总结|问答/.test(text)) return "文档工具";
+  if (/computer|system|电脑|系统/.test(text)) return "系统只读";
+  if (/browser|网页|浏览器/.test(text)) return "浏览器工具";
+  return "任务工具";
 }
 
 function TimelineBoundaryEvents({ events }: { events: TaskBoundaryEvent[] }) {

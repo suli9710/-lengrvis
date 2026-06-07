@@ -79,7 +79,14 @@ export default function App() {
   }
 
   if (activeScreen === "remote") {
-    return <RemoteScreen grant={remoteInputGrant} onBack={() => setActiveScreen("approvals")} session={session} />;
+    return (
+      <RemoteScreen
+        grant={remoteInputGrant}
+        onBack={() => setActiveScreen("approvals")}
+        onRemoteInputGrantRevoked={handleRemoteInputGrantRevoked}
+        session={session}
+      />
+    );
   }
 
   if (selectedApproval) {

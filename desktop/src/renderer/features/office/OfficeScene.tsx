@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   Clock,
   CornerDownLeft,
+  FileText,
   FolderOpen,
   LockKeyhole,
   Radio,
@@ -52,6 +53,20 @@ interface OfficeQuickSkillBase {
   id: string;
   icon: LucideIcon;
   title: string;
+  summary: string;
+  trust: {
+    local: string;
+    cloud: string;
+    approval: string;
+    rollback: string;
+    estimate: string;
+  };
+  wizard: {
+    input: string;
+    preflight: string;
+    output: string;
+    nextStep: string;
+  };
 }
 
 export type OfficeQuickSkill =
@@ -102,6 +117,7 @@ export interface OfficeSceneProps {
   onQuickSkill: (skill: OfficeQuickSkill) => void;
   onReadinessAction: (item: HomeReadinessItem) => void;
   onTaskPilotAction?: (task: TaskEvent | null, action: "open" | "approve" | "compose") => void;
+  pendingApprovalCount: number;
   safetyAlert: boolean;
 }
 
@@ -142,6 +158,22 @@ interface CommandPreviewStep {
 }
 
 type CommandPreviewIntent = OfficeQuickSkill["id"] | null;
+
+interface TaskWorkspaceItem {
+  label: string;
+  value: string;
+  detail: string;
+  tone: "ready" | "warning" | "blocked";
+}
+
+interface OutcomeCard {
+  id: string;
+  title: string;
+  eyebrow: string;
+  detail: string;
+  action: string;
+  tone: "ready" | "warning" | "blocked";
+}
 
 type TaskPilotStepState = "idle" | "current" | "done" | "blocked" | "failed";
 
@@ -273,6 +305,7 @@ export function OfficeScene({
   onQuickSkill,
   onReadinessAction,
   onTaskPilotAction,
+  pendingApprovalCount,
   safetyAlert
 }: OfficeSceneProps) {
   const initialOfficeAgentId = activeAgentId || "pm";
@@ -290,6 +323,7 @@ export function OfficeScene({
   const [movingAgents, setMovingAgents] = useState<Set<string>>(() => new Set());
   const walkClearIdRef = useRef<number | undefined>(undefined);
   const quickNoticeClearIdRef = useRef<number | undefined>(undefined);
+  const quickActionLaunchIdRef = useRef<number | undefined>(undefined);
   const commandInputRef = useRef<HTMLTextAreaElement | null>(null);
   const didSyncWorkingAgentsRef = useRef(false);
   const [quickSkillNotice, setQuickSkillNotice] = useState("");
@@ -350,6 +384,10 @@ export function OfficeScene({
         window.clearTimeout(quickNoticeClearIdRef.current);
         quickNoticeClearIdRef.current = undefined;
       }
+      if (quickActionLaunchIdRef.current) {
+        window.clearTimeout(quickActionLaunchIdRef.current);
+        quickActionLaunchIdRef.current = undefined;
+      }
     };
   }, [agents, workingAgentIds]);
 
@@ -374,13 +412,17 @@ export function OfficeScene({
   };
 
   const handleQuickSkillClick = (skill: OfficeQuickSkill) => {
-    onQuickSkill(skill);
     setQuickSkillIntent(skill.id);
 
     if (quickNoticeClearIdRef.current) {
       window.clearTimeout(quickNoticeClearIdRef.current);
     }
+    if (quickActionLaunchIdRef.current) {
+      window.clearTimeout(quickActionLaunchIdRef.current);
+      quickActionLaunchIdRef.current = undefined;
+    }
     if (skill.kind === "prompt") {
+      onQuickSkill(skill);
       setQuickSkillNotice("已填好这句话，下一步点“发送”开始；清理前不会删除任何文件。");
       setSendHintPulse(false);
       window.setTimeout(() => setSendHintPulse(true), 0);
@@ -388,8 +430,16 @@ export function OfficeScene({
       window.requestAnimationFrame(() => commandInputRef.current?.focus());
     } else if (skill.kind === "view") {
       setQuickSkillNotice(`正在打开「${skill.title}」，下一步选择文档。`);
+      quickActionLaunchIdRef.current = window.setTimeout(() => {
+        onQuickSkill(skill);
+        quickActionLaunchIdRef.current = undefined;
+      }, 650);
     } else {
       setQuickSkillNotice("正在进行只读电脑检查，不会改动系统设置。");
+      quickActionLaunchIdRef.current = window.setTimeout(() => {
+        onQuickSkill(skill);
+        quickActionLaunchIdRef.current = undefined;
+      }, 650);
     }
     quickNoticeClearIdRef.current = window.setTimeout(() => {
       setQuickSkillNotice("");
@@ -423,6 +473,15 @@ export function OfficeScene({
   const commandPreviewSteps = useMemo(
     () => buildCommandPreviewSteps(draft, quickSkillNotice, safetyAlert, quickSkillIntent),
     [draft, quickSkillIntent, quickSkillNotice, safetyAlert]
+  );
+  const selectedQuickSkill = quickSkills.find((skill) => skill.id === quickSkillIntent) ?? null;
+  const taskWorkspaceItems = useMemo(
+    () => buildTaskWorkspaceItems(recentTasks, readinessItems, trustItems, pendingApprovalCount, selectedQuickSkill),
+    [pendingApprovalCount, readinessItems, recentTasks, selectedQuickSkill, trustItems]
+  );
+  const outcomeCards = useMemo(
+    () => buildOutcomeCards(recentTasks),
+    [recentTasks]
   );
   const isOfficeMapReady = officeMapSize.width > 0 && officeMapSize.height > 0;
   const officeScale = isOfficeMapReady
@@ -561,17 +620,70 @@ export function OfficeScene({
             <strong>可以这样开始</strong>
             <span>普通话输入即可</span>
           </div>
-          <div className="office-quick-actions">
-            {quickSkills.slice(0, 3).map((skill) => (
-              <button key={skill.title} type="button" onClick={() => handleQuickSkillClick(skill)}>
-                <skill.icon size={14} aria-hidden="true" />
-                <span>
-                  <strong>{skill.title}</strong>
-                  <em>{quickSkillHint(skill)}</em>
+          <div className="office-quick-actions office-quick-actions--workbench">
+            {quickSkills.map((skill) => (
+              <button
+                key={skill.title}
+                type="button"
+                className={selectedQuickSkill?.id === skill.id ? "office-quick-card office-quick-card--active" : "office-quick-card"}
+                onClick={() => handleQuickSkillClick(skill)}
+                aria-pressed={selectedQuickSkill?.id === skill.id}
+              >
+                <skill.icon className="office-quick-card__icon" size={15} aria-hidden="true" />
+                <span className="office-quick-card__body">
+                  <span className="office-quick-card__title">
+                    <strong>{skill.title}</strong>
+                    <em>{skill.summary || quickSkillHint(skill)}</em>
+                  </span>
+                  <span className="office-quick-card__wizard-line">
+                    <b>输入</b>{skill.wizard.input}
+                  </span>
+                  <span className="office-quick-card__wizard-line">
+                    <b>预检</b>{skill.wizard.preflight}
+                  </span>
+                  <span className="office-quick-card__wizard-line">
+                    <b>产出</b>{skill.wizard.output}
+                  </span>
+                  <small className="office-quick-card__trust">
+                    <b>{skill.trust.local}</b>
+                    <b>{skill.trust.cloud}</b>
+                    <b>{skill.trust.approval}</b>
+                    <b>{skill.trust.rollback}</b>
+                    <b>{skill.trust.estimate}</b>
+                  </small>
                 </span>
               </button>
             ))}
           </div>
+          {selectedQuickSkill ? (
+            <div className="home-skill-wizard" aria-live="polite">
+              <div className="home-skill-wizard__head">
+                <span>任务向导</span>
+                <strong>{selectedQuickSkill.title}</strong>
+              </div>
+              <div className="home-skill-wizard__grid">
+                <span>
+                  <FileText size={13} aria-hidden="true" />
+                  <b>输入要求</b>
+                  <em>{selectedQuickSkill.wizard.input}</em>
+                </span>
+                <span>
+                  <ShieldCheck size={13} aria-hidden="true" />
+                  <b>预检</b>
+                  <em>{selectedQuickSkill.wizard.preflight}</em>
+                </span>
+                <span>
+                  <CheckCircle2 size={13} aria-hidden="true" />
+                  <b>成果</b>
+                  <em>{selectedQuickSkill.wizard.output}</em>
+                </span>
+              </div>
+              <div className="home-skill-wizard__next">
+                <span>{selectedQuickSkill.kind === "prompt" ? "已填入输入框" : selectedQuickSkill.kind === "view" ? "正在打开工具区" : "只读检查启动中"}</span>
+                <strong>{selectedQuickSkill.wizard.nextStep}</strong>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="inspector-card home-trust-card">
@@ -677,6 +789,39 @@ export function OfficeScene({
                 </div>
               );
             })}
+          </div>
+        </div>
+
+        <div className="inspector-card task-workspace-card">
+          <div className="inspector-card__head">
+            <strong>Task Workspace</strong>
+            <span>权限与接管</span>
+          </div>
+          <div className="task-workspace-grid" aria-label="任务工作空间">
+            {taskWorkspaceItems.map((item) => (
+              <div key={item.label} className={`task-workspace-item task-workspace-item--${item.tone}`}>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <em>{item.detail}</em>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="inspector-card home-outcomes-card">
+          <div className="inspector-card__head">
+            <strong>成果区</strong>
+            <span>最近任务产物</span>
+          </div>
+          <div className="home-outcome-list" aria-label="任务成果区">
+            {outcomeCards.map((card) => (
+              <article key={card.id} className={`home-outcome-card home-outcome-card--${card.tone}`}>
+                <span>{card.eyebrow}</span>
+                <strong>{card.title}</strong>
+                <p>{card.detail}</p>
+                <em>{card.action}</em>
+              </article>
+            ))}
           </div>
         </div>
 
@@ -1156,6 +1301,194 @@ function setupStepDetail(item: HomeReadinessItem): string {
   return "本地 AI 就绪后，敏感文档可优先留在本机处理。";
 }
 
+function buildTaskWorkspaceItems(
+  tasks: TaskEvent[],
+  readinessItems: HomeReadinessItem[],
+  trustItems: HomeTrustItem[],
+  pendingApprovalCount: number,
+  selectedSkill: OfficeQuickSkill | null
+): TaskWorkspaceItem[] {
+  const latestTask = sortTasksByUpdatedAt(tasks)[0];
+  const scopeItem = readinessItems.find((item) => item.id === "scope");
+  const aiItem = trustItems.find((item) => item.id === "ai");
+  const uploadItem = trustItems.find((item) => item.id === "upload");
+  const hasApproval = pendingApprovalCount > 0 || latestTask?.state === "blocked";
+  const hasRollback = Boolean(latestTask?.cleanupPlan) || latestTask?.state === "completed";
+  const selectedTool = selectedSkill ? inferWorkspaceToolForSkill(selectedSkill) : "未绑定";
+  const selectedApproval = selectedSkill ? selectedSkill.trust.approval : "";
+  const selectedRollback = selectedSkill ? selectedSkill.trust.rollback : "";
+
+  return [
+    {
+      label: "授权范围",
+      value: scopeItem?.state === "ready" ? "已限定" : "待选择",
+      detail: scopeItem?.detail ?? "文件工具会等待你选择范围",
+      tone: scopeItem?.state === "ready" ? "ready" : "warning"
+    },
+    {
+      label: "工具权限",
+      value: latestTask ? inferWorkspaceTool(latestTask) : selectedTool,
+      detail: latestTask
+        ? "按任务类型启用，不会开放全局控制"
+        : selectedSkill
+          ? `${selectedSkill.title}：${selectedSkill.wizard.preflight}`
+          : "选择模板后再绑定工具",
+      tone: latestTask || selectedSkill ? "ready" : "warning"
+    },
+    {
+      label: "云端边界",
+      value: aiItem?.value ?? "按当前模式",
+      detail: uploadItem ? `${aiItem?.detail ?? "按模式执行"}；${uploadItem.detail}` : "按当前模式执行",
+      tone: aiItem?.state === "warning" || uploadItem?.state === "warning" ? "warning" : "ready"
+    },
+    {
+      label: "当前动作",
+      value: latestTask ? friendlyTaskState(latestTask.state) : selectedSkill ? "待启动" : "空闲",
+      detail: latestTask?.title || selectedSkill?.wizard.nextStep || "等待第一个目标或任务模板",
+      tone: latestTask?.state === "failed" ? "blocked" : latestTask || selectedSkill ? "ready" : "warning"
+    },
+    {
+      label: "审批点",
+      value: hasApproval ? `${pendingApprovalCount || 1} 项待确认` : "暂无待审批",
+      detail: hasApproval
+        ? "高风险动作会停在这里等待你处理"
+        : selectedApproval
+          ? `模板策略：${selectedApproval}`
+          : "只读或低风险步骤继续执行",
+      tone: hasApproval ? "blocked" : "ready"
+    },
+    {
+      label: "回滚/接管",
+      value: hasRollback ? "有留痕" : latestTask?.state === "running" ? "执行中" : "待生成",
+      detail: hasRollback
+        ? "可在时间线查看解释或回滚预案"
+        : latestTask?.state === "paused"
+          ? "任务已暂停，可从进度入口接回"
+          : selectedRollback
+            ? `模板策略：${selectedRollback}`
+            : "完成或审批后显示更多控制",
+      tone: hasRollback || selectedSkill ? "ready" : latestTask ? "warning" : "warning"
+    }
+  ];
+}
+
+function inferWorkspaceTool(task?: TaskEvent): string {
+  if (!task) return "未绑定";
+  const text = `${task.title} ${task.description} ${task.agent}`.toLowerCase();
+  if (task.cleanupPlan || /cleanup|清理|下载|大文件|file/.test(text)) return "文件工具";
+  if (/document|文档|总结|问答/.test(text)) return "文档工具";
+  if (/computer|system|电脑|系统/.test(text)) return "系统只读";
+  if (/browser|网页|浏览器/.test(text)) return "浏览器工具";
+  return "任务工具";
+}
+
+function inferWorkspaceToolForSkill(skill: OfficeQuickSkill): string {
+  if (skill.id === "clean-downloads" || skill.id === "find-large-files") return "文件工具";
+  if (skill.id === "summarize-document" || skill.id === "document-qa") return "文档工具";
+  if (skill.id === "check-computer") return "系统只读";
+  if (skill.kind === "view" && skill.view === "files") return "文件/文档工具";
+  return "任务工具";
+}
+
+function buildOutcomeCards(tasks: TaskEvent[]): OutcomeCard[] {
+  const sortedTasks = sortTasksByUpdatedAt(tasks);
+  const cleanupTask = sortedTasks.find((task) => task.cleanupPlan);
+  const documentTask = sortedTasks.find((task) => /文档|总结|问答|document|summary|qa/i.test(`${task.title} ${task.description} ${task.agent}`));
+  const largeFileTask = sortedTasks.find((task) => /大文件|空间|large files?|disk usage/i.test(`${task.title} ${task.description}`));
+  const computerTask = sortedTasks.find((task) => /电脑|系统|computer|system/i.test(`${task.title} ${task.description} ${task.agent}`));
+
+  return [
+    cleanupOutcomeCard(cleanupTask),
+    taskOutcomeCard({
+      id: "document",
+      task: documentTask,
+      eyebrow: "文档 QA",
+      title: documentTask ? "文档回答已进入留痕" : "等待文档结果",
+      readyDetail: "可打开文档区继续追问；引用来源随任务记录查看。",
+      emptyDetail: "选择“总结本地文档”或“文档问答”后，这里显示摘要和引用入口。",
+      readyAction: "下一步：继续追问或查看时间线引用",
+      emptyAction: "运行文档模板后可引用结果",
+      tone: "ready"
+    }),
+    taskOutcomeCard({
+      id: "large-files",
+      task: largeFileTask,
+      eyebrow: "查找大文件",
+      title: largeFileTask ? "大文件任务已有记录" : "等待扫描结果",
+      readyDetail: "排行和清理建议保留在任务记录里；不会自动删除文件。",
+      emptyDetail: "运行“查找大文件”后，这里显示可复核的排行和下一步。",
+      readyAction: "下一步：打开时间线复核候选项",
+      emptyAction: "先选择范围，再生成只读结果",
+      tone: "warning"
+    }),
+    taskOutcomeCard({
+      id: "computer",
+      task: computerTask,
+      eyebrow: "系统检查",
+      title: computerTask ? "系统检查有最近记录" : "等待只读快照",
+      readyDetail: "只读状态可作为诊断线索；不会改系统设置。",
+      emptyDetail: "运行“检查电脑状态”后，这里显示健康检查和修复入口。",
+      readyAction: "下一步：查看电脑状态页",
+      emptyAction: "可一键启动只读检查",
+      tone: "ready"
+    })
+  ];
+}
+
+function cleanupOutcomeCard(task?: TaskEvent): OutcomeCard {
+  if (!task?.cleanupPlan) {
+    return {
+      id: "cleanup",
+      eyebrow: "清理计划",
+      title: "等待清理预览",
+      detail: "整理下载目录或大文件任务生成结果后，这里显示候选项和审批入口。",
+      action: "生成后可复核、审批或查看回滚预案",
+      tone: "warning"
+    };
+  }
+
+  const executableCount = task.cleanupPlan.items.filter((item) => item.disposition === "permanent_delete" || item.disposition === "trash").length;
+  return {
+    id: "cleanup",
+    eyebrow: "清理计划",
+    title: `${task.cleanupPlan.items.length} 个候选项`,
+    detail: `${formatOutcomeBytes(task.cleanupPlan.reclaimableBytes)} 可释放，${executableCount} 项需要审批后才会执行。`,
+    action: "下一步：打开审批或时间线回滚预案",
+    tone: task.state === "blocked" ? "blocked" : "ready"
+  };
+}
+
+function taskOutcomeCard({
+  id,
+  task,
+  eyebrow,
+  title,
+  readyDetail,
+  emptyDetail,
+  readyAction,
+  emptyAction,
+  tone
+}: {
+  id: string;
+  task?: TaskEvent;
+  eyebrow: string;
+  title: string;
+  readyDetail: string;
+  emptyDetail: string;
+  readyAction: string;
+  emptyAction: string;
+  tone: OutcomeCard["tone"];
+}): OutcomeCard {
+  return {
+    id,
+    eyebrow,
+    title,
+    detail: task ? readyDetail : emptyDetail,
+    action: task ? readyAction : emptyAction,
+    tone: task ? tone : "warning"
+  };
+}
+
 function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilotSummary {
   const latestTask = sortTasksByUpdatedAt(tasks)[0];
 
@@ -1393,6 +1726,18 @@ function isRecentTask(task: TaskEvent, hours: number): boolean {
 function taskUpdatedAt(task: TaskEvent): number {
   const time = Date.parse(task.updatedAt || task.createdAt);
   return Number.isFinite(time) ? time : 0;
+}
+
+function formatOutcomeBytes(bytes?: number): string {
+  if (!bytes || !Number.isFinite(bytes)) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
 function friendlyTaskState(state: TaskEvent["state"]): string {

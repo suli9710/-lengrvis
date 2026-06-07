@@ -17,7 +17,9 @@ from starlette.websockets import WebSocketDisconnect
 from app.api import routes_remote
 from app.llm.registry import get_effective_settings
 from app.core import db
-from app.core.schemas import Approval, Plan, PlanStep, Task
+from app.core.schemas import Approval, ChatResponse, Plan, PlanStep, Task
+from app.orchestration.execution_stage import ExecutionStage
+from app.orchestration.task_phase import TaskPhase
 from app.main import app
 from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token, issue_mobile_token
 from app.security import mobile_jwt
@@ -89,8 +91,321 @@ def test_mobile_endpoint_requires_jwt(monkeypatch, tmp_path):
     client = TestClient(app)
 
     response = client.get("/api/mobile/approvals/pending")
+    tasks_response = client.get("/api/mobile/tasks")
+    task_create_response = client.post("/api/mobile/tasks", json={"template_id": "check_computer_status"})
+    task_follow_up_response = client.post("/api/mobile/tasks/task_missing/follow-up", json={"instruction": "继续"})
+    grant_response = client.delete("/api/mobile/remote-input-grants/rig_missing")
 
     assert response.status_code == 401
+    assert tasks_response.status_code == 401
+    assert task_create_response.status_code == 401
+    assert task_follow_up_response.status_code == 401
+    assert grant_response.status_code == 401
+
+
+def test_mobile_companion_lists_task_summaries_without_plan_args(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="整理下载目录并给出清理建议",
+        mode="hybrid",
+        final_summary="已扫描文件，等待用户确认。",
+    )
+    db.upsert_model("tasks", task)
+    plan = Plan(
+        task_id=task.id,
+        goal=task.user_goal,
+        steps=[
+            PlanStep(
+                order=1,
+                agent_name="FileAgent",
+                tool_name="file.cleanup",
+                description="scan",
+                args={"secret_path": "C:/Users/example/private.txt"},
+            )
+        ],
+    )
+    db.upsert_model("plans", plan)
+
+    response = client.get("/api/mobile/tasks", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()["tasks"][0]
+    assert payload["id"] == task.id
+    assert payload["title"] == "整理下载目录并给出清理建议"
+    assert payload["mode"] == "hybrid"
+    assert payload["summary"] == "已扫描文件，等待用户确认。"
+    assert "steps" not in payload
+    assert "args" not in payload
+    assert "secret_path" not in json.dumps(payload)
+
+
+def test_mobile_companion_redacts_privacy_task_text(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="总结 C:/Users/example/private-contract.txt 的付款条款",
+        mode="privacy",
+        final_summary="private-contract.txt 写了 100 万付款。",
+    )
+    db.upsert_model("tasks", task)
+
+    response = client.get("/api/mobile/tasks", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()["tasks"][0]
+    assert payload["id"] == task.id
+    assert payload["title"] == "隐私任务"
+    assert payload["summary"] == "隐私模式：请在电脑端查看任务详情。"
+    assert "private-contract" not in json.dumps(payload, ensure_ascii=False)
+    assert "100 万" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_mobile_companion_can_cancel_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(user_goal="稍后取消的任务")
+    db.upsert_model("tasks", task)
+
+    response = client.post(
+        f"/api/mobile/tasks/{task.id}/cancel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == task.id
+    assert response.json()["status"] == "cancelled"
+
+
+def test_mobile_companion_cannot_cancel_terminal_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(user_goal="已经完成的任务", status=TaskPhase.COMPLETED)
+    db.upsert_model("tasks", task)
+
+    response = client.post(
+        f"/api/mobile/tasks/{task.id}/cancel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 409
+    refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert refreshed.status == TaskPhase.COMPLETED
+
+
+def test_mobile_companion_can_pause_and_resume_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="可暂停的任务",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+    )
+    db.upsert_model("tasks", task)
+
+    response = client.post(
+        f"/api/mobile/tasks/{task.id}/pause",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "paused"
+
+    def fake_resume_task(task_id: str, *, strict: bool | None = None) -> Task:
+        assert strict is True
+        resumed = Task.model_validate(db.fetch_one("tasks", task_id))
+        resumed.status = TaskPhase.EXECUTION
+        resumed.phase = TaskPhase.EXECUTION
+        resumed.execution_stage = ExecutionStage.STEP_RUNNING
+        db.upsert_model("tasks", resumed)
+        return resumed
+
+    monkeypatch.setattr("app.api.routes_mobile.resume_task", fake_resume_task)
+    response = client.post(
+        f"/api/mobile/tasks/{task.id}/resume",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "execution"
+
+
+def test_mobile_companion_cannot_pause_waiting_approval_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="等待审批的任务",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.AWAITING_APPROVAL,
+    )
+    db.upsert_model("tasks", task)
+
+    response = client.post(
+        f"/api/mobile/tasks/{task.id}/pause",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Only actively running tasks can be paused."
+    refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert refreshed.execution_stage == ExecutionStage.AWAITING_APPROVAL
+
+
+def test_mobile_companion_can_start_template_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    captured: dict[str, str] = {}
+
+    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+        captured.update({"goal": goal, "mode": mode, "agent_hint": agent_hint})
+        task = Task(user_goal=goal, mode=mode)
+        db.upsert_model("tasks", task)
+        return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
+
+    monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
+
+    response = client.post(
+        "/api/mobile/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "template_id": "organize_downloads",
+            "user_input": "只扫描 D:/Downloads，先不要删除。",
+            "mode": "hybrid",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["task"]["id"]
+    assert payload["task"]["mode"] == "hybrid"
+    assert payload["message"].startswith("已从手机 Companion 发起")
+    assert "整理下载目录" in captured["goal"]
+    assert "D:/Downloads" in captured["goal"]
+    assert "dry-run" in captured["goal"]
+    assert captured["agent_hint"] == "FileAgent"
+
+
+def test_mobile_companion_task_start_conflicts_when_no_computer_task_created(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+
+    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+        return ChatResponse(message="需要在电脑端补充任务范围。", delegated=False, agent=agent_hint)
+
+    monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
+
+    response = client.post(
+        "/api/mobile/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"template_id": "document_qa", "mode": "hybrid"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "需要在电脑端补充任务范围。"
+
+
+def test_mobile_companion_task_start_returns_stable_error_when_delegate_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+
+    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+        raise RuntimeError("task bus unavailable")
+
+    monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
+
+    response = client.post(
+        "/api/mobile/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"template_id": "check_computer_status", "mode": "efficiency"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Computer task service is unavailable. Please retry from the desktop task workspace."
+
+
+def test_mobile_companion_follow_up_creates_related_computer_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    source = Task(user_goal="整理下载目录", mode="hybrid")
+    db.upsert_model("tasks", source)
+    captured: dict[str, str] = {}
+
+    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+        captured.update({"goal": goal, "mode": mode, "agent_hint": agent_hint})
+        task = Task(user_goal=goal, mode=mode)
+        db.upsert_model("tasks", task)
+        return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
+
+    monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
+
+    response = client.post(
+        f"/api/mobile/tasks/{source.id}/follow-up",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"instruction": "再检查一下桌面上的临时文件。"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["source_task_id"] == source.id
+    assert payload["task"]["id"] != source.id
+    assert payload["task"]["mode"] == "hybrid"
+    assert "补充指令" in captured["goal"]
+    assert "桌面上的临时文件" in captured["goal"]
+
+
+def test_mobile_companion_follow_up_does_not_echo_privacy_task_text(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    source = Task(
+        user_goal="总结 C:/Users/example/private-contract.txt 的付款条款",
+        mode="privacy",
+        final_summary="private-contract.txt 写了 100 万付款。",
+    )
+    db.upsert_model("tasks", source)
+    captured: dict[str, str] = {}
+
+    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+        captured.update({"goal": goal, "mode": mode})
+        task = Task(user_goal=goal, mode=mode, final_summary="private-contract.txt still secret")
+        db.upsert_model("tasks", task)
+        return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
+
+    monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
+
+    response = client.post(
+        f"/api/mobile/tasks/{source.id}/follow-up",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"instruction": "继续用隐私模式检查第二部分。"},
+    )
+
+    assert response.status_code == 201
+    payload_text = json.dumps(response.json(), ensure_ascii=False)
+    assert response.json()["task"]["title"] == "隐私任务"
+    assert "private-contract" not in payload_text
+    assert "100 万" not in payload_text
+    assert "private-contract" not in captured["goal"]
 
 
 def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
@@ -1026,6 +1341,28 @@ def test_mobile_device_can_claim_remote_input_grant_token(monkeypatch, tmp_path)
     assert claims["device_id"] == device_id
     assert claims["grant_id"] == grant["grant_id"]
     assert payload["expires_in"] <= mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS
+
+
+def test_mobile_device_can_revoke_own_remote_input_grant(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+
+    response = client.delete(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == grant["grant_id"]
+    assert payload["status"] == "revoked"
+    device = db.fetch_one("mobile_devices", device_id)
+    assert device["remote_input_grants"][0]["status"] == "revoked"
 
 
 def test_mobile_device_cannot_claim_other_device_remote_input_grant(monkeypatch, tmp_path):

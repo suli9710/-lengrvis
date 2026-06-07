@@ -9,30 +9,97 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
-import { BellOff, ChevronRight, Monitor, RefreshCcw, ShieldCheck, Unlink } from "lucide-react-native";
+import {
+  BellOff,
+  ChevronRight,
+  ClipboardList,
+  FileQuestion,
+  FolderOpen,
+  HardDrive,
+  Monitor,
+  Pause,
+  Play,
+  RefreshCcw,
+  Send,
+  ShieldCheck,
+  Unlink,
+  XCircle,
+} from "lucide-react-native";
 import type { ReactNode } from "react";
 
 import {
   AuthExpiredError,
   approvalWebSocketUrl,
+  createMobileTask,
   disconnectMobileDevice,
   ForbiddenError,
+  listMobileTasks,
   listPendingApprovals,
   mobileAuthWebSocketProtocols,
+  submitMobileTaskCommand,
+  submitMobileTaskFollowUp,
   type ApprovalEvent,
   type BackendApproval,
+  type MobileTaskMode,
+  type MobileTaskTemplateId,
+  type MobileTask,
   type PairingSession,
   type RemoteInputGrant,
 } from "../api/client";
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
 import { notifyApproval, requestNotificationPermission } from "../notifications";
 import { clearSession } from "../store/auth";
+import { taskStarterTemplates } from "../taskStarterTemplates";
 
 type ApprovalConnection = "offline" | "connecting" | "online";
 const INITIAL_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 30000;
+const TASK_POLL_INTERVAL_MS = 12000;
+const MOBILE_TASK_TEMPLATES: Array<{
+  id: MobileTaskTemplateId;
+  label: string;
+  placeholder: string;
+  icon: ReactNode;
+}> = [
+  {
+    id: "organize_downloads",
+    label: "整理下载目录",
+    placeholder: "可选：指定目录或规则，例如只扫描 D:/Downloads。",
+    icon: <FolderOpen size={14} color="#23313d" />,
+  },
+  {
+    id: "summarize_local_docs",
+    label: "总结本地文档",
+    placeholder: "可选：指定文件夹、文件名或总结重点。",
+    icon: <ClipboardList size={14} color="#23313d" />,
+  },
+  {
+    id: "find_large_files",
+    label: "查找大文件",
+    placeholder: "可选：指定磁盘或大小阈值。",
+    icon: <HardDrive size={14} color="#23313d" />,
+  },
+  {
+    id: "check_computer_status",
+    label: "检查电脑状态",
+    placeholder: "可选：重点关注内存、磁盘、启动项等。",
+    icon: <Monitor size={14} color="#23313d" />,
+  },
+  {
+    id: "document_qa",
+    label: "文档问答",
+    placeholder: "请输入问题和文档范围，例如合同付款条款。",
+    icon: <FileQuestion size={14} color="#23313d" />,
+  },
+];
+const MOBILE_TASK_MODES: Array<{ value: MobileTaskMode; label: string }> = [
+  { value: "hybrid", label: "混合" },
+  { value: "privacy", label: "隐私" },
+  { value: "efficiency", label: "快速" },
+];
 
 export function ApprovalsScreen({
   session,
@@ -52,6 +119,14 @@ export function ApprovalsScreen({
   const [approvals, setApprovals] = useState<BackendApproval[]>([]);
   const [connection, setConnection] = useState<ApprovalConnection>("offline");
   const [error, setError] = useState("");
+  const [tasks, setTasks] = useState<MobileTask[]>([]);
+  const [taskActionId, setTaskActionId] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<MobileTaskTemplateId>("organize_downloads");
+  const [taskDraft, setTaskDraft] = useState("");
+  const [taskMode, setTaskMode] = useState<MobileTaskMode>("hybrid");
+  const [isStartingTask, setIsStartingTask] = useState(false);
+  const [followUpTaskId, setFollowUpTaskId] = useState("");
+  const [followUpDrafts, setFollowUpDrafts] = useState<Record<string, string>>({});
   const [notificationsOff, setNotificationsOff] = useState(false);
   const [streamReconnectKey, setStreamReconnectKey] = useState(0);
   const socketRef = useRef<WebSocket | null>(null);
@@ -63,6 +138,24 @@ export function ApprovalsScreen({
     [approvals],
   );
   const headerTitle = pendingCount === 0 ? "暂无待处理" : `${pendingCount} 项待审批`;
+  const activeTaskCount = useMemo(() => tasks.filter((task) => isActiveTask(task.status)).length, [tasks]);
+  const visibleTasks = useMemo(() => tasks.slice(0, 3), [tasks]);
+  const selectedTemplate = useMemo(
+    () => MOBILE_TASK_TEMPLATES.find((template) => template.id === selectedTemplateId) ?? MOBILE_TASK_TEMPLATES[0],
+    [selectedTemplateId],
+  );
+  const selectedTemplateManifest = useMemo(
+    () => taskStarterTemplates.find((template) => template.id === selectedTemplateId),
+    [selectedTemplateId],
+  );
+
+  const selectTaskTemplate = (templateId: MobileTaskTemplateId) => {
+    setSelectedTemplateId(templateId);
+    const manifest = taskStarterTemplates.find((template) => template.id === templateId);
+    if (manifest) {
+      setTaskMode(manifest.mode);
+    }
+  };
 
   const upsertApproval = useCallback((approval: BackendApproval) => {
     setApprovals((current) => {
@@ -101,6 +194,11 @@ export function ApprovalsScreen({
     mergePendingApprovals(pending);
   }, [mergePendingApprovals, session]);
 
+  const refreshTasks = useCallback(async () => {
+    const nextTasks = await listMobileTasks(session);
+    setTasks(nextTasks);
+  }, [session]);
+
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimerRef.current) return;
     const delay = Math.min(MAX_RECONNECT_DELAY_MS, INITIAL_RECONNECT_DELAY_MS * 2 ** reconnectAttemptRef.current);
@@ -125,7 +223,7 @@ export function ApprovalsScreen({
     }
     setConnection("connecting");
     setError("");
-    void refreshApprovals().catch((currentError: unknown) => {
+    void Promise.all([refreshApprovals(), refreshTasks()]).catch((currentError: unknown) => {
       if (currentError instanceof AuthExpiredError) {
         handleAuthExpired();
         return;
@@ -194,12 +292,12 @@ export function ApprovalsScreen({
       if (socketRef.current === socket) socketRef.current = null;
       socket.close();
     };
-  }, [handleAuthExpired, mergePendingApprovals, onRemoteInputGrant, onRemoteInputGrantRevoked, refreshApprovals, scheduleReconnect, session, streamReconnectKey, upsertApproval]);
+  }, [handleAuthExpired, mergePendingApprovals, onRemoteInputGrant, onRemoteInputGrantRevoked, refreshApprovals, refreshTasks, scheduleReconnect, session, streamReconnectKey, upsertApproval]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
       if (state !== "active") return;
-      void refreshApprovals().catch((currentError: unknown) => {
+      void Promise.all([refreshApprovals(), refreshTasks()]).catch((currentError: unknown) => {
         if (currentError instanceof AuthExpiredError) {
           handleAuthExpired();
           return;
@@ -209,7 +307,21 @@ export function ApprovalsScreen({
       setStreamReconnectKey((current) => current + 1);
     });
     return () => subscription.remove();
-  }, [handleAuthExpired, refreshApprovals]);
+  }, [handleAuthExpired, refreshApprovals, refreshTasks]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (AppState.currentState !== "active") return;
+      void refreshTasks().catch((currentError: unknown) => {
+        if (currentError instanceof AuthExpiredError) {
+          handleAuthExpired();
+          return;
+        }
+        setError(errorMessage(currentError));
+      });
+    }, TASK_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [handleAuthExpired, refreshTasks]);
 
   useEffect(
     () => () => {
@@ -243,6 +355,82 @@ export function ApprovalsScreen({
 
   const handleRefresh = () => {
     setStreamReconnectKey((current) => current + 1);
+    void refreshTasks().catch((currentError: unknown) => setError(errorMessage(currentError)));
+  };
+
+  const submitMobileTemplateTask = async () => {
+    if (isStartingTask) return;
+    setIsStartingTask(true);
+    setError("");
+    try {
+      const result = await createMobileTask(session, {
+        template_id: selectedTemplateId,
+        user_input: taskDraft.trim(),
+        mode: taskMode,
+      });
+      setTasks((current) => [result.task, ...current.filter((item) => item.id !== result.task.id)]);
+      setTaskDraft("");
+    } catch (currentError) {
+      if (currentError instanceof AuthExpiredError) {
+        handleAuthExpired();
+        return;
+      }
+      setError(taskRequestErrorMessage(currentError));
+    } finally {
+      setIsStartingTask(false);
+    }
+  };
+
+  const submitTaskFollowUp = async (task: MobileTask, instruction: string) => {
+    const trimmed = instruction.trim();
+    if (!trimmed) {
+      setError("请输入要补充给电脑任务的指令。");
+      return;
+    }
+    setFollowUpTaskId(task.id);
+    setError("");
+    try {
+      const result = await submitMobileTaskFollowUp(session, task.id, { instruction: trimmed });
+      setTasks((current) => [result.task, ...current.filter((item) => item.id !== result.task.id)]);
+      setFollowUpDrafts((current) => ({ ...current, [task.id]: "" }));
+    } catch (currentError) {
+      if (currentError instanceof AuthExpiredError) {
+        handleAuthExpired();
+        return;
+      }
+      setError(taskRequestErrorMessage(currentError));
+      void refreshTasks().catch(() => undefined);
+    } finally {
+      setFollowUpTaskId("");
+    }
+  };
+
+  const submitTaskAction = async (task: MobileTask, action: "pause" | "resume" | "cancel") => {
+    const run = async () => {
+      setTaskActionId(`${task.id}:${action}`);
+      setError("");
+      try {
+        const nextTask = await submitMobileTaskCommand(session, task.id, action);
+        setTasks((current) => [nextTask, ...current.filter((item) => item.id !== nextTask.id)]);
+      } catch (currentError) {
+        if (currentError instanceof AuthExpiredError) {
+          handleAuthExpired();
+          return;
+        }
+        setError(errorMessage(currentError));
+        void refreshTasks().catch(() => undefined);
+      } finally {
+        setTaskActionId("");
+      }
+    };
+    if (action === "cancel") {
+      Alert.alert("取消这项电脑任务？", "电脑端会停止后续执行，已完成的步骤会保留记录。", [
+        { text: "继续保留", style: "cancel" },
+        { text: "取消任务", style: "destructive", onPress: () => void run() },
+      ]);
+      return;
+    }
+    await run();
   };
 
   return (
@@ -271,6 +459,89 @@ export function ApprovalsScreen({
         </View>
       ) : null}
       {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
+      <View style={styles.companionPanel}>
+        <View style={styles.companionHeader}>
+          <View>
+            <Text style={styles.companionKicker}>任务 Companion</Text>
+            <Text style={styles.companionTitle}>{activeTaskCount ? `${activeTaskCount} 项电脑任务在进行` : "电脑端当前空闲"}</Text>
+          </View>
+          <Text style={styles.companionBadge}>{visibleTasks.length ? `${visibleTasks.length} 项` : "待命"}</Text>
+        </View>
+        <View style={styles.launchBox}>
+          <View style={styles.templateGrid}>
+            {MOBILE_TASK_TEMPLATES.map((template) => {
+              const selected = template.id === selectedTemplateId;
+              return (
+                <Pressable
+                  key={template.id}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  onPress={() => selectTaskTemplate(template.id)}
+                  style={({ pressed }) => [styles.templateButton, selected && styles.templateButtonSelected, pressed && styles.pressed]}
+                >
+                  {template.icon}
+                  <Text style={[styles.templateButtonText, selected && styles.templateButtonTextSelected]}>{template.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <TextInput
+            accessibilityLabel="任务补充说明"
+            multiline
+            onChangeText={setTaskDraft}
+            placeholder={selectedTemplateManifest?.inputHint ?? selectedTemplate.placeholder}
+            placeholderTextColor="#7b8791"
+            style={styles.launchInput}
+            value={taskDraft}
+          />
+          <View style={styles.launchFooter}>
+            <View style={styles.modePicker}>
+              {MOBILE_TASK_MODES.map((mode) => {
+                const selected = mode.value === taskMode;
+                return (
+                  <Pressable
+                    key={mode.value}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    onPress={() => setTaskMode(mode.value)}
+                    style={({ pressed }) => [styles.modeButton, selected && styles.modeButtonSelected, pressed && styles.pressed]}
+                  >
+                    <Text style={[styles.modeButtonText, selected && styles.modeButtonTextSelected]}>{mode.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ busy: isStartingTask, disabled: isStartingTask }}
+              disabled={isStartingTask}
+              onPress={() => void submitMobileTemplateTask()}
+              style={({ pressed }) => [styles.launchButton, isStartingTask && styles.disabledAction, pressed && styles.pressed]}
+            >
+              <Send size={15} color="#ffffff" />
+              <Text style={styles.launchButtonText}>{isStartingTask ? "发起中" : "发起任务"}</Text>
+            </Pressable>
+          </View>
+        </View>
+        {visibleTasks.length ? (
+          <View style={styles.taskList}>
+            {visibleTasks.map((task) => (
+              <TaskCompanionCard
+                key={task.id}
+                actionId={taskActionId}
+                followUpBusy={followUpTaskId === task.id}
+                followUpValue={followUpDrafts[task.id] ?? ""}
+                onAction={submitTaskAction}
+                onFollowUp={submitTaskFollowUp}
+                onFollowUpTextChange={(text) => setFollowUpDrafts((current) => ({ ...current, [task.id]: text }))}
+                task={task}
+              />
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.companionEmpty}>在电脑端启动任务后，这里会显示进度、暂停和取消入口。</Text>
+        )}
+      </View>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="查看电脑屏幕"
@@ -320,6 +591,108 @@ function ApprovalCard({ approval, onPress }: { approval: BackendApproval; onPres
   );
 }
 
+function TaskCompanionCard({
+  task,
+  actionId,
+  followUpBusy,
+  followUpValue,
+  onAction,
+  onFollowUp,
+  onFollowUpTextChange,
+}: {
+  task: MobileTask;
+  actionId: string;
+  followUpBusy: boolean;
+  followUpValue: string;
+  onAction: (task: MobileTask, action: "pause" | "resume" | "cancel") => Promise<void>;
+  onFollowUp: (task: MobileTask, instruction: string) => Promise<void>;
+  onFollowUpTextChange: (text: string) => void;
+}) {
+  const terminal = isTerminalTask(task.status);
+  const actionBusy = actionId.startsWith(`${task.id}:`);
+  const followUpDisabled = followUpBusy || !followUpValue.trim();
+  return (
+    <View style={styles.taskCard}>
+      <View style={styles.taskCardHeader}>
+        <View style={styles.taskCardTitleWrap}>
+          <Text numberOfLines={2} style={styles.taskCardTitle}>{task.title}</Text>
+          <Text style={styles.taskCardMeta}>{taskModeText(task.mode)} · {shortDate(task.updated_at)}</Text>
+        </View>
+        <Text style={[styles.badge, terminal ? styles.badgeDone : styles.badgePending]}>{taskStatusText(task.status)}</Text>
+      </View>
+      {task.summary ? <Text numberOfLines={2} style={styles.taskSummary}>{task.summary}</Text> : null}
+      <View style={styles.followUpRow}>
+        <TextInput
+          accessibilityLabel="补充任务指令"
+          multiline
+          onChangeText={onFollowUpTextChange}
+          placeholder={task.mode === "privacy" ? "补充隐私任务指令，内容只发给电脑端。" : "补充指令，创建相关电脑任务。"}
+          placeholderTextColor="#7b8791"
+          style={styles.followUpInput}
+          value={followUpValue}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ busy: followUpBusy, disabled: followUpDisabled }}
+          disabled={followUpDisabled}
+          onPress={() => void onFollowUp(task, followUpValue)}
+          style={({ pressed }) => [styles.followUpButton, followUpDisabled && styles.disabledAction, pressed && styles.pressed]}
+        >
+          <Send size={14} color="#ffffff" />
+        </Pressable>
+      </View>
+      <View style={styles.taskActions}>
+        {task.status === "paused" ? (
+          <TaskActionButton
+            disabled={actionBusy}
+            icon={<Play size={14} color="#1f7a4d" />}
+            label="继续"
+            onPress={() => void onAction(task, "resume")}
+          />
+        ) : (
+          <TaskActionButton
+            disabled={actionBusy || !canPauseTask(task.status)}
+            icon={<Pause size={14} color="#6c5a1b" />}
+            label="暂停"
+            onPress={() => void onAction(task, "pause")}
+          />
+        )}
+        <TaskActionButton
+          disabled={actionBusy || terminal}
+          icon={<XCircle size={14} color="#8c2f39" />}
+          label="取消"
+          onPress={() => void onAction(task, "cancel")}
+        />
+      </View>
+    </View>
+  );
+}
+
+function TaskActionButton({
+  disabled,
+  icon,
+  label,
+  onPress,
+}: {
+  disabled: boolean;
+  icon: ReactNode;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [styles.taskAction, disabled && styles.disabledAction, pressed && styles.pressed]}
+    >
+      {icon}
+      <Text style={styles.taskActionText}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function IconButton({
   accessibilityLabel,
   icon,
@@ -349,6 +722,19 @@ function errorMessage(error: unknown): string {
     return "这台手机没有权限查看这些审批。请在电脑端重新配对后再试。";
   }
   return "无法更新请求。请点刷新重试。";
+}
+
+function taskRequestErrorMessage(error: unknown): string {
+  if (error instanceof ForbiddenError) {
+    return "这台手机没有权限发起或续写电脑任务。请在电脑端重新配对后再试。";
+  }
+  if (error instanceof Error && error.message.includes("Failed to fetch")) {
+    return "无法连接到电脑。请确认 Lengrvis 已打开，然后重试。";
+  }
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "无法发起电脑任务。请稍后重试。";
 }
 
 function disconnectErrorMessage(error: unknown): string {
@@ -382,6 +768,38 @@ function readablePreview(value: unknown): string {
   if (preview === "暂无预览内容") return "打开后查看详情。";
   if (preview.trim().startsWith("{") || preview.trim().startsWith("[")) return "打开后查看详情。";
   return preview;
+}
+
+function isTerminalTask(status: string): boolean {
+  return ["completed", "failed", "cancelled", "denied"].includes(status);
+}
+
+function isActiveTask(status: string): boolean {
+  return !isTerminalTask(status) && status !== "paused";
+}
+
+function canPauseTask(status: string): boolean {
+  return status === "execution";
+}
+
+function taskStatusText(status: string): string {
+  if (status === "created") return "已创建";
+  if (status === "planning" || status === "plan_review") return "规划中";
+  if (status === "consultation") return "协作中";
+  if (status === "waiting_approval") return "待审批";
+  if (status === "execution") return "执行中";
+  if (status === "final_review") return "复核中";
+  if (status === "paused") return "已暂停";
+  if (status === "completed") return "已完成";
+  if (status === "cancelled" || status === "denied") return "已取消";
+  if (status === "failed") return "失败";
+  return status || "未知";
+}
+
+function taskModeText(mode: string): string {
+  if (mode === "privacy") return "隐私";
+  if (mode === "hybrid") return "混合";
+  return "快速";
 }
 
 const styles = StyleSheet.create({
@@ -462,6 +880,234 @@ const styles = StyleSheet.create({
     marginTop: 10,
     color: "#8c2f39",
     lineHeight: 20,
+  },
+  companionPanel: {
+    marginHorizontal: 20,
+    marginTop: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#ffffff",
+    padding: 12,
+    gap: 10,
+  },
+  companionHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  companionKicker: {
+    color: "#65717c",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  companionTitle: {
+    color: "#1f2933",
+    fontSize: 17,
+    fontWeight: "900",
+    marginTop: 2,
+  },
+  companionBadge: {
+    minHeight: 24,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 7,
+    overflow: "hidden",
+    color: "#1f7a4d",
+    backgroundColor: "#e7f6ef",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  companionEmpty: {
+    color: "#5f6b76",
+    lineHeight: 20,
+  },
+  launchBox: {
+    gap: 10,
+  },
+  templateGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  templateButton: {
+    minHeight: 34,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#f8fafb",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  templateButtonSelected: {
+    borderColor: "#8fb9a0",
+    backgroundColor: "#e7f6ef",
+  },
+  templateButtonText: {
+    color: "#23313d",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  templateButtonTextSelected: {
+    color: "#1f7a4d",
+  },
+  launchInput: {
+    minHeight: 58,
+    maxHeight: 92,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#f8fafb",
+    color: "#23313d",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    textAlignVertical: "top",
+    lineHeight: 19,
+  },
+  launchFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  modePicker: {
+    flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  modeButton: {
+    minHeight: 30,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  modeButtonSelected: {
+    borderColor: "#a7b8d8",
+    backgroundColor: "#eef3ff",
+  },
+  modeButtonText: {
+    color: "#46535f",
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  modeButtonTextSelected: {
+    color: "#234a92",
+  },
+  launchButton: {
+    minHeight: 36,
+    borderRadius: 8,
+    backgroundColor: "#1f7a4d",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+  },
+  launchButtonText: {
+    color: "#ffffff",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  taskList: {
+    gap: 8,
+  },
+  taskCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e1e6e8",
+    backgroundColor: "#f8fafb",
+    padding: 10,
+    gap: 8,
+  },
+  taskCardHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  taskCardTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  taskCardTitle: {
+    color: "#23313d",
+    fontSize: 14,
+    fontWeight: "900",
+    lineHeight: 18,
+  },
+  taskCardMeta: {
+    color: "#65717c",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  taskSummary: {
+    color: "#4b5964",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  followUpRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 8,
+  },
+  followUpInput: {
+    flex: 1,
+    minHeight: 38,
+    maxHeight: 74,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#ffffff",
+    color: "#23313d",
+    fontSize: 12,
+    lineHeight: 18,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    textAlignVertical: "top",
+  },
+  followUpButton: {
+    width: 38,
+    minHeight: 38,
+    borderRadius: 8,
+    backgroundColor: "#1f7a4d",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  taskActions: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  taskAction: {
+    minHeight: 34,
+    minWidth: 86,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#ffffff",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+  },
+  taskActionText: {
+    color: "#23313d",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  disabledAction: {
+    opacity: 0.44,
   },
   remoteEntry: {
     marginHorizontal: 20,
