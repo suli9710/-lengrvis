@@ -92,3 +92,56 @@ def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
     assert tasks.status_code == 200
     listed = next(item for item in tasks.json() if item["id"] == task.id)
     assert listed["boundary_events"]
+
+
+def test_tasks_list_batches_boundary_events(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    task_ids = [f"task_boundary_batch_{index}" for index in range(3)]
+    for task_id in task_ids:
+        task = Task(id=task_id, user_goal=f"Batch boundary events {task_id}")
+        db.upsert_model("tasks", task)
+        db.upsert_model(
+            "agent_messages",
+            AgentMessage(
+                task_id=task.id,
+                step_id="step_1",
+                from_agent="ToolRuntime",
+                message_type=MessageType.NOTIFICATION,
+                content="Starting file.read_text.",
+                structured_payload={"kind": "tool_progress", "tool_name": "file.read_text", "status": "started"},
+                metadata={"event_type": "tool.progress", "tool_name": "file.read_text"},
+            ),
+        )
+        db.upsert_model(
+            "safety_reviews",
+            SafetyReview(
+                task_id=task.id,
+                step_id="step_1",
+                target_type="tool_result",
+                verdict=SafetyVerdict.ALLOW,
+                risk_level=RiskLevel.R0_READ_ONLY,
+                reasons=["Post-tool output remained within boundary."],
+            ),
+        )
+        record("context.projected", "ContextAwareProvider", {"strategy": "auto_compact"}, task_id=task.id)
+
+    event_fetches: dict[str, int] = {"agent_messages": 0, "safety_reviews": 0, "audit_events": 0}
+    original_fetch_many = db.fetch_many
+
+    def spy_fetch_many(table, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if table in event_fetches:
+            event_fetches[table] += 1
+        return original_fetch_many(table, *args, **kwargs)
+
+    monkeypatch.setattr(db, "fetch_many", spy_fetch_many)
+
+    response = TestClient(app).get("/api/tasks")
+
+    assert response.status_code == 200
+    listed = {item["id"]: item for item in response.json() if item["id"] in task_ids}
+    assert set(listed) == set(task_ids)
+    for task_id in task_ids:
+        kinds = {event["kind"] for event in listed[task_id]["boundary_events"]}
+        assert {"tool_progress", "post_tool_review", "context_projection"}.issubset(kinds)
+    assert event_fetches == {"agent_messages": 0, "safety_reviews": 0, "audit_events": 0}

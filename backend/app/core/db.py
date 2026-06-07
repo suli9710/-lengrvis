@@ -21,6 +21,36 @@ from app.config import get_base_settings
 _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("marvis_data_dir_override", default=None)
 AUDIT_GENESIS_HASH = "0" * 64
 AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"
+DATA_TABLES = frozenset(
+    {
+        "approvals",
+        "agent_messages",
+        "audit_events",
+        "chat_messages",
+        "document_chunks",
+        "goals",
+        "indexed_files",
+        "llm_usage_events",
+        "memories",
+        "mobile_devices",
+        "mobile_pairings",
+        "perception_observations",
+        "perception_suggestions",
+        "permission_policies",
+        "plans",
+        "run_events",
+        "runs",
+        "safety_reviews",
+        "scheduled_tasks",
+        "session_contexts",
+        "task_recordings",
+        "tasks",
+        "tool_calls",
+        "tool_results",
+        "wakeups",
+    }
+)
+UNSAFE_WHERE_TOKENS = (";", "--", "/*", "*/", "\x00")
 
 
 def _now_iso() -> str:
@@ -76,6 +106,8 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_tasks_created_at
+                ON tasks(created_at DESC, id DESC);
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id TEXT PRIMARY KEY,
                 data TEXT NOT NULL,
@@ -109,6 +141,8 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_task_created
+                ON agent_messages(task_id, created_at DESC, id DESC);
             CREATE TABLE IF NOT EXISTS runs (
                 id TEXT PRIMARY KEY,
                 task_id TEXT,
@@ -161,6 +195,8 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_safety_reviews_task_created
+                ON safety_reviews(task_id, created_at DESC, id DESC);
             CREATE TABLE IF NOT EXISTS tool_calls (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -211,6 +247,8 @@ def init_db() -> None:
                 data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_audit_events_task_created
+                ON audit_events(task_id, created_at DESC, id DESC);
             CREATE TABLE IF NOT EXISTS llm_usage_events (
                 id TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
@@ -633,8 +671,9 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
 
 
 def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
+    table_name = _data_table_name(table)
     with connect() as conn:
-        row = conn.execute(f"SELECT data FROM {table} WHERE id = ?", (record_id,)).fetchone()
+        row = conn.execute(f"SELECT data FROM {table_name} WHERE id = ?", (record_id,)).fetchone()
     return json.loads(row["data"]) if row else None
 
 
@@ -646,13 +685,35 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
 
 
 def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
-    query = f"SELECT data FROM {table}"
-    if where:
-        query += f" WHERE {where}"
+    table_name = _data_table_name(table)
+    where_clause = _where_clause(where, args)
+    query = f"SELECT data FROM {table_name}"
+    if where_clause:
+        query += f" WHERE {where_clause}"
     query += " ORDER BY created_at DESC LIMIT ?"
     with connect() as conn:
         rows = conn.execute(query, (*args, limit)).fetchall()
     return [json.loads(row["data"]) for row in rows]
+
+
+def _data_table_name(table: str) -> str:
+    table_name = str(table or "").strip()
+    if table_name not in DATA_TABLES:
+        raise ValueError(f"Unsupported table: {table}")
+    return table_name
+
+
+def _where_clause(where: str, args: tuple[Any, ...]) -> str:
+    clause = str(where or "").strip()
+    if not clause:
+        if args:
+            raise ValueError("WHERE arguments require a WHERE clause")
+        return ""
+    if any(token in clause for token in UNSAFE_WHERE_TOKENS):
+        raise ValueError("Unsafe WHERE clause")
+    if clause.count("?") != len(args):
+        raise ValueError("WHERE placeholder count does not match arguments")
+    return clause
 
 
 def claim_scheduled_task_run(

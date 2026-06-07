@@ -4,12 +4,13 @@ from typing import TYPE_CHECKING
 
 from app.core.audit import record
 from app.core import db
-from app.core.schemas import MessageType, Plan, Task, TaskStatus
+from app.core.schemas import MessageType, Plan, StepStatus, Task, TaskStatus
 from app.perception.context_store import latest_perception_context
 from app.perception.storage import perception_context_summary
 from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error
 from app.policy.risk import SafetyVerdict
 from app.policy.risk import RiskLevel
+from app.orchestration.step_phase import set_step_status
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -57,7 +58,10 @@ class PlanningHandler:
 
         plan_review = orchestrator.consultation_handler.consult_and_review(task, plan)
         if plan_review.verdict == SafetyVerdict.DENY:
-            return orchestrator._set_status(task, TaskStatus.DENIED, final_summary=plan_review.safe_alternative)
+            self._mark_denied_plan_steps(plan)
+            db.upsert_model("plans", plan)
+            summary = plan_review.safe_alternative or "; ".join(plan_review.reasons) or "Plan denied by safety review."
+            return orchestrator._set_status(task, TaskStatus.DENIED, final_summary=f"Denied: {summary}")
 
         await orchestrator._process_steps(task, plan)
         await orchestrator.completion_handler.finalize(task, plan)
@@ -162,7 +166,10 @@ class PlanningHandler:
             plan.requires_user_approval = any(step.requires_approval for step in plan.steps)
 
     def _publish_annotated_plan(self, task_id: str, plan: Plan) -> None:
-        self.orchestrator.bus.publish_text(
+        publish_text = getattr(getattr(self.orchestrator, "bus", None), "publish_text", None)
+        if not callable(publish_text):
+            return
+        publish_text(
             task_id,
             "PlannerAgent",
             f"Annotated plan contracts for {len(plan.steps)} step(s).",
@@ -170,6 +177,11 @@ class PlanningHandler:
             structured_payload=plan.model_dump(mode="json"),
             metadata={"event_type": "plan.contract_annotated", "boundary": "tool_contract"},
         )
+
+    def _mark_denied_plan_steps(self, plan: Plan) -> None:
+        for step in plan.steps:
+            if step.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF and step.status == StepStatus.PENDING:
+                set_step_status(step, StepStatus.DENIED, actor="PlanningHandler")
 
     def _model_action_for_step(
         self,

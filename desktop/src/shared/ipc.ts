@@ -24,6 +24,9 @@ export const IPC_CHANNELS = {
   browserHostRelease: "mavris:browser-host:release",
   browserHostStop: "mavris:browser-host:stop",
   browserHostAction: "mavris:browser-host:action",
+  desktopWebSocketOpen: "mavris:desktop-ws:open",
+  desktopWebSocketClose: "mavris:desktop-ws:close",
+  desktopWebSocketEvent: "mavris:desktop-ws:event",
   showNotification: "mavris:show-notification",
   openTaskFromNotification: "mavris:notification:open-task"
 } as const;

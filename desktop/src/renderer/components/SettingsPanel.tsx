@@ -1287,12 +1287,7 @@ function LocalModelInstaller({
   const openProgressSocket = useCallback((): boolean => {
     closeProgressSocket();
 
-    if (typeof WebSocket === "undefined") {
-      setSocketStatus("closed");
-      return false;
-    }
-
-    let socket: WebSocket | null = null;
+    let unsubscribeSocket: (() => void) | null = null;
     let closedByCaller = false;
     let retryId: number | undefined;
     let pathIndex = 0;
@@ -1300,25 +1295,43 @@ function LocalModelInstaller({
     let reconnectAttempts = 0;
     let fallbackStarted = false;
 
-    const connect = () => {
+    const connect = (): boolean => {
       setSocketStatus(pathIndex === 0 && !receivedProgress ? "connecting" : "reconnecting");
-      socket = new WebSocket(buildInstallModelWebSocketUrl(apiBaseUrl, INSTALL_MODEL_WS_PATHS[pathIndex], model));
-
-      socket.onopen = () => {
-        setSocketStatus("connected");
-      };
-      socket.onmessage = (event) => {
-        receivedProgress = true;
-        const nextProgress = parseInstallModelProgress(event.data);
-        if (nextProgress) {
-          applyProgress(nextProgress);
+      const nextUnsubscribe = subscribeInstallModelProgressSocket(
+        apiBaseUrl,
+        INSTALL_MODEL_WS_PATHS[pathIndex],
+        model,
+        {
+          onOpen: () => {
+            setSocketStatus("connected");
+          },
+          onMessage: (data) => {
+            receivedProgress = true;
+            const nextProgress = parseInstallModelProgress(data);
+            if (nextProgress) {
+              applyProgress(nextProgress);
+            }
+          },
+          onError: () => {
+            setSocketStatus("reconnecting");
+          },
+          onClose: () => {
+            unsubscribeSocket = null;
+            handleSocketClose();
+          }
         }
-      };
-      socket.onerror = () => {
-        setSocketStatus("reconnecting");
-      };
-      socket.onclose = () => {
-        socket = null;
+      );
+
+      if (!nextUnsubscribe) {
+        setSocketStatus("closed");
+        return false;
+      }
+
+      unsubscribeSocket = nextUnsubscribe;
+      return true;
+    };
+
+    const handleSocketClose = () => {
         if (closedByCaller) {
           setSocketStatus("closed");
           return;
@@ -1345,17 +1358,20 @@ function LocalModelInstaller({
           }
           return;
         }
-        retryId = window.setTimeout(connect, INSTALL_MODEL_WS_RETRY_DELAY_MS);
-      };
+        retryId = window.setTimeout(() => {
+          void connect();
+        }, INSTALL_MODEL_WS_RETRY_DELAY_MS);
     };
 
-    connect();
+    if (!connect()) {
+      return false;
+    }
 
     closeProgressSocketRef.current = () => {
       closedByCaller = true;
       if (retryId !== undefined) window.clearTimeout(retryId);
-      socket?.close();
-      socket = null;
+      unsubscribeSocket?.();
+      unsubscribeSocket = null;
       setSocketStatus("closed");
     };
 
@@ -1776,6 +1792,56 @@ function zhInstallModelStatus(status: InstallModelStatus, socketStatus: InstallM
     return "安装中";
   }
   return "待安装";
+}
+
+interface InstallModelProgressSocketHandlers {
+  onOpen: () => void;
+  onMessage: (data: unknown) => void;
+  onError: () => void;
+  onClose: () => void;
+}
+
+function subscribeInstallModelProgressSocket(
+  baseUrl: string,
+  path: string,
+  model: string,
+  handlers: InstallModelProgressSocketHandlers
+): (() => void) | null {
+  if (window.mavris?.realtime) {
+    return window.mavris.realtime.subscribe(
+      { endpoint: path, query: { model } },
+      {
+        onOpen: handlers.onOpen,
+        onMessage: handlers.onMessage,
+        onError: handlers.onError,
+        onClose: handlers.onClose
+      }
+    );
+  }
+
+  if (typeof WebSocket === "undefined") {
+    return null;
+  }
+
+  return subscribeInstallModelWebOnlyDevSocket(buildInstallModelWebSocketUrl(baseUrl, path, model), handlers);
+}
+
+function subscribeInstallModelWebOnlyDevSocket(
+  url: string,
+  handlers: InstallModelProgressSocketHandlers
+): () => void {
+  const socket = new WebSocket(url);
+
+  socket.onopen = handlers.onOpen;
+  socket.onmessage = (event) => {
+    handlers.onMessage(event.data);
+  };
+  socket.onerror = handlers.onError;
+  socket.onclose = handlers.onClose;
+
+  return () => {
+    socket.close();
+  };
 }
 
 function buildInstallModelWebSocketUrl(baseUrl: string, path: string, model: string): string {

@@ -20,6 +20,7 @@ import type {
   BrowserHostSnapshot,
   BrowserSession
 } from "../shared/types";
+import { buildBackendWebSocketUrl, createDesktopWebSocket } from "./desktopWebSocket";
 import { isTrustedRendererUrl } from "./ipc";
 
 type BrowserContainer =
@@ -693,10 +694,7 @@ export class BrowserHostWebSocketBridge {
     if (this.stopped || typeof WebSocket === "undefined") return;
     try {
       const desktopApiToken = this.getDesktopApiToken();
-      this.socket = new WebSocket(
-        buildBrowserHostWebSocketUrl(this.getBaseUrl()),
-        desktopApiToken ? [`mavris.desktop.token.${desktopApiToken}`] : undefined
-      );
+      this.socket = createDesktopWebSocket(buildBrowserHostWebSocketUrl(this.getBaseUrl()), desktopApiToken);
       this.socket.addEventListener("open", () => {
         this.send({ type: "snapshot", snapshot: this.browserHost.getSnapshot() });
       });
@@ -1093,9 +1091,7 @@ export function buildBrowserHostWebSocketUrl(baseUrl: string): string {
   if (!isLoopbackBackendUrl(baseUrl)) {
     throw new Error("BrowserHost WebSocket bridge requires a loopback backend baseUrl");
   }
-  const url = new URL("/api/ws/browser-host", baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+  return buildBackendWebSocketUrl(baseUrl, "/api/ws/browser-host");
 }
 
 export function isLoopbackBackendUrl(baseUrl: string): boolean {

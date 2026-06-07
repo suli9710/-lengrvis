@@ -1,0 +1,167 @@
+{
+  "summary": {
+    "total": 17,
+    "ok_2xx": 15,
+    "client_4xx": 2,
+    "server_5xx": 0,
+    "errors": 0,
+    "slow_over_2500ms": [],
+    "non_2xx_or_error": [
+      {
+        "name": "pair_invalid_code",
+        "method": "POST",
+        "path": "/api/pair",
+        "status": 401,
+        "ms": 44,
+        "body": "{\"detail\":\"Pairing code is invalid or expired\"}"
+      },
+      {
+        "name": "commands_execute_unknown_safe",
+        "method": "POST",
+        "path": "/api/commands/execute",
+        "status": 404,
+        "ms": 16,
+        "body": "{\"error\":{\"code\":\"command_not_found\",\"message\":\"Command not registered: /qa-unknown-command\"}}"
+      }
+    ]
+  },
+  "results": [
+    {
+      "name": "chat_post_token",
+      "method": "POST",
+      "path": "/api/chat",
+      "status": 200,
+      "ms": 298,
+      "body": "{\"task_id\":null,\"status\":null,\"message\":\"我在。你可以正常和我说话；需要动用电脑、文件、浏览器或搜索能力时，我会先说明再分配给对应 Agent。\",\"delegated\":false,\"agent\":\"SupervisorAgent\"}"
+    },
+    {
+      "name": "pair_request",
+      "method": "POST",
+      "path": "/api/pair/request",
+      "status": 200,
+      "ms": 117,
+      "body": "{\"code\":\"3e0dc2\",\"expires_at\":\"2026-06-04T18:03:11.650813+00:00\",\"expires_in\":300,\"server\":{\"host\":\"198.18.0.1\",\"port\":8000}}"
+    },
+    {
+      "name": "pair_code_legacy",
+      "method": "POST",
+      "path": "/api/pair/code",
+      "status": 200,
+      "ms": 40,
+      "body": "{\"code\":\"652a1b\",\"expires_at\":\"2026-06-04T18:03:11.694960+00:00\",\"expires_in\":300,\"server\":{\"host\":\"198.18.0.1\",\"port\":8000}}"
+    },
+    {
+      "name": "pair_invalid_code",
+      "method": "POST",
+      "path": "/api/pair",
+      "status": 401,
+      "ms": 44,
+      "body": "{\"detail\":\"Pairing code is invalid or expired\"}"
+    },
+    {
+      "name": "file_preview_operation",
+      "method": "POST",
+      "path": "/api/files/preview-operation",
+      "status": 200,
+      "ms": 18,
+      "body": "{\"dry_run\":true,\"diff_preview\":{\"operation\":\"copy\",\"source\":\"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\test_data\\\\files\\\\workspace\\\\notes\\\\safe.txt\",\"destination\":\"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\test_data\\\\files\\\\workspace\\\\notes\\\\safe.txt.copy\"}}"
+    },
+    {
+      "name": "cleanup_scan_test_workspace",
+      "method": "POST",
+      "path": "/api/files/cleanup/scan",
+      "status": 200,
+      "ms": 27,
+      "body": "{\"ok\":true,\"roots\":[\"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\test_data\\\\files\\\\workspace\"],\"items\":[],\"count\":0,\"risk_summary\":{\"items\":0,\"by_action\":{\"delete_direct\":0,\"trash_with_prompt\":0,\"review_only\":0},\"by_risk\":{},\"requires_approval\":0}}"
+    },
+    {
+      "name": "cleanup_plan_test_workspace",
+      "method": "POST",
+      "path": "/api/files/cleanup/plan",
+      "status": 200,
+      "ms": 32,
+      "body": "{\"ok\":true,\"plan_id\":\"cleanup_197399e765e1ce06\",\"roots\":[\"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\test_data\\\\files\\\\workspace\"],\"items\":[],\"total_reclaimable_bytes\":0,\"direct_delete_bytes\":0,\"trash_bytes\":0,\"review_only_bytes\":0,\"risk_summary\":{\"items\":0,\"by_action\":{\"delete_direct\":0,\"trash_with_prompt\":0,\"review_only\":0},\"by_risk\":{},\"requires_approval\":0},\"created_at\":\"2026-06-04T17:58:11.824366+00:00\",\"content_hash\":\"197399e765e1ce0674be093e60341d49f798f468173ac450dbcdc2c685bd4415\"}"
+    },
+    {
+      "name": "cleanup_execute_dry_run_invalid_plan",
+      "method": "POST",
+      "path": "/api/files/cleanup/execute",
+      "status": 200,
+      "ms": 41,
+      "body": "{\"ok\":false,\"status\":\"denied\",\"error\":\"cleanup_execute requires a valid cleanup plan binding: missing selected_item_ids.\",\"review\":{\"id\":\"review_36545144042c416799428c2092d8d4db\",\"task_id\":\"direct_file_api\",\"step_id\":null,\"target_type\":\"tool_call\",\"verdict\":\"deny\",\"risk_level\":\"R4_FORBIDDEN_OR_HANDOFF\",\"reasons\":[\"cleanup_execute requires a valid cleanup plan binding: missing selected_item_ids.\"],\"required_changes\":[],\"user_confirmation_message\":\"\",\"safe_alternative\":\"Run file.cleanup_plan first and pass plan_id, content_hash, and selected_item_ids to cleanup_execute.\",\"created_at\":\"2026-06-04T17:58:11.848126+00:00\"}}"
+    },
+    {
+      "name": "document_parse_txt",
+      "method": "POST",
+      "path": "/api/documents/parse",
+      "status": 200,
+      "ms": 18,
+      "body": "{\"document_id\":\"sha256:f45ee8b7daf6ce58476e85a64ab4fa2dc9ab6cb0a7e1076c25ab0e043dc41337\",\"path\":\"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\test_data\\\\files\\\\workspace\\\\notes\\\\safe.txt\",\"kind\":\"text\",\"pages\":[{\"page\":1,\"text\":\"Project notes for Mavris.\\n\\nThis file is safe to index and read during tests.\\n\",\"metadata\":{}}],\"blocks\":[{\"id\":\"block-1\",\"text\":\"Project notes for Mavris.\",\"kind\":\"paragraph\",\"page\":1,\"index\":0,\"citation\":\"[p1:b1]\",\"metadata\":{}},{\"id\":\"block-2\",\"text\":\"This file is safe to index and read during tests.\",\"kind\":\"paragraph\",\"page\":1,\"index\":1,\"citation\":\"[p1:b2]\",\"metadata\":{}}],\"tables\":[],\"metadata\":{\"name\":\"safe.txt\",\"extension\":\".txt\",\"size_bytes\":77,\"modified_at\":\"2026-05-24T03:15:01\",\"page_count\":1,\"block_count\":2,\"table_count\":0},\"parse_engine\":\"builtin\",\"ocr_engine\":\"\",\"warnings\":[\"docling parser unavailable: No module named 'docling'\",\"unstructured parser unavailable: No module named 'unstructured'\",\"blake3 unavailable, used sha256 fallback: No module named 'bla"
+    },
+    {
+      "name": "document_tables_txt",
+      "method": "POST",
+      "path": "/api/documents/tables",
+      "status": 200,
+      "ms": 35,
+      "body": "{\"document_id\":\"sha256:f45ee8b7daf6ce58476e85a64ab4fa2dc9ab6cb0a7e1076c25ab0e043dc41337\",\"path\":\"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\test_data\\\\files\\\\workspace\\\\notes\\\\safe.txt\",\"kind\":\"text\",\"tables\":[],\"parse_engine\":\"builtin\",\"warnings\":[\"docling parser unavailable: No module named 'docling'\",\"unstructured parser unavailable: No module named 'unstructured'\",\"blake3 unavailable, used sha256 fallback: No module named 'blake3'\"]}"
+    },
+    {
+      "name": "document_redact_preview_txt",
+      "method": "POST",
+      "path": "/api/documents/redact-preview",
+      "status": 200,
+      "ms": 31,
+      "body": "{\"document_id\":\"sha256:f45ee8b7daf6ce58476e85a64ab4fa2dc9ab6cb0a7e1076c25ab0e043dc41337\",\"path\":\"C:\\\\Users\\\\Suli\\\\Desktop\\\\mavris\\\\test_data\\\\files\\\\workspace\\\\notes\\\\safe.txt\",\"redacted_text\":\"Project notes for Mavris.\\n\\nThis file is safe to index and read during tests.\",\"truncated\":false,\"findings\":[],\"warnings\":[\"docling parser unavailable: No module named 'docling'\",\"unstructured parser unavailable: No module named 'unstructured'\",\"blake3 unavailable, used sha256 fallback: No module named 'blake3'\"]}"
+    },
+    {
+      "name": "browser_read_local_health",
+      "method": "POST",
+      "path": "/api/browser/read-page",
+      "status": 200,
+      "ms": 30,
+      "body": "{\"ok\":false,\"error\":\"Browser network access is disabled.\"}"
+    },
+    {
+      "name": "browser_extract_links_local_frontend_absent",
+      "method": "POST",
+      "path": "/api/browser/extract-links",
+      "status": 200,
+      "ms": 32,
+      "body": "{\"ok\":false,\"error\":\"Browser network access is disabled.\"}"
+    },
+    {
+      "name": "settings_test_llm_provider",
+      "method": "POST",
+      "path": "/api/settings/test-llm-provider",
+      "status": 200,
+      "ms": 274,
+      "body": "{\"ok\":false,\"provider\":\"openai_compatible\",\"error\":\"Client error '401 Unauthorized' for url 'http://127.0.0.1:8000/v1/chat/completions'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401\"}"
+    },
+    {
+      "name": "onnx_status_post_embedding_empty",
+      "method": "POST",
+      "path": "/api/settings/onnx/test-embedding",
+      "status": 200,
+      "ms": 43,
+      "body": "{\"ok\":false,\"available\":false,\"status\":\"unavailable\",\"operation\":\"test_embedding\",\"error\":\"No local ONNX embedding model configured. Set MARVIS_EMBEDDING_ONNX_MODEL_PATH or point embedding_model at a local ONNX embedding bundle.\",\"text_embedding\":{\"available\":false,\"component\":\"text_embedding\",\"kind\":\"text_embedding\",\"model_path\":\"\",\"execution_provider\":\"\",\"available_providers\":[\"AzureExecutionProvider\",\"CPUExecutionProvider\"],\"runtime_package\":\"\",\"configured_provider\":\"\",\"selected_provider\":\"\",\"runtime_packages\":{\"onnxruntime_windowsml\":{\"available\":false,\"module\":\"onnxruntime_windowsml\",\"error\":\"No module named 'onnxruntime_windowsml'\"},\"onnxruntime_directml\":{\"available\":false,\"module\":\"onnxruntime_directml\",\"error\":\"No module named 'onnxruntime_directml'\"},\"onnxruntime\":{\"available\":true,\"module\":\"onnxruntime\",\"version\":\"1.26.0\",\"error\":\"\"},\"openvino\":{\"available\":false,\"module\":\"openvino\",\"error\":\"No module named 'openvino'\"}},\"winml\":{\"available\":false,\"provider\":\"WindowsMLExecut"
+    },
+    {
+      "name": "context_usage_estimate",
+      "method": "POST",
+      "path": "/api/context/usage",
+      "status": 200,
+      "ms": 31,
+      "body": "{\"total_tokens\":126400,\"used_tokens\":21051,\"free_tokens\":74949,\"effective_context_window\":126400,\"model_context_window\":128000,\"auto_compact_threshold\":96000,\"manual_compact_limit\":116400,\"reserved_output_tokens\":1600,\"warning\":{\"token_count\":21051,\"threshold\":96000,\"percent_left\":78,\"is_above_warning_threshold\":false,\"is_above_error_threshold\":false,\"is_above_auto_compact_threshold\":false,\"is_at_blocking_limit\":false},\"projection\":{\"enabled\":true,\"source\":\"context_usage\",\"original_count\":1,\"projected_count\":2,\"original_tokens\":5,\"projected_tokens\":197,\"compacted\":true,\"micro_compacted\":false,\"history_snipped\":false,\"session_summary_added\":true,\"strategy\":\"session\",\"boundary_id\":\"\",\"compact_metadata\":{},\"retained_tail_message_ids\":[],\"summary\":{\"enabled\":true,\"strategy\":\"session\",\"compacted\":true,\"original_tokens\":5,\"projected_tokens\":197,\"tokens_saved\":0,\"messages_removed\":0,\"adjustments\":[\"session_summary_added\"],\"description\":\"Projection trims context before the provider call.\"}},\"p"
+    },
+    {
+      "name": "commands_execute_unknown_safe",
+      "method": "POST",
+      "path": "/api/commands/execute",
+      "status": 404,
+      "ms": 16,
+      "body": "{\"error\":{\"code\":\"command_not_found\",\"message\":\"Command not registered: /qa-unknown-command\"}}"
+    }
+  ],
+  "token_used": true
+}

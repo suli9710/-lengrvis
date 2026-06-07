@@ -74,18 +74,39 @@ class ToolRegistry:
         return [tool for _score, _name, tool in scored[: max(1, max_results)]]
 
     def _is_planning_visible(self, tool: ToolDefinition) -> bool:
-        if not tool.is_model_visible():
+        if tool.name == "tool.search":
+            return True
+        if tool.defer_loading:
             return False
-        return tool.name == "tool.search" or not tool.defer_loading
+        return tool.is_model_visible() or _has_builtin_namespace(tool.name)
 
     def _tool_in_search_scope(self, tool: ToolDefinition, *, include_deferred: bool, deferred_only: bool) -> bool:
-        if not tool.is_model_visible():
+        if not (tool.is_model_visible() or tool.defer_loading or _has_builtin_namespace(tool.name)):
             return False
         if deferred_only:
             return tool.defer_loading
         if include_deferred:
             return True
         return not tool.defer_loading
+
+
+def _has_builtin_namespace(name: str) -> bool:
+    return str(name or "").startswith(
+        (
+            "app.",
+            "browser.",
+            "document.",
+            "file.",
+            "image.",
+            "remote.",
+            "search.",
+            "system.",
+            "tool.",
+            "ui_automation.",
+            "vision.",
+            "workflow.",
+        )
+    )
 
 
 registry = ToolRegistry()

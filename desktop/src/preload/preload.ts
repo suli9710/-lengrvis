@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+import { IPC_CHANNELS } from "../shared/ipc";
 import type {
   ApiRequest,
   ApiResponse,
@@ -7,49 +8,27 @@ import type {
   BrowserHostBounds,
   BrowserHostOpenRequest,
   BrowserHostSnapshot,
+  DesktopWebSocketBridgeEvent,
+  DesktopWebSocketOpenResult,
+  DesktopWebSocketSubscribeHandlers,
+  DesktopWebSocketSubscribeRequest,
   MavrisDesktopBridge,
   NotificationPayload
 } from "../shared/types";
 
-const IPC_CHANNELS = {
-  apiRequest: "mavris:api:request",
-  backendStatus: "mavris:backend:status",
-  backendStart: "mavris:backend:start",
-  backendStop: "mavris:backend:stop",
-  backendForeground: "mavris:backend:foreground",
-  backendBackground: "mavris:backend:background",
-  openExternal: "mavris:shell:open-external",
-  getFileIcon: "mavris:shell:get-file-icon",
-  chooseDirectory: "mavris:dialog:choose-directory",
-  chooseDocument: "mavris:dialog:choose-document",
-  knownFolders: "mavris:dialog:known-folders",
-  chooseSkillDirectory: "mavris:dialog:choose-skill-directory",
-  chooseSkillZip: "mavris:dialog:choose-skill-zip",
-  browserHostSnapshot: "mavris:browser-host:snapshot",
-  browserHostSnapshotChanged: "mavris:browser-host:snapshot-changed",
-  browserHostOpen: "mavris:browser-host:open",
-  browserHostShow: "mavris:browser-host:show",
-  browserHostHide: "mavris:browser-host:hide",
-  browserHostSetBounds: "mavris:browser-host:set-bounds",
-  browserHostPause: "mavris:browser-host:pause",
-  browserHostResume: "mavris:browser-host:resume",
-  browserHostTakeover: "mavris:browser-host:takeover",
-  browserHostRelease: "mavris:browser-host:release",
-  browserHostStop: "mavris:browser-host:stop",
-  browserHostAction: "mavris:browser-host:action",
-  showNotification: "mavris:show-notification",
-  openTaskFromNotification: "mavris:notification:open-task"
-} as const;
-
 const preloadProcess = typeof process === "undefined" ? null : process;
 const env = preloadProcess?.env ?? {};
 const version = (name: keyof NodeJS.ProcessVersions): string => preloadProcess?.versions?.[name] ?? "";
+let desktopWebSocketSequence = 0;
 
 const bridge: MavrisDesktopBridge = {
   api: {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>
     ): Promise<ApiResponse<TResponse>> => ipcRenderer.invoke(IPC_CHANNELS.apiRequest, request)
+  },
+  realtime: {
+    subscribe: subscribeDesktopWebSocket
   },
   backend: {
     getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.backendStatus),
@@ -117,3 +96,76 @@ const bridge: MavrisDesktopBridge = {
 };
 
 contextBridge.exposeInMainWorld("mavris", bridge);
+
+function subscribeDesktopWebSocket(
+  request: DesktopWebSocketSubscribeRequest,
+  handlers: DesktopWebSocketSubscribeHandlers
+): () => void {
+  const id = nextDesktopWebSocketId();
+  let closed = false;
+
+  const cleanup = () => {
+    ipcRenderer.removeListener(IPC_CHANNELS.desktopWebSocketEvent, listener);
+  };
+
+  const listener = (_event: Electron.IpcRendererEvent, payload: DesktopWebSocketBridgeEvent) => {
+    if (!payload || payload.id !== id) {
+      return;
+    }
+
+    if (payload.type === "open") {
+      handlers.onOpen?.();
+    } else if (payload.type === "message") {
+      handlers.onMessage?.(payload.data);
+    } else if (payload.type === "error") {
+      handlers.onError?.({ message: payload.message });
+    } else if (payload.type === "close") {
+      closed = true;
+      cleanup();
+      handlers.onClose?.({
+        code: payload.code,
+        reason: payload.reason,
+        wasClean: payload.wasClean
+      });
+    }
+  };
+
+  ipcRenderer.on(IPC_CHANNELS.desktopWebSocketEvent, listener);
+  void ipcRenderer.invoke(IPC_CHANNELS.desktopWebSocketOpen, { ...request, id })
+    .then((result: DesktopWebSocketOpenResult) => {
+      if (closed) {
+        void ipcRenderer.invoke(IPC_CHANNELS.desktopWebSocketClose, id).catch(() => undefined);
+        return;
+      }
+      if (!result.ok) {
+        closed = true;
+        cleanup();
+        handlers.onError?.({ message: result.error });
+        handlers.onClose?.({ code: 1006, reason: result.error, wasClean: false });
+      }
+    })
+    .catch((error: unknown) => {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      cleanup();
+      handlers.onError?.({ message: error instanceof Error ? error.message : "Desktop WebSocket open failed" });
+      handlers.onClose?.({ code: 1006, reason: "Desktop WebSocket open failed", wasClean: false });
+    });
+
+  return () => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    cleanup();
+    void ipcRenderer.invoke(IPC_CHANNELS.desktopWebSocketClose, id).catch(() => undefined);
+  };
+}
+
+function nextDesktopWebSocketId(): string {
+  desktopWebSocketSequence += 1;
+  const random = Math.random().toString(36).slice(2, 10);
+  return `ws_${Date.now().toString(36)}_${desktopWebSocketSequence.toString(36)}_${random}`;
+}

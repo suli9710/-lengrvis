@@ -273,6 +273,16 @@ export function zhUserFacingError(text?: string): string {
   }
 
   if (
+    lower.includes("missing desktop api token") ||
+    lower.includes("http_401") ||
+    lower.includes("http 401") ||
+    lower.includes("status 401") ||
+    lower.includes("unauthorized")
+  ) {
+    return "Mavris 正在保护本机接口。请通过桌面应用连接，或重启 Mavris 后再试；未授权的浏览器页面不能直接读取本机数据。";
+  }
+
+  if (
     lower.includes("http_404") ||
     lower.includes("http 404") ||
     lower.includes("status 404") ||

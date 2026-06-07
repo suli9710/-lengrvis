@@ -6,6 +6,7 @@ import { connect as connectTls, type TLSSocket } from "node:tls";
 import { IPC_CHANNELS } from "../shared/ipc";
 import type { NotificationPayload } from "../shared/types";
 import type { BackendProcessManager } from "./backendProcess";
+import { buildBackendWebSocketUrl, desktopWebSocketProtocols } from "./desktopWebSocket";
 import { assertTrustedRenderer } from "./ipc";
 
 const SYSTEM_NOTIFICATION_TASK_ID = "__system__";
@@ -38,7 +39,7 @@ interface NotificationSocket {
 interface NotificationSocketConstructor {
   CONNECTING: number;
   OPEN: number;
-  new (url: string): NotificationSocket;
+  new (url: string, protocols?: string[]): NotificationSocket;
 }
 
 export class NotificationBridge {
@@ -106,11 +107,13 @@ export class NotificationBridge {
 
     let socket: NotificationSocket;
     try {
+      const protocols = desktopWebSocketProtocols(this.options.backend.getDesktopApiToken());
       socket = new WebSocketCtor(
         buildBackendNotificationWebSocketUrl(
           this.options.backend.getBaseUrl(),
           this.currentBackendNotificationWebSocketPath()
-        )
+        ),
+        protocols
       );
     } catch {
       this.scheduleReconnect();
@@ -206,9 +209,7 @@ function buildBackendNotificationWebSocketUrl(baseUrl: string, path: string): st
     return configuredUrl;
   }
 
-  const url = new URL(path, baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+  return buildBackendWebSocketUrl(baseUrl, path);
 }
 
 function hasConfiguredNotificationWebSocket(): boolean {
@@ -237,7 +238,7 @@ class NodeNotificationSocket implements NotificationSocket {
   private isHandshakeComplete = false;
   private socket: Socket | TLSSocket | null = null;
 
-  constructor(url: string) {
+  constructor(url: string, private readonly protocols: string[] = []) {
     this.connect(url);
   }
 
@@ -271,7 +272,7 @@ class NodeNotificationSocket implements NotificationSocket {
     socket.setNoDelay(true);
     const connectedEvent = isSecure ? "secureConnect" : "connect";
     socket.once(connectedEvent, () => {
-      socket.write(buildWebSocketHandshake(url));
+      socket.write(buildWebSocketHandshake(url, this.protocols));
     });
     socket.on("data", (chunk) => {
       this.handleData(chunk);
@@ -377,18 +378,26 @@ class NodeNotificationSocket implements NotificationSocket {
   }
 }
 
-function buildWebSocketHandshake(url: URL): string {
+function buildWebSocketHandshake(url: URL, protocols: string[] = []): string {
   const key = randomBytes(16).toString("base64");
   const path = `${url.pathname || "/"}${url.search}`;
   const host = url.port ? `${url.hostname}:${url.port}` : url.hostname;
 
-  return [
+  const headers = [
     `GET ${path} HTTP/1.1`,
     `Host: ${host}`,
     "Upgrade: websocket",
     "Connection: Upgrade",
     `Sec-WebSocket-Key: ${key}`,
-    "Sec-WebSocket-Version: 13",
+    "Sec-WebSocket-Version: 13"
+  ];
+
+  if (protocols.length) {
+    headers.push(`Sec-WebSocket-Protocol: ${protocols.join(", ")}`);
+  }
+
+  return [
+    ...headers,
     "\r\n"
   ].join("\r\n");
 }

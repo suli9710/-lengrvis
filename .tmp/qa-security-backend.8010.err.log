@@ -1,0 +1,35 @@
+﻿INFO:     Started server process [32792]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8010 (Press CTRL+C to quit)
+INFO:     127.0.0.1:59990 - "WebSocket /ws/notifications" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:59991 - "WebSocket /ws/notifications" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:59992 - "WebSocket /ws/notifications" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:59993 - "WebSocket /ws/mobile/approvals?token=***" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:59994 - "WebSocket /ws/mobile/approvals" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:59995 - "WebSocket /ws/mobile/approvals" [accepted]
+INFO:     connection open
+INFO:     connection closed
+INFO:     127.0.0.1:59996 - "WebSocket /ws/remote/input" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:59997 - "WebSocket /ws/remote/screen?token=***" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:59998 - "WebSocket /ws/remote/screen" 403
+INFO:     connection rejected (403 Forbidden)
+INFO:     connection closed
+INFO:     127.0.0.1:59999 - "WebSocket /ws/remote/input" [accepted]
+INFO:     connection open
+INFO:     connection closed
+

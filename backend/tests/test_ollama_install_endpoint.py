@@ -189,6 +189,7 @@ def test_install_local_model_websocket_requires_desktop_token(monkeypatch):
     from app.main import create_app
 
     monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
     client = TestClient(create_app(), client=("127.0.0.1", 50100))
 
@@ -206,6 +207,7 @@ def test_install_local_model_websocket_restricts_model_name(monkeypatch):
     from app.main import create_app
 
     monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
     client = TestClient(create_app(), client=("127.0.0.1", 50100))
 

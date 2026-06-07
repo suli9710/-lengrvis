@@ -1,0 +1,1171 @@
+{
+  "desktop": {
+    "viewport": "desktop",
+    "size": {
+      "width": 1366,
+      "height": 768
+    },
+    "navLabels": [
+      "首页",
+      "对话",
+      "总览",
+      "进度",
+      "设置",
+      "应用",
+      "文档",
+      "文档识别",
+      "论文",
+      "课件",
+      "报告",
+      "图库",
+      "图片识别",
+      "人物印象",
+      "足迹地点",
+      "时光长廊",
+      "文件工具",
+      "此电脑"
+    ],
+    "pages": [
+      {
+        "index": 0,
+        "slug": "home",
+        "label": "首页",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "首页"
+          ],
+          "headings": [
+            "问问 Mavris"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 首页 让 Mavris 帮你处理电脑上的事务 本机优先的个人 AI 工作台 问问 Mavris 一句话处理文件、文档、应用和这台电脑上的事务。 当前空闲 重要修改先确认 Mavris 茶水区 专注区 休息区 隐私区 工位区 计划板 正在协作 Mavris 随时待命 待命 文件 查找文档 待命 电脑 检查设备 待命 应用 应用协作 待命 网页 查询资料 待命 搜索 寻找答案 待命 审批 修改前确认 说出目标，Mavris 会先判断范围和风险 · Ctrl + Enter 发送 理解目标 等待输入 确认范围 不改系统 执行反馈 任务会留痕 涉及重要修改前，Mavris 会先征得你的确认。 发送 可以这样开始 普通话输入即可 查找大文件 填好后点发送 总结文档 打开文档操作区 检查电脑 立即只读检查 隐私与权限 当前策略 AI 运行 高效模式 云端上下文关闭 文件范围 未授权 先选择桌面、下载或文件夹 文件内容上传 已关闭 默认不上传文件正文 危险操作 先审批 删除、移动、写入前会停下来 开箱检查 1/4 已就绪 Mavris 连接 服务已连接，可以直接开始任务 刷新连接 隐私与本地 AI 当前是高效模式，可一键切到隐私 开启 文件范围 先选择桌面、下载或指定文件夹 选择 文档操作 读取、总结、提问都从这里进入 打开 下一步队列 按顺序走即可 1 确认 Mavris 可用 服务已连接，可",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 40,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 1,
+        "slug": "chat",
+        "label": "对话",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "对话"
+          ],
+          "headings": [
+            "对话",
+            "执行计划",
+            "任务时间线"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 对话 自然对话，全程 Agent 协作 MAVRIS 对话 暂无对话。发送消息后会显示真实回复。 发送 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。 执行记录 任务时间线 暂无任务记录。真实任务启动后会出现在这里。 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 2,
+        "slug": "overview",
+        "label": "总览",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "总览"
+          ],
+          "headings": [
+            "协作状态"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 Agent 总览 查看真实协作状态，并从对话或审批继续 AGENT 总览 协作状态 这里展示真实任务和审批状态，具体操作从对话或审批入口继续。 待命 Mavris 待命，负责规划与协调 去对话 文件 待命，可在对话中协作查找文件 去对话 电脑 待命，可在对话中协作检查电脑 去对话 应用 待命，可在对话中协作处理应用 去对话 浏览器 待命，可在对话中协作处理网页 去对话 搜索 待命，可在对话中协作查资料 去对话 安全 暂无待审批操作 去对话 暂无任务所有 Agent 当前待命，开始对话后会显示真实协作状态。 去对话 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 27,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 3,
+        "slug": "progress",
+        "label": "进度",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "进度"
+          ],
+          "headings": [
+            "Agent 协作记录",
+            "定时任务",
+            "任务时间线",
+            "执行计划"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 进度 当前正在处理的工作 多 AGENT 协调 Agent 协作记录 自动化 定时任务 0 项 Cron 表达式 任务目标 模式 隐私（需本地 LLM） 效率（云端） 混合 创建定时任务 还没有定时任务。在上面创建一个吧。 执行记录 任务时间线 暂无任务记录。真实任务启动后会出现在这里。 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 23,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 4,
+        "slug": "settings",
+        "label": "设置",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "设置"
+          ],
+          "headings": [
+            "设置",
+            "技能",
+            "系统信息"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 设置 隐私模式、本地 AI、技能、安全权限和运行配置 偏好 设置 就绪 基础设置 模式 高效 优先使用云端能力，响应最快。 均衡 兼顾云端能力与本地隐私控制。 隐私 尽量把 AI 工作留在本机完成。 工作区文件夹 权限模式：默认 计划 只允许规划和读取。 默认 写操作需要试运行审批。 可信编辑 放行可逆可信编辑。 自动审查 规则和安全审查共同放行。 不打扰 只执行预授权动作。 允许访问网络 允许云端辅助 必要时允许读取文件内容 允许手机查看电脑屏幕 Mavris: 检查中 本地 AI: 关闭 隐私模式开箱检查 对标开箱即用体验：一键切换后，Mavris 会关闭云端辅助并检查本地 AI。 待配置 选择隐私模式 当前还在高效模式；开启后会关闭云端辅助和文件上传。 检查电脑条件 会检查内存、磁盘空间和 CPU 是否适合本地模型。 准备本地 AI 可一键安装 Ollama 和推荐模型，也可使用 LM Studio / llama.cpp。 开始本地任务 本地 AI 就绪后，隐私任务会直接使用本机模型。 开启隐私模式 重新检查 隐私模式会优先使用本机模型处理文件名、文档摘要和系统信息；没有本地 AI 时不会静默退回云端。 高级设置 保存设置 本地扩展包 技能 0/0 可用 安装目录 未加载 刷新 目录 Zip 包 正在加载技能... WINDOWS 核心能力 系统信息 一键只读检查 还没有电",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 98,
+          "missingNames": [
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\" checked=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "textarea",
+              "cls": "",
+              "html": "<textarea></textarea>"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input readonly=\"\" value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input readonly=\"\" value=\"\">"
+            }
+          ],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 5,
+        "slug": "apps",
+        "label": "应用",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "应用"
+          ],
+          "headings": [
+            "应用"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 应用 直接查看本地应用和脚本 应用 查看授权目录中的本地应用和脚本 0 项 0 B 未配置授权目录 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 6,
+        "slug": "documents",
+        "label": "文档",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "文档"
+          ],
+          "headings": [
+            "文档"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 文档 直接查看本地文档内容 文档 直接浏览本地文档、表格、PDF 和文本 0 项 0 B 未配置授权目录 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 7,
+        "slug": "doc_vision",
+        "label": "文档识别",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "文档识别"
+          ],
+          "headings": [
+            "文档识别"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 文档识别 定位本地文档并按需识别 文档识别 先定位本地文档，再交给识别和问答工具 0 项 0 B 未配置授权目录 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 8,
+        "slug": "papers",
+        "label": "论文",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "论文"
+          ],
+          "headings": [
+            "论文"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 论文 浏览本地论文和研究材料 论文 筛出 PDF、论文和研究材料 0 项 0 B 未配置授权目录 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 9,
+        "slug": "slides",
+        "label": "课件",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "课件"
+          ],
+          "headings": [
+            "课件"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 课件 浏览本地课件和讲义 课件 查看 PPT、讲义和课程资料 0 项 0 B 未配置授权目录 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 10,
+        "slug": "reports",
+        "label": "报告",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "报告"
+          ],
+          "headings": [
+            "报告"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 报告 浏览本地报告和总结 报告 汇总报告、周报和总结文件 0 项 0 B C:\\Users\\Suli\\Desktop\\mavris 当前授权目录没有找到对应内容 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 11,
+        "slug": "gallery",
+        "label": "图库",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "图库"
+          ],
+          "headings": [
+            "图库"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 图库 直接查看本地图片 图库 直接查看本地图片缩略图 0 项 0 B C:\\Users\\Suli\\Desktop\\mavris 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 12,
+        "slug": "image_vision",
+        "label": "图片识别",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "图片识别"
+          ],
+          "headings": [
+            "图片识别"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 图片识别 浏览图片并按需识别 图片识别 先浏览图片，再按需做 OCR 或视觉理解 0 项 0 B C:\\Users\\Suli\\Desktop\\mavris 选择一个本地项目查看详情 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 13,
+        "slug": "people",
+        "label": "人物印象",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "人物印象"
+          ],
+          "headings": [
+            "人物印象",
+            "desktop-gallery.png"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 人物印象 查看本地人物相关图片 人物印象 以图片为入口查看本地人物相关素材 69 项 12 MB C:\\Users\\Suli\\Desktop\\mavris desktop-gallery.png 类型 本地图片 大小 123 KB 修改时间 2026/06/05 01:41 尺寸 1366 x 768 位置 C:\\Users\\Suli\\Desktop\\mavris\\.tmp\\qa-screens\\desktop-gallery.png 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 90,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 14,
+        "slug": "places",
+        "label": "足迹地点",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "足迹地点"
+          ],
+          "headings": [
+            "足迹地点",
+            "desktop-gallery.png"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 足迹地点 查看本地地点相关图片 足迹地点 按图片线索浏览地点素材 69 项 12 MB C:\\Users\\Suli\\Desktop\\mavris desktop-gallery.png 类型 本地图片 大小 123 KB 修改时间 2026/06/05 01:41 尺寸 1366 x 768 位置 C:\\Users\\Suli\\Desktop\\mavris\\.tmp\\qa-screens\\desktop-gallery.png 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 90,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 15,
+        "slug": "timeline",
+        "label": "时光长廊",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "时光长廊"
+          ],
+          "headings": [
+            "时光长廊",
+            "desktop-gallery.png"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 时光长廊 按时间查看本地图片 时光长廊 按最近修改时间查看本地图片 71 项 12 MB C:\\Users\\Suli\\Desktop\\mavris desktop-gallery.png 类型 本地图片 大小 123 KB 修改时间 2026/06/05 01:41 尺寸 1366 x 768 位置 C:\\Users\\Suli\\Desktop\\mavris\\.tmp\\qa-screens\\desktop-gallery.png 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 92,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 16,
+        "slug": "files",
+        "label": "文件工具",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "文件工具"
+          ],
+          "headings": [
+            "文件工具",
+            "对话"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 文件工具 查找、整理和分析你的文件 先选文件夹，再操作 文件工具 未选文件夹 首次任务流 先给 Mavris 一个明确文件夹 1 选文件夹 2 找文件 3 读文档 4 先预览 当前范围 未选择范围 先选择一个文件夹，再开始搜索或整理。 选择要查找的文件夹 第一步：选择要查找的文件夹。Mavris 只会扫描你选择的文件夹，清理前不会删除任何文件。 桌面 下载 文档 图片 暂时读不到桌面、下载、文档、图片。可以点“选择要查找的文件夹”，或直接粘贴文件夹路径。 粘贴文件夹位置 使用这个文件夹 搜索 查找文件 文档 读取和提问 清理 先预览 先选要找的文件夹 从桌面、下载、文档、图片开始，或选择一个文件夹。选好后再输入关键词搜索。 去选择 先选要找的文件夹 分组方式 内容 类型 扩展名 图片自动 场景 人物 物体 标签 时间 地点 智能分组 先选择文件夹，再输入关键词 可以从桌面、下载、文档、图片开始，也可以点“选择要查找的文件夹”指定位置。 搜索、分组和清理只会查看当前范围；移动、重命名或删除前都会再次确认。 MAVRIS 对话 暂无对话。发送消息后会显示真实回复。 发送 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 40,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 17,
+        "slug": "computer",
+        "label": "此电脑",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "此电脑"
+          ],
+          "headings": [
+            "系统信息",
+            "执行计划"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 此电脑 检查这台设备并打开常用工具 WINDOWS 核心能力 系统信息 一键只读检查 还没有电脑健康快照 点击后会立即读取系统状态，给你一个不改设置的第一份检查结果。 立即只读检查 只读诊断，不改设置 电脑健康、Mavris 连接、任务状态已经分开显示；“暂未读取”不代表电脑异常。 应用版本 0.1.0 ELECTRON 版本 未知 CHROME 版本 未知 NODE 版本 未知 系统平台 win32 后端地址 http://127.0.0.1:8000 内存 暂未读取 磁盘 暂未读取 启动项 0 项 应用索引 0 个 诊断建议 暂无诊断建议。 资源占用进程 显示 0 个 暂无进程快照。 启动项 未检测到启动项。 白名单应用 暂无已索引的白名单应用。 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 1366,
+          "clientWidth": 1366,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      }
+    ],
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  "mobile": {
+    "viewport": "mobile",
+    "size": {
+      "width": 390,
+      "height": 844
+    },
+    "navLabels": [
+      "首页",
+      "对话",
+      "总览",
+      "进度",
+      "设置",
+      "应用",
+      "文档",
+      "文档识别",
+      "论文",
+      "课件",
+      "报告",
+      "图库",
+      "图片识别",
+      "人物印象",
+      "足迹地点",
+      "时光长廊",
+      "文件工具",
+      "此电脑"
+    ],
+    "pages": [
+      {
+        "index": 0,
+        "slug": "home",
+        "label": "首页",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "首页"
+          ],
+          "headings": [
+            "问问 Mavris"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 首页 让 Mavris 帮你处理电脑上的事务 助手暂时连不上 本机优先的个人 AI 工作台 问问 Mavris 一句话处理文件、文档、应用和这台电脑上的事务。 当前空闲 重要修改先确认 Mavris 茶水区 专注区 休息区 隐私区 工位区 计划板 正在协作 Mavris 待命 文件 待命 电脑 待命 应用 待命 网页 待命 搜索 待命 审批 说出目标，Mavris 会先判断范围和风险 · Ctrl + Enter 发送 理解目标 等待输入 确认范围 不改系统 执行反馈 任务会留痕 Mavris 服务还没连上。输入内容会保留，连接恢复后再发送。 发送 可以这样开始 普通话输入即可 查找大文件 填好后点发送 总结文档 打开文档操作区 检查电脑 立即只读检查 隐私与权限 当前策略 AI 运行 高效模式 云端上下文关闭 文件范围 未授权 先选择桌面、下载或文件夹 文件内容上传 已关闭 默认不上传文件正文 危险操作 先审批 删除、移动、写入前会停下来 开箱检查 0/4 已就绪 Mavris 连接 服务离线，先恢复连接 检查连接 隐私与本地 AI 当前是高效模式，可一键切到隐私 开启 文件范围 先选择桌面、下载或指定文件夹 选择 文档操作 读取、总结、提问都从这里进入 打开 下一步队列 按顺序走即可 1 确认 Mavris 可用 先恢复服务连接，后续任务才会进入执行流。 检查连接 2 选择文件范围 给文件工具一个",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 40,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 1,
+        "slug": "chat",
+        "label": "对话",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "对话"
+          ],
+          "headings": [
+            "对话",
+            "执行计划",
+            "任务时间线"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 对话 自然对话，全程 Agent 协作 助手暂时连不上 MAVRIS 对话 助手暂时连不上 暂无对话。发送消息后会显示真实回复。 发送 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。 执行记录 任务时间线 暂无任务记录。真实任务启动后会出现在这里。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 2,
+        "slug": "overview",
+        "label": "总览",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "总览"
+          ],
+          "headings": [
+            "协作状态"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 Agent 总览 查看真实协作状态，并从对话或审批继续 助手暂时连不上 AGENT 总览 协作状态 这里展示真实任务和审批状态，具体操作从对话或审批入口继续。 待命 Mavris 待命，负责规划与协调 去对话 文件 待命，可在对话中协作查找文件 去对话 电脑 待命，可在对话中协作检查电脑 去对话 应用 待命，可在对话中协作处理应用 去对话 浏览器 待命，可在对话中协作处理网页 去对话 搜索 待命，可在对话中协作查资料 去对话 安全 暂无待审批操作 去对话 暂无任务所有 Agent 当前待命，开始对话后会显示真实协作状态。 去对话",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 27,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 3,
+        "slug": "progress",
+        "label": "进度",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "进度"
+          ],
+          "headings": [
+            "Agent 协作记录",
+            "定时任务",
+            "任务时间线",
+            "执行计划"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 进度 当前正在处理的工作 助手暂时连不上 多 AGENT 协调 Agent 协作记录 自动化 定时任务 0 项 Cron 表达式 任务目标 模式 隐私（需本地 LLM） 效率（云端） 混合 创建定时任务 还没有定时任务。在上面创建一个吧。 执行记录 任务时间线 暂无任务记录。真实任务启动后会出现在这里。 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 23,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 4,
+        "slug": "settings",
+        "label": "设置",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "设置"
+          ],
+          "headings": [
+            "设置",
+            "技能",
+            "系统信息"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 设置 隐私模式、本地 AI、技能、安全权限和运行配置 助手暂时连不上 偏好 设置 不可用 基础设置 模式 高效 优先使用云端能力，响应最快。 均衡 兼顾云端能力与本地隐私控制。 隐私 尽量把 AI 工作留在本机完成。 工作区文件夹 权限模式：默认 计划 只允许规划和读取。 默认 写操作需要试运行审批。 可信编辑 放行可逆可信编辑。 自动审查 规则和安全审查共同放行。 不打扰 只执行预授权动作。 允许访问网络 允许云端辅助 必要时允许读取文件内容 允许手机查看电脑屏幕 Mavris: 检查中 本地 AI: 关闭 隐私模式开箱检查 对标开箱即用体验：一键切换后，Mavris 会关闭云端辅助并检查本地 AI。 待配置 选择隐私模式 当前还在高效模式；开启后会关闭云端辅助和文件上传。 检查电脑条件 会检查内存、磁盘空间和 CPU 是否适合本地模型。 准备本地 AI 可一键安装 Ollama 和推荐模型，也可使用 LM Studio / llama.cpp。 开始本地任务 本地 AI 就绪后，隐私任务会直接使用本机模型。 开启隐私模式 重新检查 隐私模式会优先使用本机模型处理文件名、文档摘要和系统信息；没有本地 AI 时不会静默退回云端。 高级设置 保存设置 本地扩展包 技能 0/0 可用 安装目录 C:\\Users\\Suli\\Desktop\\mavris\\.marvis_data\\skills 刷新 目录 Z",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 98,
+          "missingNames": [
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\" checked=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input type=\"checkbox\">"
+            },
+            {
+              "tag": "textarea",
+              "cls": "",
+              "html": "<textarea></textarea>"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input readonly=\"\" value=\"\">"
+            },
+            {
+              "tag": "input",
+              "cls": "",
+              "html": "<input readonly=\"\" value=\"\">"
+            }
+          ],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 5,
+        "slug": "apps",
+        "label": "应用",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "应用"
+          ],
+          "headings": [
+            "应用"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 应用 直接查看本地应用和脚本 助手暂时连不上 应用 查看授权目录中的本地应用和脚本 0 项 0 B 未配置授权目录 选择一个本地项目查看详情",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 6,
+        "slug": "documents",
+        "label": "文档",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "文档"
+          ],
+          "headings": [
+            "文档"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 文档 直接查看本地文档内容 助手暂时连不上 文档 直接浏览本地文档、表格、PDF 和文本 0 项 0 B 未配置授权目录 选择一个本地项目查看详情",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 7,
+        "slug": "doc_vision",
+        "label": "文档识别",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "文档识别"
+          ],
+          "headings": [
+            "文档识别",
+            "启动 Mavris.cmd"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 文档识别 定位本地文档并按需识别 助手暂时连不上 文档识别 先定位本地文档，再交给识别和问答工具 34 项 133 KB C:\\Users\\Suli\\Desktop\\mavris 启动 Mavris.cmd C:\\Users\\Suli\\Desktop\\mavris verify_packaging_ollama_smoke.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts verify_packaging.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts test.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts uninstall_service.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts start_app.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts run_tests.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts prepare_ollama_release_smoke.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts prepare_ollama_release.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts portabl",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 55,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 8,
+        "slug": "papers",
+        "label": "论文",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "论文"
+          ],
+          "headings": [
+            "论文",
+            "启动 Mavris.cmd"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 论文 浏览本地论文和研究材料 助手暂时连不上 论文 筛出 PDF、论文和研究材料 34 项 133 KB C:\\Users\\Suli\\Desktop\\mavris 启动 Mavris.cmd C:\\Users\\Suli\\Desktop\\mavris verify_packaging_ollama_smoke.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts verify_packaging.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts test.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts uninstall_service.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts start_app.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts run_tests.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts prepare_ollama_release_smoke.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts prepare_ollama_release.ps1 C:\\Users\\Suli\\Desktop\\mavris\\scripts portable_path_s",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 55,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 9,
+        "slug": "slides",
+        "label": "课件",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "课件"
+          ],
+          "headings": [
+            "课件"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 课件 浏览本地课件和讲义 助手暂时连不上 课件 查看 PPT、讲义和课程资料 0 项 0 B C:\\Users\\Suli\\Desktop\\mavris 当前授权目录没有找到对应内容 选择一个本地项目查看详情",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 10,
+        "slug": "reports",
+        "label": "报告",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "报告"
+          ],
+          "headings": [
+            "报告",
+            "document_summary_single_user.md"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 报告 浏览本地报告和总结 助手暂时连不上 报告 汇总报告、周报和总结文件 8 项 790 B C:\\Users\\Suli\\Desktop\\mavris document_summary_single_user.md C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts document_summary_single_system.md C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts document_summary_reduce_user.md C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts document_summary_reduce_system.md C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts document_summary_chunk_user.md C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts document_report_system.md C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts document_report_user.md C:\\",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 32,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 11,
+        "slug": "gallery",
+        "label": "图库",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "图库"
+          ],
+          "headings": [
+            "图库",
+            "document_summary_single_user.md"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 图库 直接查看本地图片 助手暂时连不上 图库 直接查看本地图片缩略图 8 项 790 B C:\\Users\\Suli\\Desktop\\mavris document_summary_single_user.md 读取 总结 提问 类型 文件 大小 11 B 修改时间 2026/06/05 01:24 位置 C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts\\document_summary_single_user.md",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 32,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 12,
+        "slug": "image_vision",
+        "label": "图片识别",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "图片识别"
+          ],
+          "headings": [
+            "图片识别",
+            "document_summary_single_user.md"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 图片识别 浏览图片并按需识别 助手暂时连不上 图片识别 先浏览图片，再按需做 OCR 或视觉理解 8 项 790 B C:\\Users\\Suli\\Desktop\\mavris document_summary_single_user.md 读取 总结 提问 类型 文件 大小 11 B 修改时间 2026/06/05 01:24 位置 C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts\\document_summary_single_user.md",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 32,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 13,
+        "slug": "people",
+        "label": "人物印象",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "人物印象"
+          ],
+          "headings": [
+            "人物印象",
+            "document_summary_single_user.md"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 人物印象 查看本地人物相关图片 助手暂时连不上 人物印象 以图片为入口查看本地人物相关素材 8 项 790 B C:\\Users\\Suli\\Desktop\\mavris document_summary_single_user.md 读取 总结 提问 类型 文件 大小 11 B 修改时间 2026/06/05 01:24 位置 C:\\Users\\Suli\\Desktop\\mavris\\backend\\app\\llm\\prompts\\document_summary_single_user.md",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 32,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 14,
+        "slug": "places",
+        "label": "足迹地点",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "足迹地点"
+          ],
+          "headings": [
+            "足迹地点",
+            "mobile-gallery.png"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 足迹地点 查看本地地点相关图片 助手暂时连不上 足迹地点 按图片线索浏览地点素材 87 项 14 MB C:\\Users\\Suli\\Desktop\\mavris mobile-gallery.png 类型 本地图片 大小 82 KB 修改时间 2026/06/05 01:42 尺寸 390 x 1508 位置 C:\\Users\\Suli\\Desktop\\mavris\\.tmp\\qa-screens\\mobile-gallery.png",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 108,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 15,
+        "slug": "timeline",
+        "label": "时光长廊",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "时光长廊"
+          ],
+          "headings": [
+            "时光长廊",
+            "mobile-gallery.png"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 时光长廊 按时间查看本地图片 助手暂时连不上 时光长廊 按最近修改时间查看本地图片 87 项 14 MB C:\\Users\\Suli\\Desktop\\mavris mobile-gallery.png 类型 本地图片 大小 82 KB 修改时间 2026/06/05 01:42 尺寸 390 x 1508 位置 C:\\Users\\Suli\\Desktop\\mavris\\.tmp\\qa-screens\\mobile-gallery.png",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 108,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 16,
+        "slug": "files",
+        "label": "文件工具",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "文件工具"
+          ],
+          "headings": [
+            "文件工具",
+            "对话"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 文件工具 查找、整理和分析你的文件 助手暂时连不上 先选文件夹，再操作 文件工具 未选文件夹 助手暂时连不上，电脑和文件夹没有问题 文件搜索、范围保存和文档读取需要本机服务参与。请先点右上角刷新，或到设置里启动服务；连接恢复后，你已填的关键词和路径还可以继续用。 先恢复连接 首次任务流 先给 Mavris 一个明确文件夹 1 选文件夹 2 找文件 3 读文档 4 先预览 当前范围 未选择范围 先选择一个文件夹，再开始搜索或整理。 选择要查找的文件夹 第一步：选择要查找的文件夹。Mavris 只会扫描你选择的文件夹，清理前不会删除任何文件。 桌面 下载 文档 图片 暂时读不到桌面、下载、文档、图片。可以点“选择要查找的文件夹”，或直接粘贴文件夹路径。 粘贴文件夹位置 使用这个文件夹 搜索 文档 清理 先选要找的文件夹 从桌面、下载、文档、图片开始，或选择一个文件夹。选好后再输入关键词搜索。 去选择 先选要找的文件夹 分组方式 内容 类型 扩展名 图片自动 场景 人物 物体 标签 时间 地点 智能分组 先选择文件夹，再输入关键词 可以从桌面、下载、文档、图片开始，也可以点“选择要查找的文件夹”指定位置。 搜索、分组和清理只会查看当前范围；移动、重命名或删除前都会再次确认。 MAVRIS 对话 助手暂时连不上 暂无对话。发送消息后会显示真实回复。 发送",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 40,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      },
+      {
+        "index": 17,
+        "slug": "computer",
+        "label": "此电脑",
+        "clicked": true,
+        "error": null,
+        "scan": {
+          "active": [
+            "此电脑"
+          ],
+          "headings": [
+            "系统信息",
+            "执行计划"
+          ],
+          "textSnippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 此电脑 检查这台设备并打开常用工具 助手暂时连不上 WINDOWS 核心能力 系统信息 一键只读检查 还没有电脑健康快照 点击后会立即读取系统状态，给你一个不改设置的第一份检查结果。 立即只读检查 只读诊断，不改设置 电脑健康、Mavris 连接、任务状态已经分开显示；“暂未读取”不代表电脑异常。 应用版本 0.1.0 ELECTRON 版本 未知 CHROME 版本 未知 NODE 版本 未知 系统平台 win32 后端地址 http://127.0.0.1:8000 内存 暂未读取 磁盘 暂未读取 启动项 0 项 应用索引 0 个 诊断建议 暂无诊断建议。 资源占用进程 显示 0 个 暂无进程快照。 启动项 未检测到启动项。 白名单应用 暂无已索引的白名单应用。 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。",
+          "badTokens": [],
+          "horizontalOverflow": false,
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "interactiveCount": 21,
+          "missingNames": [],
+          "unlabeledInputs": [],
+          "visibleDialogs": 0
+        }
+      }
+    ],
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  }
+}

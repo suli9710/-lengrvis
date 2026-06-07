@@ -28,6 +28,7 @@ import type {
   CleanupRollbackRequest,
   CleanupScanRequest,
   ContextUsage,
+  DesktopWebSocketSubscribeRequest,
   DocumentAskRequest,
   DocumentAskResponse,
   DocumentCitation,
@@ -371,44 +372,12 @@ export class MavrisApiClient {
       onOpen?: () => void;
     }
   ): () => void {
-    if (!taskId || typeof WebSocket === "undefined") {
+    if (!taskId) {
       return () => undefined;
     }
 
-    let socket: WebSocket | null = null;
-    let closedByCaller = false;
-    let retryId: number | undefined;
-
-    const connect = () => {
-      socket = new WebSocket(buildTaskWebSocketUrl(getBackendBaseUrl(), taskId));
-
-      socket.onopen = () => handlers.onOpen?.();
-      socket.onmessage = (event) => {
-        try {
-          handlers.onMessage(JSON.parse(String(event.data)) as BackendTaskStreamEvent);
-        } catch {
-          // Ignore malformed stream events and keep the polling fallback alive.
-        }
-      };
-      socket.onerror = (event) => {
-        handlers.onError?.(event);
-      };
-      socket.onclose = () => {
-        socket = null;
-        if (!closedByCaller) {
-          retryId = window.setTimeout(connect, WS_RETRY_DELAY_MS);
-        }
-      };
-    };
-
-    connect();
-
-    return () => {
-      closedByCaller = true;
-      if (retryId !== undefined) window.clearTimeout(retryId);
-      socket?.close();
-      socket = null;
-    };
+    const request = { endpoint: `/ws/tasks/${encodeURIComponent(taskId)}` };
+    return subscribeJsonRealtime<BackendTaskStreamEvent>(request, handlers);
   }
 
   getSafetyReview(): Promise<ApiResponse<SafetyReview>> {
@@ -1224,44 +1193,12 @@ export class MavrisApiClient {
       onOpen?: () => void;
     }
   ): () => void {
-    if (!runId || typeof WebSocket === "undefined") {
+    if (!runId) {
       return () => undefined;
     }
 
-    let socket: WebSocket | null = null;
-    let closedByCaller = false;
-    let retryId: number | undefined;
-
-    const connect = () => {
-      socket = new WebSocket(buildRunWebSocketUrl(getBackendBaseUrl(), runId));
-
-      socket.onopen = () => handlers.onOpen?.();
-      socket.onmessage = (event) => {
-        try {
-          handlers.onMessage(JSON.parse(String(event.data)) as BackendRunStreamEvent);
-        } catch {
-          // Ignore malformed stream events and keep the polling fallback alive.
-        }
-      };
-      socket.onerror = (event) => {
-        handlers.onError?.(event);
-      };
-      socket.onclose = () => {
-        socket = null;
-        if (!closedByCaller) {
-          retryId = window.setTimeout(connect, WS_RETRY_DELAY_MS);
-        }
-      };
-    };
-
-    connect();
-
-    return () => {
-      closedByCaller = true;
-      if (retryId !== undefined) window.clearTimeout(retryId);
-      socket?.close();
-      socket = null;
-    };
+    const request = { endpoint: `/ws/runs/${encodeURIComponent(runId)}` };
+    return subscribeJsonRealtime<BackendRunStreamEvent>(request, handlers);
   }
 
   getTaskExplain(taskId: string): Promise<ApiResponse<TaskExplain>> {
@@ -1434,15 +1371,87 @@ function getBackendBaseUrl(): string {
   return window.mavris?.backendBaseUrl ?? FALLBACK_BACKEND_URL;
 }
 
-function buildTaskWebSocketUrl(baseUrl: string, taskId: string): string {
-  const url = new URL(`/ws/tasks/${encodeURIComponent(taskId)}`, baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+function subscribeJsonRealtime<TMessage>(
+  request: DesktopWebSocketSubscribeRequest,
+  handlers: {
+    onMessage: (message: TMessage) => void;
+    onError?: (error: Event) => void;
+    onOpen?: () => void;
+  }
+): () => void {
+  if (window.mavris?.realtime) {
+    return window.mavris.realtime.subscribe(request, {
+      onOpen: handlers.onOpen,
+      onMessage: (data) => {
+        try {
+          handlers.onMessage(JSON.parse(data) as TMessage);
+        } catch {
+          // Ignore malformed stream events and keep the polling fallback alive.
+        }
+      },
+      onError: () => handlers.onError?.(makeWebSocketErrorEvent())
+    });
+  }
+
+  if (typeof WebSocket === "undefined") {
+    return () => undefined;
+  }
+
+  return subscribeWebOnlyDevJsonStream(buildWebSocketUrlFromEndpoint(getBackendBaseUrl(), request), handlers);
 }
 
-function buildRunWebSocketUrl(baseUrl: string, runId: string): string {
-  const url = new URL(`/ws/runs/${encodeURIComponent(runId)}`, baseUrl);
+function subscribeWebOnlyDevJsonStream<TMessage>(
+  url: string,
+  handlers: {
+    onMessage: (message: TMessage) => void;
+    onError?: (error: Event) => void;
+    onOpen?: () => void;
+  }
+): () => void {
+  let socket: WebSocket | null = null;
+  let closedByCaller = false;
+  let retryId: number | undefined;
+
+  const connect = () => {
+    socket = new WebSocket(url);
+
+    socket.onopen = () => handlers.onOpen?.();
+    socket.onmessage = (event) => {
+      try {
+        handlers.onMessage(JSON.parse(String(event.data)) as TMessage);
+      } catch {
+        // Ignore malformed stream events and keep the polling fallback alive.
+      }
+    };
+    socket.onerror = (event) => {
+      handlers.onError?.(event);
+    };
+    socket.onclose = () => {
+      socket = null;
+      if (!closedByCaller) {
+        retryId = window.setTimeout(connect, WS_RETRY_DELAY_MS);
+      }
+    };
+  };
+
+  connect();
+
+  return () => {
+    closedByCaller = true;
+    if (retryId !== undefined) window.clearTimeout(retryId);
+    socket?.close();
+    socket = null;
+  };
+}
+
+function buildWebSocketUrlFromEndpoint(baseUrl: string, request: DesktopWebSocketSubscribeRequest): string {
+  const url = new URL(request.endpoint, baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  for (const [key, value] of Object.entries(request.query ?? {})) {
+    if (value !== null && value !== undefined) {
+      url.searchParams.set(key, String(value));
+    }
+  }
   return url.toString();
 }
 
@@ -1450,6 +1459,10 @@ function buildBrowserSessionWebSocketUrl(baseUrl: string, sessionId: string): st
   const url = new URL(`/api/ws/browser/sessions/${encodeURIComponent(sessionId)}`, baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
+}
+
+function makeWebSocketErrorEvent(): Event {
+  return typeof Event === "function" ? new Event("error") : ({ type: "error" } as Event);
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {

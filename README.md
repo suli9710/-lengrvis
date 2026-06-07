@@ -129,11 +129,13 @@ MARVIS_WIRE_API=responses
 
 ## 运行
 
-启动后端：
+启动完整后端：
 
 ```powershell
-python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn backend.main:full_app --reload --host 127.0.0.1 --port 8000
 ```
+
+`backend.main:app` 是 Guardian 瘦身入口；桌面端自启动后端时会注入 `MAVRIS_FULL_BACKEND=1`。手动开发完整功能时请使用 `backend.main:full_app`。
 
 启动桌面端：
 

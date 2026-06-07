@@ -7,12 +7,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlencode
 
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
 from app.core.paths import resolve_authorized
 from app.llm.registry import get_effective_settings
+from app.security.desktop_api import signed_desktop_resource_query
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
@@ -283,7 +285,7 @@ def _library_item(path: Path, kind: str) -> dict:
         "size": stat.st_size if stat else 0,
         "created_at": stat.st_ctime if stat else 0,
         "modified_at": stat.st_mtime if stat else 0,
-        "preview_url": f"/api/library/preview?path={_url_token(str(path))}" if kind == "image" else "",
+        "preview_url": _preview_url(path) if kind == "image" else "",
         "group_label": _group_label(path, kind),
     }
     if kind == "image":
@@ -298,10 +300,10 @@ def _stable_id(path: Path) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _url_token(value: str) -> str:
-    from urllib.parse import quote
-
-    return quote(value, safe="")
+def _preview_url(path: Path) -> str:
+    raw_path = str(path)
+    query = {"path": raw_path, **signed_desktop_resource_query("/api/library/preview", raw_path)}
+    return f"/api/library/preview?{urlencode(query)}"
 
 
 def _group_label(path: Path, kind: str) -> str:
