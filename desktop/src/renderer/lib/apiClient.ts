@@ -465,6 +465,9 @@ export class LengrvisApiClient {
   }
 
   createMobilePairingCode(): Promise<ApiResponse<MobilePairingCode>> {
+    if (window.lengrvis?.mobilePairing) {
+      return window.lengrvis.mobilePairing.createCode() as Promise<ApiResponse<MobilePairingCode>>;
+    }
     return this.request<MobilePairingCode>({
       endpoint: "/api/pair/request",
       method: "POST"
@@ -472,12 +475,18 @@ export class LengrvisApiClient {
   }
 
   listMobileDevices(): Promise<ApiResponse<MobileDeviceList>> {
+    if (window.lengrvis?.mobilePairing) {
+      return window.lengrvis.mobilePairing.listDevices() as Promise<ApiResponse<MobileDeviceList>>;
+    }
     return this.request<MobileDeviceList>({
       endpoint: "/api/pair/devices"
     });
   }
 
   revokeMobileDevice(deviceId: string): Promise<ApiResponse<MobileDevice>> {
+    if (window.lengrvis?.mobilePairing) {
+      return window.lengrvis.mobilePairing.revokeDevice(deviceId) as Promise<ApiResponse<MobileDevice>>;
+    }
     return this.request<MobileDevice>({
       endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}`,
       method: "DELETE"
@@ -485,6 +494,11 @@ export class LengrvisApiClient {
   }
 
   createRemoteInputGrant(deviceId: string, expiresInSeconds = 300): Promise<ApiResponse<RemoteInputGrantIssueResult>> {
+    if (window.lengrvis?.mobilePairing) {
+      return window.lengrvis.mobilePairing.createRemoteInputGrant({ deviceId, expiresInSeconds }) as Promise<
+        ApiResponse<RemoteInputGrantIssueResult>
+      >;
+    }
     return this.request<RemoteInputGrantIssueResult, { expires_in: number }>({
       endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}/remote-input-grants`,
       method: "POST",
@@ -493,6 +507,9 @@ export class LengrvisApiClient {
   }
 
   revokeRemoteInputGrant(deviceId: string, grantId: string): Promise<ApiResponse<RemoteInputGrant>> {
+    if (window.lengrvis?.mobilePairing) {
+      return window.lengrvis.mobilePairing.revokeRemoteInputGrant({ deviceId, grantId }) as Promise<ApiResponse<RemoteInputGrant>>;
+    }
     return this.request<RemoteInputGrant>({
       endpoint: `/api/pair/devices/${encodeURIComponent(deviceId)}/remote-input-grants/${encodeURIComponent(grantId)}`,
       method: "DELETE"
@@ -3990,7 +4007,14 @@ export interface MobilePairingCode {
   server: {
     host: string;
     port: number;
+    scheme?: string;
+    origin?: string;
+    transport_security?: Record<string, unknown>;
   };
+  server_origin?: string;
+  transport_security?: Record<string, unknown>;
+  https_enabled?: boolean;
+  trust_required?: boolean;
 }
 
 export interface MobileDevice {

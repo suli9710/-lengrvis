@@ -6,12 +6,14 @@
   "scripts": {
     "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1",
     "test": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1",
-    "deps:verify": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_dependency_locks.ps1",
+    "hygiene": "powershell -ExecutionPolicy Bypass -File ./scripts/check_repo_hygiene.ps1",
+    "deps:verify": "npm run hygiene && powershell -ExecutionPolicy Bypass -File ./scripts/verify_dependency_locks.ps1",
     "build": "powershell -ExecutionPolicy Bypass -File ./scripts/build.ps1",
     "qa:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1 -- --maxfail=1 && npm --prefix desktop run smoke",
-    "release:check": "npm run qa:gate && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
+    "release:safety": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_release_safety.ps1",
+    "release:check": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
     "release:smoke": "npm run release:check && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45",
-    "release:gate": "npm run release:check"
+    "release:gate": "npm run release:smoke"
   },
   "engines": {
     "node": ">=20"

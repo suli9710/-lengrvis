@@ -167,6 +167,7 @@ const manifest = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 const lock = JSON.parse(fs.readFileSync(packageLockPath, "utf8"));
 const rootPackage = lock.packages && lock.packages[""] ? lock.packages[""] : lock;
 const issues = [];
+const dependencySections = ["dependencies", "devDependencies", "optionalDependencies"];
 
 if (!lock.lockfileVersion) {
   issues.push("missing lockfileVersion");
@@ -176,6 +177,19 @@ if (rootPackage.name !== manifest.name) {
 }
 if (rootPackage.version !== manifest.version) {
   issues.push(`root package version ${rootPackage.version || "<missing>"} does not match package.json ${manifest.version || "<missing>"}`);
+}
+for (const section of dependencySections) {
+  const manifestDeps = manifest[section] || {};
+  const lockRootDeps = rootPackage[section] || {};
+  for (const [name, spec] of Object.entries(manifestDeps)) {
+    if (lockRootDeps[name] !== spec) {
+      issues.push(`${section}.${name} spec ${lockRootDeps[name] || "<missing>"} does not match package.json ${spec}`);
+    }
+    const packageEntry = lock.packages && lock.packages[`node_modules/${name}`];
+    if (!packageEntry) {
+      issues.push(`${section}.${name} is missing from lock packages`);
+    }
+  }
 }
 
 if (issues.length) {

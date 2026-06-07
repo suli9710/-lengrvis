@@ -1,9 +1,0 @@
-[Unit]
-Description=Sub2API Docker health watchdog
-Requires=docker.service
-After=docker.service sub2api.service
-ConditionPathExists=/usr/local/sbin/sub2api-health-watchdog
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/sub2api-health-watchdog

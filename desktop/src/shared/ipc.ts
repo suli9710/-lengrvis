@@ -5,6 +5,11 @@ export const IPC_CHANNELS = {
   backendStop: "lengrvis:backend:stop",
   backendForeground: "lengrvis:backend:foreground",
   backendBackground: "lengrvis:backend:background",
+  mobilePairingCreateCode: "lengrvis:mobile-pairing:create-code",
+  mobilePairingListDevices: "lengrvis:mobile-pairing:list-devices",
+  mobilePairingRevokeDevice: "lengrvis:mobile-pairing:revoke-device",
+  mobilePairingCreateRemoteInputGrant: "lengrvis:mobile-pairing:create-remote-input-grant",
+  mobilePairingRevokeRemoteInputGrant: "lengrvis:mobile-pairing:revoke-remote-input-grant",
   openExternal: "lengrvis:shell:open-external",
   getFileIcon: "lengrvis:shell:get-file-icon",
   chooseDirectory: "lengrvis:dialog:choose-directory",
@@ -53,6 +58,7 @@ export const API_REQUEST_DENIED_PATH_PREFIXES = [
   "/api/dev",
   "/api/index",
   "/api/mobile",
+  "/api/pair",
   "/api/runtime",
   "/api/ui-automation",
   "/api/ws"
@@ -62,8 +68,5 @@ export const API_REQUEST_DENIED_EXACT_PATHS = [
   "/api/apps/launch",
   "/api/apps/open-file",
   "/api/apps/open-folder",
-  "/api/pair",
-  "/api/pair/code",
-  "/api/pair/confirm",
   "/api/perception/capture"
 ] as const;

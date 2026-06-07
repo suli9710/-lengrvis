@@ -53,6 +53,16 @@ export interface DesktopWebSocketSubscribeHandlers {
   onClose?: (event: { code?: number; reason?: string; wasClean?: boolean }) => void;
 }
 
+export interface MobilePairingRemoteInputGrantRequest {
+  deviceId: string;
+  expiresInSeconds?: number;
+}
+
+export interface MobilePairingRevokeRemoteInputGrantRequest {
+  deviceId: string;
+  grantId: string;
+}
+
 export interface NotificationPayload {
   title: string;
   body: string;
@@ -1309,6 +1319,13 @@ export interface LengrvisDesktopBridge {
     stop: () => Promise<BackendStatus>;
     foreground: () => Promise<BackendStatus>;
     background: () => Promise<BackendStatus>;
+  };
+  mobilePairing: {
+    createCode: () => Promise<ApiResponse<unknown>>;
+    listDevices: () => Promise<ApiResponse<unknown>>;
+    revokeDevice: (deviceId: string) => Promise<ApiResponse<unknown>>;
+    createRemoteInputGrant: (request: MobilePairingRemoteInputGrantRequest) => Promise<ApiResponse<unknown>>;
+    revokeRemoteInputGrant: (request: MobilePairingRevokeRemoteInputGrantRequest) => Promise<ApiResponse<unknown>>;
   };
   dialog: {
     chooseDirectory: () => Promise<string | null>;

@@ -73,6 +73,7 @@ Equivalent expanded command:
 
 ```powershell
 npm run qa:gate
+.\scripts\verify_release_safety.ps1
 .\scripts\build_all.ps1 -VerifyOnly
 .\scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45
 ```
@@ -80,7 +81,8 @@ npm run qa:gate
 Pass criteria:
 
 - The preflight gate passes on the same candidate.
-- `release:check` is the default structural release gate. It runs `qa:gate` and `scripts\build_all.ps1 -VerifyOnly`, but it does not force runnable executable smoke.
+- Release safety verification passes: `LENGRVIS_ALLOW_MOCK_FALLBACK` resolves to false, and `strict_state_machine` resolves to true through `LENGRVIS_STRICT_STATE_MACHINE=true` or `privacy.strict_state_machine: true` in `config.yaml`.
+- `release:check` is the default structural release gate. It runs `qa:gate`, `scripts\verify_release_safety.ps1`, and `scripts\build_all.ps1 -VerifyOnly`, but it does not force runnable executable smoke.
 - `release:smoke` is the explicit release-candidate runnable path. It runs `release:check`, then reruns packaging verification through `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`.
 - `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-0.1.0-x64-self-extracting.exe` exist unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
 - The portable package contains `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
@@ -119,6 +121,7 @@ Do not release if any of these are true:
 - Mobile or desktop token transport moves from header/subprotocol storage into URL query strings.
 - Release artifacts are missing backend resources or package manifests.
 - Runnable packaging smoke fails, times out, or only proves file presence without executable behavior.
+- Release safety verification fails because mock fallback is enabled or strict state machine enforcement is not enabled for the release candidate.
 - The candidate requires undocumented local environment state to launch.
 - Demo or release material claims LAN TLS, HTTPS/WSS production readiness, or system certificate trust without recorded configuration and explicit device trust evidence.
 - Demo materials or release notes claim a P2/P3 capability that was not verified or explicitly waived for this candidate.
@@ -157,6 +160,7 @@ Demo-before-release gate:
 - LAN TLS readiness, if mobile/LAN included:
 
 Artifact gate:
+- release safety verification:
 - release:check / build_all -VerifyOnly:
 - release:smoke / build_all -VerifyOnly -RunExecutableSmoke:
 - executable smoke logs:

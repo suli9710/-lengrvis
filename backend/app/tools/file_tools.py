@@ -24,6 +24,13 @@ READ_TEXT_MAX_CHARS = 120000
 EDIT_PREVIEW_CONTEXT_CHARS = 240
 SEARCH_NAME_DEFAULT_LIMIT = 100
 SEARCH_NAME_DEFAULT_MAX_SCANNED = 5000
+SEARCH_FULL_TEXT_DEFAULT_LIMIT = 100
+SEARCH_FULL_TEXT_DEFAULT_MAX_SCANNED = 5000
+SEARCH_FULL_TEXT_DEFAULT_MAX_FILE_BYTES = 1024 * 1024
+SEARCH_FULL_TEXT_DEFAULT_MAX_CHARS_PER_FILE = READ_TEXT_MAX_CHARS
+FIND_DUPLICATES_DEFAULT_LIMIT = 100
+FIND_DUPLICATES_DEFAULT_MAX_SCANNED = 5000
+FIND_DUPLICATES_DEFAULT_MAX_FILE_BYTES = 100 * 1024 * 1024
 _cleanup_service = CleanupPlannerService()
 
 
@@ -81,19 +88,61 @@ def _bounded_int(value: Any, default: int, *, minimum: int, maximum: int) -> int
 
 def search_full_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     query = str(args.get("query", "")).lower()
+    limit = _bounded_int(args.get("limit"), SEARCH_FULL_TEXT_DEFAULT_LIMIT, minimum=1, maximum=500)
+    max_scanned = _bounded_int(
+        args.get("max_scanned"),
+        SEARCH_FULL_TEXT_DEFAULT_MAX_SCANNED,
+        minimum=1,
+        maximum=100000,
+    )
+    max_file_bytes = _bounded_int(
+        args.get("max_file_bytes"),
+        SEARCH_FULL_TEXT_DEFAULT_MAX_FILE_BYTES,
+        minimum=1,
+        maximum=10 * 1024 * 1024,
+    )
+    max_chars_per_file = _bounded_int(
+        args.get("max_chars_per_file"),
+        SEARCH_FULL_TEXT_DEFAULT_MAX_CHARS_PER_FILE,
+        minimum=1,
+        maximum=READ_TEXT_MAX_CHARS,
+    )
     results = []
+    scanned = 0
+    truncated = False
     for path in _iter_files(context):
+        scanned += 1
         if path.suffix.lower() not in TEXT_EXTENSIONS:
+            if scanned >= max_scanned:
+                return {"results": results, "count": len(results), "scanned": scanned, "truncated": True}
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            with path.open("rb") as fh:
+                data = fh.read(max_file_bytes + 1)
         except OSError:
+            if scanned >= max_scanned:
+                return {"results": results, "count": len(results), "scanned": scanned, "truncated": True}
             continue
-        if query in text.lower():
-            idx = text.lower().find(query)
+
+        if len(data) > max_file_bytes:
+            truncated = True
+            data = data[:max_file_bytes]
+
+        text = data.decode("utf-8", errors="ignore")
+        if len(text) > max_chars_per_file:
+            truncated = True
+            text = text[:max_chars_per_file]
+
+        haystack = text.lower()
+        if query in haystack:
+            idx = haystack.find(query)
             snippet = text[max(0, idx - 80) : idx + 160]
             results.append({"path": str(path), "snippet": snippet})
-    return {"results": results[:100], "count": len(results)}
+            if len(results) >= limit:
+                return {"results": results, "count": len(results), "scanned": scanned, "truncated": True}
+        if scanned >= max_scanned:
+            return {"results": results, "count": len(results), "scanned": scanned, "truncated": True}
+    return {"results": results, "count": len(results), "scanned": scanned, "truncated": truncated}
 
 
 def semantic_search(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -152,12 +201,68 @@ def read_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def find_duplicates(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    limit = _bounded_int(args.get("limit"), FIND_DUPLICATES_DEFAULT_LIMIT, minimum=1, maximum=500)
+    max_scanned = _bounded_int(
+        args.get("max_scanned"),
+        FIND_DUPLICATES_DEFAULT_MAX_SCANNED,
+        minimum=1,
+        maximum=100000,
+    )
+    max_file_bytes = _bounded_int(
+        args.get("max_file_bytes"),
+        FIND_DUPLICATES_DEFAULT_MAX_FILE_BYTES,
+        minimum=1,
+        maximum=1024 * 1024 * 1024,
+    )
     groups: dict[str, list[str]] = {}
+    scanned = 0
+    skipped_large = 0
+    duplicate_group_count = 0
     for path in _iter_files(context):
-        digest = sha256_file(path)
+        scanned += 1
+        try:
+            stat = path.stat()
+        except OSError:
+            if scanned >= max_scanned:
+                return _duplicate_result(groups, limit, scanned=scanned, truncated=True, skipped_large=skipped_large)
+            continue
+        if stat.st_size > max_file_bytes:
+            skipped_large += 1
+            if scanned >= max_scanned:
+                return _duplicate_result(groups, limit, scanned=scanned, truncated=True, skipped_large=skipped_large)
+            continue
+        try:
+            digest = sha256_file(path)
+        except OSError:
+            if scanned >= max_scanned:
+                return _duplicate_result(groups, limit, scanned=scanned, truncated=True, skipped_large=skipped_large)
+            continue
         groups.setdefault(digest, []).append(str(path))
-    duplicates = [{"sha256": digest, "paths": paths} for digest, paths in groups.items() if len(paths) > 1]
-    return {"duplicates": duplicates, "count": len(duplicates)}
+        if len(groups[digest]) == 2:
+            duplicate_group_count += 1
+            if duplicate_group_count >= limit:
+                return _duplicate_result(groups, limit, scanned=scanned, truncated=True, skipped_large=skipped_large)
+        if scanned >= max_scanned:
+            return _duplicate_result(groups, limit, scanned=scanned, truncated=True, skipped_large=skipped_large)
+    return _duplicate_result(groups, limit, scanned=scanned, truncated=skipped_large > 0, skipped_large=skipped_large)
+
+
+def _duplicate_result(
+    groups: dict[str, list[str]],
+    limit: int,
+    *,
+    scanned: int,
+    truncated: bool,
+    skipped_large: int,
+) -> dict[str, Any]:
+    duplicates = [{"sha256": digest, "paths": paths} for digest, paths in groups.items() if len(paths) > 1][:limit]
+    return {
+        "duplicates": duplicates,
+        "count": len(duplicates),
+        "scanned": scanned,
+        "truncated": truncated,
+        "skipped_large": skipped_large,
+    }
 
 
 def cleanup_scan(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -493,7 +598,13 @@ def _input_schema(name: str) -> dict[str, Any]:
         },
         "file.search_full_text": {
             "type": "object",
-            "properties": {"query": {"type": "string"}},
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+                "max_scanned": {"type": "integer"},
+                "max_file_bytes": {"type": "integer"},
+                "max_chars_per_file": {"type": "integer"},
+            },
             "required": ["query"],
             "additionalProperties": False,
         },
@@ -529,7 +640,12 @@ def _input_schema(name: str) -> dict[str, Any]:
         },
         "file.find_duplicates": {
             "type": "object",
-            "properties": {"path": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "limit": {"type": "integer"},
+                "max_scanned": {"type": "integer"},
+                "max_file_bytes": {"type": "integer"},
+            },
             "additionalProperties": False,
         },
         "file.cleanup_scan": _cleanup_plan_schema(read_only=True),

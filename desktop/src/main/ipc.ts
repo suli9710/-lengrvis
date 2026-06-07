@@ -8,11 +8,19 @@ import {
   API_REQUEST_SECURITY_LIMITS,
   IPC_CHANNELS
 } from "../shared/ipc";
-import type { ApiMethod, ApiQueryValue, ApiRequest, ApiResponse } from "../shared/types";
+import type {
+  ApiMethod,
+  ApiQueryValue,
+  ApiRequest,
+  ApiResponse,
+  MobilePairingRemoteInputGrantRequest,
+  MobilePairingRevokeRemoteInputGrantRequest
+} from "../shared/types";
 import type { BackendProcessManager } from "./backendProcess";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_REMOTE_INPUT_GRANT_TTL_SECONDS = 300;
 const ALLOWED_API_METHODS = new Set<ApiMethod>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["https:", "http:", "mailto:"]);
 const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
@@ -33,6 +41,10 @@ interface ValidatedApiRequest {
   query?: Record<string, Exclude<ApiQueryValue, null | undefined>>;
   serializedBody?: string;
   timeoutMs: number;
+}
+
+interface ApiRequestValidationOptions {
+  allowDeniedDesktopBridgePath?: boolean;
 }
 
 export function registerIpcHandlers(backend: BackendProcessManager): void {
@@ -161,6 +173,66 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken());
   });
 
+  ipcMain.handle(IPC_CHANNELS.mobilePairingCreateCode, async (event) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/pair/request",
+      method: "POST"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.mobilePairingListDevices, async (event) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/pair/devices"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.mobilePairingRevokeDevice, async (event, deviceId: string) => {
+    assertTrustedRenderer(event);
+    const safeDeviceId = validateBridgeIdentifier(deviceId, "mobile device id");
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/pair/devices/${encodeURIComponent(safeDeviceId)}`,
+      method: "DELETE"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.mobilePairingCreateRemoteInputGrant, async (event, request: MobilePairingRemoteInputGrantRequest) => {
+    assertTrustedRenderer(event);
+    const safeDeviceId = validateBridgeIdentifier(request?.deviceId, "mobile device id");
+    const expiresInSeconds = validateBridgePositiveInteger(
+      request?.expiresInSeconds,
+      "remote input grant expiry",
+      DEFAULT_REMOTE_INPUT_GRANT_TTL_SECONDS,
+      1,
+      86_400
+    );
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/pair/devices/${encodeURIComponent(safeDeviceId)}/remote-input-grants`,
+      method: "POST",
+      body: { expires_in: expiresInSeconds }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.mobilePairingRevokeRemoteInputGrant, async (event, request: MobilePairingRevokeRemoteInputGrantRequest) => {
+    assertTrustedRenderer(event);
+    const safeDeviceId = validateBridgeIdentifier(request?.deviceId, "mobile device id");
+    const safeGrantId = validateBridgeIdentifier(request?.grantId, "remote input grant id");
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/pair/devices/${encodeURIComponent(safeDeviceId)}/remote-input-grants/${encodeURIComponent(safeGrantId)}`,
+      method: "DELETE"
+    });
+  });
+
+}
+
+function proxyExplicitDesktopBridgeRequest<TData>(
+  backend: BackendProcessManager,
+  request: ApiRequest
+): Promise<ApiResponse<TData>> {
+  return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken(), {
+    allowDeniedDesktopBridgePath: true
+  });
 }
 
 async function getFileIconDataUrl(filePath: string): Promise<string | null> {
@@ -184,13 +256,14 @@ async function getFileIconDataUrl(filePath: string): Promise<string | null> {
 async function proxyApiRequest<TData>(
   baseUrl: string,
   request: ApiRequest,
-  desktopApiToken: string
+  desktopApiToken: string,
+  options: ApiRequestValidationOptions = {}
 ): Promise<ApiResponse<TData>> {
   const receivedAt = new Date().toISOString();
   let timeout: ReturnType<typeof setTimeout> | undefined;
 
   try {
-    const validatedRequest = validateApiRequest(request);
+    const validatedRequest = validateApiRequest(request, options);
     const url = buildValidatedRequestUrl(baseUrl, validatedRequest);
     const controller = new AbortController();
     timeout = setTimeout(
@@ -286,13 +359,13 @@ function buildValidatedRequestUrl(baseUrl: string, request: ValidatedApiRequest)
   return url;
 }
 
-function validateApiRequest(request: unknown): ValidatedApiRequest {
+function validateApiRequest(request: unknown, options: ApiRequestValidationOptions = {}): ValidatedApiRequest {
   if (!isPlainRecord(request)) {
     throw new ApiRequestValidationError("Renderer API request is malformed");
   }
 
   rejectUnexpectedApiRequestKeys(request);
-  const endpoint = validateApiEndpoint(request.endpoint);
+  const endpoint = validateApiEndpoint(request.endpoint, options);
   const method = validateApiMethod(request.method);
   const query = validateApiQuery(request.query);
   const timeoutMs = validateApiTimeout(request.timeoutMs);
@@ -309,7 +382,7 @@ function rejectUnexpectedApiRequestKeys(request: Record<string, unknown>): void 
   }
 }
 
-function validateApiEndpoint(value: unknown): string {
+function validateApiEndpoint(value: unknown, options: ApiRequestValidationOptions = {}): string {
   if (typeof value !== "string") {
     throw new ApiRequestValidationError("Renderer API endpoint is required");
   }
@@ -355,7 +428,9 @@ function validateApiEndpoint(value: unknown): string {
   }
 
   const normalizedPath = `/${segments.filter(Boolean).join("/")}`;
-  rejectDeniedApiPath(normalizedPath);
+  if (!options.allowDeniedDesktopBridgePath) {
+    rejectDeniedApiPath(normalizedPath);
+  }
   return value;
 }
 
@@ -436,6 +511,39 @@ function validateApiTimeout(value: unknown): number {
     value > API_REQUEST_SECURITY_LIMITS.maxTimeoutMs
   ) {
     throw new ApiRequestValidationError("Renderer API timeout is invalid");
+  }
+  return value;
+}
+
+function validateBridgeIdentifier(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new ApiRequestValidationError(`${label} is required`);
+  }
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    trimmed.length > 128 ||
+    /[\s/\\?#\u0000-\u001F\u007F]/.test(trimmed) ||
+    trimmed === "." ||
+    trimmed === ".."
+  ) {
+    throw new ApiRequestValidationError(`${label} is invalid`);
+  }
+  return trimmed;
+}
+
+function validateBridgePositiveInteger(
+  value: unknown,
+  label: string,
+  defaultValue: number,
+  minimum: number,
+  maximum: number
+): number {
+  if (value === undefined) {
+    return defaultValue;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new ApiRequestValidationError(`${label} is invalid`);
   }
   return value;
 }

@@ -35,7 +35,9 @@ desktop/tmp-office-review/
 .claude/settings.local.json
 UsersSuliAppDataLocalTempClaude-Code-review
 .codex-vite-*.pid
+.codex-vite-*.err.log
 .codex-vite-*.out.log
+.codex-vite-job.id
 # Canonical local runtime data directory is .lengrvis_data.
 .lengrvis_data/
 approval_hmac.secret
