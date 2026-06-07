@@ -4,7 +4,10 @@ import hmac
 import logging
 import os
 import secrets
+import time
+from hashlib import sha256
 from pathlib import Path
+from typing import Mapping
 
 from fastapi import Request, WebSocket, WebSocketException, status
 
@@ -15,6 +18,10 @@ from app.security.lan import is_loopback_host
 DESKTOP_API_TOKEN_HEADER = "x-mavris-desktop-token"
 DESKTOP_API_TOKEN_FILE = "desktop_api.secret"
 DESKTOP_API_WS_PROTOCOL_PREFIX = "mavris.desktop.token."
+DESKTOP_SIGNED_RESOURCE_EXPIRES_QUERY = "expires"
+DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY = "signature"
+DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS = 10 * 60
+DESKTOP_SIGNED_RESOURCE_PATHS = {"/api/library/preview"}
 logger = logging.getLogger(__name__)
 
 
@@ -30,8 +37,7 @@ def should_require_desktop_api_token(request: Request) -> bool:
         return False
     if _is_desktop_api_token_exempt_path(request.url.path):
         return False
-    client_host = request.client.host if request.client else ""
-    if request.method.upper() in {"GET", "HEAD", "OPTIONS"} and is_loopback_host(client_host):
+    if _has_valid_signed_desktop_resource(request):
         return False
     return True
 
@@ -59,6 +65,20 @@ def is_authorized_desktop_websocket(websocket: WebSocket) -> bool:
     return has_valid_desktop_websocket_token(websocket)
 
 
+def signed_desktop_resource_query(
+    resource_path: str,
+    payload: str,
+    *,
+    expires_in_seconds: int = DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS,
+) -> dict[str, str]:
+    expires_in = max(1, min(int(expires_in_seconds), DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS))
+    expires_at = str(int(time.time()) + expires_in)
+    return {
+        DESKTOP_SIGNED_RESOURCE_EXPIRES_QUERY: expires_at,
+        DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY: _desktop_resource_signature(resource_path, payload, expires_at),
+    }
+
+
 async def close_unauthorized_desktop_websocket(websocket: WebSocket) -> bool:
     if is_authorized_desktop_websocket(websocket):
         return False
@@ -71,6 +91,40 @@ def _is_desktop_api_token_exempt_path(path: str) -> bool:
     if path.startswith("/api/mobile/"):
         return True
     return False
+
+
+def _has_valid_signed_desktop_resource(request: Request) -> bool:
+    resource_path = request.url.path
+    if resource_path not in DESKTOP_SIGNED_RESOURCE_PATHS:
+        return False
+    expires_at = request.query_params.get(DESKTOP_SIGNED_RESOURCE_EXPIRES_QUERY, "").strip()
+    supplied = request.query_params.get(DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY, "").strip()
+    payload = _signed_desktop_resource_payload(resource_path, request.query_params)
+    if not expires_at or not supplied or not payload:
+        return False
+    try:
+        expires_ts = int(expires_at)
+    except ValueError:
+        return False
+    now = int(time.time())
+    if expires_ts < now or expires_ts > now + DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS:
+        return False
+    expected = _desktop_resource_signature(resource_path, payload, expires_at)
+    return bool(expected and hmac.compare_digest(supplied, expected))
+
+
+def _signed_desktop_resource_payload(resource_path: str, query_params: Mapping[str, str]) -> str:
+    if resource_path == "/api/library/preview":
+        return str(query_params.get("path") or "")
+    return ""
+
+
+def _desktop_resource_signature(resource_path: str, payload: str, expires_at: str) -> str:
+    secret = desktop_api_token()
+    if not secret:
+        return ""
+    body = f"{resource_path}\n{payload}\n{expires_at}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), body, sha256).hexdigest()
 
 
 def _desktop_api_token_optional() -> bool:

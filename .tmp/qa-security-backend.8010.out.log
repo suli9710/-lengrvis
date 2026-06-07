@@ -1,0 +1,21 @@
+INFO:     127.0.0.1:56460 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62000 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62001 - "POST /api/chat HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:62002 - "POST /api/chat HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:62003 - "POST /api/chat HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59971 - "POST /api/pair/code HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59972 - "POST /api/pair/code HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59973 - "POST /api/pair/confirm HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:59975 - "POST /api/pair/confirm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59976 - "POST /api/pair/confirm HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59977 - "GET /api/mobile/approvals/pending HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59978 - "GET /api/mobile/approvals/pending HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59979 - "GET /api/mobile/approvals/pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59980 - "GET /api/mobile/devices HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59981 - "POST /api/pair/devices/mobile_084d3e943e70ead6/remote-input-grants HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59982 - "POST /api/pair/devices/mobile_084d3e943e70ead6/remote-input-grants HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59985 - "POST /api/mobile/remote-input-grants/rig_84aa74ec4dda197ead2b4714/token HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:59986 - "POST /api/mobile/remote-input-grants/rig_84aa74ec4dda197ead2b4714/token HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59987 - "GET /api/mobile/approvals/pending HTTP/1.1" 403 Forbidden
+INFO:     127.0.0.1:60000 - "DELETE /api/pair/devices/mobile_084d3e943e70ead6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60001 - "GET /api/mobile/approvals/pending HTTP/1.1" 401 Unauthorized

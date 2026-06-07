@@ -1,0 +1,268 @@
+[
+  {
+    "viewport": "desktop",
+    "view": "browser",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [],
+      "headings": [
+        "浏览器监看"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 浏览器监看 查看浏览器活动，并在需要时接管控制 浏览器活动 浏览器监看 暂无浏览器会话 打开一个网址，或等待后端浏览器宿主连接。 暂无可显示的活动浏览器。 内嵌浏览器预览会显示在这里。 暂停 继续 接管 交还控制 观察 导出回放 停止 隐藏 事件队列 0 暂无浏览器事件。 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 29,
+      "inputCount": 1
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "desktop",
+    "view": "memories",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [],
+      "headings": [
+        "我的记忆"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 记忆 Mavris 后续可使用的本地信息 本地知识库 我的记忆 22 条 搜索 新增记忆 标签（逗号分隔） 记住这条 lesson[lesson、file.search_by_name、FileAgent] {\"args_pattern\": {\"query\": \" 搜索一个不存在的文件 abcxyz-不存在-2026\"}, \"goal_pattern\": \"搜索一个不存在的文件 abcxyz-不存在-2026\", \"outcome\": \"succeeded\", \"reason\": \"Structured observation recorded in the task timeline.\", \"tool\": \"file.search_by_name\"} 2026/5/29 00:18:36 忘记 task_summary[FileAgent] Task completed with read-only/open-only MVP tools. 2026/5/29 00:18:35 忘记 lesson[lesson、system.get_info、ComputerAgent] {\"args_pattern\": {\"dry_run\": \"bool\", \"query\": \" 帮我看看这台电脑的状态\"}, \"goal_pattern\": \"帮我看看这台电脑的状态\", \"outcome\": \"succeeded\", \"reason\": \"Structured observation recorded in the task timeline.\", \"tool\": \"system.get_info\"} 2026/5/28 22:31:42 忘记 task_summary[ComputerAgent] Task completed with read-only/open-only MVP tools. 2026/5/28 22:31:42 忘记 lesson[lesson、system.get_info、ComputerAgent] {\"args_pattern\": {\"dry_run\": \"bool\", \"query\": \" 检查这台电脑，并告诉我有哪些需要注意的地方。\"}, \"goal_pattern\": \"检查这台电脑，并告诉我有哪些需要注意的地方。\", \"outcome\"",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 43,
+      "inputCount": 3
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "desktop",
+    "view": "safety",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [],
+      "headings": [
+        "安全审核",
+        "审计日志"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 审批 等待你确认的项目 助手暂时连不上 策略检查 安全审核 已通过 0 个待处理发现更新于 02:04:56 查看审批 事件记录 审计日志 0 状态总览 待连接 Mavris 连接 连接待恢复 助手暂时连不上，电脑本身没有因此变成故障。点右上角刷新可重新检查。 最近任务 暂无最近任务 助手暂时连不上，任务还不会进入执行流；这不代表电脑本身有问题。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 20,
+      "inputCount": 0
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "desktop",
+    "view": "agentOps",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [
+        "总览"
+      ],
+      "headings": [
+        "协作状态"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 Agent 总览 查看真实协作状态，并从对话或审批继续 助手暂时连不上 AGENT 总览 协作状态 这里展示真实任务和审批状态，具体操作从对话或审批入口继续。 待命 Mavris 待命，负责规划与协调 去对话 文件 待命，可在对话中协作查找文件 去对话 电脑 待命，可在对话中协作检查电脑 去对话 应用 待命，可在对话中协作处理应用 去对话 浏览器 待命，可在对话中协作处理网页 去对话 搜索 待命，可在对话中协作查资料 去对话 安全 暂无待审批操作 去对话 暂无任务所有 Agent 当前待命，开始对话后会显示真实协作状态。 去对话 状态总览 待连接 Mavris 连接 连接待恢复 助手暂时连不上，电脑本身没有因此变成故障。点右上角刷新可重新检查。 最近任务 暂无最近任务 助手暂时连不上，任务还不会进入执行流；这不代表电脑本身有问题。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 27,
+      "inputCount": 0
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "desktop",
+    "view": "agents",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [
+        "进度"
+      ],
+      "headings": [
+        "Agent 协作记录",
+        "定时任务",
+        "任务时间线",
+        "执行计划"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 本地知识库 应用 文档 文档识别 论文 课件 报告 图库 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 Mavris 电脑助手 进度 当前正在处理的工作 多 AGENT 协调 Agent 协作记录 自动化 定时任务 0 项 Cron 表达式 任务目标 模式 隐私（需本地 LLM） 效率（云端） 混合 创建定时任务 还没有定时任务。在上面创建一个吧。 执行记录 任务时间线 暂无任务记录。真实任务启动后会出现在这里。 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。 状态总览 运行中 Mavris 连接 已连接 Mavris 服务可用，可以继续发起任务。 最近任务 正在同步工作台 我在整理最新状态，很快就可以继续使用。 电脑健康 尚未检查 进入“此电脑”刷新后，会显示电脑健康快照。 下一步 在首页输入一句话，我会先整理要做什么，再开始执行。 最近回复 这里会保留最近几条对话，方便你接着问。",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 20,
+      "inputCount": 3
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "mobile",
+    "view": "browser",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [],
+      "headings": [
+        "浏览器监看"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 浏览器监看 查看浏览器活动，并在需要时接管控制 浏览器活动 浏览器监看 暂无浏览器会话 打开一个网址，或等待后端浏览器宿主连接。 暂无可显示的活动浏览器。 内嵌浏览器预览会显示在这里。 暂停 继续 接管 交还控制 观察 导出回放 停止 隐藏 事件队列 0 暂无浏览器事件。",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 29,
+      "inputCount": 1
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "mobile",
+    "view": "memories",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [],
+      "headings": [
+        "我的记忆"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 记忆 Mavris 后续可使用的本地信息 本地知识库 我的记忆 22 条 搜索 新增记忆 标签（逗号分隔） 记住这条 lesson[lesson、file.search_by_name、FileAgent] {\"args_pattern\": {\"query\": \" 搜索一个不存在的文件 abcxyz-不存在-2026\"}, \"goal_pattern\": \"搜索一个不存在的文件 abcxyz-不存在-2026\", \"outcome\": \"succeeded\", \"reason\": \"Structured observation recorded in the task timeline.\", \"tool\": \"file.search_by_name\"} 2026/5/29 00:18:36 忘记 task_summary[FileAgent] Task completed with read-only/open-only MVP tools. 2026/5/29 00:18:35 忘记 lesson[lesson、system.get_info、ComputerAgent] {\"args_pattern\": {\"dry_run\": \"bool\", \"query\": \" 帮我看看这台电脑的状态\"}, \"goal_pattern\": \"帮我看看这台电脑的状态\", \"outcome\": \"succeeded\", \"reason\": \"Structured observation recorded in the task timeline.\", \"tool\": \"system.get_info\"} 2026/5/28 22:31:42 忘记 task_summary[ComputerAgent] Task completed with read-only/open-only MVP tools. 2026/5/28 22:31:42 忘记 lesson[lesson、system.get_info、ComputerAgent] {\"args_pattern\": {\"dry_run\": \"bool\", \"query\": \" 检查这台电脑，并告诉我有哪些需要注意的地方。\"}, \"goal_pattern\": \"检查这台电脑，并告诉我有哪些需要注意的地方。\", \"outcome\": \"succeed",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 43,
+      "inputCount": 3
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "mobile",
+    "view": "safety",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [],
+      "headings": [
+        "安全审核",
+        "审计日志"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 审批 等待你确认的项目 助手暂时连不上 策略检查 安全审核 已通过 0 个待处理发现更新于 02:05:47 查看审批 事件记录 审计日志 0",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 20,
+      "inputCount": 0
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "mobile",
+    "view": "agentOps",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [
+        "总览"
+      ],
+      "headings": [
+        "协作状态"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 Agent 总览 查看真实协作状态，并从对话或审批继续 助手暂时连不上 AGENT 总览 协作状态 这里展示真实任务和审批状态，具体操作从对话或审批入口继续。 待命 Mavris 待命，负责规划与协调 去对话 文件 待命，可在对话中协作查找文件 去对话 电脑 待命，可在对话中协作检查电脑 去对话 应用 待命，可在对话中协作处理应用 去对话 浏览器 待命，可在对话中协作处理网页 去对话 搜索 待命，可在对话中协作查资料 去对话 安全 暂无待审批操作 去对话 暂无任务所有 Agent 当前待命，开始对话后会显示真实协作状态。 去对话",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 27,
+      "inputCount": 0
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  },
+  {
+    "viewport": "mobile",
+    "view": "agents",
+    "ok": true,
+    "data": {
+      "title": "Mavris",
+      "activeButtons": [
+        "进度"
+      ],
+      "headings": [
+        "Agent 协作记录",
+        "定时任务",
+        "任务时间线",
+        "执行计划"
+      ],
+      "snippet": "Mavris 电脑助手 首页 对话 总览 进度 设置 应用 文档 文档识别 论文 课件 报告 图库 图片识别 人物印象 足迹地点 时光长廊 文件工具 此电脑 横向滑动查看全部入口 进度 当前正在处理的工作 助手暂时连不上 多 AGENT 协调 Agent 协作记录 自动化 定时任务 0 项 Cron 表达式 任务目标 模式 隐私（需本地 LLM） 效率（云端） 混合 创建定时任务 还没有定时任务。在上面创建一个吧。 执行记录 任务时间线 暂无任务记录。真实任务启动后会出现在这里。 当前目标 执行计划 暂无计划 暂无执行计划。真实任务生成计划后会显示步骤和负责 Agent。",
+      "badTokens": [],
+      "horizontalOverflow": false,
+      "buttonCount": 20,
+      "inputCount": 3
+    },
+    "consoleMessages": [
+      {
+        "type": "info",
+        "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+      }
+    ],
+    "failedRequests": [],
+    "badResponses": []
+  }
+]

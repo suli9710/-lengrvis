@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from app.config import AppSettings
+from app.main import app
 from app.services import local_library_service
 
 
@@ -63,3 +66,37 @@ def test_local_library_preview_requires_explicit_authorized_root(
     with pytest.raises(HTTPException) as outside_exc_info:
         local_library_service.preview_local_image(str(outside))
     assert outside_exc_info.value.status_code == 403
+
+
+def test_local_library_preview_uses_short_lived_signed_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    image = workspace / "preview.png"
+    image.write_bytes(b"image")
+
+    monkeypatch.setenv("MARVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("MAVRIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("MAVRIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.delenv("MARVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    monkeypatch.setattr(
+        local_library_service,
+        "get_effective_settings",
+        lambda: AppSettings(allowed_directories=[str(workspace)]),
+    )
+
+    result = local_library_service.list_local_library(section="gallery", limit=20)
+    preview_url = result["items"][0]["preview_url"]
+    query = parse_qs(urlparse(preview_url).query)
+
+    assert query["path"] == [str(image)]
+    assert query["expires"]
+    assert query["signature"]
+
+    client = TestClient(app, client=("127.0.0.1", 50100))
+    assert client.get("/api/library/preview", params={"path": str(image)}).status_code == 401
+    assert client.get(preview_url).status_code == 200
+    assert client.get(preview_url.replace("signature=", "signature=bad")).status_code == 401

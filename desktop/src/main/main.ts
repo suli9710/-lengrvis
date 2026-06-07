@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import type { BackendStatus } from "../shared/types";
 import { BackendProcessManager } from "./backendProcess";
 import { BrowserHost, BrowserHostWebSocketBridge } from "./browserHost";
+import { registerDesktopWebSocketIpcHandlers } from "./desktopWebSocket";
 import { isSafeExternalUrl, registerIpcHandlers } from "./ipc";
 import { NotificationBridge } from "./notifications";
 
@@ -254,6 +255,7 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     registerIpcHandlers(backend);
+    registerDesktopWebSocketIpcHandlers(backend);
     browserHost.registerIpcHandlers();
     notifications.registerIpcHandlers();
     mainWindow = createMainWindow();

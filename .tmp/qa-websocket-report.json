@@ -1,0 +1,111 @@
+{
+  "setup": {
+    "pair_request_status": 200,
+    "pair_status": 200,
+    "pair_body_keys": [
+      "device_id",
+      "expires_in",
+      "server",
+      "token",
+      "token_type"
+    ],
+    "mobile_devices": {
+      "status": 200,
+      "ms": 765,
+      "json": {
+        "devices": [
+          {
+            "device_id": "mobile_ec746de16c0be377",
+            "device_name": "QA WebSocket Device",
+            "status": "active",
+            "created_at": "2026-06-04T17:59:59.484611+00:00",
+            "updated_at": "2026-06-04T17:59:59.484611+00:00",
+            "revoked_at": "",
+            "remote_input_grants": []
+          }
+        ]
+      },
+      "body": "{\"devices\":[{\"device_id\":\"mobile_ec746de16c0be377\",\"device_name\":\"QA WebSocket Device\",\"status\":\"active\",\"created_at\":\"2026-06-04T17:59:59.484611+00:00\",\"updated_at\":\"2026-06-04T17:59:59.484611+00:00\",\"revoked_at\":\"\",\"remote_input_grants\":[]}]}"
+    },
+    "mobile_pending": {
+      "status": 200,
+      "ms": 102,
+      "json": [],
+      "body": "[]"
+    },
+    "revoke_status": 200
+  },
+  "results": [
+    {
+      "name": "desktop_notifications",
+      "path": "/ws/notifications",
+      "ok": true,
+      "ms": 48,
+      "first": "{\"type\":\"connected\",\"task_id\":\"__system__\"}",
+      "second": null,
+      "subprotocol_accepted": null
+    },
+    {
+      "name": "desktop_task_stream",
+      "path": "/ws/tasks/task_1968b17829384d238a65ab72e69f869e",
+      "ok": true,
+      "ms": 198,
+      "first": "{\"type\":\"connected\",\"task_id\":\"task_1968b17829384d238a65ab72e69f869e\"}",
+      "second": null,
+      "subprotocol_accepted": null
+    },
+    {
+      "name": "desktop_browser_host_ping",
+      "path": "/ws/browser-host",
+      "ok": false,
+      "ms": 181,
+      "error": "InvalidStatus(Response(status_code=403, reason_phrase='Forbidden', headers=Headers([('Date', 'Thu, 04 Jun 2026 18:00:00 GMT'), ('Content-Length', '0'), ('Content-Type', 'text/plain'), ('Connection', 'close')]), body=bytearray(b''), _exception=InvalidStatus(...)))"
+    },
+    {
+      "name": "desktop_run_stream",
+      "path": "/ws/runs/run_39ff74ad810443488bdd838577f382be",
+      "ok": true,
+      "ms": 346,
+      "first": "{\"type\":\"connected\",\"run_id\":\"run_39ff74ad810443488bdd838577f382be\",\"engine\":\"os\",\"phase\":\"paused\"}",
+      "second": null,
+      "subprotocol_accepted": null
+    },
+    {
+      "name": "mobile_approvals",
+      "path": "/ws/mobile/approvals",
+      "ok": true,
+      "ms": 348,
+      "first": "{\"type\":\"connected\",\"device_id\":\"mobile_ec746de16c0be377\",\"pending\":[]}",
+      "second": null,
+      "subprotocol_accepted": null
+    },
+    {
+      "name": "mobile_notifications",
+      "path": "/ws/mobile/notifications",
+      "ok": true,
+      "ms": 351,
+      "first": "{\"type\":\"connected\",\"device_id\":\"mobile_ec746de16c0be377\",\"pending\":[]}",
+      "second": null,
+      "subprotocol_accepted": null
+    }
+  ],
+  "desktop_token_used": true,
+  "mobile_token_created": true,
+  "browser_host_alias_check": {
+    "api_ws_browser_host": {
+      "ok": true,
+      "first": {
+        "type": "connected"
+      },
+      "second": {
+        "type": "pong",
+        "request_id": "qa-api-ping"
+      }
+    },
+    "ws_browser_host": {
+      "ok": false,
+      "status": 403,
+      "note": "Naked /ws/browser-host is forbidden; /api/ws/browser-host works."
+    }
+  }
+}

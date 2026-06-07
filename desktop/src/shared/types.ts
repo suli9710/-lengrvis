@@ -22,6 +22,34 @@ export interface ApiResponse<TData = unknown> {
   receivedAt: string;
 }
 
+export interface DesktopWebSocketSubscribeRequest {
+  endpoint: string;
+  query?: Record<string, string | number | boolean | null | undefined>;
+}
+
+export interface DesktopWebSocketOpenRequest extends DesktopWebSocketSubscribeRequest {
+  id: string;
+}
+
+export interface DesktopWebSocketOpenResult {
+  ok: boolean;
+  id: string;
+  error?: string;
+}
+
+export type DesktopWebSocketBridgeEvent =
+  | { id: string; type: "open" }
+  | { id: string; type: "message"; data: string }
+  | { id: string; type: "error"; message?: string }
+  | { id: string; type: "close"; code?: number; reason?: string; wasClean?: boolean };
+
+export interface DesktopWebSocketSubscribeHandlers {
+  onOpen?: () => void;
+  onMessage?: (data: string) => void;
+  onError?: (error: { message?: string }) => void;
+  onClose?: (event: { code?: number; reason?: string; wasClean?: boolean }) => void;
+}
+
 export interface NotificationPayload {
   title: string;
   body: string;
@@ -1264,6 +1292,12 @@ export interface MavrisDesktopBridge {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>
     ) => Promise<ApiResponse<TResponse>>;
+  };
+  realtime: {
+    subscribe: (
+      request: DesktopWebSocketSubscribeRequest,
+      handlers: DesktopWebSocketSubscribeHandlers
+    ) => () => void;
   };
   backendBaseUrl?: string;
   backend: {

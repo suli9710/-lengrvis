@@ -318,9 +318,23 @@ function getErrorMessage(data: unknown, fallback: string): string {
   if (data && typeof data === "object" && "message" in data) {
     const message = (data as { message?: unknown }).message;
     if (typeof message === "string") {
-      return message;
+      return userFacingBackendError(message);
+    }
+  }
+  if (data && typeof data === "object" && "detail" in data) {
+    const detail = (data as { detail?: unknown }).detail;
+    if (typeof detail === "string") {
+      return userFacingBackendError(detail);
     }
   }
 
-  return fallback || "Backend request failed";
+  return userFacingBackendError(fallback || "Backend request failed");
+}
+
+function userFacingBackendError(message: string): string {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("missing desktop api token") || normalized.includes("unauthorized")) {
+    return "Mavris 正在保护本机接口。请重启桌面应用后再试；未授权页面不能直接读取本机数据。";
+  }
+  return message;
 }

@@ -485,12 +485,14 @@ class OrchestratorAgent:
         if rationale:
             summary_parts.append(rationale[:200])
         summary = " | ".join(summary_parts) or f"{agent.name} reasoned about {step.tool_name}"
+        allowed_tools = getattr(agent, "allowed_tools", None)
+        visible_tool_ids = allowed_tools(self.registry) if callable(allowed_tools) else []
         model_action = ModelActionEnvelope(
             action_type="subagent_action",
             tool_name=action.tool_name or step.tool_name,
             args=dict(action.args or {}),
             model_reason=action.rationale or action.follow_up_question or summary,
-            visible_tool_ids=agent.allowed_tools(self.registry),
+            visible_tool_ids=visible_tool_ids,
             source=agent.name,
             task_id=task.id,
             step_id=step.id,

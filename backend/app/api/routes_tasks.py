@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
@@ -15,6 +17,8 @@ from app.tools import rollback_tools
 
 
 router = APIRouter()
+BOUNDARY_EVENT_SOURCE_LIMIT = 500
+BOUNDARY_EVENT_QUERY_CHUNK_SIZE = 400
 
 
 def _openai_agent_messages(task_id: str) -> list[dict]:
@@ -97,7 +101,9 @@ def _merge_step_recording(
 
 @router.get("/tasks")
 def tasks():
-    return [_task_payload(task) for task in list_tasks()]
+    task_items = list_tasks()
+    boundary_events = _boundary_events_for_tasks([task.id for task in task_items])
+    return [_task_payload(task, boundary_events=boundary_events.get(task.id, [])) for task in task_items]
 
 
 @router.get("/tasks/{task_id}")
@@ -121,10 +127,67 @@ def timeline(task_id: str):
     }
 
 
-def _task_payload(task: Task) -> dict:
+def _task_payload(task: Task, *, boundary_events: list[dict] | None = None) -> dict:
     payload = task.model_dump(mode="json")
-    payload["boundary_events"] = _boundary_events(task.id)
+    payload["boundary_events"] = boundary_events if boundary_events is not None else _boundary_events(task.id)
     return payload
+
+
+def _boundary_events_for_tasks(task_ids: list[str]) -> dict[str, list[dict]]:
+    unique_task_ids = [task_id for task_id in dict.fromkeys(task_ids) if task_id]
+    if not unique_task_ids:
+        return {}
+
+    messages_by_task = _recent_records_by_task("agent_messages", unique_task_ids)
+    reviews_by_task = _recent_records_by_task("safety_reviews", unique_task_ids)
+    audits_by_task = _recent_records_by_task("audit_events", unique_task_ids)
+    return {
+        task_id: _boundary_events(
+            task_id,
+            messages=messages_by_task.get(task_id, []),
+            reviews=reviews_by_task.get(task_id, []),
+            audits=audits_by_task.get(task_id, []),
+        )
+        for task_id in unique_task_ids
+    }
+
+
+def _recent_records_by_task(table: str, task_ids: list[str], *, limit_per_task: int = BOUNDARY_EVENT_SOURCE_LIMIT) -> dict[str, list[dict]]:
+    if table not in {"agent_messages", "safety_reviews", "audit_events"}:
+        raise ValueError(f"Unsupported boundary event table: {table}")
+    if not task_ids:
+        return {}
+
+    grouped: dict[str, list[dict]] = {task_id: [] for task_id in task_ids}
+    for start in range(0, len(task_ids), BOUNDARY_EVENT_QUERY_CHUNK_SIZE):
+        chunk = task_ids[start : start + BOUNDARY_EVENT_QUERY_CHUNK_SIZE]
+        placeholders = ", ".join("?" for _ in chunk)
+        query = f"""
+            SELECT data
+            FROM (
+                SELECT
+                    task_id,
+                    data,
+                    created_at,
+                    id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY task_id
+                        ORDER BY created_at DESC, id DESC
+                    ) AS row_number
+                FROM {table}
+                WHERE task_id IN ({placeholders})
+            )
+            WHERE row_number <= ?
+            ORDER BY task_id ASC, created_at DESC, id DESC
+        """
+        with db.connect() as conn:
+            rows = conn.execute(query, (*chunk, limit_per_task)).fetchall()
+        for row in rows:
+            item = json.loads(row["data"])
+            task_id = str(item.get("task_id") or "")
+            if task_id in grouped:
+                grouped[task_id].append(item)
+    return grouped
 
 
 def _boundary_events(
@@ -132,10 +195,11 @@ def _boundary_events(
     *,
     messages: list[dict] | None = None,
     reviews: list[dict] | None = None,
+    audits: list[dict] | None = None,
 ) -> list[dict]:
     messages = messages if messages is not None else db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=500)
     reviews = reviews if reviews is not None else db.fetch_many("safety_reviews", "task_id = ?", (task_id,), limit=500)
-    audits = db.fetch_many("audit_events", "task_id = ?", (task_id,), limit=500)
+    audits = audits if audits is not None else db.fetch_many("audit_events", "task_id = ?", (task_id,), limit=500)
     events: list[dict] = []
 
     for message in messages:
