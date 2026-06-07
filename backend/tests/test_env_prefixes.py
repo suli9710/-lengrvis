@@ -11,11 +11,12 @@ from app.security.lan import allow_lan_desktop_api
 
 def test_env_example_uses_only_lengrvis_assignment_prefix(project_root: Path) -> None:
     text = (project_root / ".env.example").read_text(encoding="utf-8")
-    assignment_keys = [
-        line.split("=", 1)[0].strip()
+    assignments = {
+        line.split("=", 1)[0].strip(): line.split("=", 1)[1].strip()
         for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith("#") and "=" in line
-    ]
+    }
+    assignment_keys = list(assignments)
 
     assert assignment_keys
     assert all(key.startswith("LENGRVIS_") for key in assignment_keys)
@@ -29,6 +30,20 @@ def test_env_example_uses_only_lengrvis_assignment_prefix(project_root: Path) ->
         "LENGRVIS_JWT_SECRET",
         "LENGRVIS_BACKEND_URL",
     }.issubset(set(assignment_keys))
+
+
+def test_env_example_backend_args_default_to_full_backend(project_root: Path) -> None:
+    text = (project_root / ".env.example").read_text(encoding="utf-8")
+    assignments = {
+        line.split("=", 1)[0].strip(): line.split("=", 1)[1].strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and "=" in line
+    }
+
+    backend_args = assignments["LENGRVIS_BACKEND_ARGS"]
+
+    assert "backend.main:full_app" in backend_args
+    assert "backend.main:app" not in backend_args
 
 
 def test_config_env_lookup_does_not_alias_legacy_prefixes() -> None:

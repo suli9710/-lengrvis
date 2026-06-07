@@ -173,6 +173,84 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken());
   });
 
+  ipcMain.handle(IPC_CHANNELS.commandsExecute, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/commands/execute",
+      method: "POST",
+      body: validateCommandExecuteRequest(request)
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.cleanupExecute, async (event, body: unknown) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/files/cleanup/execute",
+      method: "POST",
+      body: validatePlainBridgeBody(body, "cleanup execute request")
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.cleanupRollback, async (event, body: unknown) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/files/cleanup/rollback",
+      method: "POST",
+      body: validatePlainBridgeBody(body, "cleanup rollback request")
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.skillsImport, async (event, packagePath: unknown) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/skills/import",
+      method: "POST",
+      body: { path: validateBridgePathValue(packagePath, "skill package path") }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.skillsRefresh, async (event) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/skills/refresh",
+      method: "POST"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.localModelInstall, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/install-local-model",
+      method: "POST",
+      body: validateOptionalModelRequest(request, "local model install request")
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ollamaInstall, async (event) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/ollama/install",
+      method: "POST"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ollamaPull, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/ollama/pull",
+      method: "POST",
+      body: validateOptionalModelRequest(request ?? {}, "Ollama pull request")
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.ollamaStart, async (event) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/ollama/start",
+      method: "POST"
+    });
+  });
+
   ipcMain.handle(IPC_CHANNELS.mobilePairingCreateCode, async (event) => {
     assertTrustedRenderer(event);
     return proxyExplicitDesktopBridgeRequest(backend, {
@@ -530,6 +608,46 @@ function validateBridgeIdentifier(value: unknown, label: string): string {
     throw new ApiRequestValidationError(`${label} is invalid`);
   }
   return trimmed;
+}
+
+function validateCommandExecuteRequest(value: unknown): { name: string; args: Record<string, unknown> } {
+  const request = validatePlainBridgeBody(value, "command execute request");
+  const name = validateBridgeIdentifier(request.name, "command name");
+  const args = request.args === undefined ? {} : validatePlainBridgeBody(request.args, "command args");
+  return { name, args };
+}
+
+function validatePlainBridgeBody(value: unknown, label: string): Record<string, unknown> {
+  if (!isPlainRecord(value)) {
+    throw new ApiRequestValidationError(`${label} must be an object`);
+  }
+  return value;
+}
+
+function validateBridgePathValue(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new ApiRequestValidationError(`${label} is required`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 4096 || trimmed.includes("\0") || /[\u0000-\u001F\u007F]/.test(trimmed)) {
+    throw new ApiRequestValidationError(`${label} is invalid`);
+  }
+  return trimmed;
+}
+
+function validateOptionalModelRequest(value: unknown, label: string): { model?: string } {
+  const request = validatePlainBridgeBody(value, label);
+  if (request.model === undefined || request.model === null || request.model === "") {
+    return {};
+  }
+  if (typeof request.model !== "string") {
+    throw new ApiRequestValidationError("model must be a string");
+  }
+  const model = request.model.trim();
+  if (!model || model.length > 256 || /[\s\u0000-\u001F\u007F]/.test(model)) {
+    throw new ApiRequestValidationError("model is invalid");
+  }
+  return { model };
 }
 
 function validateBridgePositiveInteger(
