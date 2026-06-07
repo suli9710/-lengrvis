@@ -1,11 +1,18 @@
 name: file-manager-enhanced
 version: "1.0.0"
 agent_owner: FileAgent
-risk: R2_REVERSIBLE_MODIFY
+risk:
+  default: R2_REVERSIBLE_MODIFY
+permissions:
+  - filesystem.read
+  - filesystem.write
 tools:
   - name: skill.file_manager.batch_rename
     description: Batch rename files in an authorized directory with glob matching and a template.
     risk: R2_REVERSIBLE_MODIFY
+    permissions:
+      - filesystem.read
+      - filesystem.write
     supports_dry_run: true
     requires_authorized_path: true
     input_schema:
@@ -37,9 +44,22 @@ tools:
       type: python
       entry: handlers/batch_rename.py
       timeout_seconds: 15
+    smoke_tests:
+      - name: batch-rename-preview
+        args:
+          directory: "."
+          match_glob: "*.txt"
+          template: "renamed-{n}{ext}"
+          dry_run: true
+        expected:
+          ok: true
+    rollback_hint: Use the dry-run rename plan to reverse filenames if an approved rename needs to be undone.
   - name: skill.file_manager.archive_by_rules
     description: Move files into archive folders under an authorized destination according to ordered glob rules.
     risk: R2_REVERSIBLE_MODIFY
+    permissions:
+      - filesystem.read
+      - filesystem.write
     supports_dry_run: true
     requires_authorized_path: true
     input_schema:
@@ -74,9 +94,25 @@ tools:
       type: python
       entry: handlers/archive_by_rules.py
       timeout_seconds: 20
+    smoke_tests:
+      - name: archive-rules-preview
+        args:
+          source_dir: "."
+          archive_dir: "./archive"
+          rules:
+            - name: text
+              glob: "*.txt"
+              destination: text
+          dry_run: true
+        expected:
+          ok: true
+    rollback_hint: Move files back from the archive destinations listed in the dry-run plan if rollback is requested.
   - name: skill.file_manager.zip_package
     description: Create a zip package from authorized files or folders with include and exclude glob controls.
     risk: R2_REVERSIBLE_MODIFY
+    permissions:
+      - filesystem.read
+      - filesystem.write
     supports_dry_run: true
     requires_authorized_path: true
     input_schema:
@@ -114,3 +150,15 @@ tools:
       type: python
       entry: handlers/zip_package.py
       timeout_seconds: 30
+    smoke_tests:
+      - name: zip-package-preview
+        args:
+          source_paths:
+            - "."
+          output_zip: "./bundle.zip"
+          include_globs:
+            - "*.txt"
+          dry_run: true
+        expected:
+          ok: true
+    rollback_hint: Delete the generated zip file if the package is no longer wanted.

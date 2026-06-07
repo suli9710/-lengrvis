@@ -3,7 +3,10 @@
     [string]$PortableDir = "dist\Lengrvis-win-portable",
     [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
     [string]$SelfExtractingExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe",
-    [switch]$RequireBundledOllama
+    [switch]$RequireBundledOllama,
+    [switch]$RunExecutableSmoke,
+    [ValidateRange(1, 300)]
+    [int]$SmokeTimeoutSeconds = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +18,10 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $Failures = New-Object System.Collections.Generic.List[string]
 $MissingArtifacts = New-Object System.Collections.Generic.List[object]
 $MinimumSelfExtractingExeBytes = 65536
+$MinimumPortableLauncherBytes = 4096
+$MinimumBackendExecutableBytes = 4096
+$SmokeLogRoot = Join-Path $Root ".tmp\packaging-smoke"
+$script:SmokeRunIndex = 0
 
 function Resolve-ProjectPath([string]$Path) {
     if ([System.IO.Path]::IsPathRooted($Path)) {
@@ -93,81 +100,403 @@ function Test-ZipDirectoryEntry([System.IO.Compression.ZipArchive]$Zip, [string]
     Write-Host "[ok] zip directory $Normalized contains files"
 }
 
-function Test-SelfExtractingExecutable([string]$Path) {
+function Test-PEExecutableHeader {
+    param(
+        [string]$Label,
+        [string]$Path,
+        [int64]$MinimumBytes
+    )
+
     $FullPath = Resolve-ProjectPath $Path
     if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
-        return
+        return $false
     }
 
     $Item = Get-Item -LiteralPath $FullPath
-    if ($Item.Length -lt $MinimumSelfExtractingExeBytes) {
-        $Failures.Add("self-extracting executable is too small to be a release SFX ($($Item.Length) bytes; expected at least $MinimumSelfExtractingExeBytes): $FullPath")
-        return
+    if ($Item.Length -lt $MinimumBytes) {
+        $Failures.Add("$Label is too small to be a runnable Windows executable ($($Item.Length) bytes; expected at least $MinimumBytes): $FullPath")
+        return $false
     }
 
     $Stream = [System.IO.File]::Open($FullPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
     $Reader = New-Object System.IO.BinaryReader($Stream)
     try {
         if ($Stream.Length -lt 0x100) {
-            $Failures.Add("self-extracting executable is too small for a PE header: $FullPath")
-            return
+            $Failures.Add("$Label is too small for a PE header: $FullPath")
+            return $false
         }
 
         $Mz = $Reader.ReadUInt16()
         if ($Mz -ne 0x5A4D) {
-            $Failures.Add("self-extracting executable does not start with MZ header: $FullPath")
-            return
+            $Failures.Add("$Label does not start with MZ header: $FullPath")
+            return $false
         }
 
         $Stream.Position = 0x3C
         $PeOffset = [int64]$Reader.ReadUInt32()
         if ($PeOffset -lt 0x40 -or $PeOffset -gt ($Stream.Length - 0x18)) {
-            $Failures.Add("self-extracting executable has invalid PE header offset $PeOffset`: $FullPath")
-            return
+            $Failures.Add("$Label has invalid PE header offset $PeOffset`: $FullPath")
+            return $false
         }
 
         $Stream.Position = $PeOffset
         $PeSignature = $Reader.ReadUInt32()
         if ($PeSignature -ne 0x00004550) {
-            $Failures.Add("self-extracting executable has invalid PE signature at offset $PeOffset`: $FullPath")
-            return
+            $Failures.Add("$Label has invalid PE signature at offset $PeOffset`: $FullPath")
+            return $false
         }
 
         $Machine = $Reader.ReadUInt16()
         if ($Machine -notin @(0x014C, 0x8664, 0xAA64)) {
-            $Failures.Add(("self-extracting executable uses unexpected PE machine 0x{0:X4}: {1}" -f $Machine, $FullPath))
+            $Failures.Add(("$Label uses unexpected PE machine 0x{0:X4}: {1}" -f $Machine, $FullPath))
         }
 
         $SectionCount = $Reader.ReadUInt16()
         if ($SectionCount -lt 1 -or $SectionCount -gt 96) {
-            $Failures.Add("self-extracting executable has invalid PE section count $SectionCount`: $FullPath")
+            $Failures.Add("$Label has invalid PE section count $SectionCount`: $FullPath")
         }
 
         $Stream.Position = $PeOffset + 0x14
         $OptionalHeaderSize = $Reader.ReadUInt16()
         if ($OptionalHeaderSize -lt 0x60) {
-            $Failures.Add("self-extracting executable optional header is too small ($OptionalHeaderSize bytes): $FullPath")
-            return
+            $Failures.Add("$Label optional header is too small ($OptionalHeaderSize bytes): $FullPath")
+            return $false
         }
 
         $OptionalHeaderOffset = $PeOffset + 0x18
         if (($OptionalHeaderOffset + $OptionalHeaderSize) -gt $Stream.Length) {
-            $Failures.Add("self-extracting executable optional header extends beyond file length: $FullPath")
-            return
+            $Failures.Add("$Label optional header extends beyond file length: $FullPath")
+            return $false
         }
 
         $Stream.Position = $OptionalHeaderOffset
         $OptionalMagic = $Reader.ReadUInt16()
         if ($OptionalMagic -notin @(0x010B, 0x020B)) {
-            $Failures.Add(("self-extracting executable uses unexpected PE optional header magic 0x{0:X4}: {1}" -f $OptionalMagic, $FullPath))
-            return
+            $Failures.Add(("$Label uses unexpected PE optional header magic 0x{0:X4}: {1}" -f $OptionalMagic, $FullPath))
+            return $false
         }
 
-        Write-Host "[ok] self-extracting executable PE header validated ($($Item.Length) bytes): $FullPath"
+        Write-Host "[ok] $Label PE header validated ($($Item.Length) bytes): $FullPath"
+        return $true
     }
     finally {
         $Reader.Dispose()
         $Stream.Dispose()
+    }
+}
+
+function Test-SelfExtractingExecutable([string]$Path) {
+    Test-PEExecutableHeader -Label "self-extracting executable" -Path $Path -MinimumBytes $MinimumSelfExtractingExeBytes | Out-Null
+}
+
+function ConvertTo-SmokeSafeName([string]$Value) {
+    $Safe = $Value -replace '[^A-Za-z0-9_.-]', '-'
+    if ([string]::IsNullOrWhiteSpace($Safe)) {
+        return "smoke"
+    }
+    return $Safe.Trim('-')
+}
+
+function Join-SmokeArguments([string[]]$Arguments) {
+    if ($null -eq $Arguments -or $Arguments.Count -eq 0) {
+        return ""
+    }
+    $Quoted = foreach ($ArgumentValue in $Arguments) {
+        $Argument = [string]$ArgumentValue
+        if ($Argument -match '^[A-Za-z0-9_./:=+-]+$') {
+            $Argument
+        }
+        else {
+            '"' + ($Argument -replace '"', '\"') + '"'
+        }
+    }
+    return ($Quoted -join " ")
+}
+
+function New-SmokeLogSet([string]$Label) {
+    New-Item -ItemType Directory -Path $SmokeLogRoot -Force | Out-Null
+    $script:SmokeRunIndex += 1
+    $SafeLabel = ConvertTo-SmokeSafeName $Label
+    $Prefix = "{0:00}-{1}" -f $script:SmokeRunIndex, $SafeLabel
+    return [pscustomobject]@{
+        StdOut = Join-Path $SmokeLogRoot "$Prefix.stdout.log"
+        StdErr = Join-Path $SmokeLogRoot "$Prefix.stderr.log"
+    }
+}
+
+function Save-SmokeProcessLogs([object]$Run) {
+    if ($null -eq $Run -or $Run.LogsSaved) {
+        return
+    }
+    try {
+        $StdOut = $Run.Process.StandardOutput.ReadToEnd()
+    }
+    catch {
+        $StdOut = "[unable to read stdout: $($_.Exception.Message)]"
+    }
+    try {
+        $StdErr = $Run.Process.StandardError.ReadToEnd()
+    }
+    catch {
+        $StdErr = "[unable to read stderr: $($_.Exception.Message)]"
+    }
+    Set-Content -LiteralPath $Run.StdOut -Value $StdOut -Encoding UTF8
+    Set-Content -LiteralPath $Run.StdErr -Value $StdErr -Encoding UTF8
+    $Run.LogsSaved = $true
+}
+
+function Start-SmokeProcess {
+    param(
+        [string]$Label,
+        [string]$ExecutablePath,
+        [string[]]$Arguments = @(),
+        [hashtable]$Environment = @{},
+        [string]$WorkingDirectory = ""
+    )
+
+    $FullPath = Resolve-ProjectPath $ExecutablePath
+    $Logs = New-SmokeLogSet $Label
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+        return [pscustomobject]@{
+            Started = $false
+            Error = "executable missing: $FullPath"
+            StdOut = $Logs.StdOut
+            StdErr = $Logs.StdErr
+        }
+    }
+
+    $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $StartInfo.FileName = $FullPath
+    $StartInfo.Arguments = Join-SmokeArguments $Arguments
+    if ([string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        $StartInfo.WorkingDirectory = Split-Path -Parent $FullPath
+    }
+    else {
+        $StartInfo.WorkingDirectory = Resolve-ProjectPath $WorkingDirectory
+    }
+    $StartInfo.UseShellExecute = $false
+    $StartInfo.CreateNoWindow = $true
+    $StartInfo.RedirectStandardOutput = $true
+    $StartInfo.RedirectStandardError = $true
+    foreach ($Key in $Environment.Keys) {
+        $StartInfo.EnvironmentVariables[$Key] = [string]$Environment[$Key]
+    }
+
+    $Process = New-Object System.Diagnostics.Process
+    $Process.StartInfo = $StartInfo
+    try {
+        [void]$Process.Start()
+    }
+    catch {
+        return [pscustomobject]@{
+            Started = $false
+            Error = $_.Exception.Message
+            StdOut = $Logs.StdOut
+            StdErr = $Logs.StdErr
+        }
+    }
+
+    return [pscustomobject]@{
+        Started = $true
+        Process = $Process
+        StdOut = $Logs.StdOut
+        StdErr = $Logs.StdErr
+        LogsSaved = $false
+    }
+}
+
+function Stop-SmokeProcess([object]$Run) {
+    if ($null -eq $Run -or -not $Run.Started) {
+        return
+    }
+    try {
+        if (-not $Run.Process.HasExited) {
+            $Run.Process.Kill()
+            [void]$Run.Process.WaitForExit(5000)
+        }
+        Save-SmokeProcessLogs $Run
+    }
+    finally {
+        $Run.Process.Dispose()
+    }
+}
+
+function Invoke-SmokeProcessAndWait {
+    param(
+        [string]$Label,
+        [string]$ExecutablePath,
+        [string[]]$Arguments = @(),
+        [hashtable]$Environment = @{},
+        [int]$TimeoutSeconds
+    )
+
+    $Run = Start-SmokeProcess -Label $Label -ExecutablePath $ExecutablePath -Arguments $Arguments -Environment $Environment
+    if (-not $Run.Started) {
+        return [pscustomobject]@{
+            Started = $false
+            Error = $Run.Error
+            StdOut = $Run.StdOut
+            StdErr = $Run.StdErr
+        }
+    }
+
+    $Exited = $Run.Process.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $Exited) {
+        Stop-SmokeProcess $Run
+        return [pscustomobject]@{
+            Started = $true
+            TimedOut = $true
+            ExitCode = $null
+            StdOut = $Run.StdOut
+            StdErr = $Run.StdErr
+        }
+    }
+
+    Save-SmokeProcessLogs $Run
+    $ExitCode = $Run.Process.ExitCode
+    $Run.Process.Dispose()
+    return [pscustomobject]@{
+        Started = $true
+        TimedOut = $false
+        ExitCode = $ExitCode
+        StdOut = $Run.StdOut
+        StdErr = $Run.StdErr
+    }
+}
+
+function Get-FreeTcpPort {
+    $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse("127.0.0.1"), 0)
+    try {
+        $Listener.Start()
+        return ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port
+    }
+    finally {
+        $Listener.Stop()
+    }
+}
+
+function New-BackendSmokeEnvironment([string]$Label, [int]$BackendPort) {
+    $SafeLabel = ConvertTo-SmokeSafeName $Label
+    $StateRoot = Join-Path $SmokeLogRoot ("state-$SafeLabel-$([guid]::NewGuid().ToString('N'))")
+    $DataRoot = Join-Path $StateRoot "data"
+    New-Item -ItemType Directory -Path $DataRoot -Force | Out-Null
+    $FullBackendPort = Get-FreeTcpPort
+    return @{
+        LENGRVIS_BACKEND_HOST = "127.0.0.1"
+        LENGRVIS_BACKEND_PORT = [string]$BackendPort
+        LENGRVIS_GUARDIAN_PORT = [string]$BackendPort
+        LENGRVIS_FULL_BACKEND = "0"
+        LENGRVIS_FULL_BACKEND_PORT = [string]$FullBackendPort
+        LENGRVIS_FULL_BACKEND_URL = "http://127.0.0.1:$FullBackendPort"
+        LENGRVIS_CONFIG_DIR = $StateRoot
+        LENGRVIS_DATA_DIR = $DataRoot
+        LENGRVIS_PROVIDER_NAME = "mock"
+        LENGRVIS_API_KEY = ""
+        LENGRVIS_BACKEND_LOG_LEVEL = "warning"
+        LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL = "1"
+    }
+}
+
+function Invoke-BackendShortCommandSmoke {
+    param(
+        [string]$Label,
+        [string]$ExecutablePath
+    )
+
+    $Diagnostics = New-Object System.Collections.Generic.List[string]
+    $ShortTimeoutSeconds = [Math]::Min(5, $SmokeTimeoutSeconds)
+    foreach ($Arguments in @(@("--version"), @("--help"))) {
+        $ArgumentLabel = $Arguments -join " "
+        $BackendPort = Get-FreeTcpPort
+        $Environment = New-BackendSmokeEnvironment -Label "$Label-$ArgumentLabel" -BackendPort $BackendPort
+        $Result = Invoke-SmokeProcessAndWait -Label "$Label $ArgumentLabel" -ExecutablePath $ExecutablePath -Arguments $Arguments -Environment $Environment -TimeoutSeconds $ShortTimeoutSeconds
+        if (-not $Result.Started) {
+            $Diagnostics.Add("$ArgumentLabel could not start: $($Result.Error) (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
+            continue
+        }
+        if ($Result.TimedOut) {
+            $Diagnostics.Add("$ArgumentLabel did not exit within $ShortTimeoutSeconds seconds and was stopped (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
+            continue
+        }
+        if ($Result.ExitCode -eq 0) {
+            Write-Host "[ok] $Label runnable smoke exited 0 with $ArgumentLabel"
+            return [pscustomobject]@{ Passed = $true; Diagnostics = $Diagnostics }
+        }
+        $Diagnostics.Add("$ArgumentLabel exited $($Result.ExitCode) (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
+    }
+
+    return [pscustomobject]@{ Passed = $false; Diagnostics = $Diagnostics }
+}
+
+function Invoke-BackendHealthSmoke {
+    param(
+        [string]$Label,
+        [string]$ExecutablePath
+    )
+
+    $BackendPort = Get-FreeTcpPort
+    $Environment = New-BackendSmokeEnvironment -Label "$Label-health" -BackendPort $BackendPort
+    $Run = Start-SmokeProcess -Label "$Label health" -ExecutablePath $ExecutablePath -Environment $Environment
+    if (-not $Run.Started) {
+        return [pscustomobject]@{
+            Passed = $false
+            Diagnostic = "health process could not start: $($Run.Error) (stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+        }
+    }
+
+    $HealthUrl = "http://127.0.0.1:$BackendPort/health"
+    $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        while ($Stopwatch.Elapsed.TotalSeconds -lt $SmokeTimeoutSeconds) {
+            if ($Run.Process.HasExited) {
+                Save-SmokeProcessLogs $Run
+                return [pscustomobject]@{
+                    Passed = $false
+                    Diagnostic = "health process exited before $HealthUrl responded (exit $($Run.Process.ExitCode); stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+                }
+            }
+            try {
+                $Response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 2
+                if ($Response.StatusCode -ge 200 -and $Response.StatusCode -lt 300) {
+                    Write-Host "[ok] $Label runnable smoke served $HealthUrl"
+                    return [pscustomobject]@{ Passed = $true; Diagnostic = "" }
+                }
+            }
+            catch {
+                Start-Sleep -Milliseconds 500
+            }
+        }
+        return [pscustomobject]@{
+            Passed = $false
+            Diagnostic = "health endpoint did not respond within $SmokeTimeoutSeconds seconds: $HealthUrl (stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+        }
+    }
+    finally {
+        Stop-SmokeProcess $Run
+    }
+}
+
+function Invoke-BackendExecutableSmoke {
+    param(
+        [string]$Label,
+        [string]$ExecutablePath
+    )
+
+    $FullPath = Resolve-ProjectPath $ExecutablePath
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+        return
+    }
+
+    $ShortSmoke = Invoke-BackendShortCommandSmoke -Label $Label -ExecutablePath $FullPath
+    if ($ShortSmoke.Passed) {
+        return
+    }
+
+    Write-Host "[info] $Label did not expose a short --version/--help command; probing isolated /health instead."
+    $HealthSmoke = Invoke-BackendHealthSmoke -Label $Label -ExecutablePath $FullPath
+    if (-not $HealthSmoke.Passed) {
+        $ShortDiagnostics = $ShortSmoke.Diagnostics -join " | "
+        $Failures.Add("$Label runnable smoke failed. Short command attempts: $ShortDiagnostics. Health probe: $($HealthSmoke.Diagnostic). Smoke logs: $SmokeLogRoot")
     }
 }
 
@@ -244,17 +573,26 @@ $SelfExtractingPath = Resolve-ProjectPath $SelfExtractingExe
 $PortableOllamaDir = Join-Path $PortablePath "resources\ollama"
 $PortableOllamaModelsDir = Join-Path $PortablePath "resources\ollama-models"
 $PortableOllamaManifest = Join-Path $PortablePath "resources\ollama-bundle-manifest.json"
+$BackendExePath = Join-Path $DistPath "backend.exe"
+$PortableLauncherPath = Join-Path $PortablePath "Lengrvis.exe"
+$PortableBackendExePath = Join-Path $PortablePath "resources\backend\backend.exe"
 
 Test-RequiredDirectory "dist directory" $DistPath
-Test-RequiredFile "backend executable" (Join-Path $DistPath "backend.exe")
+Test-RequiredFile "backend executable" $BackendExePath
 Test-RequiredDirectory "portable directory" $PortablePath
-Test-RequiredFile "portable launcher" (Join-Path $PortablePath "Lengrvis.exe")
-Test-RequiredFile "portable backend executable" (Join-Path $PortablePath "resources\backend\backend.exe")
+Test-RequiredFile "portable launcher" $PortableLauncherPath
+Test-RequiredFile "portable backend executable" $PortableBackendExePath
 Test-RequiredDirectory "portable app resources" (Join-Path $PortablePath "resources\app")
 Test-RequiredDirectory "portable renderer dist" (Join-Path $PortablePath "resources\app\dist")
 Test-RequiredFile "portable app package manifest" (Join-Path $PortablePath "resources\app\package.json")
 Test-RequiredFile "portable zip" $PortableZipPath
 Test-RequiredFile "self-extracting executable" $SelfExtractingPath
+Test-PEExecutableHeader -Label "backend executable" -Path $BackendExePath -MinimumBytes $MinimumBackendExecutableBytes | Out-Null
+$PortableLauncherPreflightPassed = Test-PEExecutableHeader -Label "portable launcher" -Path $PortableLauncherPath -MinimumBytes $MinimumPortableLauncherBytes
+Test-PEExecutableHeader -Label "portable backend executable" -Path $PortableBackendExePath -MinimumBytes $MinimumBackendExecutableBytes | Out-Null
+if ($PortableLauncherPreflightPassed) {
+    Write-Host "[ok] portable launcher startup preflight completed without opening the GUI"
+}
 Test-SelfExtractingExecutable $SelfExtractingPath
 if ($RequireBundledOllama) {
     Test-NonEmptyDirectory "portable Ollama runtime" $PortableOllamaDir
@@ -280,6 +618,14 @@ if (Test-Path -LiteralPath $PortableZipPath -PathType Leaf) {
     }
 }
 
+if ($RunExecutableSmoke) {
+    Invoke-BackendExecutableSmoke -Label "backend executable" -ExecutablePath $BackendExePath
+    Invoke-BackendExecutableSmoke -Label "portable backend executable" -ExecutablePath $PortableBackendExePath
+}
+else {
+    Write-Host "[info] executable runnable smoke not requested; pass -RunExecutableSmoke for release-candidate packaging validation."
+}
+
 if ($Failures.Count -gt 0) {
     Write-Host ""
     Write-Host "Packaging verification failed:" -ForegroundColor Red
@@ -294,6 +640,16 @@ if ($Failures.Count -gt 0) {
         }
         Write-Host ""
         Write-Host "This verification step does not generate artifacts. Run a full packaging build first, or pass -DistDir/-PortableDir/-PortableZip/-SelfExtractingExe to the artifacts you intend to release." -ForegroundColor Yellow
+        Write-Host "Suggested build command: .\scripts\build_all.ps1" -ForegroundColor Yellow
+        Write-Host "Verify existing artifacts: .\scripts\build_all.ps1 -VerifyOnly" -ForegroundColor Yellow
+        Write-Host "Verify runnable artifacts: .\scripts\verify_packaging.ps1 -RunExecutableSmoke -SmokeTimeoutSeconds $SmokeTimeoutSeconds" -ForegroundColor Yellow
+        if ($RequireBundledOllama) {
+            Write-Host "Bundled Ollama releases must prepare resources before verification; see .\scripts\prepare_ollama_release.ps1." -ForegroundColor Yellow
+        }
+    }
+    if (Test-Path -LiteralPath $SmokeLogRoot -PathType Container) {
+        Write-Host ""
+        Write-Host "Executable smoke logs: $SmokeLogRoot" -ForegroundColor Yellow
     }
     exit 1
 }

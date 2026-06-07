@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
@@ -20,16 +22,18 @@ class RemoteInputGrantRequest(BaseModel):
 
 @router.post("/pair/request")
 def create_pairing_code() -> dict:
-    return mobile_pairing_service.create_pairing_request()
+    return _with_transport_metadata(mobile_pairing_service.create_pairing_request())
 
 
 @router.post("/pair/confirm")
 def confirm_pairing(payload: PairRedeemRequest, request: Request) -> dict:
     client_host = request.client.host if request.client else ""
-    return mobile_pairing_service.confirm_pairing(
-        code=payload.code,
-        device_name=payload.device_name,
-        client_host=client_host,
+    return _with_transport_metadata(
+        mobile_pairing_service.confirm_pairing(
+            code=payload.code,
+            device_name=payload.device_name,
+            client_host=client_host,
+        )
     )
 
 
@@ -56,14 +60,29 @@ def revoke_remote_input_grant(device_id: str, grant_id: str) -> dict:
 
 @router.post("/pair/code")
 def create_pairing_code_legacy() -> dict:
-    return mobile_pairing_service.create_pairing_request()
+    return _with_transport_metadata(mobile_pairing_service.create_pairing_request())
 
 
 @router.post("/pair")
 def pair(payload: PairRedeemRequest, request: Request) -> dict:
     client_host = request.client.host if request.client else ""
-    return mobile_pairing_service.confirm_pairing(
-        code=payload.code,
-        device_name=payload.device_name,
-        client_host=client_host,
+    return _with_transport_metadata(
+        mobile_pairing_service.confirm_pairing(
+            code=payload.code,
+            device_name=payload.device_name,
+            client_host=client_host,
+        )
     )
+
+
+def _with_transport_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    server = result.get("server") if isinstance(result.get("server"), dict) else {}
+    transport = server.get("transport_security") if isinstance(server.get("transport_security"), dict) else None
+    if transport is None:
+        transport = mobile_pairing_service.lan_transport_security()
+    result.setdefault("transport_security", transport)
+    result.setdefault("https_enabled", bool(transport.get("https_enabled")))
+    result.setdefault("trust_required", bool(transport.get("trust_required")))
+    result.setdefault("server_origin", str(server.get("origin") or transport.get("origin") or ""))
+    return result

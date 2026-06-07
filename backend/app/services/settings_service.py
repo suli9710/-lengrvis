@@ -183,6 +183,9 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "ocr_openvino_model_dir",
         "ocr_openvino_device",
         "ocr_lang",
+        "lan_tls_cert_file",
+        "lan_tls_key_file",
+        "lan_public_base_url",
         "jwt_secret",
     }:
         return str(value or "").strip()
@@ -230,6 +233,7 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "disable_response_storage",
         "strict_state_machine",
         "remote_desktop_enabled",
+        "lan_tls_enabled",
         "allow_mock_fallback",
         "onnx_enabled",
         "onnx_warm_on_startup",

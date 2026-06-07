@@ -14,18 +14,18 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from "react-native";
-import { ArrowLeft, Monitor, MousePointer2, Pause, Play, RefreshCcw, Wifi, WifiOff, XCircle } from "lucide-react-native";
+import { ArrowLeft, Monitor, MousePointer2, Pause, Play, RefreshCcw, ShieldCheck, TriangleAlert, Wifi, WifiOff, XCircle } from "lucide-react-native";
 
 import {
   claimRemoteInputGrantToken,
-  mobileAuthWebSocketProtocols,
-  mobileTokenWebSocketProtocols,
-  remoteInputWebSocketUrl,
-  remoteScreenWebSocketUrl,
+  formatTlsFingerprint,
+  remoteInputWebSocketConnectionInfo,
+  remoteScreenWebSocketConnectionInfo,
   revokeRemoteInputGrant,
   type PairingSession,
   type RemoteInputGrant,
   type RemoteScreenEvent,
+  type WebSocketConnectionInfo,
 } from "../api/client";
 import { shortDate } from "../format";
 import { isRemoteInputGrantUsable, mapViewerPointToRemote, remoteInputGrantRemainingText } from "../remoteInputGrant";
@@ -42,6 +42,13 @@ interface ScreenFrame {
   height: number;
   originalWidth: number;
   originalHeight: number;
+}
+
+interface TransportNotice {
+  tone: "secure" | "warning" | "danger";
+  title: string;
+  detail: string;
+  warning?: string;
 }
 
 export function RemoteScreen({
@@ -80,6 +87,9 @@ export function RemoteScreen({
   const grantUsable = isRemoteInputGrantUsable(effectiveGrant, nowMs);
   const grantRemainingText = remoteInputGrantRemainingText(effectiveGrant, nowMs);
   const remoteModeText = grantUsable ? (inputConnection === "online" ? "已授权输入" : "可输入，待连接") : "只读观看";
+  const screenConnectionInfo = remoteScreenWebSocketConnectionInfo(session);
+  const transportNotice = remoteTransportNotice(screenConnectionInfo);
+  const transportWarning = transportNotice.warning ?? "";
 
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
@@ -186,7 +196,8 @@ export function RemoteScreen({
     setConnection("connecting");
     setError("");
 
-    const socket = new WebSocket(remoteScreenWebSocketUrl(session), mobileAuthWebSocketProtocols(session));
+    const connectionInfo = remoteScreenWebSocketConnectionInfo(session);
+    const socket = new WebSocket(connectionInfo.url, connectionInfo.protocols);
     socketRef.current = socket;
 
     socket.onopen = () => {
@@ -255,7 +266,8 @@ export function RemoteScreen({
       if (connectionGeneration !== inputConnectionGenerationRef.current || !isRemoteInputGrantUsable(effectiveGrant)) {
         return;
       }
-      const socket = new WebSocket(remoteInputWebSocketUrl(session), mobileTokenWebSocketProtocols(grantToken.token));
+      const connectionInfo = remoteInputWebSocketConnectionInfo(session, grantToken.token);
+      const socket = new WebSocket(connectionInfo.url, connectionInfo.protocols);
       if (connectionGeneration !== inputConnectionGenerationRef.current) {
         socket.close();
         return;
@@ -422,6 +434,20 @@ export function RemoteScreen({
         {streamMeta.fps ? <Text style={styles.statusMeta}>低带宽模式</Text> : null}
       </View>
 
+      <View
+        style={[
+          styles.transportStatusRow,
+          transportNotice.tone === "secure" && styles.transportStatusSecure,
+          transportNotice.tone === "danger" && styles.transportStatusDanger,
+        ]}
+      >
+        {transportNotice.tone === "secure" ? <ShieldCheck size={15} color="#75d39a" /> : <TriangleAlert size={15} color="#ffcf72" />}
+        <View style={styles.transportStatusTextWrap}>
+          <Text style={styles.transportStatusLabel}>{transportNotice.title}</Text>
+          <Text style={styles.transportStatusMeta}>{transportNotice.detail}</Text>
+        </View>
+      </View>
+
       <View style={styles.inputStatusRow}>
         <MousePointer2 size={15} color={inputConnection === "online" ? "#75d39a" : "#ffcf72"} />
         <Text style={styles.inputStatusText}>{inputStatusText(inputConnection)}</Text>
@@ -477,6 +503,7 @@ export function RemoteScreen({
       </Pressable>
 
       <View style={styles.footer}>
+        {transportWarning ? <Text style={styles.transportWarningText}>{transportWarning}</Text> : null}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
         {inputError ? <Text style={styles.inputHintText}>{inputError}</Text> : null}
         {canRetry ? (
@@ -523,6 +550,42 @@ function inputStatusText(connection: InputConnectionState): string {
 function inputErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return "无法领取远程点击授权。请在电脑端重新授权。";
+}
+
+function remoteTransportNotice(connectionInfo: WebSocketConnectionInfo): TransportNotice {
+  const { security } = connectionInfo;
+  const webSocketScheme = connectionInfo.url.startsWith("wss:") ? "wss" : "ws";
+  const httpScheme = security.isHttps ? "HTTPS" : "HTTP";
+  const tokenNote = "token 通过 WebSocket protocol 发送，不写入 URL";
+  if (security.requiresTlsTrust) {
+    const fingerprint = formatTlsFingerprint(security.serverTls?.fingerprintSha256);
+    return {
+      tone: "warning",
+      title: "HTTPS / wss 需要证书信任",
+      detail: fingerprint ? `连接 ${security.host}，证书 SHA-256 ${fingerprint}。` : `连接 ${security.host}，后端未提供证书指纹。`,
+      warning: `${security.serverTls?.warning ?? "HTTPS 证书需要核对或手动信任。"} ${tokenNote}。`,
+    };
+  }
+  if (security.isHttps) {
+    return {
+      tone: "secure",
+      title: "HTTPS / wss 加密通道",
+      detail: `屏幕使用 ${webSocketScheme}://${security.host}，${tokenNote}。`,
+    };
+  }
+  if (security.isInsecureLan) {
+    return {
+      tone: "danger",
+      title: "LAN HTTP / ws 明文通道",
+      detail: `${httpScheme}/ws 连接 ${security.host}，${tokenNote}。`,
+      warning: security.warning,
+    };
+  }
+  return {
+    tone: "warning",
+    title: "本机 HTTP / ws 通道",
+    detail: `${httpScheme}/ws 连接 ${security.host}，${tokenNote}。`,
+  };
 }
 
 const styles = StyleSheet.create({
@@ -585,6 +648,43 @@ const styles = StyleSheet.create({
     color: "#93a2ad",
     fontSize: 12,
     fontWeight: "700",
+  },
+  transportStatusRow: {
+    marginHorizontal: 20,
+    marginTop: 8,
+    minHeight: 46,
+    borderRadius: 8,
+    backgroundColor: "#2b2f2f",
+    borderWidth: 1,
+    borderColor: "#5f553d",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    gap: 8,
+  },
+  transportStatusSecure: {
+    backgroundColor: "#1c302c",
+    borderColor: "#366f5d",
+  },
+  transportStatusDanger: {
+    backgroundColor: "#34272a",
+    borderColor: "#70404a",
+  },
+  transportStatusTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  transportStatusLabel: {
+    color: "#f7faf8",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  transportStatusMeta: {
+    color: "#c8d2ce",
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
   },
   inputStatusRow: {
     marginHorizontal: 20,
@@ -718,6 +818,10 @@ const styles = StyleSheet.create({
   },
   inputHintText: {
     color: "#75d39a",
+    lineHeight: 20,
+  },
+  transportWarningText: {
+    color: "#ffcf72",
     lineHeight: 20,
   },
   retryButton: {

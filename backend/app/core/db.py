@@ -1095,7 +1095,7 @@ def insert_audit_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
 
 def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
     query = """
-        SELECT id, sequence, prev_hash, event_hash, hmac, data
+        SELECT id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at
         FROM audit_events
         WHERE sequence > 0
         ORDER BY sequence ASC, created_at ASC, id ASC
@@ -1104,43 +1104,47 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
     if limit is not None:
         query += " LIMIT ?"
         args = (max(1, int(limit)),)
-    else:
-        with connect() as conn:
-            row = conn.execute("SELECT COUNT(*) AS total, COALESCE(MAX(sequence), 0) AS max_sequence FROM audit_events WHERE sequence > 0").fetchone()
-        expected_total = int(row["total"] or 0)
-        max_sequence = int(row["max_sequence"] or 0)
-        if expected_total != max_sequence:
-            return {
-                "ok": False,
-                "checked": 0,
-                "last_hash": AUDIT_GENESIS_HASH,
-                "failures": [{"reason": "sequence_gap", "expected_events": expected_total, "max_sequence": max_sequence}],
-            }
 
     expected_prev = AUDIT_GENESIS_HASH
     checked = 0
     failures: list[dict[str, Any]] = []
     last_hash = expected_prev
+    last_event_id: str | None = None
+    last_sequence = 0
     with connect() as conn:
         rows = conn.execute(query, args).fetchall()
 
     for index, row in enumerate(rows, start=1):
+        row_id = str(row["id"] or "")
+        row_sequence = int(row["sequence"] or 0)
         try:
             data = json.loads(row["data"])
         except (TypeError, ValueError):
-            failures.append({"id": row["id"], "sequence": row["sequence"], "reason": "invalid_json"})
+            failures.append({"index": index, "id": row_id, "sequence": row_sequence, "reason": "invalid_json"})
             break
 
-        sequence = int(data.get("sequence") or row["sequence"] or 0)
+        sequence = int(data.get("sequence") or row_sequence or 0)
         prev_hash = str(data.get("prev_hash") or row["prev_hash"] or "")
         event_hash = str(data.get("event_hash") or row["event_hash"] or "")
         event_hmac = str(data.get("hmac") or row["hmac"] or "")
 
+        column_mismatch = _audit_column_mismatch(row, data)
+        if column_mismatch:
+            failures.append(
+                {
+                    "index": index,
+                    "id": row_id,
+                    "sequence": sequence,
+                    "reason": "stored_column_mismatch",
+                    "fields": column_mismatch,
+                }
+            )
+            break
         if sequence != index:
-            failures.append({"id": row["id"], "sequence": sequence, "reason": "sequence_gap", "expected": index})
+            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "sequence_gap", "expected": index})
             break
         if prev_hash != expected_prev:
-            failures.append({"id": row["id"], "sequence": sequence, "reason": "prev_hash_mismatch"})
+            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "prev_hash_mismatch"})
             break
 
         unsigned = dict(data)
@@ -1151,22 +1155,92 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
         computed_hash = _audit_event_hash(unsigned)
         computed_hmac = _audit_event_hmac(computed_hash)
         if not hmac.compare_digest(event_hash, computed_hash):
-            failures.append({"id": row["id"], "sequence": sequence, "reason": "event_hash_mismatch"})
+            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "event_hash_mismatch"})
             break
         if not hmac.compare_digest(event_hmac, computed_hmac):
-            failures.append({"id": row["id"], "sequence": sequence, "reason": "hmac_mismatch"})
+            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "hmac_mismatch"})
             break
 
         checked += 1
         last_hash = event_hash
+        last_event_id = row_id
+        last_sequence = sequence
         expected_prev = event_hash
 
+    failure = failures[0] if failures else {}
     return {
         "ok": not failures,
         "checked": checked,
+        "last_event_id": last_event_id,
+        "last_sequence": last_sequence,
         "last_hash": last_hash,
+        "failure_index": failure.get("index"),
+        "failure_event_id": failure.get("id"),
+        "failure_sequence": failure.get("sequence"),
+        "failure_reason": str(failure.get("reason") or ""),
         "failures": failures,
     }
+
+
+def _audit_column_mismatch(row: sqlite3.Row, data: dict[str, Any]) -> list[str]:
+    mismatched: list[str] = []
+    for field in ("id", "task_id", "event_type", "actor", "sequence", "prev_hash", "event_hash", "hmac", "created_at"):
+        if field not in data:
+            continue
+        row_value = row[field]
+        data_value = data.get(field)
+        if field == "sequence":
+            if int(data_value or 0) != int(row_value or 0):
+                mismatched.append(field)
+            continue
+        if data_value is None and row_value is None:
+            continue
+        if str(data_value or "") != str(row_value or ""):
+            mismatched.append(field)
+    return mismatched
+
+
+def local_product_diagnostics(*, recent_limit: int = 200) -> dict[str, Any]:
+    limit = _query_limit(recent_limit)
+    tasks = fetch_many("tasks", limit=limit)
+    runs = fetch_many("runs", limit=limit)
+    tool_results = fetch_many("tool_results", limit=limit)
+    audits = fetch_many("audit_events", limit=limit)
+
+    latest_audit_event = None
+    if audits:
+        latest = audits[0]
+        latest_audit_event = {
+            "id": latest.get("id"),
+            "event_type": latest.get("event_type"),
+            "sequence": latest.get("sequence"),
+            "created_at": latest.get("created_at"),
+        }
+
+    return {
+        "sample_size": limit,
+        "recent_counts": {
+            "tasks": len(tasks),
+            "runs": len(runs),
+            "tool_results": len(tool_results),
+            "audit_events": len(audits),
+        },
+        "recent_failure_counts": {
+            "tasks_failed": sum(1 for item in tasks if _is_failed_state(item.get("status")) or _is_failed_state(item.get("phase"))),
+            "runs_failed": sum(1 for item in runs if _is_failed_state(item.get("phase"))),
+            "tool_results_failed": sum(1 for item in tool_results if item.get("ok") is False),
+            "audit_events_failure_like": sum(
+                1
+                for item in audits
+                if any(token in str(item.get("event_type") or "").casefold() for token in ("fail", "error"))
+            ),
+        },
+        "latest_audit_event": latest_audit_event,
+    }
+
+
+def _is_failed_state(value: Any) -> bool:
+    return str(getattr(value, "value", value) or "").casefold() in {"failed", "failure", "error"}
 
 
 def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:

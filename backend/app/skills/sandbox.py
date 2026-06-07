@@ -56,23 +56,31 @@ class SkillSandbox:
         return bool(getattr(settings, "allow_unsafe_local_skill_execution", False))
 
     def resolve_local_entry(self, execution: SkillExecution) -> Path:
-        raw = Path(execution.entry)
+        return self.resolve_package_file(execution.entry, label="execution entry")
+
+    def resolve_package_file(self, raw_path: str | Path, *, label: str = "package file") -> Path:
+        raw_value = str(raw_path or "").strip()
+        if not raw_value:
+            raise SkillSandboxError(f"{label} must not be empty")
+        if any(char in raw_value for char in ("\x00", "\n", "\r")):
+            raise SkillSandboxError(f"{label} must not contain control characters")
+        raw = Path(raw_value)
         if raw.is_absolute():
-            raise SkillSandboxError("execution entry must be relative to the skill package")
+            raise SkillSandboxError(f"{label} must be relative to the skill package")
         if ".." in raw.parts:
-            raise SkillSandboxError("execution entry must not contain path traversal")
+            raise SkillSandboxError(f"{label} must not contain path traversal")
         candidate = (self.skill_root / raw).resolve(strict=False)
         try:
             candidate.relative_to(self.skill_root)
         except ValueError as exc:
-            raise SkillSandboxError("execution entry escapes the skill package") from exc
+            raise SkillSandboxError(f"{label} escapes the skill package") from exc
         if not candidate.exists() or not candidate.is_file():
-            raise SkillSandboxError(f"execution entry does not exist: {execution.entry}")
+            raise SkillSandboxError(f"{label} does not exist: {raw_value}")
         resolved = candidate.resolve(strict=True)
         try:
             resolved.relative_to(self.skill_root)
         except ValueError as exc:
-            raise SkillSandboxError("execution entry symlink escapes the skill package") from exc
+            raise SkillSandboxError(f"{label} symlink escapes the skill package") from exc
         return resolved
 
     def _python_command(self, execution: SkillExecution) -> list[str]:

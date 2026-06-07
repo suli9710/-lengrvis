@@ -43,6 +43,54 @@ def test_pair_request_generates_code(monkeypatch, tmp_path):
     assert len(payload["code"]) == 6
     int(payload["code"], 16)
     assert payload["expires_in"] <= 300
+    assert payload["server"]["scheme"] == "http"
+    assert payload["server"]["transport_security"]["status"] == "http_lan_insecure"
+    assert payload["server"]["transport_security"]["tls_ready"] is False
+
+
+def test_pair_request_reports_lan_tls_misconfiguration(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(tmp_path / "missing.crt"))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(tmp_path / "missing.key"))
+    db.init_db()
+    client = TestClient(app)
+
+    payload = client.post("/api/pair/request").json()
+
+    security = payload["server"]["transport_security"]
+    assert payload["server"]["scheme"] == "https"
+    assert security["status"] == "https_misconfigured"
+    assert security["https_enabled"] is True
+    assert security["tls_ready"] is False
+    assert security["cert_present"] is False
+    assert security["key_present"] is False
+    assert "missing" in security["warning"].lower()
+
+
+def test_pair_request_reports_lan_tls_ready(monkeypatch, tmp_path):
+    cert = tmp_path / "lan.crt"
+    key = tmp_path / "lan.key"
+    cert.write_text("fake cert for readiness metadata", encoding="utf-8")
+    key.write_text("fake key for readiness metadata", encoding="utf-8")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
+    monkeypatch.setenv("LENGRVIS_LAN_PUBLIC_BASE_URL", "https://lengrvis.local:8443")
+    db.init_db()
+    client = TestClient(app)
+
+    payload = client.post("/api/pair/request").json()
+
+    security = payload["server"]["transport_security"]
+    assert payload["server"]["scheme"] == "https"
+    assert payload["server"]["origin"] == "https://lengrvis.local:8443"
+    assert security["status"] == "https_ready"
+    assert security["origin"] == "https://lengrvis.local:8443"
+    assert security["tls_ready"] is True
+    assert security["requires_trust"] is True
+    assert security["trust_model"] == "local_certificate"
 
 
 def test_pair_confirm_valid_code(monkeypatch, tmp_path):

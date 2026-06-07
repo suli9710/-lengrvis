@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import { IPC_CHANNELS } from "../shared/ipc";
+import { API_REQUEST_ALLOWED_KEYS, IPC_CHANNELS } from "../shared/ipc";
 import type {
   ApiRequest,
   ApiResponse,
@@ -20,6 +20,7 @@ const preloadProcess = typeof process === "undefined" ? null : process;
 const env = preloadProcess?.env ?? {};
 const version = (name: keyof NodeJS.ProcessVersions): string => preloadProcess?.versions?.[name] ?? "";
 let desktopWebSocketSequence = 0;
+const apiRequestAllowedKeys = new Set<string>(API_REQUEST_ALLOWED_KEYS);
 
 function envValue(name: string, fallback = ""): string {
   const value = env[name];
@@ -31,7 +32,13 @@ const bridge: LengrvisDesktopBridge = {
   api: {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>
-    ): Promise<ApiResponse<TResponse>> => ipcRenderer.invoke(IPC_CHANNELS.apiRequest, request)
+    ): Promise<ApiResponse<TResponse>> => {
+      try {
+        return ipcRenderer.invoke(IPC_CHANNELS.apiRequest, sanitizeApiBridgeRequest(request));
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
   },
   realtime: {
     subscribe: subscribeDesktopWebSocket
@@ -102,6 +109,48 @@ const bridge: LengrvisDesktopBridge = {
 };
 
 contextBridge.exposeInMainWorld("lengrvis", bridge);
+
+function sanitizeApiBridgeRequest<TBody>(request: ApiRequest<TBody>): ApiRequest<TBody> {
+  if (!isPlainRecord(request)) {
+    throw new Error("Renderer API request is malformed");
+  }
+
+  for (const key of Object.keys(request)) {
+    if (!apiRequestAllowedKeys.has(key)) {
+      throw new Error(`Renderer API request field is not allowed: ${key}`);
+    }
+  }
+
+  if (typeof request.endpoint !== "string") {
+    throw new Error("Renderer API endpoint is required");
+  }
+
+  const sanitized: ApiRequest<TBody> = { endpoint: request.endpoint };
+  if (request.method !== undefined) {
+    sanitized.method = request.method;
+  }
+  if (request.query !== undefined) {
+    if (!isPlainRecord(request.query)) {
+      throw new Error("Renderer API query must be an object");
+    }
+    sanitized.query = { ...(request.query as NonNullable<ApiRequest<TBody>["query"]>) };
+  }
+  if (Object.prototype.hasOwnProperty.call(request, "body")) {
+    sanitized.body = request.body;
+  }
+  if (request.timeoutMs !== undefined) {
+    sanitized.timeoutMs = request.timeoutMs;
+  }
+  return sanitized;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
 
 function subscribeDesktopWebSocket(
   request: DesktopWebSocketSubscribeRequest,

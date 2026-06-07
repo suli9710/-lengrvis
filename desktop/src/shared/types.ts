@@ -1,10 +1,13 @@
 export type ApiMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
+export type ApiQueryValue = string | number | boolean | null | undefined;
+
 export interface ApiRequest<TBody = unknown> {
   endpoint: string;
   method?: ApiMethod;
-  query?: Record<string, string | number | boolean | null | undefined>;
+  query?: Record<string, ApiQueryValue>;
   body?: TBody;
+  headers?: never;
   timeoutMs?: number;
 }
 
@@ -24,7 +27,7 @@ export interface ApiResponse<TData = unknown> {
 
 export interface DesktopWebSocketSubscribeRequest {
   endpoint: string;
-  query?: Record<string, string | number | boolean | null | undefined>;
+  query?: Record<string, ApiQueryValue>;
 }
 
 export interface DesktopWebSocketOpenRequest extends DesktopWebSocketSubscribeRequest {

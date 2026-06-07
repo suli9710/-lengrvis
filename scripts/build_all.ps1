@@ -3,6 +3,9 @@
     [switch]$SkipInstaller,
     [switch]$RequireBundledOllama,
     [switch]$VerifyOnly,
+    [switch]$RunExecutableSmoke,
+    [ValidateRange(1, 300)]
+    [int]$SmokeTimeoutSeconds = 30,
     [string]$DistDir = "dist",
     [string]$PortableDir = "dist\Lengrvis-win-portable",
     [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
@@ -25,12 +28,20 @@ function Resolve-ProjectPath {
 }
 
 function Invoke-PackagingVerification {
+    $verifyArgs = @{
+        DistDir = $DistDir
+        PortableDir = $PortableDir
+        PortableZip = $PortableZip
+        SelfExtractingExe = $SelfExtractingExe
+        SmokeTimeoutSeconds = $SmokeTimeoutSeconds
+    }
     if ($RequireBundledOllama) {
-        & "$PSScriptRoot\verify_packaging.ps1" -DistDir $DistDir -PortableDir $PortableDir -PortableZip $PortableZip -SelfExtractingExe $SelfExtractingExe -RequireBundledOllama
+        $verifyArgs.RequireBundledOllama = $true
     }
-    else {
-        & "$PSScriptRoot\verify_packaging.ps1" -DistDir $DistDir -PortableDir $PortableDir -PortableZip $PortableZip -SelfExtractingExe $SelfExtractingExe
+    if ($RunExecutableSmoke) {
+        $verifyArgs.RunExecutableSmoke = $true
     }
+    & "$PSScriptRoot\verify_packaging.ps1" @verifyArgs
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

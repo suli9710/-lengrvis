@@ -44,7 +44,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 
 const { IPC_CHANNELS } = require("../dist/shared/ipc.js");
-const { assertTrustedRenderer, isTrustedRendererUrl, registerIpcHandlers } = require("../dist/main/ipc.js");
+const { assertTrustedRenderer, buildRequestUrl, isTrustedRendererUrl, registerIpcHandlers } = require("../dist/main/ipc.js");
 const { registerBrowserHostIpcHandlers } = require("../dist/main/browserHost.js");
 const { NotificationBridge } = require("../dist/main/notifications.js");
 
@@ -116,6 +116,104 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     /untrusted renderer/
   );
   assert.equal(backendCalls, 0, "untrusted renderer must not reach backend lifecycle handler");
+
+  const apiRequestHandler = ipcHandlers.get(IPC_CHANNELS.apiRequest);
+  assert.ok(apiRequestHandler, "api request handler must be registered");
+  assert.equal(
+    buildRequestUrl("http://127.0.0.1:8000", { endpoint: "/api/health", query: { probe: "ipc" } }).toString(),
+    "http://127.0.0.1:8000/api/health?probe=ipc"
+  );
+
+  const originalFetch = global.fetch;
+  let fetchCalls = [];
+  global.fetch = async (url, init) => {
+    fetchCalls.push({ url: url.toString(), init });
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+
+  try {
+    const apiResponse = await Promise.resolve(
+      apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), {
+        endpoint: "/api/health",
+        query: { probe: "ipc", ok: true },
+        timeoutMs: 1000
+      })
+    );
+    assert.equal(apiResponse.ok, true, "ordinary backend API requests should still pass");
+    assert.equal(fetchCalls.length, 1, "valid backend API request should call fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/health?probe=ipc&ok=true");
+    assert.equal(fetchCalls[0].init.method, "GET");
+    assert.equal(fetchCalls[0].init.headers["X-Lengrvis-Desktop-Token"], "desktop-secret");
+
+    fetchCalls = [];
+    const postResponse = await Promise.resolve(
+      apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), {
+        endpoint: "/api/chat",
+        method: "POST",
+        body: { content: "hello" },
+        timeoutMs: 1000
+      })
+    );
+    assert.equal(postResponse.ok, true, "ordinary JSON backend API requests should still pass");
+    assert.equal(fetchCalls.length, 1, "valid JSON API request should call fetch once");
+    assert.equal(fetchCalls[0].init.headers["Content-Type"], "application/json");
+    assert.equal(fetchCalls[0].init.body, JSON.stringify({ content: "hello" }));
+
+    const blockedRequests = [
+      {
+        name: "absolute URL",
+        request: { endpoint: "https://evil.example/api/health" },
+        pattern: /backend-relative endpoints/
+      },
+      {
+        name: "double slash path",
+        request: { endpoint: "/api//health" },
+        pattern: /backend-relative endpoints|unsafe path separators/
+      },
+      {
+        name: "backslash path",
+        request: { endpoint: "/api\\health" },
+        pattern: /backend-relative endpoints/
+      },
+      {
+        name: "protocol-relative cross origin",
+        request: { endpoint: "//evil.example/api/health" },
+        pattern: /backend-relative endpoints/
+      },
+      {
+        name: "dangerous endpoint",
+        request: { endpoint: "/api/runtime/foreground", method: "POST" },
+        pattern: /explicit desktop bridge/
+      },
+      {
+        name: "custom headers",
+        request: { endpoint: "/api/health", headers: { Authorization: "Bearer renderer-token" } },
+        pattern: /custom headers are not allowed/
+      },
+      {
+        name: "overlarge body",
+        request: { endpoint: "/api/chat", method: "POST", body: { content: "x".repeat(600 * 1024) } },
+        pattern: /body .*too large/
+      }
+    ];
+
+    for (const testCase of blockedRequests) {
+      fetchCalls = [];
+      const blocked = await Promise.resolve(
+        apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), testCase.request)
+      );
+      assert.equal(blocked.ok, false, `${testCase.name} should be rejected`);
+      assert.equal(blocked.status, 0, `${testCase.name} should not return a backend status`);
+      assert.equal(blocked.error && blocked.error.code, "INVALID_RENDERER_API_REQUEST", `${testCase.name} should fail validation`);
+      assert.match(blocked.error && blocked.error.message, testCase.pattern, `${testCase.name} should explain the rejection`);
+      assert.equal(fetchCalls.length, 0, `${testCase.name} must be rejected before fetch`);
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
 
   const getFileIconHandler = ipcHandlers.get(IPC_CHANNELS.getFileIcon);
   assert.ok(getFileIconHandler, "file icon handler must be registered");

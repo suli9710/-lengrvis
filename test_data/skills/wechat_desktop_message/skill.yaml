@@ -1,11 +1,17 @@
 name: wechat-desktop-message
 version: "0.1.0"
 agent_owner: AppAgent
-risk: R2_REVERSIBLE_MODIFY
+risk:
+  default: R2_REVERSIBLE_MODIFY
+permissions:
+  - messaging.send
 tools:
   - name: skill.wechat_desktop.send_message
     description: Preview or execute a WeChat Desktop message workflow using UIAutomation selectors.
     risk: R2_REVERSIBLE_MODIFY
+    permissions:
+      - messaging.send
+      - ui.open
     supports_dry_run: true
     app_target:
       app_id: wechat.desktop
@@ -50,3 +56,13 @@ tools:
       type: python
       entry: handlers/intent.py
       timeout_seconds: 5
+    smoke_tests:
+      - name: wechat-send-preview
+        args:
+          contact: Alice
+          message: hello
+          dry_run: true
+        expected:
+          ok: true
+          dry_run: true
+    rollback_hint: Sent messages cannot be automatically recalled; hand off to the user to delete or clarify in WeChat if needed.

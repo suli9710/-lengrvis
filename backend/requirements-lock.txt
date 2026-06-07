@@ -1,0 +1,35 @@
+# Direct dependency lock for backend/requirements.txt.
+#
+# This file pins only the direct backend requirements. Pins were captured from
+# the current Python 3.12 environment when installed; dependencies absent from
+# that environment are pinned to the existing minimum declared in
+# backend/requirements.txt so the gate can verify every direct dependency.
+# Upgrade this to a full resolved lock with uv or pip-tools when the project
+# adopts a dedicated Python lock workflow.
+
+fastapi==0.136.3
+uvicorn[standard]==0.47.0
+pydantic==2.13.4
+PyJWT==2.13.0
+httpx==0.28.1
+PyYAML==6.0.3
+psutil==7.2.2
+send2trash==2.1.0
+pypdf==6.12.1
+Pillow==12.2.0
+pytesseract==0.3.13
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
+pandas==3.0.3
+beautifulsoup4==4.14.3
+playwright==1.60.0
+croniter==6.2.2
+numpy==2.4.6
+pywin32==311; platform_system=="Windows"
+comtypes==1.4; platform_system=="Windows"
+watchdog==6.0.0
+blake3==0.4.1
+docling==2.30
+unstructured[all-docs]==0.16
+paddleocr==2.8

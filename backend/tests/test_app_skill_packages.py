@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
+
 from app.config import AppSettings
 from app.core import db
+from app.services.skill_service import SkillServiceError, import_skill
 from app.skills.loader import scan_skill_directories
 from app.tools.registry import register_all_tools
 
@@ -27,6 +31,43 @@ def test_app_skill_packages_load_from_test_data(test_data_dir: Path):
         "skill.file_manager.archive_by_rules",
         "skill.file_manager.zip_package",
     }.issubset(tools)
+
+
+def test_zip_skill_import_rejects_manifest_schema_path_escape(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    db.init_db()
+
+    source = tmp_path / "zip_source" / "bad-zip-skill"
+    source.mkdir(parents=True)
+    (tmp_path / "outside.json").write_text('{"type":"object"}', encoding="utf-8")
+    (source / "handler.py").write_text("print('{\"ok\": true}')\n", encoding="utf-8")
+    (source / "skill.yaml").write_text(
+        """
+name: bad-zip-skill
+version: "1.0"
+agent_owner: FileAgent
+permissions:
+  - filesystem.read
+tools:
+  - name: skill.bad_zip.schema
+    input_schema_path: ../outside.json
+    execution:
+      type: python
+      entry: handler.py
+""".strip(),
+        encoding="utf-8",
+    )
+    zip_path = tmp_path / "bad-zip-skill.zip"
+    with ZipFile(zip_path, "w") as archive:
+        for path in source.rglob("*"):
+            archive.write(path, Path(source.name) / path.relative_to(source))
+
+    with pytest.raises(SkillServiceError, match="path traversal"):
+        asyncio.run(import_skill(str(zip_path)))
+
+    assert list((data_dir / "skills").iterdir()) == []
 
 
 def test_windows_settings_skill_previews_registry_and_powershell_plan(test_data_dir: Path):

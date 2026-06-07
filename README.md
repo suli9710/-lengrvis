@@ -192,6 +192,8 @@ npm run qa:gate
 npm run release:check
 ```
 
+发布候选若需要证明打包后端可运行，再跑 `npm run release:smoke`；移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
+
 ## 打包
 
 后端 binary：

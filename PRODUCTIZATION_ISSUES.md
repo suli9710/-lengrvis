@@ -30,20 +30,36 @@
   - 影响：避免演示和 release notes 只讲“本地模型、Skill、文档库、移动伴侣、模板路径”这些卖点，却没有同候选版本绑定的证据。
   - 验收：自动门禁继续使用既有 `qa:gate` / `release:check`；未自动化的平台卖点必须进入人工 gate、waiver 或 residual risk。
 
+- [x] **补齐依赖锁验证入口与验收口径。**
+  - 证据：根目录 `deps:verify` 入口验证 `desktop/package-lock.json`、`mobile/package-lock.json` 与后端 direct lock；`docs/qa/release-gate.md` 已把 `npm run deps:verify` 列为依赖变更时必须记录的 preflight evidence。
+  - 剩余风险：`backend/requirements-lock.txt` 只锁直接依赖，不是完整解析后的 Python 传递依赖锁；后续仍应迁移到 uv/pip-tools 等完整 lock workflow。
+  - 验收：依赖清单、lockfile 或后端 requirements 变更时，QA handoff 必须记录 `npm run deps:verify` 的命令、日期、提交和结果。
+
+- [x] **补齐 LAN TLS readiness 的证据口径。**
+  - 证据：`docs/qa/release-gate.md` 和 `docs/qa/e2e-acceptance-matrix.md` 已要求移动/LAN 演示记录 `http/ws` 或 `https/wss` scheme、证书来源、设备侧显式信任路径。
+  - 剩余风险：这只是 readiness/configuration/manual evidence，不代表系统级证书信任链已经完成；HTTP LAN 仍只能算 dev/test-only。
+  - 验收：任何 demo/release 文案提到 LAN TLS、HTTPS/WSS 或证书信任时，必须附候选版本手工证据；否则只能记为 residual risk。
+
+- [x] **补齐 Skill 样本迁移的自动/人工验收口径。**
+  - 证据：`docs/qa/e2e-acceptance-matrix.md` 已把 E2E-019 写成可复制的 pytest 命令，并要求记录迁移样本 id/source、import path 和 Product Manifest 卡片证据。
+  - 剩余风险：这证明样本迁移和 manifest 风险表达有验收口径，不代表 Skill 生态已有足够多真实生产样本。
+  - 验收：每个 release candidate 至少导入或展示一个非私有迁移样本；样本不得回退到 `legacy.unspecified` 权限表达。
+
 ## P0 安装、打包、分发
 
-- [ ] **打包验证从“文件存在”升级为“可运行”。**
-  - 证据：`scripts/verify_packaging.ps1` 多处只校验文件非空、zip entry 非空；部分 smoke 可用极小假 exe 绕过。
-  - 影响：产物看起来齐全，但用户下载后打不开，最伤品牌。
-  - 验收：Windows portable/self-extracting exe 至少执行 `--version`、启动后端 health check、校验 Electron 主进程可启动到首屏。
+- [ ] **部分完成：打包验证从“文件存在”升级为“可运行”。**
+  - 证据：`release:smoke` 和 `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` 已提供 release runnable smoke；`docs/qa/release-gate.md` 与 E2E-012 已要求记录 structural verification、runnable smoke 和 `.tmp\packaging-smoke` 失败诊断。
+  - 剩余缺口：当前自动化主要证明后端可执行文件能短命令退出或在隔离 loopback 上响应 `/health`；portable GUI 启动到首屏仍保留为人工 P1 sign-off。
+  - 验收：Windows release candidate 必须跑 `npm run release:smoke` 或等价命令；portable 首屏和读只诊断任务必须另行记录人工证据。
 
 - [x] **明确发布产物矩阵：Windows、macOS、Android 分别到什么完成度。**
   - 证据：`desktop/package.json` 有 mac dist 脚本，根目录脚本和启动文档偏 Windows/PowerShell；移动端是 Expo app，但分发状态不清。
   - 影响：对外承诺跨平台，实际交付像 Windows-only 内测包。
   - 验收：README 顶部已给出平台支持表，标注 `Supported / Preview / Planned`，并写明当前交付与已知限制。
 
-- [ ] **停止在正式启动脚本里现场安装依赖。**
+- [ ] **部分完成：停止在正式启动脚本里现场安装依赖。**
   - 证据：`scripts/start_app.ps1` 带有 npm/pip 安装路径，后端依赖存在 `>=` 风格漂移风险。
+  - 已补闭环：依赖锁验证已有 `deps:verify` 入口和 direct backend lock 证据，可在发布前阻断明显 drift。
   - 影响：用户第一次启动时网络、registry、依赖新版本都可能把体验炸掉。
   - 验收：正式启动脚本只启动已锁定产物；开发环境安装迁到 `setup` 脚本；依赖使用 lock/constraints 固定。
 
@@ -137,7 +153,7 @@
 
 这些不在本轮产品化清单中展开，但不能忘：
 
-- [ ] 移动端 LAN 明文 token 与 `ws://` 传输。
+- [ ] 移动端 LAN 明文 token 与 `ws://` 传输；当前仅补齐 TLS readiness/configuration/manual evidence，尚未完成系统级证书信任链。
 - [ ] 桌面 preload 通用 API 代理扩大 renderer XSS 影响面。
 - [ ] backend URL 任意 origin 携带桌面 token。
 - [ ] Developer Engine 的 `Edit/Write` 接入统一审批绑定。

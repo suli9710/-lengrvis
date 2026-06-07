@@ -247,6 +247,10 @@ class AppSettings:
     allow_browser_network: bool = False
     allow_unsafe_local_skill_execution: bool = False
     remote_desktop_enabled: bool = False
+    lan_tls_enabled: bool = False
+    lan_tls_cert_file: str = ""
+    lan_tls_key_file: str = ""
+    lan_public_base_url: str = ""
     app_allowlist: list[str] = field(default_factory=list)
     browser_max_page_bytes: int = 250000
     document_max_chars_to_llm: int = 30000
@@ -295,6 +299,7 @@ class AppSettings:
         paths = config.get("paths", {}) if isinstance(config.get("paths"), dict) else {}
         orchestration = config.get("orchestration", {}) if isinstance(config.get("orchestration"), dict) else {}
         perception = config.get("perception", {}) if isinstance(config.get("perception"), dict) else {}
+        transport = config.get("transport", {}) if isinstance(config.get("transport"), dict) else {}
 
         def _section_value(section: dict[str, Any], yaml_key: str) -> tuple[bool, Any]:
             if yaml_key not in section:
@@ -306,7 +311,7 @@ class AppSettings:
             raw_env = env_value(env, env_key)
             if _configured(raw_env):
                 return raw_env
-            for section in (llm, privacy, paths, orchestration, perception):
+            for section in (llm, privacy, paths, orchestration, perception, transport):
                 found, raw = _section_value(section, yaml_key)
                 if found:
                     return raw
@@ -317,7 +322,7 @@ class AppSettings:
                 raw = env_value(env, env_key)
                 if _configured(raw):
                     return raw
-            for section in (llm, privacy, paths, orchestration, perception):
+            for section in (llm, privacy, paths, orchestration, perception, transport):
                 found, raw = _section_value(section, yaml_key)
                 if found:
                     return raw
@@ -556,6 +561,10 @@ class AppSettings:
                 False,
             ),
             remote_desktop_enabled=flag("LENGRVIS_REMOTE_DESKTOP_ENABLED", "remote_desktop_enabled", False),
+            lan_tls_enabled=flag("LENGRVIS_LAN_TLS_ENABLED", "lan_tls_enabled", False),
+            lan_tls_cert_file=str(value("LENGRVIS_LAN_TLS_CERT_FILE", "lan_tls_cert_file", "")),
+            lan_tls_key_file=str(value("LENGRVIS_LAN_TLS_KEY_FILE", "lan_tls_key_file", "")),
+            lan_public_base_url=str(value("LENGRVIS_LAN_PUBLIC_BASE_URL", "lan_public_base_url", "")),
             app_allowlist=app_allowlist_items,
             browser_max_page_bytes=int_value(
                 "LENGRVIS_BROWSER_MAX_PAGE_BYTES",

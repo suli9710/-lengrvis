@@ -12,7 +12,7 @@ import pytest
 from app.config import AppSettings
 from app.policy.risk import RiskLevel
 from app.skills.loader import load_skill_package, scan_skill_directories
-from app.skills.schemas import SkillLoadError
+from app.skills.schemas import LEGACY_PERMISSION, SkillLoadError
 from app.tools.registry import register_all_tools
 
 
@@ -366,3 +366,23 @@ def test_repository_demo_skill_loads_and_executes(test_data_dir: Path):
 
     assert demo.tool_definitions[0].name == "skill.demo.echo"
     assert result == {"ok": True, "echo": "from fixture"}
+
+
+def test_repository_skill_manifests_do_not_use_legacy_permissions(test_data_dir: Path):
+    packages = scan_skill_directories([test_data_dir / "skills"])
+
+    legacy_warnings = [
+        f"{package.definition.name}: {issue.location}: {issue.message}"
+        for package in packages
+        for issue in package.safety_report.issues
+        if "legacy.unspecified" in issue.message or "permissions missing" in issue.message
+    ]
+    legacy_defaults = [
+        f"{package.definition.name}: {tool.name}"
+        for package in packages
+        for tool in package.definition.tools
+        if package.definition.effective_permissions(tool) == [LEGACY_PERMISSION]
+    ]
+
+    assert legacy_warnings == []
+    assert legacy_defaults == []

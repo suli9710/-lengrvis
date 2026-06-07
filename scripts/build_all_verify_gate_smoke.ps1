@@ -21,6 +21,27 @@ function New-SmokeExecutable([string]$Path) {
     [System.IO.File]::WriteAllBytes($Path, $bytes)
 }
 
+function New-RunnableSmokeExecutable([string]$Path) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+    $className = "PackagingSmoke_" + [guid]::NewGuid().ToString("N")
+    $source = @"
+public static class $className {
+    public static int Main(string[] args) {
+        if (args.Length > 0 && (args[0] == "--version" || args[0] == "--help")) {
+            System.Console.WriteLine("lengrvis packaging smoke 0.0.0");
+            return 0;
+        }
+        System.Console.WriteLine("lengrvis packaging smoke executable");
+        return 0;
+    }
+}
+"@
+    Add-Type -TypeDefinition $source -OutputAssembly $Path -OutputType ConsoleApplication
+}
+
 function New-SmokeSelfExtractingExecutable([string]$Path) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     [byte[]]$bytes = [byte[]]::new(131072)
@@ -71,9 +92,9 @@ function New-SmokePackage {
     $dist = Join-Path $PackageRoot "dist"
     $portable = Join-Path $dist "Lengrvis-win-portable"
     $resources = Join-Path $portable "resources"
-    New-SmokeExecutable (Join-Path $dist "backend.exe")
-    New-SmokeExecutable (Join-Path $portable "Lengrvis.exe")
-    New-SmokeExecutable (Join-Path $resources "backend\backend.exe")
+    New-RunnableSmokeExecutable (Join-Path $dist "backend.exe")
+    New-RunnableSmokeExecutable (Join-Path $portable "Lengrvis.exe")
+    New-RunnableSmokeExecutable (Join-Path $resources "backend\backend.exe")
     New-Item -ItemType Directory -Path (Join-Path $resources "app\dist") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $resources "app\package.json") -Value '{"name":"lengrvis-smoke"}' -Encoding ASCII
     New-SmokeSelfExtractingExecutable (Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe")
@@ -109,7 +130,9 @@ function Invoke-BuildVerify {
     param(
         [string]$ScriptName,
         [string]$PackageRoot,
-        [switch]$RequireBundledOllama
+        [switch]$RequireBundledOllama,
+        [switch]$RunExecutableSmoke,
+        [int]$SmokeTimeoutSeconds = 10
     )
     $dist = Join-Path $PackageRoot "dist"
     $portable = Join-Path $dist "Lengrvis-win-portable"
@@ -134,11 +157,68 @@ function Invoke-BuildVerify {
     if ($RequireBundledOllama) {
         $args += "-RequireBundledOllama"
     }
+    if ($RunExecutableSmoke) {
+        $args += @("-RunExecutableSmoke", "-SmokeTimeoutSeconds", $SmokeTimeoutSeconds)
+    }
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
         $output = & powershell @args 2>&1
         $script:LastBuildAllVerifyExitCode = $LASTEXITCODE
+        return $output
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Assert-RunnableSmokeOutput {
+    param(
+        [object]$Output,
+        [string]$Label
+    )
+    $text = $Output | Out-String
+    if ($text -notmatch "backend executable runnable smoke exited 0" -or $text -notmatch "portable backend executable runnable smoke exited 0") {
+        throw "Expected $Label output to include runnable executable smoke results:`n$text"
+    }
+}
+
+function Invoke-DirectPackagingVerify {
+    param(
+        [string]$PackageRoot,
+        [switch]$RequireBundledOllama,
+        [switch]$RunExecutableSmoke
+    )
+    $dist = Join-Path $PackageRoot "dist"
+    $portable = Join-Path $dist "Lengrvis-win-portable"
+    $zip = Join-Path $dist "Lengrvis-win-portable.zip"
+    $selfExtracting = Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe"
+    $args = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "$PSScriptRoot\verify_packaging.ps1",
+        "-DistDir",
+        $dist,
+        "-PortableDir",
+        $portable,
+        "-PortableZip",
+        $zip,
+        "-SelfExtractingExe",
+        $selfExtracting
+    )
+    if ($RequireBundledOllama) {
+        $args += "-RequireBundledOllama"
+    }
+    if ($RunExecutableSmoke) {
+        $args += @("-RunExecutableSmoke", "-SmokeTimeoutSeconds", "10")
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & powershell @args 2>&1
+        $script:LastDirectVerifyExitCode = $LASTEXITCODE
         return $output
     }
     finally {
@@ -179,11 +259,25 @@ if ($script:LastBuildAllVerifyExitCode -ne 0) {
 }
 Write-Host "[ok] build_all verify gate remains compatible without bundled requirement"
 
-$output = Invoke-BuildVerify -ScriptName "build.ps1" -PackageRoot $withOllama -RequireBundledOllama
+$output = Invoke-BuildVerify -ScriptName "build_all.ps1" -PackageRoot $withOllama -RequireBundledOllama -RunExecutableSmoke
 if ($script:LastBuildAllVerifyExitCode -ne 0) {
-    throw "Expected build.ps1 wrapper to pass through -VerifyOnly -RequireBundledOllama:`n$output"
+    throw "Expected build_all -VerifyOnly -RunExecutableSmoke to pass with bundled resources:`n$output"
 }
-Write-Host "[ok] build.ps1 wrapper passes verify gate arguments"
+Assert-RunnableSmokeOutput -Output $output -Label "build_all -RunExecutableSmoke"
+Write-Host "[ok] build_all verify gate passes runnable executable smoke"
+
+$output = Invoke-DirectPackagingVerify -PackageRoot $withOllama -RequireBundledOllama -RunExecutableSmoke
+if ($script:LastDirectVerifyExitCode -ne 0) {
+    throw "Expected direct packaging verify to pass runnable smoke with bundled resources:`n$output"
+}
+Write-Host "[ok] direct packaging verify gate passes runnable executable smoke"
+
+$output = Invoke-BuildVerify -ScriptName "build.ps1" -PackageRoot $withOllama -RequireBundledOllama -RunExecutableSmoke
+if ($script:LastBuildAllVerifyExitCode -ne 0) {
+    throw "Expected build.ps1 wrapper to pass through -VerifyOnly -RequireBundledOllama -RunExecutableSmoke:`n$output"
+}
+Assert-RunnableSmokeOutput -Output $output -Label "build.ps1 -RunExecutableSmoke"
+Write-Host "[ok] build.ps1 wrapper passes verify gate smoke arguments"
 
 Write-Host ""
 Write-Host "build_all verification gate smoke passed." -ForegroundColor Green

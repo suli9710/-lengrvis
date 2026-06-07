@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -14,9 +15,10 @@ from pydantic import ValidationError
 
 from app.config import AppSettings
 from app.core.audit import record
-from app.policy.risk import RiskLevel
+from app.policy.risk import RISK_ORDER, RiskLevel
 from app.skills.sandbox import SkillSandbox, SkillSandboxError, is_loopback_http_url
 from app.skills.schemas import (
+    LEGACY_PERMISSION,
     SkillDefinition,
     SkillExecutionType,
     SkillLoadError,
@@ -29,6 +31,22 @@ from app.tools.schemas import ToolDefinition
 
 SKILL_MANIFEST_NAMES = ("skill.yaml", "skill.yml")
 SENSITIVE_HEADER_HINTS = ("authorization", "cookie", "key", "password", "secret", "token")
+HIGH_RISK_PERMISSION_PREFIXES = (
+    "credential.",
+    "filesystem.delete",
+    "messaging.send",
+    "network.external",
+    "process.kill",
+    "process.terminate",
+    "shell.execute",
+    "system.apply",
+    "system.control",
+    "system.modify",
+    "system.set",
+    "system.write",
+    "ui.control",
+    "ui.input",
+)
 
 
 @dataclass(slots=True)
@@ -80,6 +98,7 @@ def load_skill_package(
         raise SkillLoadError("Skill package root is not a directory", path=root)
     manifest = _manifest_for(root)
     raw = _load_manifest(manifest)
+    raw = _hydrate_schema_paths(raw, root, manifest)
     try:
         definition = SkillDefinition.model_validate(raw)
     except ValidationError as exc:
@@ -149,6 +168,10 @@ def adapt_skill_to_tool_definitions(
     tool_definitions: list[ToolDefinition] = []
     for tool in definition.tools:
         risk = definition.effective_risk(tool)
+        permissions = definition.effective_permissions(tool)
+        effects = _effects_from_permissions(permissions, risk)
+        destructive = _is_destructive_permission_set(permissions) or risk == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+        read_only = _is_read_only_skill_tool(permissions, risk)
         tool_definitions.append(
             ToolDefinition(
                 name=tool.name,
@@ -161,8 +184,15 @@ def adapt_skill_to_tool_definitions(
                 requires_authorized_path=tool.requires_authorized_path,
                 execute=_build_executor(sandbox, tool),
                 search_hint=_skill_search_hint(definition, tool),
+                read_only=read_only,
+                concurrency_safe=read_only and RISK_ORDER[risk] <= RISK_ORDER[RiskLevel.R1_OPEN_ONLY],
+                destructive=destructive,
                 defer_loading=True,
                 trust_tier="skill",
+                capabilities=list(permissions),
+                effects=effects,
+                resource_kinds=_resource_kinds_from_permissions(permissions),
+                external_network=any(permission.startswith("network.external") for permission in permissions),
                 fast_path_eligible=False,
                 app_target=tool.app_target.model_dump(mode="json") if tool.app_target else None,
                 workflow=tool.workflow.model_dump(mode="json") if tool.workflow else None,
@@ -185,6 +215,46 @@ def review_skill_definition(definition: SkillDefinition, root: str | Path) -> Sk
     for index, tool in enumerate(definition.tools):
         location = f"tools[{index}] ({tool.name})"
         risk = definition.effective_risk(tool)
+        permissions = definition.effective_permissions(tool)
+        if _is_legacy_permissions(permissions):
+            issues.append(
+                SkillSafetyIssue(
+                    severity="warning",
+                    location=f"{location}.permissions",
+                    message="permissions missing; using legacy.unspecified compatibility default.",
+                )
+            )
+
+        minimum_risk = _minimum_risk_for_permissions(permissions)
+        if RISK_ORDER[risk] < RISK_ORDER[minimum_risk]:
+            severity = "error" if RISK_ORDER[minimum_risk] >= RISK_ORDER[RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM] else "warning"
+            issues.append(
+                SkillSafetyIssue(
+                    severity=severity,
+                    location=f"{location}.risk",
+                    message=f"declared permissions imply at least {minimum_risk.value}, but tool risk is {risk.value}.",
+                )
+            )
+
+        has_high_risk_permissions = _has_high_risk_permission(permissions)
+        high_risk_surface = has_high_risk_permissions or risk == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+        if high_risk_surface and not tool.smoke_tests:
+            issues.append(
+                SkillSafetyIssue(
+                    severity="error" if has_high_risk_permissions else "warning",
+                    location=f"{location}.smoke_tests",
+                    message="high-risk skill tools should declare at least one smoke test metadata entry.",
+                )
+            )
+        if high_risk_surface and not tool.rollback_hint:
+            issues.append(
+                SkillSafetyIssue(
+                    severity="error" if has_high_risk_permissions else "warning",
+                    location=f"{location}.rollback_hint",
+                    message="high-risk skill tools should declare a rollback or handoff hint.",
+                )
+            )
+
         if risk == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
             issues.append(
                 SkillSafetyIssue(
@@ -250,6 +320,121 @@ def review_skill_definition(definition: SkillDefinition, root: str | Path) -> Sk
     return SkillSafetyReport(issues=issues)
 
 
+def _is_legacy_permissions(permissions: list[str]) -> bool:
+    return permissions == [LEGACY_PERMISSION]
+
+
+def _has_high_risk_permission(permissions: list[str]) -> bool:
+    if _is_legacy_permissions(permissions):
+        return False
+    return any(permission.startswith(HIGH_RISK_PERMISSION_PREFIXES) for permission in permissions)
+
+
+def _minimum_risk_for_permissions(permissions: list[str]) -> RiskLevel:
+    if _is_legacy_permissions(permissions):
+        return RiskLevel.R0_READ_ONLY
+    minimum = RiskLevel.R0_READ_ONLY
+    for permission in permissions:
+        segments = set(permission.split("."))
+        namespace = permission.split(".", 1)[0]
+        if _permission_requires_r3(permission, namespace, segments):
+            minimum = max(minimum, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, key=lambda risk: RISK_ORDER[risk])
+        elif segments & {"create", "input", "modify", "send", "write"}:
+            minimum = max(minimum, RiskLevel.R2_REVERSIBLE_MODIFY, key=lambda risk: RISK_ORDER[risk])
+        elif "open" in segments:
+            minimum = max(minimum, RiskLevel.R1_OPEN_ONLY, key=lambda risk: RISK_ORDER[risk])
+    return minimum
+
+
+def _permission_requires_r3(permission: str, namespace: str, segments: set[str]) -> bool:
+    if permission.startswith(("credential.", "filesystem.delete", "network.external", "ui.control", "ui.input")):
+        return True
+    if segments & {"delete", "destructive"}:
+        return True
+    if namespace == "shell" and segments & {"execute", "run", "write"}:
+        return True
+    if namespace == "system" and segments & {"apply", "control", "modify", "set", "write"}:
+        return True
+    if namespace == "process" and segments & {"kill", "terminate", "write"}:
+        return True
+    return False
+
+
+def _effects_from_permissions(permissions: list[str], risk: RiskLevel) -> list[str]:
+    if _is_legacy_permissions(permissions):
+        if risk == RiskLevel.R0_READ_ONLY:
+            return ["read"]
+        if risk == RiskLevel.R1_OPEN_ONLY:
+            return ["open"]
+        if risk == RiskLevel.R2_REVERSIBLE_MODIFY:
+            return ["write"]
+        if risk == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM:
+            return ["system"]
+        return ["handoff"]
+
+    effects: list[str] = []
+    for permission in permissions:
+        for segment in permission.split("."):
+            if segment in {"inspect", "list", "read", "search"}:
+                _append_unique(effects, segment)
+            elif segment in {"create", "modify", "write"}:
+                _append_unique(effects, "write")
+            elif segment in {"control", "input"}:
+                _append_unique(effects, "control")
+            elif segment in {"delete", "send", "open"}:
+                _append_unique(effects, segment)
+    return effects or _effects_from_permissions([LEGACY_PERMISSION], risk)
+
+
+def _resource_kinds_from_permissions(permissions: list[str]) -> list[str]:
+    if _is_legacy_permissions(permissions):
+        return ["skill"]
+    kinds: list[str] = []
+    for permission in permissions:
+        namespace = permission.split(".", 1)[0]
+        for kind in _resource_kinds_for_namespace(namespace):
+            _append_unique(kinds, kind)
+    return kinds or ["skill"]
+
+
+def _resource_kinds_for_namespace(namespace: str) -> list[str]:
+    return {
+        "browser": ["web_page", "url"],
+        "credential": ["secret"],
+        "filesystem": ["file", "directory"],
+        "memory": ["memory"],
+        "messaging": ["message"],
+        "network": ["url"],
+        "process": ["process"],
+        "shell": ["process"],
+        "system": ["system"],
+        "ui": ["application"],
+    }.get(namespace, [namespace])
+
+
+def _is_destructive_permission_set(permissions: list[str]) -> bool:
+    for permission in permissions:
+        segments = set(permission.split("."))
+        namespace = permission.split(".", 1)[0]
+        if segments & {"delete", "destructive"}:
+            return True
+        if namespace in {"process", "shell", "system"} and _permission_requires_r3(permission, namespace, segments):
+            return True
+    return False
+
+
+def _is_read_only_skill_tool(permissions: list[str], risk: RiskLevel) -> bool:
+    if risk != RiskLevel.R0_READ_ONLY:
+        return False
+    effects = set(_effects_from_permissions(permissions, risk))
+    return effects.issubset({"inspect", "list", "read", "search"})
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
+
+
 def _build_executor(sandbox: SkillSandbox, tool: SkillToolSpec):
     def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return sandbox.execute(tool.execution, args, context)
@@ -264,6 +449,7 @@ def _skill_search_hint(definition: SkillDefinition, tool: SkillToolSpec) -> str:
         tool.description,
         definition.effective_agent_owner(tool),
         tool.execution.type.value,
+        " ".join(definition.effective_permissions(tool)),
     ]
     if tool.app_target:
         parts.extend(
@@ -277,6 +463,56 @@ def _skill_search_hint(definition: SkillDefinition, tool: SkillToolSpec) -> str:
     if tool.workflow:
         parts.extend([tool.workflow.target_app, tool.workflow.action, tool.workflow.interface])
     return " ".join(str(part).strip() for part in parts if str(part).strip())
+
+
+def _hydrate_schema_paths(raw: dict[str, Any], root: Path, manifest: Path) -> dict[str, Any]:
+    tools = raw.get("tools")
+    if not isinstance(tools, list):
+        return raw
+
+    sandbox = SkillSandbox(root)
+    hydrated = dict(raw)
+    hydrated_tools: list[Any] = []
+    for index, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            hydrated_tools.append(tool)
+            continue
+        copied = dict(tool)
+        for schema_field, path_names in (
+            ("input_schema", ("input_schema_path", "inputSchemaPath")),
+            ("output_schema", ("output_schema_path", "outputSchemaPath")),
+        ):
+            schema_path = next((copied.get(name) for name in path_names if copied.get(name)), "")
+            if not schema_path:
+                continue
+            if not isinstance(schema_path, str):
+                raise SkillLoadError(f"Invalid skill.yaml: tools[{index}].{schema_field}_path must be a string.", path=manifest)
+            try:
+                resolved = sandbox.resolve_package_file(schema_path, label=f"tools[{index}].{schema_field}_path")
+            except SkillSandboxError as exc:
+                raise SkillLoadError(f"Invalid skill.yaml: {exc}", path=manifest) from exc
+            copied[schema_field] = _load_schema_file(resolved, schema_field)
+        hydrated_tools.append(copied)
+    hydrated["tools"] = hydrated_tools
+    return hydrated
+
+
+def _load_schema_file(path: Path, field_name: str) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+        if path.suffix.lower() in {".yaml", ".yml"}:
+            data = yaml.safe_load(text) or {}
+        else:
+            data = json.loads(text)
+    except OSError as exc:
+        raise SkillLoadError(f"Could not read {field_name} file: {exc}", path=path) from exc
+    except json.JSONDecodeError as exc:
+        raise SkillLoadError(f"Invalid JSON in {field_name} file: {exc}", path=path) from exc
+    except yaml.YAMLError as exc:
+        raise SkillLoadError(f"Invalid YAML in {field_name} file: {exc}", path=path) from exc
+    if not isinstance(data, dict):
+        raise SkillLoadError(f"{field_name}_path must point to a JSON schema object.", path=path)
+    return data
 
 
 def _find_manifests(directory: Path) -> list[Path]:

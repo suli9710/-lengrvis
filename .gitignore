@@ -27,6 +27,13 @@ workspace/
 *.sqlite3
 logs/
 output/
+.tmp/
+.tmp-diagnostics/
+tmp-office-review/
+desktop/tmp-office-review/
+.codex_remote/
+.claude/settings.local.json
+UsersSuliAppDataLocalTempClaude-Code-review
 .codex-vite-*.pid
 .codex-vite-*.out.log
 # Canonical local runtime data directory is .lengrvis_data.

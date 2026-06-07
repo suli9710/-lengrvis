@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -12,6 +13,8 @@ from app.policy.risk import RiskLevel
 TOOL_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$"
 SKILL_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]*$"
 AGENT_OWNER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
+PERMISSION_NAME_PATTERN = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_-]*)+$"
+LEGACY_PERMISSION = "legacy.unspecified"
 
 RISK_ALIASES = {
     "r0": RiskLevel.R0_READ_ONLY,
@@ -30,6 +33,8 @@ RISK_ALIASES = {
     "r4_forbidden_or_handoff": RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
     "forbidden_or_handoff": RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
 }
+
+_PERMISSION_RE = re.compile(PERMISSION_NAME_PATTERN)
 
 
 class SkillLoadError(ValueError):
@@ -59,6 +64,48 @@ def coerce_risk_level(value: Any) -> RiskLevel:
     if normalized in RISK_ALIASES:
         return RISK_ALIASES[normalized]
     raise ValueError(f"unsupported risk level: {raw}")
+
+
+def extract_risk_default(value: Any, fallback: RiskLevel | None) -> Any:
+    """Accept legacy string risks and product-manifest risk.default objects."""
+
+    if not isinstance(value, dict):
+        return value
+    unknown = sorted(set(value) - {"default"})
+    if unknown:
+        raise ValueError(f"risk object supports only default; unknown keys: {', '.join(unknown)}")
+    return value.get("default", fallback)
+
+
+def normalize_permissions(value: Any, *, default: list[str] | None) -> list[str] | None:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("permissions must be a non-empty list of permission strings")
+    if not value:
+        raise ValueError("permissions must not be empty when declared")
+
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("permissions must contain only strings")
+        permission = item.strip()
+        if not permission:
+            raise ValueError("permission entries must not be empty")
+        if not _PERMISSION_RE.fullmatch(permission):
+            raise ValueError(f"permission has invalid format: {item}")
+        if permission not in normalized:
+            normalized.append(permission)
+    return normalized
+
+
+def strip_optional_manifest_path(value: str) -> str:
+    text = str(value or "").strip()
+    if any(char in text for char in ("\x00", "\n", "\r")):
+        raise ValueError("manifest paths must not contain control characters")
+    return text
 
 
 class SkillExecution(BaseModel):
@@ -114,6 +161,25 @@ class WorkflowIntentSpec(BaseModel):
     interface: str = "ui_automation"
 
 
+class SkillSmokeTestSpec(BaseModel):
+    """Declarative smoke metadata for validating one skill tool manually or in CI."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    name: str = Field(default="default", min_length=1, max_length=80)
+    description: str = ""
+    args: dict[str, Any] = Field(default_factory=dict)
+    expected: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("name", "description")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        text = value.strip()
+        if any(char in text for char in ("\x00", "\n", "\r")):
+            raise ValueError("smoke test text must not contain control characters")
+        return text
+
+
 class SkillToolSpec(BaseModel):
     """Tool declaration inside skill.yaml."""
 
@@ -123,6 +189,10 @@ class SkillToolSpec(BaseModel):
     description: str = ""
     agent_owner: str | None = Field(default=None, pattern=AGENT_OWNER_PATTERN, validation_alias=AliasChoices("agent_owner", "agentOwner"))
     risk: RiskLevel | None = None
+    permissions: list[str] | None = None
+    entrypoint: str = Field(default="", validation_alias=AliasChoices("entrypoint", "entryPoint"))
+    input_schema_path: str = Field(default="", validation_alias=AliasChoices("input_schema_path", "inputSchemaPath"))
+    output_schema_path: str = Field(default="", validation_alias=AliasChoices("output_schema_path", "outputSchemaPath"))
     input_schema: dict[str, Any] = Field(
         default_factory=lambda: {"type": "object", "additionalProperties": True},
         validation_alias=AliasChoices("input_schema", "inputSchema"),
@@ -142,25 +212,62 @@ class SkillToolSpec(BaseModel):
         validation_alias=AliasChoices("app_target", "appTarget"),
     )
     workflow: WorkflowIntentSpec | None = None
+    smoke_tests: list[SkillSmokeTestSpec] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("smoke_tests", "smokeTests", "smoke_test", "smokeTest"),
+    )
+    rollback_hint: str = Field(default="", validation_alias=AliasChoices("rollback_hint", "rollbackHint"))
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_execution_entry_from_entrypoint(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        entrypoint = data.get("entrypoint") or data.get("entryPoint")
+        execution = data.get("execution")
+        if entrypoint and isinstance(execution, dict) and not execution.get("entry"):
+            copied = dict(data)
+            copied["execution"] = {**execution, "entry": entrypoint}
+            return copied
+        return data
 
     @field_validator("risk", mode="before")
     @classmethod
     def normalize_optional_risk(cls, value: Any) -> RiskLevel | None:
+        value = extract_risk_default(value, None)
         if value is None or value == "":
             return None
         return coerce_risk_level(value)
+
+    @field_validator("permissions", mode="before")
+    @classmethod
+    def normalize_tool_permissions(cls, value: Any) -> list[str] | None:
+        return normalize_permissions(value, default=None)
 
     @field_validator("description")
     @classmethod
     def strip_description(cls, value: str) -> str:
         return value.strip()
 
+    @field_validator("entrypoint", "input_schema_path", "output_schema_path")
+    @classmethod
+    def strip_manifest_paths(cls, value: str) -> str:
+        return strip_optional_manifest_path(value)
+
+    @field_validator("rollback_hint")
+    @classmethod
+    def strip_rollback_hint(cls, value: str) -> str:
+        return value.strip()
+
     @model_validator(mode="after")
-    def schemas_must_be_objects(self) -> "SkillToolSpec":
+    def manifest_contract_must_be_consistent(self) -> "SkillToolSpec":
         for field_name in ("input_schema", "output_schema"):
             schema = getattr(self, field_name)
             if not isinstance(schema, dict):
                 raise ValueError(f"{field_name} must be a JSON schema object")
+        if self.entrypoint and self.entrypoint != self.execution.entry:
+            raise ValueError("entrypoint must match execution.entry when both are declared")
+        self.entrypoint = self.execution.entry
         return self
 
 
@@ -173,6 +280,7 @@ class SkillDefinition(BaseModel):
     version: str = Field(min_length=1)
     agent_owner: str = Field(pattern=AGENT_OWNER_PATTERN, validation_alias=AliasChoices("agent_owner", "agentOwner"))
     risk: RiskLevel = RiskLevel.R0_READ_ONLY
+    permissions: list[str] = Field(default_factory=lambda: [LEGACY_PERMISSION])
     tools: list[SkillToolSpec] = Field(min_length=1)
 
     @field_validator("version", mode="before")
@@ -183,9 +291,16 @@ class SkillDefinition(BaseModel):
     @field_validator("risk", mode="before")
     @classmethod
     def normalize_risk(cls, value: Any) -> RiskLevel:
+        value = extract_risk_default(value, RiskLevel.R0_READ_ONLY)
         if value is None or value == "":
             return RiskLevel.R0_READ_ONLY
         return coerce_risk_level(value)
+
+    @field_validator("permissions", mode="before")
+    @classmethod
+    def normalize_manifest_permissions(cls, value: Any) -> list[str]:
+        permissions = normalize_permissions(value, default=[LEGACY_PERMISSION])
+        return permissions or [LEGACY_PERMISSION]
 
     @model_validator(mode="after")
     def tools_must_have_unique_names(self) -> "SkillDefinition":
@@ -200,6 +315,9 @@ class SkillDefinition(BaseModel):
 
     def effective_risk(self, tool: SkillToolSpec) -> RiskLevel:
         return tool.risk or self.risk
+
+    def effective_permissions(self, tool: SkillToolSpec) -> list[str]:
+        return tool.permissions or self.permissions
 
 
 class SkillSafetyIssue(BaseModel):

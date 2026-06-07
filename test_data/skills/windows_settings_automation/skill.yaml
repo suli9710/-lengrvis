@@ -1,11 +1,16 @@
 name: windows-settings-automation
 version: "1.0.0"
 agent_owner: AppAgent
-risk: R3_DESTRUCTIVE_OR_SYSTEM
+risk:
+  default: R3_DESTRUCTIVE_OR_SYSTEM
+permissions:
+  - system.read
 tools:
   - name: skill.windows_settings.preview
     description: Preview Windows settings automation for theme, resolution, night light, and lock screen ads.
     risk: R0_READ_ONLY
+    permissions:
+      - system.read
     supports_dry_run: true
     input_schema:
       type: object
@@ -46,9 +51,19 @@ tools:
       type: python
       entry: handlers/settings.py
       timeout_seconds: 10
+    smoke_tests:
+      - name: settings-preview-query
+        args:
+          action: query
+          dry_run: true
+        expected:
+          ok: true
+    rollback_hint: Read-only settings preview does not apply system changes.
   - name: skill.windows_settings.apply
     description: Apply supported Windows settings through PowerShell or registry-backed commands after approval.
     risk: R3_DESTRUCTIVE_OR_SYSTEM
+    permissions:
+      - system.set
     supports_dry_run: true
     input_schema:
       type: object
@@ -90,3 +105,13 @@ tools:
       type: python
       entry: handlers/settings.py
       timeout_seconds: 20
+    smoke_tests:
+      - name: settings-apply-preview
+        args:
+          action: set_theme
+          theme: dark
+          dry_run: true
+        expected:
+          ok: true
+          dry_run: true
+    rollback_hint: Capture the previous setting value before approval and restore it through the same action if rollback is requested.
