@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from app.config import AppSettings
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.api import routes_approvals
 from app.api import routes_runtime
@@ -581,6 +583,31 @@ def test_approval_secret_is_generated_in_data_dir(tmp_path: Path):
     assert first == second
     assert len(first) >= 32
     assert (tmp_path / "approval_hmac.secret").exists()
+
+
+def test_settings_fingerprint_binds_safety_settings(tmp_path: Path):
+    base = AppSettings(
+        allowed_directories=[str(tmp_path / "workspace")],
+        app_allowlist=["notepad"],
+        permission_mode="default",
+        allow_browser_network=False,
+        remote_desktop_enabled=False,
+    )
+
+    assert settings_fingerprint(base) != settings_fingerprint(replace(base, permission_mode="dont_ask"))
+    assert settings_fingerprint(base) != settings_fingerprint(replace(base, allow_browser_network=True))
+    assert settings_fingerprint(base) != settings_fingerprint(replace(base, remote_desktop_enabled=True))
+    assert settings_fingerprint(base) != settings_fingerprint(replace(base, app_allowlist=["calc"]))
+
+
+def test_settings_fingerprint_preserves_explicit_empty_allowed_directories(tmp_path: Path):
+    settings = AppSettings(allowed_directories=[str(tmp_path / "workspace")])
+
+    assert settings_fingerprint(settings, allowed_directories=[]) != settings_fingerprint(settings)
+    assert settings_fingerprint(settings, allowed_directories=[]) == settings_fingerprint(
+        AppSettings(allowed_directories=[]),
+        allowed_directories=[],
+    )
 
 
 def test_redacted_preview_hides_resource_state_but_binding_keeps_it():

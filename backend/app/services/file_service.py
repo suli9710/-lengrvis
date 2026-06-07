@@ -92,5 +92,28 @@ def semantic_search(query: str, *, limit: int = 10) -> dict:
 def duplicates() -> dict:
     settings = get_effective_settings()
     indexed = FTSIndex().duplicates()
-    live = find_duplicates({}, {"allowed_directories": settings.allowed_directories})
-    return {"index_duplicates": indexed, "live_duplicates": live.get("duplicates", [])}
+    if not settings.allowed_directories:
+        live = {
+            "duplicates": [],
+            "count": 0,
+            "scanned": 0,
+            "truncated": False,
+            "skipped_large": 0,
+            "status": "missing_scope",
+        }
+    else:
+        live = find_duplicates(
+            {"limit": 100, "max_scanned": 5000, "max_file_bytes": 100 * 1024 * 1024},
+            {"allowed_directories": settings.allowed_directories},
+        )
+    return {
+        "index_duplicates": indexed,
+        "live_duplicates": live.get("duplicates", []),
+        "live_duplicates_meta": {
+            "count": live.get("count", 0),
+            "scanned": live.get("scanned", 0),
+            "truncated": bool(live.get("truncated", False)),
+            "skipped_large": live.get("skipped_large", 0),
+            "status": live.get("status", "ok"),
+        },
+    }

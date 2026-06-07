@@ -1080,7 +1080,7 @@ export function SettingsPanel({
               <span>在 Android 伴侣应用中输入服务器地址和一次性配对码。</span>
               {pairing ? (
                 <small>
-                  服务器：http://{pairing.server.host}:{pairing.server.port} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
+                  服务器：{formatMobilePairingServer(pairing)} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
                 </small>
               ) : null}
               {pairedDevices.length ? (
@@ -1893,6 +1893,15 @@ function buildInstallModelWebSocketUrl(baseUrl: string, path: string, model: str
 function getInstallModelBackendBaseUrl(baseUrl: string): string {
   const candidate = window.lengrvis?.backendBaseUrl || baseUrl || "http://127.0.0.1:8000";
   return /^https?:\/\//i.test(candidate) ? candidate : "http://127.0.0.1:8000";
+}
+
+function formatMobilePairingServer(pairing: MobilePairingCode): string {
+  const origin = pairing.server.origin || pairing.server_origin;
+  if (origin) {
+    return origin;
+  }
+  const scheme = pairing.server.scheme || (pairing.https_enabled ? "https" : "http");
+  return `${scheme}://${pairing.server.host}:${pairing.server.port}`;
 }
 
 function parseInstallModelProgress(data: unknown): InstallModelProgress | null {

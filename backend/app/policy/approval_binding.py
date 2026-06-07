@@ -4,23 +4,28 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import secrets
 from pathlib import Path
 from typing import Any
 
-from app.config import AppSettings, get_base_settings
+from app.config import AppSettings, _find_config_file, _load_dotenv, env_value, get_base_settings, get_env
 from app.policy.redaction import redact_value
 
 
-APPROVAL_HMAC_ENV_KEYS = ("LENGRVIS_APPROVAL_HMAC_SECRET", "LENGRVIS_APPROVAL_HMAC_SECRET", "LENGRVIS_APPROVAL_HMAC_SECRET")
+APPROVAL_HMAC_ENV_KEYS = ("LENGRVIS_APPROVAL_HMAC_SECRET",)
 APPROVAL_HMAC_SECRET_FILE = "approval_hmac.secret"
 logger = logging.getLogger(__name__)
 
 
 def approval_secret() -> str:
     for key in APPROVAL_HMAC_ENV_KEYS:
-        value = os.environ.get(key)
+        value = get_env(key)
+        if value:
+            return value
+    env_path = _find_config_file(".env", "LENGRVIS_ENV_FILE")
+    dotenv_values = _load_dotenv(env_path) if env_path else {}
+    for key in APPROVAL_HMAC_ENV_KEYS:
+        value = env_value(dotenv_values, key)
         if value:
             return value
     return _local_approval_secret()
@@ -129,12 +134,21 @@ def _is_preview_path_key(key: str) -> bool:
 
 
 def settings_fingerprint(settings: AppSettings | None, *, allowed_directories: list[str] | None = None) -> str:
+    directory_values = getattr(settings, "allowed_directories", []) if allowed_directories is None else allowed_directories
     payload = {
         "mode": getattr(settings, "mode", ""),
+        "permission_mode": getattr(settings, "permission_mode", ""),
+        "network_access": getattr(settings, "network_access", ""),
         "allow_cloud_context": bool(getattr(settings, "allow_cloud_context", False)),
         "allow_browser_network": bool(getattr(settings, "allow_browser_network", False)),
         "allow_file_content_upload": bool(getattr(settings, "allow_file_content_upload", False)),
-        "allowed_directories": sorted(str(path) for path in (allowed_directories or getattr(settings, "allowed_directories", []) or [])),
+        "allow_unsafe_local_skill_execution": bool(getattr(settings, "allow_unsafe_local_skill_execution", False)),
+        "remote_desktop_enabled": bool(getattr(settings, "remote_desktop_enabled", False)),
+        "lan_tls_enabled": bool(getattr(settings, "lan_tls_enabled", False)),
+        "lan_public_base_url": getattr(settings, "lan_public_base_url", ""),
+        "app_allowlist": sorted(str(item).casefold() for item in getattr(settings, "app_allowlist", []) or []),
+        "browser_max_page_bytes": getattr(settings, "browser_max_page_bytes", 0),
+        "allowed_directories": sorted(str(path) for path in (directory_values or [])),
     }
     return hmac_digest(payload, prefix="settings")
 

@@ -189,6 +189,16 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         pattern: /explicit desktop bridge/
       },
       {
+        name: "mobile pairing request through generic API",
+        request: { endpoint: "/api/pair/request", method: "POST" },
+        pattern: /explicit desktop bridge/
+      },
+      {
+        name: "mobile pairing device through generic API",
+        request: { endpoint: "/api/pair/devices/phone-1", method: "DELETE" },
+        pattern: /explicit desktop bridge/
+      },
+      {
         name: "custom headers",
         request: { endpoint: "/api/health", headers: { Authorization: "Bearer renderer-token" } },
         pattern: /custom headers are not allowed/
@@ -211,6 +221,34 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       assert.match(blocked.error && blocked.error.message, testCase.pattern, `${testCase.name} should explain the rejection`);
       assert.equal(fetchCalls.length, 0, `${testCase.name} must be rejected before fetch`);
     }
+
+    const mobilePairingCreateCodeHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingCreateCode);
+    assert.ok(mobilePairingCreateCodeHandler, "mobile pairing create-code handler must be registered");
+    fetchCalls = [];
+    const pairingResponse = await Promise.resolve(mobilePairingCreateCodeHandler(eventFor("http://127.0.0.1:5173/settings")));
+    assert.equal(pairingResponse.ok, true, "explicit mobile pairing bridge should call backend");
+    assert.equal(fetchCalls.length, 1, "explicit mobile pairing bridge should use fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/pair/request");
+    assert.equal(fetchCalls[0].init.method, "POST");
+
+    await assert.rejects(
+      async () => mobilePairingCreateCodeHandler(eventFor("https://evil.example/app")),
+      /untrusted renderer/
+    );
+
+    const mobilePairingGrantHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingCreateRemoteInputGrant);
+    assert.ok(mobilePairingGrantHandler, "mobile pairing remote-input grant handler must be registered");
+    fetchCalls = [];
+    const grantResponse = await Promise.resolve(
+      mobilePairingGrantHandler(eventFor("http://127.0.0.1:5173/settings"), {
+        deviceId: "phone-1",
+        expiresInSeconds: 300
+      })
+    );
+    assert.equal(grantResponse.ok, true, "explicit remote-input grant bridge should call backend");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/pair/devices/phone-1/remote-input-grants");
+    assert.equal(fetchCalls[0].init.method, "POST");
+    assert.equal(fetchCalls[0].init.body, JSON.stringify({ expires_in: 300 }));
   } finally {
     global.fetch = originalFetch;
   }

@@ -13,6 +13,8 @@ import type {
   DesktopWebSocketSubscribeHandlers,
   DesktopWebSocketSubscribeRequest,
   LengrvisDesktopBridge,
+  MobilePairingRemoteInputGrantRequest,
+  MobilePairingRevokeRemoteInputGrantRequest,
   NotificationPayload
 } from "../shared/types";
 
@@ -49,6 +51,15 @@ const bridge: LengrvisDesktopBridge = {
     stop: () => ipcRenderer.invoke(IPC_CHANNELS.backendStop),
     foreground: () => ipcRenderer.invoke(IPC_CHANNELS.backendForeground),
     background: () => ipcRenderer.invoke(IPC_CHANNELS.backendBackground)
+  },
+  mobilePairing: {
+    createCode: () => ipcRenderer.invoke(IPC_CHANNELS.mobilePairingCreateCode),
+    listDevices: () => ipcRenderer.invoke(IPC_CHANNELS.mobilePairingListDevices),
+    revokeDevice: (deviceId: string) => ipcRenderer.invoke(IPC_CHANNELS.mobilePairingRevokeDevice, deviceId),
+    createRemoteInputGrant: (request: MobilePairingRemoteInputGrantRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.mobilePairingCreateRemoteInputGrant, request),
+    revokeRemoteInputGrant: (request: MobilePairingRevokeRemoteInputGrantRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.mobilePairingRevokeRemoteInputGrant, request)
   },
   backendBaseUrl: envValue("LENGRVIS_BACKEND_URL", "http://127.0.0.1:8000"),
   dialog: {

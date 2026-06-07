@@ -71,7 +71,7 @@ const quickSkills: OfficeQuickSkill[] = [
     summary: "先盘点和分组，删除前确认",
     kind: "prompt",
     prompt: "扫描我的下载目录，按安装包、文档、图片、压缩包和临时文件分组，给出整理建议；不要直接删除任何文件。",
-    trust: { local: "本机文件", cloud: "不传正文", approval: "删除需审批", rollback: "可回滚", estimate: "3-6 分钟" },
+    trust: { local: "本机文件", cloud: "不传正文", approval: "删除需审批", rollback: "回收站可恢复", estimate: "3-6 分钟" },
     wizard: {
       input: "下载目录或指定文件夹",
       preflight: "确认授权范围和清理风险",
@@ -101,7 +101,7 @@ const quickSkills: OfficeQuickSkill[] = [
     summary: "列出占用空间和清理建议",
     kind: "prompt",
     prompt: "找出这台电脑上最大的文件，并按安全清理、需要确认、建议保留三类给出建议；不要直接删除任何文件。",
-    trust: { local: "本机索引", cloud: "不传路径", approval: "清理需审批", rollback: "可回滚", estimate: "2-5 分钟" },
+    trust: { local: "本机索引", cloud: "不传路径", approval: "清理需审批", rollback: "先审再处理", estimate: "2-5 分钟" },
     wizard: {
       input: "文件范围和大小阈值",
       preflight: "先扫描授权目录，不触碰未授权路径",

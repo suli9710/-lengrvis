@@ -305,14 +305,63 @@ function Start-SmokeProcess {
     }
 }
 
+function Get-SmokeProcessTreeIds {
+    param([int]$RootProcessId)
+
+    $ProcessRows = @()
+    try {
+        $ProcessRows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId)
+    }
+    catch {
+        return @()
+    }
+    $ChildrenByParent = @{}
+    foreach ($ProcessRow in $ProcessRows) {
+        if (-not $ChildrenByParent.ContainsKey($ProcessRow.ParentProcessId)) {
+            $ChildrenByParent[$ProcessRow.ParentProcessId] = @()
+        }
+        $ChildrenByParent[$ProcessRow.ParentProcessId] += [int]$ProcessRow.ProcessId
+    }
+
+    $ProcessIds = New-Object System.Collections.Generic.List[int]
+    function Add-ChildProcessIds([int]$CurrentProcessId) {
+        if (-not $ChildrenByParent.ContainsKey($CurrentProcessId)) {
+            return
+        }
+        foreach ($ChildProcessId in $ChildrenByParent[$CurrentProcessId]) {
+            Add-ChildProcessIds $ChildProcessId
+            $ProcessIds.Add($ChildProcessId)
+        }
+    }
+
+    Add-ChildProcessIds $RootProcessId
+    return @($ProcessIds | Select-Object -Unique)
+}
+
+function Stop-SmokeProcessTree {
+    param([System.Diagnostics.Process]$Process)
+
+    if ($null -eq $Process) {
+        return
+    }
+
+    $ChildProcessIds = @(Get-SmokeProcessTreeIds -RootProcessId $Process.Id)
+    foreach ($ChildProcessId in $ChildProcessIds) {
+        Stop-Process -Id $ChildProcessId -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $Process.HasExited) {
+        $Process.Kill()
+    }
+    [void]$Process.WaitForExit(5000)
+}
+
 function Stop-SmokeProcess([object]$Run) {
     if ($null -eq $Run -or -not $Run.Started) {
         return
     }
     try {
         if (-not $Run.Process.HasExited) {
-            $Run.Process.Kill()
-            [void]$Run.Process.WaitForExit(5000)
+            Stop-SmokeProcessTree -Process $Run.Process
         }
         Save-SmokeProcessLogs $Run
     }
@@ -352,6 +401,10 @@ function Invoke-SmokeProcessAndWait {
         }
     }
 
+    $ChildProcessIds = @(Get-SmokeProcessTreeIds -RootProcessId $Run.Process.Id)
+    foreach ($ChildProcessId in $ChildProcessIds) {
+        Stop-Process -Id $ChildProcessId -Force -ErrorAction SilentlyContinue
+    }
     Save-SmokeProcessLogs $Run
     $ExitCode = $Run.Process.ExitCode
     $Run.Process.Dispose()
@@ -359,6 +412,7 @@ function Invoke-SmokeProcessAndWait {
         Started = $true
         TimedOut = $false
         ExitCode = $ExitCode
+        HadChildProcesses = $ChildProcessIds.Count -gt 0
         StdOut = $Run.StdOut
         StdErr = $Run.StdErr
     }
@@ -418,6 +472,10 @@ function Invoke-BackendShortCommandSmoke {
             $Diagnostics.Add("$ArgumentLabel did not exit within $ShortTimeoutSeconds seconds and was stopped (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
             continue
         }
+        if ($Result.HadChildProcesses) {
+            $Diagnostics.Add("$ArgumentLabel exited but left child processes running, so it is not a short command (stdout: $($Result.StdOut); stderr: $($Result.StdErr))")
+            continue
+        }
         if ($Result.ExitCode -eq 0) {
             Write-Host "[ok] $Label runnable smoke exited 0 with $ArgumentLabel"
             return [pscustomobject]@{ Passed = $true; Diagnostics = $Diagnostics }
@@ -449,10 +507,13 @@ function Invoke-BackendHealthSmoke {
     try {
         while ($Stopwatch.Elapsed.TotalSeconds -lt $SmokeTimeoutSeconds) {
             if ($Run.Process.HasExited) {
-                Save-SmokeProcessLogs $Run
-                return [pscustomobject]@{
-                    Passed = $false
-                    Diagnostic = "health process exited before $HealthUrl responded (exit $($Run.Process.ExitCode); stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+                $ChildProcessIds = @(Get-SmokeProcessTreeIds -RootProcessId $Run.Process.Id)
+                if ($ChildProcessIds.Count -eq 0) {
+                    Save-SmokeProcessLogs $Run
+                    return [pscustomobject]@{
+                        Passed = $false
+                        Diagnostic = "health process exited before $HealthUrl responded (exit $($Run.Process.ExitCode); stdout: $($Run.StdOut); stderr: $($Run.StdErr))"
+                    }
                 }
             }
             try {
