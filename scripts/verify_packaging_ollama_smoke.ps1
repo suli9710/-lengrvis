@@ -48,6 +48,66 @@ function New-SmokeExecutable([string]$Path) {
     [System.IO.File]::WriteAllBytes($Path, $bytes)
 }
 
+function New-RunnableSmokeExecutable([string]$Path) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+    $className = "PackagingSmoke_" + [guid]::NewGuid().ToString("N")
+    $source = @"
+public static class $className {
+    public static int Main(string[] args) {
+        if (args.Length > 0 && (args[0] == "--version" || args[0] == "--help")) {
+            System.Console.WriteLine("lengrvis packaging smoke 0.0.0");
+            return 0;
+        }
+        System.Console.WriteLine("lengrvis packaging smoke executable");
+        return 0;
+    }
+}
+"@
+    Add-Type -TypeDefinition $source -OutputAssembly $Path -OutputType ConsoleApplication
+}
+
+function New-HealthSmokeExecutable([string]$Path) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+    $className = "PackagingHealthSmoke_" + [guid]::NewGuid().ToString("N")
+    $source = @"
+public static class $className {
+    public static int Main(string[] args) {
+        if (args.Length > 0) {
+            System.Console.Error.WriteLine("short command intentionally unsupported");
+            return 2;
+        }
+        string rawPort = System.Environment.GetEnvironmentVariable("LENGRVIS_BACKEND_PORT");
+        int port = string.IsNullOrWhiteSpace(rawPort) ? 8000 : int.Parse(rawPort);
+        System.Net.Sockets.TcpListener listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Parse("127.0.0.1"), port);
+        listener.Start();
+        while (true) {
+            System.Net.Sockets.TcpClient client = listener.AcceptTcpClient();
+            try {
+                System.Net.Sockets.NetworkStream stream = client.GetStream();
+                byte[] buffer = new byte[1024];
+                stream.Read(buffer, 0, buffer.Length);
+                byte[] body = System.Text.Encoding.UTF8.GetBytes("{\"status\":\"ok\"}");
+                string header = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body.Length + "\r\nConnection: close\r\n\r\n";
+                byte[] headerBytes = System.Text.Encoding.ASCII.GetBytes(header);
+                stream.Write(headerBytes, 0, headerBytes.Length);
+                stream.Write(body, 0, body.Length);
+            }
+            finally {
+                client.Close();
+            }
+        }
+    }
+}
+"@
+    Add-Type -TypeDefinition $source -OutputAssembly $Path -OutputType ConsoleApplication
+}
+
 function New-SmokeSelfExtractingExecutable([string]$Path) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     [byte[]]$bytes = [byte[]]::new(131072)
@@ -67,14 +127,25 @@ function New-SmokeSelfExtractingExecutable([string]$Path) {
 function New-SmokePackage {
     param(
         [string]$RootPath,
-        [switch]$IncludeOllama
+        [switch]$IncludeOllama,
+        [switch]$UseHealthBackend
     )
     $dist = Join-Path $RootPath "dist"
     $portable = Join-Path $dist "Lengrvis-win-portable"
     $resources = Join-Path $portable "resources"
-    New-SmokeExecutable (Join-Path $dist "backend.exe")
-    New-SmokeExecutable (Join-Path $portable "Lengrvis.exe")
-    New-SmokeExecutable (Join-Path $resources "backend\backend.exe")
+    if ($UseHealthBackend) {
+        New-HealthSmokeExecutable (Join-Path $dist "backend.exe")
+    }
+    else {
+        New-RunnableSmokeExecutable (Join-Path $dist "backend.exe")
+    }
+    New-RunnableSmokeExecutable (Join-Path $portable "Lengrvis.exe")
+    if ($UseHealthBackend) {
+        New-HealthSmokeExecutable (Join-Path $resources "backend\backend.exe")
+    }
+    else {
+        New-RunnableSmokeExecutable (Join-Path $resources "backend\backend.exe")
+    }
     New-Item -ItemType Directory -Path (Join-Path $resources "app\dist") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $resources "app\package.json") -Value '{"name":"lengrvis-smoke"}' -Encoding ASCII
     New-SmokeSelfExtractingExecutable (Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe")
@@ -117,7 +188,8 @@ function New-SmokePackage {
 function Invoke-VerifyPackaging {
     param(
         [object]$Package,
-        [switch]$RequireBundledOllama
+        [switch]$RequireBundledOllama,
+        [switch]$RunExecutableSmoke
     )
     $args = @(
         "-NoProfile",
@@ -136,6 +208,9 @@ function Invoke-VerifyPackaging {
     )
     if ($RequireBundledOllama) {
         $args += "-RequireBundledOllama"
+    }
+    if ($RunExecutableSmoke) {
+        $args += @("-RunExecutableSmoke", "-SmokeTimeoutSeconds", "10")
     }
     $previousErrorActionPreference = $ErrorActionPreference
     try {
@@ -157,12 +232,25 @@ New-Item -ItemType Directory -Path $workspacePath -Force | Out-Null
 
 $withOllama = New-SmokePackage -RootPath (Join-Path $workspacePath "with-ollama") -IncludeOllama
 $withoutOllama = New-SmokePackage -RootPath (Join-Path $workspacePath "without-ollama")
+$healthFallback = New-SmokePackage -RootPath (Join-Path $workspacePath "health-fallback") -IncludeOllama -UseHealthBackend
 
 $output = Invoke-VerifyPackaging -Package $withOllama -RequireBundledOllama
 if ($script:LastVerifyPackagingExitCode -ne 0) {
     throw "Expected bundled Ollama package verification to pass:`n$output"
 }
 Write-Host "[ok] package with bundled Ollama passes"
+
+$output = Invoke-VerifyPackaging -Package $withOllama -RequireBundledOllama -RunExecutableSmoke
+if ($script:LastVerifyPackagingExitCode -ne 0) {
+    throw "Expected bundled Ollama package verification with runnable smoke to pass:`n$output"
+}
+Write-Host "[ok] package with bundled Ollama passes runnable executable smoke"
+
+$output = Invoke-VerifyPackaging -Package $healthFallback -RequireBundledOllama -RunExecutableSmoke
+if ($script:LastVerifyPackagingExitCode -ne 0) {
+    throw "Expected bundled Ollama package verification to pass runnable /health fallback:`n$output"
+}
+Write-Host "[ok] package runnable smoke falls back to isolated backend health probe"
 
 $output = Invoke-VerifyPackaging -Package $withoutOllama -RequireBundledOllama
 if ($script:LastVerifyPackagingExitCode -eq 0) {

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.core import db
+from app.core import audit as audit_core, db
+from app.core.schemas import AuditChainVerification
 
 
 router = APIRouter()
@@ -13,10 +14,10 @@ def audit():
     return db.fetch_many("audit_events", limit=500)
 
 
-@router.get("/audit/verify-chain")
-@router.get("/audit/verify")
-def verify_audit(limit: int | None = None):
-    return db.verify_audit_log(limit=limit)
+@router.get("/audit/verify-chain", response_model=AuditChainVerification)
+@router.get("/audit/verify", response_model=AuditChainVerification)
+def verify_audit(limit: int | None = None) -> AuditChainVerification:
+    return AuditChainVerification.model_validate(audit_core.verify_chain(limit=limit))
 
 
 @router.get("/audit/{task_id}")

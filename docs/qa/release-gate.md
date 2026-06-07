@@ -1,6 +1,6 @@
 # Lengrvis Release Gate
 
-Last reviewed: 2026-06-07
+Last reviewed: 2026-06-08
 
 This release gate turns the end-to-end acceptance matrix into a repeatable decision checklist. It is intentionally split into fast preflight, demo-before-release readiness, artifact verification, and manual sign-off so development builds do not need release artifacts while release candidates still verify the package that will ship.
 
@@ -10,6 +10,12 @@ Run this before merging release-bound changes:
 
 ```powershell
 npm run qa:gate
+```
+
+When dependency manifests, lockfiles, or backend requirements change, also run:
+
+```powershell
+npm run deps:verify
 ```
 
 Equivalent expanded commands:
@@ -28,6 +34,7 @@ Pass criteria:
 - Backend, desktop, and mobile verification commands exit 0.
 - Desktop smoke commands exit 0, including document scope, remote input grant, desktop WebSocket token, IPC security, bundled backend env, and browser activity smoke.
 - Mobile smoke commands exit 0, including token subprotocol and remote-input grant lifecycle checks.
+- Dependency lock verification passes when run with `npm run deps:verify`: backend direct requirements have pinned `==` entries in `backend/requirements-lock.txt`, and desktop/mobile npm lockfiles exist with matching root package name and version. This is a direct-dependency lock gate only; upgrade to uv or pip-tools for a full resolved Python lock when that workflow is adopted.
 - Any skipped backend tests are expected platform skips and are recorded.
 
 ## 2. Demo-Before-Release Gate
@@ -45,14 +52,21 @@ Demo pass criteria:
 - The demo script covers first launch, one read-only natural-language task, one R2/R3 dry-run approval, one R4 blocked request, and one document QA answer with a citation label.
 - Platform positioning evidence is captured: Settings model boundary profile, local model readiness or smoke result, one Skill Product Manifest sample, and one template-driven demo path.
 - Mobile companion is included only if pairing, pending approvals, and approve/reject round trip were manually checked on the demo LAN or emulator setup.
+- LAN TLS readiness is recorded when a phone or emulator connects over LAN: either mark the run as HTTP dev/test-only, or record the HTTPS/WSS configuration plus the explicit certificate trust path used by that device. Do not claim system-level certificate trust chain completion unless it was manually verified on the target OS/device.
 - Any P2/P3 rows skipped for the demo are recorded as residual risks, not implied passes.
 
 ## 3. Release Artifact Gate
 
-Run this after Windows release artifacts have been built:
+Run the structural release check after Windows release artifacts have been built:
 
 ```powershell
 npm run release:check
+```
+
+Run the executable smoke gate for release candidates that must prove packaged backend executables can start:
+
+```powershell
+npm run release:smoke
 ```
 
 Equivalent expanded command:
@@ -60,15 +74,21 @@ Equivalent expanded command:
 ```powershell
 npm run qa:gate
 .\scripts\build_all.ps1 -VerifyOnly
+.\scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45
 ```
 
 Pass criteria:
 
 - The preflight gate passes on the same candidate.
+- `release:check` is the default structural release gate. It runs `qa:gate` and `scripts\build_all.ps1 -VerifyOnly`, but it does not force runnable executable smoke.
+- `release:smoke` is the explicit release-candidate runnable path. It runs `release:check`, then reruns packaging verification through `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`.
 - `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-0.1.0-x64-self-extracting.exe` exist unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
 - The portable package contains `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
-- The self-extracting executable has a valid PE header and is above the minimum release size enforced by `scripts\verify_packaging.ps1`.
-- If a special offline Ollama release is being prepared, rerun verification with `-RequireBundledOllama` and confirm the runtime, models, and bundle manifest summaries match the packaged files.
+- `scripts\verify_packaging.ps1` validates PE headers and minimum sizes for `dist\backend.exe`, the portable launcher, the portable backend, and the self-extracting executable.
+- Runnable packaging smoke passes when `release:smoke` or `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` is used: backend executables either exit successfully for `--version`/`--help` or answer `/health` on an isolated loopback port before the smoke timeout.
+- The portable launcher is not opened automatically during the gate; it must pass PE/header/size and packaged-resource preflight, with GUI launch left to manual sign-off.
+- If a special offline Ollama release is being prepared, rerun verification with `scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama -RunExecutableSmoke` and confirm the runtime, models, bundle manifest summaries, and backend runnable smoke match the packaged files.
+- Failed executable smoke writes diagnostics under `.tmp\packaging-smoke`; missing artifacts should be rebuilt with `.\scripts\build_all.ps1` before rerunning the gate.
 
 ## 4. Manual P1 Sign-Off
 
@@ -83,6 +103,7 @@ Before tagging a release candidate, verify these user-visible flows against `doc
 | Local/hybrid model evidence | Settings shows quick/privacy/hybrid model boundary, recommended model, size, hardware status, speed estimate, and the privacy failure path that does not auto-fall back to cloud. |
 | Skill sample | Import or display one non-private Skill/App integration sample and verify Product Manifest cards for file read/write, UI, network, messaging, delete, preview, and rollback/handoff. |
 | Mobile companion | Pairing, pending approval list, and approve/reject round trip work on LAN or documented emulator setup. |
+| LAN TLS readiness | For mobile/LAN runs, record the configured `http/ws` or `https/wss` scheme, certificate source, and explicit device trust path. Treat HTTP LAN as dev/test-only evidence, not a production TLS pass. |
 | Template demo path | One scripted template path from `docs/demo-script.md` runs against disposable data or is recorded as residual risk. |
 | Portable artifact | The release portable starts from a clean directory and can run a read-only diagnostic task. |
 
@@ -97,7 +118,9 @@ Do not release if any of these are true:
 - Secrets, tokens, cookies, one-time codes, payment text, or private file contents appear in logs, URLs, audit exports, screenshots, or release notes.
 - Mobile or desktop token transport moves from header/subprotocol storage into URL query strings.
 - Release artifacts are missing backend resources or package manifests.
+- Runnable packaging smoke fails, times out, or only proves file presence without executable behavior.
 - The candidate requires undocumented local environment state to launch.
+- Demo or release material claims LAN TLS, HTTPS/WSS production readiness, or system certificate trust without recorded configuration and explicit device trust evidence.
 - Demo materials or release notes claim a P2/P3 capability that was not verified or explicitly waived for this candidate.
 - Demo materials claim local/private, Skill/App integration, document citation, mobile companion, or template workflows without either recorded evidence or a named residual risk.
 
@@ -118,6 +141,7 @@ Preflight gate:
 - mobile token smoke:
 - mobile remote-input grant smoke:
 - desktop smoke:
+- dependency lock verification:
 
 Demo-before-release gate:
 - clean profile/test workspace:
@@ -130,9 +154,12 @@ Demo-before-release gate:
 - Skill Product Manifest sample:
 - template demo path:
 - mobile companion, if included:
+- LAN TLS readiness, if mobile/LAN included:
 
 Artifact gate:
-- build_all -VerifyOnly:
+- release:check / build_all -VerifyOnly:
+- release:smoke / build_all -VerifyOnly -RunExecutableSmoke:
+- executable smoke logs:
 - bundled Ollama verification, if applicable:
 
 Manual sign-off:
@@ -143,6 +170,7 @@ Manual sign-off:
 - local/hybrid model evidence:
 - Skill sample:
 - mobile companion:
+- LAN TLS readiness:
 - template demo path:
 - portable artifact:
 

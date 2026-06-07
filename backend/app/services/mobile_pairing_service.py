@@ -6,10 +6,12 @@ import socket
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
 
+from app.config import AppSettings
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
@@ -867,10 +869,68 @@ def _recent_pairing_failures(rate_key: str, now: float) -> list[float]:
 
 
 def _server_info() -> dict[str, Any]:
+    transport = lan_transport_security()
     return {
         "host": _lan_ip(),
         "port": _backend_port(),
+        "scheme": transport["scheme"],
+        "origin": transport["origin"],
+        "transport_security": transport,
     }
+
+
+def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any]:
+    settings = settings or get_effective_settings()
+    https_enabled = bool(getattr(settings, "lan_tls_enabled", False))
+    cert_file = str(getattr(settings, "lan_tls_cert_file", "") or "").strip()
+    key_file = str(getattr(settings, "lan_tls_key_file", "") or "").strip()
+    cert_present = bool(cert_file) and Path(cert_file).expanduser().exists()
+    key_present = bool(key_file) and Path(key_file).expanduser().exists()
+    tls_ready = https_enabled and cert_present and key_present
+    scheme = "https" if https_enabled else "http"
+    origin = _configured_lan_origin(settings, scheme)
+
+    if tls_ready:
+        status = "https_ready"
+        warning = ""
+        next_action = "Pair mobile devices with the HTTPS address and trust the local certificate when prompted."
+    elif https_enabled:
+        status = "https_misconfigured"
+        missing = []
+        if not cert_present:
+            missing.append("certificate file")
+        if not key_present:
+            missing.append("private key file")
+        warning = f"LAN HTTPS is enabled but the {' and '.join(missing)} is missing."
+        next_action = "Create or point Lengrvis at a local TLS certificate and key, then restart the backend."
+    else:
+        status = "http_lan_insecure"
+        warning = "LAN mobile pairing uses HTTP/ws transport unless HTTPS is explicitly configured."
+        next_action = "Use loopback for local testing, or configure LAN TLS before pairing phones on an untrusted network."
+
+    return {
+        "status": status,
+        "scheme": scheme,
+        "origin": origin,
+        "https_enabled": https_enabled,
+        "tls_ready": tls_ready,
+        "cert_configured": bool(cert_file),
+        "key_configured": bool(key_file),
+        "cert_present": cert_present,
+        "key_present": key_present,
+        "requires_trust": https_enabled,
+        "trust_required": https_enabled,
+        "trust_model": "local_certificate" if https_enabled else "none",
+        "warning": warning,
+        "next_action": next_action,
+    }
+
+
+def _configured_lan_origin(settings: AppSettings, scheme: str) -> str:
+    configured = str(getattr(settings, "lan_public_base_url", "") or "").strip().rstrip("/")
+    if configured:
+        return configured
+    return f"{scheme}://{_lan_ip()}:{_backend_port()}"
 
 
 def _lan_ip() -> str:

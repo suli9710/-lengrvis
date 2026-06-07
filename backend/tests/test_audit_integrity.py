@@ -17,7 +17,13 @@ def test_audit_events_are_append_only_and_verifiable(monkeypatch, tmp_path):
     assert first.sequence == 1
     assert second.sequence == 2
     assert second.prev_hash == first.event_hash
-    assert verify_chain()["ok"] is True
+    result = verify_chain()
+    assert result["ok"] is True
+    assert result["checked"] == 2
+    assert result["last_event_id"] == second.id
+    assert result["last_sequence"] == 2
+    assert result["failure_index"] is None
+    assert result["failure_reason"] == ""
 
 
 def test_audit_verify_detects_tampering(monkeypatch, tmp_path):
@@ -49,4 +55,9 @@ def test_audit_verify_detects_tampering(monkeypatch, tmp_path):
 
     result = verify_chain()
     assert result["ok"] is False
+    assert result["checked"] == 0
+    assert result["failure_index"] == 1
+    assert result["failure_event_id"] == event.id
+    assert result["failure_sequence"] == 1
+    assert result["failure_reason"] == "event_hash_mismatch"
     assert result["failures"][0]["reason"] == "event_hash_mismatch"

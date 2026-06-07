@@ -55,6 +55,16 @@ paths:
     - calculator
     - calc
 
+transport:
+  # Enables HTTPS for LAN/mobile pairing when start_app.ps1 is launched with matching cert/key files.
+  # Lengrvis does not install or trust root certificates automatically.
+  lan_tls_enabled: false
+  lan_tls_cert_file: ""
+  lan_tls_key_file: ""
+  # Optional advertised origin for phones, for example https://192.168.1.20:8000.
+  # Leave blank to let diagnostics/pairing suggest a LAN IP and current backend port.
+  lan_public_base_url: ""
+
 privacy:
   mode: efficiency
   allow_cloud_context: false

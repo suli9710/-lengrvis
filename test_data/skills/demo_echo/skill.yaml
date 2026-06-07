@@ -1,11 +1,16 @@
 name: demo-echo
 version: "1.0.0"
 agent_owner: FileAgent
-risk: R0_READ_ONLY
+risk:
+  default: R0_READ_ONLY
+permissions:
+  - skill.echo.read
 tools:
   - name: skill.demo.echo
     description: Echo text through the demo Python skill handler.
     risk: R0_READ_ONLY
+    permissions:
+      - skill.echo.read
     input_schema:
       type: object
       properties:
@@ -24,3 +29,11 @@ tools:
       type: python
       entry: handlers/echo.py
       timeout_seconds: 5
+    smoke_tests:
+      - name: echo-smoke
+        args:
+          text: hello
+        expected:
+          ok: true
+          echo: hello
+    rollback_hint: Read-only echo has no persistent side effects.

@@ -479,6 +479,19 @@ class AuditEvent(BaseModel):
     created_at: str = Field(default_factory=now_iso)
 
 
+class AuditChainVerification(BaseModel):
+    ok: bool
+    checked: int = 0
+    last_event_id: str | None = None
+    last_sequence: int = 0
+    last_hash: str = ""
+    failure_index: int | None = None
+    failure_event_id: str | None = None
+    failure_sequence: int | None = None
+    failure_reason: str = ""
+    failures: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class IndexedFile(BaseModel):
     id: str = Field(default_factory=lambda: new_id("file"))
     path: str

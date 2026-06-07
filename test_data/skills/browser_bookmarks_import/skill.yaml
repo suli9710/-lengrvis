@@ -1,11 +1,16 @@
 name: browser-bookmarks-import
 version: "1.0.0"
 agent_owner: BrowserAgent
-risk: R2_REVERSIBLE_MODIFY
+risk:
+  default: R2_REVERSIBLE_MODIFY
+permissions:
+  - browser.bookmarks.read
 tools:
   - name: skill.browser_bookmarks.discover
     description: Read Chrome or Edge bookmark JSON files and return normalized bookmark records without writing memory.
     risk: R0_READ_ONLY
+    permissions:
+      - browser.bookmarks.read
     supports_dry_run: true
     input_schema:
       type: object
@@ -31,9 +36,22 @@ tools:
       type: python
       entry: handlers/bookmarks.py
       timeout_seconds: 10
+    smoke_tests:
+      - name: discover-bookmarks-dry-run
+        args:
+          paths:
+            - "."
+          max_bookmarks: 5
+          dry_run: true
+        expected:
+          ok: true
+    rollback_hint: Read-only bookmark discovery does not modify browser data or memory.
   - name: skill.browser_bookmarks.import_to_memory
     description: Import Chrome or Edge bookmark JSON files into Lengrvis Memory as searchable bookmark facts.
     risk: R2_REVERSIBLE_MODIFY
+    permissions:
+      - browser.bookmarks.read
+      - memory.write
     supports_dry_run: true
     input_schema:
       type: object
@@ -61,3 +79,13 @@ tools:
       type: python
       entry: handlers/bookmarks.py
       timeout_seconds: 15
+    smoke_tests:
+      - name: import-bookmarks-preview
+        args:
+          paths:
+            - "."
+          max_bookmarks: 5
+          dry_run: true
+        expected:
+          ok: true
+    rollback_hint: Remove imported bookmark memory entries if the user rejects or wants to undo the import.

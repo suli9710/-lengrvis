@@ -1,11 +1,17 @@
 name: windows-settings-workflow
 version: "0.1.0"
 agent_owner: ComputerAgent
-risk: R3_DESTRUCTIVE_OR_SYSTEM
+risk:
+  default: R3_DESTRUCTIVE_OR_SYSTEM
+permissions:
+  - system.set
 tools:
   - name: skill.windows_settings.workflow
     description: Preview Windows Settings display or network adjustments using Settings URI plus UIAutomation.
     risk: R3_DESTRUCTIVE_OR_SYSTEM
+    permissions:
+      - system.set
+      - ui.control
     supports_dry_run: true
     app_target:
       app_id: windows.settings
@@ -54,3 +60,13 @@ tools:
       type: python
       entry: handlers/intent.py
       timeout_seconds: 5
+    smoke_tests:
+      - name: settings-workflow-preview
+        args:
+          area: display
+          action: inspect
+          dry_run: true
+        expected:
+          ok: true
+          dry_run: true
+    rollback_hint: Record the original Windows setting before applying changes and hand off to the user when a UI-only toggle cannot be restored automatically.

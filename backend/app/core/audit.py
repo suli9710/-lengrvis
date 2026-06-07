@@ -26,5 +26,7 @@ def record(event_type: str, actor: str, payload: dict[str, Any] | None = None, t
     return AuditEvent.model_validate(db.insert_audit_event(event))
 
 
-def verify_chain(limit: int = 10000) -> dict[str, Any]:
-    return db.verify_audit_log(limit=limit)
+def verify_chain(limit: int | None = None) -> dict[str, Any]:
+    from app.core.schemas import AuditChainVerification
+
+    return AuditChainVerification.model_validate(db.verify_audit_log(limit=limit)).model_dump(mode="json")

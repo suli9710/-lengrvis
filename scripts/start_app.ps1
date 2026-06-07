@@ -3,6 +3,10 @@
     [int]$BackendPort = 8000,
     [int]$FrontendPort = 5173,
     [switch]$SkipInstall,
+    [switch]$InstallMissingDependencies,
+    [switch]$EnableLanTls,
+    [string]$TlsCertFile = "",
+    [string]$TlsKeyFile = "",
     [switch]$CheckOnly,
     [switch]$Detached,
     [switch]$Desktop
@@ -19,6 +23,7 @@ catch {
 }
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DesktopDir = Join-Path $Root "desktop"
+$BackendScheme = "http"
 $BackendUrl = "http://$BackendHost`:$BackendPort"
 $FrontendUrl = "http://127.0.0.1`:$FrontendPort"
 $LogDir = Join-Path $Root "logs"
@@ -37,6 +42,10 @@ $leaveProcessesRunning = $false
 function Write-Step([string]$Message) {
     Write-Host ""
     Write-Host "==> $Message" -ForegroundColor Cyan
+}
+
+function Format-DependencyList([string[]]$Items) {
+    return ($Items | ForEach-Object { "  - $_" }) -join "`n"
 }
 
 function Find-Python {
@@ -63,9 +72,62 @@ function Find-Npm {
     throw "未找到 npm。请先安装 Node.js 20+。"
 }
 
+function Test-TruthyEnv([string]$Value) {
+    return $Value -and $Value.ToLowerInvariant() -in @("1", "true", "yes", "on")
+}
+
+function Resolve-LaunchPath([string]$Path) {
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    return Join-Path $Root $Path
+}
+
+function Resolve-LanTlsConfig {
+    $cert = if ($TlsCertFile) { $TlsCertFile } elseif ($env:LENGRVIS_LAN_TLS_CERT_FILE) { $env:LENGRVIS_LAN_TLS_CERT_FILE } else { "" }
+    $key = if ($TlsKeyFile) { $TlsKeyFile } elseif ($env:LENGRVIS_LAN_TLS_KEY_FILE) { $env:LENGRVIS_LAN_TLS_KEY_FILE } else { "" }
+    $enabled = [bool]$EnableLanTls -or (Test-TruthyEnv $env:LENGRVIS_LAN_TLS_ENABLED) -or [bool]$cert -or [bool]$key
+
+    if (-not $enabled) {
+        return [pscustomobject]@{ Enabled = $false; CertFile = ""; KeyFile = "" }
+    }
+    if (-not $cert -or -not $key) {
+        throw "启用 LAN HTTPS 需要同时提供证书和私钥。请使用 -TlsCertFile/-TlsKeyFile，或设置 LENGRVIS_LAN_TLS_CERT_FILE/LENGRVIS_LAN_TLS_KEY_FILE。"
+    }
+
+    $certPath = Resolve-LaunchPath $cert
+    $keyPath = Resolve-LaunchPath $key
+    if (-not (Test-Path -LiteralPath $certPath -PathType Leaf)) {
+        throw "LAN HTTPS 证书文件不存在：$certPath"
+    }
+    if (-not (Test-Path -LiteralPath $keyPath -PathType Leaf)) {
+        throw "LAN HTTPS 私钥文件不存在：$keyPath"
+    }
+
+    return [pscustomobject]@{ Enabled = $true; CertFile = $certPath; KeyFile = $keyPath }
+}
+
 function Test-Health {
     try {
-        $response = Invoke-WebRequest -Uri "$BackendUrl/api/health" -UseBasicParsing -TimeoutSec 2
+        $healthUrl = "$BackendUrl/api/health"
+        if ($BackendScheme -eq "https") {
+            $invokeCommand = Get-Command Invoke-WebRequest
+            if ($invokeCommand.Parameters.ContainsKey("SkipCertificateCheck")) {
+                $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2 -SkipCertificateCheck
+                return $response.StatusCode -ge 200 -and $response.StatusCode -lt 300
+            }
+            $previousCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+            try {
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+                $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2
+            }
+            finally {
+                [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
+            }
+        }
+        else {
+            $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2
+        }
         return $response.StatusCode -ge 200 -and $response.StatusCode -lt 300
     }
     catch {
@@ -145,6 +207,7 @@ function Stop-WorkspaceListenerOnPort([int]$Port, [string]$Purpose) {
 }
 
 function Ensure-NodeDependencies([string]$Npm, [bool]$NeedsDesktop) {
+    # Legacy switch: keep accepting callers that explicitly opted out of install/check.
     if ($SkipInstall) {
         return
     }
@@ -156,45 +219,159 @@ function Ensure-NodeDependencies([string]$Npm, [bool]$NeedsDesktop) {
         $requiredPaths += (Join-Path $DesktopDir "node_modules\electron\dist\electron.exe")
     }
 
-    $missingDependency = $false
+    $missingDependencies = @()
     foreach ($path in $requiredPaths) {
         if (-not (Test-Path $path)) {
-            $missingDependency = $true
-            break
+            $missingDependencies += $path
         }
     }
 
-    if ($missingDependency) {
-        Write-Step "正在安装桌面依赖（首次启动可能需要几分钟）"
-        & $Npm --prefix $DesktopDir install
-        if ($LASTEXITCODE -ne 0) {
-            throw "桌面依赖安装失败。请查看上方输出或 logs 文件夹。"
+    if ($missingDependencies.Count -eq 0) {
+        return
+    }
+
+    if (-not $InstallMissingDependencies) {
+        $missingList = Format-DependencyList $missingDependencies
+        throw @"
+缺少桌面/前端依赖：
+$missingList
+
+正式/产品启动不会现场运行 npm install。
+开发环境请先运行：
+  .\scripts\dev.ps1 -InstallMissingDependencies
+也可以手动运行：
+  $Npm --prefix desktop install
+如确需由本启动脚本安装，重新运行：
+  .\scripts\start_app.ps1 -InstallMissingDependencies
+"@
+    }
+
+    Write-Step "正在安装桌面依赖（显式开发安装模式）"
+    & $Npm --prefix $DesktopDir install
+    if ($LASTEXITCODE -ne 0) {
+        throw "桌面依赖安装失败。请查看上方输出或 logs 文件夹。"
+    }
+
+    $remainingDependencies = @()
+    foreach ($path in $requiredPaths) {
+        if (-not (Test-Path $path)) {
+            $remainingDependencies += $path
+        }
+    }
+    if ($remainingDependencies.Count -ne 0) {
+        throw "桌面依赖安装后仍缺少：`n$(Format-DependencyList $remainingDependencies)"
+    }
+}
+
+function Get-MissingPythonRequirements([string]$Python) {
+    $requirementsPath = Join-Path $Root "backend\requirements.txt"
+    $previousRequirementsPath = $env:LENGRVIS_REQUIREMENTS_CHECK_PATH
+    $dependencyCheckScript = @'
+import importlib.metadata as metadata
+import os
+import pathlib
+import platform
+import re
+import sys
+
+
+def marker_applies(marker):
+    marker = marker.strip()
+    for key, actual in (
+        ("platform_system", platform.system()),
+        ("sys_platform", sys.platform),
+    ):
+        match = re.fullmatch(rf"{key}\s*(==|!=)\s*['\"]([^'\"]+)['\"]", marker)
+        if match:
+            operator, expected = match.groups()
+            return actual == expected if operator == "==" else actual != expected
+    return True
+
+
+def requirement_name(line):
+    line = line.strip()
+    if not line or line.startswith("#") or line.startswith("-"):
+        return None
+    line = re.split(r"\s+#", line, 1)[0].strip()
+    requirement, _, marker = line.partition(";")
+    if marker and not marker_applies(marker):
+        return None
+    requirement = requirement.strip()
+    if "://" in requirement or requirement.startswith((".", "/")):
+        return None
+    return re.split(r"\s*(?:\[|===|==|~=|!=|<=|>=|<|>)", requirement, 1)[0].strip() or None
+
+
+requirements_path = pathlib.Path(os.environ["LENGRVIS_REQUIREMENTS_CHECK_PATH"])
+missing = []
+for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
+    name = requirement_name(raw_line)
+    if not name:
+        continue
+    try:
+        metadata.distribution(name)
+    except metadata.PackageNotFoundError:
+        missing.append(name)
+
+if missing:
+    print("\n".join(missing))
+    sys.exit(1)
+'@
+
+    try {
+        $env:LENGRVIS_REQUIREMENTS_CHECK_PATH = $requirementsPath
+        $output = & $Python -c $dependencyCheckScript 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            return @()
+        }
+        return @($output | ForEach-Object { [string]$_ } | Where-Object { $_.Trim() })
+    }
+    finally {
+        if ($null -eq $previousRequirementsPath) {
+            Remove-Item Env:\LENGRVIS_REQUIREMENTS_CHECK_PATH -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:LENGRVIS_REQUIREMENTS_CHECK_PATH = $previousRequirementsPath
         }
     }
 }
 
 function Ensure-PythonDependencies([string]$Python) {
+    # Legacy switch: keep accepting callers that explicitly opted out of install/check.
     if ($SkipInstall) {
         return
     }
 
-    $dependenciesAvailable = $false
-    try {
-        & $Python -c "import bs4, croniter, docx, fastapi, httpx, jwt, numpy, openpyxl, pandas, psutil, pydantic, pypdf, pytesseract, send2trash, uvicorn, watchdog, yaml; from PIL import Image; from pptx import Presentation; import playwright.sync_api" *> $null
-        $dependenciesAvailable = $LASTEXITCODE -eq 0
-    }
-    catch {
-        $dependenciesAvailable = $false
-    }
-
-    if ($dependenciesAvailable) {
+    $missingDependencies = @(Get-MissingPythonRequirements $Python)
+    if ($missingDependencies.Count -eq 0) {
         return
     }
 
-    Write-Step "正在安装后端依赖（首次启动可能需要几分钟）"
+    if (-not $InstallMissingDependencies) {
+        $missingList = Format-DependencyList $missingDependencies
+        throw @"
+缺少后端 Python 依赖：
+$missingList
+
+正式/产品启动不会现场运行 pip install。
+开发环境请先运行：
+  .\scripts\dev.ps1 -InstallMissingDependencies
+也可以手动运行：
+  $Python -m pip install -r backend\requirements.txt
+如确需由本启动脚本安装，重新运行：
+  .\scripts\start_app.ps1 -InstallMissingDependencies
+"@
+    }
+
+    Write-Step "正在安装后端依赖（显式开发安装模式）"
     & $Python -m pip install -r (Join-Path $Root "backend\requirements.txt")
     if ($LASTEXITCODE -ne 0) {
         throw "后端依赖安装失败。请查看上方输出或 logs 文件夹。"
+    }
+
+    $remainingDependencies = @(Get-MissingPythonRequirements $Python)
+    if ($remainingDependencies.Count -ne 0) {
+        throw "后端依赖安装后仍缺少：`n$(Format-DependencyList $remainingDependencies)"
     }
 }
 
@@ -239,7 +416,7 @@ function Ensure-DesktopBuild([string]$Npm) {
     }
 }
 
-function Start-Backend([string]$Python) {
+function Start-Backend([string]$Python, [object]$LanTlsConfig) {
     $existing = Get-ListenProcess $BackendPort
     if ($existing) {
         $commandLine = [string]$existing.CommandLine
@@ -264,9 +441,13 @@ function Start-Backend([string]$Python) {
     Write-Step "正在启动后端服务：$BackendUrl"
     Stop-FullBackendIfWorkspaceOwned
     $env:LENGRVIS_FULL_BACKEND = "1"
+    $backendArgs = @("-m", "uvicorn", "backend.main:full_app", "--host", $BackendHost, "--port", [string]$BackendPort)
+    if ($LanTlsConfig.Enabled) {
+        $backendArgs += @("--ssl-certfile", [string]$LanTlsConfig.CertFile, "--ssl-keyfile", [string]$LanTlsConfig.KeyFile)
+    }
     $process = Start-Process `
         -FilePath $Python `
-        -ArgumentList @("-m", "uvicorn", "backend.main:full_app", "--host", $BackendHost, "--port", [string]$BackendPort) `
+        -ArgumentList $backendArgs `
         -WorkingDirectory $Root `
         -WindowStyle Hidden `
         -RedirectStandardOutput $BackendStdoutLog `
@@ -438,10 +619,23 @@ function Start-DesktopShell {
 try {
     Set-Location $Root
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    $lanTlsConfig = Resolve-LanTlsConfig
+    if ($lanTlsConfig.Enabled) {
+        $BackendScheme = "https"
+        $BackendUrl = "${BackendScheme}://$BackendHost`:$BackendPort"
+        $env:LENGRVIS_LAN_TLS_ENABLED = "true"
+        $env:LENGRVIS_LAN_TLS_CERT_FILE = [string]$lanTlsConfig.CertFile
+        $env:LENGRVIS_LAN_TLS_KEY_FILE = [string]$lanTlsConfig.KeyFile
+    }
+    else {
+        $env:LENGRVIS_LAN_TLS_ENABLED = "false"
+    }
 
     $env:LENGRVIS_ENV = if ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } elseif ($env:LENGRVIS_ENV) { $env:LENGRVIS_ENV } else { "development" }
     $env:LENGRVIS_ENV = $env:LENGRVIS_ENV
     $env:LENGRVIS_BACKEND_URL = $BackendUrl
+    $env:LENGRVIS_BACKEND_HOST = $BackendHost
+    $env:LENGRVIS_BACKEND_PORT = [string]$BackendPort
     $env:LENGRVIS_CONFIG_DIR = $Root
 
     $python = Find-Python
@@ -450,7 +644,7 @@ try {
     Ensure-NodeDependencies $npm ([bool]$Desktop)
     Ensure-PythonDependencies $python
     Ensure-DesktopBuild $npm
-    $startedBackend = Start-Backend $python
+    $startedBackend = Start-Backend $python $lanTlsConfig
     $startedFrontend = Start-Frontend $npm
 
     if ($CheckOnly) {
