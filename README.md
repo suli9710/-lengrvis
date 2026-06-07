@@ -1,10 +1,19 @@
 # Lengrvis
 
+## 平台支持矩阵
+
+| 平台 | 状态 | 当前交付 | 已知限制 |
+| --- | --- | --- | --- |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包仍需在真实机器做启动到首屏的人工验收。 |
+| Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 需要与电脑在可访问网络内；完整应用商店分发未完成。 |
+| macOS 桌面 | Preview | macOS 后端构建脚本与 DMG 脚本存在 | 不作为 0-90 天主线，需在 macOS 主机验证。 |
+| iOS Companion | Planned | 暂不交付 | 等 Android companion 闭环稳定后再排期。 |
+
 ## 普通用户快速开始
 
 1. 双击 `启动 Lengrvis.cmd` 启动 Lengrvis。
 2. 第一次启动可能会安装依赖，通常需要 1-5 分钟；之后启动一般在 20-60 秒内完成。命令行窗口会显示“正在启动”“已启动”或失败原因。
-3. 启动成功后会打开 Lengrvis 桌面窗口。如果没看到窗口，请手动打开 `http://127.0.0.1:5173`，或查看系统托盘里的 Lengrvis。
+3. 启动成功后会打开 Lengrvis 桌面窗口。首屏可以直接从“整理下载目录、总结本地文档、查找大文件、检查电脑状态、文档问答”开始，每个模板都会显示本机处理、云端边界、审批、回滚和预计耗时。
 4. 如果启动失败，请先双击 `Start-Lengrvis-Debug.cmd`，它会把最近的错误日志打印出来；完整日志在 `logs` 文件夹。
 5. 开发者说明保留在下面；普通使用只需要优先看这一节。
 
@@ -152,14 +161,16 @@ npm --prefix desktop run dev
 ```
 
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket smoke。
+同时会运行 mobile remote-input grant smoke，避免发布门禁漏掉远程输入授权边界。
 
-最近一次记录的验证结果（本轮文档审计未能重新核验完整测试数）：
+最近一次记录的核心门禁验证结果：
 
 ```text
-backend: 1049 passed, 1 skipped
+backend: 1251 passed, 1 skipped
 desktop typecheck passed
 mobile typecheck passed
 mobile token smoke passed
+mobile remote-input grant smoke passed
 ```
 
 跳过项是当前 Windows shell 没有创建符号链接权限。
@@ -167,7 +178,7 @@ mobile token smoke passed
 端到端 QA 和发布门禁见：
 
 - `docs/qa/e2e-acceptance-matrix.md`：backend / desktop / mobile 的 P0-P2 验收矩阵。
-- `docs/qa/release-gate.md`：发布前 `qa:gate`、产物 `release:gate`、人工 P1 验收和 stop-ship 条件。
+- `docs/qa/release-gate.md`：发布前 `qa:gate`、产物 `release:check`、人工 P1 验收和 stop-ship 条件。
 
 快速发布前置门禁：
 
@@ -178,7 +189,7 @@ npm run qa:gate
 已有 Windows 发布产物时再跑产物门禁：
 
 ```powershell
-npm run release:gate
+npm run release:check
 ```
 
 ## 打包
@@ -236,7 +247,7 @@ npm --prefix desktop run dist:mac:arm64
 .\scripts\build_all.ps1 -VerifyOnly
 ```
 
-默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。用户切换隐私模式后，Settings 会按需安装 Ollama 运行时、启动本地服务，并通过 `/api/settings/ollama/pull` 拉取推荐模型。
+默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。Settings 已提供本地模型健康检查、Ollama 安装/启动/拉取推荐模型的产品入口；当前仍按真实机器环境执行，隐私模式不可用时会明确失败，不会静默切到云端。
 
 ```powershell
 .\scripts\build_all.ps1
@@ -260,6 +271,8 @@ npm --prefix desktop run dist:mac:arm64
 - `POST /api/pair/code` — 桌面端生成一次性 LAN 配对码
 - `POST /api/pair` — Android 伴侣 App 用配对码换取移动端 JWT
 - `GET /api/mobile/approvals/pending`、`POST /api/mobile/approvals/{approval_id}/decision` — Bearer JWT 保护的审批接口
+- `GET /api/mobile/tasks`、`POST /api/mobile/tasks/{task_id}/pause|resume|cancel` — 手机端监督电脑任务，不暴露内部 plan args。
+- `POST /api/mobile/remote-input-grants/{grant_id}/token`、`DELETE /api/mobile/remote-input-grants/{grant_id}` — 手机端领取或结束短期远程输入授权。
 - `WebSocket /ws/mobile/approvals` — 手机端订阅审批创建/决策事件；令牌通过 `Sec-WebSocket-Protocol: lengrvis.mobile.token.<token>` 传递，避免进入 URL 日志。
 
 Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` 启动。手机真机访问时，后端需要监听局域网地址，例如 `.\scripts\start_app.ps1 -BackendHost 0.0.0.0`；远程 LAN 客户端默认只能访问移动端配对与审批接口，桌面端完整 API 仍限制为本机访问。

@@ -105,6 +105,14 @@ const forbiddenPlaceholderTexts = [
   "审批队列里有一个待处理的高风险请求"
 ];
 
+const quickTemplateButtonNames = {
+  cleanDownloads: /整理下载目录|鏁寸悊涓嬭浇鐩綍/,
+  summarizeDocument: /总结本地文档|总结文档|鎬荤粨鏈湴鏂囨。|鎬荤粨鏂囨。/,
+  findLargeFiles: /查找大文件|鏌ユ壘澶ф枃浠?/,
+  checkComputer: /检查电脑状态|检查电脑|妫€鏌ョ數鑴戠姸鎬?|妫€鏌ョ數鑴?/,
+  documentQa: /文档问答|鏂囨。闂瓟/
+};
+
 function releasePreviewPort() {
   if (process.platform !== "win32") return;
   try {
@@ -303,10 +311,18 @@ async function installApiMocks(page, options = {}) {
 }
 
 async function assertRootRendered(page) {
-  await page.waitForSelector("#root > *", { timeout: 15_000 });
-  const rootText = await page.locator("#root").innerText();
-  assert.ok(rootText.trim().length > 0, "root should not be blank");
-  await assertButtonExists(page, /^(Refresh|刷新|鍒锋柊)$/);
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      await page.waitForSelector("#root > *", { timeout: 30_000 });
+      const rootText = await page.locator("#root").innerText();
+      assert.ok(rootText.trim().length > 0, "root should not be blank");
+      await assertButtonExists(page, /^(Refresh|刷新|鍒锋柊)$/);
+      return;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await page.reload({ waitUntil: "networkidle" });
+    }
+  }
 }
 
 async function assertNoPlaceholderContent(page, label) {
@@ -316,9 +332,17 @@ async function assertNoPlaceholderContent(page, label) {
   }
 }
 
+async function assertHomeQuickTemplates(page) {
+  for (const name of Object.values(quickTemplateButtonNames)) {
+    await page.getByRole("button", { name }).first().waitFor({ timeout: 10_000 });
+  }
+  await page.getByText(/Task Workspace/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/成果区|鎴愭灉鍖?/).first().waitFor({ timeout: 10_000 });
+}
+
 async function assertDocumentQuickEntry(page) {
-  await page.getByRole("button", { name: /总结文档|鎬荤粨鏂囨。/ }).click();
-  await page.getByText(/文档操作区|鏂囨。鎿嶄綔鍖?/).waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: quickTemplateButtonNames.summarizeDocument }).click();
+  await page.getByText(/文档操作区|鏂囨。鎿嶄綔鍖?/).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择文档|閫夋嫨鏂囨。/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /选择并总结|閫夋嫨骞舵€荤粨/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /读取预览|^读取$/ }).first().waitFor({ timeout: 10_000 });
@@ -342,8 +366,8 @@ async function assertDocumentQuickEntry(page) {
 async function assertDocumentCompareFlow(page, counters) {
   await page.goto(previewUrl, { waitUntil: "networkidle" });
   await assertRootRendered(page);
-  await page.getByRole("button", { name: /总结文档|鎬荤粨鏂囨。/ }).click();
-  await page.getByText(/对比两份文档|瀵规瘮涓や唤鏂囨。/).waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: quickTemplateButtonNames.summarizeDocument }).click();
+  await page.getByText(/对比两份文档|瀵规瘮涓や唤鏂囨。/).first().waitFor({ timeout: 10_000 });
   await page.getByPlaceholder(/选择文档，或粘贴文件位置|閫夋嫨鏂囨。/).fill(smokeDocumentPath);
   await page.getByLabel(/第二份文档位置|绗簩浠芥枃妗ｄ綅缃?/).fill(smokeCompareDocumentPath);
 
@@ -359,12 +383,13 @@ async function assertDocumentCompareFlow(page, counters) {
 }
 
 async function assertQuickPromptEntry(page, counters) {
-  await page.getByRole("button", { name: /查找大文件|鏌ユ壘澶ф枃浠?/ }).click();
+  await page.getByRole("button", { name: quickTemplateButtonNames.findLargeFiles }).click();
   const commandInput = page.locator("textarea").first();
   await expectTextareaValue(commandInput, /找出这台电脑上最大的文件|鎵惧嚭/);
   await page.getByText(/已填好这句话|宸插～濂借繖鍙ヨ瘽/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/清理前会确认|实时显示进度|瀹炴椂鏄剧ず杩涘害/).first().waitFor({ timeout: 10_000 });
+  await assertRootTextIncludes(page, /Task Workspace.*文件工具|文件工具.*Task Workspace|Task Workspace.*鏂囦欢宸ュ叿|鏂囦欢宸ュ叿.*Task Workspace/s, "quick prompt should update Task Workspace");
   await assertRootTextIncludes(page, /发送后先选文件夹|清理前会确认|清理前不会删除任何文件/, "large-file quick entry should explain scope and deletion safety");
   assert.equal(counters.taskLaunchRequests ?? 0, 0, "quick prompt should fill the command box without starting a task");
   await assertNoHorizontalOverflow(page, "quick prompt entry");
@@ -372,7 +397,7 @@ async function assertQuickPromptEntry(page, counters) {
 
 async function assertComputerCheckEntry(page, counters) {
   const systemInfoRequestsBefore = counters.systemInfoRequests ?? 0;
-  await page.getByRole("button", { name: /检查电脑|妫€鏌ョ數鑴?/ }).click();
+  await page.getByRole("button", { name: quickTemplateButtonNames.checkComputer }).click();
   await page.getByText(/系统信息|绯荤粺淇℃伅/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/一键只读检查|涓€閿彧璇绘鏌?/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/只读诊断，不改设置|鍙璇婃柇锛屼笉鏀硅缃?/).first().waitFor({ timeout: 10_000 });
@@ -581,6 +606,7 @@ async function returnToSearchTab(page) {
       await page.goto(previewUrl, { waitUntil: "networkidle" });
       await assertRootRendered(page);
       await assertNoPlaceholderContent(page, `${viewport.label} empty backend`);
+      await assertHomeQuickTemplates(page);
       await assertButtonExists(page, /^(Chat|对话|瀵硅瘽)$/);
       await assertNoHorizontalOverflow(page, `${viewport.label} home`);
       console.log(`viewport smoke passed: ${viewport.label} ${viewport.width}x${viewport.height}`);

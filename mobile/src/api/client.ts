@@ -44,6 +44,31 @@ export interface BackendTask {
   updated_at: string;
 }
 
+export interface MobileTask {
+  id: string;
+  title: string;
+  status: string;
+  mode: string;
+  summary: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export type MobileTaskTemplateId =
+  | "organize_downloads"
+  | "summarize_local_docs"
+  | "find_large_files"
+  | "check_computer_status"
+  | "document_qa";
+
+export type MobileTaskMode = "efficiency" | "privacy" | "hybrid";
+
+export interface MobileTaskLaunchResult {
+  task: MobileTask;
+  message: string;
+  source_task_id?: string;
+}
+
 export interface BackendPlanStep {
   id: string;
   order: number;
@@ -201,12 +226,65 @@ export async function disconnectMobileDevice(session: PairingSession): Promise<v
   await parseJson<unknown>(response);
 }
 
+export async function listMobileTasks(session: PairingSession): Promise<MobileTask[]> {
+  const response = await fetch(`${session.baseUrl}/api/mobile/tasks`, {
+    headers: authHeaders(session.token),
+  });
+  const payload = await parseJson<{ tasks: MobileTask[] }>(response);
+  return payload.tasks;
+}
+
+export async function createMobileTask(
+  session: PairingSession,
+  request: { template_id: MobileTaskTemplateId; user_input?: string; mode: MobileTaskMode },
+): Promise<MobileTaskLaunchResult> {
+  const response = await fetch(`${session.baseUrl}/api/mobile/tasks`, {
+    method: "POST",
+    headers: jsonAuthHeaders(session.token),
+    body: JSON.stringify(request),
+  });
+  return parseJson<MobileTaskLaunchResult>(response);
+}
+
+export async function submitMobileTaskFollowUp(
+  session: PairingSession,
+  taskId: string,
+  request: { instruction: string; mode?: MobileTaskMode },
+): Promise<MobileTaskLaunchResult> {
+  const response = await fetch(`${session.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/follow-up`, {
+    method: "POST",
+    headers: jsonAuthHeaders(session.token),
+    body: JSON.stringify(request),
+  });
+  return parseJson<MobileTaskLaunchResult>(response);
+}
+
+export async function submitMobileTaskCommand(
+  session: PairingSession,
+  taskId: string,
+  command: "pause" | "resume" | "cancel",
+): Promise<MobileTask> {
+  const response = await fetch(`${session.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/${command}`, {
+    method: "POST",
+    headers: authHeaders(session.token),
+  });
+  return parseJson<MobileTask>(response);
+}
+
 export async function claimRemoteInputGrantToken(session: PairingSession, grantId: string): Promise<RemoteInputGrantToken> {
   const response = await fetch(`${session.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}/token`, {
     method: "POST",
     headers: authHeaders(session.token),
   });
   return parseJson<RemoteInputGrantToken>(response);
+}
+
+export async function revokeRemoteInputGrant(session: PairingSession, grantId: string): Promise<RemoteInputGrant> {
+  const response = await fetch(`${session.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}`, {
+    method: "DELETE",
+    headers: authHeaders(session.token),
+  });
+  return parseJson<RemoteInputGrant>(response);
 }
 
 export function approvalWebSocketUrl(session: PairingSession): string {
@@ -266,9 +344,16 @@ async function parseJson<T>(response: Response): Promise<T> {
   return data as T;
 }
 
-function authHeaders(token: string): HeadersInit {
+function authHeaders(token: string): Record<string, string> {
   return {
     Accept: "application/json",
     Authorization: `Bearer ${token}`,
+  };
+}
+
+function jsonAuthHeaders(token: string): Record<string, string> {
+  return {
+    ...authHeaders(token),
+    "Content-Type": "application/json",
   };
 }

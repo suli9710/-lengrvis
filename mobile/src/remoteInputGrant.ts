@@ -25,6 +25,17 @@ export function remoteInputGrantExpiryDelayMs(grant: RemoteInputGrant, now = Dat
   return Math.max(0, expiresAt - now);
 }
 
+export function remoteInputGrantRemainingText(grant: RemoteInputGrant | null | undefined, now = Date.now()): string {
+  if (!grant || grant.status !== "active" || grant.revoked_at) return "未授权";
+  const remainingMs = remoteInputGrantExpiryDelayMs(grant, now);
+  if (remainingMs === null || remainingMs <= 0) return "已过期";
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds} 秒`;
+  return `${minutes} 分 ${seconds.toString().padStart(2, "0")} 秒`;
+}
+
 export function isRemoteInputGrantUsable(
   grant: RemoteInputGrant | null | undefined,
   now = Date.now(),

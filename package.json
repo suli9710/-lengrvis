@@ -8,7 +8,8 @@
     "test": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1",
     "build": "powershell -ExecutionPolicy Bypass -File ./scripts/build.ps1",
     "qa:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1 -- --maxfail=1 && npm --prefix desktop run smoke",
-    "release:gate": "npm run qa:gate && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly"
+    "release:check": "npm run qa:gate && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
+    "release:gate": "npm run release:check"
   },
   "engines": {
     "node": ">=20"

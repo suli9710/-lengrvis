@@ -163,13 +163,13 @@ def get_task(task_id: str) -> Task:
     return Task.model_validate(data)
 
 
-def set_task_status(task_id: str, status: TaskStatus) -> Task:
+def set_task_status(task_id: str, status: TaskStatus, *, strict: bool | None = None) -> Task:
     task = get_task(task_id)
-    return safe_transition(task, status, actor="TaskService")
+    return safe_transition(task, status, actor="TaskService", strict=strict)
 
 
-def resume_task(task_id: str) -> Task:
-    task = set_task_status(task_id, TaskStatus.EXECUTING_STEP)
+def resume_task(task_id: str, *, strict: bool | None = None) -> Task:
+    task = set_task_status(task_id, TaskStatus.EXECUTING_STEP, strict=strict)
     pool = get_pool()
     try:
         loop = asyncio.get_running_loop()

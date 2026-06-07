@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   AppState,
   type AppStateStatus,
+  Alert,
   Image,
   Pressable,
   SafeAreaView,
@@ -13,7 +14,7 @@ import {
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from "react-native";
-import { ArrowLeft, Monitor, MousePointer2, Pause, Play, RefreshCcw, Wifi, WifiOff } from "lucide-react-native";
+import { ArrowLeft, Monitor, MousePointer2, Pause, Play, RefreshCcw, Wifi, WifiOff, XCircle } from "lucide-react-native";
 
 import {
   claimRemoteInputGrantToken,
@@ -21,12 +22,13 @@ import {
   mobileTokenWebSocketProtocols,
   remoteInputWebSocketUrl,
   remoteScreenWebSocketUrl,
+  revokeRemoteInputGrant,
   type PairingSession,
   type RemoteInputGrant,
   type RemoteScreenEvent,
 } from "../api/client";
 import { shortDate } from "../format";
-import { isRemoteInputGrantUsable, mapViewerPointToRemote } from "../remoteInputGrant";
+import { isRemoteInputGrantUsable, mapViewerPointToRemote, remoteInputGrantRemainingText } from "../remoteInputGrant";
 
 type ConnectionState = "offline" | "connecting" | "online" | "paused";
 type InputConnectionState = "disabled" | "ready" | "connecting" | "online" | "offline";
@@ -46,10 +48,12 @@ export function RemoteScreen({
   grant,
   session,
   onBack,
+  onRemoteInputGrantRevoked,
 }: {
   grant: RemoteInputGrant | null;
   session: PairingSession;
   onBack: () => void;
+  onRemoteInputGrantRevoked: (grant: RemoteInputGrant) => void;
 }) {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [inputConnection, setInputConnection] = useState<InputConnectionState>(isRemoteInputGrantUsable(grant) ? "ready" : "disabled");
@@ -57,6 +61,9 @@ export function RemoteScreen({
   const [streamMeta, setStreamMeta] = useState({ fps: 0, quality: 0 });
   const [error, setError] = useState("");
   const [inputError, setInputError] = useState("");
+  const [nowMs, setNowMs] = useState(Date.now());
+  const [isRevokingInput, setIsRevokingInput] = useState(false);
+  const [locallyRevokedGrantId, setLocallyRevokedGrantId] = useState("");
   const [viewerSize, setViewerSize] = useState({ width: 0, height: 0 });
   const socketRef = useRef<WebSocket | null>(null);
   const inputSocketRef = useRef<WebSocket | null>(null);
@@ -69,6 +76,15 @@ export function RemoteScreen({
   const lastAcknowledgedSequenceRef = useRef(0);
   const lastRenderedAtRef = useRef(0);
   const degradedStreamRef = useRef(false);
+  const effectiveGrant = grant?.id === locallyRevokedGrantId ? null : grant;
+  const grantUsable = isRemoteInputGrantUsable(effectiveGrant, nowMs);
+  const grantRemainingText = remoteInputGrantRemainingText(effectiveGrant, nowMs);
+  const remoteModeText = grantUsable ? (inputConnection === "online" ? "已授权输入" : "可输入，待连接") : "只读观看";
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const clearFrameAckFallback = useCallback(() => {
     if (frameAckFallbackRef.current !== null) {
@@ -99,8 +115,8 @@ export function RemoteScreen({
   }, []);
 
   const resetInputConnection = useCallback(() => {
-    setInputConnection(isRemoteInputGrantUsable(grant) ? "ready" : "disabled");
-  }, [grant]);
+    setInputConnection(isRemoteInputGrantUsable(effectiveGrant) ? "ready" : "disabled");
+  }, [effectiveGrant]);
 
   const sendStreamConfig = useCallback((fps: number, quality: number) => {
     const socket = socketRef.current;
@@ -226,7 +242,7 @@ export function RemoteScreen({
 
   const connectInput = useCallback(async () => {
     closeInputSocket();
-    if (!isRemoteInputGrantUsable(grant)) {
+    if (!isRemoteInputGrantUsable(effectiveGrant)) {
       setInputConnection("disabled");
       setInputError("");
       return;
@@ -235,8 +251,8 @@ export function RemoteScreen({
     setInputConnection("connecting");
     setInputError("");
     try {
-      const grantToken = await claimRemoteInputGrantToken(session, grant.id);
-      if (connectionGeneration !== inputConnectionGenerationRef.current || !isRemoteInputGrantUsable(grant)) {
+      const grantToken = await claimRemoteInputGrantToken(session, effectiveGrant.id);
+      if (connectionGeneration !== inputConnectionGenerationRef.current || !isRemoteInputGrantUsable(effectiveGrant)) {
         return;
       }
       const socket = new WebSocket(remoteInputWebSocketUrl(session), mobileTokenWebSocketProtocols(grantToken.token));
@@ -280,22 +296,22 @@ export function RemoteScreen({
       setInputConnection("offline");
       setInputError(inputErrorMessage(currentError));
     }
-  }, [closeInputSocket, grant, session]);
+  }, [closeInputSocket, effectiveGrant, session]);
 
   useEffect(() => {
     resetInputConnection();
     setInputError("");
     closeInputSocket();
-  }, [closeInputSocket, grant, resetInputConnection]);
+  }, [closeInputSocket, effectiveGrant, resetInputConnection]);
 
   useEffect(() => {
     connect();
-    if (isRemoteInputGrantUsable(grant)) void connectInput();
+    if (grantUsable) void connectInput();
     return () => {
       closeSocket();
       closeInputSocket();
     };
-  }, [closeInputSocket, closeSocket, connect, connectInput, grant]);
+  }, [closeInputSocket, closeSocket, connect, connectInput, grantUsable]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
@@ -303,7 +319,7 @@ export function RemoteScreen({
         if (!pausedByUserRef.current) {
           setConnection("connecting");
           connect();
-          if (isRemoteInputGrantUsable(grant)) void connectInput();
+          if (grantUsable) void connectInput();
         }
         return;
       }
@@ -313,7 +329,7 @@ export function RemoteScreen({
       closeInputSocket();
     });
     return () => subscription.remove();
-  }, [closeInputSocket, closeSocket, connect, connectInput, grant, resetInputConnection]);
+  }, [closeInputSocket, closeSocket, connect, connectInput, grantUsable, resetInputConnection]);
 
   const handleToggleStream = () => {
     if (connection === "online" || connection === "connecting") {
@@ -326,7 +342,7 @@ export function RemoteScreen({
     }
     pausedByUserRef.current = false;
     connect();
-    if (isRemoteInputGrantUsable(grant)) void connectInput();
+    if (grantUsable) void connectInput();
   };
 
   const handleViewerLayout = (event: LayoutChangeEvent) => {
@@ -339,13 +355,33 @@ export function RemoteScreen({
   const handleRemotePress = (event: GestureResponderEvent) => {
     const socket = inputSocketRef.current;
     if (!frame || !viewerSize.width || !viewerSize.height || !socket || socket.readyState !== 1) {
-      if (isRemoteInputGrantUsable(grant) && inputConnection !== "online") void connectInput();
+      if (grantUsable && inputConnection !== "online") void connectInput();
       return;
     }
     const point = mapViewerPointToRemote(event.nativeEvent.locationX, event.nativeEvent.locationY, viewerSize, frame);
     if (!point) return;
     socket.send(JSON.stringify({ type: "click", x: point.x, y: point.y }));
     setInputError("点击已发送，等待电脑端审批。");
+  };
+
+  const handleEndInputControl = async () => {
+    if (!grantUsable || !grant) return;
+    setIsRevokingInput(true);
+    setInputError("");
+    try {
+      const revokedGrant = await revokeRemoteInputGrant(session, grant.id);
+      setLocallyRevokedGrantId(revokedGrant.id);
+      onRemoteInputGrantRevoked(revokedGrant);
+      resetInputConnection();
+      closeInputSocket();
+      setInputConnection("disabled");
+      setInputError("已结束远程输入授权。");
+    } catch (currentError) {
+      const message = currentError instanceof Error && currentError.message ? currentError.message : "结束接管失败，请稍后重试。";
+      Alert.alert("结束接管失败", message);
+    } finally {
+      setIsRevokingInput(false);
+    }
   };
 
   const online = connection === "online";
@@ -389,9 +425,29 @@ export function RemoteScreen({
       <View style={styles.inputStatusRow}>
         <MousePointer2 size={15} color={inputConnection === "online" ? "#75d39a" : "#ffcf72"} />
         <Text style={styles.inputStatusText}>{inputStatusText(inputConnection)}</Text>
-        {isRemoteInputGrantUsable(grant) && inputConnection !== "online" ? (
+        {grantUsable && inputConnection !== "online" ? (
           <Pressable onPress={() => void connectInput()} style={({ pressed }) => [styles.inputReconnect, pressed && styles.pressed]}>
             <Text style={styles.inputReconnectText}>连接</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      <View style={styles.grantStatusRow}>
+        <View style={styles.grantStatusTextWrap}>
+          <Text style={styles.grantStatusLabel}>{remoteModeText}</Text>
+          <Text style={styles.grantStatusMeta}>剩余 {grantRemainingText}</Text>
+        </View>
+        {grantUsable ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="结束远程输入接管"
+            accessibilityState={{ busy: isRevokingInput }}
+            disabled={isRevokingInput}
+            onPress={() => void handleEndInputControl()}
+            style={({ pressed }) => [styles.endGrantButton, (pressed || isRevokingInput) && styles.pressed]}
+          >
+            <XCircle size={15} color="#ffd1d6" />
+            <Text style={styles.endGrantText}>{isRevokingInput ? "结束中" : "结束接管"}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -399,7 +455,7 @@ export function RemoteScreen({
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="发送远程点击审批"
-        disabled={!isRemoteInputGrantUsable(grant)}
+        disabled={!grantUsable}
         onLayout={handleViewerLayout}
         onPress={handleRemotePress}
         style={styles.viewer}
@@ -561,6 +617,53 @@ const styles = StyleSheet.create({
     color: "#17222b",
     fontSize: 12,
     fontWeight: "800",
+  },
+  grantStatusRow: {
+    marginHorizontal: 20,
+    marginTop: 8,
+    minHeight: 42,
+    borderRadius: 8,
+    backgroundColor: "#23313d",
+    borderWidth: 1,
+    borderColor: "#3b4d5b",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  grantStatusTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  grantStatusLabel: {
+    color: "#f7faf8",
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  grantStatusMeta: {
+    color: "#93a2ad",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  endGrantButton: {
+    minHeight: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#70404a",
+    backgroundColor: "#4d2630",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+  },
+  endGrantText: {
+    color: "#ffd1d6",
+    fontSize: 12,
+    fontWeight: "900",
   },
   viewer: {
     flex: 1,

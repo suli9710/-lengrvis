@@ -19,6 +19,7 @@ python -m pytest backend/tests -q --maxfail=1
 npm --prefix desktop run typecheck
 npm --prefix mobile run typecheck
 npm --prefix mobile run smoke:token
+npm --prefix mobile run smoke:remote-input-grant
 npm --prefix desktop run smoke
 ```
 
@@ -26,6 +27,7 @@ Pass criteria:
 
 - Backend, desktop, and mobile verification commands exit 0.
 - Desktop smoke commands exit 0, including document scope, remote input grant, desktop WebSocket token, IPC security, bundled backend env, and browser activity smoke.
+- Mobile smoke commands exit 0, including token subprotocol and remote-input grant lifecycle checks.
 - Any skipped backend tests are expected platform skips and are recorded.
 
 ## 2. Demo-Before-Release Gate
@@ -41,6 +43,7 @@ Demo pass criteria:
 - The preflight gate passes on the same candidate or has only documented, non-demo-blocking platform skips.
 - The demo starts from a clean profile or clearly labeled test workspace with no private user files, real tokens, cookies, one-time codes, payment text, or customer data.
 - The demo script covers first launch, one read-only natural-language task, one R2/R3 dry-run approval, one R4 blocked request, and one document QA answer with a citation label.
+- Platform positioning evidence is captured: Settings model boundary profile, local model readiness or smoke result, one Skill Product Manifest sample, and one template-driven demo path.
 - Mobile companion is included only if pairing, pending approvals, and approve/reject round trip were manually checked on the demo LAN or emulator setup.
 - Any P2/P3 rows skipped for the demo are recorded as residual risks, not implied passes.
 
@@ -49,7 +52,7 @@ Demo pass criteria:
 Run this after Windows release artifacts have been built:
 
 ```powershell
-npm run release:gate
+npm run release:check
 ```
 
 Equivalent expanded command:
@@ -77,7 +80,10 @@ Before tagging a release candidate, verify these user-visible flows against `doc
 | Agent task loop | A read-only natural-language task creates visible progress and completes or fails with actionable copy. |
 | Approval loop | One reversible action produces dry-run approval; one forbidden token/credential request is blocked. |
 | Document QA | A test document answer includes the correct source/citation label. |
+| Local/hybrid model evidence | Settings shows quick/privacy/hybrid model boundary, recommended model, size, hardware status, speed estimate, and the privacy failure path that does not auto-fall back to cloud. |
+| Skill sample | Import or display one non-private Skill/App integration sample and verify Product Manifest cards for file read/write, UI, network, messaging, delete, preview, and rollback/handoff. |
 | Mobile companion | Pairing, pending approval list, and approve/reject round trip work on LAN or documented emulator setup. |
+| Template demo path | One scripted template path from `docs/demo-script.md` runs against disposable data or is recorded as residual risk. |
 | Portable artifact | The release portable starts from a clean directory and can run a read-only diagnostic task. |
 
 Manual checks may be waived only when the release explicitly excludes the affected surface. Record the waiver owner, reason, expiry condition, and follow-up task.
@@ -93,6 +99,7 @@ Do not release if any of these are true:
 - Release artifacts are missing backend resources or package manifests.
 - The candidate requires undocumented local environment state to launch.
 - Demo materials or release notes claim a P2/P3 capability that was not verified or explicitly waived for this candidate.
+- Demo materials claim local/private, Skill/App integration, document citation, mobile companion, or template workflows without either recorded evidence or a named residual risk.
 
 ## 6. Result Template
 
@@ -109,14 +116,19 @@ Preflight gate:
 - desktop typecheck:
 - mobile typecheck:
 - mobile token smoke:
+- mobile remote-input grant smoke:
 - desktop smoke:
 
 Demo-before-release gate:
 - clean profile/test workspace:
+- Settings model boundary profile:
+- local model smoke/readiness:
 - read-only task:
 - approval loop:
 - blocked risky request:
 - document QA citation:
+- Skill Product Manifest sample:
+- template demo path:
 - mobile companion, if included:
 
 Artifact gate:
@@ -128,7 +140,10 @@ Manual sign-off:
 - agent task loop:
 - approval loop:
 - document QA:
+- local/hybrid model evidence:
+- Skill sample:
 - mobile companion:
+- template demo path:
 - portable artifact:
 
 Waivers:

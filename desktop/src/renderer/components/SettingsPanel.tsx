@@ -25,8 +25,8 @@ function zhMode(mode: AppSettings["mode"]): string {
 }
 
 function displayMode(mode: AppSettings["mode"]): string {
-  if (mode === "efficiency") return "高效";
-  if (mode === "hybrid") return "均衡";
+  if (mode === "efficiency") return "快速";
+  if (mode === "hybrid") return "智能混合";
   return "隐私";
 }
 
@@ -47,9 +47,9 @@ function permissionModeLabel(mode: AppSettings["permissionMode"]): string {
 }
 
 function modeDescription(mode: AppSettings["mode"]): string {
-  if (mode === "efficiency") return "优先使用云端能力，响应最快。";
-  if (mode === "hybrid") return "兼顾云端能力与本地隐私控制。";
-  return "尽量把 AI 工作留在本机完成。";
+  if (mode === "efficiency") return "云端优先，适合长推理和网页任务。";
+  if (mode === "hybrid") return "云端规划，本机处理敏感内容。";
+  return "本机优先，失败时给修复动作。";
 }
 
 function appStatusLabel(state: BackendStatus["state"]): string {
@@ -573,6 +573,16 @@ export function SettingsPanel({
               {draft.mode === "privacy" || draft.mode === "hybrid" ? (
                 <LocalLlmHealthNotice health={effectiveLocalLlmHealth} />
               ) : null}
+              <ModelBoundaryProfile
+                mode={draft.mode}
+                allowCloudContext={draft.allowCloudContext}
+                allowFileContentUpload={draft.allowFileContentUpload}
+                localReady={Boolean(detectedLocalLlmHealth?.available || localModelSetupPlan?.ready)}
+                localHealth={detectedLocalLlmHealth}
+                setupPlan={localModelSetupPlan}
+                hardwareStatus={hardwareStatus}
+                cloudModel={draft.model}
+              />
             </label>
             <label className="field">
               <span>工作区文件夹</span>
@@ -2027,6 +2037,192 @@ function LocalLlmHealthNotice({ health }: { health: LocalLLMHealth | null }) {
       </span>
     </div>
   );
+}
+
+function ModelBoundaryProfile({
+  mode,
+  allowCloudContext,
+  allowFileContentUpload,
+  localReady,
+  localHealth,
+  setupPlan,
+  hardwareStatus,
+  cloudModel
+}: {
+  mode: AppSettings["mode"];
+  allowCloudContext: boolean;
+  allowFileContentUpload: boolean;
+  localReady: boolean;
+  localHealth: LocalLLMHealth | null;
+  setupPlan: LocalModelSetupPlan | null;
+  hardwareStatus: HardwareAccelerationStatusPayload | null;
+  cloudModel: string;
+}) {
+  const cards = modelBoundaryCards(
+    mode,
+    allowCloudContext,
+    allowFileContentUpload,
+    localReady,
+    localHealth,
+    setupPlan,
+    hardwareStatus,
+    cloudModel
+  );
+  return (
+    <div className="model-boundary-profile" aria-label="模型边界">
+      {cards.map((card) => (
+        <div
+          key={card.mode}
+          className={`model-boundary-profile__item model-boundary-profile__item--${card.tone}${card.mode === mode ? " model-boundary-profile__item--current" : ""}`}
+        >
+          <div className="model-boundary-profile__item-head">
+            <strong>{card.label}</strong>
+            {card.mode === mode ? <span>当前</span> : null}
+          </div>
+          <span>{card.summary}</span>
+          <dl className="model-boundary-profile__facts">
+            {card.facts.map((fact) => (
+              <div key={fact.label}>
+                <dt>{fact.label}</dt>
+                <dd>{fact.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <em>{card.repair}</em>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type ModelBoundaryTone = "ready" | "warning" | "blocked";
+
+interface ModelBoundaryFact {
+  label: string;
+  value: string;
+}
+
+interface ModelBoundaryCard {
+  mode: AppSettings["mode"];
+  label: string;
+  summary: string;
+  repair: string;
+  tone: ModelBoundaryTone;
+  facts: ModelBoundaryFact[];
+}
+
+function modelBoundaryCards(
+  mode: AppSettings["mode"],
+  allowCloudContext: boolean,
+  allowFileContentUpload: boolean,
+  localReady: boolean,
+  localHealth: LocalLLMHealth | null,
+  setupPlan: LocalModelSetupPlan | null,
+  hardwareStatus: HardwareAccelerationStatusPayload | null,
+  cloudModel: string
+): ModelBoundaryCard[] {
+  const recommendedLocalModel = modelDisplayName(
+    setupPlan?.model || setupPlan?.readiness?.recommendedModel || localHealth?.readiness?.recommendedModel || localHealth?.selectedBackend?.model || "qwen2.5:3b"
+  );
+  const cloudModelLabel = cloudModel.trim() || "已配置云端模型";
+  const modelSize = localModelSizeEstimate(recommendedLocalModel);
+  const hardware = hardwareStatusSummary(hardwareStatus, setupPlan?.readiness ?? localHealth?.readiness);
+  const localSpeed = localSpeedEstimate(hardwareStatus, localReady);
+  const localRepair = localModelRepairAction(setupPlan, localHealth);
+
+  return [
+    {
+      mode: "efficiency",
+      label: "快速",
+      summary: "云端优先，适合长推理、网页和综合规划。",
+      repair: "失败修复：检查 API key、Provider、网络或切换到智能混合。",
+      tone: mode === "efficiency" ? "warning" : "ready",
+      facts: [
+        { label: "推荐模型", value: cloudModelLabel },
+        { label: "模型大小", value: "不占本机模型盘" },
+        { label: "硬件状态", value: "无需本地加速" },
+        { label: "速度预估", value: "最快，取决于网络和服务商" }
+      ]
+    },
+    {
+      mode: "hybrid",
+      label: "智能混合",
+      summary: allowCloudContext ? "云端做复杂规划，本机守住私密内容。" : "本机上下文优先，需要时再请求云端。",
+      repair: localReady ? "失败修复：本地失败时先给分步修复，再由你决定是否云端继续。" : localRepair,
+      tone: localReady ? (allowFileContentUpload ? "warning" : "ready") : "warning",
+      facts: [
+        { label: "推荐模型", value: `${recommendedLocalModel} + ${cloudModelLabel}` },
+        { label: "模型大小", value: modelSize },
+        { label: "硬件状态", value: hardware },
+        { label: "速度预估", value: localReady ? `规划快；私密任务${localSpeed}` : "本地部分待准备" }
+      ]
+    },
+    {
+      mode: "privacy",
+      label: "隐私",
+      summary: "文件名、摘要、OCR 和 embedding 优先留在这台电脑。",
+      repair: `${localRepair}；隐私失败不自动回云端。`,
+      tone: localReady ? "ready" : "blocked",
+      facts: [
+        { label: "推荐模型", value: recommendedLocalModel },
+        { label: "模型大小", value: modelSize },
+        { label: "硬件状态", value: hardware },
+        { label: "速度预估", value: localSpeed }
+      ]
+    }
+  ];
+}
+
+function modelDisplayName(model: string): string {
+  const normalized = model.trim();
+  if (!normalized) return "qwen2.5:3b";
+  return normalized;
+}
+
+function localModelSizeEstimate(model: string): string {
+  const lower = model.toLowerCase();
+  if (lower.includes("7b")) return "约 4-6 GB";
+  if (lower.includes("3b")) return "约 2-3 GB";
+  if (lower.includes("1.5b") || lower.includes("1b")) return "约 1-2 GB";
+  return "按模型包显示";
+}
+
+function hardwareStatusSummary(
+  status: HardwareAccelerationStatusPayload | null,
+  readiness?: LocalModelReadiness
+): string {
+  if (status?.available) {
+    const provider = status.selectedProvider || status.configuredProvider || status.executionProvider || status.generationRuntime || "本地运行时";
+    return `就绪 · ${provider}`;
+  }
+  if (status?.error || status?.errors?.length) {
+    return "需要处理";
+  }
+  if (readiness?.gpuSummary) {
+    return readiness.gpuSummary;
+  }
+  if (readiness && !readiness.canInstall) {
+    return "低于推荐条件";
+  }
+  return "待检测，可先走 CPU";
+}
+
+function localSpeedEstimate(status: HardwareAccelerationStatusPayload | null, localReady: boolean): string {
+  if (!localReady) return "待本地 AI 就绪";
+  const provider = `${status?.selectedProvider || status?.configuredProvider || status?.executionProvider || status?.generationRuntime || ""}`.toLowerCase();
+  if (status?.available && provider.match(/winml|directml|openvino|gpu|npu/)) return "预计较快，适合摘要和短问答";
+  if (status?.available) return "预计中等，适合本地摘要和检索";
+  return "CPU 路径较慢，适合短摘要和轻量问答";
+}
+
+function localModelRepairAction(setupPlan: LocalModelSetupPlan | null, health: LocalLLMHealth | null): string {
+  if (setupPlan?.nextAction === "hardware_blocked") return "失败修复：换高效模式或释放内存/磁盘后重试";
+  if (setupPlan?.nextAction === "install_runtime") return "失败修复：下一步安装 Ollama 运行时";
+  if (setupPlan?.nextAction === "start_runtime") return "失败修复：下一步启动本地 AI 服务";
+  if (setupPlan?.nextAction === "use_bundled_model") return "失败修复：下一步启用随包模型";
+  if (setupPlan?.nextAction === "download_model") return "失败修复：下一步下载推荐模型";
+  if (setupPlan?.ready || health?.available) return "失败修复：重新检查本地 AI 或切换模型";
+  return "失败修复：按下一步准备本地 AI";
 }
 
 interface OllamaStatus {

@@ -32,7 +32,7 @@ export async function notifyApproval(approval: BackendApproval): Promise<void> {
   await Notifications.scheduleNotificationAsync({
     content: {
       title: "Lengrvis 需要你审批",
-      body: approval.message || "有一个任务正在等待你确认。",
+      body: "有任务等待审批，打开 App 查看详情。",
       data: { approvalId: approval.id },
       sound: "default",
       priority: Notifications.AndroidNotificationPriority.HIGH,
