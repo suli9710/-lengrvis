@@ -72,9 +72,31 @@ assert.equal(parsedQrValue.expires_at, "2026-06-01T00:05:00.000Z");
 assert.equal(parsedQrValue.server.origin, parsedQrValue.base_url);
 assert.equal(parsedQrValue.server.scheme, "https");
 assert.equal(parsedQrValue.server.transport_security.fingerprint_sha256, "00112233445566778899aabbccddeeff");
+assert.equal(parsedQrValue.transport_security.fingerprint_sha256, "00112233445566778899aabbccddeeff");
 assert.equal(parsedQrValue.https_enabled, true);
 assert.equal(parsedQrValue.trust_required, true);
 assert.ok(qrContent.value.length > pairing.code.length, "QR content must include the server payload, not only the short code");
+
+const lanHttpPairing = {
+  ...pairing,
+  server: {
+    host: "192.168.1.20",
+    port: 8000,
+    scheme: "http",
+    transport_security: {
+      http_scheme: "http",
+      websocket_scheme: "ws",
+      tls_enabled: false,
+    },
+  },
+  https_enabled: false,
+  trust_required: false,
+};
+const lanHttpQrValue = JSON.parse(buildMobilePairingQrContent(lanHttpPairing).value);
+assert.equal(lanHttpQrValue.base_url, "http://192.168.1.20:8000");
+assert.equal(lanHttpQrValue.server.scheme, "http");
+assert.equal(lanHttpQrValue.server.transport_security.websocket_scheme, "ws");
+assert.equal(lanHttpQrValue.https_enabled, false);
 
 async function main() {
   const dataUrl = await QRCode.toDataURL(qrContent.value, {
@@ -91,11 +113,28 @@ async function main() {
   );
   assert.match(settingsSource, /QRCode\.toDataURL\(qrContent\.value/);
   assert.match(settingsSource, /<img className="mobile-pairing__qr-image" src=\{qrImage\}/);
+  assert.match(settingsSource, /手机扫码配对/);
+  assert.match(settingsSource, /打开手机 App 的扫码入口扫二维码/);
+  assert.match(settingsSource, /打开手机 App 扫码/);
+  assert.match(settingsSource, /优先扫码；复制只是备用，不会在界面展开 token/);
+  assert.match(settingsSource, /无需手动输入局域网地址或 token/);
+  assert.match(settingsSource, /HTTPS\/WSS 会直接用于手机连接/);
+  assert.match(settingsSource, /局域网 HTTP 会被拦截/);
   assert.match(settingsSource, /手机端会阻断 token 配对/);
-  assert.doesNotMatch(settingsSource, /data-qr-text=\{qrContent\.value\}/);
-  assert.doesNotMatch(settingsSource, /mobile-pairing__payload-text/);
-  assert.doesNotMatch(settingsSource, /mobile-pairing__qr-text/);
-  assert.doesNotMatch(settingsSource, /<span>QR 内容<\/span>/);
+  assert.doesNotMatch(settingsSource, /点击生成后复制整段配对信息/);
+  assert.doesNotMatch(settingsSource, /手动复制下方文本/);
+  assert.doesNotMatch(settingsSource, /真实手机已验证|真机已验证|已在手机验证/);
+  [
+    /data-qr-text=\{qrContent\.value\}/,
+    /mobile-pairing__payload-text/,
+    /mobile-pairing__qr-text/,
+    /<span>QR 内容<\/span>/,
+    /<textarea[^>]*>\s*\{qrContent\.value\}/,
+    /<pre[^>]*>\s*\{qrContent\.value\}/,
+    /<code[^>]*>\s*\{qrContent\.value\}/,
+  ].forEach((pattern) => {
+    assert.doesNotMatch(settingsSource, pattern);
+  });
   console.log("desktop mobile pairing QR smoke passed");
 }
 

@@ -19,6 +19,7 @@ from app.security.mobile_jwt import (
     require_mobile_token,
     validate_mobile_claims_active,
 )
+from app.security.lan import is_secure_mobile_transport
 from app.core.schemas import ChatResponse, Task, TaskStatus
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
@@ -102,8 +103,26 @@ MOBILE_TASK_TITLE_FALLBACK = "Lengrvis 任务"
 MOBILE_TASK_PRIVACY_TITLE = "隐私任务"
 MOBILE_TASK_PRIVACY_SUMMARY = "隐私模式：请在电脑端查看任务详情。"
 MOBILE_TASK_METADATA_SOURCE = "mobile_companion"
+MOBILE_TASK_EVIDENCE_PLACEHOLDER = "[desktop evidence hidden]"
 MOBILE_LOCAL_PATH_RE = re.compile(
-    r"(?i)(?:[A-Za-z]:[\\/][^\s,;，。；、]+|(?:/Users|/home)/[^\s,;，。；、]+|~[\\/][^\s,;，。；、]+)"
+    r"(?i)(?:[A-Za-z]:[\\/][^\s,;'\"<>\uFF0C\u3002\uFF1B\u3001]+|"
+    r"(?:/Users|/home|/tmp|/var|/private)/[^\s,;'\"<>\uFF0C\u3002\uFF1B\u3001]+|"
+    r"~[\\/][^\s,;'\"<>\uFF0C\u3002\uFF1B\u3001]+)"
+)
+MOBILE_TASK_EVIDENCE_LOCATOR_RE = re.compile(
+    r"(?ix)(?:"
+    r"(?:https?://[^\s,;'\"<>]+)?/api/tasks/[^\s,;'\"<>]+/"
+    r"(?:timeline|replay|recordings/[^\s,;'\"<>]+)"
+    r"|\brec_[A-Za-z0-9_-]{8,}\b"
+    r"|\b[A-Za-z0-9_.-]+-[A-Za-z0-9_.-]+-\d{8}T\d{6}\d{1,6}Z\.png\b"
+    r")"
+)
+MOBILE_TASK_EVIDENCE_FIELD_RE = re.compile(
+    r"(?i)\b(?:recording(?:_id|_url)?|file_name|timeline_url|replay_url)\s*[:=]\s*['\"]?[^\s,;'\"<>]+['\"]?"
+)
+MOBILE_TASK_STRUCTURED_EVIDENCE_RE = re.compile(
+    r"(?i)['\"]?\b(?:model_action|task_metadata|metadata|tool[_ -]?(?:args?|arguments?|results?|calls?)|"
+    r"tool_call(?:_id)?)\b['\"]?\s*[:=]"
 )
 MOBILE_TERMINAL_TASK_PHASES = {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED}
 
@@ -275,6 +294,10 @@ async def mobile_approval_events_legacy(websocket: WebSocket, token: str = ""):
 
 
 async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notification_alias: bool = False):
+    client_host = websocket.client.host if websocket.client else ""
+    if not is_secure_mobile_transport(client_host, websocket.url.scheme):
+        await websocket.close(code=1008)
+        return
     try:
         claims = decode_mobile_token(mobile_token_from_websocket(websocket, token), allowed_scopes={TOKEN_SCOPE})
     except HTTPException:
@@ -432,10 +455,21 @@ def _safe_mobile_task_text(value: object, *, limit: int, fallback: str) -> tuple
     redacted = redact_value(raw)
     safe = str(redacted if redacted is not None else "").strip()
     safe = MOBILE_LOCAL_PATH_RE.sub("[本地路径]", safe)
+    safe, evidence_redacted = _redact_mobile_task_evidence(safe, fallback=fallback)
     safe = " ".join(safe.split())
     truncated = len(safe) > limit
     safe = safe[:limit].strip() or fallback
-    return safe, safe != raw or truncated
+    return safe, safe != raw or truncated or evidence_redacted
+
+
+def _redact_mobile_task_evidence(value: str, *, fallback: str) -> tuple[str, bool]:
+    if not value:
+        return value, False
+    if MOBILE_TASK_STRUCTURED_EVIDENCE_RE.search(value):
+        return fallback or MOBILE_TASK_EVIDENCE_PLACEHOLDER, True
+    redacted = MOBILE_TASK_EVIDENCE_FIELD_RE.sub(MOBILE_TASK_EVIDENCE_PLACEHOLDER, value)
+    redacted = MOBILE_TASK_EVIDENCE_LOCATOR_RE.sub(MOBILE_TASK_EVIDENCE_PLACEHOLDER, redacted)
+    return redacted, redacted != value
 
 
 def _mobile_task_available_actions(task: Task) -> list[str]:
@@ -523,7 +557,13 @@ def _mobile_task_follow_up_goal(source_task: Task, instruction: str) -> str:
     if source_task.mode == "privacy":
         source_context = f"原任务是隐私模式任务（ID: {source_task.id}），不要在手机侧或新任务摘要中复述原任务正文。"
     else:
-        source_context = f"原任务 ID: {source_task.id}；原任务摘要：{source_task.user_goal[:240]}"
+        source_summary, redacted = _safe_mobile_task_text(
+            source_task.user_goal,
+            limit=160,
+            fallback="已关联电脑端原任务",
+        )
+        suffix = "（已脱敏）" if redacted else ""
+        source_context = f"原任务 ID: {source_task.id}；原任务上下文{suffix}：{source_summary}"
     return "\n".join(
         [
             "来自手机 Companion 的补充指令。",

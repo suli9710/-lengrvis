@@ -4,6 +4,7 @@ from typing import Any
 
 from app.core import db
 from app.core.schemas import Task, now_iso
+from app.policy.redaction import redact_public_text
 
 
 SOURCE_TASKS = "tasks"
@@ -12,6 +13,32 @@ SOURCE_SAFETY_REVIEWS = "safety_reviews"
 SOURCE_AUDIT_EVENTS = "audit_events"
 SOURCE_PLANS = "plans"
 SENSITIVE_KEYS = {"api_key", "password", "token", "cookie", "authorization", "secret", "credential", "credentials"}
+PUBLIC_REDACTED_KEYS = {
+    "args",
+    "argument",
+    "arguments",
+    "body",
+    "content",
+    "detail",
+    "details",
+    "hidden_prompt",
+    "html",
+    "input",
+    "inputs",
+    "message",
+    "messages",
+    "observation",
+    "output",
+    "parameter",
+    "parameters",
+    "params",
+    "prompt",
+    "raw",
+    "reason",
+    "system_prompt",
+    "text",
+    "value",
+}
 
 SUBAGENT_EXCLUDED = {"User", "PlannerAgent", "SafetyReviewAgent", "OrchestratorAgent", "HumanGateAgent"}
 
@@ -86,7 +113,7 @@ def build_task_explain(task_id: str) -> dict[str, Any]:
 
     return {
         "task_id": task.id,
-        "user_goal": task.user_goal,
+        "user_goal": _public_text(task.user_goal),
         "status": _enum_value(task.status),
         "mode": task.mode,
         "generated_at": now_iso(),
@@ -167,10 +194,10 @@ def _user_goal(task: Task, messages: list[dict[str, Any]], audits: list[dict[str
                 "id": task.id,
                 "created_at": task.created_at,
                 "actor": "Task",
-                "summary": task.user_goal,
+                "summary": _public_text(task.user_goal),
             }
         )
-    return {"text": user_message.get("content") if user_message else task.user_goal, "evidence": evidence}
+    return {"text": _public_text(user_message.get("content") if user_message else task.user_goal), "evidence": evidence}
 
 
 def _supervisor_judgment(task: Task, messages: list[dict[str, Any]], audits: list[dict[str, Any]]) -> dict[str, Any]:
@@ -182,7 +209,7 @@ def _supervisor_judgment(task: Task, messages: list[dict[str, Any]], audits: lis
         payload = decision_event.get("payload") if isinstance(decision_event.get("payload"), dict) else {}
         delegate = bool(payload.get("delegate"))
         agent_hint = str(payload.get("agent_hint") or "")
-        reply = str(payload.get("reply") or "").strip()
+        reply = _public_text(payload.get("reply") or "").strip()
         summary = reply or (
             f"Supervisor delegated the task to {agent_hint}."
             if delegate
@@ -218,9 +245,9 @@ def _planner_reasoning(
     initial_plan_message: dict[str, Any] | None,
     plan_source: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    assumptions = [str(item) for item in (plan_payload or {}).get("assumptions") or [] if str(item).strip()]
+    assumptions = [_public_text(item) for item in (plan_payload or {}).get("assumptions") or [] if str(item).strip()]
     steps = _plan_steps(plan_payload)
-    message_summary = str(initial_plan_message.get("content") or "").strip() if initial_plan_message else ""
+    message_summary = _public_text(initial_plan_message.get("content") or "").strip() if initial_plan_message else ""
     assumption_summary = " ".join(assumptions)
     step_summary = "; ".join(
         f"{step['order']}. {step['agent_name']} uses {step['tool_name']}: {step['description']}"
@@ -234,9 +261,9 @@ def _planner_reasoning(
     elif plan_source:
         evidence.append(plan_source)
     return {
-        "summary": summary,
+        "summary": _public_text(summary),
         "plan_id": str((plan_payload or {}).get("id") or task.id),
-        "goal": str((plan_payload or {}).get("goal") or task.user_goal),
+        "goal": _public_text((plan_payload or {}).get("goal") or task.user_goal),
         "assumptions": assumptions,
         "step_count": len(steps),
         "global_risk_level": str((plan_payload or {}).get("global_risk_level") or ""),
@@ -261,12 +288,12 @@ def _plan_steps(plan_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "order": int(raw.get("order") or index),
                 "agent_name": str(raw.get("agent_name") or ""),
                 "tool_name": str(raw.get("tool_name") or ""),
-                "description": str(raw.get("description") or ""),
+                "description": _public_text(raw.get("description") or ""),
                 "status": _enum_value(raw.get("status") or ""),
                 "risk_level": _enum_value(raw.get("risk_level") or ""),
                 "requires_approval": bool(raw.get("requires_approval")),
-                "expected_observation": str(raw.get("expected_observation") or ""),
-                "rollback_strategy": str(raw.get("rollback_strategy") or ""),
+                "expected_observation": _public_text(raw.get("expected_observation") or ""),
+                "rollback_strategy": _public_text(raw.get("rollback_strategy") or ""),
             }
         )
     return sorted(steps, key=lambda step: (step["order"], step["id"]))
@@ -319,20 +346,24 @@ def _step_explanations(
 
 def _planner_reason_for_step(step: dict[str, Any]) -> str:
     parts = [step.get("description"), step.get("expected_observation"), step.get("rollback_strategy")]
-    return " ".join(str(part).strip() for part in parts if str(part or "").strip())
+    return _public_text(" ".join(str(part).strip() for part in parts if str(part or "").strip()))
 
 
 def _review_item(review: dict[str, Any]) -> dict[str, Any]:
+    reasons = list(review.get("reasons") or [])
+    required_changes = list(review.get("required_changes") or [])
     return {
         "id": str(review.get("id") or ""),
         "step_id": review.get("step_id"),
         "target_type": str(review.get("target_type") or ""),
         "verdict": _enum_value(review.get("verdict") or ""),
         "risk_level": _enum_value(review.get("risk_level") or ""),
-        "reasons": [str(reason) for reason in review.get("reasons") or []],
-        "required_changes": [str(change) for change in review.get("required_changes") or []],
-        "user_confirmation_message": str(review.get("user_confirmation_message") or ""),
-        "safe_alternative": str(review.get("safe_alternative") or ""),
+        "reasons": ["Review reason redacted."] * len(reasons),
+        "reason_count": len(reasons),
+        "required_changes": ["Required change redacted."] * len(required_changes),
+        "required_change_count": len(required_changes),
+        "user_confirmation_message": _public_text(review.get("user_confirmation_message") or ""),
+        "safe_alternative": _public_text(review.get("safe_alternative") or ""),
         "created_at": str(review.get("created_at") or ""),
         "evidence": [_review_evidence(review)],
     }
@@ -355,8 +386,8 @@ def _subagent_suggestions(messages: list[dict[str, Any]]) -> list[dict[str, Any]
             item["action"] = {
                 "kind": str(action.get("kind") or ""),
                 "tool_name": str(action.get("tool_name") or ""),
-                "rationale": str(action.get("rationale") or ""),
-                "follow_up_question": str(action.get("follow_up_question") or ""),
+                "rationale": _public_text(action.get("rationale") or ""),
+                "follow_up_question": _public_text(action.get("follow_up_question") or ""),
             }
         result.append(item)
     return result
@@ -369,7 +400,7 @@ def _message_item(message: dict[str, Any]) -> dict[str, Any]:
         "from_agent": _agent_name(message),
         "to_agent": message.get("to_agent") or (message.get("metadata") or {}).get("to_agent"),
         "message_type": str(message.get("message_type") or (message.get("metadata") or {}).get("message_type") or ""),
-        "content": str(message.get("content") or ""),
+        "content": _message_public_content(message),
         "created_at": str(message.get("created_at") or ""),
         "evidence": [_message_evidence(message)],
     }
@@ -404,12 +435,12 @@ def _final_result(task: Task, reviews: list[dict[str, Any]], audits: list[dict[s
             "id": task.id,
             "created_at": task.updated_at,
             "actor": "Task",
-            "summary": task.final_summary or _enum_value(task.status),
+            "summary": _public_text(task.final_summary or _enum_value(task.status)),
         }
     )
     return {
         "status": _enum_value(task.status),
-        "summary": task.final_summary or f"Task status: {_enum_value(task.status)}",
+        "summary": _public_text(task.final_summary or f"Task status: {_enum_value(task.status)}"),
         "safety_reviews": final_reviews,
         "evidence": evidence,
     }
@@ -463,25 +494,26 @@ def _message_evidence(message: dict[str, Any]) -> dict[str, Any]:
         "created_at": str(message.get("created_at") or ""),
         "actor": _agent_name(message),
         "step_id": message.get("step_id"),
-        "summary": str(message.get("content") or ""),
+        "summary": _message_public_content(message),
     }
 
 
 def _review_evidence(review: dict[str, Any]) -> dict[str, Any]:
-    reasons = "; ".join(str(reason) for reason in review.get("reasons") or [])
+    reason_count = len(review.get("reasons") or [])
+    suffix = f"; {reason_count} reason(s) redacted" if reason_count else ""
     return {
         "source": SOURCE_SAFETY_REVIEWS,
         "id": str(review.get("id") or ""),
         "created_at": str(review.get("created_at") or ""),
         "actor": "SafetyReviewAgent",
         "step_id": review.get("step_id"),
-        "summary": f"{review.get('target_type')}: {review.get('verdict')} {reasons}".strip(),
+        "summary": _public_text(f"{review.get('target_type')}: {review.get('verdict')}{suffix}".strip()),
     }
 
 
 def _audit_evidence(event: dict[str, Any]) -> dict[str, Any]:
     payload = _sanitize(event.get("payload") if isinstance(event.get("payload"), dict) else {})
-    summary = str(payload.get("reply") or payload.get("goal") or payload.get("status") or payload.get("error") or payload)
+    summary = _public_text(payload.get("reply") or payload.get("goal") or payload.get("status") or payload.get("error") or payload)
     return {
         "source": SOURCE_AUDIT_EVENTS,
         "id": str(event.get("id") or ""),
@@ -502,11 +534,45 @@ def _plan_evidence(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_text(value: Any) -> str:
+    return redact_public_text(str(value or ""))
+
+
+def _message_public_content(message: dict[str, Any]) -> str:
+    payload = _payload(message)
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    event_type = str(payload.get("event_type") or metadata.get("event_type") or "").lower()
+    if event_type.startswith("model_boundary") or _agent_name(message).lower() == "modelboundary":
+        return "Model boundary event recorded."
+    if event_type == "tool.progress" or payload.get("kind") == "tool_progress":
+        return "Tool progress was recorded."
+    if _agent_name(message).lower() in {"user", "human"}:
+        return "User message recorded."
+    return "Agent message recorded."
+
+
 def _sanitize(value: Any, key: str = "") -> Any:
-    if key.casefold() in SENSITIVE_KEYS:
+    normalized_key = key.replace("-", "_").casefold()
+    if normalized_key in SENSITIVE_KEYS:
         return "***"
+    if normalized_key in PUBLIC_REDACTED_KEYS:
+        return _redacted_public_field(value)
     if isinstance(value, dict):
         return {item_key: _sanitize(item_value, item_key) for item_key, item_value in value.items()}
     if isinstance(value, list):
         return [_sanitize(item) for item in value]
+    if isinstance(value, str):
+        return _public_text(value)
     return value
+
+
+def _redacted_public_field(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {"redacted": True, "field_count": len(value)}
+    if isinstance(value, (list, tuple, set)):
+        return {"redacted": True, "count": len(value)}
+    if isinstance(value, str):
+        return "[REDACTED_TEXT]"
+    if value is None:
+        return None
+    return "[REDACTED_VALUE]"

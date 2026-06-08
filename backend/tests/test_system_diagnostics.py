@@ -11,13 +11,15 @@ from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Run, RunPhase, Task, ToolResult
 from app.main import create_app
 from app.orchestration.task_phase import TaskPhase
-from app.services import system_service
+from app.services import system_service, task_recording_service
 from tls_test_material import write_lan_tls_material
 
 
 def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_FORCE", raising=False)
     db.init_db()
     record("diagnostics.ready", "pytest", {"ok": True})
     failed_task = Task(user_goal="diagnostic failure sample", status=TaskPhase.FAILED, phase=TaskPhase.FAILED)
@@ -30,26 +32,37 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
     payload = response.json()
     assert payload["product"]["name"] == "Lengrvis"
     assert payload["product"]["version"] == "0.1.0"
-    assert payload["update_channel"] == {
-        "configured": False,
-        "status": "not_configured",
-        "label": "未配置在线更新通道",
-        "detail": "当前未配置在线更新通道，只显示本机版本与本地发布说明。",
-        "check_action": "refresh_local_status",
-        "offline_only": True,
-        "user_action_label": "刷新本机状态",
-        "release_notes": {
-            "available": True,
-            "label": "本地发布说明",
-            "detail": "打开随安装包提供的说明文件；本页不会联网检查更新。",
-            "path": str(PROJECT_ROOT / "README.md"),
-            "source": "local_file",
-        },
-        "next_steps": [
-            "确认是否有新版：查看本地发布说明或新的安装包说明。",
-            "遇到故障：导出诊断包，再打开日志位置排查。",
-        ],
+    update_channel = payload["update_channel"]
+    assert update_channel["schema_version"] == 1
+    assert update_channel["configured"] is False
+    assert update_channel["status"] == "not_configured"
+    assert update_channel["label"] == "未配置在线更新通道"
+    assert update_channel["detail"] == "当前未配置在线更新通道，只显示本机版本与本地发布说明。"
+    assert update_channel["check_action"] == "refresh_local_status"
+    assert update_channel["offline_only"] is True
+    assert update_channel["network_check_performed"] is False
+    assert update_channel["auto_update_claim"] == "not_configured"
+    assert update_channel["crash_pipeline_claim"] == "not_reported"
+    assert update_channel["user_action_label"] == "刷新本机状态"
+    assert update_channel["evidence"] == {
+        "update_channel_configured": False,
+        "network_update_check_performed": False,
+        "release_notes_available": True,
+        "release_notes_source": "local_file",
+        "auto_update_pipeline": "not_configured",
+        "crash_pipeline": "not_reported",
     }
+    assert update_channel["release_notes"]["available"] is True
+    assert update_channel["release_notes"]["label"] == "本地发布说明"
+    assert update_channel["release_notes"]["detail"] == "打开随安装包提供的说明文件；本页不会联网检查更新。"
+    assert update_channel["release_notes"]["filename"] == "README.md"
+    assert update_channel["release_notes"]["path"] == str(PROJECT_ROOT / "README.md")
+    assert update_channel["release_notes"]["path_kind"] == "local_file"
+    assert update_channel["release_notes"]["source"] == "local_file"
+    assert update_channel["next_steps"] == [
+        "确认是否有新版：查看本地发布说明或新的安装包说明。",
+        "遇到故障：导出诊断包，再打开日志位置排查。",
+    ]
     assert payload["local_paths"]["data_dir"] == str(tmp_path)
     assert payload["local_paths"]["database"].endswith("lengrvis.db")
     assert payload["local_paths"]["log_dirs"]
@@ -62,6 +75,46 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     assert "自动更新已完成" not in encoded
     assert "auto_update_completed" not in encoded
+    assert "crash_pipeline_completed" not in encoded
+
+
+def test_system_diagnostics_task_recording_defaults_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_FORCE", raising=False)
+    db.init_db()
+
+    response = TestClient(create_app()).get("/api/system/diagnostics")
+
+    assert response.status_code == 200
+    _assert_task_recording_status(response.json(), enabled=False, env_override="unset")
+
+
+def test_system_diagnostics_task_recording_force_ignored_outside_test_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_TASK_RECORDING_FORCE", "1")
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
+    monkeypatch.setattr(task_recording_service, "_is_test_environment", lambda: False)
+    db.init_db()
+
+    response = TestClient(create_app()).get("/api/system/diagnostics")
+
+    assert response.status_code == 200
+    _assert_task_recording_status(response.json(), enabled=False, env_override="unset")
+
+
+def test_system_diagnostics_task_recording_env_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_TASK_RECORDING_ENABLED", "true")
+    db.init_db()
+
+    response = TestClient(create_app()).get("/api/system/diagnostics")
+
+    assert response.status_code == 200
+    _assert_task_recording_status(response.json(), enabled=True, env_override="enabled")
 
 
 def test_system_diagnostics_include_anonymous_product_funnel(monkeypatch, tmp_path):
@@ -177,6 +230,11 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     monkeypatch.setenv("LENGRVIS_API_KEY", "sk-export-secret")
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_FORCE", raising=False)
+    secret_recording_path = data_dir / "task_recordings" / "task_secret" / "recording-secret-frame.png"
+    support_debug_recording_path = data_dir / "task_recordings" / "task_secret" / "support-debug-recording.png"
+    support_list_recording_path = data_dir / "task_recordings" / "task_secret" / "support-list-recording.png"
     monkeypatch.setattr(
         system_service,
         "diagnostics",
@@ -196,6 +254,36 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
                 }
             ],
             "local_ai": {"scope": "local_only"},
+            "task_recording": {
+                "enabled": True,
+                "file_name": "recording-secret-frame.png",
+                "path": str(secret_recording_path),
+                "url": "/api/tasks/task_secret/recordings/recording-secret-frame.png",
+                "frames": [
+                    {
+                        "file_name": "nested-secret-recording.png",
+                        "path": str(secret_recording_path.parent / "nested-secret-recording.png"),
+                    }
+                ],
+            },
+            "support_debug": {
+                "recording_evidence": {
+                    "kind": "step_screenshot",
+                    "ok": True,
+                    "file_name": "support-debug-recording.png",
+                    "path": str(support_debug_recording_path),
+                    "url": "/api/tasks/task_secret/recordings/support-debug-recording.png",
+                    "image_base64": "raw-support-debug-recording-image-secret",
+                },
+                "recordings": [
+                    {
+                        "ok": True,
+                        "file_name": "support-list-recording.png",
+                        "path": str(support_list_recording_path),
+                        "image": "raw-support-list-recording-image-secret",
+                    }
+                ],
+            },
             "suggestions": ["No critical system issue detected from read-only diagnostics."],
         },
     )
@@ -229,25 +317,53 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert diagnostics["local_ai"]["scope"] == "local_only"
     assert diagnostics["product"]["name"] == "Lengrvis"
     assert diagnostics["product"]["version"] == "0.1.0"
+    assert diagnostics["update_channel"]["schema_version"] == 1
     assert diagnostics["update_channel"]["configured"] is False
     assert diagnostics["update_channel"]["status"] == "not_configured"
     assert diagnostics["update_channel"]["check_action"] == "refresh_local_status"
+    assert diagnostics["update_channel"]["network_check_performed"] is False
+    assert diagnostics["update_channel"]["auto_update_claim"] == "not_configured"
+    assert diagnostics["update_channel"]["crash_pipeline_claim"] == "not_reported"
     assert diagnostics["update_channel"]["release_notes"]["path"] == "[path_label:release_notes]"
+    assert diagnostics["update_channel"]["release_notes"]["path_label"] == "release_notes"
+    assert diagnostics["update_channel"]["release_notes"]["path_redacted"] is True
+    assert diagnostics["update_channel"]["evidence"]["network_update_check_performed"] is False
+    assert diagnostics["update_channel"]["evidence"]["auto_update_pipeline"] == "not_configured"
+    assert diagnostics["update_channel"]["evidence"]["crash_pipeline"] == "not_reported"
     assert diagnostics["product_metrics"]["schema_version"] == 1
     assert diagnostics["product_metrics"]["local_model"]["schema_version"] == 1
     assert diagnostics["product_funnel"]["schema_version"] == 1
     assert diagnostics["product_funnel"]["local_model"]["schema_version"] == 1
+    _assert_task_recording_status(diagnostics, enabled=False, env_override="unset")
     assert set(("info", "disks", "network", "battery", "top_processes", "suggestions")).issubset(diagnostics)
-    assert diagnostics["support_package_redaction"] == {
-        "local_paths": "redacted_to_path_labels",
-        "process_usernames": "redacted_to_user_labels",
-        "release_notes_path": "redacted_to_path_label_when_present",
-        "full_local_paths_removed": True,
-        "data_dir_path_label": "app_data_dir",
-        "database_path_label": "app_database",
-        "scope": "local_only",
+    redaction = diagnostics["support_package_redaction"]
+    assert redaction["schema_version"] == 1
+    assert redaction["scope"] == "local_only"
+    assert redaction["intended_audience"] == "trusted_support"
+    assert redaction["public_safe"] is False
+    assert redaction["review_before_external_sharing"] is True
+    _assert_support_package_review_metadata(redaction)
+    assert redaction["local_paths"] == "redacted_to_path_labels"
+    assert redaction["local_path_labels"] == {
+        "data_dir": "app_data_dir",
+        "database": "app_database",
+        "release_notes": "release_notes",
+        "log_dirs": ["project_logs", "app_data_logs"],
     }
+    assert redaction["process_usernames"] == "redacted_to_user_labels"
+    assert redaction["device_names_and_ids"] == "redacted"
+    assert redaction["grant_and_pairing_identifiers"] == "redacted"
+    assert redaction["task_content"] == "redacted"
+    assert redaction["tokens_and_credentials"] == "redacted"
+    assert redaction["model_paths"] == "redacted"
+    assert redaction["task_recording"] == "status_only_no_images_or_file_names"
+    assert redaction["release_notes_path"] == "redacted_to_path_label_when_present"
+    assert redaction["full_local_paths_removed"] is True
+    assert "原始日志" in redaction["guidance"]
+    assert "外发前需要单独检查" in redaction["guidance"]
     assert diagnostics["top_processes"][0]["username"] == "[redacted:local_user]"
+    assert diagnostics["support_debug"]["recording_evidence"]["status_only"] is True
+    assert diagnostics["support_debug"]["recordings"]["status_only"] is True
 
     exported_paths = diagnostics["local_paths"]
     assert exported_paths["data_dir"] == {
@@ -265,6 +381,8 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert exported_paths["log_dirs"]
     assert all(item["kind"] == "log_dir" and item["redacted"] is True for item in exported_paths["log_dirs"])
     assert all(item["path_label"] for item in exported_paths["log_dirs"])
+    assert [item["path_label"] for item in exported_paths["log_dirs"]] == ["project_logs", "app_data_logs"]
+    assert all(item["replacement_label"] == item["path_label"] for item in exported_paths["log_dirs"])
 
     package_text = json.dumps(package, ensure_ascii=False, sort_keys=True).replace("\\\\", "\\")
     raw_paths = [local_paths["data_dir"], local_paths["database"], *local_paths["log_dirs"]]
@@ -276,11 +394,19 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert "Suli" not in package_text
     assert "Contoso" not in package_text
     assert "sk-export-secret" not in package_text
+    assert "recording-secret-frame.png" not in package_text
+    assert "nested-secret-recording.png" not in package_text
+    assert "support-debug-recording.png" not in package_text
+    assert "support-list-recording.png" not in package_text
+    assert "raw-support-debug-recording-image-secret" not in package_text
+    assert "raw-support-list-recording-image-secret" not in package_text
+    assert "/api/tasks/task_secret/recordings" not in package_text
+    assert "task_secret" not in package_text
 
 
 def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch, tmp_path):
     data_dir = tmp_path / "Users" / "Suli" / "ContosoExportEvidence" / "LengrvisData"
-    model_path = tmp_path / "Users" / "Suli" / "AcmeResearchModels" / "private-model" / "model.onnx"
+    model_path = tmp_path / "Users" / "Suli" / "Acme Research Models" / "private model" / "model.onnx"
     model_path.parent.mkdir(parents=True)
     model_path.write_bytes(b"placeholder")
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
@@ -294,9 +420,44 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
     device_name = "Pixel Export Evidence Phone"
     grant_id = "grant-export-secret-1234567890"
     pairing_code = "pair-export-secret-1234567890"
+    nested_device_id = "device-nested-secret-1234567890"
+    nested_device_name = "Nested Export Evidence Phone"
+    nested_grant_id = "grant-nested-secret-1234567890"
+    nested_pairing_id = "pairing-nested-secret-1234567890"
+    nested_pairing_code = "pairing-code-nested-secret-1234567890"
+    nested_task_goal = "nested task goal marker: prepare payroll notes"
+    nested_task_prompt = "nested task prompt marker: inspect private calendar"
+    nested_run_message = "nested run message marker: summarize confidential draft"
+    nested_approval_message = "nested approval message marker: click payroll approval"
+    host_name = "SULI-WORKSTATION-SECRET"
+    host_header = "support-host-secret.internal"
+    bearer_token = "bearer-export-secret-1234567890"
+    camel_device_id = "camel-device-secret-1234567890"
+    camel_grant_id = "camel-grant-secret-1234567890"
+    camel_pairing_id = "camel-pairing-secret-1234567890"
+    camel_pairing_code = "camel-pairing-code-secret-1234567890"
+    camel_task_body = "camel task body marker: reconcile private invoices"
+    camel_user_goal = "camel user goal marker: open private compensation sheet"
+    machine_id = "machine-id-secret-1234567890"
+    update_token = "update-token-secret-1234567890"
+    crash_report_id = "crash-report-secret-1234567890"
+    bare_recording_filename = "recording-secret-frame.png"
+    bare_screenshot_filename = "screen-shot-secret-before.png"
+    dump_file_name = "SULI-WORKSTATION-SECRET-crash.dmp"
+    unc_log_path = r"\\SULI-WORKSTATION-SECRET\Users\Suli\Logs\backend.log"
+    env_log_path = r"%USERPROFILE%\AppData\Local\Lengrvis\debug.log"
+    posix_log_path = "/Users/Suli/Library/Logs/Lengrvis/backend.log"
     log_snippet = (
         f"task_body={task_body}; api_key={api_key}; Cookie: session={cookie}; "
         f"device_name={device_name}; grant_id={grant_id}; model_path={model_path}"
+    )
+    host_log_snippet = (
+        f"Host: {host_header}; host={host_name}; Authorization: Bearer {bearer_token}; "
+        f"Set-Cookie: session={cookie}; deviceId={camel_device_id}; grantId={camel_grant_id}; "
+        f"pairingCode={camel_pairing_code}; taskBody={camel_task_body}; modelPath={model_path}"
+    )
+    artifact_log_snippet = (
+        f"saved recording {bare_recording_filename}; saved screenshot {bare_screenshot_filename}"
     )
     monkeypatch.setattr(
         system_service,
@@ -323,12 +484,54 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
             "support_debug": {
                 "task_body": task_body,
                 "api_key": api_key,
-                "headers": {"Cookie": f"session={cookie}"},
+                "headers": {
+                    "Cookie": f"session={cookie}",
+                    "Host": host_header,
+                    "Authorization": f"Bearer {bearer_token}",
+                },
                 "device_name": device_name,
+                "deviceId": camel_device_id,
                 "grant_id": grant_id,
+                "grantId": camel_grant_id,
+                "pairingId": camel_pairing_id,
                 "pairing_code": pairing_code,
+                "pairingCode": camel_pairing_code,
                 "model_path": str(model_path),
-                "log_snippets": [log_snippet],
+                "modelPath": str(model_path),
+                "hostname": host_name,
+                "hostName": host_name,
+                "machineId": machine_id,
+                "taskBody": camel_task_body,
+                "userGoal": camel_user_goal,
+                "device": {"id": nested_device_id, "name": nested_device_name},
+                "grant": {"id": nested_grant_id, "scope": "remote_input"},
+                "pairing": {"id": nested_pairing_id, "code": nested_pairing_code},
+                "task": {"goal": nested_task_goal, "prompt": nested_task_prompt},
+                "run": {"message": nested_run_message},
+                "approval": {"message": nested_approval_message},
+                "artifacts": {
+                    "latestFile": bare_recording_filename,
+                    "thumbnail": {"filename": bare_screenshot_filename},
+                },
+                "local_path_logs": [
+                    f"opened {unc_log_path}",
+                    f"fallback log at {env_log_path}",
+                    f"posix log at {posix_log_path}",
+                    f"app child log at {data_dir / 'logs' / 'Suli-secret-child.log'}",
+                ],
+                "future_update": {
+                    "installerPath": str(data_dir / "updates" / "Suli-secret-installer.exe"),
+                    "feedHost": host_header,
+                    "requestToken": update_token,
+                    "log": f"update host={host_header}; token={update_token}; path={env_log_path}",
+                },
+                "future_crash": {
+                    "crashReportId": crash_report_id,
+                    "dumpPath": str(data_dir / "crashes" / dump_file_name),
+                    "dumpFileName": dump_file_name,
+                    "host": host_header,
+                },
+                "log_snippets": [log_snippet, host_log_snippet, artifact_log_snippet],
             },
             "suggestions": ["No critical system issue detected from read-only diagnostics."],
         },
@@ -370,8 +573,11 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
         "configured": True,
         "present": True,
     }
+    _assert_support_package_review_metadata(diagnostics["support_package_redaction"])
 
     package_text = json.dumps(package, ensure_ascii=False, sort_keys=True).replace("\\\\", "\\")
+    assert '"checklist"' in package_text
+    assert '"public_safe": false' in package_text
     for secret in (
         task_body,
         api_key,
@@ -379,19 +585,96 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
         device_name,
         grant_id,
         pairing_code,
+        nested_device_id,
+        nested_device_name,
+        nested_grant_id,
+        nested_pairing_id,
+        nested_pairing_code,
+        nested_task_goal,
+        nested_task_prompt,
+        nested_run_message,
+        nested_approval_message,
+        host_name,
+        host_header,
+        bearer_token,
+        camel_device_id,
+        camel_grant_id,
+        camel_pairing_id,
+        camel_pairing_code,
+        camel_task_body,
+        camel_user_goal,
+        machine_id,
+        update_token,
+        crash_report_id,
+        bare_recording_filename,
+        bare_screenshot_filename,
+        dump_file_name,
+        unc_log_path,
+        env_log_path,
+        posix_log_path,
         "sk-export-api-key-secret",
         "sk-device-name-secret",
         "sk-grant-id-secret",
         "sk-pairing-secret",
         str(model_path),
         str(model_path).replace("\\", "/"),
-        "AcmeResearchModels",
+        "Acme Research Models",
+        "private model",
         "ContosoExportEvidence",
         "Suli",
     ):
         assert secret not in package_text
+    assert diagnostics["support_debug"]["artifacts"]["latestFile"] == "[redacted:task_recording_artifact]"
+    assert diagnostics["support_debug"]["artifacts"]["thumbnail"]["status_only"] is True
+    assert "[path_label:app_data_dir]/[redacted:relative_path]" in package_text
     assert "[redacted:local_user]" in package_text
     assert "[REDACTED" in package_text or "[redacted:" in package_text
+
+
+def _assert_support_package_review_metadata(redaction: dict):
+    external_review = redaction["external_review"]
+    assert external_review["schema_version"] == 1
+    assert external_review["status"] == "manual_review_required"
+    assert external_review["required_before_external_sharing"] is True
+    assert external_review["public_safe"] is False
+    checklist = external_review["checklist"]
+    assert isinstance(checklist, list)
+    assert {item["id"] for item in checklist} == {
+        "scope_and_audience",
+        "raw_logs_and_artifacts",
+        "local_paths",
+        "secrets_and_identifiers",
+        "task_content",
+        "external_sharing_decision",
+    }
+    assert all(item["required"] is True for item in checklist)
+    assert all(item["status"] for item in checklist)
+    assert any(item["status"] == "pending" for item in checklist)
+    assert any(item["status"] == "requires_reviewer_confirmation" for item in checklist)
+    assert any(item["status"] == "automated_redaction_applied" for item in checklist)
+
+
+def _assert_task_recording_status(payload: dict, *, enabled: bool, env_override: str):
+    task_recording = payload["task_recording"]
+    assert set(task_recording) == {"schema_version", "enabled", "default_policy", "local_only", "configuration", "export"}
+    assert task_recording["schema_version"] == 1
+    assert task_recording["enabled"] is enabled
+    assert task_recording["default_policy"] == {
+        "mode": "opt_in",
+        "enabled_by_default": False,
+        "scope": "local_only",
+    }
+    assert task_recording["local_only"] is True
+    assert task_recording["configuration"] == {
+        "env_override": env_override,
+        "explicit_opt_in": env_override == "enabled",
+    }
+    assert task_recording["export"] == {
+        "status_only": True,
+        "contains_images": False,
+        "contains_image_paths": False,
+        "contains_recording_file_names": False,
+    }
 
 
 def _insert_mobile_funnel_fixture():

@@ -373,6 +373,68 @@ function Get-SmokeCollectionCount {
     return 0
 }
 
+function Get-SmokeCollectionItems {
+    param(
+        [AllowNull()][object]$Payload,
+        [string[]]$Keys
+    )
+
+    if ($null -eq $Payload) {
+        return @()
+    }
+    if ($Payload -is [array]) {
+        return @($Payload)
+    }
+    foreach ($key in $Keys) {
+        if ($Payload.PSObject.Properties.Name -contains $key) {
+            $value = $Payload.$key
+            if ($null -eq $value) {
+                return @()
+            }
+            return @($value)
+        }
+    }
+    return @($Payload)
+}
+
+function New-SmokeStringSet {
+    param([AllowNull()][object[]]$Values)
+
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($value in @($Values)) {
+        $text = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            [void]$set.Add($text)
+        }
+    }
+    Write-Output -NoEnumerate $set
+}
+
+function Get-SmokeRecordIds {
+    param(
+        [AllowNull()][object]$Payload,
+        [string[]]$Keys,
+        [string[]]$IdKeys = @("id")
+    )
+
+    $ids = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @(Get-SmokeCollectionItems -Payload $Payload -Keys $Keys)) {
+        if ($null -eq $item) {
+            continue
+        }
+        foreach ($idKey in $IdKeys) {
+            if ($item.PSObject.Properties.Name -contains $idKey) {
+                $value = [string]$item.$idKey
+                if (-not [string]::IsNullOrWhiteSpace($value)) {
+                    $ids.Add($value)
+                    break
+                }
+            }
+        }
+    }
+    return @($ids | Select-Object -Unique)
+}
+
 function Test-NoPortableWriteSideEffects {
     param(
         [string]$BackendUrl,
@@ -1048,62 +1110,6 @@ function mergeObservedCalls(...groups) {
   return merged;
 }
 
-async function rendererCollectionSnapshot(page) {
-  return page.evaluate(async () => {
-    function collectionCount(payload) {
-      if (Array.isArray(payload)) return payload.length;
-      if (!payload || typeof payload !== "object") return 0;
-      for (const key of ["runs", "tasks", "items", "results"]) {
-        if (Array.isArray(payload[key])) return payload[key].length;
-      }
-      return 0;
-    }
-
-    const snapshot = { runsCount: 0, tasksCount: 0, ok: false, error: "" };
-    try {
-      if (!window.lengrvis?.api?.request) {
-        snapshot.error = "api.request unavailable";
-        return snapshot;
-      }
-      const runs = await window.lengrvis.api.request({ endpoint: "/api/runs", timeoutMs: 2000 });
-      const tasks = await window.lengrvis.api.request({ endpoint: "/api/tasks", timeoutMs: 2000 });
-      snapshot.runsCount = collectionCount(runs?.data);
-      snapshot.tasksCount = collectionCount(tasks?.data);
-      snapshot.ok = Boolean(runs?.ok || tasks?.ok);
-    } catch (error) {
-      snapshot.error = error instanceof Error ? error.message : String(error);
-    }
-    return snapshot;
-  });
-}
-
-async function inferNaturalLanguagePostFromBackend(page, baseline) {
-  if (!baseline || baseline.ok === false) return null;
-  const snapshot = await rendererCollectionSnapshot(page).catch(() => null);
-  if (!snapshot || snapshot.ok === false) return null;
-  if (snapshot.runsCount > baseline.runsCount) {
-    return {
-      kind: "api.startRun",
-      endpoint: "/api/runs",
-      method: "POST",
-      inferred: true,
-      beforeRuns: baseline.runsCount,
-      afterRuns: snapshot.runsCount
-    };
-  }
-  if (snapshot.tasksCount > baseline.tasksCount) {
-    return {
-      kind: "api.request",
-      endpoint: "/api/chat",
-      method: "POST",
-      inferred: true,
-      beforeTasks: baseline.tasksCount,
-      afterTasks: snapshot.tasksCount
-    };
-  }
-  return null;
-}
-
 async function openHomeCommandDock(page, deadline) {
   const commandInput = page.locator(".office-command-dock textarea").first();
   if (await commandInput.count().catch(() => 0)) {
@@ -1286,7 +1292,7 @@ async function naturalLanguageOutcomeSnapshot(page, calls, networkCalls) {
   };
 }
 
-async function waitForNaturalLanguageOutcome(page, deadline, networkCalls, backendSubmissionBaseline) {
+async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
   let lastOutcome = {
     dock: await commandDockSnapshot(page),
     expectedPosts: [],
@@ -1299,10 +1305,9 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls, backe
         ? window.__portableSmokeNaturalLanguageBridgeCalls
         : []
     ).catch(() => []);
-    const inferredPost = await inferNaturalLanguagePostFromBackend(page, backendSubmissionBaseline);
-    const calls = mergeObservedCalls(bridgeCalls, networkCalls, inferredPost ? [inferredPost] : []);
+    const calls = mergeObservedCalls(bridgeCalls, networkCalls);
     lastOutcome = await naturalLanguageOutcomeSnapshot(page, calls, networkCalls);
-    lastOutcome.bridgeCalls = mergeObservedCalls(bridgeCalls, inferredPost ? [inferredPost] : []);
+    lastOutcome.bridgeCalls = bridgeCalls;
     lastOutcome.calls = calls;
     if (lastOutcome.expectedPosts.length > 0) {
       return lastOutcome;
@@ -1412,18 +1417,12 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls, backe
       });
     }
 
-    const backendSubmissionBaseline = await rendererCollectionSnapshot(page).catch(() => ({
-      runsCount: 0,
-      tasksCount: 0,
-      ok: false,
-      error: "baseline snapshot failed"
-    }));
     await page.evaluate(() => {
       if (Array.isArray(window.__portableSmokeNaturalLanguageBridgeCalls)) window.__portableSmokeNaturalLanguageBridgeCalls.length = 0;
     }).catch(() => undefined);
     networkCalls.length = 0;
     const submitAttempt = await submitNaturalLanguagePrompt(page, sendButton, deadline);
-    const outcome = await waitForNaturalLanguageOutcome(page, Math.min(deadline, Date.now() + 15_000), networkCalls, backendSubmissionBaseline);
+    const outcome = await waitForNaturalLanguageOutcome(page, Math.min(deadline, Date.now() + 15_000), networkCalls);
     await page.waitForTimeout(750);
 
     const bridgeCalls = await page.evaluate(() =>
@@ -1538,6 +1537,8 @@ function Test-PortableNaturalLanguageTaskEvidence {
         [string]$BackendUrl,
         [string]$ExpectedDataDir,
         [string]$DesktopApiToken,
+        [string[]]$BaselineTaskIds = @(),
+        [string[]]$BaselineRunIds = @(),
         [int]$TimeoutSeconds = 20
     )
 
@@ -1546,6 +1547,8 @@ function Test-PortableNaturalLanguageTaskEvidence {
     $diagnosticsEvidencePattern = "(?i)(system\.diagnostics|local_ai|local_only|diagnostic_scope|top_processes|startup_items|\u7cfb\u7edf\u8bca\u65ad)"
     $safeFailurePattern = "(?i)(failed|failure|unavailable|backend|provider|timeout|error|offline|not connected|service|paused|full_backend_backgrounding|\u5931\u8d25|\u4e0d\u53ef\u7528|\u7a0d\u540e|\u670d\u52a1|\u6a21\u578b|\u8fde\u4e0d\u4e0a|\u672a\u8fde\u63a5|\u79bb\u7ebf)"
     $highRiskPattern = "(?i)(R[2-4]_|requires_user_approval\\?[""']?\s*:\s*true|permanent_delete\\?[""']?\s*:\s*true)"
+    $baselineTaskIdSet = New-SmokeStringSet -Values $BaselineTaskIds
+    $baselineRunIdSet = New-SmokeStringSet -Values $BaselineRunIds
     $deadline = (Get-Date).AddSeconds([Math]::Max(5, $TimeoutSeconds))
     $lastObservation = "not attempted"
 
@@ -1576,19 +1579,30 @@ function Test-PortableNaturalLanguageTaskEvidence {
             }
         }
 
-        $tasks = @($tasksPayload)
-        $runs = @($runsPayload)
-        $messages = @($messagesPayload)
+        $allTasks = @(Get-SmokeCollectionItems -Payload $tasksPayload -Keys @("tasks", "items", "results"))
+        $allRuns = @(Get-SmokeCollectionItems -Payload $runsPayload -Keys @("runs", "items", "results"))
+        $messages = @(Get-SmokeCollectionItems -Payload $messagesPayload -Keys @("messages", "items", "results"))
+        $tasks = @($allTasks | Where-Object {
+            $taskId = [string]$_.id
+            $taskId -and -not $baselineTaskIdSet.Contains($taskId)
+        })
+        $runs = @($allRuns | Where-Object {
+            $runId = [string]$_.run_id
+            if (-not $runId -and ($_.PSObject.Properties.Name -contains "id")) {
+                $runId = [string]$_.id
+            }
+            $runId -and -not $baselineRunIdSet.Contains($runId)
+        })
         $relatedTasks = @($tasks | Where-Object { [regex]::IsMatch((ConvertTo-SmokeJsonText $_), $relatedIntentPattern) })
         $relatedRuns = @($runs | Where-Object { [regex]::IsMatch((ConvertTo-SmokeJsonText $_), $relatedIntentPattern) })
         $chatText = ConvertTo-SmokeJsonText $messages
-        if ($relatedTasks.Count -eq 0 -and $tasks.Count -eq 1 -and ($messages.Count -gt 0 -or [regex]::IsMatch($chatText, $relatedIntentPattern))) {
+        if ($relatedTasks.Count -eq 0 -and $tasks.Count -eq 1 -and [regex]::IsMatch($chatText, $relatedIntentPattern)) {
             $relatedTasks = @($tasks)
         }
-        if ($relatedRuns.Count -eq 0 -and $runs.Count -eq 1 -and ($messages.Count -gt 0 -or [regex]::IsMatch($chatText, $relatedIntentPattern))) {
+        if ($relatedRuns.Count -eq 0 -and $runs.Count -eq 1 -and [regex]::IsMatch($chatText, $relatedIntentPattern)) {
             $relatedRuns = @($runs)
         }
-        $lastObservation = "tasks=$($tasks.Count), relatedTasks=$($relatedTasks.Count), runs=$($runs.Count), relatedRuns=$($relatedRuns.Count), chat messages=$($messages.Count), diagnostic-packages=$($exportFiles.Count)"
+        $lastObservation = "tasks=$($tasks.Count), relatedTasks=$($relatedTasks.Count), runs=$($runs.Count), relatedRuns=$($relatedRuns.Count), chat messages=$($messages.Count), diagnostic-packages=$($exportFiles.Count), baselineTasks=$($baselineTaskIdSet.Count), baselineRuns=$($baselineRunIdSet.Count)"
 
         foreach ($task in $relatedTasks) {
             $taskId = [string]$task.id
@@ -1733,6 +1747,28 @@ function Test-RendererDomEvidence {
         return $sideEffects
     }
 
+    try {
+        $naturalLanguageBaselineTaskIds = @(Get-SmokeRecordIds `
+            -Payload (Get-SmokeJson -Url "$BackendUrl/api/tasks" -DesktopApiToken $DesktopApiToken) `
+            -Keys @("tasks", "items", "results") `
+            -IdKeys @("id"))
+        $naturalLanguageBaselineRunIds = @(Get-SmokeRecordIds `
+            -Payload (Get-SmokeJson -Url "$BackendUrl/api/runs" -DesktopApiToken $DesktopApiToken) `
+            -Keys @("runs", "items", "results") `
+            -IdKeys @("run_id", "id"))
+    }
+    catch {
+        return [pscustomobject]@{
+            Ok = $true
+            Status = "pass"
+            Message = "$($automation.Message); $($sideEffects.Message)"
+            Payload = $automation.Payload
+            NaturalLanguageStatus = "unsupported"
+            NaturalLanguageMessage = "could not capture natural-language backend baseline before packaged prompt submission: $(Redact-SmokeText $_.Exception.Message)"
+            NaturalLanguagePayload = $null
+        }
+    }
+
     $naturalLanguageDom = Invoke-PortableNaturalLanguageDomAutomation `
         -RemoteDebuggingPort $RemoteDebuggingPort `
         -RunRoot $RunRoot `
@@ -1754,6 +1790,8 @@ function Test-RendererDomEvidence {
             -BackendUrl $BackendUrl `
             -ExpectedDataDir $ExpectedDataDir `
             -DesktopApiToken $DesktopApiToken `
+            -BaselineTaskIds $naturalLanguageBaselineTaskIds `
+            -BaselineRunIds $naturalLanguageBaselineRunIds `
             -TimeoutSeconds $TimeoutSeconds
 
         $naturalLanguageStatus = $naturalLanguageBackend.Status
@@ -1803,9 +1841,10 @@ function Test-RendererDomEvidence {
                 -BackendUrl $BackendUrl `
                 -ExpectedDataDir $ExpectedDataDir `
                 -DesktopApiToken $DesktopApiToken `
+                -BaselineTaskIds $naturalLanguageBaselineTaskIds `
+                -BaselineRunIds $naturalLanguageBaselineRunIds `
                 -TimeoutSeconds $TimeoutSeconds
 
-            $naturalLanguageStatus = $naturalLanguageBackend.Status
             $naturalLanguageMessage = "$naturalLanguageMessage; $($naturalLanguageBackend.Message)"
             if ($naturalLanguageBackend.Status -eq "fail") {
                 return [pscustomobject]@{
@@ -1814,6 +1853,9 @@ function Test-RendererDomEvidence {
                     Message = "natural-language backend evidence failed after renderer bridge submission attempt: $naturalLanguageMessage"
                     Payload = $naturalLanguagePayload
                 }
+            }
+            if ($naturalLanguageBackend.Status -eq "pass") {
+                $naturalLanguageMessage = "$naturalLanguageMessage; backend evidence observed after renderer bridge submission attempt, but no packaged /api/chat or /api/runs POST was observed; keeping natural-language evidence unsupported"
             }
         }
     }

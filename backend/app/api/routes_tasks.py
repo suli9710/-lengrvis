@@ -11,7 +11,7 @@ from app.core.errors import StateTransitionError
 from app.core.schemas import AgentMessage, Task, TaskStatus
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
-from app.policy.redaction import redact_text, redact_value
+from app.policy.redaction import redact_public_text, redact_value
 from app.services import task_recording_service
 from app.services.task_explain_service import build_task_explain
 from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
@@ -38,6 +38,88 @@ SAFE_BOUNDARY_PAYLOAD_KEYS = {
     "tokens_saved",
     "verdict",
 }
+PUBLIC_PAYLOAD_TEXT_KEYS = {
+    "args",
+    "argument",
+    "arguments",
+    "body",
+    "content",
+    "detail",
+    "details",
+    "hidden_prompt",
+    "html",
+    "input",
+    "inputs",
+    "message",
+    "messages",
+    "observation",
+    "output",
+    "parameter",
+    "parameters",
+    "params",
+    "prompt",
+    "raw",
+    "reason",
+    "system_prompt",
+    "text",
+    "value",
+}
+PUBLIC_PAYLOAD_ERROR_KEYS = {
+    "error",
+    "errors",
+    "exception",
+    "exceptions",
+    "stack",
+    "stack_trace",
+    "stderr",
+    "traceback",
+}
+PUBLIC_PAYLOAD_STATUS_KEYS = {
+    "status",
+    "tool_status",
+}
+PUBLIC_ERROR_SUMMARIES = {
+    "blocked": "The tool was blocked by a permission or policy check.",
+    "invalid_input": "The tool could not run because required input was invalid or missing.",
+    "not_found": "The tool could not find a requested resource.",
+    "timeout": "The tool timed out before it finished.",
+    "network": "The tool hit a network or service connection problem.",
+    "execution_error": "The tool reported an error. Private diagnostic details are hidden from replay.",
+}
+PUBLIC_ERROR_NEXT_STEPS = {
+    "blocked": "Review the approval or permission settings before retrying.",
+    "invalid_input": "Check the step inputs, then retry the task.",
+    "not_found": "Confirm the requested file, page, or resource is available, then retry.",
+    "timeout": "Retry when the device or service is responsive.",
+    "network": "Check the connection or service status, then retry.",
+    "execution_error": "Check the step inputs, then retry or open local diagnostics for details.",
+}
+PUBLIC_STATUS_ALIASES = {
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+    "complete": "completed",
+    "completed": "completed",
+    "created": "created",
+    "denied": "blocked",
+    "done": "completed",
+    "error": "failed",
+    "failed": "failed",
+    "failure": "failed",
+    "in_progress": "running",
+    "ok": "completed",
+    "pending": "pending",
+    "queued": "pending",
+    "retry": "retrying",
+    "retrying": "retrying",
+    "running": "running",
+    "skipped": "skipped",
+    "started": "started",
+    "success": "completed",
+    "succeeded": "completed",
+    "timeout": "failed",
+    "timed_out": "failed",
+    "waiting": "waiting",
+}
 
 
 def _openai_agent_messages(task_id: str) -> list[dict]:
@@ -45,6 +127,38 @@ def _openai_agent_messages(task_id: str) -> list[dict]:
         AgentMessage.model_validate(item).to_openai_dict()
         for item in db.fetch_many_by_fields("agent_messages", {"task_id": task_id})
     ]
+
+
+def _public_agent_messages(task_id: str) -> list[dict]:
+    return [
+        _public_agent_message(item)
+        for item in db.fetch_many_by_fields("agent_messages", {"task_id": task_id})
+    ]
+
+
+def _public_agent_message(item: dict) -> dict:
+    model = AgentMessage.model_validate(item)
+    message = model.to_openai_dict()
+    safe = dict(message)
+    safe["content"] = _public_agent_message_content(model)
+    for key in ("metadata", "structured_payload", "tool_calls"):
+        if key in safe:
+            safe[key] = _public_value(safe.get(key))
+    safe["redacted"] = True
+    return safe
+
+
+def _public_agent_message_content(message: AgentMessage) -> str:
+    payload = message.structured_payload if isinstance(message.structured_payload, dict) else {}
+    metadata = message.metadata if isinstance(message.metadata, dict) else {}
+    event_type = str(payload.get("event_type") or metadata.get("event_type") or "").lower()
+    if event_type.startswith("model_boundary") or message.from_agent.lower() == "modelboundary":
+        return "Model boundary event recorded."
+    if event_type == "tool.progress" or payload.get("kind") == "tool_progress":
+        return _tool_progress_detail(str(payload.get("tool_name") or metadata.get("tool_name") or ""), str(payload.get("status") or ""))
+    if message.from_agent.lower() in {"user", "human"}:
+        return "User message recorded."
+    return "Agent message recorded."
 
 
 def _step_recordings(task_id: str) -> list[dict]:
@@ -75,6 +189,38 @@ def _step_recordings(task_id: str) -> list[dict]:
             recording_frames,
         )
     return list(result.values())
+
+
+def _public_step_recordings(task_id: str) -> list[dict]:
+    return [_public_step_recording(item) for item in _step_recordings(task_id)]
+
+
+def _public_step_recording(item: dict) -> dict:
+    frames = [frame for frame in item.get("frames") or [] if isinstance(frame, dict)]
+    return {
+        "step_id": str(item.get("step_id") or ""),
+        "tool_name": str(item.get("tool_name") or ""),
+        "agent": str(item.get("agent") or ""),
+        "frame_count": len(frames),
+        "frames": [_public_recording_frame(frame) for frame in frames],
+        "redacted": True,
+        "privacy_note": "Recording images are hidden from the timeline; open them only through an explicit local review flow.",
+    }
+
+
+def _public_recording_frame(frame: dict) -> dict:
+    return {
+        "kind": str(frame.get("kind") or task_recording_service.RECORDING_KIND),
+        "phase": str(frame.get("phase") or ""),
+        "ok": bool(frame.get("ok", False)),
+        "enabled": bool(frame.get("enabled", False)),
+        "captured_at": str(frame.get("captured_at") or ""),
+        "mime_type": str(frame.get("mime_type") or ""),
+        "width": int(frame.get("width") or 0),
+        "height": int(frame.get("height") or 0),
+        "has_image": bool(frame.get("url") or frame.get("file_name") or frame.get("recording_id")),
+        "image_redacted": True,
+    }
 
 
 def _merge_step_recording(
@@ -142,9 +288,9 @@ def timeline(task_id: str):
     boundary_events = _boundary_events(task_id, messages=messages, reviews=reviews)
     return {
         "task": task_id,
-        "messages": [AgentMessage.model_validate(item).to_openai_dict() for item in messages],
+        "messages": [_public_agent_message(item) for item in messages],
         "reviews": [_public_review(review) for review in reviews],
-        "recordings": _step_recordings(task_id),
+        "recordings": _public_step_recordings(task_id),
         "boundary_events": boundary_events,
         "evidence_summary": _task_evidence_summary(task_model, boundary_events),
     }
@@ -152,6 +298,9 @@ def timeline(task_id: str):
 
 def _task_payload(task: Task, *, boundary_events: list[dict] | None = None) -> dict:
     payload = task.model_dump(mode="json")
+    payload["user_goal"] = _public_detail(str(payload.get("user_goal") or ""), limit=1000)
+    payload["final_summary"] = _public_detail(str(payload.get("final_summary") or ""), limit=2000)
+    payload["metadata"] = _redacted_public_field(payload.get("metadata") or {})
     events = boundary_events if boundary_events is not None else _boundary_events(task.id)
     payload["boundary_events"] = events
     payload["evidence_summary"] = _task_evidence_summary(task, events)
@@ -424,7 +573,7 @@ def _enum_text(value: Any) -> str:
 
 
 def _tool_progress_detail(tool: str, status: str) -> str:
-    parts = [part for part in [tool, status] if part]
+    parts = [part for part in [tool, _public_status_label(status)] if part]
     return " ".join(parts) if parts else "Tool progress was recorded."
 
 
@@ -446,10 +595,12 @@ def _public_review(review: dict[str, Any]) -> dict[str, Any]:
         "verdict": str(review.get("verdict") or ""),
         "risk_level": str(review.get("risk_level") or ""),
         "summary": _review_event_detail(review),
+        "reasons": [],
         "reason_count": len(reasons),
         "required_change_count": len(required_changes),
         "has_user_confirmation_message": bool(review.get("user_confirmation_message")),
         "has_safe_alternative": bool(review.get("safe_alternative")),
+        "safe_alternative": "",
         "created_at": str(review.get("created_at") or ""),
     }
 
@@ -478,7 +629,7 @@ def _boundary_event(
 
 
 def _public_detail(detail: str, *, limit: int = 220) -> str:
-    text = redact_text(str(detail or "")).strip()
+    text = redact_public_text(str(detail or "")).strip()
     if len(text) <= limit:
         return text
     return f"{text[:limit].rstrip()}..."
@@ -493,7 +644,10 @@ def _safe_boundary_payload(kind: str, payload: dict | None) -> dict[str, Any]:
     }
     for key in SAFE_BOUNDARY_PAYLOAD_KEYS:
         if key in raw_payload:
-            safe[key] = _safe_boundary_value(raw_payload.get(key))
+            if key == "status":
+                safe[key] = _public_status_label(str(raw_payload.get(key) or ""))
+            else:
+                safe[key] = _safe_boundary_value(raw_payload.get(key))
     for key, count_key in (
         ("reasons", "reason_count"),
         ("required_changes", "required_change_count"),
@@ -523,24 +677,123 @@ def _safe_boundary_value(value: Any) -> Any:
     return redacted
 
 
+def _public_value(value: Any, key: str = "") -> Any:
+    normalized_key = key.replace("-", "_").casefold()
+    if normalized_key in PUBLIC_PAYLOAD_ERROR_KEYS:
+        return _public_error_metadata(value)
+    if normalized_key in PUBLIC_PAYLOAD_STATUS_KEYS and isinstance(value, str):
+        return _public_status_label(value)
+    if normalized_key in PUBLIC_PAYLOAD_TEXT_KEYS:
+        return _redacted_public_field(value)
+    redacted = redact_value(value)
+    if isinstance(redacted, dict):
+        return {str(item_key): _public_value(item, str(item_key)) for item_key, item in redacted.items()}
+    if isinstance(redacted, list):
+        return [_public_value(item, key) for item in redacted]
+    if isinstance(redacted, tuple):
+        return [_public_value(item, key) for item in redacted]
+    if isinstance(redacted, set):
+        return [_public_value(item, key) for item in sorted(redacted, key=str)]
+    if isinstance(redacted, str):
+        return redact_public_text(redacted)
+    return redacted
+
+
+def _redacted_public_field(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {"redacted": True, "field_count": len(value)}
+    if isinstance(value, (list, tuple, set)):
+        return {"redacted": True, "count": len(value)}
+    if isinstance(value, str):
+        return "[REDACTED_TEXT]"
+    if value is None:
+        return None
+    return "[REDACTED_VALUE]"
+
+
+def _public_status_label(status: str) -> str:
+    normalized = str(status or "").strip().replace("-", "_").casefold()
+    if not normalized:
+        return ""
+    if normalized in PUBLIC_STATUS_ALIASES:
+        return PUBLIC_STATUS_ALIASES[normalized]
+    if any(token in normalized for token in ("deny", "blocked", "permission", "policy", "approval")):
+        return "blocked"
+    if any(token in normalized for token in ("fail", "error", "exception", "traceback")):
+        return "failed"
+    if "timeout" in normalized or "timed out" in normalized:
+        return "failed"
+    if any(token in normalized for token in ("start", "run", "progress")):
+        return "running"
+    return "updated"
+
+
+def _public_error_metadata(error: Any, *, ok: bool | None = None) -> dict[str, Any]:
+    has_detail = _has_error_detail(error)
+    failed = ok is False or has_detail
+    category = _public_error_category(error) if failed else ""
+    summary = PUBLIC_ERROR_SUMMARIES.get(category, "") if failed else ""
+    next_step = PUBLIC_ERROR_NEXT_STEPS.get(category, "") if failed else ""
+    metadata: dict[str, Any] = {
+        "status": "failed" if failed else "completed" if ok is True else "unknown",
+        "has_detail": has_detail,
+        "category": category,
+        "summary": summary,
+        "next_step": next_step,
+        "private_detail_redacted": has_detail,
+        "redacted": True,
+    }
+    if isinstance(error, dict):
+        metadata["field_count"] = len(error)
+    elif isinstance(error, (list, tuple, set)):
+        metadata["count"] = len(error)
+    return metadata
+
+
+def _has_error_detail(error: Any) -> bool:
+    if error is None:
+        return False
+    if isinstance(error, str):
+        return bool(error.strip())
+    if isinstance(error, (list, tuple, set, dict)):
+        return bool(error)
+    return True
+
+
+def _public_error_category(error: Any) -> str:
+    text = str(error or "").casefold() if isinstance(error, str) else ""
+    if any(token in text for token in ("permission", "policy", "approval", "authorized", "denied", "blocked")):
+        return "blocked"
+    if any(token in text for token in ("invalid", "missing", "required", "validation", "bad request")):
+        return "invalid_input"
+    if any(token in text for token in ("not found", "no such file", "does not exist", "missing file")):
+        return "not_found"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if any(token in text for token in ("connection", "network", "http", "service unavailable", "dns")):
+        return "network"
+    return "execution_error"
+
+
 @router.get("/tasks/{task_id}/replay")
 def replay(task_id: str):
     try:
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
-    messages = sorted(_openai_agent_messages(task_id), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
+    messages = sorted(_public_agent_messages(task_id), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
     tool_calls = sorted(
         db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=1000),
         key=lambda item: item.get("created_at") or "",
     )
     results_by_call = _tool_results_by_call_id([str(call.get("id") or "") for call in tool_calls])
     return {
-        "task": task.model_dump(mode="json"),
+        "task": _task_payload(task),
         "events": messages,
-        "tool_calls": tool_calls,
-        "tool_results": [results_by_call[call["id"]] for call in tool_calls if call.get("id") in results_by_call],
-        "recordings": _step_recordings(task_id),
+        "tool_calls": [_public_tool_call(call) for call in tool_calls],
+        "tool_results": [_public_tool_result(results_by_call[call["id"]]) for call in tool_calls if call.get("id") in results_by_call],
+        "recordings": _public_step_recordings(task_id),
+        "raw_redacted": True,
     }
 
 
@@ -554,6 +807,38 @@ def _tool_results_by_call_id(call_ids: list[str]) -> dict[str, dict]:
             if tool_call_id and tool_call_id not in results_by_call:
                 results_by_call[tool_call_id] = result
     return results_by_call
+
+
+def _public_tool_call(call: dict) -> dict:
+    return {
+        "id": call.get("id"),
+        "task_id": call.get("task_id"),
+        "step_id": call.get("step_id"),
+        "tool_name": call.get("tool_name"),
+        "risk_level": call.get("risk_level"),
+        "status": call.get("status"),
+        "dry_run": call.get("dry_run"),
+        "created_at": call.get("created_at"),
+        "args": _redacted_public_field(call.get("args") or {}),
+        "redacted": True,
+    }
+
+
+def _public_tool_result(result: dict) -> dict:
+    error_metadata = _public_error_metadata(result.get("error"), ok=result.get("ok"))
+    return {
+        "id": result.get("id"),
+        "tool_call_id": result.get("tool_call_id"),
+        "ok": result.get("ok"),
+        "output": _redacted_public_field(result.get("output") or {}),
+        "error": error_metadata["summary"] if error_metadata["status"] == "failed" else "",
+        "error_metadata": error_metadata,
+        "changed_paths": _public_value(result.get("changed_paths") or []),
+        "rollback_info": _redacted_public_field(result.get("rollback_info") or {}),
+        "observation": _redacted_public_field(result.get("observation")),
+        "created_at": result.get("created_at"),
+        "redacted": True,
+    }
 
 
 @router.get("/tasks/{task_id}/progress")
@@ -574,7 +859,7 @@ def progress(task_id: str):
                     "created_at": message.get("created_at"),
                     "step_id": message.get("step_id"),
                     "tool_call_id": message.get("tool_call_id"),
-                    "payload": payload,
+                    "payload": _public_value(payload),
                 }
             )
     progress_events.sort(key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
@@ -608,12 +893,12 @@ def recording(task_id: str, file_name: str):
 
 @router.get("/tasks/{task_id}/agent-messages")
 def agent_messages(task_id: str):
-    return _openai_agent_messages(task_id)
+    return _public_agent_messages(task_id)
 
 
 @router.get("/tasks/{task_id}/safety-reviews")
 def safety_reviews(task_id: str):
-    return db.fetch_many_by_fields("safety_reviews", {"task_id": task_id})
+    return [_public_review(review) for review in db.fetch_many_by_fields("safety_reviews", {"task_id": task_id})]
 
 
 @router.post("/tasks/{task_id}/pause")

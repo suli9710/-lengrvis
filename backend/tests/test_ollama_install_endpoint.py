@@ -37,7 +37,7 @@ def _mock_ready_hardware(monkeypatch):
         "app.services.ollama_service.hardware_readiness",
         lambda model=None: {
             "can_install": True,
-            "recommended_model": model or "test-model",
+            "recommended_model": model or "qwen2.5:3b",
             "reason": "ready",
             "checks": [],
             "memory_total_bytes": 16 * 1024**3,
@@ -64,7 +64,7 @@ async def test_install_local_model_already_installed():
         mock_pull.side_effect = fake_stream
 
         results = []
-        async for progress in ollama_service.install_local_model("test-model"):
+        async for progress in ollama_service.install_local_model("qwen2.5:3b"):
             results.append(progress)
 
         assert any(r.get("phase") == "install" and r.get("status") == "skipped" for r in results)
@@ -86,7 +86,7 @@ async def test_install_local_model_needs_install():
         mock_pull.side_effect = fake_stream
 
         results = []
-        async for progress in ollama_service.install_local_model("test-model"):
+        async for progress in ollama_service.install_local_model("qwen2.5:3b"):
             results.append(progress)
 
         assert any(r.get("phase") == "install" and r.get("status") in ("installing", "done") for r in results)
@@ -104,6 +104,8 @@ async def test_install_local_model_install_fails():
             results.append(progress)
 
         assert any(r.get("status") == "error" for r in results)
+        assert results[-1]["repair_action"]["code"] == "install_runtime"
+        assert any(item["key"] == "runtime" for item in results[-1]["evidence"])
 
 
 @pytest.mark.asyncio
@@ -141,7 +143,7 @@ async def test_pull_model_streaming_success():
 
     with patch("httpx.AsyncClient", FakeClient):
         results = []
-        async for progress in ollama_service.pull_model_streaming("test"):
+        async for progress in ollama_service.pull_model_streaming("qwen2.5:3b"):
             results.append(progress)
 
         assert len(results) >= 2
@@ -170,6 +172,37 @@ def test_install_local_model_endpoint():
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
+
+
+def test_install_local_model_endpoint_does_not_claim_hidden_bundled_model_ready():
+    """Bundled files alone are not enough; Ollama must list the model before success."""
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+    from app.services import ollama_service
+
+    running_states = iter([False, True])
+
+    async def _is_running():
+        return next(running_states, True)
+
+    with patch.object(ollama_service, "is_installed", return_value=True), \
+         patch.object(ollama_service, "is_running", side_effect=_is_running), \
+         patch.object(ollama_service, "start_server", new_callable=AsyncMock, return_value={"ok": True, "models_dir_configured": True}), \
+         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]), \
+         patch.object(ollama_service, "_bundled_model_available", return_value=True), \
+         patch.object(ollama_service, "pull_model_streaming") as mock_pull:
+
+        client = TestClient(create_app())
+        resp = client.post("/api/settings/install-local-model", json={"model": "qwen2.5:3b"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is False
+    assert data["final"]["status"] == "error"
+    assert data["final"]["next_action"] == "download_model"
+    assert data["final"]["repair_action"]["code"] == "download_model"
+    assert not any(item.get("phase") == "switch" for item in data["progress"])
+    mock_pull.assert_not_called()
 
 
 def test_install_local_model_endpoint_restricts_model_name():
@@ -232,6 +265,17 @@ def test_install_local_model_endpoint_rejects_unsupported_model():
     assert "restricted" in resp.json()["detail"]
 
 
+def test_ollama_pull_endpoint_restricts_model_name():
+    from fastapi.testclient import TestClient
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    resp = client.post("/api/settings/ollama/pull", json={"model": "not-approved:70b"})
+
+    assert resp.status_code == 400
+    assert "restricted" in resp.json()["detail"]
+
+
 def test_local_model_readiness_endpoint():
     """Test the hardware readiness endpoint used by the desktop setup UI."""
     from fastapi.testclient import TestClient
@@ -242,7 +286,7 @@ def test_local_model_readiness_endpoint():
     assert resp.status_code == 200
     data = resp.json()
     assert data["can_install"] is True
-    assert data["recommended_model"] == "test-model"
+    assert data["recommended_model"] == "qwen2.5:3b"
 
 
 def test_local_model_setup_plan_endpoint(mock_ollama_not_installed):
@@ -251,10 +295,53 @@ def test_local_model_setup_plan_endpoint(mock_ollama_not_installed):
     from app.main import create_app
 
     client = TestClient(create_app())
-    resp = client.get("/api/settings/local-model/setup-plan?model=test-model")
+    resp = client.get("/api/settings/local-model/setup-plan?model=qwen2.5:3b")
     assert resp.status_code == 200
     data = resp.json()
     assert data["ready"] is False
     assert data["next_action"] == "install_runtime"
-    assert data["model"] == "test-model"
+    assert data["model"] == "qwen2.5:3b"
+    assert data["repair_action"]["code"] == "install_runtime"
+    assert any(item["key"] == "runtime" for item in data["evidence"])
     assert data["steps"][0]["key"] == "hardware"
+
+
+def test_local_llm_health_endpoint_redacts_paths_urls_and_tokens(monkeypatch):
+    from fastapi.testclient import TestClient
+    from app.api import routes_settings
+    from app.main import create_app
+
+    monkeypatch.setattr(
+        routes_settings,
+        "health_snapshot",
+        lambda settings: {
+            "available": False,
+            "selected_backend": {"kind": "ollama", "base_url": "http://127.0.0.1:11434/v1", "models": []},
+            "probe_order": ["ollama"],
+            "onnx": {
+                "llm": {
+                    "onnx_model_path": r"C:\Users\Suli\models\private-model.onnx",
+                    "cache_dir": r"C:\Users\Suli\AppData\Local\Lengrvis\onnx-cache",
+                },
+                "bundle": {"manifest_path": r"C:\Users\Suli\models\manifest.json"},
+            },
+            "error": r"Tried http://127.0.0.1:11434/api/tags with token=sk-1234567890abcdef at C:\Users\Suli\.ollama",
+        },
+    )
+
+    client = TestClient(create_app())
+    resp = client.get("/api/settings/local-llm/health")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    text = str(payload)
+    assert payload["selected_backend"]["base_url"] == ""
+    assert payload["onnx"]["llm"]["onnx_model_path"] == ""
+    assert payload["onnx"]["llm"]["cache_dir"] == ""
+    assert payload["onnx"]["bundle"]["manifest_path"] == ""
+    assert "http://127.0.0.1" not in text
+    assert "sk-1234567890abcdef" not in text
+    assert "C:\\Users" not in text
+    assert "private-model.onnx" not in text
+    assert "manifest.json" not in text
+    assert "[REDACTED_URL]" in payload["error"]

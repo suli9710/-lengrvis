@@ -11,10 +11,14 @@
 ## 当前证据边界快照（2026-06-08）
 
 - **最新自动门禁证据**：当前工作区最新 `npm run qa:gate` 完整通过，记录为 backend pytest `1337 passed, 1 skipped`，并包含 desktop/mobile typecheck、mobile behavior smoke 与 desktop smoke。该结果是当前 dirty workspace 的开发证据，不等同于 release candidate commit/build sign-off。
+- **Desktop diagnostics/update boundary**：当前能力是本机版本与诊断可见，而不是在线更新器。`GET /api/system/diagnostics` 返回 `product.version`、`update_channel.status=not_configured`、`check_action=refresh_local_status`、本地发布说明、`local_paths.data_dir/database/log_dirs`、audit verification、LAN readiness、local model readiness、`product_metrics` 和 `product_funnel`；桌面“系统信息”展示桌面/后端版本、“刷新本机状态”、日志目录、导出诊断包入口和本地保存位置。`POST /api/system/diagnostics/export` 写入 `<data_dir>\diagnostic-packages\lengrvis-diagnostics-*.json`，导出包会把 data/database/log 绝对路径、release notes 路径和进程用户名标签化，并覆盖 secrets、任务正文、设备名、grant id、pairing code、模型路径、任务录屏图片/文件名/路径等种子。证据命令是 `python -m pytest backend\tests\test_system_diagnostics.py -q`（当前 8 passed）与 `npm --prefix desktop run smoke:system-diagnostics-ui`；这不能写成完整在线自动更新、自动安装更新、完整 crash/update pipeline、clean-machine RC sign-off，或诊断包可以公开发布。
+- **Task recording / replay privacy boundary**：任务录屏/步骤截图是本机 opt-in 证据，不是默认采集。默认 `LENGRVIS_TASK_RECORDING_ENABLED` 未设置时不采集，只有显式开启或测试专用 `LENGRVIS_TASK_RECORDING_FORCE=1` 才会写入本机 SQLite BLOB；perception 截屏不写入 task recordings。`GET /api/tasks`、`/timeline`、`/replay`、`/agent-messages`、`/safety-reviews`、`/progress` 和 `/explain` 只返回 redacted summary、计数、状态和标签；tool args/result、agent message 正文、review reasons、metadata、hidden prompt、文件正文、本地路径、截图 URL、file name 和 recording id 都不能作为公开 timeline/replay 输出。`/api/system/diagnostics/export` 只保留 `task_recording=status_only_no_images_or_file_names`，不包含图片、文件名或录屏路径。原始图片只能通过显式本机文件名路由读取，不能从 timeline/replay 自动发现。证据来自 `backend/tests/test_task_recordings.py`、`backend/tests/test_tasks_replay.py` 和 `backend/tests/test_system_diagnostics.py`；剩余缺口是真实 Electron timeline/replay UX、手机端任务查看 UX、真实设备截图/录屏证据和外发诊断包逐项安全复核。
+- **Remote WS client-error boundary**：远程屏幕/远程输入 WebSocket 对客户端只返回泛化 `type=error`、稳定 `code` 和安全文案，例如 invalid control、screen temporarily unavailable、input rejected/could not be handled；原始 exception、selector、host/path/token/device 细节只能进入审计侧的 redacted error，不应回显给手机端或截图材料。非 loopback 仍要求 WSS，auth/scope 失败关闭原因保持泛化。当前可记录为既有 remote auth/revoke/expiry smoke 加后端定向测试证据：本轮 `python -m pytest backend\tests\test_remote_desktop.py -q` 为 `25 passed`，覆盖 auth/scope、query-token rejection、revoke/expiry/disable close behavior，以及 invalid screen control、screen capture failure、unsupported input、policy/tool rejection 和 remote input unexpected exception redaction 等 targeted backend branches；真实 Android/WSS UX、弱网/锁屏/后台证据仍未完成。
+- **Mobile approval payload redaction boundary**：移动端审批 list/detail/WebSocket created event 面向手机只暴露脱敏审批证据；model action nested args、本地路径文本、selector、token、value、support note 等会被压成 redacted keys/安全摘要，不能把桌面内部 plan args 或私有文件路径展示到手机截图。当前后端目标证据为 `python -m pytest backend\tests\test_mobile_pairing.py -q -k "mobile_approval_payload_redacts_model_action_args or mobile_approval_detail_redacts_local_paths_in_text_fields or mobile_approval_websocket_redacts_created_event"`，本轮结果 `3 passed, 79 deselected`。这仍不是手机真机审批截图、锁屏通知、代理抓包或 LAN/WSS artifact review。
 - **Skill Product Manifest remaining gap**：自动化证据已覆盖 backend manifest/schema/catalog、非私有 showcase 样本、`legacy.unspecified` 回归，以及 `desktop/scripts/skill-manifest-ui-smoke.cjs` 的 Vite/Playwright DOM 渲染 smoke；该 smoke mock `/api/skills` 并生成 `.tmp/qa-evidence/skill-manifest-ui-smoke.png`，证明 declared permissions 与 inferred signals 在 UI 中分开标注。当前未看到真实 release-candidate import 完成证据；zip/schema path 相关测试只能算导入安全边界证据，不能写成 marketplace 或真实导入通过。剩余缺口是真实 release-candidate import path、更多生产样本、签名/市场分发证据。
 - **Portable GUI task evidence boundary**：自动化证据已覆盖 `release:check` 的可执行 backend/portable backend `/health` smoke，以及 `npm run smoke:portable-first-screen` 的 portable 窗口、后端健康、token-authenticated read-only diagnostics GET 和 packaged renderer DOM 点击“检查电脑状态”。最新证据来源是 `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259\portable.status.log`：read-only entry 为 `[pass]`，packaged renderer 已观察到 `/api/system/diagnostics` 和只读诊断文案，且该只读点击后仍为 `tasks=0`、`runs=0`、`chat messages=0`、`diagnostic-packages=0`。随后自然语言命令 dock 填入 `帮我检查这台电脑`，记录为 `[pass] portable renderer DOM natural-language read-only task evidence passed`，观察到 packaged renderer `POST /api/runs`，并由后端生成 read-only/system diagnostics task evidence：`task_99963aecac4841d2af25feb2f675c2ad`，同次统计为 `tasks=1`、`runs=1`、`chat messages=0`、`diagnostic-packages=0`。这可以写成 packaged command-dock 提交 + 只读系统诊断任务证据，不能写成完整 agent 任务结果、clean-machine 验收或 release-candidate sign-off。剩余缺口是 clean-machine 候选包 sign-off、自然语言 agent 任务完成/结果签收，以及平台分发验收。
 - **Clean-machine/local model readiness remaining gap**：自动化证据已覆盖 privacy mode 不静默回退云端、local setup-plan、文件搜索/系统诊断/确定性文档摘要 fallback，以及 `desktop/scripts/settings-local-model-experience-smoke.cjs` 的 Vite/Playwright Settings smoke；该 smoke 展示 quick/privacy/hybrid、本地模型下一步、推荐模型、大小、硬件、速度估计、“不静默回退云端”边界和 mock 下可点击的一键准备入口，并在 1366px desktop、900px narrow desktop 两个视口断言模型边界卡片、setup panel 和操作按钮没有横向溢出/挤压/重叠，生成 `.tmp/qa-evidence/settings-local-model-experience-smoke-desktop.png`、`.tmp/qa-evidence/settings-local-model-experience-smoke-desktop-setup.png`、`.tmp/qa-evidence/settings-local-model-experience-smoke-narrow.png`、`.tmp/qa-evidence/settings-local-model-experience-smoke-narrow-setup.png`。但没有证明干净机器上一键安装/启动推荐模型、bundled/offline model 可用、真实 local model smoke 或失败修复按钮闭环；该 Vite/mock 视觉回归也不是 packaged release-candidate Settings UX 签收。
-- **Mobile real camera/LAN TLS remaining gap**：自动化证据已覆盖桌面 QR payload/PNG 生成、移动端 payload parser、本地 HTTP/WS behavior stub、非 loopback HTTP LAN token-bearing flow 阻断、后端设备绑定，以及 LAN TLS ready/misconfigured metadata 的后端测试；但没有证明真机/模拟器相机扫码、真实 LAN router/firewall 路径、HTTPS/WSS 服务端到设备侧的证书信任链或显式 trust path。
+- **Mobile real camera/LAN TLS remaining gap**：自动化证据已覆盖桌面 QR payload/PNG 生成、移动端 payload parser、PairScreen 内置 `expo-camera` / `CameraView` 二维码扫码入口及 native camera permission/source smoke 断言、本地 HTTP/WS behavior stub、非 loopback HTTP LAN token-bearing flow 阻断、后端设备绑定，以及 LAN TLS ready/misconfigured metadata 的后端测试；但没有证明真机/模拟器相机真实完成扫码配对、真实 LAN router/firewall 路径、HTTPS/WSS 服务端到设备侧的证书信任链或显式 trust path。
 
 ## P0 发布门禁与验收
 
@@ -26,7 +30,7 @@
 - [x] **把 regex smoke 升级为行为级 smoke。**
   - 证据：`mobile/scripts/behavior-smoke-helpers.cjs` 提供本地 HTTP/WS smoke server 和原始 WebSocket 握手；`mobile/scripts/mobile-token-smoke.cjs` 会真实调用 `POST /api/pair/confirm`，验证 approvals/remote screen WebSocket 通过 `Sec-WebSocket-Protocol` 携带 token 且 URL 不含 token；`mobile/scripts/remote-input-grant-smoke.cjs` 会真实调用 grant token claim、DELETE revoke、`/ws/remote/input` 握手，并覆盖 wrong token、revoked、expired 拒绝。
   - 已核验：2026-06-08 本地执行 `npm --prefix mobile run smoke:token` 与 `npm --prefix mobile run smoke:remote-input-grant` 均通过。
-  - 剩余边界：这是自包含本地行为桩，不等同于真机 LAN、证书信任或扫码相机路径验收；这些仍应保留在 demo/release manual evidence。
+  - 剩余边界：这是自包含本地行为桩；`mobile-token-smoke` 对 PairScreen 相机入口和原生权限配置的断言属于源码/配置证明，不等同于真机 LAN、证书信任或真实设备扫码验收；这些仍应保留在 demo/release manual evidence。
 
 - [x] **建立“一条命令发布前验证”而不是散落脚本。**
   - 证据：曾经 `scripts/run_tests.ps1`、`scripts/build_all.ps1`、`scripts/verify_packaging.ps1`、docs release gate 存在口径差；现已由根目录 `release:check` 收敛，`release:gate` 仅保留兼容别名。
@@ -77,12 +81,14 @@
   - 影响：用户第一次启动时网络、registry、依赖新版本都可能把体验炸掉。
   - 验收：正式启动脚本只启动已锁定产物；开发环境安装迁到 `setup` 脚本；依赖使用 lock/constraints 固定。
 
-- [ ] **补齐桌面自动更新/版本展示/故障日志入口。**
-  - 证据：设置/系统区域已经能展示版本、后端诊断、日志目录，并提供 `POST /api/system/diagnostics/export` 支撑的本地诊断包导出；`backend/tests/test_system_diagnostics.py` 覆盖导出包 schema、版本、路径和 secret 不泄露。
-  - 边界更新：本地 diagnostics payload 可以显示诊断包保存位置、data/database/log 路径和进程用户名，方便同机 UI 排障；面向分享的 diagnostics export 当前已写入 `support_package_redaction`，把 data/database/log 绝对路径替换为 path labels，并把进程用户名替换为本地用户标签。该证据只覆盖当前测试种子和导出包路径/用户名红线，仍不能写成完整 crash/update pipeline 或“任意日志内容都已安全公开”。
-  - 剩余缺口：自动更新/检查更新仍未完成；诊断包 UI 不能替代完整 crash/update pipeline；当前证据不能过度表述为“shareable support bundle 可以放心公开”。
+- [ ] **补齐桌面在线更新；版本展示、本机刷新、故障日志入口已有边界证据。**
+  - 证据：设置/系统区域已经能展示桌面版本、后端版本、后端诊断、日志目录、本地发布说明和“刷新本机状态”；该刷新只会重新读取本机版本、服务状态和诊断快照，不会调用在线 updater、下载更新或自动安装更新。后端 `GET /api/system/diagnostics` 返回 `update_channel.status=not_configured`、`check_action=refresh_local_status`、`local_paths.data_dir/database/log_dirs`、audit verification、LAN readiness、local model readiness、`product_metrics` 和 `product_funnel`。
+  - 诊断包导出：`POST /api/system/diagnostics/export` 会在 `<data_dir>\diagnostic-packages` 写入本地 JSON 支持包。`backend/tests/test_system_diagnostics.py` 覆盖导出包 schema、版本、路径标签、进程用户名标签、release notes 路径标签，以及 API key、任务正文、tool 输出 secret、approval message secret、设备名、grant id、pairing code、模型路径、组织式路径片段和任务录屏图片/文件名/路径不进入导出包；当前文件已扩至 8 个诊断用例，本轮本地重跑为 `8 passed`。
+  - UI smoke：`npm --prefix desktop run smoke:system-diagnostics-ui` 在 Vite/Playwright 预览里 mock diagnostics/settings 后端，断言“版本与更新”卡只显示本机版本/本地发布说明，“刷新本机状态”不会请求在线 updater endpoints；同时断言诊断包文案说明脱敏路径、本机范围摘要、导出必须由用户点击触发，且成功状态不会把完整本机路径写成可公开信息。
+  - 边界更新：本地 diagnostics payload 和 UI 可以显示诊断包保存位置、data/database/log 路径和进程用户名，方便同机排障；面向分享的 diagnostics export 当前会写入 `support_package_redaction`，把 data/database/log 绝对路径替换为 path labels，并把进程用户名替换为本地用户标签。该证据覆盖当前测试种子和导出包路径/用户名红线，仍不能写成完整 crash/update pipeline、“任意日志内容都已安全公开”或“诊断包可以公开发布”。
+  - 剩余缺口：完整在线自动更新、自动下载/安装更新、崩溃收集与 update pipeline、clean-machine RC sign-off 仍未完成；诊断包 UI 不能替代完整 crash/update pipeline，也不能过度表述为 shareable support bundle 可以放心公开。
   - 影响：真实用户遇到问题只能截图喊救命，不像产品。
-  - 验收：设置页展示版本、构建时间、后端状态、日志目录、导出诊断包按钮。
+  - 验收：设置/系统页展示桌面版本、后端版本、后端状态、本机更新状态、本地发布说明、日志目录、导出诊断包按钮；文档和 release notes 明确当前只有本机刷新与导出诊断证据，没有完整在线更新或 crash/update pipeline。
 
 ## P1 首次体验与核心闭环
 
@@ -99,12 +105,13 @@
   - 验收：断网时隐私模式至少完成文件搜索、简单摘要、系统查询中的两类；安装失败展示修复路径，不允许自动降级成云端处理。当前已自动化覆盖文件搜索与系统查询，简单摘要和真实本地模型安装/运行仍需候选版本证据。
 
 - [ ] **移动端配对流程产品化。**
-  - 证据：移动端已新增 pairing payload parser，behavior smoke 覆盖 JSON、`lengrvis://pair` URL 和自然语言文本中的地址/配对码解析，也会区分缺地址/缺 code；桌面端已用 `qrcode` 生成真实 PNG QR data URL 并在 Settings 面板渲染，`desktop/scripts/mobile-pairing-qr-smoke.cjs` 覆盖 payload、QR 生成和渲染断言；后端测试覆盖 LAN TLS metadata 的 ready/misconfigured 口径；移动端当前 UI 明确走“粘贴二维码内容”路径，不再把未内置相机组件的入口写成“打开扫码”。真实扫码相机路径、LAN 真机配对和设备侧证书信任验收尚未完成。
+  - 证据：移动端已新增 pairing payload parser，behavior smoke 覆盖 JSON、`lengrvis://pair` URL 和自然语言文本中的地址/配对码解析，也会区分缺地址/缺 code；PairScreen 已内置 `expo-camera` / `CameraView` 二维码扫码入口，同时保留粘贴与手动输入 fallback，`mobile/scripts/mobile-token-smoke.cjs` 会断言 `useCameraPermissions`、`onBarcodeScanned`、QR-only scanner settings、“打开相机扫码”入口、粘贴文案和原生 camera permission 配置；桌面端已用 `qrcode` 生成真实 PNG QR data URL 并在 Settings 面板渲染，`desktop/scripts/mobile-pairing-qr-smoke.cjs` 覆盖 payload、QR 生成和渲染断言；后端测试覆盖 LAN TLS metadata 的 ready/misconfigured 口径。这些证明内置扫码源码路径存在并有自动 smoke/source 断言，但真实手机/模拟器扫码配对、LAN 真机配对和设备侧证书信任验收尚未完成。
   - 影响：演示可以，普通用户会被 IP、端口、同网段这些词劝退。
-  - 验收：桌面端 QR 展示已有自动化证据；剩余验收为移动端扫码配对、真机 LAN 路径，以及失败页区分“不在同一网络 / 后端未启动 / code 过期 / 权限不足”。
+  - 验收：桌面端 QR 展示和移动端扫码源码入口已有自动化证据；剩余验收为真实手机/模拟器扫码配对、真机 LAN 路径，以及失败页在真实设备上区分“不在同一网络 / 后端未启动 / code 过期 / 权限不足”。
 
 - [x] **远程桌面/远控做成明确的模式切换。**
   - 证据：移动端已有 RemoteScreen 和 remote input grant，但产品语义仍散在审批事件里。
+  - 边界更新：远程屏幕/输入 WebSocket 面向客户端的错误只允许泛化 code/message，不回显底层异常、selector、host/path/token/device 信息；原始异常只能进入 redacted audit/log 侧。本轮 `backend/tests/test_remote_desktop.py` 本地重跑为 `25 passed`，已覆盖 auth/scope、query-token rejection、revoke/expiry/disable close behavior，以及 invalid screen control、screen capture failure、unsupported input、policy/tool rejection 和 remote input unexpected exception redaction；仍需补真实 Android/WSS UX、弱网、锁屏和后台证据。
   - 影响：用户不知道现在是只读、可接管、已过期，容易恐慌或误操作。
   - 验收：移动端远程屏幕固定显示 `只读观看 / 已授权输入 / 授权剩余时间 / 结束接管` 状态与按钮；远程输入仍需短期授权。
 
@@ -144,6 +151,7 @@
 
 - [x] **补齐截图、录屏、演示脚本。**
   - 证据：桌面有 smoke screenshot 资源，但还没有稳定的一分钟产品演示路径。
+  - 隐私边界：任务步骤录屏/截图不是默认采集能力；只有显式开启 `LENGRVIS_TASK_RECORDING_ENABLED=true` 或测试专用 force 时才写本机 task recordings。公开 timeline/replay 只能展示 redacted summary、状态、计数和截图是否存在，不返回原始图片、URL、文件名或 recording id；演示录屏仍应使用干净 profile 和脱敏素材。
   - 影响：没有 demo，产品价值只能靠讲，讲得越多越像没做完。
   - 验收：`docs/demo-script.md` 已包含 60 秒、3 分钟、10 分钟三档演示脚本；每档有准备数据、失败兜底、预期画面。
 
@@ -167,7 +175,7 @@
 
 - [x] **建立产品指标而不是只看测试绿灯。**
   - 证据：`backend/app/core/db.py` 的 `local_product_diagnostics()` 输出匿名本地 product metrics/funnel；`backend/app/api/routes_system.py` 将其接入 `/api/system/diagnostics` 与 `/api/system/diagnostics/export`，并补充 local model/Ollama/ONNX readiness。覆盖项包括配对设备、remote input grants、tasks/runs/tool_results 成败、approval pending/approved/rejected/expired、local model next action。
-  - 已核验：2026-06-08 本地执行 `python -m pytest backend\tests\test_system_diagnostics.py -q`，结果 `5 passed`；测试确认诊断 payload/export 不包含 API key、任务正文、tool 输出 secret、approval message secret、设备名、grant id、pairing code 或模型路径原文。
+  - 已核验：2026-06-08 本轮本地执行 `python -m pytest backend\tests\test_system_diagnostics.py -q`，结果为 `8 passed`；测试确认诊断 payload/export 不包含 API key、任务正文、tool 输出 secret、approval message secret、设备名、grant id、pairing code 或模型路径原文，并确认 task recording 在诊断导出里只保留状态边界，不包含图片、文件名或路径。
   - 边界更新：diagnostics payload 可以保留本机 UI 需要的保存位置/日志位置提示；面向分享的 export 当前已改为 redacted path labels 和本地用户标签，避免把用户名或完整 data/database/log 绝对路径当作 support bundle 证据外发；任意日志片段和组织式路径仍需要后续扩展种子覆盖。
   - 剩余边界：这是本机匿名诊断证据，不是云端 telemetry/dashboard；首次启动成功率、模型安装成功率等仍需要后续事件埋点或 dogfood 采样才能变成长期趋势指标。
 

@@ -39,26 +39,125 @@ function loadDesktopPairingPayload() {
   return loadTsModule(path.resolve(__dirname, "..", "..", "desktop", "src", "shared", "mobilePairingPayload.ts"));
 }
 
-function assertPairScreenBeginnerCopy() {
+function assertSourceIncludes(source, expected, message) {
+  assert.ok(source.includes(expected), `${message}: expected source to include ${JSON.stringify(expected)}`);
+}
+
+function assertSourceMatches(source, pattern, message) {
+  assert.match(source, pattern, message);
+}
+
+function assertPairScreenQrSourceAssertions() {
   const source = fs.readFileSync(mobilePath("src/screens/PairScreen.tsx"), "utf8");
-  assert.match(source, /expo-camera/);
-  assert.match(source, /CameraView/);
-  assert.match(source, /useCameraPermissions/);
-  assert.match(source, /onBarcodeScanned/);
-  assert.match(source, /parsePairingPayload\(result\.data\)/);
-  assert.match(source, /barcodeScannerSettings=\{\{ barcodeTypes: \["qr"\] \}\}/);
-  assert.match(source, /打开相机扫码/);
-  assert.match(source, /accessibilityLabel="打开相机扫码"/);
-  assert.match(source, /accessibilityRole="alert"/);
-  assert.match(source, /粘贴电脑端二维码内容或配对信息/);
-  assert.match(source, /扫码失败时也可以直接粘贴/);
-  assert.match(source, /没有识别到 Lengrvis 配对二维码/);
-  assert.match(source, /需要在系统设置打开相机/);
-  assert.match(source, /输入电脑地址和 6 位配对码/);
-  assert.match(source, /等待 HTTPS\/WSS 配对信息/);
-  assert.match(source, /重新生成配对码/);
-  assert.match(source, /需要启用 HTTPS\/WSS/);
+  assertSourceMatches(
+    source,
+    /import\s+\{[\s\S]*\bCameraView\b[\s\S]*\buseCameraPermissions\b[\s\S]*\bBarcodeScanningResult\b[\s\S]*\}\s+from "expo-camera";/,
+    "PairScreen must import the Expo camera scanner surface, permission hook, and scan result type",
+  );
+  assertSourceIncludes(
+    source,
+    "const [cameraPermission, requestCameraPermission] = useCameraPermissions();",
+    "PairScreen must request camera permission through useCameraPermissions",
+  );
+  assertSourceIncludes(source, "requestCameraPermission()", "Opening the scanner must request camera permission when needed");
+  assertSourceIncludes(
+    source,
+    "setFailure(cameraPermissionFailureNotice(nextPermission.canAskAgain));",
+    "Denied camera permission must use beginner-readable recovery copy",
+  );
+  assertSourceIncludes(source, "scanLockedRef", "Scanner must synchronously lock repeated native scan callbacks");
+  assertSourceIncludes(source, "cameraUnavailableFailureNotice()", "Camera open or mount failures must keep a paste fallback");
+
+  assertSourceMatches(
+    source,
+    /const handleBarcodeScanned = \(result: BarcodeScanningResult\) => \{[\s\S]*const payload = parsePairingPayload\(result\.data\);[\s\S]*setPairingPayload\(result\.data\);[\s\S]*applyPayload\(payload\);[\s\S]*setFailure\(pairingFailureNotice\(currentError, undefined, "scan"\)\);[\s\S]*\n  \};/,
+    "Barcode scan handler must parse the scanned QR payload data and apply that exact payload",
+  );
+  assertSourceIncludes(
+    source,
+    '<PairingScanner visible={isScanning} scanLocked={scanLocked} onClose={closeScanner} onScanned={handleBarcodeScanned} />',
+    "PairScreen must wire the scanner result callback to the barcode handler",
+  );
+  assertSourceMatches(
+    source,
+    /<CameraView[\s\S]*barcodeScannerSettings=\{\{ barcodeTypes: \["qr"\] \}\}[\s\S]*facing="back"[\s\S]*onMountError=\{\(\) => onClose\(cameraUnavailableFailureNotice\(\)\)\}[\s\S]*onBarcodeScanned=\{scanLocked \? undefined : onScanned\}[\s\S]*\/>/,
+    "PairingScanner must render a rear CameraView with QR-only scanning, mount failure handling, and the scan callback",
+  );
+
+  const beginnerCopy = [
+    "打开相机扫码",
+    "请求相机权限",
+    "无法打开相机",
+    "需要在系统设置打开相机",
+    "需要相机权限",
+    "允许相机权限",
+    "粘贴电脑端二维码内容或配对信息",
+    "扫码失败时也可以直接粘贴",
+    "二维码里的电脑地址不可用",
+    "二维码缺少电脑地址",
+    "没有识别到 Lengrvis 配对二维码",
+    "请对准电脑端 Lengrvis 配对页的二维码",
+    "输入电脑地址和 6 位配对码",
+    "等待安全配对信息",
+    "重新生成配对码",
+    "需要安全连接",
+    "普通网络地址不能直接连接",
+    "电脑指纹",
+    "需要确认这台电脑",
+    "手机还没有和这台电脑建立安全连接",
+    "电脑端未打开",
+  ];
+  for (const copy of beginnerCopy) {
+    assertSourceIncludes(source, copy, `PairScreen beginner copy must explain ${copy}`);
+  }
+
+  assertSourceIncludes(source, 'testID="pair-open-scanner-button"', "Scan entry must have a stable test id");
+  assertSourceIncludes(source, 'testID="pairing-scanner-camera"', "Camera view must have a stable test id");
+  assertSourceIncludes(source, 'testID="pair-failure-notice"', "Failure notice must have a stable test id");
+  assertSourceIncludes(source, 'accessibilityLabel="打开相机扫码"', "Scan entry must have an accessible label");
+  assertSourceIncludes(source, 'accessibilityRole="alert"', "Pairing failures must be announced as alerts");
+  assert.doesNotMatch(source, /等待 HTTPS\/WSS 配对信息|需要启用 HTTPS\/WSS|手机 token|后端未启动|无法信任电脑证书/);
   assert.doesNotMatch(source, /不会打开相机|没有相机扫码组件|真机相机扫码仍未内置/);
+}
+
+function assertSmokeDoesNotClaimRealDeviceEvidence() {
+  const source = fs.readFileSync(__filename, "utf8");
+  const forbiddenClaims = [
+    ["真", "实", "手", "机", "已", "验", "证"].join(""),
+    ["真", "机", "已", "验", "证"].join(""),
+    ["real", "phone", "verified"].join(" "),
+    ["real", "device", "verified"].join(" "),
+  ];
+  for (const claim of forbiddenClaims) {
+    assert.equal(source.includes(claim), false, `mobile token smoke must not claim ${claim} without real-device evidence`);
+  }
+}
+
+function assertExpoCameraNativeConfig() {
+  const appJson = JSON.parse(fs.readFileSync(mobilePath("app.json"), "utf8"));
+  const expo = appJson.expo ?? {};
+  const androidPermissions = expo.android?.permissions ?? [];
+  assert.ok(Array.isArray(androidPermissions), "app.json expo.android.permissions must be an array");
+  assert.ok(androidPermissions.includes("CAMERA"), "app.json must declare Android CAMERA permission for QR pairing");
+
+  const iosCameraUsage = expo.ios?.infoPlist?.NSCameraUsageDescription;
+  assert.equal(
+    iosCameraUsage,
+    "Allow Lengrvis Approval to use the camera to scan pairing QR codes from your desktop.",
+    "app.json must explain iOS camera usage for QR pairing",
+  );
+
+  const plugins = expo.plugins ?? [];
+  assert.ok(Array.isArray(plugins), "app.json expo.plugins must be an array");
+  const cameraPlugin = plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === "expo-camera");
+  assert.ok(cameraPlugin, "app.json must configure the expo-camera config plugin");
+  const cameraPluginConfig = cameraPlugin[1] ?? {};
+  assert.equal(
+    cameraPluginConfig.cameraPermission,
+    iosCameraUsage,
+    "expo-camera plugin cameraPermission should match the iOS camera usage explanation",
+  );
+  assert.equal(cameraPluginConfig.recordAudioAndroid, false, "QR pairing must not request Android audio recording permission");
 }
 
 function plain(value) {
@@ -107,7 +206,9 @@ async function main() {
   const pairingPayload = loadPairingPayload(client);
   const desktopPairingPayload = loadDesktopPairingPayload();
   let expectedPairToken = "paired-token";
-  assertPairScreenBeginnerCopy();
+  assertPairScreenQrSourceAssertions();
+  assertSmokeDoesNotClaimRealDeviceEvidence();
+  assertExpoCameraNativeConfig();
 
   const server = await startHttpWsSmokeServer({
     handleRequest: ({ res, url, request }) => {

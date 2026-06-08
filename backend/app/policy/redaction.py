@@ -63,6 +63,9 @@ PATTERNS = [
     (re.compile(r"\b1[3-9]\d{9}\b"), "[REDACTED_PHONE]"),
 ]
 GENERIC_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{24,}(?![A-Za-z0-9_-])")
+LOCAL_PATH_PATTERN = re.compile(
+    r"(?i)(?:[A-Za-z]:[\\/][^\s,;'\"<>]+|(?:/Users|/home|/tmp|/var|/private)/[^\s,;'\"<>]+|~[\\/][^\s,;'\"<>]+)"
+)
 
 
 def redact_text(text: str, *, redact_generic_tokens: bool = True) -> str:
@@ -72,6 +75,10 @@ def redact_text(text: str, *, redact_generic_tokens: bool = True) -> str:
     if redact_generic_tokens:
         redacted = GENERIC_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", redacted)
     return redacted
+
+
+def redact_public_text(text: str, *, redact_generic_tokens: bool = True) -> str:
+    return LOCAL_PATH_PATTERN.sub("[REDACTED_LOCAL_PATH]", redact_text(text, redact_generic_tokens=redact_generic_tokens))
 
 
 def redact_value(value: Any) -> Any:

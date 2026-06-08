@@ -18,6 +18,7 @@ from app.llm.registry import get_effective_settings
 RECORDING_KIND = "step_screenshot"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _DEFAULT_MIME_TYPE = "image/png"
+_TEST_ENV_TRUE_VALUES = {"1", "true", "yes", "on", "test", "testing"}
 
 
 def capture_step_screenshot(
@@ -68,20 +69,14 @@ def capture_step_screenshot(
 
 
 def recording_enabled() -> bool:
-    raw = (
-        os.environ.get("LENGRVIS_TASK_RECORDING_ENABLED")
-        or os.environ.get("LENGRVIS_TASK_RECORDING_ENABLED")
-        or os.environ.get("LENGRVIS_TASK_RECORDING_ENABLED")
-    )
-    if raw is not None:
-        return raw.strip().lower() in {"1", "true", "yes", "on"}
-    if os.environ.get("PYTEST_CURRENT_TEST") and not (
-        os.environ.get("LENGRVIS_TASK_RECORDING_FORCE")
-        or os.environ.get("LENGRVIS_TASK_RECORDING_FORCE")
-        or os.environ.get("LENGRVIS_TASK_RECORDING_FORCE")
-    ):
-        return False
-    return True
+    force = _env_flag("LENGRVIS_TASK_RECORDING_FORCE")
+    if force and _is_test_environment():
+        return True
+
+    enabled = _env_flag("LENGRVIS_TASK_RECORDING_ENABLED")
+    if enabled is not None:
+        return enabled
+    return False
 
 
 def recording_task_dir(task_id: str, *, settings: AppSettings | None = None) -> Path:
@@ -242,3 +237,19 @@ def _safe_name(value: str) -> str:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def _env_flag(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_test_environment() -> bool:
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return any(
+        str(os.environ.get(name) or "").strip().lower() in _TEST_ENV_TRUE_VALUES
+        for name in ("LENGRVIS_TEST", "APP_ENV", "LENGRVIS_ENV")
+    )

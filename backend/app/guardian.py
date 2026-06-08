@@ -9,7 +9,14 @@ from fastapi.responses import JSONResponse
 from app.api.routes_guardian import proxy_router, router, ws_router
 from app.core import db
 from app.core.errors import AppError
-from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_mobile_lan_http_path
+from app.security.lan import (
+    LAN_PUBLIC_HTTP_PATHS,
+    MOBILE_SECURE_TRANSPORT_ERROR,
+    allow_lan_desktop_api,
+    is_loopback_host,
+    is_mobile_token_http_path,
+    is_secure_mobile_transport,
+)
 from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token
 from app.services.guardian_runtime import runtime
@@ -42,7 +49,14 @@ def create_guardian_app() -> FastAPI:
     @app.middleware("http")
     async def lan_api_guard(request: Request, call_next):
         client_host = request.client.host if request.client else ""
-        if is_loopback_host(client_host) or allow_lan_desktop_api() or is_mobile_lan_http_path(request.url.path):
+        path = request.url.path
+        if is_loopback_host(client_host):
+            return await call_next(request)
+        if is_mobile_token_http_path(path):
+            if is_secure_mobile_transport(client_host, request.url.scheme):
+                return await call_next(request)
+            return JSONResponse(status_code=403, content={"detail": MOBILE_SECURE_TRANSPORT_ERROR})
+        if path in LAN_PUBLIC_HTTP_PATHS or allow_lan_desktop_api():
             return await call_next(request)
         return JSONResponse(
             status_code=403,
@@ -58,8 +72,9 @@ def create_guardian_app() -> FastAPI:
     async def mobile_jwt_guard(request: Request, call_next):
         if not request.url.path.startswith("/api/mobile/"):
             return await call_next(request)
-        if request.url.path.startswith("/api/mobile/pair"):
-            return await call_next(request)
+        client_host = request.client.host if request.client else ""
+        if not is_secure_mobile_transport(client_host, request.url.scheme):
+            return JSONResponse(status_code=403, content={"detail": MOBILE_SECURE_TRANSPORT_ERROR})
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:

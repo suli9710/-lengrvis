@@ -9,6 +9,12 @@ const desktopRoot = path.resolve(__dirname, "..");
 const previewHost = "127.0.0.1";
 const backendOrigin = "http://127.0.0.1:8000";
 const previewReadyTimeoutMs = 30_000;
+const desktopViewport = { width: 1366, height: 768 };
+const narrowViewport = { width: 390, height: 844 };
+const overpromisingPathCopyPattern = /安全公开|放心公开|公开完整路径|可以直接公开|无需脱敏|不会包含隐私|随意分享/;
+const positiveUpdaterCopyPattern = /下载更新|自动安装更新|立即更新|检查在线更新|联网查询更新|开始下载|点击安装/;
+const onlineUpdaterEndpointPattern =
+  /\/(?:api\/)?(?:app\/|system\/)?updates?\b|\/api\/updater\b|\/api\/releases\/(?:check|latest)\b|\/update-check\b|\/auto-update\b/i;
 
 const backendDiagnostics = {
   info: {
@@ -93,31 +99,53 @@ async function main() {
   try {
     await waitForPreview(previewUrl);
     browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1366, height: 768 } });
-    page.on("pageerror", (error) => {
-      throw error;
-    });
+    const desktopCounters = createNetworkCounters();
+    const desktopPage = await openDiagnosticsPage(browser, previewUrl, desktopViewport, desktopCounters);
+    await assertUpdateCardIsLocalOnly(desktopPage, desktopCounters);
+    await assertDiagnosticExportEntry(desktopPage, desktopCounters);
+    await assertLogPathCopyDoesNotOverpromise(desktopPage);
+    await assertDiagnosticsLayout(desktopPage, "desktop diagnostics view");
+    assertNoOnlineUpdaterRequests(desktopCounters);
+    await desktopPage.close();
 
-    const counters = {
-      diagnosticExportRequests: 0,
-      systemDiagnosticsRequests: 0,
-      systemInfoRequests: 0,
-      onlineUpdateRequests: 0
-    };
-    await installApiMocks(page, counters);
-    await page.goto(`${previewUrl}/?view=computer`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForSelector("[data-testid='system-update-card']", { timeout: 30_000 });
-
-    await assertUpdateCardIsLocalOnly(page, counters);
-    await assertDiagnosticExportEntry(page, counters);
-    assert.equal(counters.onlineUpdateRequests, 0, "system diagnostics UI must not call online updater endpoints");
-    await page.close();
+    const narrowCounters = createNetworkCounters();
+    const narrowPage = await openDiagnosticsPage(browser, previewUrl, narrowViewport, narrowCounters);
+    await assertUpdateCardIsLocalOnly(narrowPage, narrowCounters);
+    await assertDiagnosticExportEntry(narrowPage, narrowCounters);
+    await assertLogPathCopyDoesNotOverpromise(narrowPage);
+    await assertDiagnosticsLayout(narrowPage, "narrow diagnostics view");
+    assertNoOnlineUpdaterRequests(narrowCounters);
+    await narrowPage.close();
   } finally {
     if (browser) await browser.close();
     await stopProcess(preview);
   }
 
   console.log("desktop system diagnostics UI smoke passed");
+}
+
+function createNetworkCounters() {
+  return {
+    diagnosticExportRequests: 0,
+    diagnosticExportAnyRequests: 0,
+    diagnosticExportMethods: [],
+    postRequests: [],
+    systemDiagnosticsRequests: 0,
+    systemInfoRequests: 0,
+    onlineUpdateRequests: 0,
+    onlineUpdateUrls: []
+  };
+}
+
+async function openDiagnosticsPage(browser, previewUrl, viewport, counters) {
+  const page = await browser.newPage({ viewport });
+  page.on("pageerror", (error) => {
+    throw error;
+  });
+  await installApiMocks(page, counters);
+  await page.goto(`${previewUrl}/?view=computer`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.waitForSelector("[data-testid='system-update-card']", { timeout: 30_000 });
+  return page;
 }
 
 function assertBuiltRendererExists() {
@@ -161,16 +189,26 @@ async function assertUpdateCardIsLocalOnly(page, counters) {
   assert.match(cardText, /只显示本机版本与本地发布说明|只会刷新本机版本和服务信息/, "version section should explain the local-only refresh");
   assert.match(cardText, /刷新本机状态/, "version action should be framed as local status refresh");
   assert.match(cardText, /本地发布说明/, "version section should expose packaged local release notes");
-  assert.doesNotMatch(cardText, /下载更新|自动安装更新|立即更新/, "version card must not look like an online updater");
+  assertNoPositiveUpdaterCopy(cardText, "version card must not look like an online updater");
+
+  const updateDetail = await page.getByTestId("system-update-detail").innerText();
+  assert.match(updateDetail, /本机|本地/, "version detail should frame refresh as a local-only status check");
+  assertNoPositiveUpdaterCopy(updateDetail, "version detail must not imply online update behavior");
+
+  const channelLabel = await page.getByTestId("system-update-channel-label").innerText();
+  assert.match(channelLabel, /未配置在线更新通道/, "channel label should stay explicit about the missing online updater channel");
+  const releaseNotesLabel = await page.getByTestId("system-release-notes-label").innerText();
+  assert.match(releaseNotesLabel, /本地发布说明/, "release notes label should point to packaged local notes");
 
   const refreshButton = page.getByTestId("system-update-refresh-button");
   assert.equal(await refreshButton.isEnabled(), true, "local status refresh button should be enabled");
+  assertNoPositiveUpdaterCopy(await refreshButton.innerText(), "refresh action should not be worded as an updater");
   assert.equal(await page.getByTestId("system-release-notes-button").isEnabled(), true, "local release notes entry should be available");
 
   const nextStepsText = await page.getByTestId("system-update-next-steps").innerText();
   assert.match(nextStepsText, /确认是否有新版：查看本地发布说明/, "next steps should route version questions to local release notes");
   assert.match(nextStepsText, /遇到故障：导出诊断包，再打开日志位置排查/, "next steps should route support cases to diagnostics and logs");
-  assert.doesNotMatch(nextStepsText, /下载更新|自动安装更新|立即更新/, "next steps must not imply online update capability");
+  assertNoPositiveUpdaterCopy(nextStepsText, "next steps must not imply online update capability");
 
   const systemInfoRequestsBefore = counters.systemInfoRequests;
   const diagnosticsRequestsBefore = counters.systemDiagnosticsRequests;
@@ -195,38 +233,141 @@ async function assertDiagnosticExportEntry(page, counters) {
   assert.match(exportText, /本机范围摘要/, "diagnostics export copy should frame the package as local-scope diagnostics");
   assert.match(exportText, /版本、服务状态、网络接口/, "diagnostics export copy should describe support bundle contents");
   assert.match(exportText, /不包含你的文档正文、文件内容或密钥/, "diagnostics export copy should make privacy boundary visible");
-  assert.doesNotMatch(exportText, /安全公开|放心公开/, "diagnostics export copy must not imply the full path is safe to publish");
+  assertNoOverpromisingPathCopy(exportText, "diagnostics export copy must not imply the full path is safe to publish");
   assert.equal(counters.diagnosticExportRequests, 0, "diagnostics package should not be exported before user action");
+  assert.equal(counters.diagnosticExportAnyRequests, 0, "diagnostics export endpoint should not be requested before user action");
+  assert.deepEqual(counters.postRequests, [], "system diagnostics view should not POST to the backend before the explicit export action");
 
   await page.getByTestId("diagnostic-export-button").click();
   await waitForCounter(() => counters.diagnosticExportRequests === 1, "diagnostics export request");
+  assert.deepEqual(counters.diagnosticExportMethods, ["POST"], "diagnostics export should be triggered exactly once and only with POST");
+  assert.deepEqual(counters.postRequests, ["/api/system/diagnostics/export"], "the first backend POST should be the user-triggered diagnostics export");
 
   const status = page.getByTestId("diagnostic-export-status");
   await status.waitFor({ timeout: 10_000 });
   const statusText = await status.innerText();
   assert.match(statusText, /诊断包已生成/, "export action should report the generated diagnostics package");
   assert.match(statusText, /不要把完整路径当作可公开信息/, "success status should not imply that full local paths are public-safe");
+  assertNoOverpromisingPathCopy(statusText, "success status must not overpromise local path safety");
 
   const pathText = await page.getByTestId("diagnostic-export-path").innerText();
   assert.match(pathText, /本机保存位置/, "success state should label the local save location");
   assert.match(pathText, /仅用于在这台电脑上打开/, "local path should be framed as a same-machine convenience");
   assert.match(pathText, /不建议公开完整路径/, "local path copy should warn against publicly sharing the full path");
   assert.match(pathText, /lengrvis-diagnostics-smoke\.json/);
-  assert.doesNotMatch(pathText, /安全公开|放心公开/, "local path copy must not imply the full path is safe to publish");
+  assertNoOverpromisingPathCopy(pathText, "local path copy must not imply the full path is safe to publish");
+}
+
+async function assertLogPathCopyDoesNotOverpromise(page) {
+  const logText = await page.evaluate(() => {
+    const section = [...document.querySelectorAll(".system-section")].find(
+      (element) => element.querySelector(".system-section__head strong")?.textContent?.trim() === "日志位置"
+    );
+    return section?.innerText ?? "";
+  });
+  assert.notEqual(logText, "", "system diagnostics view should render the log path section");
+  assert.match(logText, /日志位置/, "system diagnostics view should expose the log path section");
+  assert.match(logText, /排查问题|刷新后会显示日志目录/, "log path copy should frame logs as troubleshooting context");
+  assert.match(logText, /C:\\Users\\Smoke\\AppData\\Local\\Lengrvis\\logs/, "log path section should show the mocked local log directory");
+  assertNoOverpromisingPathCopy(logText, "log path copy must not imply full local paths are safe to publish");
+}
+
+async function assertDiagnosticsLayout(page, label) {
+  const violations = await page.evaluate(() => {
+    const tolerance = 4;
+    const viewportWidth = document.documentElement.clientWidth;
+    const failures = [];
+    const documentOverflow = Math.ceil(document.documentElement.scrollWidth - viewportWidth);
+    if (documentOverflow > tolerance) {
+      failures.push(`document has ${documentOverflow}px horizontal overflow`);
+    }
+
+    const layoutSelectors = [
+      ["system update card", "[data-testid='system-update-card']"],
+      ["diagnostics export card", "[data-testid='diagnostic-export-card']"],
+      ["update next steps", "[data-testid='system-update-next-steps']"],
+      ["system grid", ".system-grid"],
+      ["log path list", ".system-path-list"]
+    ];
+    for (const [name, selector] of layoutSelectors) {
+      const element = document.querySelector(selector);
+      if (!element) {
+        failures.push(`${name} is missing`);
+        continue;
+      }
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        failures.push(`${name} is not visible`);
+      }
+      if (rect.left < -tolerance || rect.right > viewportWidth + tolerance) {
+        failures.push(`${name} extends beyond viewport (${Math.round(rect.left)}..${Math.round(rect.right)} of ${viewportWidth})`);
+      }
+    }
+
+    const textFitSelectors = [
+      ["update detail", "[data-testid='system-update-detail']"],
+      ["update facts", ".system-update-card__facts"],
+      ["diagnostics export copy", "[data-testid='diagnostic-export-card'] .diagnostic-export__body span"],
+      ["diagnostics export status", "[data-testid='diagnostic-export-status'] span"],
+      ["diagnostics saved path", "[data-testid='diagnostic-export-path']"],
+      ["log path", ".system-path-row code"]
+    ];
+    for (const [name, selector] of textFitSelectors) {
+      for (const element of document.querySelectorAll(selector)) {
+        const rect = element.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const overflow = Math.ceil(element.scrollWidth - element.clientWidth);
+        if (overflow > tolerance) {
+          failures.push(`${name} has ${overflow}px horizontal text overflow`);
+        }
+      }
+    }
+    return failures;
+  });
+
+  assert.deepEqual(violations, [], `${label} should not horizontally overflow or clip diagnostics copy`);
+}
+
+function assertNoOnlineUpdaterRequests(counters) {
+  assert.deepEqual(
+    counters.onlineUpdateUrls,
+    [],
+    `system diagnostics UI must not call online updater endpoints: ${counters.onlineUpdateUrls.join(", ")}`
+  );
+}
+
+function assertNoPositiveUpdaterCopy(text, message) {
+  const copyWithoutSafetyStatements = text
+    .replace(/不会联网查询、下载或自动安装更新/g, "")
+    .replace(/不会下载或安装更新/g, "");
+  assert.doesNotMatch(copyWithoutSafetyStatements, positiveUpdaterCopyPattern, message);
+}
+
+function assertNoOverpromisingPathCopy(text, message) {
+  const copyWithoutSafetyStatements = text
+    .replace(/不建议公开完整路径/g, "")
+    .replace(/不要把完整路径当作可公开信息/g, "");
+  assert.doesNotMatch(copyWithoutSafetyStatements, overpromisingPathCopyPattern, message);
 }
 
 async function installApiMocks(page, counters) {
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    const method = request.method().toUpperCase();
+    if (method === "POST" && url.origin === backendOrigin) {
+      counters.postRequests.push(url.pathname);
+    }
+    if (onlineUpdaterEndpointPattern.test(url.pathname)) {
+      counters.onlineUpdateRequests += 1;
+      counters.onlineUpdateUrls.push(`${method} ${url.href}`);
+    }
     if (url.origin !== backendOrigin) {
       await route.continue();
       return;
     }
 
-    const method = request.method().toUpperCase();
-    if (/\/(?:api\/)?(?:app\/|system\/)?updates?\b|\/api\/updater\b/i.test(url.pathname)) {
-      counters.onlineUpdateRequests += 1;
+    if (onlineUpdaterEndpointPattern.test(url.pathname)) {
       return route.fulfill({
         status: 500,
         contentType: "application/json",
@@ -264,14 +405,23 @@ async function installApiMocks(page, counters) {
     if (url.pathname === "/api/system/processes") return json({ processes: backendDiagnostics.top_processes, count: backendDiagnostics.top_processes.length });
     if (url.pathname === "/api/system/startup-items") return json({ startup_items: [], count: 0 });
     if (url.pathname === "/api/apps") return json({ apps: [] });
-    if (url.pathname === "/api/system/diagnostics/export" && method === "POST") {
-      counters.diagnosticExportRequests += 1;
-      return json({
-        ok: true,
-        path: "C:\\Users\\Smoke\\AppData\\Local\\Lengrvis\\diagnostics\\lengrvis-diagnostics-smoke.json",
-        filename: "lengrvis-diagnostics-smoke.json",
-        created_at: "2026-06-08T00:00:00.000Z",
-        bytes: 4096
+    if (url.pathname === "/api/system/diagnostics/export") {
+      counters.diagnosticExportAnyRequests += 1;
+      counters.diagnosticExportMethods.push(method);
+      if (method === "POST") {
+        counters.diagnosticExportRequests += 1;
+        return json({
+          ok: true,
+          path: "C:\\Users\\Smoke\\AppData\\Local\\Lengrvis\\diagnostics\\lengrvis-diagnostics-smoke.json",
+          filename: "lengrvis-diagnostics-smoke.json",
+          created_at: "2026-06-08T00:00:00.000Z",
+          bytes: 4096
+        });
+      }
+      return route.fulfill({
+        status: 405,
+        contentType: "application/json",
+        body: JSON.stringify({ error: `diagnostics export requires POST, received ${method}` })
       });
     }
 
