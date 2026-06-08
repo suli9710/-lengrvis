@@ -29,6 +29,7 @@ READONLY_SHELL_COMMANDS = {
     "where",
     "whoami",
 }
+LOCAL_READONLY_BUILTINS = {"dir", "echo", "type"}
 SHELL_WRITE_TOKENS = {
     ">",
     ">>",
@@ -190,14 +191,17 @@ def shell_readonly(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     command = str(args.get("command") or "").strip()
     if not command:
         return {"ok": False, "error": "Missing command."}
-    tokens, reason = _parse_readonly_shell(command, allowed_directories=_allowed(context))
+    allowed_directories = _allowed(context)
+    tokens, reason = _parse_readonly_shell(command, allowed_directories=allowed_directories)
     if tokens is None:
         return {"ok": False, "error": reason, "readonly": False}
     try:
         root = _workspace_root(args, context)
     except SecurityError as exc:
         return {"ok": False, "error": str(exc), "readonly": False}
-    result = _run_command(tokens, cwd=root, shell=False)
+    result = _run_local_readonly_builtin(tokens, root, allowed_directories)
+    if result is None:
+        result = _run_command(tokens, cwd=root, shell=False)
     payload = {"ok": result["returncode"] == 0, "cwd": str(root), "readonly": True, **result}
     payload["summary"] = _summarize_shell_readonly(command, payload)
     return payload
@@ -348,6 +352,74 @@ def _parse_readonly_shell(command: str, *, allowed_directories: list[str] | None
     return tokens, ""
 
 
+def _run_local_readonly_builtin(tokens: list[str], root: Path, allowed_directories: list[str]) -> dict[str, Any] | None:
+    executable = Path(tokens[0]).name.casefold()
+    if executable not in LOCAL_READONLY_BUILTINS:
+        return None
+    try:
+        if executable == "echo":
+            return _command_result(0, " ".join(tokens[1:]) + ("\n" if len(tokens) > 1 else "\n"), "")
+        if executable == "dir":
+            target = _builtin_path_arg(tokens, root, allowed_directories, default=root)
+            if not target.exists():
+                return _command_result(1, "", f"Path does not exist: {target}")
+            if target.is_file():
+                return _command_result(0, f"{target.name}\n", "")
+            entries = sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold()))
+            lines = [f"{item.name}{'/' if item.is_dir() else ''}" for item in entries]
+            return _command_result(0, "\n".join(lines) + ("\n" if lines else ""), "")
+        if executable == "type":
+            if len(tokens) < 2:
+                return _command_result(1, "", "type requires a file path.")
+            output: list[str] = []
+            for raw_path in tokens[1:]:
+                target = _builtin_path_arg([tokens[0], raw_path], root, allowed_directories)
+                if not target.exists():
+                    return _command_result(1, "", f"Path does not exist: {target}")
+                if not target.is_file():
+                    return _command_result(1, "", f"Path is not a file: {target}")
+                output.append(target.read_text(encoding="utf-8", errors="replace"))
+            return _command_result(0, "".join(output), "")
+    except SecurityError as exc:
+        return _command_result(1, "", str(exc))
+    except OSError as exc:
+        return _command_result(1, "", str(exc))
+    return None
+
+
+def _builtin_path_arg(
+    tokens: list[str],
+    root: Path,
+    allowed_directories: list[str],
+    *,
+    default: Path | None = None,
+) -> Path:
+    if len(tokens) <= 1:
+        if default is None:
+            raise SecurityError("Missing path argument.")
+        return default
+    if len(tokens) > 2:
+        raise SecurityError(f"{tokens[0]} accepts at most one path argument.")
+    raw = _strip_matching_quotes(tokens[1])
+    path = Path(raw)
+    if raw.startswith("-") or (raw.startswith("/") and not path.is_absolute()):
+        raise SecurityError(f"{tokens[0]} options are not supported by read-only built-in execution.")
+    candidate = path if path.is_absolute() else root / path
+    return resolve_authorized(candidate, allowed_directories or [str(root)])
+
+
+def _command_result(returncode: int, stdout: str, stderr: str) -> dict[str, Any]:
+    stdout, stdout_truncated = _truncate_text(stdout, COMMAND_STDOUT_LIMIT)
+    stderr, stderr_truncated = _truncate_text(stderr, COMMAND_STDERR_LIMIT)
+    return {
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_truncated": stdout_truncated,
+        "stderr_truncated": stderr_truncated,
+    }
+
+
 def validate_test_command(command: str, *, allowed_directories: list[str] | None = None) -> tuple[bool, str]:
     tokens, reason = _parse_test_command(command, allowed_directories=allowed_directories)
     return (tokens is not None, reason)
@@ -455,16 +527,25 @@ def _guarded_git_command(args: list[str]) -> list[str]:
 
 
 def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) -> dict[str, Any]:
-    completed = subprocess.run(
-        command,
-        cwd=str(cwd),
-        shell=shell,
-        env=_safe_command_env(),
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            shell=shell,
+            env=_safe_command_env(),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except OSError as exc:
+        return {
+            "returncode": 127,
+            "stdout": "",
+            "stderr": str(exc),
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
     stdout, stdout_truncated = _truncate_text(completed.stdout, COMMAND_STDOUT_LIMIT)
     stderr, stderr_truncated = _truncate_text(completed.stderr, COMMAND_STDERR_LIMIT)
     return {

@@ -96,6 +96,7 @@ export default function App() {
         onBack={() => setSelectedApproval(null)}
         onSessionExpired={handleSessionExpired}
         onUpdated={setSelectedApproval}
+        remoteInputGrant={remoteInputGrant}
         session={session}
       />
     );

@@ -18,8 +18,8 @@ const SESSION_TOKEN = "session-token";
 const DEVICE_ID = "device-1";
 const ACTIVE_GRANT_ID = "grant/slash id";
 const EXPIRING_GRANT_ID = "grant-expiring";
-const START_TIME = Date.parse("2026-06-01T00:00:00.000Z");
-const EXPIRY_TIME = Date.parse("2026-06-01T00:05:00.000Z");
+const START_TIME = Date.now();
+const EXPIRY_TIME = START_TIME + 5 * 60 * 1000;
 
 function makeGrant(id, overrides = {}) {
   return {
@@ -54,6 +54,12 @@ function decodeGrantTokenPath(pathname, suffix = "") {
   return decodeURIComponent(pathname.slice(prefix.length, pathname.length - suffix.length));
 }
 
+function decodeApprovalPath(pathname, suffix = "") {
+  const prefix = "/api/mobile/approvals/";
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) return null;
+  return decodeURIComponent(pathname.slice(prefix.length, pathname.length - suffix.length));
+}
+
 async function main() {
   const client = loadMobileClient();
   const {
@@ -68,6 +74,24 @@ async function main() {
     grants: new Map([
       [ACTIVE_GRANT_ID, makeGrant(ACTIVE_GRANT_ID)],
       [EXPIRING_GRANT_ID, makeGrant(EXPIRING_GRANT_ID)],
+    ]),
+    approvals: new Map([
+      [
+        "approval-active",
+        {
+          id: "approval-active",
+          task_id: "task-remote-input",
+          approval_type: "remote_input",
+          message: "Approve remote input click",
+          diff_preview: {},
+          status: "pending",
+          created_at: new Date(START_TIME).toISOString(),
+          source_device_id: DEVICE_ID,
+          source_grant_id: ACTIVE_GRANT_ID,
+          allowed_device_ids: [DEVICE_ID],
+          required_mobile_scopes: ["remote:input"],
+        },
+      ],
     ]),
     tokenToGrantId: new Map(),
   };
@@ -127,6 +151,55 @@ async function main() {
         };
         state.grants.set(revokeGrantId, revoked);
         jsonResponse(res, 200, revoked);
+        return true;
+      }
+
+      const approvalDetailId = decodeApprovalPath(url.pathname);
+      if (request.method === "GET" && approvalDetailId) {
+        assertJsonRequest(request, {
+          method: "GET",
+          path: `/api/mobile/approvals/${encodeURIComponent(approvalDetailId)}`,
+          authorization: `Bearer ${SESSION_TOKEN}`,
+        });
+        const approval = state.approvals.get(approvalDetailId);
+        if (!approval) {
+          jsonResponse(res, 404, { detail: "Approval not found" });
+          return true;
+        }
+        jsonResponse(res, 200, {
+          approval,
+          task: null,
+          plan: null,
+          preview: approval.diff_preview,
+        });
+        return true;
+      }
+
+      const approvalDecisionId = decodeApprovalPath(url.pathname, "/decision");
+      if (request.method === "POST" && approvalDecisionId) {
+        const approval = state.approvals.get(approvalDecisionId);
+        if (!approval) {
+          jsonResponse(res, 404, { detail: "Approval not found" });
+          return true;
+        }
+        const grantId = approval.source_grant_id;
+        assertJsonRequest(request, {
+          method: "POST",
+          path: `/api/mobile/approvals/${encodeURIComponent(approvalDecisionId)}/decision`,
+          authorization: `Bearer ${tokenForGrantId(grantId)}`,
+          body: { decision: "approved" },
+        });
+        if (state.tokenToGrantId.get(tokenForGrantId(grantId)) !== grantId) {
+          jsonResponse(res, 403, { detail: "Unknown grant token" });
+          return true;
+        }
+        const decided = {
+          ...approval,
+          status: "approved",
+          decided_at: new Date(state.now).toISOString(),
+        };
+        state.approvals.set(approvalDecisionId, decided);
+        jsonResponse(res, 200, decided);
         return true;
       }
 
@@ -196,6 +269,18 @@ async function main() {
     assert.equal(grantToken.grant.scope, "remote:input");
     assert.equal(grantToken.expires_in, 300);
 
+    const decidedApproval = await client.submitApprovalDecision(session, "approval-active", "approved");
+    assert.equal(decidedApproval.id, "approval-active");
+    assert.equal(decidedApproval.status, "approved");
+    assert.equal(server.requests.length, 3);
+    assert.equal(server.requests[1].method, "GET");
+    assert.equal(server.requests[1].path, "/api/mobile/approvals/approval-active");
+    assert.equal(server.requests[1].headers.authorization, `Bearer ${SESSION_TOKEN}`);
+    assert.equal(server.requests[2].method, "POST");
+    assert.equal(server.requests[2].path, "/api/mobile/approvals/approval-active/decision");
+    assert.equal(server.requests[2].headers.authorization, "Bearer grant-token-active");
+    assert.deepEqual(server.requests[2].json, { decision: "approved" });
+
     const inputInfo = client.remoteInputWebSocketConnectionInfo(session, grantToken.token);
     assert.equal(inputInfo.url, `${server.origin.replace("http:", "ws:")}/ws/remote/input`);
     assert.equal(JSON.stringify(inputInfo.protocols), JSON.stringify([`${WS_PROTOCOL_PREFIX}${grantToken.token}`]));
@@ -206,9 +291,9 @@ async function main() {
     assert.equal(wrongTokenHandshake.statusCode, 401);
 
     const revokedGrant = await client.revokeRemoteInputGrant(session, ACTIVE_GRANT_ID);
-    assert.equal(server.requests.length, 2);
-    assert.equal(server.requests[1].method, "DELETE");
-    assert.equal(server.requests[1].path, "/api/mobile/remote-input-grants/grant%2Fslash%20id");
+    assert.equal(server.requests.length, 4);
+    assert.equal(server.requests[3].method, "DELETE");
+    assert.equal(server.requests[3].path, "/api/mobile/remote-input-grants/grant%2Fslash%20id");
     assert.equal(revokedGrant.status, "revoked");
     assert.equal(reduceRemoteInputGrant(activeGrant, { type: "revoked", grantId: ACTIVE_GRANT_ID }, START_TIME), null);
 

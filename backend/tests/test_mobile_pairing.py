@@ -21,7 +21,14 @@ from app.core.schemas import Approval, ChatResponse, Plan, PlanStep, Task
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
 from app.main import app
-from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token, issue_mobile_token
+from app.security.mobile_jwt import (
+    MOBILE_AUTH_WS_PROTOCOL_PREFIX,
+    REMOTE_INPUT_SCOPE,
+    REMOTE_VIEW_SCOPE,
+    TOKEN_SCOPE,
+    decode_mobile_token,
+    issue_mobile_token,
+)
 from app.security import mobile_jwt
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.api.routes_mobile import _mobile_event_allowed
@@ -29,10 +36,15 @@ from app.services import mobile_pairing_service
 from app.services.approval_event_service import publish_approval_created
 from app.services.settings_service import update_settings
 from app.tools.registry import register_all_tools
+from tls_test_material import write_lan_tls_material
 
 
 def test_pair_request_generates_code(monkeypatch, tmp_path):
+    cert, key = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     client = TestClient(app)
 
@@ -43,12 +55,28 @@ def test_pair_request_generates_code(monkeypatch, tmp_path):
     assert len(payload["code"]) == 6
     int(payload["code"], 16)
     assert payload["expires_in"] <= 300
-    assert payload["server"]["scheme"] == "http"
-    assert payload["server"]["transport_security"]["status"] == "http_lan_insecure"
-    assert payload["server"]["transport_security"]["tls_ready"] is False
+    assert payload["server"]["scheme"] == "https"
+    assert payload["server"]["transport_security"]["status"] == "https_ready"
+    assert payload["server"]["transport_security"]["tls_ready"] is True
 
 
-def test_pair_request_reports_lan_tls_misconfiguration(monkeypatch, tmp_path):
+def test_pair_request_blocks_default_http_lan_pairing(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+
+    response = client.post("/api/pair/request")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "HTTPS/WSS" in detail["message"]
+    security = detail["transport_security"]
+    assert security["status"] == "http_lan_insecure"
+    assert security["scheme"] == "http"
+    assert security["tls_ready"] is False
+
+
+def test_pair_request_blocks_lan_tls_misconfiguration(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
     monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(tmp_path / "missing.crt"))
@@ -56,10 +84,12 @@ def test_pair_request_reports_lan_tls_misconfiguration(monkeypatch, tmp_path):
     db.init_db()
     client = TestClient(app)
 
-    payload = client.post("/api/pair/request").json()
+    response = client.post("/api/pair/request")
 
-    security = payload["server"]["transport_security"]
-    assert payload["server"]["scheme"] == "https"
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "HTTPS/WSS" in detail["message"]
+    security = detail["transport_security"]
     assert security["status"] == "https_misconfigured"
     assert security["https_enabled"] is True
     assert security["tls_ready"] is False
@@ -69,10 +99,7 @@ def test_pair_request_reports_lan_tls_misconfiguration(monkeypatch, tmp_path):
 
 
 def test_pair_request_reports_lan_tls_ready(monkeypatch, tmp_path):
-    cert = tmp_path / "lan.crt"
-    key = tmp_path / "lan.key"
-    cert.write_text("fake cert for readiness metadata", encoding="utf-8")
-    key.write_text("fake key for readiness metadata", encoding="utf-8")
+    cert, key = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
     monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
@@ -91,6 +118,34 @@ def test_pair_request_reports_lan_tls_ready(monkeypatch, tmp_path):
     assert security["tls_ready"] is True
     assert security["requires_trust"] is True
     assert security["trust_model"] == "local_certificate"
+    assert security["tls_material_valid"] is True
+
+
+def test_pair_request_blocks_fake_lan_tls_files_as_misconfigured(monkeypatch, tmp_path):
+    cert = tmp_path / "lan.crt"
+    key = tmp_path / "lan.key"
+    cert.write_text("fake cert for readiness metadata", encoding="utf-8")
+    key.write_text("fake key for readiness metadata", encoding="utf-8")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
+    monkeypatch.setenv("LENGRVIS_LAN_PUBLIC_BASE_URL", "https://lengrvis.local:8443")
+    db.init_db()
+    client = TestClient(app)
+
+    response = client.post("/api/pair/request")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "HTTPS/WSS" in detail["message"]
+    security = detail["transport_security"]
+    assert security["status"] == "https_misconfigured"
+    assert security["cert_present"] is True
+    assert security["key_present"] is True
+    assert security["tls_ready"] is False
+    assert security["tls_material_valid"] is False
+    assert "validation failed" in security["warning"].lower()
 
 
 def test_backend_port_defaults_to_8000_with_single_env_lookup(monkeypatch):
@@ -114,7 +169,11 @@ def test_backend_port_uses_env_value(monkeypatch):
 
 
 def test_pair_confirm_valid_code(monkeypatch, tmp_path):
+    cert, key = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     client = TestClient(app)
     code = client.post("/api/pair/request").json()["code"]
@@ -129,7 +188,11 @@ def test_pair_confirm_valid_code(monkeypatch, tmp_path):
 
 
 def test_pair_confirm_expired_code(monkeypatch, tmp_path):
+    cert, key = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     client = TestClient(app)
     code = client.post("/api/pair/request").json()["code"]
@@ -616,7 +679,11 @@ def test_mobile_companion_follow_up_does_not_echo_privacy_task_text(monkeypatch,
 
 
 def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
+    cert, key = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     client = TestClient(app)
 
@@ -679,7 +746,11 @@ def test_mobile_token_survives_backend_process_restart(tmp_path):
 
 
 def test_pair_code_redeem_is_atomic_under_concurrent_submitters(monkeypatch, tmp_path):
+    cert, key = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     _clear_pairing_failures()
     code = mobile_pairing_service.create_pairing_request()["code"]
@@ -926,6 +997,55 @@ def test_same_device_mobile_approval_scope_cannot_decide_remote_input(monkeypatc
     assert pending_response.json() == []
     assert decision_response.status_code == 403
     assert db.fetch_one("approvals", approval.id)["status"] == "pending"
+
+
+def test_paired_mobile_can_read_but_not_decide_grant_bound_remote_input(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    approval = Approval(
+        task_id="task_mobile_remote_input_readable",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve readable same-device remote input",
+        source_device_id=device_id,
+        source_grant_id=grant["grant_id"],
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+    detail_response = client.get(
+        f"/api/mobile/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+    paired_decision_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {paired_token}"},
+        json={"decision": "denied"},
+    )
+    grant_token = _claim_remote_input_token(client, paired_token, grant)
+    grant_decision_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {grant_token}"},
+        json={"decision": "denied"},
+    )
+
+    assert pending_response.status_code == 200
+    assert [item["id"] for item in pending_response.json()] == [approval.id]
+    assert detail_response.status_code == 200
+    assert detail_response.json()["approval"]["source_grant_id"] == grant["grant_id"]
+    assert paired_decision_response.status_code == 403
+    assert grant_decision_response.status_code == 200
+    assert grant_decision_response.json()["status"] == "rejected"
 
 
 def test_remote_input_scope_can_decide_remote_input(monkeypatch, tmp_path):
@@ -1494,8 +1614,7 @@ def test_remote_input_grant_full_websocket_lifecycle(monkeypatch, tmp_path):
 
             revoke_response = client.delete(f"/api/pair/devices/{device_id}/remote-input-grants/{grant['grant_id']}")
             assert revoke_response.status_code == 200
-            revoked_event = mobile_websocket.receive_json()
-            assert revoked_event["type"] == "remote_input_grant_revoked"
+            revoked_event = _receive_mobile_event_type(mobile_websocket, "remote_input_grant_revoked")
             assert revoked_event["device_id"] == device_id
             assert revoked_event["grant"]["id"] == grant["grant_id"]
             assert revoked_event["grant"]["status"] == "revoked"
@@ -2143,8 +2262,14 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
 
 
 def _paired_token(client: TestClient) -> str:
-    code = client.post("/api/pair/code").json()["code"]
-    return client.post("/api/pair", json={"code": code, "device_name": "Test Phone"}).json()["token"]
+    del client
+    device_id = mobile_jwt.new_device_id()
+    device_name = "Test Phone"
+    mobile_pairing_service._upsert_mobile_device(device_id=device_id, device_name=device_name)
+    scopes = [TOKEN_SCOPE]
+    if get_effective_settings().remote_desktop_enabled:
+        scopes.append(REMOTE_VIEW_SCOPE)
+    return issue_mobile_token(device_id=device_id, device_name=device_name, scope=scopes)
 
 
 def _mobile_task_metadata(token: str) -> dict:
@@ -2165,6 +2290,17 @@ def _enable_remote_desktop() -> None:
     if confirmation.get("required"):
         patch["confirmation_nonce"] = confirmation["nonce"]
     update_settings(patch)
+
+
+def _receive_mobile_event_type(websocket, event_type: str, *, max_events: int = 5) -> dict:
+    skipped: list[str] = []
+    for _ in range(max_events):
+        event = websocket.receive_json()
+        current_type = event.get("type")
+        if current_type == event_type:
+            return event
+        skipped.append(str(current_type))
+    raise AssertionError(f"Expected websocket event {event_type!r}; skipped {skipped!r}")
 
 
 def _claim_remote_input_token(client: TestClient, paired_token: str, grant: dict) -> str:

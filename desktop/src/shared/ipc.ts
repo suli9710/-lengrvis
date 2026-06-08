@@ -6,6 +6,7 @@ export const IPC_CHANNELS = {
   backendForeground: "lengrvis:backend:foreground",
   backendBackground: "lengrvis:backend:background",
   commandsExecute: "lengrvis:commands:execute",
+  taskRollback: "lengrvis:tasks:rollback",
   cleanupExecute: "lengrvis:cleanup:execute",
   cleanupRollback: "lengrvis:cleanup:rollback",
   skillsImport: "lengrvis:skills:import",
@@ -111,6 +112,7 @@ export const API_REQUEST_DENIED_EXACT_PATHS = [
 
 export const API_REQUEST_DENIED_METHOD_PATHS = [
   { method: "POST", pathPrefix: "/api/runs" },
+  { method: "POST", pathPrefix: "/api/tasks/", pathSuffix: "/rollback" },
   { method: "POST", path: "/api/settings" },
   { method: "POST", path: "/api/settings/confirm-sensitive-change" },
   { method: "PUT", path: "/api/settings/permission-policy" },

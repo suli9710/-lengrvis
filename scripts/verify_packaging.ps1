@@ -909,7 +909,7 @@ Test-PEExecutableHeader -Label "backend executable" -Path $BackendExePath -Minim
 $PortableLauncherPreflightPassed = Test-PEExecutableHeader -Label "portable launcher" -Path $PortableLauncherPath -MinimumBytes $MinimumPortableLauncherBytes
 Test-PEExecutableHeader -Label "portable backend executable" -Path $PortableBackendExePath -MinimumBytes $MinimumBackendExecutableBytes | Out-Null
 if ($PortableLauncherPreflightPassed) {
-    Write-Host "[ok] portable launcher startup preflight completed without opening the GUI"
+    Write-Host "[ok] portable launcher structural PE/header/resource preflight completed; GUI launch was not attempted"
 }
 Test-SelfExtractingExecutable $SelfExtractingPath
 if ($RequireBundledOllama) {

@@ -67,6 +67,9 @@ const bridge: LengrvisDesktopBridge = {
   commands: {
     execute: (request) => ipcRenderer.invoke(IPC_CHANNELS.commandsExecute, request)
   },
+  tasks: {
+    rollback: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.taskRollback, taskId)
+  },
   cleanup: {
     execute: (body) => ipcRenderer.invoke(IPC_CHANNELS.cleanupExecute, body),
     rollback: (body) => ipcRenderer.invoke(IPC_CHANNELS.cleanupRollback, body)

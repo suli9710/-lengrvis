@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import secrets
 import socket
+import ssl
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -42,6 +43,8 @@ _PAIR_CONFIRM_FAILURES_LOCK = threading.Lock()
 def create_pairing_request() -> dict[str, Any]:
     db.init_db()
     _expire_stale_pairings()
+    transport = lan_transport_security()
+    _raise_if_pairing_transport_not_ready(transport)
 
     now = time.time()
     code = _unique_code()
@@ -55,7 +58,7 @@ def create_pairing_request() -> dict[str, Any]:
         "expires_at": _iso(now + PAIR_CODE_TTL_SECONDS),
         "used_at": None,
         "updated_at": _iso(now),
-        "server": _server_info(),
+        "server": _server_info(transport),
     }
     _write_pairing_record(record)
     return {
@@ -64,6 +67,21 @@ def create_pairing_request() -> dict[str, Any]:
         "expires_in": PAIR_CODE_TTL_SECONDS,
         "server": record["server"],
     }
+
+
+def _raise_if_pairing_transport_not_ready(transport: dict[str, Any]) -> None:
+    if bool(transport.get("tls_ready")):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": "Mobile pairing requires LAN HTTPS/WSS before generating a phone pairing code.",
+            "status": str(transport.get("status") or "https_misconfigured"),
+            "warning": str(transport.get("warning") or ""),
+            "next_action": str(transport.get("next_action") or "Configure LAN TLS, then generate a new pairing code."),
+            "transport_security": transport,
+        },
+    )
 
 
 def confirm_pairing(*, code: str, device_name: str, client_host: str = "") -> dict[str, Any]:
@@ -159,14 +177,14 @@ def _redeem_pairing_record(code: str, device_name: str) -> dict[str, Any] | None
 
 def list_pending_approvals(claims: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     approvals = db.fetch_many("approvals", "status = ?", ("pending",))
-    return [_safe_approval_payload(row) for row in approvals if _mobile_claims_allow_approval(row, claims)]
+    return [_safe_approval_payload(row) for row in approvals if _mobile_claims_allow_approval_for_read(row, claims)]
 
 
 def get_approval_detail(approval_id: str, claims: dict[str, Any] | None = None) -> dict[str, Any]:
     approval_data = db.fetch_one("approvals", approval_id)
     if not approval_data:
         raise HTTPException(status_code=404, detail="Approval not found")
-    _raise_if_mobile_claims_disallowed(approval_data, claims)
+    _raise_if_mobile_claims_disallowed_for_read(approval_data, claims)
 
     approval = Approval.model_validate(approval_data)
     task_data = db.fetch_one("tasks", approval.task_id)
@@ -485,7 +503,7 @@ def _upsert_mobile_device_locked(conn: Any, *, device_id: str, device_name: str,
 
 def mobile_claims_can_access_approval(approval: Approval | dict[str, Any], claims: dict[str, Any]) -> bool:
     payload = approval.model_dump(mode="json") if isinstance(approval, Approval) else dict(approval)
-    return _mobile_claims_allow_approval(payload, claims)
+    return _mobile_claims_allow_approval_for_read(payload, claims)
 
 
 def raise_if_mobile_claims_disallowed(approval: Approval | dict[str, Any], claims: dict[str, Any] | None) -> None:
@@ -553,8 +571,27 @@ def _raise_if_mobile_claims_disallowed(approval: dict[str, Any], claims: dict[st
         raise HTTPException(status_code=403, detail=reason)
 
 
+def _raise_if_mobile_claims_disallowed_for_read(approval: dict[str, Any], claims: dict[str, Any] | None) -> None:
+    reason = _mobile_approval_read_denial_reason(approval, claims)
+    if reason:
+        raise HTTPException(status_code=403, detail=reason)
+
+
 def _mobile_claims_allow_approval(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
     return not _mobile_approval_denial_reason(approval, claims)
+
+
+def _mobile_claims_allow_approval_for_read(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
+    return not _mobile_approval_read_denial_reason(approval, claims)
+
+
+def _mobile_approval_read_denial_reason(approval: dict[str, Any], claims: dict[str, Any] | None) -> str:
+    reason = _mobile_approval_denial_reason(approval, claims)
+    if not reason:
+        return ""
+    if _paired_mobile_claims_can_read_remote_input_approval(approval, claims):
+        return ""
+    return reason
 
 
 def _mobile_approval_denial_reason(approval: dict[str, Any], claims: dict[str, Any] | None) -> str:
@@ -599,6 +636,25 @@ def _mobile_approval_denial_reason(approval: dict[str, Any], claims: dict[str, A
     if not scopes.intersection(required_scopes):
         return "Mobile token scope is not allowed for this approval."
     return ""
+
+
+def _paired_mobile_claims_can_read_remote_input_approval(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
+    if claims is None or not _is_remote_input_approval(approval):
+        return False
+    device_id = _text(claims.get("device_id"))
+    if not device_id or not is_mobile_device_active(device_id):
+        return False
+    scopes = mobile_token_scopes(claims)
+    if TOKEN_SCOPE not in scopes:
+        return False
+    allowed_devices = _approval_allowed_device_ids(approval)
+    if not allowed_devices or device_id not in allowed_devices:
+        return False
+    if not _approval_source_grant_id(approval):
+        return False
+    approval_source = _approval_source(approval)
+    claim_source = _text(claims.get("source"))
+    return not approval_source or not claim_source or approval_source == claim_source
 
 
 def _is_remote_input_approval(approval: dict[str, Any]) -> bool:
@@ -868,8 +924,8 @@ def _recent_pairing_failures(rate_key: str, now: float) -> list[float]:
     return [timestamp for timestamp in _PAIR_CONFIRM_FAILURES.get(rate_key, []) if timestamp >= cutoff]
 
 
-def _server_info() -> dict[str, Any]:
-    transport = lan_transport_security()
+def _server_info(transport: dict[str, Any] | None = None) -> dict[str, Any]:
+    transport = transport or lan_transport_security()
     return {
         "host": _lan_ip(),
         "port": _backend_port(),
@@ -886,7 +942,8 @@ def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any
     key_file = str(getattr(settings, "lan_tls_key_file", "") or "").strip()
     cert_present = bool(cert_file) and Path(cert_file).expanduser().exists()
     key_present = bool(key_file) and Path(key_file).expanduser().exists()
-    tls_ready = https_enabled and cert_present and key_present
+    tls_validation = _validate_lan_tls_material(cert_file, key_file) if https_enabled and cert_present and key_present else {"ok": False, "error": ""}
+    tls_ready = https_enabled and cert_present and key_present and bool(tls_validation["ok"])
     scheme = "https" if https_enabled else "http"
     origin = _configured_lan_origin(settings, scheme)
 
@@ -901,8 +958,12 @@ def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any
             missing.append("certificate file")
         if not key_present:
             missing.append("private key file")
-        warning = f"LAN HTTPS is enabled but the {' and '.join(missing)} is missing."
-        next_action = "Create or point Lengrvis at a local TLS certificate and key, then restart the backend."
+        if missing:
+            warning = f"LAN HTTPS is enabled but the {' and '.join(missing)} is missing."
+            next_action = "Create or point Lengrvis at a local TLS certificate and key, then restart the backend."
+        else:
+            warning = f"LAN HTTPS certificate/key validation failed: {tls_validation['error']}"
+            next_action = "Point Lengrvis at a parseable certificate and matching private key, then restart the backend."
     else:
         status = "http_lan_insecure"
         warning = "LAN mobile pairing uses HTTP/ws transport unless HTTPS is explicitly configured."
@@ -918,12 +979,30 @@ def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any
         "key_configured": bool(key_file),
         "cert_present": cert_present,
         "key_present": key_present,
+        "tls_material_valid": bool(tls_validation["ok"]),
         "requires_trust": https_enabled,
         "trust_required": https_enabled,
         "trust_model": "local_certificate" if https_enabled else "none",
         "warning": warning,
         "next_action": next_action,
     }
+
+
+def _validate_lan_tls_material(cert_file: str, key_file: str) -> dict[str, Any]:
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(Path(cert_file).expanduser()), str(Path(key_file).expanduser()))
+    except Exception as exc:  # noqa: BLE001 - readiness should report a structured status.
+        return {"ok": False, "error": _safe_tls_error(exc)}
+    return {"ok": True, "error": ""}
+
+
+def _safe_tls_error(error: Exception) -> str:
+    if isinstance(error, ssl.SSLError):
+        return "certificate or private key could not be parsed or do not match"
+    if isinstance(error, OSError):
+        return "certificate or private key file could not be opened"
+    return "certificate or private key validation failed"
 
 
 def _configured_lan_origin(settings: AppSettings, scheme: str) -> str:

@@ -16,8 +16,11 @@ from app.core import db
 from app.core.audit import record
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
-from app.core.schemas import ToolResult
+from app.core.schemas import Approval, ApprovalStatus, ToolResult, now_iso
 from app.llm.registry import get_effective_settings
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
+from app.policy.risk import RiskLevel
 
 try:
     from send2trash import send2trash
@@ -127,10 +130,11 @@ def rollback_cleanup_result(args: dict[str, Any], context: dict[str, Any] | None
         }
     if not args.get("approved") or not args.get("approval_id"):
         raise SecurityError("cleanup_rollback requires approved=true and approval_id for live execution.")
+    approval = _claim_valid_cleanup_rollback_approval(args, context)
     record(
         "file.cleanup_rollback",
         "RollbackTool",
-        {"approval_id": args.get("approval_id"), "steps": steps},
+        {"approval_id": approval.id, "steps": steps},
         task_id=context.get("task_id"),
     )
     return {
@@ -142,6 +146,94 @@ def rollback_cleanup_result(args: dict[str, Any], context: dict[str, Any] | None
         "changed_paths": [],
         "message": "Recycle-bin cleanup items must be restored by the user; permanent deletes are unrecoverable.",
     }
+
+
+def _claim_valid_cleanup_rollback_approval(args: dict[str, Any], context: dict[str, Any]) -> Approval:
+    if args.get("approved") is not True:
+        raise SecurityError("cleanup_rollback requires approved=true and a valid approved approval_id.")
+    approval_id = str(args.get("approval_id") or "").strip()
+    if not approval_id:
+        raise SecurityError("cleanup_rollback requires a valid approved approval_id.")
+
+    data = db.fetch_one("approvals", approval_id)
+    if not data:
+        raise SecurityError("cleanup_rollback requires an approval_id that exists in the approval database.")
+    approval = Approval.model_validate(data)
+    binding_error = _cleanup_rollback_approval_binding_error(approval, args, context, allow_consumed=False)
+    if binding_error:
+        raise SecurityError(binding_error)
+
+    claimed = db.claim_approval_for_execution(approval.id, now_iso())
+    if not claimed:
+        raise SecurityError("cleanup_rollback approval has already been consumed or is no longer approved.")
+    claimed_approval = Approval.model_validate(claimed)
+    binding_error = _cleanup_rollback_approval_binding_error(claimed_approval, args, context, allow_consumed=True)
+    if binding_error:
+        raise SecurityError(binding_error)
+    return claimed_approval
+
+
+def _cleanup_rollback_approval_binding_error(
+    approval: Approval,
+    args: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    allow_consumed: bool,
+) -> str:
+    if approval.approval_type != "tool_call":
+        return "cleanup_rollback approval is not bound to a tool call."
+    if approval.status != ApprovalStatus.APPROVED:
+        return f"cleanup_rollback approval status is {approval.status}; expected approved."
+    if approval.consumed_at and not allow_consumed:
+        return "cleanup_rollback approval has already been consumed."
+    required = {
+        "tool_name": approval.tool_name,
+        "args_binding_hmac": approval.args_binding_hmac,
+        "preview_hmac": approval.preview_hmac,
+        "settings_fingerprint": approval.settings_fingerprint,
+        "permission_policy_version": approval.permission_policy_version,
+        "tool_version": approval.tool_version,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        return f"cleanup_rollback approval lacks binding metadata: {', '.join(missing)}."
+    if approval.tool_name != "file.cleanup_rollback":
+        return "cleanup_rollback approval tool name does not match file.cleanup_rollback."
+    if approval.risk_level and approval.risk_level != RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value:
+        return "cleanup_rollback approval risk level does not match cleanup_rollback."
+    if approval.tool_version != "1":
+        return "cleanup_rollback approval tool version does not match cleanup_rollback."
+
+    expected_args = args_binding_hmac(
+        "file.cleanup_rollback",
+        args,
+        task_id=approval.task_id,
+        step_id=approval.step_id,
+    )
+    if not _hmac_equal(approval.args_binding_hmac, expected_args):
+        return "cleanup_rollback approval arguments do not match the current request."
+
+    expected_preview = preview_hmac(approval.diff_preview)
+    if not _hmac_equal(approval.preview_hmac, expected_preview):
+        return "cleanup_rollback approval preview was modified after review."
+
+    expected_settings = settings_fingerprint(
+        context.get("settings"),
+        allowed_directories=[str(path) for path in context.get("allowed_directories") or []],
+    )
+    if not _hmac_equal(approval.settings_fingerprint, expected_settings):
+        return "cleanup_rollback runtime settings changed after approval preview."
+
+    expected_policy = permission_policy_version(PermissionStore().updated_at())
+    if not _hmac_equal(approval.permission_policy_version, expected_policy):
+        return "cleanup_rollback permission policy changed after approval preview."
+    return ""
+
+
+def _hmac_equal(left: str, right: str) -> bool:
+    import hmac
+
+    return hmac.compare_digest(str(left or ""), str(right or ""))
 
 
 def _results_for_task(task_id: str) -> list[ToolResult]:

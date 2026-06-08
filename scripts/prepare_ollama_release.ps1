@@ -68,7 +68,17 @@ function Invoke-Step {
 function New-SmokeExecutable {
     param([string]$Path)
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
-    [System.IO.File]::WriteAllBytes($Path, [byte[]](0x4d,0x5a,0x90,0x00))
+    [byte[]]$bytes = [byte[]]::new(4096)
+    $peOffset = 0x80
+    $bytes[0] = 0x4d
+    $bytes[1] = 0x5a
+    [System.BitConverter]::GetBytes([uint32]$peOffset).CopyTo($bytes, 0x3c)
+    [System.BitConverter]::GetBytes([uint32]0x00004550).CopyTo($bytes, $peOffset)
+    [System.BitConverter]::GetBytes([uint16]0x8664).CopyTo($bytes, $peOffset + 4)
+    [System.BitConverter]::GetBytes([uint16]3).CopyTo($bytes, $peOffset + 6)
+    [System.BitConverter]::GetBytes([uint16]0x00f0).CopyTo($bytes, $peOffset + 0x14)
+    [System.BitConverter]::GetBytes([uint16]0x020b).CopyTo($bytes, $peOffset + 0x18)
+    [System.IO.File]::WriteAllBytes($Path, $bytes)
 }
 
 function New-SmokeSelfExtractingExecutable {

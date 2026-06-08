@@ -24,6 +24,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 PYTHON_BIN="${PYTHON:-python3}"
+BUILD_REQUIREMENTS="backend/requirements-build.txt"
 
 if [[ -f ".venv/bin/activate" ]]; then
   # shellcheck disable=SC1091
@@ -31,9 +32,15 @@ if [[ -f ".venv/bin/activate" ]]; then
   PYTHON_BIN="${PYTHON:-python}"
 fi
 
-if ! "$PYTHON_BIN" -m pip show pyinstaller >/dev/null 2>&1; then
-  echo "Installing PyInstaller..."
-  "$PYTHON_BIN" -m pip install pyinstaller
+if [[ ! -f "$BUILD_REQUIREMENTS" ]]; then
+  echo "Missing pinned backend build dependency file: $BUILD_REQUIREMENTS" >&2
+  exit 1
+fi
+
+echo "Ensuring pinned backend build dependencies from $BUILD_REQUIREMENTS..."
+if ! "$PYTHON_BIN" -m pip install -r "$BUILD_REQUIREMENTS"; then
+  echo "Failed to install pinned backend build dependencies. Run: $PYTHON_BIN -m pip install -r $BUILD_REQUIREMENTS" >&2
+  exit 1
 fi
 
 ARGS=()

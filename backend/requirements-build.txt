@@ -1,0 +1,4 @@
+# Direct build dependency lock for backend packaging scripts.
+# Keep this file small and pinned; build scripts install from it before PyInstaller packaging.
+
+pyinstaller==6.20.0

@@ -19,6 +19,28 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATA = PROJECT_ROOT / "test_data"
+SLOW_TEST_NODEID_SUFFIXES = {
+    "test_claude_code_runner.py::test_cancel_terminates_fake_claude_code_process",
+    "test_runs_api.py::test_cancelled_run_is_not_overwritten_by_finishing_engine_turn",
+    "test_runs_api.py::test_developer_cancel_terminates_fake_claude_and_publishes_diagnostics",
+    "test_runs_api.py::test_paused_run_is_not_overwritten_by_finishing_engine_turn",
+    "test_skill_loader.py::test_handler_timeout_returns_inline_error",
+    "test_start_app_script.py::test_start_app_recent_log_summary_redacts_secrets",
+    "test_task_pool.py::test_pool_shutdown_drains_running_tasks",
+}
+SLOW_TEST_NODEID_SUBSTRINGS = {
+    "test_lan_transport_security.py::test_system_diagnostics_reports_default_http_lan_readiness",
+    "test_lan_transport_security.py::test_system_diagnostics_reports_tls_enabled_with_missing_files",
+    "test_privacy_mode_offline_eval.py::test_natural_language_system_check_chat_delegates_to_read_only_diagnostics",
+    "test_privacy_mode_offline_eval.py::test_natural_language_system_check_runs_auto_routes_to_read_only_diagnostics",
+    "test_privacy_mode_offline_eval.py::test_privacy_mode_offline_system_check_completes_with_local_diagnostics",
+    "test_runs_api.py::test_run_api_system_diagnostics_stays_os_local_only",
+    "test_system_diagnostics.py::test_system_diagnostics_include_anonymous_product_funnel",
+    "test_system_diagnostics.py::test_system_diagnostics_include_lan_tls_readiness",
+    "test_system_diagnostics.py::test_system_diagnostics_include_local_product_metrics",
+    "test_windows_core_capabilities.py::test_public_api_routes_expose_windows_core",
+    "test_windows_core_capabilities.py::test_system_diagnostics_startup_and_settings_dry_run",
+}
 
 
 @pytest.fixture(scope="session")
@@ -38,6 +60,15 @@ def workspace(tmp_path: Path) -> Path:
     (root / "notes").mkdir()
     (root / "notes" / "safe.txt").write_text("project notes\n", encoding="utf-8")
     return root
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        normalized = item.nodeid.replace("\\", "/")
+        if any(normalized.endswith(suffix) for suffix in SLOW_TEST_NODEID_SUFFIXES) or any(
+            substring in normalized for substring in SLOW_TEST_NODEID_SUBSTRINGS
+        ):
+            item.add_marker("slow")
 
 
 @pytest.fixture(autouse=True)

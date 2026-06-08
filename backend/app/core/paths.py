@@ -48,6 +48,8 @@ def is_system_path(path: Path) -> bool:
 
 
 def resolve_authorized(path: str | Path, allowed_directories: list[str]) -> Path:
+    if _has_windows_alternate_data_stream(path):
+        raise SecurityError("Windows alternate data streams are not allowed.")
     candidate = normalize_path(path)
     if ".." in Path(path).parts:
         raise SecurityError("Path traversal is not allowed.")
@@ -68,4 +70,14 @@ def resolve_authorized(path: str | Path, allowed_directories: list[str]) -> Path
         except ValueError:
             continue
     raise SecurityError("Path is outside authorized directories.")
+
+
+def _has_windows_alternate_data_stream(path: str | Path) -> bool:
+    parsed = Path(path)
+    parts = parsed.parts
+    if not parts:
+        return False
+    # The first part may be a drive or UNC anchor such as "C:\". Colons in
+    # later components indicate NTFS stream syntax like "safe.txt:stream".
+    return any(":" in part for part in parts[1:])
 

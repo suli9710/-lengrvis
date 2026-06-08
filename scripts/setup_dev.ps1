@@ -1,6 +1,7 @@
 param(
     [switch]$SkipPython,
     [switch]$SkipDesktop,
+    [switch]$SkipMobile,
     [switch]$UseSystemPython
 )
 
@@ -16,6 +17,7 @@ catch {
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $DesktopDir = Join-Path $Root "desktop"
+$MobileDir = Join-Path $Root "mobile"
 Set-Location $Root
 
 function Write-Step([string]$Message) {
@@ -103,6 +105,19 @@ if (-not $SkipDesktop) {
     }
     else {
         Invoke-Checked "Failed to install desktop/frontend dependencies. See the output above." { & $npm --prefix $DesktopDir install }
+    }
+}
+
+if (-not $SkipMobile -and (Test-Path (Join-Path $MobileDir "package.json"))) {
+    $npm = Find-Npm
+    $lockFile = Join-Path $MobileDir "package-lock.json"
+
+    Write-Step "Installing mobile development dependencies"
+    if (Test-Path $lockFile) {
+        Invoke-Checked "Failed to install mobile dependencies. See the output above." { & $npm --prefix $MobileDir ci }
+    }
+    else {
+        Invoke-Checked "Failed to install mobile dependencies. See the output above." { & $npm --prefix $MobileDir install }
     }
 }
 
