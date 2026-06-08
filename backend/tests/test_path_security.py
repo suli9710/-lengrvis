@@ -26,10 +26,25 @@ def test_path_security_uses_real_app_contract():
         "notes/../../outside.txt",
         "/etc/passwd",
         "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "notes/safe.txt:stream",
+        "notes/safe.txt:stream:$DATA",
         "notes/%2e%2e/outside.txt",
     ],
 )
 def test_rejects_paths_that_escape_workspace(workspace: Path, candidate: str):
+    with pytest.raises(SecurityError):
+        _resolve(workspace, candidate)
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        "\\\\localhost\\C$\\Windows\\system.ini",
+        "\\\\?\\C:\\Windows\\win.ini",
+        "\\\\.\\NUL",
+    ],
+)
+def test_rejects_windows_namespace_paths(workspace: Path, candidate: str):
     with pytest.raises(SecurityError):
         _resolve(workspace, candidate)
 

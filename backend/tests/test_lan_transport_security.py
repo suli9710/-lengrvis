@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.config import AppSettings
 from app.core import db
 from app.main import create_app
+from tls_test_material import write_lan_tls_material
 
 
 def test_app_settings_loads_lan_tls_from_yaml_and_env(monkeypatch, tmp_path: Path):
@@ -88,10 +89,7 @@ def test_system_diagnostics_reports_tls_enabled_with_missing_files(monkeypatch, 
 
 def test_pairing_responses_include_tls_transport_metadata_when_files_exist(monkeypatch, tmp_path: Path):
     _isolate_config(monkeypatch, tmp_path)
-    cert_file = tmp_path / "lan.crt"
-    key_file = tmp_path / "lan.key"
-    cert_file.write_text("test certificate placeholder", encoding="utf-8")
-    key_file.write_text("test key placeholder", encoding="utf-8")
+    cert_file, key_file = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
     monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert_file))
     monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key_file))
@@ -116,6 +114,7 @@ def test_pairing_responses_include_tls_transport_metadata_when_files_exist(monke
         assert transport["tls_ready"] is True
         assert transport["cert_present"] is True
         assert transport["key_present"] is True
+        assert transport["tls_material_valid"] is True
 
 
 def _isolate_config(monkeypatch, tmp_path: Path, *, config_path: Path | None = None) -> None:

@@ -28,6 +28,7 @@ from app.services.approval_event_service import publish_approval_created
 from app.services.guardian_scheduler import GuardianScheduler
 from app.services.scheduler_service import Scheduler, _utc_now
 from app.services.settings_service import update_settings
+from tls_test_material import write_lan_tls_material
 
 
 async def _backend_unavailable() -> bool:
@@ -1380,6 +1381,7 @@ def test_guardian_mobile_routes_enforce_device_bound_approval(monkeypatch, tmp_p
 
 
 def test_guardian_mobile_device_list_only_returns_calling_device(monkeypatch, tmp_path: Path):
+    _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
@@ -1581,6 +1583,7 @@ def test_guardian_mobile_approval_preserves_remote_input_denial_reason(monkeypat
 
 
 def test_guardian_mobile_websocket_streams_grant_events_and_closes_on_revoke(monkeypatch, tmp_path: Path):
+    _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     guardian_scheduler._scheduler = None
     db.init_db()
@@ -1657,3 +1660,10 @@ def _enable_remote_desktop() -> None:
     if confirmation.get("required"):
         patch["confirmation_nonce"] = confirmation["nonce"]
     update_settings(patch)
+
+
+def _enable_lan_tls(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cert, key = write_lan_tls_material(tmp_path)
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))

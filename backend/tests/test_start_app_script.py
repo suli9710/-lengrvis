@@ -27,6 +27,18 @@ def _release_gate_text(project_root: Path) -> str:
     return (project_root / "docs" / "qa" / "release-gate.md").read_text(encoding="utf-8")
 
 
+def _e2e_acceptance_matrix_text(project_root: Path) -> str:
+    return (project_root / "docs" / "qa" / "e2e-acceptance-matrix.md").read_text(encoding="utf-8")
+
+
+def _productization_issues_text(project_root: Path) -> str:
+    return (project_root / "PRODUCTIZATION_ISSUES.md").read_text(encoding="utf-8")
+
+
+def _agentic_product_evals_text(project_root: Path) -> str:
+    return (project_root / "docs" / "qa" / "agentic-product-evals.md").read_text(encoding="utf-8")
+
+
 def _parity_text(project_root: Path) -> str:
     return (project_root / "docs" / "LENGRVIS_PARITY.md").read_text(encoding="utf-8")
 
@@ -269,6 +281,7 @@ def test_portable_first_screen_smoke_forbids_renderer_export_and_write_side_effe
     assert "read-only renderer API call outside allowlist after system-check click" in text
     assert "system-check click did not invoke /api/system/diagnostics through the packaged renderer" in text
     assert "observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy" in text
+    assert "lengrvis-api-request" in text
     assert 'const forbiddenWritePrefixes = ["/api/runs", "/api/chat", "/api/tasks"];' not in text
     assert "function Test-NoPortableWriteSideEffects" in text
     assert 'Url = "$BackendUrl/api/tasks"' in text
@@ -294,6 +307,7 @@ def test_portable_first_screen_smoke_attempts_natural_language_read_only_task_ev
     assert "function waitForCommandDockReady(page, input, deadline)" in text
     assert "packaged command dock send remained disabled after renderer/backend readiness wait" in text
     assert "backend task/run evidence will be verified separately" in text
+    assert "lengrvis-api-request" in text
     assert "natural-language command dock displayed clear visible safe failure before submit; no packaged task submission was possible" in text
     assert "visible safe failure is not accepted as natural-language task evidence" in text
     assert "natural-language visible safe failure side-effect check failed" in text
@@ -326,11 +340,37 @@ def test_portable_docs_do_not_overclaim_gui_task_automation(project_root: Path) 
     assert "Any POST/PUT/PATCH/DELETE, unknown API mutation, diagnostics export, or settings/files/apps mutation during the read-only click fails the smoke" in release_gate
     assert "that pass requires a packaged renderer `/api/chat` or `/api/runs` POST plus backend read-only/system diagnostics task or run evidence" in release_gate
     assert "Visible safe-failure copy is still useful safety evidence when paired with zero side effects, but it is not accepted as natural-language task evidence" in release_gate
-    assert "prints a natural-language `[unsupported]` line while the read-only entry passes" in release_gate
+    assert "This is submission/task-evidence coverage, not release-candidate completion sign-off" in release_gate
+    assert "observes `/api/chat` or `/api/runs` and a related task/run" in release_gate
     assert "If CDP or the packaged renderer cannot be automated, the strict script exits 2 with `[unsupported]`" in release_gate
     assert "packaged renderer DOM automation to click the read-only" in parity
     assert "does not prove a natural-language agent task" in parity
     assert "separate manual release evidence" in parity
+
+
+def test_portable_docs_reference_latest_natural_language_evidence(project_root: Path) -> None:
+    release_gate = _release_gate_text(project_root)
+    matrix = _e2e_acceptance_matrix_text(project_root)
+    productization = _productization_issues_text(project_root)
+    agentic_evals = _agentic_product_evals_text(project_root)
+    combined = "\n".join([release_gate, matrix, productization, agentic_evals])
+
+    latest_run = r".tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259"
+    stale_runs = [
+        "run-20260608-141325-18256-1520d784",
+        "run-20260608-123849-34760-bc8d1829",
+    ]
+
+    for text in (release_gate, matrix, productization, agentic_evals):
+        assert latest_run in text
+        assert "POST /api/runs" in text
+        assert "read-only/system diagnostics task evidence" in text
+
+    for stale_run in stale_runs:
+        assert stale_run not in combined
+
+    assert "send stayed disabled" not in combined
+    assert "visible safe-failure plus zero-write safety evidence" not in combined
 
 
 def test_start_app_recent_log_summary_redacts_secrets(project_root: Path) -> None:

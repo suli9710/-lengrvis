@@ -575,6 +575,21 @@ async function instrumentBridge(page) {
       }
     }
 
+    try {
+      window.addEventListener("lengrvis-api-request", (event) => {
+        const detail = event?.detail || {};
+        calls.push({
+          path: "lengrvis-api-request",
+          kind: "api.request",
+          endpoint: detail.endpoint || "",
+          method: detail.method || "GET"
+        });
+      });
+      result.wrapped.push("lengrvis-api-request");
+    } catch (error) {
+      result.errors.push(`lengrvis-api-request: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
     if (window.lengrvis) {
       wrap("api.request", window.lengrvis.api, "request", (args) => {
         const request = args[0] || {};
@@ -963,6 +978,21 @@ async function instrumentBridge(page) {
       } catch (error) {
         result.errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+
+    try {
+      window.addEventListener("lengrvis-api-request", (event) => {
+        const detail = event?.detail || {};
+        calls.push({
+          path: "lengrvis-api-request",
+          kind: "api.request",
+          endpoint: detail.endpoint || "",
+          method: detail.method || "GET"
+        });
+      });
+      result.wrapped.push("lengrvis-api-request");
+    } catch (error) {
+      result.errors.push(`lengrvis-api-request: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     if (window.lengrvis) {

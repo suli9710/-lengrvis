@@ -1425,6 +1425,9 @@ export interface LengrvisDesktopBridge {
   commands: {
     execute: (request: { name: string; args?: Record<string, unknown> }) => Promise<ApiResponse<unknown>>;
   };
+  tasks: {
+    rollback: (taskId: string) => Promise<ApiResponse<unknown>>;
+  };
   cleanup: {
     execute: (body: Record<string, unknown>) => Promise<ApiResponse<unknown>>;
     rollback: (body: Record<string, unknown>) => Promise<ApiResponse<unknown>>;

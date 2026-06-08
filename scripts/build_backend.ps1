@@ -27,11 +27,16 @@ $DistPath = Resolve-ProjectPath $DistDir
 $DefaultDistPath = Join-Path $Root "dist"
 $DefaultBackendExe = Join-Path $DefaultDistPath "backend.exe"
 $TargetBackendExe = Join-Path $DistPath "backend.exe"
+$BuildRequirementsPath = Join-Path $Root "backend\requirements-build.txt"
 
-python -m pip show pyinstaller *> $null
+if (-not (Test-Path -LiteralPath $BuildRequirementsPath -PathType Leaf)) {
+    throw "Missing pinned backend build dependency file: $BuildRequirementsPath"
+}
+
+Write-Host "Ensuring pinned backend build dependencies from $BuildRequirementsPath..."
+python -m pip install -r $BuildRequirementsPath
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "Installing PyInstaller..."
-    python -m pip install pyinstaller
+    throw "Failed to install pinned backend build dependencies. Run: python -m pip install -r backend\requirements-build.txt"
 }
 
 python backend\build_backend.py

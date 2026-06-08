@@ -41,15 +41,17 @@ function loadDesktopPairingPayload() {
 
 function assertPairScreenBeginnerCopy() {
   const source = fs.readFileSync(mobilePath("src/screens/PairScreen.tsx"), "utf8");
-  assert.match(source, /粘贴二维码内容配对/);
-  assert.match(source, /查看粘贴方式/);
-  assert.match(source, /不会打开相机/);
-  assert.match(source, /没有相机扫码组件/);
-  assert.match(source, /真机相机扫码仍未内置/);
+  assert.match(source, /expo-camera/);
+  assert.match(source, /CameraView/);
+  assert.match(source, /useCameraPermissions/);
+  assert.match(source, /onBarcodeScanned/);
+  assert.match(source, /parsePairingPayload\(result\.data\)/);
+  assert.match(source, /打开相机扫码/);
   assert.match(source, /粘贴电脑端二维码内容或配对信息/);
+  assert.match(source, /扫码失败时也可以直接粘贴/);
   assert.match(source, /等待 HTTPS\/WSS 配对信息/);
   assert.match(source, /需要启用 HTTPS\/WSS/);
-  assert.doesNotMatch(source, /打开扫码|请扫描|重新扫描|扫码已完成|相机会打开/);
+  assert.doesNotMatch(source, /不会打开相机|没有相机扫码组件|真机相机扫码仍未内置/);
 }
 
 function plain(value) {

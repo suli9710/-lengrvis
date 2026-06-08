@@ -111,6 +111,22 @@ def test_shell_readonly_rejects_absolute_paths_outside_authorized_directories(tm
     assert "outside authorized directories" in result["error"].lower()
 
 
+def test_shell_readonly_reads_absolute_paths_inside_authorized_directories(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    inside = workspace / "inside.txt"
+    inside.write_text("authorized content", encoding="utf-8")
+
+    result = developer_tools.shell_readonly(
+        {"cwd": str(workspace), "command": f"type {inside}"},
+        {"allowed_directories": [str(workspace)]},
+    )
+
+    assert result["ok"] is True
+    assert result["readonly"] is True
+    assert result["stdout"] == "authorized content"
+
+
 def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[dict[str, Any]] = []
 
@@ -135,6 +151,49 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
     assert "core.hooksPath=" in calls[0]["command"]
     assert "diff.external=" in calls[0]["command"]
     assert calls[0]["command"][-2:] == ["status", "--short"]
+
+
+def test_shell_readonly_executes_builtins_without_process_spawn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:
+        calls.append({"command": command, "cwd": cwd, "shell": shell})
+        return {"returncode": 0, "stdout": "hello\r\n", "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
+
+    monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
+
+    result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": "echo hello"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is True
+    assert result["readonly"] is True
+    assert result["stdout"] == "hello\n"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("dir", "readonly-sentinel.txt"),
+        ("echo hello", "hello"),
+        ("type readonly-sentinel.txt", "readonly shell sentinel"),
+    ],
+)
+def test_shell_readonly_executes_readonly_builtins(tmp_path: Path, command: str, expected: str) -> None:
+    sentinel = tmp_path / "readonly-sentinel.txt"
+    sentinel.write_text("readonly shell sentinel", encoding="utf-8")
+
+    result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": command},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is True
+    assert result["readonly"] is True
+    assert result["returncode"] == 0
+    assert expected in result["stdout"]
 
 
 @pytest.mark.parametrize(

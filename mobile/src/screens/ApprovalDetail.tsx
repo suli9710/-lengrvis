@@ -21,6 +21,7 @@ import {
   type ApprovalDetail as ApprovalDetailData,
   type BackendApproval,
   type PairingSession,
+  type RemoteInputGrant,
 } from "../api/client";
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
 
@@ -30,12 +31,14 @@ export function ApprovalDetail({
   onBack,
   onUpdated,
   onSessionExpired,
+  remoteInputGrant,
 }: {
   session: PairingSession;
   approval: BackendApproval;
   onBack: () => void;
   onUpdated: (approval: BackendApproval) => void;
   onSessionExpired: () => void;
+  remoteInputGrant?: RemoteInputGrant | null;
 }) {
   const [detail, setDetail] = useState<ApprovalDetailData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -85,7 +88,10 @@ export function ApprovalDetail({
         Alert.alert("审批已处理", `此审批当前状态为：${approvalStatusLabel(latest.approval.status)}。`);
         return;
       }
-      const updated = await submitApprovalDecision(session, currentApproval.id, decision);
+      const updated = await submitApprovalDecision(session, currentApproval.id, decision, {
+        approvalType: currentApproval.approval_type,
+        remoteInputGrant,
+      });
       onUpdated(updated);
       onBack();
     } catch (currentError) {

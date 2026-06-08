@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const Module = require("node:module");
+const nodeFs = require("node:fs");
 const path = require("node:path");
 
 const originalLoad = Module._load;
@@ -8,8 +9,23 @@ let dialogOpenResult = { canceled: false, filePaths: ["C:\\Users\\Suli\\Document
 let messageBoxCalls = [];
 let messageBoxResponses = [];
 let shellRevealCalls = [];
+let fileIconCalls = [];
+let fsExistsCalls = [];
 
 Module._load = function patchedLoad(request, parent, isMain) {
+  if (request === "node:fs") {
+    return new Proxy(nodeFs, {
+      get(target, prop, receiver) {
+        if (prop === "existsSync") {
+          return (filePath) => {
+            fsExistsCalls.push(filePath);
+            return target.existsSync(filePath);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      }
+    });
+  }
   if (request === "electron") {
     class Notification {
       static isSupported() {
@@ -31,10 +47,13 @@ Module._load = function patchedLoad(request, parent, isMain) {
           if (name === "userData") return path.resolve(__dirname, "../.tmp/ipc-user-data");
           return path.resolve(__dirname, "../.tmp");
         },
-        getFileIcon: async () => ({
-          isEmpty: () => false,
-          toDataURL: () => "data:image/png;base64,ZmFrZS1pY29u"
-        })
+        getFileIcon: async (filePath) => {
+          fileIconCalls.push(filePath);
+          return {
+            isEmpty: () => false,
+            toDataURL: () => "data:image/png;base64,ZmFrZS1pY29u"
+          };
+        }
       },
       BrowserWindow: {
         fromWebContents: (sender) => sender && sender.__trustedWindow ? sender.__trustedWindow : null,
@@ -285,6 +304,10 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       {
         name: "cleanup rollback through generic API",
         request: { endpoint: "/api/files/cleanup/rollback", method: "POST", body: { execution_id: "cleanup-1" } }
+      },
+      {
+        name: "task rollback through generic API",
+        request: { endpoint: "/api/tasks/task_123/rollback", method: "POST" }
       },
       {
         name: "skill import through generic API",
@@ -786,6 +809,30 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     );
     assert.equal(fetchCalls.length, 0, "denied native remote-input confirmation must not call backend");
     assert.equal(messageBoxCalls.length, 1, "remote-input grant should ask exactly once");
+
+    const taskRollbackHandler = ipcHandlers.get(IPC_CHANNELS.taskRollback);
+    assert.ok(taskRollbackHandler, "task rollback explicit bridge handler must be registered");
+    messageBoxCalls = [];
+    fetchCalls = [];
+    const rollbackResponse = await Promise.resolve(
+      taskRollbackHandler(eventFor("http://127.0.0.1:5173/tasks"), "task_123")
+    );
+    assert.equal(rollbackResponse.ok, true, "explicit task rollback bridge should call backend after native confirmation");
+    assert.equal(messageBoxCalls.length, 1, "task rollback should ask native confirmation exactly once");
+    assert.equal(fetchCalls.length, 1, "explicit task rollback bridge should use fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/tasks/task_123/rollback");
+    assert.equal(fetchCalls[0].init.method, "POST");
+
+    messageBoxCalls = [];
+    messageBoxResponses = [1];
+    fetchCalls = [];
+    await assert.rejects(
+      async () => taskRollbackHandler(eventFor("http://127.0.0.1:5173/tasks"), "task_456"),
+      /not confirmed/,
+      "task rollback bridge should require native confirmation"
+    );
+    assert.equal(fetchCalls.length, 0, "denied native task rollback confirmation must not call backend");
+    assert.equal(messageBoxCalls.length, 1, "task rollback denied path should ask exactly once");
   } finally {
     global.fetch = originalFetch;
   }
@@ -794,8 +841,12 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   const showItemInFolderHandler = ipcHandlers.get(IPC_CHANNELS.showItemInFolder);
   assert.ok(getFileIconHandler, "file icon handler must be registered");
   assert.ok(showItemInFolderHandler, "show item in folder handler must be registered");
-  const icon = await Promise.resolve(getFileIconHandler(eventFor("http://127.0.0.1:5173/apps"), __filename));
-  assert.equal(icon, "data:image/png;base64,ZmFrZS1pY29u");
+  fileIconCalls = [];
+  fsExistsCalls = [];
+  const ungrantedIcon = await Promise.resolve(getFileIconHandler(eventFor("http://127.0.0.1:5173/apps"), "C:\\Windows\\win.ini"));
+  assert.equal(ungrantedIcon, null, "ungranted file icon requests should return the generic null result");
+  assert.equal(fsExistsCalls.length, 0, "ungranted file icon requests must not probe filesystem existence");
+  assert.equal(fileIconCalls.length, 0, "ungranted file icon requests must not call app.getFileIcon");
   await assert.rejects(
     async () => getFileIconHandler(eventFor("https://evil.example/app"), __filename),
     /untrusted renderer/
@@ -807,6 +858,14 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   assert.equal(shellRevealCalls.length, 0, "ungranted reveal requests must not call shell.showItemInFolder");
   dialogOpenResult = { canceled: false, filePaths: [__filename] };
   const grantedRevealPath = await Promise.resolve(ipcHandlers.get(IPC_CHANNELS.chooseDocument)(eventFor("http://127.0.0.1:5173/files")));
+  fileIconCalls = [];
+  fsExistsCalls = [];
+  const icon = await Promise.resolve(getFileIconHandler(eventFor("http://127.0.0.1:5173/apps"), grantedRevealPath));
+  assert.equal(icon, "data:image/png;base64,ZmFrZS1pY29u");
+  assert.equal(fsExistsCalls.length, 1, "granted file icon requests may check filesystem existence once");
+  assert.equal(fsExistsCalls[0], path.resolve(__filename));
+  assert.equal(fileIconCalls.length, 1, "granted file icon requests should call app.getFileIcon once");
+  assert.equal(fileIconCalls[0], path.resolve(__filename));
   const revealResponse = await Promise.resolve(showItemInFolderHandler(eventFor("http://127.0.0.1:5173/apps"), grantedRevealPath));
   assert.equal(revealResponse.ok, true, "previously selected document path should be revealable");
   assert.equal(shellRevealCalls.length, 1, "granted reveal should call shell.showItemInFolder once");

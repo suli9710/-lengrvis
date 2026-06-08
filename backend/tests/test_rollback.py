@@ -8,7 +8,10 @@ import pytest
 
 from app.core import db
 from app.core.errors import SecurityError
-from app.core.schemas import ToolResult
+from app.core.schemas import Approval, ApprovalStatus, ToolResult
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.permissions import PermissionStore
+from app.policy.risk import RiskLevel
 from app.tools import rollback_tools
 
 
@@ -122,6 +125,55 @@ def test_cleanup_rollback_preview_fails_closed_without_authorized_directories(tm
             {"rollback_info": {"restore_from_recycle_bin": str(tmp_path / "trashed.txt")}},
             {},
         )
+
+
+def test_cleanup_rollback_rejects_random_approval_id_for_live_execution(tmp_path: Path):
+    with pytest.raises(SecurityError, match="approval"):
+        rollback_tools.rollback_cleanup_result(
+            {
+                "rollback_info": {"restore_from_recycle_bin": str(tmp_path / "trashed.txt")},
+                "dry_run": False,
+                "approved": True,
+                "approval_id": "random-forged-approval",
+            },
+            {"allowed_directories": [str(tmp_path)]},
+        )
+
+
+def test_cleanup_rollback_accepts_bound_approval_and_consumes_it(tmp_path: Path):
+    args = {
+        "rollback_info": {"restore_from_recycle_bin": str(tmp_path / "trashed.txt")},
+        "dry_run": False,
+    }
+    context = {"allowed_directories": [str(tmp_path)]}
+    preview = rollback_tools.rollback_cleanup_result({**args, "dry_run": True}, context)
+    approval = Approval(
+        task_id="task_cleanup_rollback",
+        step_id="step_cleanup_rollback",
+        message="Approve cleanup rollback",
+        status=ApprovalStatus.APPROVED,
+        tool_name="file.cleanup_rollback",
+        risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
+        args_binding_hmac=args_binding_hmac(
+            "file.cleanup_rollback",
+            args,
+            task_id="task_cleanup_rollback",
+            step_id="step_cleanup_rollback",
+        ),
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(None, allowed_directories=context["allowed_directories"]),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+        diff_preview=preview,
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    result = rollback_tools.rollback_cleanup_result({**args, "approved": True, "approval_id": approval.id}, context)
+
+    assert result["ok"] is False
+    assert result["requires_user_action"] is True
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert refreshed.consumed_at
 
 
 def test_execute_rollback_uses_effective_authorized_directories(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

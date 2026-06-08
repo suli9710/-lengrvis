@@ -52,6 +52,10 @@ if ($VerifyOnly) {
 
 if (-not $SkipTests) {
     & "$PSScriptRoot\run_tests.ps1"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Test gate failed; aborting release build before packaging artifacts." -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
 }
 
 $DistPath = Resolve-ProjectPath $DistDir

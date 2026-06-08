@@ -124,6 +124,38 @@ tools:
     assert list((data_dir / "skills").iterdir()) == []
 
 
+def test_zip_skill_import_rejects_zip_slip_member(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    db.init_db()
+
+    zip_path = tmp_path / "zip-slip-skill.zip"
+    with ZipFile(zip_path, "w") as archive:
+        archive.writestr(
+            "zip-slip-skill/skill.yaml",
+            """
+name: zip-slip-skill
+version: "1.0"
+agent_owner: FileAgent
+tools:
+  - name: skill.zip_slip.noop
+    execution:
+      type: python
+      entry: handler.py
+""".strip(),
+        )
+        archive.writestr("zip-slip-skill/handler.py", "print('{\"ok\": true}')\n")
+        archive.writestr("../evil.txt", "escaped")
+
+    with pytest.raises(SkillServiceError, match="unsafe path"):
+        asyncio.run(import_skill(str(zip_path)))
+
+    assert not (tmp_path / "evil.txt").exists()
+    install_dir = data_dir / "skills"
+    assert not install_dir.exists() or list(install_dir.iterdir()) == []
+
+
 def test_windows_settings_skill_previews_registry_and_powershell_plan(test_data_dir: Path):
     settings = AppSettings(
         provider_name="mock",

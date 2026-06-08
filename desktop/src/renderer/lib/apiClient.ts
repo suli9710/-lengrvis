@@ -148,6 +148,7 @@ export class LengrvisApiClient {
   private lastLoadedSettings: AppSettings | null = null;
 
   async request<TResponse, TBody = unknown>(request: ApiRequest<TBody>): Promise<ApiResponse<TResponse>> {
+    emitRendererApiRequestEvent(request);
     if (!window.lengrvis) {
       return requestBackendDirect<TResponse, TBody>(FALLBACK_BACKEND_URL, request);
     }
@@ -1424,7 +1425,10 @@ export class LengrvisApiClient {
   }
 
   executeRollback(taskId: string): Promise<ApiResponse<{ executed: unknown[]; count: number }>> {
-    return this.request({ endpoint: `/api/tasks/${taskId}/rollback`, method: "POST" });
+    const response = window.lengrvis?.tasks
+      ? window.lengrvis.tasks.rollback(taskId)
+      : this.request({ endpoint: `/api/tasks/${taskId}/rollback`, method: "POST" });
+    return response as Promise<ApiResponse<{ executed: unknown[]; count: number }>>;
   }
 
   subscribeRunEvents(
@@ -1610,6 +1614,21 @@ function buildRequestUrl(baseUrl: string, request: ApiRequest): URL {
     throw new Error("Renderer direct backend requests require a loopback HTTP(S) backend");
   }
   return new URL(url);
+}
+
+function emitRendererApiRequestEvent<TBody>(request: ApiRequest<TBody>): void {
+  try {
+    window.dispatchEvent(
+      new CustomEvent("lengrvis-api-request", {
+        detail: {
+          endpoint: request.endpoint,
+          method: request.method ?? "GET"
+        }
+      })
+    );
+  } catch {
+    // Diagnostics-only event for renderer smoke instrumentation; never block the API call.
+  }
 }
 
 function getBackendBaseUrl(baseUrl?: string): string {

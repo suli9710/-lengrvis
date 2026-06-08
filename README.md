@@ -4,7 +4,7 @@
 
 | 平台 | 状态 | 当前交付 | 已知限制 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包已有 portable 首屏 smoke；仍需在真实机器做读只任务和候选版本人工验收。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包已有 portable 首屏 smoke：packaged renderer 已观察到 `/api/system/diagnostics`，NL 命令 dock 已观察到 `/api/runs` 和后端只读系统诊断任务证据；仍需 clean-machine、真实设备和候选版本人工验收。 |
 | Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 需要与电脑在可访问网络内；完整应用商店分发未完成。 |
 | macOS 桌面 | Preview | macOS 后端构建脚本与 DMG 脚本存在 | 不作为 0-90 天主线，需在 macOS 主机验证。 |
 | iOS Companion | Planned | 暂不交付 | 等 Android companion 闭环稳定后再排期。 |
@@ -190,11 +190,12 @@ npm --prefix desktop run dev
 最近一次记录的核心门禁验证结果：
 
 ```text
-backend: 1251 passed, 1 skipped
+backend: 1337 passed, 1 skipped
 desktop typecheck passed
 mobile typecheck passed
 mobile token smoke passed
 mobile remote-input grant smoke passed
+desktop smoke passed
 ```
 
 跳过项是当前 Windows shell 没有创建符号链接权限。
@@ -216,7 +217,7 @@ npm run qa:gate
 npm run release:check
 ```
 
-发布候选若需要证明打包后端可运行，再跑 `npm run release:smoke`；移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
+发布候选若需要证明打包 GUI 首屏和只读任务入口，再跑 `npm run smoke:portable-first-screen`。最新开发工作区证据目录为 `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259`：只读入口观察到 packaged renderer `/api/system/diagnostics`；自然语言 dock 观察到 `/api/runs` 与后端 read-only/system diagnostics task evidence。该证据不能替代 clean-machine、真实设备或人工 RC sign-off。移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
 
 ## 打包
 

@@ -11,6 +11,7 @@ from app.core.schemas import Approval, ApprovalStatus, Run, RunPhase, Task, Tool
 from app.main import create_app
 from app.orchestration.task_phase import TaskPhase
 from app.services import system_service
+from tls_test_material import write_lan_tls_material
 
 
 def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path):
@@ -138,10 +139,7 @@ def test_system_diagnostics_include_anonymous_product_funnel(monkeypatch, tmp_pa
 
 
 def test_system_diagnostics_include_lan_tls_readiness(monkeypatch, tmp_path):
-    cert = tmp_path / "lan.crt"
-    key = tmp_path / "lan.key"
-    cert.write_text("fake cert for readiness metadata", encoding="utf-8")
-    key.write_text("fake key for readiness metadata", encoding="utf-8")
+    cert, key = write_lan_tls_material(tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
@@ -157,6 +155,7 @@ def test_system_diagnostics_include_lan_tls_readiness(monkeypatch, tmp_path):
     assert transport["status"] == "https_ready"
     assert transport["origin"] == "https://lengrvis.local:8443"
     assert transport["tls_ready"] is True
+    assert transport["tls_material_valid"] is True
     assert transport["requires_trust"] is True
 
 

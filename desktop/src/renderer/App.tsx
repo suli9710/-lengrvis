@@ -17,6 +17,7 @@ import {
 import type {
   AgentConversation,
   AppSettings,
+  ApiResponse,
   ApprovalRequest,
   AuditLogEntry,
   BackendStatus,
@@ -685,7 +686,14 @@ export function App() {
     const previousMode = mode;
     setSettings(nextSettings);
     setMode(nextSettings.mode);
-    const result = await api.saveSettings(nextSettings);
+    let result: ApiResponse<AppSettings>;
+    try {
+      result = await api.saveSettings(nextSettings);
+    } catch (error) {
+      setSettings(previousSettings);
+      setMode(previousMode);
+      throw new Error(readableError(error, "无法保存设置"));
+    }
     if (!result.ok) {
       setSettings(previousSettings);
       setMode(previousMode);

@@ -186,7 +186,7 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.getFileIcon, async (event, filePath: string) => {
     assertTrustedRenderer(event);
-    return getFileIconDataUrl(filePath);
+    return getFileIconDataUrl(filePath, { documentPathGrants, revealPathGrants });
   });
 
   ipcMain.handle(IPC_CHANNELS.showItemInFolder, async (event, filePath: unknown) => {
@@ -307,6 +307,20 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
       endpoint: "/api/commands/execute",
       method: "POST",
       body: validateCommandExecuteRequest(request)
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.taskRollback, async (event, taskId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeTaskId = validateBridgeIdentifier(taskId, "task id");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm task rollback",
+      message: "Roll back this task?",
+      detail: `Task id: ${safeTaskId}\n\nReview the rollback preview before confirming. Rollback replays recorded file recovery steps and may move or delete files inside authorized directories.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/tasks/${encodeURIComponent(safeTaskId)}/rollback`,
+      method: "POST"
     });
   });
 
@@ -703,15 +717,24 @@ function normalizeGrantPath(filePath: string): string {
   return resolvePath(filePath).toLowerCase();
 }
 
-async function getFileIconDataUrl(filePath: string): Promise<string | null> {
-  if (typeof filePath !== "string" || !filePath.trim() || filePath.includes("\0")) {
+async function getFileIconDataUrl(
+  filePath: string,
+  grants: { documentPathGrants: Set<string>; revealPathGrants: Set<string> }
+): Promise<string | null> {
+  let resolved: string;
+  try {
+    resolved = resolvePath(validateBridgePathValue(filePath, "file icon path"));
+  } catch {
     return null;
   }
-  if (!existsSync(filePath)) {
+  if (!isRevealPathAuthorized(resolved, grants)) {
+    return null;
+  }
+  if (!existsSync(resolved)) {
     return null;
   }
   try {
-    const icon = await app.getFileIcon(filePath, { size: "normal" });
+    const icon = await app.getFileIcon(resolved, { size: "normal" });
     if (icon.isEmpty()) {
       return null;
     }
@@ -991,7 +1014,13 @@ function rejectDeniedApiPath(pathname: string, method: ApiMethod): void {
       if ("path" in rule) {
         return pathname === rule.path;
       }
-      return pathname.startsWith(rule.pathPrefix);
+      if (!pathname.startsWith(rule.pathPrefix)) {
+        return false;
+      }
+      if ("pathSuffix" in rule) {
+        return pathname.endsWith(rule.pathSuffix);
+      }
+      return true;
     })
   ) {
     throw new ApiRequestValidationError("Renderer API endpoint requires an explicit desktop bridge");

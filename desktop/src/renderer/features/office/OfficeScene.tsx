@@ -602,7 +602,9 @@ export function OfficeScene({
             </span>
             <button
               className={sendHintPulse ? "button button--primary command-footer__send command-footer__send--hint" : "button button--primary command-footer__send"}
-              onClick={() => onSubmitPrompt()}
+              onClick={() => {
+                if (canSubmit) onSubmitPrompt();
+              }}
               type="button"
               disabled={!canSubmit}
               aria-busy={isSubmitting}

@@ -44,6 +44,11 @@ export interface BackendApproval {
   status: "pending" | "approved" | "rejected" | "expired";
   created_at: string;
   decided_at?: string | null;
+  source?: string;
+  source_device_id?: string;
+  source_grant_id?: string;
+  allowed_device_ids?: string[];
+  required_mobile_scopes?: string[];
 }
 
 export interface BackendTask {
@@ -247,6 +252,8 @@ export interface WebSocketConnectionInfo {
 }
 
 const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token.";
+const REMOTE_INPUT_SCOPE = "remote:input";
+const remoteInputGrantTokens = new Map<string, RemoteInputGrantToken>();
 export const INSECURE_LAN_HTTP_WARNING = "当前电脑地址使用非本机 HTTP，手机 token、远程输入授权和屏幕连接不能通过局域网明文传输。请在桌面端启用 HTTPS/WSS 或使用受信任证书后重新配对。";
 export const SELF_SIGNED_TLS_WARNING = "此服务器使用自签或未受系统信任的 HTTPS 证书。请在电脑端核对证书指纹；手机系统信任前，本应用不会安装证书。";
 export const BACKEND_TLS_DISABLED_WARNING = "后端当前未启用 TLS。请输入 HTTPS 地址；非本机局域网 HTTP 不能承载手机 token、屏幕或远程输入连接。";
@@ -340,8 +347,18 @@ export async function submitApprovalDecision(
   session: PairingSession,
   approvalId: string,
   decision: "approved" | "denied",
+  options: { approval?: BackendApproval; approvalType?: string; remoteInputGrant?: RemoteInputGrant | null } = {},
 ): Promise<BackendApproval> {
   const safeSession = assertSafePairingSession(session);
+  const remoteInputGrantToken = await remoteInputGrantTokenForApproval(safeSession, approvalId, options);
+  if (remoteInputGrantToken) {
+    const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/decision`, {
+      method: "POST",
+      headers: jsonAuthHeaders(remoteInputGrantToken.token),
+      body: JSON.stringify({ decision }),
+    });
+    return parseJson<BackendApproval>(response);
+  }
   const action = decision === "approved" ? "approve" : "reject";
   const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/${action}`, {
     method: "POST",
@@ -414,7 +431,9 @@ export async function claimRemoteInputGrantToken(session: PairingSession, grantI
     method: "POST",
     headers: authHeaders(safeSession.token),
   });
-  return parseJson<RemoteInputGrantToken>(response);
+  const payload = await parseJson<RemoteInputGrantToken>(response);
+  rememberRemoteInputGrantToken(payload);
+  return payload;
 }
 
 export async function revokeRemoteInputGrant(session: PairingSession, grantId: string): Promise<RemoteInputGrant> {
@@ -423,7 +442,76 @@ export async function revokeRemoteInputGrant(session: PairingSession, grantId: s
     method: "DELETE",
     headers: authHeaders(safeSession.token),
   });
-  return parseJson<RemoteInputGrant>(response);
+  const payload = await parseJson<RemoteInputGrant>(response);
+  forgetRemoteInputGrantToken(grantId);
+  forgetRemoteInputGrantToken(payload.id);
+  return payload;
+}
+
+async function remoteInputGrantTokenForApproval(
+  session: PairingSession,
+  approvalId: string,
+  options: { approval?: BackendApproval; approvalType?: string; remoteInputGrant?: RemoteInputGrant | null },
+): Promise<RemoteInputGrantToken | null> {
+  const explicitGrantId = options.remoteInputGrant?.id ?? "";
+  if (explicitGrantId) {
+    return usableRemoteInputGrantToken(explicitGrantId) ?? claimRemoteInputGrantToken(session, explicitGrantId);
+  }
+
+  let approval = options.approval;
+  if (!approval && remoteInputGrantTokens.size > 0) {
+    try {
+      approval = (await getApprovalDetail(session, approvalId)).approval;
+    } catch (error) {
+      if (error instanceof AuthExpiredError) throw error;
+    }
+  }
+
+  const explicitRemoteInput = options.approvalType === "remote_input";
+  if (!approval && !explicitRemoteInput) return null;
+  if (approval && !isRemoteInputApproval(approval) && !explicitRemoteInput) return null;
+
+  const grantId = approval ? remoteInputApprovalGrantId(approval) : "";
+  if (!grantId) {
+    throw new ForbiddenError("Remote input approval requires an active remote input grant.");
+  }
+  const grantToken = usableRemoteInputGrantToken(grantId);
+  if (!grantToken) {
+    throw new ForbiddenError("Remote input approval requires an active remote input grant.");
+  }
+  return grantToken;
+}
+
+function rememberRemoteInputGrantToken(payload: RemoteInputGrantToken): void {
+  const grantId = payload.grant_id || payload.grant?.id || "";
+  if (grantId) remoteInputGrantTokens.set(grantId, payload);
+}
+
+function forgetRemoteInputGrantToken(grantId: string): void {
+  if (grantId) remoteInputGrantTokens.delete(grantId);
+}
+
+function usableRemoteInputGrantToken(grantId: string): RemoteInputGrantToken | null {
+  const cached = remoteInputGrantTokens.get(grantId);
+  if (!cached) return null;
+  const expiresAt = Date.parse(cached.expires_at || cached.grant?.expires_at || "");
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    remoteInputGrantTokens.delete(grantId);
+    return null;
+  }
+  return cached;
+}
+
+function isRemoteInputApproval(approval: BackendApproval): boolean {
+  return (
+    approval.approval_type === "remote_input" ||
+    approval.source === "remote_input" ||
+    approval.required_mobile_scopes?.includes(REMOTE_INPUT_SCOPE) === true
+  );
+}
+
+function remoteInputApprovalGrantId(approval: BackendApproval): string {
+  return approval.source_grant_id ?? "";
 }
 
 export function approvalWebSocketConnectionInfo(session: PairingSession): WebSocketConnectionInfo {

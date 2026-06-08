@@ -13,12 +13,21 @@ from app.main import app
 from app.guardian import create_guardian_app
 from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX, signed_desktop_resource_query
 from app.services import mobile_pairing_service
+from tls_test_material import write_lan_tls_material
 
 
 DESKTOP_SECRET = "desktop-secret"
 
 
+def _enable_lan_tls(monkeypatch, tmp_path) -> None:
+    cert, key = write_lan_tls_material(tmp_path)
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
+
+
 def test_remote_lan_client_can_redeem_but_not_create_pairing_codes_or_use_desktop_apis(monkeypatch, tmp_path):
+    _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
     db.init_db()
@@ -210,6 +219,7 @@ def test_browser_host_websocket_requires_desktop_authorization(monkeypatch, tmp_
 
 
 def test_loopback_client_keeps_desktop_api_access(monkeypatch, tmp_path):
+    _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_TEST", "1")
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
@@ -240,6 +250,7 @@ def test_desktop_get_requires_desktop_token_when_enabled(monkeypatch, tmp_path):
 
 
 def test_loopback_state_changes_require_desktop_token_when_configured(monkeypatch, tmp_path):
+    _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
@@ -282,6 +293,7 @@ def test_remote_input_grant_creation_requires_desktop_token(monkeypatch, tmp_pat
 
 
 def test_loopback_state_changes_require_persisted_desktop_token_by_default(monkeypatch, tmp_path):
+    _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
@@ -327,6 +339,7 @@ def test_signed_desktop_resource_is_bound_to_http_method(monkeypatch, tmp_path):
 
 
 def test_lengrvis_dev_does_not_disable_desktop_token_guard(monkeypatch, tmp_path):
+    _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)

@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -13,8 +14,9 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import * as Device from "expo-device";
-import { Link2, QrCode, Smartphone } from "lucide-react-native";
+import { Camera, Link2, QrCode, Smartphone, X } from "lucide-react-native";
 
 import {
   AuthExpiredError,
@@ -60,7 +62,10 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const [showManualEntry, setShowManualEntry] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [failure, setFailure] = useState<PairingFailureNotice | null>(null);
-  const [showScanFallback, setShowScanFallback] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanLocked, setScanLocked] = useState(false);
+  const [isCameraPermissionBusy, setIsCameraPermissionBusy] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const securityHint = showManualEntry ? baseUrlSecurityHint(baseUrl) : null;
   const detectedPayloadSecurity = detectedPayload ? classifyPairingPayloadSecurity(detectedPayload) : null;
@@ -109,6 +114,51 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
     setDetectedPayload(payload);
     setBaseUrl(payload.baseUrl);
     setPairCode(payload.code);
+  };
+
+  const openScanner = async () => {
+    setFailure(null);
+    setScanLocked(false);
+    if (cameraPermission?.granted) {
+      setIsScanning(true);
+      return;
+    }
+
+    setIsCameraPermissionBusy(true);
+    try {
+      const nextPermission = await requestCameraPermission();
+      if (nextPermission.granted) {
+        setIsScanning(true);
+        return;
+      }
+      setFailure({
+        title: "需要相机权限",
+        detail: "手机没有授权 Lengrvis 使用相机，因此暂时不能扫码。",
+        action: "请在系统设置中允许相机权限，或直接粘贴电脑端二维码内容。",
+      });
+    } finally {
+      setIsCameraPermissionBusy(false);
+    }
+  };
+
+  const closeScanner = () => {
+    setIsScanning(false);
+    setScanLocked(false);
+  };
+
+  const handleBarcodeScanned = (result: BarcodeScanningResult) => {
+    if (scanLocked) return;
+    setScanLocked(true);
+    try {
+      const payload = parsePairingPayload(result.data);
+      setPairingPayload(result.data);
+      applyPayload(payload);
+      setFailure(null);
+      setIsScanning(false);
+    } catch (currentError) {
+      setFailure(pairingFailureNotice(currentError));
+      setIsScanning(false);
+    }
   };
 
   const handlePair = async () => {
@@ -206,30 +256,22 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                   <QrCode size={22} color="#0e5f76" />
                 </View>
                 <View style={styles.payloadCopy}>
-                  <Text style={styles.sectionTitle}>粘贴二维码内容配对</Text>
-                  <Text style={styles.sectionDetail}>复制电脑端二维码内容后粘贴，手机会自动识别地址和配对码；此移动包暂未内置相机扫码。</Text>
+                  <Text style={styles.sectionTitle}>扫码或粘贴二维码内容</Text>
+                  <Text style={styles.sectionDetail}>扫描电脑端二维码，或复制二维码内容后粘贴，手机会自动识别地址和配对码。</Text>
                 </View>
               </View>
               <View style={styles.scanActionRow}>
                 <Pressable
                   accessibilityRole="button"
-                  onPress={() => {
-                    setShowScanFallback(true);
-                    setFailure(null);
-                  }}
+                  accessibilityState={{ busy: isCameraPermissionBusy }}
+                  onPress={() => void openScanner()}
                   style={({ pressed }) => [styles.scanButton, pressed && styles.pressed]}
                 >
-                  <QrCode size={16} color="#0e5f76" />
-                  <Text style={styles.scanButtonText}>查看粘贴方式</Text>
+                  {isCameraPermissionBusy ? <ActivityIndicator size="small" color="#0e5f76" /> : <Camera size={16} color="#0e5f76" />}
+                  <Text style={styles.scanButtonText}>{isCameraPermissionBusy ? "请求相机权限" : "打开相机扫码"}</Text>
                 </Pressable>
-                <Text style={styles.scanActionText}>不会打开相机。</Text>
+                <Text style={styles.scanActionText}>扫码失败时也可以直接粘贴。</Text>
               </View>
-              {showScanFallback ? (
-                <View style={styles.scanFallbackNotice}>
-                  <Text style={styles.scanFallbackTitle}>没有相机扫码组件</Text>
-                  <Text style={styles.scanFallbackText}>这不是扫码入口。复制电脑端二维码内容后粘贴到下方即可识别；真机相机扫码仍未内置。</Text>
-                </View>
-              ) : null}
               <TextInput
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -304,7 +346,44 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+      <PairingScanner visible={isScanning} scanLocked={scanLocked} onClose={closeScanner} onScanned={handleBarcodeScanned} />
     </SafeAreaView>
+  );
+}
+
+function PairingScanner({
+  visible,
+  scanLocked,
+  onClose,
+  onScanned,
+}: {
+  visible: boolean;
+  scanLocked: boolean;
+  onClose: () => void;
+  onScanned: (result: BarcodeScanningResult) => void;
+}) {
+  return (
+    <Modal animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen" visible={visible}>
+      <SafeAreaView style={styles.scannerScreen}>
+        <StatusBar barStyle="light-content" backgroundColor="#101820" />
+        <View style={styles.scannerHeader}>
+          <QrCode size={22} color="#ffffff" />
+          <Text style={styles.scannerTitle}>扫描配对二维码</Text>
+          <Pressable accessibilityLabel="关闭扫码" accessibilityRole="button" onPress={onClose} style={({ pressed }) => [styles.scannerCloseButton, pressed && styles.pressed]}>
+            <X size={22} color="#ffffff" />
+          </Pressable>
+        </View>
+        <CameraView
+          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+          onBarcodeScanned={scanLocked ? undefined : onScanned}
+          style={styles.cameraPreview}
+        />
+        <View style={styles.scannerHint}>
+          <Text style={styles.scannerHintTitle}>将电脑端二维码放入取景框</Text>
+          <Text style={styles.scannerHintText}>识别后会自动填入电脑地址和 6 位配对码。</Text>
+        </View>
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -640,24 +719,50 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
-  scanFallbackNotice: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#d6c17d",
-    backgroundColor: "#fff8df",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 3,
+  scannerScreen: {
+    flex: 1,
+    backgroundColor: "#101820",
   },
-  scanFallbackTitle: {
-    color: "#56451b",
-    fontSize: 13,
+  scannerHeader: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 8,
+  },
+  scannerTitle: {
+    flex: 1,
+    color: "#ffffff",
+    fontSize: 18,
     fontWeight: "900",
   },
-  scanFallbackText: {
-    color: "#605333",
-    fontSize: 12,
-    lineHeight: 18,
+  scannerCloseButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cameraPreview: {
+    flex: 1,
+  },
+  scannerHint: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 20,
+    gap: 4,
+  },
+  scannerHintTitle: {
+    color: "#ffffff",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  scannerHintText: {
+    color: "#cbd9df",
+    fontSize: 13,
+    lineHeight: 19,
   },
   label: {
     color: "#31424c",

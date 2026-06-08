@@ -41,15 +41,24 @@ if (Test-Path $OutputPath) {
 
 Compress-Archive -Path (Join-Path $PortablePath "*") -DestinationPath $PayloadZip -CompressionLevel Optimal
 
+$LauncherPowerShell = @'
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+Expand-Archive -LiteralPath $env:LENGRVIS_SFX_PAYLOAD_ZIP -DestinationPath $env:LENGRVIS_SFX_TARGET -Force
+'@
+$LauncherEncodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($LauncherPowerShell))
+
 @'
 @echo off
 setlocal
 set "TARGET=%LOCALAPPDATA%\Lengrvis"
 if not exist "%TARGET%" mkdir "%TARGET%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%~dp0lengrvis-payload.zip' -DestinationPath '%TARGET%' -Force"
+set "LENGRVIS_SFX_PAYLOAD_ZIP=%~dp0lengrvis-payload.zip"
+set "LENGRVIS_SFX_TARGET=%TARGET%"
+powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand __LENGRVIS_SFX_EXPAND_COMMAND__
 start "" "%TARGET%\Lengrvis.exe"
 endlocal
-'@ | Set-Content -LiteralPath $LauncherCmd -Encoding ASCII
+'@.Replace("__LENGRVIS_SFX_EXPAND_COMMAND__", $LauncherEncodedCommand) | Set-Content -LiteralPath $LauncherCmd -Encoding ASCII
 
 @"
 [Version]

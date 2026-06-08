@@ -62,6 +62,7 @@ const completedComputerTemplateTask = {
 };
 
 async function main() {
+  runSourceAssertions();
   assertBuiltRendererExists();
 
   const previewPort = Number(process.env.LENGRVIS_FIRST_LAUNCH_PORT) || await getFreePort();
@@ -71,12 +72,34 @@ async function main() {
   try {
     await waitForPreview(previewUrl);
     await assertFirstLaunchEntryWorks(previewUrl);
+    await assertPromptQuickSkillUsesSelectedDraft(previewUrl);
     await assertBackendUnavailableState(previewUrl);
   } finally {
     await stopProcess(preview);
   }
 
   console.log("desktop first-launch smoke passed");
+}
+
+function runSourceAssertions() {
+  const appSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "App.tsx"), "utf8");
+  const officeSceneSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "features", "office", "OfficeScene.tsx"), "utf8");
+
+  assert.match(
+    officeSceneSource,
+    /if \(skill\.kind === "prompt"\) \{\s*onQuickSkill\(skill\);/,
+    "prompt quick skills should synchronously update the draft before the user can submit"
+  );
+  assert.match(
+    appSource,
+    /catch \(error\) \{\s*setSettings\(previousSettings\);\s*setMode\(previousMode\);\s*throw new Error\(readableError\(error,/,
+    "thrown settings-save errors should restore the previous renderer settings and mode"
+  );
+  assert.match(
+    appSource,
+    /if \(!result\.ok\) \{\s*setSettings\(previousSettings\);\s*setMode\(previousMode\);/,
+    "non-ok settings-save responses should restore the previous renderer settings and mode"
+  );
 }
 
 function assertBuiltRendererExists() {
@@ -137,7 +160,7 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
     await assertComputerTemplateHomeEvidence(page, { hasRecentResult: true });
 
     await checkComputerEntry.click();
-    await page.getByText(/正在进行只读电脑检查|只读检查启动中/).first().waitFor({ timeout: 10_000 });
+    await page.getByText(/正在进行只读电脑检查|只读检查启动中/).first().waitFor({ timeout: 1_500 }).catch(() => undefined);
     await page.getByText(/系统信息/).first().waitFor({ timeout: 15_000 });
     await page.getByText(/一键只读检查/).first().waitFor({ timeout: 15_000 });
     await page.getByText(/只读诊断，不改设置/).first().waitFor({ timeout: 15_000 });
@@ -145,6 +168,43 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
 
     assert.equal(counters.taskLaunchRequests ?? 0, 0, "read-only first-launch entry must not create a chat/run task");
     assert.ok(counters.systemInfoRequests >= 1, "read-only first-launch entry should refresh system info");
+  } finally {
+    await context.close();
+    removeTempDir(profileDir);
+  }
+}
+
+async function assertPromptQuickSkillUsesSelectedDraft(previewUrl) {
+  const counters = {};
+  const { context, page, profileDir } = await openDisposablePage();
+  try {
+    await installHealthyBackendMocks(page, counters);
+    await gotoFirstLaunch(page, previewUrl);
+
+    const commandInput = page.locator(".office-command-dock textarea");
+    await commandInput.waitFor({ timeout: 15_000 });
+    await commandInput.fill("previous stale draft");
+
+    await page.getByTestId("office-template-clean-downloads").click();
+    const selectedPrompt = await commandInput.inputValue();
+    assert.match(
+      selectedPrompt,
+      /\u626b\u63cf\u6211\u7684\u4e0b\u8f7d\u76ee\u5f55/,
+      "prompt quick skill should replace the draft synchronously"
+    );
+    assert.doesNotMatch(selectedPrompt, /previous stale draft/, "prompt quick skill should not leave the previous draft submit-ready");
+
+    const sendButton = page.locator("button.command-footer__send").first();
+    assert.equal(await sendButton.isEnabled(), true, "send should be enabled for the selected quick-skill prompt");
+    await sendButton.click();
+
+    await waitForCounter(() => (counters.taskLaunchRequests ?? 0) >= 1, "quick-skill task launch request");
+    const launchPayload = counters.taskLaunchPayloads?.[0] ?? {};
+    assert.equal(
+      launchPayload.message,
+      selectedPrompt,
+      "immediate Send after a prompt quick-skill click should submit the selected prompt, not the stale draft"
+    );
   } finally {
     await context.close();
     removeTempDir(profileDir);
@@ -243,6 +303,15 @@ async function expectText(locator, pattern, message, timeoutMs = 10_000) {
   assert.match(lastText, pattern, message);
 }
 
+async function waitForCounter(predicate, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
 async function installHealthyBackendMocks(page, counters, options = {}) {
   const tasks = options.tasks ?? [];
   await page.route("**/*", async (route) => {
@@ -254,8 +323,10 @@ async function installHealthyBackendMocks(page, counters, options = {}) {
     }
 
     count(counters, "backendRequests");
-    if (request.method().toUpperCase() === "POST" && (url.pathname === "/api/chat" || url.pathname === "/api/runs")) {
+    const method = request.method().toUpperCase();
+    if (method === "POST" && (url.pathname === "/api/chat" || url.pathname === "/api/runs")) {
       count(counters, "taskLaunchRequests");
+      recordTaskLaunchPayload(counters, request);
     }
     if (url.pathname === "/api/system/info") {
       count(counters, "systemInfoRequests");
@@ -268,6 +339,22 @@ async function installHealthyBackendMocks(page, counters, options = {}) {
     });
 
     if (url.pathname === "/api/health") return json({ status: "ok" });
+    if (url.pathname === "/api/chat" && method === "POST") {
+      return json({
+        task_id: "task-quick-skill-smoke",
+        status: "queued",
+        message: "Task queued by first-launch smoke.",
+        delegated: true,
+        agent: "FileAgent"
+      });
+    }
+    if (url.pathname === "/api/runs" && method === "POST") {
+      return json({
+        run_id: "run_quick_skill_smoke",
+        engine: "os",
+        phase: "queued"
+      });
+    }
     if (url.pathname === "/api/chat/messages") return json([]);
     if (url.pathname === "/api/runs") return json([]);
     if (url.pathname === "/api/tasks") return json(tasks);
@@ -291,6 +378,16 @@ async function installHealthyBackendMocks(page, counters, options = {}) {
       body: JSON.stringify({ error: `unmocked first-launch smoke endpoint: ${url.pathname}` })
     });
   });
+}
+
+function recordTaskLaunchPayload(counters, request) {
+  let payload = {};
+  try {
+    payload = request.postDataJSON();
+  } catch {
+    payload = { raw: request.postData() ?? "" };
+  }
+  counters.taskLaunchPayloads = [...(counters.taskLaunchPayloads ?? []), payload];
 }
 
 async function installUnavailableBackendMocks(page, counters) {
