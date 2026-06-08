@@ -3590,7 +3590,18 @@ function mapDiagnostic(data: BackendSystemDiagnostics, startupItems?: BackendSta
           label: data.update_channel.label ? String(data.update_channel.label) : undefined,
           detail: data.update_channel.detail ? String(data.update_channel.detail) : undefined,
           checkAction: data.update_channel.check_action ? String(data.update_channel.check_action) : undefined,
-          offlineOnly: data.update_channel.offline_only === undefined ? undefined : Boolean(data.update_channel.offline_only)
+          offlineOnly: data.update_channel.offline_only === undefined ? undefined : Boolean(data.update_channel.offline_only),
+          userActionLabel: data.update_channel.user_action_label ? String(data.update_channel.user_action_label) : undefined,
+          nextSteps: Array.isArray(data.update_channel.next_steps) ? data.update_channel.next_steps.map(String) : undefined,
+          releaseNotes: data.update_channel.release_notes
+            ? {
+                available: Boolean(data.update_channel.release_notes.available),
+                label: data.update_channel.release_notes.label ? String(data.update_channel.release_notes.label) : undefined,
+                detail: data.update_channel.release_notes.detail ? String(data.update_channel.release_notes.detail) : undefined,
+                path: data.update_channel.release_notes.path ? String(data.update_channel.release_notes.path) : undefined,
+                source: data.update_channel.release_notes.source ? String(data.update_channel.release_notes.source) : undefined
+              }
+            : undefined
         }
       : undefined,
     localPaths: data.local_paths
@@ -5226,6 +5237,15 @@ interface BackendSystemDiagnostics {
     detail?: string;
     check_action?: string;
     offline_only?: boolean;
+    user_action_label?: string;
+    next_steps?: unknown[];
+    release_notes?: {
+      available?: boolean;
+      label?: string;
+      detail?: string;
+      path?: string;
+      source?: string;
+    };
   };
   local_paths?: {
     data_dir?: string;

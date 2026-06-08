@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
+from app.config import PROJECT_ROOT
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Run, RunPhase, Task, ToolResult
@@ -33,9 +34,21 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
         "configured": False,
         "status": "not_configured",
         "label": "未配置在线更新通道",
-        "detail": "当前未配置在线更新通道，请以安装包/发布说明为准。",
+        "detail": "当前未配置在线更新通道，只显示本机版本与本地发布说明。",
         "check_action": "refresh_local_status",
         "offline_only": True,
+        "user_action_label": "刷新本机状态",
+        "release_notes": {
+            "available": True,
+            "label": "本地发布说明",
+            "detail": "打开随安装包提供的说明文件；本页不会联网检查更新。",
+            "path": str(PROJECT_ROOT / "README.md"),
+            "source": "local_file",
+        },
+        "next_steps": [
+            "确认是否有新版：查看本地发布说明或新的安装包说明。",
+            "遇到故障：导出诊断包，再打开日志位置排查。",
+        ],
     }
     assert payload["local_paths"]["data_dir"] == str(tmp_path)
     assert payload["local_paths"]["database"].endswith("lengrvis.db")
@@ -219,6 +232,7 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert diagnostics["update_channel"]["configured"] is False
     assert diagnostics["update_channel"]["status"] == "not_configured"
     assert diagnostics["update_channel"]["check_action"] == "refresh_local_status"
+    assert diagnostics["update_channel"]["release_notes"]["path"] == "[path_label:release_notes]"
     assert diagnostics["product_metrics"]["schema_version"] == 1
     assert diagnostics["product_metrics"]["local_model"]["schema_version"] == 1
     assert diagnostics["product_funnel"]["schema_version"] == 1
@@ -227,6 +241,7 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert diagnostics["support_package_redaction"] == {
         "local_paths": "redacted_to_path_labels",
         "process_usernames": "redacted_to_user_labels",
+        "release_notes_path": "redacted_to_path_label_when_present",
         "full_local_paths_removed": True,
         "data_dir_path_label": "app_data_dir",
         "database_path_label": "app_database",
@@ -256,6 +271,8 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     for raw_path in raw_paths:
         assert raw_path not in package_text
         assert raw_path.replace("\\", "/") not in package_text
+    assert str(PROJECT_ROOT / "README.md") not in package_text
+    assert str(PROJECT_ROOT / "README.md").replace("\\", "/") not in package_text
     assert "Suli" not in package_text
     assert "Contoso" not in package_text
     assert "sk-export-secret" not in package_text

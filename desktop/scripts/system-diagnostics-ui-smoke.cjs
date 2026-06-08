@@ -50,9 +50,21 @@ const backendDiagnostics = {
     configured: false,
     status: "not_configured",
     label: "未配置在线更新通道",
-    detail: "当前未配置在线更新通道，只刷新本机状态；请以安装包/发布说明为准。",
+    detail: "当前未配置在线更新通道，只显示本机版本与本地发布说明。",
     check_action: "refresh_local_status",
-    offline_only: true
+    offline_only: true,
+    user_action_label: "刷新本机状态",
+    release_notes: {
+      available: true,
+      label: "本地发布说明",
+      detail: "打开随安装包提供的说明文件；本页不会联网检查更新。",
+      path: "C:\\Program Files\\Lengrvis\\README.md",
+      source: "local_file"
+    },
+    next_steps: [
+      "确认是否有新版：查看本地发布说明或新的安装包说明。",
+      "遇到故障：导出诊断包，再打开日志位置排查。"
+    ]
   },
   local_paths: {
     data_dir: "C:\\Users\\Smoke\\AppData\\Local\\Lengrvis",
@@ -146,12 +158,19 @@ async function assertUpdateCardIsLocalOnly(page, counters) {
   const cardText = await card.innerText();
   assert.match(cardText, /版本与更新/, "system info panel should expose the version section");
   assert.match(cardText, /未配置在线更新通道/, "version section should name that online updates are not configured");
-  assert.match(cardText, /只刷新本机状态|只会刷新本机版本和服务信息/, "version section should explain the local-only refresh");
+  assert.match(cardText, /只显示本机版本与本地发布说明|只会刷新本机版本和服务信息/, "version section should explain the local-only refresh");
   assert.match(cardText, /刷新本机状态/, "version action should be framed as local status refresh");
+  assert.match(cardText, /本地发布说明/, "version section should expose packaged local release notes");
   assert.doesNotMatch(cardText, /下载更新|自动安装更新|立即更新/, "version card must not look like an online updater");
 
   const refreshButton = page.getByTestId("system-update-refresh-button");
   assert.equal(await refreshButton.isEnabled(), true, "local status refresh button should be enabled");
+  assert.equal(await page.getByTestId("system-release-notes-button").isEnabled(), true, "local release notes entry should be available");
+
+  const nextStepsText = await page.getByTestId("system-update-next-steps").innerText();
+  assert.match(nextStepsText, /确认是否有新版：查看本地发布说明/, "next steps should route version questions to local release notes");
+  assert.match(nextStepsText, /遇到故障：导出诊断包，再打开日志位置排查/, "next steps should route support cases to diagnostics and logs");
+  assert.doesNotMatch(nextStepsText, /下载更新|自动安装更新|立即更新/, "next steps must not imply online update capability");
 
   const systemInfoRequestsBefore = counters.systemInfoRequests;
   const diagnosticsRequestsBefore = counters.systemDiagnosticsRequests;

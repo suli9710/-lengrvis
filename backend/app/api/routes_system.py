@@ -140,13 +140,14 @@ def _diagnostics_payload(request: Request) -> dict[str, Any]:
 def _diagnostics_export_payload(request: Request) -> dict[str, Any]:
     payload = _diagnostics_payload(request)
     local_paths = payload.get("local_paths") if isinstance(payload.get("local_paths"), dict) else {}
-    path_replacements = _support_package_path_replacements(local_paths)
+    path_replacements = _support_package_path_replacements(payload)
     redacted = _sanitize_support_package_value(payload, path_replacements)
     export_payload = dict(redacted) if isinstance(redacted, dict) else {"diagnostics": redacted}
     export_payload["local_paths"] = _support_package_local_paths(local_paths)
     export_payload["support_package_redaction"] = {
         "local_paths": "redacted_to_path_labels",
         "process_usernames": "redacted_to_user_labels",
+        "release_notes_path": "redacted_to_path_label_when_present",
         "full_local_paths_removed": True,
         "data_dir_path_label": "app_data_dir",
         "database_path_label": "app_database",
@@ -183,8 +184,9 @@ def _log_dirs(data_dir: str) -> list[str]:
     return result
 
 
-def _support_package_path_replacements(local_paths: dict[str, Any]) -> list[tuple[str, str]]:
+def _support_package_path_replacements(payload: dict[str, Any]) -> list[tuple[str, str]]:
     replacements: list[tuple[str, str]] = []
+    local_paths = payload.get("local_paths") if isinstance(payload.get("local_paths"), dict) else {}
     data_dir = str(local_paths.get("data_dir") or "").strip()
     database = str(local_paths.get("database") or "").strip()
     log_dirs = local_paths.get("log_dirs") if isinstance(local_paths.get("log_dirs"), list) else []
@@ -196,6 +198,11 @@ def _support_package_path_replacements(local_paths: dict[str, Any]) -> list[tupl
         text = str(raw_path or "").strip()
         if text:
             replacements.extend(_path_variants(text, f"[path_label:log_dir_{index}]"))
+    update_channel = payload.get("update_channel") if isinstance(payload.get("update_channel"), dict) else {}
+    release_notes = update_channel.get("release_notes") if isinstance(update_channel.get("release_notes"), dict) else {}
+    release_notes_path = str(release_notes.get("path") or "").strip()
+    if release_notes_path:
+        replacements.extend(_path_variants(release_notes_path, "[path_label:release_notes]"))
     replacements.sort(key=lambda item: len(item[0]), reverse=True)
     return replacements
 
@@ -297,9 +304,38 @@ def _update_channel_status() -> dict[str, Any]:
         "configured": False,
         "status": "not_configured",
         "label": "未配置在线更新通道",
-        "detail": "当前未配置在线更新通道，请以安装包/发布说明为准。",
+        "detail": "当前未配置在线更新通道，只显示本机版本与本地发布说明。",
         "check_action": "refresh_local_status",
         "offline_only": True,
+        "user_action_label": "刷新本机状态",
+        "release_notes": _release_notes_status(),
+        "next_steps": [
+            "确认是否有新版：查看本地发布说明或新的安装包说明。",
+            "遇到故障：导出诊断包，再打开日志位置排查。",
+        ],
+    }
+
+
+def _release_notes_status() -> dict[str, Any]:
+    candidates = [
+        PROJECT_ROOT / "RELEASE_NOTES.md",
+        PROJECT_ROOT / "CHANGELOG.md",
+        PROJECT_ROOT / "README.md",
+    ]
+    for path in candidates:
+        if path.exists():
+            return {
+                "available": True,
+                "label": "本地发布说明",
+                "detail": "打开随安装包提供的说明文件；本页不会联网检查更新。",
+                "path": str(path),
+                "source": "local_file",
+            }
+    return {
+        "available": False,
+        "label": "发布说明",
+        "detail": "当前安装包未附带可打开的本地发布说明，请以安装包来源说明为准。",
+        "source": "not_packaged",
     }
 
 

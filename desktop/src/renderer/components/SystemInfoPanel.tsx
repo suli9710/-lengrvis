@@ -3,6 +3,7 @@ import {
   AppWindow,
   CheckCircle2,
   Cpu,
+  FileText,
   FolderOpen,
   HardDrive,
   Info,
@@ -56,9 +57,17 @@ const DEFAULT_UPDATE_CHANNEL: SystemDiagnosticUpdateChannel = {
   configured: false,
   status: "not_configured",
   label: "未配置在线更新通道",
-  detail: "当前未配置在线更新通道，请以安装包/发布说明为准。",
+  detail: "当前未配置在线更新通道，只显示本机版本与本地发布说明。",
   checkAction: "refresh_local_status",
-  offlineOnly: true
+  offlineOnly: true,
+  userActionLabel: "刷新本机状态",
+  releaseNotes: {
+    available: false,
+    label: "发布说明",
+    detail: "当前安装包未附带可打开的本地发布说明，请以安装包来源说明为准。",
+    source: "not_packaged"
+  },
+  nextSteps: ["确认是否有新版：查看本地发布说明或新的安装包说明。", "遇到故障：导出诊断包，再打开日志位置排查。"]
 };
 
 export function SystemInfoPanel({
@@ -80,6 +89,9 @@ export function SystemInfoPanel({
   const apps = info.installedApps ?? [];
   const backendVersion = diagnostics?.product?.version || "未知";
   const updateChannel = diagnostics?.updateChannel ?? DEFAULT_UPDATE_CHANNEL;
+  const releaseNotes = updateChannel.releaseNotes ?? DEFAULT_UPDATE_CHANNEL.releaseNotes;
+  const releaseNotesPath = releaseNotes?.available && releaseNotes.path ? releaseNotes.path : "";
+  const nextSteps = updateChannel.nextSteps?.length ? updateChannel.nextSteps : DEFAULT_UPDATE_CHANNEL.nextSteps ?? [];
   const logDirs = diagnostics?.localPaths?.logDirs ?? [];
   const backendSummary = backendStatusSummary(backendStatus);
   const memoryTotal = Number(diagnostics?.info.memory_total ?? 0);
@@ -211,23 +223,53 @@ export function SystemInfoPanel({
               <code>桌面 {info.appVersion || "未知"}</code>
               <code>后端 {backendVersion}</code>
               <code data-testid="system-update-channel-label">{updateSummary.shortLabel}</code>
+              <code data-testid="system-release-notes-label">说明 {releaseNotes?.label || "发布说明"}</code>
             </div>
           </div>
         </div>
-        <button
-          className="button button--secondary"
-          data-testid="system-update-refresh-button"
-          type="button"
-          onClick={() => void checkUpdateStatus()}
-          disabled={isRefreshing || updateCheck.status === "checking"}
-        >
-          {updateCheck.status === "checking" || isRefreshing ? (
-            <Loader2 className="settings-spinner" size={16} aria-hidden="true" />
-          ) : (
-            <RefreshCw size={16} aria-hidden="true" />
-          )}
-          {updateCheck.status === "checking" || isRefreshing ? "刷新中" : "刷新本机状态"}
-        </button>
+        <div className="diagnostic-export__actions">
+          <button
+            className="button button--secondary"
+            data-testid="system-update-refresh-button"
+            type="button"
+            onClick={() => void checkUpdateStatus()}
+            disabled={isRefreshing || updateCheck.status === "checking"}
+          >
+            {updateCheck.status === "checking" || isRefreshing ? (
+              <Loader2 className="settings-spinner" size={16} aria-hidden="true" />
+            ) : (
+              <RefreshCw size={16} aria-hidden="true" />
+            )}
+            {updateCheck.status === "checking" || isRefreshing ? "刷新中" : updateChannel.userActionLabel || "刷新本机状态"}
+          </button>
+          {releaseNotesPath && onRevealPath ? (
+            <button
+              className="button button--secondary"
+              data-testid="system-release-notes-button"
+              type="button"
+              onClick={() => void revealLocalPath(releaseNotesPath)}
+            >
+              <FileText size={16} aria-hidden="true" />
+              打开说明位置
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="system-section" data-testid="system-update-next-steps">
+        <div className="system-section__head">
+          <strong>下一步</strong>
+          <span>本机可做的事</span>
+        </div>
+        <div className="system-suggestions">
+          {nextSteps.map((step) => (
+            <div className="system-suggestion" key={step}>
+              <CheckCircle2 size={14} aria-hidden="true" />
+              <span>{step}</span>
+            </div>
+          ))}
+        </div>
+        {pathRevealError ? <span className="system-path-error">{pathRevealError}</span> : null}
       </div>
 
       {onExportDiagnostics ? (
@@ -321,7 +363,6 @@ export function SystemInfoPanel({
             <span className="system-empty">暂未读取到日志目录。</span>
           )}
         </div>
-        {pathRevealError ? <span className="system-path-error">{pathRevealError}</span> : null}
       </div>
 
       <div className="system-section">
