@@ -7,6 +7,7 @@ const ipcHandlers = new Map();
 let dialogOpenResult = { canceled: false, filePaths: ["C:\\Users\\Suli\\Documents\\picked-report.pdf"] };
 let messageBoxCalls = [];
 let messageBoxResponses = [];
+let shellRevealCalls = [];
 
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "electron") {
@@ -26,6 +27,10 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
     return {
       app: {
+        getPath: (name) => {
+          if (name === "userData") return path.resolve(__dirname, "../.tmp/ipc-user-data");
+          return path.resolve(__dirname, "../.tmp");
+        },
         getFileIcon: async () => ({
           isEmpty: () => false,
           toDataURL: () => "data:image/png;base64,ZmFrZS1pY29u"
@@ -46,7 +51,12 @@ Module._load = function patchedLoad(request, parent, isMain) {
         }
       },
       ipcMain: { handle: (channel, listener) => ipcHandlers.set(channel, listener) },
-      shell: { openExternal: async () => undefined }
+      shell: {
+        openExternal: async () => undefined,
+        showItemInFolder: (filePath) => {
+          shellRevealCalls.push(filePath);
+        }
+      }
     };
   }
   return originalLoad.call(this, request, parent, isMain);
@@ -605,18 +615,18 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 
     messageBoxCalls = [];
     fetchCalls = [];
-    const documentIdAskResponse = await Promise.resolve(
-      documentAskHandler(eventFor("http://127.0.0.1:5173/files"), {
-        documentId: "doc-123",
-        question: "What changed?",
-        topK: 2
-      })
+    await assert.rejects(
+      async () =>
+        documentAskHandler(eventFor("http://127.0.0.1:5173/files"), {
+          documentId: "doc-123",
+          question: "What changed?",
+          topK: 2
+        }),
+      /document ask request field is not allowed/,
+      "document id only ask should be rejected until the backend supports it"
     );
-    assert.equal(documentIdAskResponse.ok, true, "document id ask should call backend");
-    assert.equal(messageBoxCalls.length, 0, "document id ask should not require a path grant");
-    assert.equal(fetchCalls.length, 1, "document id ask should call backend once");
-    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/documents/ask");
-    assert.equal(fetchCalls[0].init.body, JSON.stringify({ document_id: "doc-123", question: "What changed?", top_k: 2 }));
+    assert.equal(messageBoxCalls.length, 0, "invalid document id ask should not ask for a path grant");
+    assert.equal(fetchCalls.length, 0, "invalid document id ask must not call backend");
 
     messageBoxCalls = [];
     messageBoxResponses = [1];
@@ -781,13 +791,26 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   }
 
   const getFileIconHandler = ipcHandlers.get(IPC_CHANNELS.getFileIcon);
+  const showItemInFolderHandler = ipcHandlers.get(IPC_CHANNELS.showItemInFolder);
   assert.ok(getFileIconHandler, "file icon handler must be registered");
+  assert.ok(showItemInFolderHandler, "show item in folder handler must be registered");
   const icon = await Promise.resolve(getFileIconHandler(eventFor("http://127.0.0.1:5173/apps"), __filename));
   assert.equal(icon, "data:image/png;base64,ZmFrZS1pY29u");
   await assert.rejects(
     async () => getFileIconHandler(eventFor("https://evil.example/app"), __filename),
     /untrusted renderer/
   );
+  shellRevealCalls = [];
+  const deniedReveal = await Promise.resolve(showItemInFolderHandler(eventFor("http://127.0.0.1:5173/apps"), "C:\\Windows\\win.ini"));
+  assert.equal(deniedReveal.ok, false, "ungranted paths must not be revealed");
+  assert.equal(deniedReveal.path, "", "ungranted reveal requests must not echo resolved local paths");
+  assert.equal(shellRevealCalls.length, 0, "ungranted reveal requests must not call shell.showItemInFolder");
+  dialogOpenResult = { canceled: false, filePaths: [__filename] };
+  const grantedRevealPath = await Promise.resolve(ipcHandlers.get(IPC_CHANNELS.chooseDocument)(eventFor("http://127.0.0.1:5173/files")));
+  const revealResponse = await Promise.resolve(showItemInFolderHandler(eventFor("http://127.0.0.1:5173/apps"), grantedRevealPath));
+  assert.equal(revealResponse.ok, true, "previously selected document path should be revealable");
+  assert.equal(shellRevealCalls.length, 1, "granted reveal should call shell.showItemInFolder once");
+  assert.equal(shellRevealCalls[0], path.resolve(__filename));
 
   const notificationBridge = new NotificationBridge({ backend, getMainWindow: () => null });
   notificationBridge.registerIpcHandlers();

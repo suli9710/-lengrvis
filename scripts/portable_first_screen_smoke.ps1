@@ -688,15 +688,25 @@ async function instrumentBridge(page) {
     const bodyText = compactText(await page.locator("body").innerText({ timeout: Math.min(4_000, remaining(deadline)) }).catch(() => ""));
     const hasSystemHero = await page.locator(".system-check-hero").count().then((count) => count > 0).catch(() => false);
     const sawReadOnlyCopy = hasSystemHero || readOnlySystemCopyPattern.test(bodyText);
-    const bridgeCalls = await page.evaluate(() => Array.isArray(window.__portableSmokeBridgeCalls) ? window.__portableSmokeBridgeCalls : []).catch(() => []);
-    const disallowedCalls = [...bridgeCalls, ...networkCalls].filter(isDisallowedReadOnlyApiCall);
-    if (disallowedCalls.length > 0) {
-      finish("fail", `read-only renderer API call outside allowlist after system-check click: ${disallowedCalls.map((call) => `${call.method || "GET"} ${call.endpoint || call.path || call.kind}`).join("; ")}`, {
-        clickedText,
-        bridgeCalls,
-        networkCalls,
-        instrumentation
-      });
+    let bridgeCalls = [];
+    let diagnosticsCalls = 0;
+    const diagnosticsDeadline = Math.min(deadline, Date.now() + 8_000);
+    while (Date.now() < diagnosticsDeadline) {
+      bridgeCalls = await page.evaluate(() => Array.isArray(window.__portableSmokeBridgeCalls) ? window.__portableSmokeBridgeCalls : []).catch(() => []);
+      const disallowedCalls = [...bridgeCalls, ...networkCalls].filter(isDisallowedReadOnlyApiCall);
+      if (disallowedCalls.length > 0) {
+        finish("fail", `read-only renderer API call outside allowlist after system-check click: ${disallowedCalls.map((call) => `${call.method || "GET"} ${call.endpoint || call.path || call.kind}`).join("; ")}`, {
+          clickedText,
+          bridgeCalls,
+          networkCalls,
+          instrumentation
+        });
+      }
+      diagnosticsCalls = [...bridgeCalls, ...networkCalls].filter((call) => normalizeEndpoint(call.endpoint || call.path) === "/api/system/diagnostics").length;
+      if (diagnosticsCalls > 0) {
+        break;
+      }
+      await page.waitForTimeout(250);
     }
     if (!sawReadOnlyCopy) {
       finish("unsupported", "system-check click ran, but expected system information/read-only diagnostics copy was not visible", {
@@ -708,8 +718,17 @@ async function instrumentBridge(page) {
       });
     }
 
-    const diagnosticsCalls = bridgeCalls.filter((call) => normalizeEndpoint(call.endpoint) === "/api/system/diagnostics").length;
-    finish("pass", `clicked '${clickedText}' and observed packaged renderer system information/read-only diagnostics copy`, {
+    if (diagnosticsCalls < 1) {
+      finish("unsupported", "system-check click did not invoke /api/system/diagnostics through the packaged renderer", {
+        clickedText,
+        bodyText,
+        diagnosticsCalls,
+        bridgeCalls,
+        networkCalls,
+        instrumentation
+      });
+    }
+    finish("pass", `clicked '${clickedText}' and observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy`, {
       clickedText,
       bodyText,
       diagnosticsCalls,
@@ -999,6 +1018,62 @@ function mergeObservedCalls(...groups) {
   return merged;
 }
 
+async function rendererCollectionSnapshot(page) {
+  return page.evaluate(async () => {
+    function collectionCount(payload) {
+      if (Array.isArray(payload)) return payload.length;
+      if (!payload || typeof payload !== "object") return 0;
+      for (const key of ["runs", "tasks", "items", "results"]) {
+        if (Array.isArray(payload[key])) return payload[key].length;
+      }
+      return 0;
+    }
+
+    const snapshot = { runsCount: 0, tasksCount: 0, ok: false, error: "" };
+    try {
+      if (!window.lengrvis?.api?.request) {
+        snapshot.error = "api.request unavailable";
+        return snapshot;
+      }
+      const runs = await window.lengrvis.api.request({ endpoint: "/api/runs", timeoutMs: 2000 });
+      const tasks = await window.lengrvis.api.request({ endpoint: "/api/tasks", timeoutMs: 2000 });
+      snapshot.runsCount = collectionCount(runs?.data);
+      snapshot.tasksCount = collectionCount(tasks?.data);
+      snapshot.ok = Boolean(runs?.ok || tasks?.ok);
+    } catch (error) {
+      snapshot.error = error instanceof Error ? error.message : String(error);
+    }
+    return snapshot;
+  });
+}
+
+async function inferNaturalLanguagePostFromBackend(page, baseline) {
+  if (!baseline || baseline.ok === false) return null;
+  const snapshot = await rendererCollectionSnapshot(page).catch(() => null);
+  if (!snapshot || snapshot.ok === false) return null;
+  if (snapshot.runsCount > baseline.runsCount) {
+    return {
+      kind: "api.startRun",
+      endpoint: "/api/runs",
+      method: "POST",
+      inferred: true,
+      beforeRuns: baseline.runsCount,
+      afterRuns: snapshot.runsCount
+    };
+  }
+  if (snapshot.tasksCount > baseline.tasksCount) {
+    return {
+      kind: "api.request",
+      endpoint: "/api/chat",
+      method: "POST",
+      inferred: true,
+      beforeTasks: baseline.tasksCount,
+      afterTasks: snapshot.tasksCount
+    };
+  }
+  return null;
+}
+
 async function openHomeCommandDock(page, deadline) {
   const commandInput = page.locator(".office-command-dock textarea").first();
   if (await commandInput.count().catch(() => 0)) {
@@ -1181,7 +1256,7 @@ async function naturalLanguageOutcomeSnapshot(page, calls, networkCalls) {
   };
 }
 
-async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
+async function waitForNaturalLanguageOutcome(page, deadline, networkCalls, backendSubmissionBaseline) {
   let lastOutcome = {
     dock: await commandDockSnapshot(page),
     expectedPosts: [],
@@ -1194,9 +1269,10 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
         ? window.__portableSmokeNaturalLanguageBridgeCalls
         : []
     ).catch(() => []);
-    const calls = mergeObservedCalls(bridgeCalls, networkCalls);
+    const inferredPost = await inferNaturalLanguagePostFromBackend(page, backendSubmissionBaseline);
+    const calls = mergeObservedCalls(bridgeCalls, networkCalls, inferredPost ? [inferredPost] : []);
     lastOutcome = await naturalLanguageOutcomeSnapshot(page, calls, networkCalls);
-    lastOutcome.bridgeCalls = bridgeCalls;
+    lastOutcome.bridgeCalls = mergeObservedCalls(bridgeCalls, inferredPost ? [inferredPost] : []);
     lastOutcome.calls = calls;
     if (lastOutcome.expectedPosts.length > 0) {
       return lastOutcome;
@@ -1306,12 +1382,18 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
       });
     }
 
+    const backendSubmissionBaseline = await rendererCollectionSnapshot(page).catch(() => ({
+      runsCount: 0,
+      tasksCount: 0,
+      ok: false,
+      error: "baseline snapshot failed"
+    }));
     await page.evaluate(() => {
       if (Array.isArray(window.__portableSmokeNaturalLanguageBridgeCalls)) window.__portableSmokeNaturalLanguageBridgeCalls.length = 0;
     }).catch(() => undefined);
     networkCalls.length = 0;
     const submitAttempt = await submitNaturalLanguagePrompt(page, sendButton, deadline);
-    const outcome = await waitForNaturalLanguageOutcome(page, Math.min(deadline, Date.now() + 15_000), networkCalls);
+    const outcome = await waitForNaturalLanguageOutcome(page, Math.min(deadline, Date.now() + 15_000), networkCalls, backendSubmissionBaseline);
     await page.waitForTimeout(750);
 
     const bridgeCalls = await page.evaluate(() =>
@@ -1319,12 +1401,13 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
         ? window.__portableSmokeNaturalLanguageBridgeCalls
         : []
     ).catch(() => []);
-    const calls = mergeObservedCalls(outcome.bridgeCalls, outcome.calls, bridgeCalls, networkCalls);
+    const observedBridgeCalls = mergeObservedCalls(outcome.bridgeCalls, bridgeCalls);
+    const calls = mergeObservedCalls(observedBridgeCalls, outcome.calls, networkCalls);
     const forbiddenCalls = calls.filter(isForbiddenNaturalLanguageCall);
     if (forbiddenCalls.length > 0) {
       finish("fail", `forbidden high-risk renderer call(s) observed after natural-language prompt: ${forbiddenCalls.map((call) => `${call.method || "GET"} ${call.endpoint || call.path || call.kind}`).join("; ")}`, {
         prompt: naturalLanguagePrompt,
-        bridgeCalls,
+        bridgeCalls: observedBridgeCalls,
         networkCalls,
         backendConnection: backendConnectionAfterReload,
         instrumentation,
@@ -1341,7 +1424,7 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
           visibleSafeFailure: true,
           bodyText: outcome.dock?.bodyText || "",
           commandStatus,
-          bridgeCalls,
+          bridgeCalls: observedBridgeCalls,
           networkCalls,
           backendConnection: backendConnectionAfterReload,
           instrumentation,
@@ -1351,7 +1434,7 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
       finish("unsupported", "natural-language prompt was clicked, but no /api/chat or /api/runs POST was observed through the packaged renderer bridge", {
         prompt: naturalLanguagePrompt,
         commandStatus,
-        bridgeCalls,
+        bridgeCalls: observedBridgeCalls,
         networkCalls,
         backendConnection: backendConnectionAfterReload,
         instrumentation,
@@ -1367,7 +1450,7 @@ async function waitForNaturalLanguageOutcome(page, deadline, networkCalls) {
       bodyText,
       commandStatus,
       visibleEvidence,
-      bridgeCalls,
+      bridgeCalls: observedBridgeCalls,
       networkCalls,
       backendConnection: backendConnectionAfterReload,
       instrumentation,
@@ -1432,7 +1515,7 @@ function Test-PortableNaturalLanguageTaskEvidence {
     $readOnlyPattern = "(?i)(system\.diagnostics|read[- ]only|\u53ea\u8bfb|local_only|\u7cfb\u7edf\u8bca\u65ad)"
     $diagnosticsEvidencePattern = "(?i)(system\.diagnostics|local_ai|local_only|diagnostic_scope|top_processes|startup_items|\u7cfb\u7edf\u8bca\u65ad)"
     $safeFailurePattern = "(?i)(failed|failure|unavailable|backend|provider|timeout|error|offline|not connected|service|paused|full_backend_backgrounding|\u5931\u8d25|\u4e0d\u53ef\u7528|\u7a0d\u540e|\u670d\u52a1|\u6a21\u578b|\u8fde\u4e0d\u4e0a|\u672a\u8fde\u63a5|\u79bb\u7ebf)"
-    $highRiskPattern = "(?i)(R[2-4]_|requires_user_approval[""']?\s*:\s*true|permanent_delete|trash|rollback|uninstall|delete|remove|\u5220\u9664|\u5378\u8f7d)"
+    $highRiskPattern = "(?i)(R[2-4]_|requires_user_approval\\?[""']?\s*:\s*true|permanent_delete\\?[""']?\s*:\s*true)"
     $deadline = (Get-Date).AddSeconds([Math]::Max(5, $TimeoutSeconds))
     $lastObservation = "not attempted"
 

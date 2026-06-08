@@ -44,7 +44,7 @@ const API_REQUEST_DENIED_EXACT_PATH_SET = new Set<string>(API_REQUEST_DENIED_EXA
 const API_REQUEST_DENIED_METHOD_PATH_RULES = API_REQUEST_DENIED_METHOD_PATHS;
 const API_REQUEST_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const DOCUMENT_PARSE_ALLOWED_KEYS = new Set(["path", "includeText", "include_text"]);
-const DOCUMENT_ASK_ALLOWED_KEYS = new Set(["path", "documentId", "document_id", "question", "topK", "top_k"]);
+const DOCUMENT_ASK_ALLOWED_KEYS = new Set(["path", "question", "topK", "top_k"]);
 const DOCUMENT_COMPARE_ALLOWED_KEYS = new Set(["paths", "focus"]);
 const SETTINGS_EGRESS_CONFIRMATION_FIELDS = new Set(["base_url", "wire_api"]);
 const SETTINGS_NATIVE_CONFIRMATION_FIELDS = new Set([
@@ -156,6 +156,7 @@ interface ApiRequestValidationOptions {
 
 export function registerIpcHandlers(backend: BackendProcessManager): void {
   const documentPathGrants = new Set<string>();
+  const revealPathGrants = new Set<string>();
 
   ipcMain.handle(IPC_CHANNELS.backendStatus, (event) => {
     assertTrustedRenderer(event);
@@ -190,7 +191,10 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.showItemInFolder, async (event, filePath: unknown) => {
     assertTrustedRenderer(event);
-    return showItemInFolder(validateBridgePathValue(filePath, "file path to reveal"));
+    return showItemInFolder(validateBridgePathValue(filePath, "file path to reveal"), {
+      documentPathGrants,
+      revealPathGrants
+    });
   });
 
   ipcMain.handle(IPC_CHANNELS.chooseDirectory, async (event) => {
@@ -390,10 +394,12 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.systemDiagnosticsExport, async (event) => {
     assertTrustedRenderer(event);
-    return proxyExplicitDesktopBridgeRequest(backend, {
+    const response = await proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/system/diagnostics/export",
       method: "POST"
     });
+    rememberRevealPathFromApiResponse(revealPathGrants, response);
+    return response;
   });
 
   ipcMain.handle(IPC_CHANNELS.documentsParse, async (event, request: unknown) => {
@@ -615,7 +621,18 @@ function isRendererTaskSubmissionRequest(request: unknown): boolean {
 }
 
 function rememberDocumentPathGrant(grants: Set<string>, filePath: string): void {
-  grants.add(normalizeDocumentGrantPath(filePath));
+  grants.add(normalizeGrantPath(filePath));
+}
+
+function rememberRevealPathGrant(grants: Set<string>, filePath: string): void {
+  grants.add(normalizeGrantPath(filePath));
+}
+
+function rememberRevealPathFromApiResponse(grants: Set<string>, response: ApiResponse<unknown>): void {
+  if (!response.ok || !isPlainRecord(response.data) || typeof response.data.path !== "string") {
+    return;
+  }
+  rememberRevealPathGrant(grants, response.data.path);
 }
 
 async function ensureDocumentReadGrant(
@@ -623,7 +640,7 @@ async function ensureDocumentReadGrant(
   grants: Set<string>,
   paths: string[]
 ): Promise<void> {
-  const ungranted = [...new Set(paths)].filter((filePath) => !grants.has(normalizeDocumentGrantPath(filePath)));
+  const ungranted = [...new Set(paths)].filter((filePath) => !grants.has(normalizeGrantPath(filePath)));
   if (!ungranted.length) {
     return;
   }
@@ -682,7 +699,7 @@ async function confirmNativeDesktopAction(
   }
 }
 
-function normalizeDocumentGrantPath(filePath: string): string {
+function normalizeGrantPath(filePath: string): string {
   return resolvePath(filePath).toLowerCase();
 }
 
@@ -704,8 +721,20 @@ async function getFileIconDataUrl(filePath: string): Promise<string | null> {
   }
 }
 
-function showItemInFolder(filePath: string): { ok: boolean; path: string; revealed: boolean; shown: boolean; error?: string } {
+function showItemInFolder(
+  filePath: string,
+  grants: { documentPathGrants: Set<string>; revealPathGrants: Set<string> }
+): { ok: boolean; path: string; revealed: boolean; shown: boolean; error?: string } {
   const resolved = resolvePath(filePath);
+  if (!isRevealPathAuthorized(resolved, grants)) {
+    return {
+      ok: false,
+      path: "",
+      revealed: false,
+      shown: false,
+      error: "Path is not authorized for reveal"
+    };
+  }
   if (!existsSync(resolved)) {
     return { ok: false, path: resolved, revealed: false, shown: false, error: "Path does not exist" };
   }
@@ -721,6 +750,40 @@ function showItemInFolder(filePath: string): { ok: boolean; path: string; reveal
       error: error instanceof Error ? error.message : "Could not reveal path"
     };
   }
+}
+
+function isRevealPathAuthorized(
+  resolvedPath: string,
+  grants: { documentPathGrants: Set<string>; revealPathGrants: Set<string> }
+): boolean {
+  const normalized = normalizeGrantPath(resolvedPath);
+  if (grants.documentPathGrants.has(normalized) || grants.revealPathGrants.has(normalized)) {
+    return true;
+  }
+  return defaultRevealRoots().some((root) => isSameOrNestedPath(root, resolvedPath));
+}
+
+function defaultRevealRoots(): string[] {
+  const roots = [
+    process.env.LENGRVIS_CONFIG_DIR,
+    process.env.LENGRVIS_DATA_DIR,
+    safeElectronAppPath("userData")
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return [...new Set(roots.map((root) => resolvePath(root)))];
+}
+
+function safeElectronAppPath(name: "userData"): string {
+  try {
+    return app.getPath(name);
+  } catch {
+    return "";
+  }
+}
+
+function isSameOrNestedPath(rootPath: string, candidatePath: string): boolean {
+  const root = resolvePath(rootPath).toLowerCase().replace(/[\\/]+$/, "");
+  const candidate = resolvePath(candidatePath).toLowerCase();
+  return candidate === root || candidate.startsWith(`${root}\\`) || candidate.startsWith(`${root}/`);
 }
 
 async function proxyApiRequest<TData>(
@@ -1093,23 +1156,12 @@ function validateDocumentParseRequest(value: unknown): { path: string; include_t
   return body;
 }
 
-function validateDocumentAskRequest(value: unknown): { path?: string; document_id?: string; question: string; top_k?: number } {
+function validateDocumentAskRequest(value: unknown): { path: string; question: string; top_k?: number } {
   const request = validatePlainBridgeBody(value, "document ask request") as DocumentAskRequest & Record<string, unknown>;
   rejectUnexpectedBridgeKeys(request, DOCUMENT_ASK_ALLOWED_KEYS, "document ask request");
-  const body: { path?: string; document_id?: string; question?: string; top_k?: number } = {};
-  if (request.path !== undefined && request.path !== null && request.path !== "") {
-    body.path = validateBridgePathValue(request.path, "document path");
-  }
-  const documentId = request.documentId ?? request.document_id;
-  if (documentId !== undefined && documentId !== null && documentId !== "") {
-    body.document_id = validateBridgeStringValue(documentId, "document id", 512, {
-      allowEmpty: false,
-      trim: true
-    });
-  }
-  if (!body.path && !body.document_id) {
-    throw new ApiRequestValidationError("document ask request requires a path or document id");
-  }
+  const body: { path: string; question?: string; top_k?: number } = {
+    path: validateBridgePathValue(request.path, "document path")
+  };
   body.question = validateBridgeStringValue(request.question, "document question", DOCUMENT_QUESTION_MAX_CHARS, {
     allowEmpty: false,
     trim: true
@@ -1118,7 +1170,7 @@ function validateDocumentAskRequest(value: unknown): { path?: string; document_i
   if (topK !== undefined) {
     body.top_k = validateBridgePositiveInteger(topK, "document topK", 5, 1, 20);
   }
-  return body as { path?: string; document_id?: string; question: string; top_k?: number };
+  return body as { path: string; question: string; top_k?: number };
 }
 
 function validateDocumentCompareRequest(value: unknown): { paths: string[]; focus?: string } {

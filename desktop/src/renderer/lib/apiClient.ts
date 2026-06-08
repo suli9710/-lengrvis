@@ -967,7 +967,6 @@ export class LengrvisApiClient {
           method: "POST",
           body: {
             path: body.path,
-            document_id: body.documentId,
             question: body.question,
             top_k: body.topK
           },
@@ -4192,8 +4191,7 @@ interface BackendDocumentParseRequest {
 }
 
 interface BackendDocumentAskRequest {
-  path?: string;
-  document_id?: string;
+  path: string;
   question: string;
   top_k?: number;
 }
