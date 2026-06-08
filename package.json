@@ -15,6 +15,10 @@
     "release:check": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45",
     "release:smoke": "npm run release:check",
     "release:gate": "npm run release:check",
+    "evidence:release": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_release_evidence_packet.ps1",
+    "evidence:mobile-lan-wss": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_mobile_lan_wss_preflight.ps1",
+    "evidence:local-model-template": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_local_model_clean_machine_evidence_template.ps1",
+    "evidence:diagnostics-review": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_diagnostics_external_review_packet.ps1",
     "smoke:desktop-first-launch": "npm --prefix desktop run smoke:first-launch",
     "smoke:portable-first-screen": "powershell -ExecutionPolicy Bypass -File ./scripts/portable_first_screen_smoke.ps1"
   },

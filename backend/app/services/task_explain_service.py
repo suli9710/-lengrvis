@@ -5,6 +5,7 @@ from typing import Any
 from app.core import db
 from app.core.schemas import Task, now_iso
 from app.policy.redaction import redact_public_text
+from app.services import task_recording_service
 
 
 SOURCE_TASKS = "tasks"
@@ -41,6 +42,26 @@ PUBLIC_REDACTED_KEYS = {
 }
 
 SUBAGENT_EXCLUDED = {"User", "PlannerAgent", "SafetyReviewAgent", "OrchestratorAgent", "HumanGateAgent"}
+TERMINAL_AUDIT_TYPES = {
+    "task.finished_or_waiting",
+    "task.status_changed",
+    "task.background_failed",
+    "task.approved_step_executed",
+}
+COMPLETED_STATUSES = {"completed", "complete", "success", "succeeded", "done"}
+SAFE_FAILURE_STATUSES = {"failed", "failure", "cancelled", "canceled", "denied", "blocked"}
+ALLOW_REVIEW_VERDICTS = {"allow", "allowed", "approved", "pass", "passed"}
+BLOCKING_REVIEW_VERDICTS = {"deny", "denied", "blocked"}
+RESULT_REVIEW_TARGETS = {"final", "tool_result"}
+NON_RESULT_SUMMARY_MARKERS = {
+    "submitted",
+    "submission",
+    "routed",
+    "queued",
+    "waiting",
+    "pending",
+    "in progress",
+}
 
 
 def build_task_explain(task_id: str) -> dict[str, Any]:
@@ -62,6 +83,7 @@ def build_task_explain(task_id: str) -> dict[str, Any]:
     subagent_suggestions = _subagent_suggestions(messages)
     steps = _step_explanations(plan_payload, messages, reviews)
     final_result = _final_result(task, reviews, audits)
+    completion_evidence = build_task_completion_evidence(task, messages=messages, reviews=reviews, audits=audits)
 
     missing_sections = _missing_sections(
         user_goal=user_goal,
@@ -130,9 +152,111 @@ def build_task_explain(task_id: str) -> dict[str, Any]:
         "global_safety_reviews": global_safety_reviews,
         "steps": steps,
         "subagent_suggestions": subagent_suggestions,
+        "completion_evidence": completion_evidence,
         "final_result": final_result,
         "chain": chain,
     }
+
+
+def build_task_completion_evidence(
+    task: Task,
+    *,
+    messages: list[dict[str, Any]] | None = None,
+    reviews: list[dict[str, Any]] | None = None,
+    audits: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Summarize public completion evidence without exposing raw task data."""
+
+    task_id = task.id
+    messages = messages if messages is not None else _chronological(db.fetch_many(SOURCE_AGENT_MESSAGES, "task_id = ?", (task_id,), limit=5000))
+    reviews = reviews if reviews is not None else _chronological(db.fetch_many(SOURCE_SAFETY_REVIEWS, "task_id = ?", (task_id,), limit=5000))
+    audits = audits if audits is not None else _chronological(db.fetch_many(SOURCE_AUDIT_EVENTS, "task_id = ?", (task_id,), limit=5000))
+    tool_calls = db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=5000)
+    tool_call_ids = [str(item.get("id") or "") for item in tool_calls if item.get("id")]
+    tool_results = db.fetch_many_in("tool_results", "tool_call_id", tool_call_ids, limit=5000) if tool_call_ids else []
+    successful_results = [item for item in tool_results if bool(item.get("ok"))]
+    failed_results = [item for item in tool_results if not bool(item.get("ok"))]
+    result_reviews = [review for review in reviews if str(review.get("target_type") or "") in RESULT_REVIEW_TARGETS]
+    final_reviews = [review for review in result_reviews if str(review.get("target_type") or "") == "final"]
+    blocking_reviews = [review for review in result_reviews if _review_verdict(review) in BLOCKING_REVIEW_VERDICTS]
+    terminal_audits = [event for event in audits if event.get("event_type") in TERMINAL_AUDIT_TYPES]
+    progress_messages = [
+        message
+        for message in messages
+        if _payload(message).get("kind") == "tool_progress"
+        or str((_payload(message).get("event_type") or (message.get("metadata") or {}).get("event_type") or "")).lower() == "tool.progress"
+        or bool(message.get("tool_call_id"))
+    ]
+
+    status = _enum_value(task.status).replace("-", "_").casefold()
+    has_final_summary = bool(str(task.final_summary or "").strip())
+    has_result_summary = _has_result_summary(task.final_summary)
+    has_successful_result_evidence = bool(successful_results) and has_result_summary
+    safe_failure = status in SAFE_FAILURE_STATUSES or bool(blocking_reviews) or any(
+        str(event.get("event_type") or "") == "task.background_failed" for event in terminal_audits
+    )
+    result_verified = status in COMPLETED_STATUSES and has_successful_result_evidence and not safe_failure
+    if result_verified:
+        level = "completed_result"
+    elif safe_failure:
+        level = "safe_failure"
+    elif tool_calls or tool_results or progress_messages or result_reviews or terminal_audits or has_final_summary:
+        level = "visible_progress"
+    elif task.id or any(event.get("event_type") == "task.created" for event in audits):
+        level = "task_created"
+    else:
+        level = "submission"
+
+    result_artifacts: list[dict[str, Any]] = []
+    if successful_results:
+        result_artifacts.append(_completion_evidence_item("tool_result", "Successful tool result", len(successful_results)))
+    if failed_results:
+        result_artifacts.append(_completion_evidence_item("failed_tool_result", "Failed tool result", len(failed_results)))
+    if has_final_summary:
+        result_artifacts.append(_completion_evidence_item("final_summary", "Final task summary", 1))
+    if final_reviews:
+        result_artifacts.append(_completion_evidence_item("final_review", "Final safety review", len(final_reviews)))
+    if safe_failure:
+        result_artifacts.append(_completion_evidence_item("safe_failure", "Blocking result review", len(blocking_reviews) or 1))
+    if not result_artifacts and terminal_audits:
+        result_artifacts.append(_completion_evidence_item("terminal_event", "Terminal task event", len(terminal_audits)))
+    if not result_artifacts and progress_messages:
+        result_artifacts.append(_completion_evidence_item("tool_progress", "Tool progress event", len(progress_messages)))
+    if not result_artifacts and tool_calls:
+        result_artifacts.append(_completion_evidence_item("tool_call", "Tool call", len(tool_calls)))
+    recording_frame_count = len(task_recording_service.list_recording_frames(task_id))
+    if not result_artifacts and recording_frame_count:
+        result_artifacts.append(_completion_evidence_item("recording_frame", "Recording frame", recording_frame_count))
+
+    missing: list[str] = []
+    if status not in COMPLETED_STATUSES:
+        missing.append("completed task status")
+    if not has_successful_result_evidence:
+        missing.append("completed result evidence")
+    if blocking_reviews:
+        missing.append("unblocked result review")
+
+    return {
+        "level": level,
+        "result_verified": result_verified,
+        "result_artifacts": result_artifacts,
+        "missing": [] if result_verified else missing,
+        "signoff": False,
+    }
+
+
+def _review_verdict(review: dict[str, Any]) -> str:
+    return _enum_value(review.get("verdict") or "").replace("-", "_").casefold()
+
+
+def _has_result_summary(summary: Any) -> bool:
+    text = str(summary or "").strip()
+    if not text:
+        return False
+    normalized = text.casefold()
+    if any(marker in normalized for marker in NON_RESULT_SUMMARY_MARKERS):
+        return False
+    return True
 
 
 def _chronological(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -422,7 +546,7 @@ def _final_result(task: Task, reviews: list[dict[str, Any]], audits: list[dict[s
     terminal_audits = [
         event
         for event in audits
-        if event.get("event_type") in {"task.finished_or_waiting", "task.status_changed", "task.background_failed", "task.approved_step_executed"}
+        if event.get("event_type") in TERMINAL_AUDIT_TYPES
     ]
     evidence = []
     if final_reviews:
@@ -443,6 +567,15 @@ def _final_result(task: Task, reviews: list[dict[str, Any]], audits: list[dict[s
         "summary": _public_text(task.final_summary or f"Task status: {_enum_value(task.status)}"),
         "safety_reviews": final_reviews,
         "evidence": evidence,
+    }
+
+
+def _completion_evidence_item(kind: str, label: str, count: int) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "label": label,
+        "count": int(count),
+        "redacted": True,
     }
 
 

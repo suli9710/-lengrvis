@@ -879,6 +879,57 @@ function ConvertTo-SmokeJsonText {
     }
 }
 
+function Get-CompletionEvidenceSummary {
+    param([AllowNull()][object]$ExplainPayload)
+
+    $allowedLevels = @(
+        "submission",
+        "task_created",
+        "visible_progress",
+        "completed_result",
+        "safe_failure"
+    )
+    $level = "unavailable"
+    $resultVerified = $false
+    $resultVerifiedText = "unavailable"
+
+    try {
+        if ($null -ne $ExplainPayload -and ($ExplainPayload.PSObject.Properties.Name -contains "completion_evidence")) {
+            $completionEvidence = $ExplainPayload.completion_evidence
+            $candidateLevel = [string]$completionEvidence.level
+            if ($candidateLevel -in $allowedLevels) {
+                $level = $candidateLevel
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($candidateLevel)) {
+                $level = "invalid"
+            }
+            if ($completionEvidence.result_verified -is [bool]) {
+                $resultVerified = [bool]$completionEvidence.result_verified
+                $resultVerifiedText = ([string]$resultVerified).ToLowerInvariant()
+            }
+            else {
+                $resultVerified = $false
+                $resultVerifiedText = "missing"
+            }
+        }
+        elseif ($null -ne $ExplainPayload) {
+            $level = "missing"
+            $resultVerifiedText = "missing"
+        }
+    }
+    catch {
+        $level = "unparseable"
+        $resultVerified = $false
+        $resultVerifiedText = "unparseable"
+    }
+
+    return [pscustomobject]@{
+        Level = $level
+        ResultVerified = [bool]$resultVerified
+        Text = "completion_evidence.level=$level result_verified=$resultVerifiedText"
+    }
+}
+
 function Invoke-PortableNaturalLanguageDomAutomation {
     param(
         [int]$RemoteDebuggingPort,
@@ -1609,6 +1660,7 @@ function Test-PortableNaturalLanguageTaskEvidence {
             $taskText = ConvertTo-SmokeJsonText $task
             $timelineText = ""
             $taskDetailText = ""
+            $completionEvidence = Get-CompletionEvidenceSummary $null
             if ($taskId) {
                 try {
                     $taskDetailText = ConvertTo-SmokeJsonText (Get-SmokeJson -Url "$BackendUrl/api/tasks/$taskId" -DesktopApiToken $DesktopApiToken)
@@ -1622,6 +1674,13 @@ function Test-PortableNaturalLanguageTaskEvidence {
                 catch {
                     $timelineText = ""
                 }
+                try {
+                    $taskExplainPayload = Get-SmokeJson -Url "$BackendUrl/api/tasks/$taskId/explain" -DesktopApiToken $DesktopApiToken
+                    $completionEvidence = Get-CompletionEvidenceSummary $taskExplainPayload
+                }
+                catch {
+                    $completionEvidence = Get-CompletionEvidenceSummary $null
+                }
             }
             $combined = "$taskText $taskDetailText $timelineText"
             if ([regex]::IsMatch($combined, $highRiskPattern)) {
@@ -1631,14 +1690,19 @@ function Test-PortableNaturalLanguageTaskEvidence {
                     Message = "natural-language task $taskId showed high-risk intent instead of read-only diagnostics ($lastObservation)"
                 }
             }
+            $taskObservation = $lastObservation
+            if ($taskId) {
+                $taskObservation = "$lastObservation, relatedTask=$taskId $($completionEvidence.Text)"
+            }
             $taskStatus = [string]$task.status
             if ($taskStatus -notin @("failed", "cancelled") -and [regex]::IsMatch($combined, $readOnlyPattern) -and [regex]::IsMatch($combined, $diagnosticsEvidencePattern)) {
                 return [pscustomobject]@{
                     Ok = $true
                     Status = "pass"
-                    Message = "natural-language prompt created read-only/system diagnostics task $taskId ($lastObservation)"
+                    Message = "natural-language prompt created read-only/system diagnostics task $taskId ($taskObservation)"
                 }
             }
+            $lastObservation = $taskObservation
             $taskSummary = [string]$task.final_summary
             if ($taskStatus -in @("failed", "cancelled") -and $taskSummary -and [regex]::IsMatch($taskSummary, $safeFailurePattern)) {
                 $lastObservation = "$lastObservation, safeFailureTask=$taskId status=$taskStatus"
@@ -1654,6 +1718,7 @@ function Test-PortableNaturalLanguageTaskEvidence {
             $runTimelineText = ""
             $runProgressText = ""
             $runTaskText = ""
+            $completionEvidence = Get-CompletionEvidenceSummary $null
             $runTaskId = [string]$run.task_id
             if ($runId) {
                 try {
@@ -1682,6 +1747,13 @@ function Test-PortableNaturalLanguageTaskEvidence {
                 catch {
                     $runTaskText = "$runTaskText"
                 }
+                try {
+                    $runTaskExplainPayload = Get-SmokeJson -Url "$BackendUrl/api/tasks/$runTaskId/explain" -DesktopApiToken $DesktopApiToken
+                    $completionEvidence = Get-CompletionEvidenceSummary $runTaskExplainPayload
+                }
+                catch {
+                    $completionEvidence = Get-CompletionEvidenceSummary $null
+                }
             }
             $combined = "$runText $runTimelineText $runProgressText $runTaskText"
             if ([regex]::IsMatch($combined, $highRiskPattern)) {
@@ -1691,14 +1763,19 @@ function Test-PortableNaturalLanguageTaskEvidence {
                     Message = "natural-language run $runId showed high-risk intent instead of read-only diagnostics ($lastObservation)"
                 }
             }
+            $runObservation = $lastObservation
+            if ($runTaskId) {
+                $runObservation = "$lastObservation, relatedRunTask=$runTaskId $($completionEvidence.Text)"
+            }
             $runPhase = [string]$run.phase
             if ($runPhase -notin @("failed", "denied", "cancelled", "paused") -and [regex]::IsMatch($combined, $readOnlyPattern) -and [regex]::IsMatch($combined, $diagnosticsEvidencePattern)) {
                 return [pscustomobject]@{
                     Ok = $true
                     Status = "pass"
-                    Message = "natural-language prompt created read-only/system diagnostics run $runId ($lastObservation)"
+                    Message = "natural-language prompt created read-only/system diagnostics run $runId ($runObservation)"
                 }
             }
+            $lastObservation = $runObservation
             $runError = [string]$run.error
             if ($runPhase -in @("failed", "denied", "cancelled", "paused") -and [regex]::IsMatch("$runError $runTimelineText $runProgressText", $safeFailurePattern)) {
                 $lastObservation = "$lastObservation, safeFailureRun=$runId phase=$runPhase"

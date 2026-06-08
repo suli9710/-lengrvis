@@ -20,3 +20,10 @@ runners a documented way to avoid false timeouts.
 
 Do not mark a failing or flaky test as `slow` unless the runtime is inherent to
 the behavior under test and the slow command is kept green.
+
+## Current Workspace Note
+
+As of the 2026-06-08 development handoff, a focused core backend combo recorded
+`183 passed`. Treat that as targeted dirty-worktree evidence for the current
+productization fixes, not a replacement for full backend sign-off or a
+release-candidate `qa:gate`/`release:check` run.

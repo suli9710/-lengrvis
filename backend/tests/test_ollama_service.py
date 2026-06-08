@@ -149,6 +149,102 @@ def test_setup_plan_reports_next_action_for_missing_runtime(monkeypatch):
         assert result["steps"][1]["state"] == "current"
 
 
+def test_setup_plan_clean_machine_no_runtime_no_model_has_safe_verification(monkeypatch, tmp_path: Path, no_bundled_ollama):
+    monkeypatch.setattr(
+        ollama_service,
+        "hardware_readiness",
+        lambda model=None: {
+            "can_install": True,
+            "recommended_model": model or "qwen2.5:3b",
+            "reason": "ready",
+            "checks": [
+                {"key": "memory", "label": "Memory", "ok": True, "actual": "16.0 GB", "required": "8.0 GB"},
+                {"key": "disk", "label": "Free disk space", "ok": True, "actual": "64.0 GB", "required": "8.0 GB"},
+                {"key": "cpu", "label": "CPU cores", "ok": True, "actual": "8", "required": "4"},
+            ],
+        },
+    )
+
+    with patch("shutil.which", return_value=None), \
+         patch.object(ollama_service.os.path, "exists", return_value=False):
+        result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
+
+    evidence = {item["key"]: item for item in result["evidence"]}
+    verification = result["verification"]
+    payload = json.dumps(result)
+
+    assert result["ready"] is False
+    assert result["installed"] is False
+    assert result["running"] is False
+    assert result["has_model"] is False
+    assert result["models"] == []
+    assert result["runtime_source"] == "missing"
+    assert result["bundled_runtime_available"] is False
+    assert result["bundled_models_available"] is False
+    assert result["bundled_model_available"] is False
+    assert result["bundle_manifest"]["present"] is False
+    assert result["next_action"] == "install_runtime"
+    assert result["repair_action"]["code"] == "install_runtime"
+    assert "one-click setup" in result["repair_action"]["detail"]
+    assert verification["ready"] is False
+    assert verification["next_action"] == "install_runtime"
+    assert verification["paths_redacted"] is True
+    assert verification["privacy_fallback"] == "local_only_until_ready"
+    assert verification["runtime"] == {"checked": True, "found": False, "source": "missing", "path": ""}
+    assert verification["model"]["listed"] is False
+    assert verification["model"]["models_seen"] == []
+    assert verification["bundle"]["model_proven"] is False
+    assert verification["bundle"]["manifest_present"] is False
+    assert verification["bundle"]["paths"] == ""
+    assert evidence["runtime"]["ok"] is False
+    assert evidence["runtime"]["path"] == ""
+    assert evidence["model"]["ok"] is False
+    assert evidence["model"]["models_seen"] == []
+    assert evidence["bundle_manifest"]["ok"] is False
+    assert evidence["bundle_manifest"]["path"] == ""
+    assert evidence["bundled_model"]["ok"] is False
+    assert evidence["bundled_model"]["models_path"] == ""
+    assert evidence["bundled_model"]["model_manifest_path"] == ""
+    assert str(tmp_path) not in payload
+    assert str(tmp_path).replace("\\", "\\\\") not in payload
+    assert "C:\\Users" not in payload
+    assert "sk-" not in payload
+
+
+def test_setup_plan_blocks_insufficient_resources_before_runtime_work(monkeypatch, no_bundled_ollama):
+    blocked_readiness = {
+        "can_install": False,
+        "recommended_model": "qwen2.5:3b",
+        "reason": "Local AI setup needs Memory >= 8.0 GB, Free disk space >= 8.0 GB.",
+        "checks": [
+            {"key": "memory", "label": "Memory", "ok": False, "actual": "4.0 GB", "required": "8.0 GB"},
+            {"key": "disk", "label": "Free disk space", "ok": False, "actual": "2.0 GB", "required": "8.0 GB"},
+            {"key": "cpu", "label": "CPU cores", "ok": True, "actual": "8", "required": "4"},
+        ],
+    }
+    monkeypatch.setattr(ollama_service, "hardware_readiness", lambda model=None: blocked_readiness)
+
+    with patch("shutil.which", return_value=None), \
+         patch.object(ollama_service.os.path, "exists", return_value=False):
+        result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
+
+    hardware_evidence = next(item for item in result["evidence"] if item["key"] == "hardware")
+    assert result["ready"] is False
+    assert result["can_install"] is False
+    assert result["next_action"] == "hardware_blocked"
+    assert result["repair_action"]["code"] == "free_resources_for_local_ai"
+    assert "will not silently use cloud or mock AI" in result["repair_action"]["detail"]
+    assert result["verification"]["next_action"] == "hardware_blocked"
+    assert result["verification"]["ready"] is False
+    assert result["steps"][0]["state"] == "blocked"
+    assert result["steps"][1]["state"] == "pending"
+    assert result["steps"][2]["state"] == "pending"
+    assert result["steps"][3]["state"] == "pending"
+    assert hardware_evidence["ok"] is False
+    assert hardware_evidence["failed_checks"] == ["memory", "disk"]
+    assert hardware_evidence["checks"] == blocked_readiness["checks"]
+
+
 def test_setup_plan_ready_when_runtime_and_model_exist(monkeypatch):
     async def _running():
         return True
@@ -344,6 +440,59 @@ def test_setup_plan_accepts_bom_encoded_bundle_manifest(monkeypatch, tmp_path: P
     assert result["bundle_manifest"]["models_sha256"] == "models-hash"
 
 
+def test_setup_plan_redacts_bundle_manifest_string_fields(monkeypatch, tmp_path: Path):
+    runtime_dir = tmp_path / "ollama"
+    models_dir = tmp_path / "ollama-models"
+    manifest_path = tmp_path / "ollama-bundle-manifest.json"
+    model_manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
+    private_manifest = r"C:\Users\Suli\private\models\qwen2.5\3b?token=sk-manifest-secret-1234567890"
+    runtime_dir.mkdir()
+    model_manifest.parent.mkdir(parents=True)
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    model_manifest.write_text("{}", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "model": "qwen2.5:3b",
+                "accepted_licenses": True,
+                "runtime": {"summary": {"sha256": "runtime-hash token=sk-runtime-secret-1234567890", "files": 1}},
+                "models": {"model_manifest": private_manifest, "summary": {"sha256": "models-hash", "files": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
+    monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
+    monkeypatch.setenv("LENGRVIS_OLLAMA_BUNDLE_MANIFEST", str(manifest_path))
+    monkeypatch.setattr(
+        ollama_service,
+        "hardware_readiness",
+        lambda model=None: {
+            "can_install": True,
+            "recommended_model": model or "qwen2.5:3b",
+            "reason": "ready",
+            "checks": [],
+        },
+    )
+
+    with patch("shutil.which", return_value=None), \
+         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False):
+        result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
+
+    payload = json.dumps(result)
+    assert result["bundle_manifest"]["present"] is True
+    assert result["bundle_manifest"]["valid"] is True
+    assert result["bundle_manifest"]["model"] == "qwen2.5:3b"
+    assert "[REDACTED_LOCAL_PATH]" in result["bundle_manifest"]["model_manifest"]
+    assert "sk-manifest-secret-1234567890" not in payload
+    assert "sk-runtime-secret-1234567890" not in payload
+    assert r"C:\Users\Suli" not in payload
+    assert str(tmp_path) not in payload
+    assert str(tmp_path).replace("\\", "\\\\") not in payload
+    assert result["evidence"][4]["value"] == "qwen2.5:3b"
+
+
 def test_ollama_action_error_redacts_paths_urls_and_tokens(monkeypatch):
     monkeypatch.setattr(
         ollama_service,
@@ -535,6 +684,8 @@ def test_assess_hardware_blocks_underpowered_machine():
     )
     assert result["can_install"] is False
     assert len([check for check in result["checks"] if not check["ok"]]) == 3
+    assert result["next_action"] == "hardware_blocked"
+    assert result["repair_action"]["code"] == "free_resources_for_local_ai"
 
 
 def test_assess_hardware_recommends_medium_model_when_resources_allow():
@@ -545,6 +696,8 @@ def test_assess_hardware_recommends_medium_model_when_resources_allow():
     )
     assert result["can_install"] is True
     assert result["recommended_model"] == ollama_service.FALLBACK_MEDIUM_MODEL
+    assert result["next_action"] == "continue_setup"
+    assert result["repair_action"]["code"] == "continue_setup"
 
 
 @pytest.mark.asyncio
@@ -566,8 +719,12 @@ async def test_install_local_model_stops_when_hardware_not_ready(monkeypatch):
     assert results[0]["phase"] == "hardware"
     assert results[0]["status"] == "error"
     assert results[0]["error"] == "not enough memory"
+    assert results[0]["model"] == "qwen2.5:3b"
+    assert results[0]["next_action"] == "hardware_blocked"
     assert results[0]["repair_action"]["code"] == "free_resources_for_local_ai"
     assert "will not silently use cloud or mock AI" in results[0]["repair_action"]["detail"]
+    assert results[0]["verification"]["next_action"] == "hardware_blocked"
+    assert results[0]["verification"]["ready"] is False
     assert any(item["key"] == "hardware" and item["ok"] is False for item in results[0]["evidence"])
 
 
@@ -624,6 +781,42 @@ async def test_install_local_model_stops_on_pull_error(monkeypatch, no_bundled_o
     assert results[-1]["status"] == "error"
     assert results[-1]["error"] == "network down"
     assert results[-1]["repair_action"]["code"] == "download_model"
+    assert not any(item.get("phase") == "switch" for item in results)
+
+
+@pytest.mark.asyncio
+async def test_install_local_model_verifies_model_is_listed_after_pull_success(monkeypatch, no_bundled_ollama):
+    monkeypatch.setattr(
+        ollama_service,
+        "hardware_readiness",
+        lambda model=None: {
+            "can_install": True,
+            "recommended_model": model or "qwen2.5:3b",
+            "reason": "ready",
+            "checks": [],
+        },
+    )
+
+    async def _pull_success(model=None):
+        yield {"status": "success", "model": model or "qwen2.5:3b"}
+
+    with patch.object(ollama_service, "is_installed", return_value=True), \
+         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
+         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]) as list_models, \
+         patch.object(ollama_service, "pull_model_streaming", side_effect=_pull_success):
+        results = []
+        async for progress in ollama_service.install_local_model("qwen2.5:3b"):
+            results.append(progress)
+
+    assert list_models.await_count >= 2
+    assert results[-1]["phase"] == "pull"
+    assert results[-1]["status"] == "error"
+    assert results[-1]["next_action"] == "download_model"
+    assert results[-1]["repair_action"]["code"] == "download_model"
+    assert "did not list the model after refresh" in results[-1]["error"]
+    assert results[-1]["verification"]["ready"] is False
+    assert results[-1]["verification"]["model"]["listed"] is False
+    assert any(item["key"] == "model" and item["ok"] is False for item in results[-1]["evidence"])
     assert not any(item.get("phase") == "switch" for item in results)
 
 

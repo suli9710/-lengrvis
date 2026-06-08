@@ -20,6 +20,7 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
     monkeypatch.delenv("LENGRVIS_TASK_RECORDING_FORCE", raising=False)
+    monkeypatch.setattr(system_service, "diagnostics", lambda: _fake_system_diagnostics())
     db.init_db()
     record("diagnostics.ready", "pytest", {"ok": True})
     failed_task = Task(user_goal="diagnostic failure sample", status=TaskPhase.FAILED, phase=TaskPhase.FAILED)
@@ -72,6 +73,22 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
     assert payload["recent_failure_counts"]["tool_results_failed"] == 1
     assert payload["lan_transport"]["status"] == "http_lan_insecure"
     assert payload["lan_transport"]["tls_ready"] is False
+    redaction = payload["support_package_redaction"]
+    assert redaction["schema_version"] == 1
+    assert redaction["applies_to"] == "diagnostics_export_payload"
+    assert redaction["scope"] == "local_only"
+    assert redaction["intended_audience"] == "trusted_support"
+    assert redaction["public_safe"] is False
+    assert redaction["review_before_external_sharing"] is True
+    assert redaction["current_response"] == {
+        "public_safe": False,
+        "contains_local_paths": True,
+        "external_review_required": True,
+    }
+    _assert_current_response_contract(redaction, contains_local_paths=True)
+    assert redaction["full_local_paths_removed"] is False
+    assert redaction["export_full_local_paths_removed"] is True
+    _assert_support_package_review_metadata(redaction)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     assert "自动更新已完成" not in encoded
     assert "auto_update_completed" not in encoded
@@ -83,6 +100,7 @@ def test_system_diagnostics_task_recording_defaults_disabled(monkeypatch, tmp_pa
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
     monkeypatch.delenv("LENGRVIS_TASK_RECORDING_FORCE", raising=False)
+    monkeypatch.setattr(system_service, "diagnostics", lambda: _fake_system_diagnostics())
     db.init_db()
 
     response = TestClient(create_app()).get("/api/system/diagnostics")
@@ -97,6 +115,7 @@ def test_system_diagnostics_task_recording_force_ignored_outside_test_environmen
     monkeypatch.setenv("LENGRVIS_TASK_RECORDING_FORCE", "1")
     monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
     monkeypatch.setattr(task_recording_service, "_is_test_environment", lambda: False)
+    monkeypatch.setattr(system_service, "diagnostics", lambda: _fake_system_diagnostics())
     db.init_db()
 
     response = TestClient(create_app()).get("/api/system/diagnostics")
@@ -109,6 +128,7 @@ def test_system_diagnostics_task_recording_env_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     monkeypatch.setenv("LENGRVIS_TASK_RECORDING_ENABLED", "true")
+    monkeypatch.setattr(system_service, "diagnostics", lambda: _fake_system_diagnostics())
     db.init_db()
 
     response = TestClient(create_app()).get("/api/system/diagnostics")
@@ -121,6 +141,7 @@ def test_system_diagnostics_include_anonymous_product_funnel(monkeypatch, tmp_pa
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
     monkeypatch.setenv("LENGRVIS_API_KEY", "sk-diagnostic-secret")
+    monkeypatch.setattr(system_service, "diagnostics", lambda: _fake_system_diagnostics())
     model_path = tmp_path / "models" / "sk-local-model-path" / "model.onnx"
     model_path.parent.mkdir(parents=True)
     model_path.write_bytes(b"placeholder")
@@ -212,6 +233,7 @@ def test_system_diagnostics_include_lan_tls_readiness(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
     monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     monkeypatch.setenv("LENGRVIS_LAN_PUBLIC_BASE_URL", "https://lengrvis.local:8443")
+    monkeypatch.setattr(system_service, "diagnostics", lambda: _fake_system_diagnostics())
     db.init_db()
 
     response = TestClient(create_app()).get("/api/system/diagnostics")
@@ -338,10 +360,17 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert set(("info", "disks", "network", "battery", "top_processes", "suggestions")).issubset(diagnostics)
     redaction = diagnostics["support_package_redaction"]
     assert redaction["schema_version"] == 1
+    assert redaction["applies_to"] == "diagnostics_export_payload"
     assert redaction["scope"] == "local_only"
     assert redaction["intended_audience"] == "trusted_support"
     assert redaction["public_safe"] is False
     assert redaction["review_before_external_sharing"] is True
+    assert redaction["current_response"] == {
+        "public_safe": False,
+        "contains_local_paths": False,
+        "external_review_required": True,
+    }
+    _assert_current_response_contract(redaction, contains_local_paths=False)
     _assert_support_package_review_metadata(redaction)
     assert redaction["local_paths"] == "redacted_to_path_labels"
     assert redaction["local_path_labels"] == {
@@ -359,6 +388,7 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert redaction["task_recording"] == "status_only_no_images_or_file_names"
     assert redaction["release_notes_path"] == "redacted_to_path_label_when_present"
     assert redaction["full_local_paths_removed"] is True
+    assert redaction["export_full_local_paths_removed"] is True
     assert "原始日志" in redaction["guidance"]
     assert "外发前需要单独检查" in redaction["guidance"]
     assert diagnostics["top_processes"][0]["username"] == "[redacted:local_user]"
@@ -633,10 +663,19 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
 
 def _assert_support_package_review_metadata(redaction: dict):
     external_review = redaction["external_review"]
+    assert redaction["review_status"] == "manual_review_required"
+    assert redaction["review_required"] is True
+    assert redaction["external_sharing_allowed"] is False
+    assert redaction["fail_closed"] is True
     assert external_review["schema_version"] == 1
     assert external_review["status"] == "manual_review_required"
+    assert external_review["review_status"] == "manual_review_required"
+    assert external_review["review_required"] is True
     assert external_review["required_before_external_sharing"] is True
     assert external_review["public_safe"] is False
+    assert external_review["external_sharing_allowed"] is False
+    assert external_review["fail_closed"] is True
+    assert external_review["machine_decision"] == "block_external_sharing_until_manual_review"
     checklist = external_review["checklist"]
     assert isinstance(checklist, list)
     assert {item["id"] for item in checklist} == {
@@ -652,6 +691,49 @@ def _assert_support_package_review_metadata(redaction: dict):
     assert any(item["status"] == "pending" for item in checklist)
     assert any(item["status"] == "requires_reviewer_confirmation" for item in checklist)
     assert any(item["status"] == "automated_redaction_applied" for item in checklist)
+    expected_summary = {
+        "total": 6,
+        "required": 6,
+        "required_pending": 2,
+        "all_required_have_status": True,
+        "status_counts": {
+            "requires_reviewer_confirmation": 1,
+            "export_metadata_only": 1,
+            "automated_redaction_applied": 3,
+            "pending": 1,
+        },
+    }
+    assert external_review["checklist_summary"] == expected_summary
+    assert redaction["checklist_summary"] == expected_summary
+
+
+def _assert_current_response_contract(redaction: dict, *, contains_local_paths: bool):
+    assert redaction["current_response_contract"] == {
+        "schema_version": 1,
+        "response_kind": "diagnostics_get_response" if contains_local_paths else "diagnostics_export_payload",
+        "public_safe": False,
+        "contains_local_paths": contains_local_paths,
+        "local_path_state": "full_local_paths_present" if contains_local_paths else "path_labels_only",
+        "review_status": "manual_review_required",
+        "review_required": True,
+        "external_sharing_allowed": False,
+        "machine_decision": "block_external_sharing_until_manual_review",
+    }
+
+
+def _fake_system_diagnostics() -> dict:
+    return {
+        "info": {
+            "memory_total": 1024,
+            "memory_available": 768,
+        },
+        "disks": [],
+        "network": {},
+        "battery": None,
+        "top_processes": [],
+        "local_ai": {"scope": "local_only"},
+        "suggestions": ["No critical system issue detected from read-only diagnostics."],
+    }
 
 
 def _assert_task_recording_status(payload: dict, *, enabled: bool, env_override: str):

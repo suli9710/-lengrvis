@@ -84,6 +84,17 @@ def test_skill_catalog_exposes_manifest_fields_for_product_manifest_cards(test_d
     ]
     assert tool["supports_dry_run"] is True
     assert tool["requires_authorized_path"] is True
+    assert tool["smoke_tests"] == [
+        {
+            "name": "product-manifest-boundaries-preview",
+            "description": "Dry-run preview lists file read/write, UI, network, messaging, delete, and rollback or handoff boundaries.",
+            "has_args": True,
+            "arg_keys": ["dry_run", "endpoint", "message", "path"],
+            "expected_keys": ["dry_run", "ok"],
+        }
+    ]
+    assert "sample.txt" not in str(catalog)
+    assert "https://example.invalid/webhook" not in str(catalog)
     assert "Preview must list" in tool["rollback_hint"]
 
 

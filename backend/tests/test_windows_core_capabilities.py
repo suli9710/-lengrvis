@@ -15,7 +15,8 @@ from app.policy.approval_binding import args_binding_hmac, permission_policy_ver
 from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
-from app.tools import app_tools, browser_tools, search_tools, system_tools
+from app.services import system_service
+from app.tools import app_tools, browser_tools, search_tools, system_tools, ui_automation_tools
 
 
 def _init_test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: str) -> None:
@@ -162,12 +163,18 @@ def test_app_open_authorized_file_and_folder_dry_run(monkeypatch, tmp_path):
     assert folder_result == {"ok": True, "dry_run": True, "path": str(workspace.resolve())}
 
 
-def test_system_diagnostics_startup_and_settings_dry_run():
+def test_system_diagnostics_startup_and_settings_dry_run(monkeypatch):
+    monkeypatch.setattr(system_tools, "get_info", lambda args, context: {"memory_total": 1024, "memory_available": 768})
+    monkeypatch.setattr(system_tools, "get_disks", lambda args, context: {"disks": []})
+    monkeypatch.setattr(system_tools, "get_network", lambda args, context: {"network": {}})
+    monkeypatch.setattr(system_tools, "get_battery", lambda args, context: {"battery": None})
+    monkeypatch.setattr(system_tools, "get_processes", lambda args, context: {"processes": []})
     diagnostics = system_tools.diagnostics({}, {})
     startup = system_tools.get_startup_items({}, {})
     settings = system_tools.open_settings_uri({"uri": "ms-settings:display", "dry_run": True}, {})
 
     assert {"info", "disks", "network", "battery", "top_processes", "suggestions"}.issubset(diagnostics)
+    assert diagnostics["local_ai"]["probe_mode"] == "summary_only"
     assert isinstance(startup["startup_items"], list)
     assert settings == {"ok": True, "dry_run": True, "uri": "ms-settings:display"}
 
@@ -223,6 +230,23 @@ def test_search_query_delegates_to_browser_gate(monkeypatch, tmp_path):
 
 def test_public_api_routes_expose_windows_core(monkeypatch, tmp_path):
     _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOW_BROWSER_NETWORK="false")
+    monkeypatch.setattr(
+        system_service,
+        "diagnostics",
+        lambda: {
+            "info": {"memory_total": 1024, "memory_available": 768},
+            "disks": [],
+            "network": {},
+            "battery": None,
+            "top_processes": [],
+            "local_ai": {"scope": "local_only", "probe_mode": "summary_only"},
+            "suggestions": ["No critical system issue detected from read-only diagnostics."],
+        },
+    )
+    monkeypatch.setattr(system_service, "processes", lambda limit=25: {"processes": [], "count": 0})
+    monkeypatch.setattr(system_service, "startup_items", lambda: {"startup_items": [], "count": 0})
+    monkeypatch.setattr(ui_automation_tools, "active_window", lambda args, context: {"ok": True, "title": "Test Window"})
+    monkeypatch.setattr(ui_automation_tools, "observe", lambda args, context: {"ok": True, "elements": []})
     client = TestClient(create_app())
 
     assert client.get("/api/apps").status_code == 200

@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,74 @@ class FTSIndex:
     def __init__(self, *, embedder: Embedder | None = None, embedding_batch_size: int = 64) -> None:
         self.embedder = embedder
         self.embedding_batch_size = max(1, embedding_batch_size)
+
+    def status(self, allowed_directories: list[str] | None = None) -> dict[str, Any]:
+        db.init_db()
+        allowed_roots = _normalized_allowed_roots(allowed_directories or [])
+        if not allowed_roots:
+            return {
+                "status": "missing_scope",
+                "files_indexed": 0,
+                "chunks_indexed": 0,
+                "embeddings_indexed": 0,
+                "bytes_indexed": 0,
+                "last_indexed_at": "",
+                "last_modified_at": "",
+                "latest_failure": None,
+                "retry_hint": _index_status_retry_hint("missing_scope"),
+            }
+
+        with db.connect() as conn:
+            index_rows = conn.execute(
+                """
+                SELECT id, normalized_path, size, indexed_at, modified_at
+                FROM indexed_files
+                """
+            ).fetchall()
+            failure_rows = conn.execute(
+                """
+                SELECT data, created_at
+                FROM audit_events
+                WHERE event_type = ?
+                ORDER BY created_at DESC, sequence DESC, id DESC
+                """,
+                ("index.embedding_failed",),
+            ).fetchall()
+
+        scoped_rows = [row for row in index_rows if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)]
+        scoped_file_ids = [str(row["id"]) for row in scoped_rows]
+        chunks_indexed = 0
+        embeddings_indexed = 0
+        if scoped_file_ids:
+            scoped_file_id_set = set(scoped_file_ids)
+            with db.connect() as conn:
+                chunk_rows = conn.execute("SELECT file_id, COUNT(*) AS count FROM document_chunks GROUP BY file_id").fetchall()
+                embedding_rows = conn.execute(
+                    "SELECT file_id, COUNT(*) AS count FROM document_chunk_embeddings GROUP BY file_id"
+                ).fetchall()
+            chunks_indexed = sum(int(row["count"] or 0) for row in chunk_rows if str(row["file_id"]) in scoped_file_id_set)
+            embeddings_indexed = sum(int(row["count"] or 0) for row in embedding_rows if str(row["file_id"]) in scoped_file_id_set)
+
+        files_indexed = len(scoped_rows)
+        bytes_indexed = sum(int(row["size"] or 0) for row in scoped_rows)
+        last_indexed_at = max((str(row["indexed_at"] or "") for row in scoped_rows), default="")
+        last_modified_at = max((str(row["modified_at"] or "") for row in scoped_rows), default="")
+        latest_failure = _latest_index_failure(failure_rows, allowed_roots)
+        status = "empty" if files_indexed <= 0 else "ready"
+        if latest_failure is not None and status == "ready" and _timestamp_after(latest_failure["at"], last_indexed_at):
+            status = "degraded"
+
+        return {
+            "status": status,
+            "files_indexed": files_indexed,
+            "chunks_indexed": chunks_indexed,
+            "embeddings_indexed": embeddings_indexed,
+            "bytes_indexed": bytes_indexed,
+            "last_indexed_at": last_indexed_at,
+            "last_modified_at": last_modified_at,
+            "latest_failure": latest_failure,
+            "retry_hint": _index_status_retry_hint(status),
+        }
 
     def rebuild(self, allowed_directories: list[str]) -> dict[str, Any]:
         started = time.perf_counter()
@@ -392,3 +461,81 @@ class SearchIndex:
 
     def search(self, query: str) -> list[dict[str, str]]:
         return [{"path": path, "text": text} for path, text in self.docs if query.lower() in text.lower()]
+
+
+def _normalized_allowed_roots(allowed_directories: list[str]) -> list[Path]:
+    roots: list[Path] = []
+    for raw_root in allowed_directories:
+        if not str(raw_root).strip():
+            continue
+        try:
+            roots.append(Path(raw_root).expanduser().resolve(strict=False))
+        except OSError:
+            continue
+    return roots
+
+
+def _path_within_roots(path: str, roots: list[Path]) -> bool:
+    if not path:
+        return False
+    try:
+        resolved = Path(path).expanduser().resolve(strict=False)
+    except OSError:
+        return False
+    for root in roots:
+        if resolved == root or root in resolved.parents:
+            return True
+    return False
+
+
+def _latest_index_failure(rows: list[Any], allowed_roots: list[Path]) -> dict[str, str] | None:
+    for row in rows:
+        try:
+            data = json.loads(row["data"])
+        except (TypeError, ValueError, KeyError):
+            data = {}
+        payload = data.get("payload") if isinstance(data, dict) else {}
+        payload = payload if isinstance(payload, dict) else {}
+        path = str(payload.get("path") or "")
+        if not _path_within_roots(path, allowed_roots):
+            continue
+        message = _safe_index_failure_message(payload.get("error"))
+        return {
+            "at": str(row["created_at"] or data.get("created_at") or ""),
+            "path_label": Path(path).name,
+            "message": message,
+        }
+    return None
+
+
+def _safe_index_failure_message(value: Any) -> str:
+    message = str(value or "").strip()
+    if not message:
+        return "Indexing could not finish semantic embeddings."
+    lowered = message.lower()
+    if any(marker in lowered for marker in ("token", "secret", "password", "api key", "apikey")):
+        return "Indexing failed recently; details were redacted."
+    if "\\" in message or "/" in message or "://" in message:
+        return "Indexing failed recently; path details were redacted."
+    return message[:180]
+
+
+def _index_status_retry_hint(status: str) -> str:
+    if status == "missing_scope":
+        return "Choose an authorized folder before indexing or searching files."
+    if status == "empty":
+        return "The content index is empty. File-name search still scans live files; rebuild the index to search inside documents."
+    if status == "degraded":
+        return "The content index is usable, but semantic indexing failed recently. Retry rebuild after the local embedding service recovers."
+    return ""
+
+
+def _timestamp_after(left: str, right: str) -> bool:
+    if not right:
+        return True
+    try:
+        left_at = datetime.fromisoformat(left)
+        right_at = datetime.fromisoformat(right)
+    except ValueError:
+        return True
+    return left_at >= right_at

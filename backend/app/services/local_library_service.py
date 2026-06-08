@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse
 
 from app.core.paths import resolve_authorized
+from app.indexer.fts_index import FTSIndex
 from app.llm.registry import get_effective_settings
 from app.security.desktop_api import signed_desktop_resource_query
 
@@ -133,6 +134,7 @@ def list_local_library(section: str = "gallery", query: str = "", limit: int = 2
             or scan_budget.item_limited
         ),
         "stats": _stats(limited_items),
+        "index_status": FTSIndex().status(settings.allowed_directories),
     }
 
 

@@ -12,6 +12,30 @@ from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.task_recording_service import persist_recording_frame
 
 
+def _assert_completion_evidence_shape(completion_evidence):
+    assert set(completion_evidence) == {"level", "result_verified", "result_artifacts", "missing", "signoff"}
+    assert completion_evidence["level"] in {
+        "submission",
+        "task_created",
+        "visible_progress",
+        "completed_result",
+        "safe_failure",
+    }
+    assert isinstance(completion_evidence["result_verified"], bool)
+    assert isinstance(completion_evidence["result_artifacts"], list)
+    assert isinstance(completion_evidence["missing"], list)
+    assert completion_evidence["signoff"] is False
+    for item in completion_evidence["result_artifacts"]:
+        assert {"kind", "label", "redacted"}.issubset(item)
+        if "count" in item:
+            assert isinstance(item["count"], int)
+        assert item["redacted"] is True
+
+
+def _completion_counts(completion_evidence):
+    return {item["kind"]: item.get("count", 1) for item in completion_evidence["result_artifacts"]}
+
+
 def test_task_replay_fetches_results_for_current_task_beyond_global_recent_limit(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -391,10 +415,144 @@ def test_task_evidence_summary_and_boundary_payloads_are_public_safe(monkeypatch
     assert agent_messages.json()[0]["redacted"] is True
     assert task_payload.json()["metadata"] == {"redacted": True, "field_count": 4}
     assert listed["metadata"] == {"redacted": True, "field_count": 4}
+    completion_evidence_surfaces = [
+        task_payload.json()["completion_evidence"],
+        listed["completion_evidence"],
+        replay.json()["task"]["completion_evidence"],
+        timeline.json()["evidence_summary"]["completion_evidence"],
+        explain.json()["completion_evidence"],
+    ]
+    for completion_evidence in completion_evidence_surfaces:
+        _assert_completion_evidence_shape(completion_evidence)
+        assert completion_evidence["level"] == "safe_failure"
+        assert completion_evidence["result_verified"] is False
+        assert "unblocked result review" in completion_evidence["missing"]
+    completion_kinds = set(_completion_counts(explain.json()["completion_evidence"]))
+    assert {"tool_result", "final_summary", "safe_failure"}.issubset(completion_kinds)
+    completion_dump = json.dumps(completion_evidence_surfaces, ensure_ascii=False)
+    assert secret_token not in completion_dump
+    assert hidden_prompt not in completion_dump
+    assert file_body not in completion_dump
+    assert "ordinary sensitive business prose" not in completion_dump
+    assert "C:/Users/example/private.txt" not in completion_dump
+    assert "file.read_text" not in completion_dump
+    assert "tool_result_public_safe" not in completion_dump
+    assert "recordings/screen-" not in completion_dump
     assert replay.json()["raw_redacted"] is True
     assert replay.json()["tool_calls"][0]["args"]["redacted"] is True
     assert all(result["redacted"] is True for result in replay.json()["tool_results"])
     assert timeline.json()["evidence_summary"]["counts"]["items_needing_attention"] >= 1
+
+
+def test_task_payload_completion_evidence_does_not_verify_tool_result_without_final_summary(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    secret_token = "route-success-token-1234567890"
+    private_path = "C:/Users/example/route-private.txt"
+    task = Task(id="task_route_completion_evidence", user_goal="Read route result", status="completed")
+    tool_call = ToolCall(
+        id="tool_route_completion_evidence",
+        task_id=task.id,
+        step_id="step_1",
+        tool_name="file.read_text",
+        args={"path": private_path, "token": secret_token},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        dry_run=False,
+        status="succeeded",
+    )
+    db.upsert_model("tasks", task)
+    db.upsert_model("tool_calls", tool_call)
+    db.upsert_model(
+        "tool_results",
+        ToolResult(
+            id="result_route_completion_evidence",
+            tool_call_id=tool_call.id,
+            ok=True,
+            output={"path": private_path, "text": f"private route body {secret_token}"},
+            observation=f"Read {private_path} with token {secret_token}.",
+        ),
+    )
+
+    client = TestClient(app)
+    detail = client.get(f"/api/tasks/{task.id}")
+    listed = client.get("/api/tasks")
+
+    assert detail.status_code == 200
+    assert listed.status_code == 200
+    listed_task = next(item for item in listed.json() if item["id"] == task.id)
+    for payload in (detail.json(), listed_task):
+        completion_evidence = payload["completion_evidence"]
+        _assert_completion_evidence_shape(completion_evidence)
+        assert completion_evidence["level"] == "visible_progress"
+        assert completion_evidence["result_verified"] is False
+        assert "completed result evidence" in completion_evidence["missing"]
+        assert _completion_counts(completion_evidence) == {"tool_result": 1}
+        assert payload["evidence_summary"]["completion_evidence"] == completion_evidence
+    public_dump = json.dumps([detail.json()["completion_evidence"], listed_task["completion_evidence"]], ensure_ascii=False)
+    assert private_path not in public_dump
+    assert secret_token not in public_dump
+    assert "file.read_text" not in public_dump
+    assert tool_call.id not in public_dump
+
+
+def test_task_payload_completion_evidence_verifies_tool_result_with_final_summary_publicly(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    secret_token = "route-success-token-1234567890"
+    private_path = "C:/Users/example/route-private.txt"
+    task = Task(
+        id="task_route_completion_evidence_with_summary",
+        user_goal="Read route result",
+        status="completed",
+        final_summary="Route result was read.",
+    )
+    tool_call = ToolCall(
+        id="tool_route_completion_evidence_with_summary",
+        task_id=task.id,
+        step_id="step_1",
+        tool_name="file.read_text",
+        args={"path": private_path, "token": secret_token},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        dry_run=False,
+        status="succeeded",
+    )
+    db.upsert_model("tasks", task)
+    db.upsert_model("tool_calls", tool_call)
+    db.upsert_model(
+        "tool_results",
+        ToolResult(
+            id="result_route_completion_evidence_with_summary",
+            tool_call_id=tool_call.id,
+            ok=True,
+            output={"path": private_path, "text": f"private route body {secret_token}"},
+            observation=f"Read {private_path} with token {secret_token}.",
+        ),
+    )
+
+    client = TestClient(app)
+    detail = client.get(f"/api/tasks/{task.id}")
+    listed = client.get("/api/tasks")
+
+    assert detail.status_code == 200
+    assert listed.status_code == 200
+    listed_task = next(item for item in listed.json() if item["id"] == task.id)
+    for payload in (detail.json(), listed_task):
+        completion_evidence = payload["completion_evidence"]
+        _assert_completion_evidence_shape(completion_evidence)
+        assert completion_evidence["level"] == "completed_result"
+        assert completion_evidence["result_verified"] is True
+        assert completion_evidence["missing"] == []
+        assert _completion_counts(completion_evidence) == {"tool_result": 1, "final_summary": 1}
+        assert payload["evidence_summary"]["completion_evidence"] == completion_evidence
+    public_dump = json.dumps([detail.json()["completion_evidence"], listed_task["completion_evidence"]], ensure_ascii=False)
+    assert private_path not in public_dump
+    assert secret_token not in public_dump
+    assert "file.read_text" not in public_dump
+    assert tool_call.id not in public_dump
 
 
 def test_tasks_list_batches_boundary_events(monkeypatch, tmp_path):

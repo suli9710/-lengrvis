@@ -128,6 +128,19 @@ def test_skill_route_imports_product_manifest_showcase_into_real_catalog(
     assert tool["entry"] == "handlers/intent.py"
     assert {"path", "message", "endpoint", "dry_run"}.issubset(tool["input_schema"]["properties"])
     assert tool["input_schema"]["required"] == ["path", "message"]
+    assert tool["smoke_tests"] == [
+        {
+            "name": "product-manifest-boundaries-preview",
+            "description": "Dry-run preview lists file read/write, UI, network, messaging, delete, and rollback or handoff boundaries.",
+            "has_args": True,
+            "arg_keys": ["dry_run", "endpoint", "message", "path"],
+            "expected_keys": ["dry_run", "ok"],
+        }
+    ]
+    rendered = list_response.text
+    assert "sample.txt" not in rendered
+    assert "https://example.invalid/webhook" not in rendered
+    assert '"message":"hello"' not in rendered
     assert "Preview must list each file, UI, network, messaging, and delete operation" in tool["rollback_hint"]
     assert "hand off to the user" in tool["rollback_hint"]
 

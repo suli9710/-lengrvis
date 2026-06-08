@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   CleanupPlan,
   TaskBoundaryEvent,
+  TaskCompletionEvidenceStatus,
   TaskEvent,
   TaskExplain,
   TaskExplainEvidence,
@@ -505,6 +506,7 @@ function formatBytes(bytes?: number): string {
 }
 
 function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; taskId: string | null; onClose: () => void }) {
+  const completionEvidence = explain.finalResult.completionEvidence;
   return (
     <div className="modal-backdrop" role="presentation">
       <div className="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="explain-title">
@@ -534,6 +536,23 @@ function ExplainDialog({ explain, taskId, onClose }: { explain: TaskExplain; tas
               <span className="muted">数据来源</span>
               <span>{formatSources(explain.dataSources)}</span>
             </div>
+            <div>
+              <span className="muted">结果证据</span>
+              <Badge tone={completionEvidenceTone(completionEvidence.status)}>
+                {completionEvidenceLabel(completionEvidence.status)}
+              </Badge>
+            </div>
+          </div>
+
+          <div className={`explain-result-evidence explain-result-evidence--${completionEvidence.status}`}>
+            <div className="row row--between">
+              <strong>结果证据状态</strong>
+              <Badge tone={completionEvidenceTone(completionEvidence.status)}>
+                {completionEvidenceLabel(completionEvidence.status)}
+              </Badge>
+            </div>
+            <p>{completionEvidence.summary}</p>
+            <span>{completionEvidence.privacyNote ?? "仅展示证据状态，不展示原始证据内容。"}</span>
           </div>
 
           <div className="explain-chain">
@@ -624,6 +643,25 @@ function formatSources(sources: Record<string, number>) {
   return Object.entries(sources)
     .map(([name, count]) => `${name}: ${count}`)
     .join(" / ");
+}
+
+function completionEvidenceLabel(status: TaskCompletionEvidenceStatus): string {
+  const labels: Record<TaskCompletionEvidenceStatus, string> = {
+    unverified: "未验证",
+    task_evidence_only: "仅任务证据",
+    visible_progress: "可见进度",
+    safe_failure: "安全失败",
+    verified_completed_result: "最终结果已验证"
+  };
+  return labels[status];
+}
+
+function completionEvidenceTone(status: TaskCompletionEvidenceStatus): "neutral" | "success" | "warning" | "danger" | "info" {
+  if (status === "verified_completed_result") return "success";
+  if (status === "safe_failure") return "danger";
+  if (status === "visible_progress") return "info";
+  if (status === "task_evidence_only") return "warning";
+  return "neutral";
 }
 
 function boundaryKindLabel(kind: string) {
