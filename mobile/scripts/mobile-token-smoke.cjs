@@ -46,10 +46,17 @@ function assertPairScreenBeginnerCopy() {
   assert.match(source, /useCameraPermissions/);
   assert.match(source, /onBarcodeScanned/);
   assert.match(source, /parsePairingPayload\(result\.data\)/);
+  assert.match(source, /barcodeScannerSettings=\{\{ barcodeTypes: \["qr"\] \}\}/);
   assert.match(source, /打开相机扫码/);
+  assert.match(source, /accessibilityLabel="打开相机扫码"/);
+  assert.match(source, /accessibilityRole="alert"/);
   assert.match(source, /粘贴电脑端二维码内容或配对信息/);
   assert.match(source, /扫码失败时也可以直接粘贴/);
+  assert.match(source, /没有识别到 Lengrvis 配对二维码/);
+  assert.match(source, /需要在系统设置打开相机/);
+  assert.match(source, /输入电脑地址和 6 位配对码/);
   assert.match(source, /等待 HTTPS\/WSS 配对信息/);
+  assert.match(source, /重新生成配对码/);
   assert.match(source, /需要启用 HTTPS\/WSS/);
   assert.doesNotMatch(source, /不会打开相机|没有相机扫码组件|真机相机扫码仍未内置/);
 }
@@ -214,6 +221,27 @@ async function main() {
     assert.equal(httpsPayloadState.status, "ready");
     assert.equal(httpsPayloadState.canPair, true);
     assert.equal(httpsPayloadState.security.webSocketProtocol, "wss:");
+
+    const expiredPayloadState = pairingPayload.classifyPairingPayloadSecurity(
+      {
+        baseUrl: "https://lengrvis.local:8443",
+        expiresAt: "2026-06-01T00:05:00.000Z",
+      },
+      Date.parse("2026-06-01T00:06:00.000Z"),
+    );
+    assert.equal(expiredPayloadState.status, "expired");
+    assert.equal(expiredPayloadState.canPair, false);
+    assert.equal(expiredPayloadState.security.kind, "https");
+
+    const freshPayloadState = pairingPayload.classifyPairingPayloadSecurity(
+      {
+        baseUrl: "https://lengrvis.local:8443",
+        expiresAt: "2026-06-01T00:05:00.000Z",
+      },
+      Date.parse("2026-06-01T00:04:00.000Z"),
+    );
+    assert.equal(freshPayloadState.status, "ready");
+    assert.equal(freshPayloadState.canPair, true);
 
     const lanPayloadState = pairingPayload.classifyPairingPayloadSecurity({
       baseUrl: "http://192.168.1.20:8000",

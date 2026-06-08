@@ -17,13 +17,7 @@ Cadence: Re-check every 10 minutes. Remove an issue when the current worktree pr
 
 ## Open Issues
 
-### TEST-BACKEND-001 - P3 - Backend suite exceeds common 5-minute timeout
-
-- Location: `C:\Users\Suli\Desktop\mavris\backend\tests`
-- Problem: The full backend test suite can pass but exceed a 5-minute runner timeout.
-- Evidence: The backend test agent's first `python -m pytest backend/tests --maxfail=20` run timed out around 303 seconds, while the follow-up full run completed successfully with `1357 passed, 1 skipped in 336.14s`. Latest re-check: `python -m pytest backend/tests -q --maxfail=1 -m "not slow"` was still running after 326.4 seconds and had only reached 95% before the review-owned process was stopped; the earlier slow subset check passed with 7 passed and 1363 deselected in 4.38s.
-- Impact: Default 5-minute CI/tool runners can falsely report backend failure despite a green suite.
-- Resolution check: The backend suite completes under the intended CI/tool timeout, or slow diagnostics/integration tests are split or marked with a documented longer command.
+No open issues after the latest 2026-06-08 10-minute re-check.
 
 ## Re-check Log
 
@@ -42,3 +36,11 @@ Cadence: Re-check every 10 minutes. Remove an issue when the current worktree pr
 - 2026-06-08 16:42 +08:00 re-check removed TEST-BACKEND-002 and RELEASE-001 through RELEASE-006. Evidence: guardian pairing targeted test passed; `scripts\build_all.ps1` was verified in an isolated stub workspace to exit 47 after a failing `run_tests.ps1` without creating the backend build marker; `scripts\build_all_verify_gate_smoke.ps1`, `scripts\prepare_ollama_release_smoke.ps1`, `scripts\verify_packaging_ollama_smoke.ps1`, and `scripts\create_self_extracting_exe_smoke.ps1` passed; backend packaging dependency tests passed; setup_dev now installs mobile dependencies; packaging verifier copy now says structural PE/header/resource preflight without GUI launch. Retained TEST-BACKEND-001 because `python -m pytest backend/tests -q --maxfail=1 -m "not slow"` still timed out after about 308 seconds, though the slow subset passed. 1 open issue remains.
 - 2026-06-08 16:50 +08:00 re-check retained TEST-BACKEND-001. A background `python -m pytest backend/tests -q --maxfail=1 -m "not slow"` run was still active at 326.4 seconds, with stdout showing progress through 95% and no stderr; the review-owned process was stopped after exceeding the 5-minute budget. 1 open issue remains.
 - 2026-06-08 16:50 +08:00 cadence updated from every 5 minutes to every 10 minutes after the active goal objective changed; the thread heartbeat automation was updated to `FREQ=MINUTELY;INTERVAL=10`.
+- 2026-06-08 17:00 +08:00 re-check removed TEST-BACKEND-001 after expanding the slow split to include full local diagnostic/evaluation flows and verifying both runners: `python -m pytest backend/tests -q -m slow` reported 24 passed and 1346 deselected in 84.30s, while `python -m pytest backend/tests -q --maxfail=1 -m "not slow"` reported 1345 passed, 1 skipped, and 24 deselected in 246.80s. 0 open issues remain.
+- 2026-06-08 17:01 +08:00 continuation re-check confirmed there are no `###` open issue entries in this file, `git status --short` only reports this document as modified, and `agent-review-issues` heartbeat remains active at `FREQ=MINUTELY;INTERVAL=10`. No multi-agent fix dispatch was needed.
+- 2026-06-08 17:04 +08:00 continuation re-check again found no `###` open issue entries; `agent-review-issues` automation remains active at `FREQ=MINUTELY;INTERVAL=10`, and the only worktree change is this log/document update. No multi-agent fix dispatch was needed.
+- 2026-06-08 17:05 +08:00 continuation re-check found no `###` open issue entries; `agent-review-issues` automation remains active at `FREQ=MINUTELY;INTERVAL=10`, and `git status --short` only reports this document as modified. No multi-agent fix dispatch was needed.
+- 2026-06-08 17:10 +08:00 scheduled 10-minute re-check found no `###` open issue entries; `agent-review-issues` automation remains active at `FREQ=MINUTELY;INTERVAL=10`, and `git status --short` only reports this document as modified. No multi-agent fix dispatch was needed.
+- 2026-06-08 17:24 +08:00 scheduled 10-minute re-check found no `###` open issue entries; `agent-review-issues` automation remains active at `FREQ=MINUTELY;INTERVAL=10`, and `git status --short` only reports this document as modified. No multi-agent fix dispatch was needed.
+- 2026-06-08 17:34 +08:00 scheduled 10-minute re-check found no `###` open issue entries; `agent-review-issues` automation remains active at `FREQ=MINUTELY;INTERVAL=10`, and `git status --short` only reports this document as modified. No multi-agent fix dispatch was needed.
+- 2026-06-08 17:46 +08:00 scheduled 10-minute re-check found no `###` open issue entries; `agent-review-issues` automation remains active at `FREQ=MINUTELY;INTERVAL=10`, and `git status --short` only reports this document as modified. No multi-agent fix dispatch was needed.

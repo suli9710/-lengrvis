@@ -973,6 +973,14 @@ export interface SystemDiagnosticProduct {
   version?: string;
 }
 
+export interface SystemDiagnosticReleaseNotes {
+  available: boolean;
+  label?: string;
+  detail?: string;
+  path?: string;
+  source?: "local_file" | "package_notes" | "not_packaged" | string;
+}
+
 export interface SystemDiagnosticUpdateChannel {
   configured: boolean;
   status?: "not_configured" | string;
@@ -980,6 +988,9 @@ export interface SystemDiagnosticUpdateChannel {
   detail?: string;
   checkAction?: "refresh_local_status" | string;
   offlineOnly?: boolean;
+  userActionLabel?: string;
+  nextSteps?: string[];
+  releaseNotes?: SystemDiagnosticReleaseNotes;
 }
 
 export interface SystemDiagnosticLocalPaths {

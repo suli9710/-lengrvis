@@ -54,6 +54,8 @@ interface PairingFailureNotice {
   }>;
 }
 
+type PairingFailureSource = "scan" | "input";
+
 export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) => void }) {
   const [baseUrl, setBaseUrl] = useState("");
   const [pairCode, setPairCode] = useState("");
@@ -67,10 +69,18 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const [isCameraPermissionBusy, setIsCameraPermissionBusy] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
+  const normalizedPairCode = normalizePairingCodeInput(pairCode);
   const securityHint = showManualEntry ? baseUrlSecurityHint(baseUrl) : null;
   const detectedPayloadSecurity = detectedPayload ? classifyPairingPayloadSecurity(detectedPayload) : null;
   const isDetectedPayloadBlocked = Boolean(!showManualEntry && detectedPayloadSecurity && !detectedPayloadSecurity.canPair);
-  const canSubmit = !isBusy && !isDetectedPayloadBlocked;
+  const hasSubmitInput = showManualEntry ? Boolean(baseUrl.trim() && normalizedPairCode.length === 6) : Boolean(pairingPayload.trim());
+  const canSubmit = !isBusy && hasSubmitInput && !isDetectedPayloadBlocked;
+  const primaryButtonLabel = pairingButtonLabel({
+    isBusy,
+    hasSubmitInput,
+    showManualEntry,
+    blockedStatus: isDetectedPayloadBlocked ? detectedPayloadSecurity?.status : undefined,
+  });
 
   const persistPairedSession = async (session: PairingSession) => {
     setIsBusy(true);
@@ -131,10 +141,12 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
         setIsScanning(true);
         return;
       }
+      setFailure(cameraPermissionFailureNotice(nextPermission.canAskAgain));
+    } catch {
       setFailure({
-        title: "需要相机权限",
-        detail: "手机没有授权 Lengrvis 使用相机，因此暂时不能扫码。",
-        action: "请在系统设置中允许相机权限，或直接粘贴电脑端二维码内容。",
+        title: "无法打开相机",
+        detail: "手机没有成功打开相机权限请求。",
+        action: "请确认系统没有限制相机后重试；也可以直接粘贴电脑端二维码内容。",
       });
     } finally {
       setIsCameraPermissionBusy(false);
@@ -156,7 +168,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       setFailure(null);
       setIsScanning(false);
     } catch (currentError) {
-      setFailure(pairingFailureNotice(currentError));
+      setFailure(pairingFailureNotice(currentError, undefined, "scan"));
       setIsScanning(false);
     }
   };
@@ -178,7 +190,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       }
     }
 
-    const code = nextPairCode.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const code = normalizePairingCodeInput(nextPairCode);
     if (code.length !== 6) {
       setFailure({
         title: "配对码不可用",
@@ -262,10 +274,13 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               </View>
               <View style={styles.scanActionRow}>
                 <Pressable
+                  accessibilityHint="使用手机相机扫描电脑端 Lengrvis 配对二维码"
+                  accessibilityLabel="打开相机扫码"
                   accessibilityRole="button"
-                  accessibilityState={{ busy: isCameraPermissionBusy }}
+                  accessibilityState={{ busy: isCameraPermissionBusy, disabled: isCameraPermissionBusy }}
+                  disabled={isCameraPermissionBusy}
                   onPress={() => void openScanner()}
-                  style={({ pressed }) => [styles.scanButton, pressed && styles.pressed]}
+                  style={({ pressed }) => [styles.scanButton, pressed && styles.pressed, isCameraPermissionBusy && styles.scanButtonDisabled]}
                 >
                   {isCameraPermissionBusy ? <ActivityIndicator size="small" color="#0e5f76" /> : <Camera size={16} color="#0e5f76" />}
                   <Text style={styles.scanButtonText}>{isCameraPermissionBusy ? "请求相机权限" : "打开相机扫码"}</Text>
@@ -273,6 +288,8 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                 <Text style={styles.scanActionText}>扫码失败时也可以直接粘贴。</Text>
               </View>
               <TextInput
+                accessibilityHint="粘贴电脑端显示的二维码文本，手机会自动识别地址和配对码"
+                accessibilityLabel="二维码内容或配对信息"
                 autoCapitalize="none"
                 autoCorrect={false}
                 multiline
@@ -285,7 +302,14 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               {detectedPayload && detectedPayloadSecurity ? <PairingPayloadStatus payload={detectedPayload} state={detectedPayloadSecurity} /> : null}
             </View>
 
-            <Pressable accessibilityRole="button" onPress={() => setShowManualEntry((current) => !current)} style={styles.manualToggle}>
+            <Pressable
+              accessibilityHint="显示或隐藏备用的电脑地址和配对码输入"
+              accessibilityLabel="手动输入配对信息"
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showManualEntry }}
+              onPress={() => setShowManualEntry((current) => !current)}
+              style={styles.manualToggle}
+            >
               <Text style={styles.manualToggleText}>{showManualEntry ? "收起手动输入" : "无法粘贴？手动输入"}</Text>
             </Pressable>
 
@@ -293,6 +317,8 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               <View style={styles.manualPanel}>
                 <Text style={styles.label}>电脑地址</Text>
                 <TextInput
+                  accessibilityHint="输入电脑端 Lengrvis 显示的 HTTPS 地址"
+                  accessibilityLabel="电脑地址"
                   autoCapitalize="none"
                   autoCorrect={false}
                   inputMode="url"
@@ -318,10 +344,12 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                 ) : null}
                 <Text style={styles.label}>配对码</Text>
                 <TextInput
+                  accessibilityHint="输入电脑端显示的 6 位字母或数字"
+                  accessibilityLabel="配对码"
                   autoCapitalize="none"
                   autoCorrect={false}
                   onChangeText={(value) => {
-                    setPairCode(value.replace(/[^a-z0-9]/gi, "").toLowerCase());
+                    setPairCode(normalizePairingCodeInput(value));
                     setFailure(null);
                   }}
                   placeholder="6 位字母或数字"
@@ -334,6 +362,8 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
             {failure ? <PairingFailure notice={failure} /> : null}
 
             <Pressable
+              accessibilityHint="使用当前配对信息连接这台手机"
+              accessibilityLabel={primaryButtonLabel}
               accessibilityRole="button"
               accessibilityState={{ disabled: !canSubmit, busy: isBusy }}
               disabled={!canSubmit}
@@ -341,7 +371,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, !canSubmit && styles.disabledButton]}
             >
               {isBusy ? <ActivityIndicator color="#ffffff" /> : <Link2 size={18} color="#ffffff" />}
-              <Text style={styles.primaryButtonText}>{isDetectedPayloadBlocked ? "等待 HTTPS/WSS 配对信息" : "连接手机"}</Text>
+              <Text style={styles.primaryButtonText}>{primaryButtonLabel}</Text>
             </Pressable>
           </View>
         </ScrollView>
@@ -364,23 +394,31 @@ function PairingScanner({
 }) {
   return (
     <Modal animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen" visible={visible}>
-      <SafeAreaView style={styles.scannerScreen}>
+      <SafeAreaView accessibilityViewIsModal style={styles.scannerScreen}>
         <StatusBar barStyle="light-content" backgroundColor="#101820" />
         <View style={styles.scannerHeader}>
           <QrCode size={22} color="#ffffff" />
           <Text style={styles.scannerTitle}>扫描配对二维码</Text>
-          <Pressable accessibilityLabel="关闭扫码" accessibilityRole="button" onPress={onClose} style={({ pressed }) => [styles.scannerCloseButton, pressed && styles.pressed]}>
+          <Pressable
+            accessibilityHint="返回配对输入页面"
+            accessibilityLabel="关闭扫码"
+            accessibilityRole="button"
+            onPress={onClose}
+            style={({ pressed }) => [styles.scannerCloseButton, pressed && styles.pressed]}
+          >
             <X size={22} color="#ffffff" />
           </Pressable>
         </View>
         <CameraView
+          accessibilityLabel="相机取景框"
           barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
           onBarcodeScanned={scanLocked ? undefined : onScanned}
           style={styles.cameraPreview}
         />
         <View style={styles.scannerHint}>
-          <Text style={styles.scannerHintTitle}>将电脑端二维码放入取景框</Text>
-          <Text style={styles.scannerHintText}>识别后会自动填入电脑地址和 6 位配对码。</Text>
+          {scanLocked ? <ActivityIndicator color="#ffffff" /> : null}
+          <Text style={styles.scannerHintTitle}>{scanLocked ? "正在识别二维码" : "将电脑端二维码放入取景框"}</Text>
+          <Text style={styles.scannerHintText}>{scanLocked ? "如果内容不是 Lengrvis 配对信息，手机会回到上一页并给出下一步。" : "识别后会自动填入电脑地址和 6 位配对码。"}</Text>
         </View>
       </SafeAreaView>
     </Modal>
@@ -389,7 +427,7 @@ function PairingScanner({
 
 function PairingFailure({ notice }: { notice: PairingFailureNotice }) {
   return (
-    <View style={styles.failureNotice}>
+    <View accessibilityLiveRegion="assertive" accessibilityRole="alert" style={styles.failureNotice}>
       <Text style={styles.failureTitle}>{notice.title}</Text>
       <Text style={styles.failureText}>{notice.detail}</Text>
       {notice.checks?.map((check) => (
@@ -408,7 +446,7 @@ function PairingPayloadStatus({ payload, state }: { payload: PairingPayload; sta
   const isDanger = notice.tone === "danger";
   const isWarning = notice.tone === "warning";
   return (
-    <View style={[styles.detectedNotice, isWarning && styles.detectedNoticeWarning, isDanger && styles.detectedNoticeDanger]}>
+    <View accessibilityLiveRegion="polite" style={[styles.detectedNotice, isWarning && styles.detectedNoticeWarning, isDanger && styles.detectedNoticeDanger]}>
       <Text style={[styles.detectedTitle, isDanger && styles.detectedTitleDanger]}>{notice.title}</Text>
       <Text style={[styles.detectedText, isDanger && styles.detectedTextDanger]}>{notice.detail}</Text>
     </View>
@@ -429,6 +467,13 @@ function pairingPayloadNotice(payload: PairingPayload, state: PairingPayloadSecu
       tone: "danger",
       title: "这不是电脑地址",
       detail: `${validityText} 但这个地址会指向手机自己，请使用电脑端重新生成的配对信息。`,
+    };
+  }
+  if (state.status === "expired") {
+    return {
+      tone: "danger",
+      title: "配对码已过期",
+      detail: "这份配对信息已经过期，手机不会继续发送请求。请在电脑端重新生成后再扫码或粘贴。",
     };
   }
   if (state.status === "invalid_address") {
@@ -504,8 +549,73 @@ function payloadValidityText(payload: PairingPayload): string {
   return `${expiry.toLocaleTimeString()} 前有效。`;
 }
 
-function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity): PairingFailureNotice {
+function cameraPermissionFailureNotice(canAskAgain: boolean | undefined): PairingFailureNotice {
+  if (canAskAgain === false) {
+    return {
+      title: "需要在系统设置打开相机",
+      detail: "手机已经拒绝了 Lengrvis 的相机权限，应用内暂时不能再次弹出授权窗口。",
+      action: "请到系统设置里允许 Lengrvis 使用相机；不方便授权时，也可以复制电脑端二维码内容后粘贴。",
+    };
+  }
+  return {
+    title: "需要相机权限",
+    detail: "手机没有授权 Lengrvis 使用相机，因此暂时不能扫码。",
+    action: "请再次点击“打开相机扫码”并允许相机权限；也可以直接粘贴电脑端二维码内容。",
+  };
+}
+
+function pairingButtonLabel({
+  isBusy,
+  hasSubmitInput,
+  showManualEntry,
+  blockedStatus,
+}: {
+  isBusy: boolean;
+  hasSubmitInput: boolean;
+  showManualEntry: boolean;
+  blockedStatus?: PairingPayloadSecurityState["status"];
+}): string {
+  if (isBusy) return "正在连接";
+  if (blockedStatus) return blockedPairingButtonLabel(blockedStatus);
+  if (!hasSubmitInput) return showManualEntry ? "输入电脑地址和 6 位配对码" : "先扫码或粘贴配对信息";
+  return "连接手机";
+}
+
+function blockedPairingButtonLabel(status: PairingPayloadSecurityState["status"]): string {
+  if (status === "requires_https_wss") return "等待 HTTPS/WSS 配对信息";
+  if (status === "loopback") return "等待电脑地址";
+  if (status === "expired") return "重新生成配对码";
+  if (status === "invalid_address") return "等待完整配对信息";
+  return "检查配对信息";
+}
+
+function normalizePairingCodeInput(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source: PairingFailureSource = "input"): PairingFailureNotice {
   if (error instanceof PairingPayloadParseError) {
+    if (source === "scan") {
+      if (error.code === "invalid_address") {
+        return {
+          title: "二维码里的电脑地址不可用",
+          detail: "手机扫到了二维码，但里面的电脑地址格式不对。",
+          action: "请回到电脑端重新生成配对二维码，再用手机扫描新的二维码。",
+        };
+      }
+      if (error.code === "missing_address") {
+        return {
+          title: "二维码缺少电脑地址",
+          detail: "手机扫到了配对码，但不知道要连接哪台电脑。",
+          action: "请对准电脑端 Lengrvis 配对页的完整二维码；如果仍失败，请复制二维码内容后粘贴。",
+        };
+      }
+      return {
+        title: "没有识别到 Lengrvis 配对二维码",
+        detail: "手机扫到的内容里没有同时包含电脑地址和 6 位配对码。",
+        action: "请对准电脑端 Lengrvis 配对页的二维码；如果屏幕反光或太远，可以复制二维码内容后粘贴。",
+      };
+    }
     if (error.code === "invalid_address") {
       return {
         title: "地址格式错误",
@@ -540,6 +650,10 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity): Pairi
     return {
       title: "权限不足",
       detail: "电脑端拒绝了这台手机的配对或授权请求。",
+      checks: [
+        { title: "手机未被允许", detail: "如果电脑端有设备或权限开关，请确认这台手机可以连接。" },
+        { title: "配对页已变化", detail: "旧二维码或旧配对码被撤销后，也会出现这个提示。" },
+      ],
       action: "请在电脑端重新生成配对信息，并确认移动端权限没有被关闭。",
     };
   }
@@ -547,7 +661,7 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity): Pairi
     return {
       title: "配对码已过期",
       detail: "配对信息里的 6 位配对码只能短时间使用，过期后会被电脑端拒绝。",
-      action: "请在电脑端重新生成配对信息后再试。",
+      action: "请回到电脑端重新生成配对信息，不要复用旧截图或旧粘贴内容。",
     };
   }
   if (status === 422 || message.includes("url") || message.includes("address") || message.includes("must be 6 characters")) {
@@ -577,6 +691,7 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity): Pairi
       detail: "手机没有连上电脑端 Lengrvis。",
       checks: [
         { title: "不在同一网络", detail: "手机和电脑不在同一个 Wi-Fi 时会出现这个提示。" },
+        { title: "网络被隔离", detail: "公司网络、访客 Wi-Fi、VPN 或热点隔离可能会阻止手机访问电脑。" },
         { title: "后端未启动", detail: "如果已经同网，请在电脑端打开 Lengrvis，并保持配对页处于可用状态。" },
       ],
       action: "确认后在电脑端重新生成配对信息，再回到手机重试。",
@@ -698,6 +813,7 @@ const styles = StyleSheet.create({
   },
   scanButton: {
     minHeight: 38,
+    maxWidth: "100%",
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#9ec6cf",
@@ -707,11 +823,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 7,
     paddingHorizontal: 12,
+    flexShrink: 1,
+  },
+  scanButtonDisabled: {
+    opacity: 0.68,
   },
   scanButtonText: {
+    flexShrink: 1,
     color: "#0e5f76",
     fontSize: 14,
     fontWeight: "900",
+    textAlign: "center",
   },
   scanActionText: {
     flexShrink: 1,
@@ -845,14 +967,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 9,
     marginTop: 2,
+    paddingHorizontal: 16,
   },
   disabledButton: {
-    opacity: 0.82,
+    opacity: 0.68,
   },
   primaryButtonText: {
+    flexShrink: 1,
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "800",
+    textAlign: "center",
   },
   failureNotice: {
     borderRadius: 8,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
@@ -10,6 +11,7 @@ from app.core.errors import StateTransitionError
 from app.core.schemas import AgentMessage, Task, TaskStatus
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
+from app.policy.redaction import redact_text, redact_value
 from app.services import task_recording_service
 from app.services.task_explain_service import build_task_explain
 from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
@@ -19,6 +21,23 @@ from app.tools import rollback_tools
 router = APIRouter()
 BOUNDARY_EVENT_SOURCE_LIMIT = 500
 BOUNDARY_EVENT_QUERY_CHUNK_SIZE = 400
+EVIDENCE_PRIVACY_NOTE = (
+    "Only status, counts, and redacted event labels are exposed; raw payloads, file contents, and hidden prompts are omitted."
+)
+REVIEW_EVENT_KINDS = {"post_tool_review", "safety_review"}
+CAPABILITY_BOUNDARY_KINDS = {"context_boundary", "context_projection", "model_boundary_denied", "tool_contract"}
+SAFE_BOUNDARY_PAYLOAD_KEYS = {
+    "event_type",
+    "kind",
+    "risk_level",
+    "source",
+    "status",
+    "strategy",
+    "target_type",
+    "tool_name",
+    "tokens_saved",
+    "verdict",
+}
 
 
 def _openai_agent_messages(task_id: str) -> list[dict]:
@@ -107,29 +126,35 @@ def tasks():
 
 
 @router.get("/tasks/{task_id}")
-def task(task_id: str) -> Task:
+def task(task_id: str):
     try:
-        return get_task(task_id)
+        return _task_payload(get_task(task_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
 
 
 @router.get("/tasks/{task_id}/timeline")
 def timeline(task_id: str):
+    task_data = db.fetch_one("tasks", task_id)
+    task_model = Task.model_validate(task_data) if task_data else None
     messages = db.fetch_many_by_fields("agent_messages", {"task_id": task_id})
     reviews = db.fetch_many_by_fields("safety_reviews", {"task_id": task_id})
+    boundary_events = _boundary_events(task_id, messages=messages, reviews=reviews)
     return {
         "task": task_id,
         "messages": [AgentMessage.model_validate(item).to_openai_dict() for item in messages],
-        "reviews": reviews,
+        "reviews": [_public_review(review) for review in reviews],
         "recordings": _step_recordings(task_id),
-        "boundary_events": _boundary_events(task_id, messages=messages, reviews=reviews),
+        "boundary_events": boundary_events,
+        "evidence_summary": _task_evidence_summary(task_model, boundary_events),
     }
 
 
 def _task_payload(task: Task, *, boundary_events: list[dict] | None = None) -> dict:
     payload = task.model_dump(mode="json")
-    payload["boundary_events"] = boundary_events if boundary_events is not None else _boundary_events(task.id)
+    events = boundary_events if boundary_events is not None else _boundary_events(task.id)
+    payload["boundary_events"] = events
+    payload["evidence_summary"] = _task_evidence_summary(task, events)
     return payload
 
 
@@ -229,7 +254,7 @@ def _boundary_events(
                     message.get("id"),
                     "tool_progress",
                     "Tool progress",
-                    f"{tool} {status}".strip() or content,
+                    _tool_progress_detail(tool, status),
                     created_at,
                     step_id=message.get("step_id"),
                     severity="info",
@@ -242,20 +267,19 @@ def _boundary_events(
                     message.get("id"),
                     "tool_contract",
                     "Tool contract boundary",
-                    content or "Planner steps were annotated with registry risk and tool metadata.",
+                    "Planner steps were checked against registry risk and tool metadata.",
                     created_at,
                     severity="info",
                     payload=payload,
                 )
             )
         elif payload.get("kind") == "context_compact_boundary" or metadata.get("context_boundary"):
-            boundary = str(metadata.get("context_boundary") or payload.get("context_boundary") or "")
             events.append(
                 _boundary_event(
                     message.get("id"),
                     "context_boundary",
                     "Context boundary",
-                    boundary or content or "Context projection boundary persisted.",
+                    "Context projection boundary was recorded.",
                     created_at,
                     severity="info",
                     payload=payload or metadata,
@@ -267,7 +291,7 @@ def _boundary_events(
                     message.get("id"),
                     "model_boundary_denied",
                     "Model boundary denied",
-                    content,
+                    "Model boundary blocked an unsafe transfer.",
                     created_at,
                     step_id=message.get("step_id"),
                     severity="danger",
@@ -279,13 +303,12 @@ def _boundary_events(
         target_type = str(review.get("target_type") or "")
         verdict = str(review.get("verdict") or "")
         if target_type == "tool_result" or verdict in {"deny", "needs_user_approval"}:
-            reasons = review.get("reasons") if isinstance(review.get("reasons"), list) else []
             events.append(
                 _boundary_event(
                     review.get("id"),
                     "post_tool_review" if target_type == "tool_result" else "safety_review",
                     "Post-tool review" if target_type == "tool_result" else "Safety review",
-                    " ".join(str(reason) for reason in reasons[:2]) or verdict,
+                    _review_event_detail(review),
                     str(review.get("created_at") or ""),
                     step_id=review.get("step_id"),
                     severity="danger" if verdict == "deny" else "warning",
@@ -308,7 +331,7 @@ def _boundary_events(
                     detail,
                     str(audit.get("created_at") or ""),
                     severity="info",
-                    payload=payload,
+                    payload={**payload, "event_type": event_type},
                 )
             )
         elif event_type.startswith("model_boundary"):
@@ -317,17 +340,118 @@ def _boundary_events(
                     audit.get("id"),
                     "model_boundary_denied",
                     "Model boundary denied",
-                    str(payload.get("error") or payload.get("reason") or event_type),
+                    "Model boundary blocked an unsafe transfer.",
                     str(audit.get("created_at") or ""),
                     step_id=payload.get("step_id"),
                     severity="danger",
-                    payload=payload,
+                    payload={**payload, "event_type": event_type},
                 )
             )
 
     deduped = {str(event["id"]): event for event in events if event.get("id")}
     ordered = sorted(deduped.values(), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
     return ordered[-20:]
+
+
+def _task_evidence_summary(task: Task | None, boundary_events: list[dict]) -> dict[str, Any]:
+    counts = {
+        "events": len(boundary_events),
+        "review_checkpoints": sum(1 for event in boundary_events if event.get("kind") in REVIEW_EVENT_KINDS),
+        "capability_boundaries": sum(1 for event in boundary_events if event.get("kind") in CAPABILITY_BOUNDARY_KINDS),
+        "tool_updates": sum(1 for event in boundary_events if event.get("kind") == "tool_progress"),
+        "items_needing_attention": sum(
+            1 for event in boundary_events if event.get("severity") in {"warning", "danger", "critical", "high"}
+        ),
+    }
+    evidence = []
+    if counts["review_checkpoints"]:
+        evidence.append(f"{counts['review_checkpoints']} review checkpoint(s) recorded.")
+    if counts["capability_boundaries"]:
+        evidence.append(f"{counts['capability_boundaries']} capability boundary event(s) recorded.")
+    if counts["tool_updates"]:
+        evidence.append(f"{counts['tool_updates']} tool progress update(s) recorded.")
+    if counts["items_needing_attention"]:
+        evidence.append(f"{counts['items_needing_attention']} item(s) need review before trusting the result.")
+    if not evidence:
+        evidence.append("No review or boundary evidence has been recorded yet.")
+
+    status = _task_status_summary(task)
+    return {
+        "status": status,
+        "evidence": evidence[:4],
+        "next_step": _task_next_step(task, counts),
+        "counts": counts,
+        "privacy_note": EVIDENCE_PRIVACY_NOTE,
+    }
+
+
+def _task_status_summary(task: Task | None) -> str:
+    if task is None:
+        return "Task record unavailable."
+    status = _enum_text(task.status)
+    stage = _enum_text(task.execution_stage)
+    if stage == "awaiting_approval":
+        return "Waiting for approval before the agent continues."
+    if status == "completed":
+        return "Completed with an auditable evidence trail."
+    if status == "failed":
+        return "Failed; review the evidence trail before retrying."
+    if status == "cancelled":
+        return "Cancelled before completion."
+    if status == "execution":
+        return "Running; evidence is being collected as steps finish."
+    if status in {"planning", "plan_review", "consultation", "final_review"}:
+        return "Preparing or reviewing the plan."
+    return f"Task status: {status or 'unknown'}."
+
+
+def _task_next_step(task: Task | None, counts: dict[str, int]) -> str:
+    status = _enum_text(task.status) if task else ""
+    stage = _enum_text(task.execution_stage) if task else ""
+    if stage == "awaiting_approval":
+        return "Review the pending approval summary before allowing live execution."
+    if counts["items_needing_attention"]:
+        return "Review the flagged checkpoint and decide whether to continue, revise, or stop."
+    if status == "completed":
+        return "Open the task explanation to inspect the decision chain."
+    if counts["events"] == 0:
+        return "Let the run continue until the first reviewed step is recorded."
+    return "Keep monitoring; the summary will update as more steps are reviewed."
+
+
+def _enum_text(value: Any) -> str:
+    return str(value.value if hasattr(value, "value") else value or "")
+
+
+def _tool_progress_detail(tool: str, status: str) -> str:
+    parts = [part for part in [tool, status] if part]
+    return " ".join(parts) if parts else "Tool progress was recorded."
+
+
+def _review_event_detail(review: dict[str, Any]) -> str:
+    target_type = str(review.get("target_type") or "review")
+    verdict = str(review.get("verdict") or "recorded")
+    risk_level = str(review.get("risk_level") or "")
+    suffix = f" at {risk_level}" if risk_level else ""
+    return f"{target_type}: {verdict}{suffix}."
+
+
+def _public_review(review: dict[str, Any]) -> dict[str, Any]:
+    reasons = review.get("reasons") if isinstance(review.get("reasons"), list) else []
+    required_changes = review.get("required_changes") if isinstance(review.get("required_changes"), list) else []
+    return {
+        "id": str(review.get("id") or ""),
+        "step_id": review.get("step_id"),
+        "target_type": str(review.get("target_type") or ""),
+        "verdict": str(review.get("verdict") or ""),
+        "risk_level": str(review.get("risk_level") or ""),
+        "summary": _review_event_detail(review),
+        "reason_count": len(reasons),
+        "required_change_count": len(required_changes),
+        "has_user_confirmation_message": bool(review.get("user_confirmation_message")),
+        "has_safe_alternative": bool(review.get("safe_alternative")),
+        "created_at": str(review.get("created_at") or ""),
+    }
 
 
 def _boundary_event(
@@ -345,12 +469,58 @@ def _boundary_event(
         "id": str(event_id or f"{kind}-{created_at}"),
         "kind": kind,
         "title": title,
-        "detail": detail,
+        "detail": _public_detail(detail),
         "severity": severity,
         "step_id": str(step_id or ""),
         "created_at": created_at,
-        "payload": payload or {},
+        "payload": _safe_boundary_payload(kind, payload),
     }
+
+
+def _public_detail(detail: str, *, limit: int = 220) -> str:
+    text = redact_text(str(detail or "")).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
+
+
+def _safe_boundary_payload(kind: str, payload: dict | None) -> dict[str, Any]:
+    raw_payload = payload if isinstance(payload, dict) else {}
+    safe: dict[str, Any] = {
+        "kind": kind,
+        "redacted": True,
+        "field_count": len([key for key in raw_payload if not str(key).startswith("_")]),
+    }
+    for key in SAFE_BOUNDARY_PAYLOAD_KEYS:
+        if key in raw_payload:
+            safe[key] = _safe_boundary_value(raw_payload.get(key))
+    for key, count_key in (
+        ("reasons", "reason_count"),
+        ("required_changes", "required_change_count"),
+        ("diff_preview", "preview_field_count"),
+        ("engineering_boundary", "boundary_field_count"),
+    ):
+        value = raw_payload.get(key)
+        if isinstance(value, list):
+            safe[count_key] = len(value)
+        elif isinstance(value, dict):
+            safe[count_key] = len(value)
+    return safe
+
+
+def _safe_boundary_value(value: Any) -> Any:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return _public_detail(value, limit=120)
+    redacted = redact_value(value)
+    if isinstance(redacted, dict):
+        return {"field_count": len(redacted)}
+    if isinstance(redacted, list):
+        return {"count": len(redacted)}
+    return redacted
 
 
 @router.get("/tasks/{task_id}/replay")

@@ -47,14 +47,16 @@ Last synchronized: 2026-06-08, local dirty worktree. Treat these as handoff evid
 
 ## Active Agent Roster
 
+Default productization runs use six parallel agents: four development workers, one testing worker, and one review worker. Treat this table as dispatch evidence only; completion still requires merged code, passing verification, and review of the current worktree.
+
 | Agent | Role | Owned scope | Done condition |
 | --- | --- | --- | --- |
-| Archimedes | Dev A | `mobile/scripts/*.cjs` | Mobile token and remote-input smokes are behavior-level and still run with npm scripts. |
-| Volta | Dev B | `scripts/start_app.ps1`, `scripts/portable_first_screen_smoke.ps1`, startup commands, setup docs | Formal launch path does not install dependencies unless the user explicitly chooses setup/dev mode, and portable launcher/backend diagnostics smoke is kept separate from the formal release gate. |
-| Ohm | Dev C | `mobile/src/screens/PairScreen.tsx`, mobile pairing helpers | Pairing supports QR payload parsing and user-friendly failure classes. |
-| Dirac | Dev D | `PRODUCTIZATION_ISSUES.md`, `docs/qa/*`, `docs/LENGRVIS_PARITY.md` | Evidence boundaries stay current without overclaiming source-level, mocked DOM, or read-only smoke as release-candidate/user-task proof. |
-| Meitner | Test | Verification commands and gap report | Baseline failures and likely integration blockers are known before merge. |
-| Noether | Review | Read-only security/code review | P0/P1 findings include file/line references and concrete fixes. |
+| Erdos | Dev 1 | Desktop version, update-channel, diagnostic export, and log entry UX | A beginner can see local version/update status, export diagnostics, and find logs without any online updater overclaim. |
+| Pasteur | Dev 2 | Local model setup/readiness service and install endpoint evidence | Local model next action, repair action, bundled-runtime/model evidence, and failure states are precise and covered by backend tests. |
+| Boyle | Dev 3 | Mobile QR/camera pairing path and failure classification | Scan/paste/manual pairing stays simple, blocks insecure LAN token flows, and exposes actionable beginner failure states. |
+| Mencius | Dev 4 | Agent task evidence, review, and explainability surface | Users can see concise, redacted task/review evidence and a next step without being shown a developer console. |
+| Aquinas | Test | Baseline and final verification commands | Fast gates and targeted regressions are run or explicitly reported as blocked with command-level evidence. |
+| Socrates | Review | Security, privacy, beginner UX, and evidence-boundary review | Findings are concrete, severity-ordered, and tied to file/line references or clearly marked as residual manual evidence. |
 
 ## Review Rules
 

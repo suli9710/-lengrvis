@@ -9,7 +9,7 @@ export interface PairingPayload {
   source: PairingPayloadSource;
 }
 
-export type PairingPayloadSecurityStatus = "ready" | "requires_https_wss" | "loopback" | "invalid_address";
+export type PairingPayloadSecurityStatus = "ready" | "requires_https_wss" | "loopback" | "expired" | "invalid_address";
 
 export interface PairingPayloadSecurityState {
   status: PairingPayloadSecurityStatus;
@@ -47,7 +47,7 @@ export function parsePairingPayload(value: string): PairingPayload {
   throw new PairingPayloadParseError("missing_code", "Pairing payload must include a 6-character code and a computer address.");
 }
 
-export function classifyPairingPayloadSecurity(payload: Pick<PairingPayload, "baseUrl">): PairingPayloadSecurityState {
+export function classifyPairingPayloadSecurity(payload: Pick<PairingPayload, "baseUrl" | "expiresAt">, nowMs = Date.now()): PairingPayloadSecurityState {
   try {
     const security = describeBaseUrlSecurity(payload.baseUrl);
     if (security.isInsecureLan) {
@@ -56,10 +56,19 @@ export function classifyPairingPayloadSecurity(payload: Pick<PairingPayload, "ba
     if (security.isLoopback) {
       return { status: "loopback", canPair: false, security };
     }
+    if (isExpiredPairingPayload(payload.expiresAt, nowMs)) {
+      return { status: "expired", canPair: false, security };
+    }
     return { status: "ready", canPair: true, security };
   } catch {
     return { status: "invalid_address", canPair: false };
   }
+}
+
+function isExpiredPairingPayload(expiresAt: string | undefined, nowMs: number): boolean {
+  if (!expiresAt) return false;
+  const expiryMs = Date.parse(expiresAt);
+  return Number.isFinite(expiryMs) && expiryMs <= nowMs;
 }
 
 function parseJsonPayload(raw: string): PairingPayload | null {

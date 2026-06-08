@@ -89,11 +89,96 @@ def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
     tasks = client.get("/api/tasks")
 
     assert timeline.status_code == 200
-    kinds = {event["kind"] for event in timeline.json()["boundary_events"]}
+    timeline_payload = timeline.json()
+    kinds = {event["kind"] for event in timeline_payload["boundary_events"]}
     assert {"tool_progress", "post_tool_review", "context_projection"}.issubset(kinds)
+    summary = timeline_payload["evidence_summary"]
+    assert summary["counts"]["review_checkpoints"] == 1
+    assert summary["counts"]["capability_boundaries"] == 1
+    assert summary["counts"]["tool_updates"] == 1
+    assert "next_step" in summary
+    assert "file contents" in summary["privacy_note"]
     assert tasks.status_code == 200
     listed = next(item for item in tasks.json() if item["id"] == task.id)
     assert listed["boundary_events"]
+    assert listed["evidence_summary"]["counts"] == summary["counts"]
+
+
+def test_task_evidence_summary_and_boundary_payloads_are_public_safe(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    secret_token = "super-secret-token-1234567890"
+    hidden_prompt = "hidden system prompt should stay private"
+    file_body = "quarterly revenue file body should not be displayed"
+    task = Task(
+        id="task_public_safe_evidence",
+        user_goal=f"Audit task with {secret_token}",
+        status="completed",
+        final_summary=f"Completed with {file_body}",
+    )
+    db.upsert_model("tasks", task)
+    db.upsert_model(
+        "agent_messages",
+        AgentMessage(
+            task_id=task.id,
+            step_id="step_1",
+            from_agent="ModelBoundary",
+            message_type=MessageType.NOTIFICATION,
+            content=f"Model boundary denied token={secret_token}; {hidden_prompt}",
+            structured_payload={
+                "event_type": "model_boundary.denied",
+                "reason": hidden_prompt,
+                "token": secret_token,
+            },
+            metadata={"event_type": "model_boundary.denied"},
+        ),
+    )
+    db.upsert_model(
+        "safety_reviews",
+        SafetyReview(
+            task_id=task.id,
+            step_id="step_1",
+            target_type="tool_result",
+            verdict=SafetyVerdict.DENY,
+            risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            reasons=[f"Review saw {file_body} and token={secret_token}."],
+        ),
+    )
+    record(
+        "context.projected",
+        "ContextAwareProvider",
+        {
+            "strategy": "auto_compact",
+            "tokens_saved": 13,
+            "secret": secret_token,
+            "content": file_body,
+        },
+        task_id=task.id,
+    )
+
+    client = TestClient(app)
+    timeline = client.get(f"/api/tasks/{task.id}/timeline")
+    task_payload = client.get(f"/api/tasks/{task.id}")
+    tasks = client.get("/api/tasks")
+
+    assert timeline.status_code == 200
+    assert task_payload.status_code == 200
+    assert tasks.status_code == 200
+    listed = next(item for item in tasks.json() if item["id"] == task.id)
+    public_dump = json.dumps(
+        [
+            timeline.json()["boundary_events"],
+            timeline.json()["evidence_summary"],
+            task_payload.json()["evidence_summary"],
+            listed["evidence_summary"],
+        ],
+        ensure_ascii=False,
+    )
+    assert secret_token not in public_dump
+    assert hidden_prompt not in public_dump
+    assert file_body not in public_dump
+    assert all(event["payload"].get("redacted") is True for event in timeline.json()["boundary_events"])
+    assert timeline.json()["evidence_summary"]["counts"]["items_needing_attention"] >= 1
 
 
 def test_tasks_list_batches_boundary_events(monkeypatch, tmp_path):
