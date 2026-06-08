@@ -8237,6 +8237,70 @@ select:focus-visible,
   min-width: 128px;
 }
 
+.system-support-flow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  gap: 10px;
+  margin: 12px 0;
+  min-width: 0;
+}
+
+.system-support-action {
+  display: grid;
+  align-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(74, 108, 247, 0.16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.system-support-action__body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+}
+
+.system-support-action__body > svg {
+  color: var(--brand);
+  margin-top: 2px;
+}
+
+.system-support-action__body div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.system-support-action__body strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.3;
+}
+
+.system-support-action__body span {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.system-support-action__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.system-support-action .button,
+.diagnostic-export--support .button {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .system-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9222,6 +9286,7 @@ select:focus-visible,
   .browser-watch,
   .file-tools,
   .local-library-view,
+  .system-support-flow,
   .system-grid,
   .toggle-list,
   .settings-grid {
@@ -9566,6 +9631,7 @@ select:focus-visible,
   .document-start-hero,
   .document-start-guide,
   .system-check-hero,
+  .system-support-flow,
   .system-update-card,
   .system-path-row,
   .approval-decision__facts,

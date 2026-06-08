@@ -4,6 +4,9 @@
     [string]$BackendHost = "127.0.0.1",
     [int]$BackendPort = 8000,
     [string]$LogLevel = "info",
+    [switch]$LanTlsEnabled,
+    [string]$LanTlsCertFile = "",
+    [string]$LanTlsKeyFile = "",
     [switch]$StartupAuto,
     [switch]$DelayedAutoStart,
     [switch]$SkipHealthCheck,
@@ -45,15 +48,24 @@ function Wait-BackendHealth {
     param(
         [string]$HostName,
         [int]$Port,
+        [string]$Scheme,
         [int]$TimeoutSeconds
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $uri = "http://${HostName}:${Port}/health"
+    $uri = "${Scheme}://${HostName}:${Port}/health"
     Write-Step "Waiting for backend health: $uri"
     do {
         try {
-            $response = Invoke-WebRequest -Uri $uri -UseBasicParsing -TimeoutSec 2
+            $request = @{
+                Uri = $uri
+                UseBasicParsing = $true
+                TimeoutSec = 2
+            }
+            if ($Scheme -eq "https" -and (Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipCertificateCheck")) {
+                $request.SkipCertificateCheck = $true
+            }
+            $response = Invoke-WebRequest @request
             if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
                 Write-Host "Backend health check passed."
                 return
@@ -88,6 +100,15 @@ $env:LENGRVIS_BACKEND_HOST = $BackendHost
 $env:LENGRVIS_BACKEND_PORT = [string]$BackendPort
 $env:LENGRVIS_BACKEND_LOG_LEVEL = $LogLevel
 $env:LENGRVIS_CONFIG_DIR = $Root
+if ($LanTlsEnabled) {
+    $env:LENGRVIS_LAN_TLS_ENABLED = "true"
+    if ($LanTlsCertFile) {
+        $env:LENGRVIS_LAN_TLS_CERT_FILE = $LanTlsCertFile
+    }
+    if ($LanTlsKeyFile) {
+        $env:LENGRVIS_LAN_TLS_KEY_FILE = $LanTlsKeyFile
+    }
+}
 
 $serviceArgs = @()
 switch ($Action) {
@@ -105,6 +126,15 @@ switch ($Action) {
             "--backend-port", [string]$BackendPort,
             "--backend-log-level", $LogLevel
         )
+        if ($LanTlsEnabled) {
+            $serviceArgs += "--lan-tls-enabled"
+        }
+        if ($LanTlsCertFile) {
+            $serviceArgs += @("--lan-tls-cert-file", $LanTlsCertFile)
+        }
+        if ($LanTlsKeyFile) {
+            $serviceArgs += @("--lan-tls-key-file", $LanTlsKeyFile)
+        }
     }
     "update" {
         $serviceArgs += "update"
@@ -120,6 +150,15 @@ switch ($Action) {
             "--backend-port", [string]$BackendPort,
             "--backend-log-level", $LogLevel
         )
+        if ($LanTlsEnabled) {
+            $serviceArgs += "--lan-tls-enabled"
+        }
+        if ($LanTlsCertFile) {
+            $serviceArgs += @("--lan-tls-cert-file", $LanTlsCertFile)
+        }
+        if ($LanTlsKeyFile) {
+            $serviceArgs += @("--lan-tls-key-file", $LanTlsKeyFile)
+        }
     }
     "query" {
         $serviceArgs += "query"
@@ -136,7 +175,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if (($Action -eq "start" -or $Action -eq "restart") -and -not $SkipHealthCheck) {
-    Wait-BackendHealth -HostName $BackendHost -Port $BackendPort -TimeoutSeconds $WaitSeconds
+    $healthScheme = if ($LanTlsEnabled) { "https" } else { "http" }
+    Wait-BackendHealth -HostName $BackendHost -Port $BackendPort -Scheme $healthScheme -TimeoutSeconds $WaitSeconds
 }
 
 if ($Action -eq "install") {

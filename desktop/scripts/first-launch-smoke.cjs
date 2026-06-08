@@ -72,6 +72,7 @@ async function main() {
   try {
     await waitForPreview(previewUrl);
     await assertFirstLaunchEntryWorks(previewUrl);
+    await assertNaturalLanguageComputerCheckStartsReadOnlyRun(previewUrl);
     await assertPromptQuickSkillUsesSelectedDraft(previewUrl);
     await assertBackendUnavailableState(previewUrl);
   } finally {
@@ -162,7 +163,7 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
     await checkComputerEntry.click();
     await page.getByText(/正在进行只读电脑检查|只读检查启动中/).first().waitFor({ timeout: 1_500 }).catch(() => undefined);
     await page.getByText(/系统信息/).first().waitFor({ timeout: 15_000 });
-    await page.getByText(/一键只读检查/).first().waitFor({ timeout: 15_000 });
+    await page.getByText(/立即只读检查|刷新本机状态|桌面诊断支持流/).first().waitFor({ timeout: 15_000 });
     await page.getByText(/只读诊断，不改设置/).first().waitFor({ timeout: 15_000 });
     await page.getByText(/Lengrvis 服务：已连接/).first().waitFor({ timeout: 15_000 });
 
@@ -205,6 +206,58 @@ async function assertPromptQuickSkillUsesSelectedDraft(previewUrl) {
       selectedPrompt,
       "immediate Send after a prompt quick-skill click should submit the selected prompt, not the stale draft"
     );
+  } finally {
+    await context.close();
+    removeTempDir(profileDir);
+  }
+}
+
+async function assertNaturalLanguageComputerCheckStartsReadOnlyRun(previewUrl) {
+  const counters = {};
+  const { context, page, profileDir } = await openDisposablePage();
+  try {
+    await installHealthyBackendMocks(page, counters, {
+      runTasks: [
+        {
+          run_id: "run_natural_language_system_check_smoke",
+          message: "帮我检查这台电脑",
+          engine: "os",
+          phase: "queued",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      ]
+    });
+    await gotoFirstLaunch(page, previewUrl);
+
+    const commandInput = page.locator(".office-command-dock textarea");
+    await commandInput.waitFor({ timeout: 15_000 });
+    await commandInput.fill("帮我检查这台电脑");
+
+    const sendButton = page.locator("button.command-footer__send").first();
+    assert.equal(await sendButton.isEnabled(), true, "natural-language computer check should be submit-ready");
+    await sendButton.click();
+
+    await waitForCounter(() => (counters.runLaunchRequests ?? 0) >= 1, "natural-language /api/runs launch request");
+    assert.equal(counters.chatLaunchRequests ?? 0, 0, "natural-language computer check should prefer /api/runs over legacy chat");
+    assert.equal(counters.taskLaunchRequests ?? 0, 1, "natural-language computer check should create exactly one task/run request");
+
+    const launch = counters.taskLaunchPayloads?.[0] ?? {};
+    assert.equal(counters.taskLaunchEndpoints?.[0], "/api/runs", "natural-language computer check should submit through /api/runs");
+    assert.equal(launch.message, "帮我检查这台电脑", "natural-language computer check should submit the user's exact first-task text");
+    assert.equal(launch.engine, "auto", "renderer should let the backend route the read-only diagnostics engine");
+
+    await page.getByText(/已开始处理任务/).first().waitFor({ timeout: 15_000 });
+
+    const workspaceText = await page.getByTestId("task-workspace-card").innerText();
+    assert.match(workspaceText, /系统只读/, "Task Workspace should classify the natural-language computer check as a read-only system task");
+
+    const rootText = await page.locator("#root").innerText();
+    assert.match(rootText, /帮我检查这台电脑/, "first screen should keep the submitted natural-language goal visible");
+    assert.match(rootText, /电脑执行引擎|系统只读/, "first screen should expose OS/read-only execution feedback");
+    assert.match(rootText, /等待执行|正在执行|排队中|处理中|进行中/, "first screen should show understandable task progress after natural-language submit");
+
+    assert.ok(counters.systemDiagnosticsRequests >= 1, "natural-language first task should keep read-only diagnostics data available in the mocked path");
   } finally {
     await context.close();
     removeTempDir(profileDir);
@@ -314,6 +367,7 @@ async function waitForCounter(predicate, label, timeoutMs = 10_000) {
 
 async function installHealthyBackendMocks(page, counters, options = {}) {
   const tasks = options.tasks ?? [];
+  const runTasks = options.runTasks ?? [];
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -326,10 +380,15 @@ async function installHealthyBackendMocks(page, counters, options = {}) {
     const method = request.method().toUpperCase();
     if (method === "POST" && (url.pathname === "/api/chat" || url.pathname === "/api/runs")) {
       count(counters, "taskLaunchRequests");
+      count(counters, url.pathname === "/api/runs" ? "runLaunchRequests" : "chatLaunchRequests");
       recordTaskLaunchPayload(counters, request);
+      counters.taskLaunchEndpoints = [...(counters.taskLaunchEndpoints ?? []), url.pathname];
     }
     if (url.pathname === "/api/system/info") {
       count(counters, "systemInfoRequests");
+    }
+    if (url.pathname === "/api/system/diagnostics") {
+      count(counters, "systemDiagnosticsRequests");
     }
 
     const json = (body) => route.fulfill({
@@ -350,13 +409,13 @@ async function installHealthyBackendMocks(page, counters, options = {}) {
     }
     if (url.pathname === "/api/runs" && method === "POST") {
       return json({
-        run_id: "run_quick_skill_smoke",
+        run_id: "run_natural_language_system_check_smoke",
         engine: "os",
         phase: "queued"
       });
     }
     if (url.pathname === "/api/chat/messages") return json([]);
-    if (url.pathname === "/api/runs") return json([]);
+    if (url.pathname === "/api/runs") return json(runTasks);
     if (url.pathname === "/api/tasks") return json(tasks);
     if (url.pathname === "/api/approvals/pending") return json([]);
     if (url.pathname === "/api/settings") return json(backendSettings);

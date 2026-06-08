@@ -9,13 +9,26 @@
     "android": {
       "package": "com.lengrvis.approval",
       "permissions": [
+        "CAMERA",
         "POST_NOTIFICATIONS"
       ],
       "usesCleartextTraffic": true
     },
+    "ios": {
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow Lengrvis Approval to use the camera to scan pairing QR codes from your desktop."
+      }
+    },
     "plugins": [
       "expo-notifications",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Lengrvis Approval to use the camera to scan pairing QR codes from your desktop.",
+          "recordAudioAndroid": false
+        }
+      ]
     ]
   }
 }

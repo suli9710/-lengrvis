@@ -19,7 +19,7 @@ from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
 from app.llm.registry import get_effective_settings
 from app.orchestration.execution_stage import ExecutionStage
 from app.policy.approval_binding import redacted_preview
-from app.policy.redaction import redact_value
+from app.policy.redaction import contains_sensitive_key, redact_public_text, redact_value
 from app.security.mobile_jwt import (
     REMOTE_INPUT_SCOPE,
     REMOTE_VIEW_SCOPE,
@@ -827,24 +827,89 @@ def _latest_plan(task_id: str) -> dict[str, Any] | None:
 
 def _safe_approval_payload(approval: dict[str, Any]) -> dict[str, Any]:
     payload = dict(approval)
-    payload["message"] = redact_value(payload.get("message") or "")
+    payload["message"] = _safe_mobile_text(payload.get("message") or "")
     payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
+    payload["model_action"] = _safe_mobile_model_action(payload.get("model_action") or {})
+    for key in (
+        "dry_run_summary",
+        "tool_effects",
+        "resource_kinds",
+        "runtime_control_fields",
+        "runtime_fields",
+        "engineering_boundary",
+    ):
+        if key in payload:
+            payload[key] = _safe_mobile_public_value(payload.get(key), key=key)
     return payload
+
+
+def _safe_mobile_model_action(model_action: Any) -> dict[str, Any]:
+    if not isinstance(model_action, dict):
+        return {}
+    safe = dict(model_action)
+    if "args" in safe:
+        safe["args"] = _safe_mobile_model_action_args(safe.get("args"))
+    for key in ("raw", "input", "inputs", "output", "observation", "prompt", "content", "text", "value"):
+        if key in safe:
+            safe[key] = _safe_mobile_public_value(safe[key], key=key)
+    safe["redacted"] = True
+    return _safe_mobile_public_value(safe)
+
+
+def _safe_mobile_model_action_args(raw_args: Any) -> Any:
+    if isinstance(raw_args, dict):
+        return {"redacted": True, "field_count": len(raw_args)}
+    if isinstance(raw_args, (list, tuple, set)):
+        return {"redacted": True, "field_count": len(raw_args)}
+    if raw_args in (None, ""):
+        return {}
+    return "[REDACTED]"
+
+
+def _safe_mobile_text(value: Any) -> str:
+    return redact_public_text(str(redact_value(str(value or "")) or ""))
+
+
+def _safe_mobile_public_value(value: Any, *, key: str = "") -> Any:
+    normalized_key = key.replace("-", "_").casefold()
+    if normalized_key == "model_action":
+        return _safe_mobile_model_action(value)
+    if contains_sensitive_key(key):
+        value = redact_value({key: value}).get(key)
+    if isinstance(value, dict):
+        return {item_key: _safe_mobile_public_value(item, key=str(item_key)) for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_mobile_public_value(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [_safe_mobile_public_value(item, key=key) for item in value]
+    if isinstance(value, set):
+        return [_safe_mobile_public_value(item, key=key) for item in sorted(value, key=str)]
+    if isinstance(value, str):
+        redacted = redact_value(value)
+        return redact_public_text(str(redacted or ""))
+    return value
 
 
 def _safe_mobile_task(task: Task) -> dict[str, Any]:
     payload = task.model_dump(mode="json")
     for key in ("user_goal", "final_summary"):
-        payload[key] = redact_value(payload.get(key) or "")
+        payload[key] = _safe_mobile_text(payload.get(key) or "")
+    payload["metadata"] = _safe_mobile_task_metadata(payload.get("metadata"))
     return payload
+
+
+def _safe_mobile_task_metadata(metadata: Any) -> dict[str, Any]:
+    if not isinstance(metadata, dict) or not metadata:
+        return {}
+    return {"redacted": True, "field_count": len(metadata)}
 
 
 def _safe_mobile_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     if not plan:
         return None
     safe = dict(plan)
-    safe["goal"] = redact_value(safe.get("goal") or "")
-    safe["assumptions"] = redact_value(safe.get("assumptions") or [])
+    safe["goal"] = _safe_mobile_text(safe.get("goal") or "")
+    safe["assumptions"] = _safe_mobile_public_value(safe.get("assumptions") or [], key="assumptions")
     safe_steps: list[dict[str, Any]] = []
     for raw_step in safe.get("steps") or []:
         if not isinstance(raw_step, dict):
@@ -855,15 +920,15 @@ def _safe_mobile_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
                 "order": raw_step.get("order") or 0,
                 "agent_name": raw_step.get("agent_name") or "",
                 "tool_name": raw_step.get("tool_name") or "",
-                "description": redact_value(raw_step.get("description") or ""),
+                "description": _safe_mobile_text(raw_step.get("description") or ""),
                 "status": raw_step.get("status") or "",
                 "risk_level": raw_step.get("risk_level") or "",
                 "requires_approval": bool(raw_step.get("requires_approval")),
-                "tool_effects": redact_value(raw_step.get("tool_effects") or []),
-                "resource_kinds": redact_value(raw_step.get("resource_kinds") or []),
+                "tool_effects": _safe_mobile_public_value(raw_step.get("tool_effects") or [], key="tool_effects"),
+                "resource_kinds": _safe_mobile_public_value(raw_step.get("resource_kinds") or [], key="resource_kinds"),
                 "trust_tier": raw_step.get("trust_tier") or "",
                 "deferred_tool": bool(raw_step.get("deferred_tool")),
-                "expected_observation": redact_value(raw_step.get("expected_observation") or ""),
+                "expected_observation": _safe_mobile_text(raw_step.get("expected_observation") or ""),
             }
         )
     safe["steps"] = safe_steps

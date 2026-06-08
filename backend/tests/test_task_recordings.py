@@ -29,6 +29,8 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_API_KEY", "")
     monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_TASK_RECORDING_FORCE", raising=False)
     db.init_db()
     register_all_tools()
     yield
@@ -130,7 +132,7 @@ def test_step_execution_records_before_and_after_screenshots(fake_capture):
     assert [frame["phase"] for frame in payloads[0]["frames"]] == ["before", "after"]
 
 
-def test_timeline_exposes_recordings_and_image_route(fake_capture):
+def test_timeline_redacts_recordings_and_image_route_requires_explicit_file_name(fake_capture):
     calls: list[dict[str, Any]] = []
     orchestrator = OrchestratorAgent()
     orchestrator.subagents["FileAgent"] = PassthroughAgent()
@@ -144,10 +146,16 @@ def test_timeline_exposes_recordings_and_image_route(fake_capture):
     assert timeline.status_code == 200
     recordings = timeline.json()["recordings"]
     assert recordings
+    assert recordings[0]["redacted"] is True
+    assert recordings[0]["frame_count"] == 2
     frames = recordings[0]["frames"]
     assert {frame["phase"] for frame in frames} == {"before", "after"}
+    assert all(frame["image_redacted"] is True for frame in frames)
+    assert all(frame["has_image"] is True for frame in frames)
+    assert all("url" not in frame and "file_name" not in frame and "recording_id" not in frame for frame in frames)
 
-    image = client.get(frames[0]["url"])
+    raw_frames = list_recording_frames(task.id)
+    image = client.get(f"/api/tasks/{task.id}/recordings/{raw_frames[0]['file_name']}")
     assert image.status_code == 200
     assert image.headers["content-type"] == "image/png"
     assert image.content.startswith(b"\x89PNG")
@@ -170,6 +178,72 @@ def test_recording_frames_are_stored_as_sqlite_blobs(fake_capture):
     assert image == _tiny_png()
 
 
+def test_capture_step_screenshot_is_disabled_by_default_without_writing(monkeypatch: pytest.MonkeyPatch):
+    from PIL import Image
+
+    grab_calls = 0
+
+    def grab_screen():
+        nonlocal grab_calls
+        grab_calls += 1
+        return Image.new("RGB", (2, 1), "red")
+
+    monkeypatch.setattr(task_recording_service, "_grab_screen", grab_screen)
+
+    frame = task_recording_service.capture_step_screenshot("task_disabled", "step_disabled", "before")
+
+    assert task_recording_service.recording_enabled() is False
+    assert grab_calls == 0
+    assert frame["ok"] is False
+    assert frame["enabled"] is False
+    assert frame["error"] == "Task recording is disabled."
+    assert list_recording_frames("task_disabled") == []
+    assert _recording_count() == 0
+
+
+def test_force_recording_flag_is_ignored_outside_test_environment(monkeypatch: pytest.MonkeyPatch):
+    from PIL import Image
+
+    grab_calls = 0
+
+    def grab_screen():
+        nonlocal grab_calls
+        grab_calls += 1
+        return Image.new("RGB", (2, 1), "red")
+
+    monkeypatch.setenv("LENGRVIS_TASK_RECORDING_FORCE", "1")
+    for name in ("PYTEST_CURRENT_TEST", "LENGRVIS_TEST", "APP_ENV", "LENGRVIS_ENV"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(task_recording_service, "_grab_screen", grab_screen)
+
+    frame = task_recording_service.capture_step_screenshot("task_force_prod", "step_force_prod", "before")
+
+    assert task_recording_service.recording_enabled() is False
+    assert grab_calls == 0
+    assert frame["ok"] is False
+    assert frame["enabled"] is False
+    assert list_recording_frames("task_force_prod") == []
+    assert _recording_count() == 0
+
+
+def test_capture_step_screenshot_persists_when_explicitly_enabled(monkeypatch: pytest.MonkeyPatch):
+    from PIL import Image
+
+    monkeypatch.setenv("LENGRVIS_TASK_RECORDING_ENABLED", "true")
+    monkeypatch.setattr(task_recording_service, "_grab_screen", lambda: Image.new("RGB", (2, 1), "green"))
+
+    frame = task_recording_service.capture_step_screenshot("task_enabled", "step_enabled", "before")
+
+    assert task_recording_service.recording_enabled() is True
+    assert frame["ok"] is True
+    assert frame["recording_id"]
+    assert frame["width"] == 2
+    assert frame["height"] == 1
+    image, mime_type = read_recording_image("task_enabled", frame["file_name"])
+    assert mime_type == "image/png"
+    assert image.startswith(b"\x89PNG")
+
+
 def test_capture_step_screenshot_persists_png_blob(monkeypatch: pytest.MonkeyPatch):
     from PIL import Image
 
@@ -178,6 +252,7 @@ def test_capture_step_screenshot_persists_png_blob(monkeypatch: pytest.MonkeyPat
 
     frame = task_recording_service.capture_step_screenshot("task_capture", "step_capture", "before")
 
+    assert task_recording_service.recording_enabled() is True
     assert frame["ok"] is True
     assert frame["recording_id"]
     assert frame["width"] == 2
@@ -257,3 +332,8 @@ def _tiny_png() -> bytes:
         "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c4944415408d763f8ffff3f0005fe02fea73581"
         "840000000049454e44ae426082"
     )
+
+
+def _recording_count() -> int:
+    with db.connect() as conn:
+        return int(conn.execute("SELECT COUNT(*) AS count FROM task_recordings").fetchone()["count"])

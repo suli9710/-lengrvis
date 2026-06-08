@@ -93,6 +93,7 @@ export function SystemInfoPanel({
   const releaseNotesPath = releaseNotes?.available && releaseNotes.path ? releaseNotes.path : "";
   const nextSteps = updateChannel.nextSteps?.length ? updateChannel.nextSteps : DEFAULT_UPDATE_CHANNEL.nextSteps ?? [];
   const logDirs = diagnostics?.localPaths?.logDirs ?? [];
+  const primaryLogDir = logDirs[0] ?? "";
   const backendSummary = backendStatusSummary(backendStatus);
   const memoryTotal = Number(diagnostics?.info.memory_total ?? 0);
   const memoryAvailable = Number(diagnostics?.info.memory_available ?? 0);
@@ -109,9 +110,10 @@ export function SystemInfoPanel({
     Boolean(diagnostics?.suggestions?.length);
   const healthSummary = buildHealthSummary({ hasDiagnostics, diagnostics, memoryUsedPercent, largestDisk });
   const updateSummary = buildUpdateSummary(updateCheck, info, backendVersion, updateChannel);
+  const isLocalStatusRefreshing = isRefreshing || updateCheck.status === "checking";
 
-  const checkUpdateStatus = async () => {
-    if (updateCheck.status === "checking") return;
+  const refreshLocalStatus = async () => {
+    if (isLocalStatusRefreshing) return;
     setUpdateCheck({ status: "checking" });
     try {
       await onRefresh();
@@ -136,7 +138,7 @@ export function SystemInfoPanel({
       }
       setDiagnosticExport({
         status: "success",
-        message: `诊断包已生成：${result.filename || compactPath(result.path)}。下方显示的是本机保存位置，方便你打开文件；不要把完整路径当作可公开信息。`,
+        message: `诊断包已生成：${result.filename || compactPath(result.path)}。下方显示的是本机保存位置，方便你打开文件；不要把完整路径当作可公开信息，诊断包也只建议发给信任的支持人员。`,
         path: result.path,
         bytes: result.bytes
       });
@@ -179,21 +181,131 @@ export function SystemInfoPanel({
       title="系统信息"
       eyebrow="Windows 核心能力"
       action={
-        <button className="icon-button" aria-label="刷新系统信息" onClick={() => void onRefresh()} disabled={isRefreshing}>
-          {isRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+        <button className="icon-button" aria-label="刷新本机状态" onClick={() => void refreshLocalStatus()} disabled={isLocalStatusRefreshing}>
+          {isLocalStatusRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
         </button>
       }
     >
       <div className={`system-check-hero system-check-hero--${healthSummary.tone}`}>
         <div>
-          <span className="system-check-hero__eyebrow">一键只读检查</span>
-          <strong>{isRefreshing ? "正在读取电脑健康快照" : healthSummary.title}</strong>
-          <p>{isRefreshing ? "Lengrvis 只读取 CPU、内存、磁盘、启动项和进程信息，不会更改系统设置。" : healthSummary.detail}</p>
+          <span className="system-check-hero__eyebrow">桌面诊断支持流</span>
+          <strong>{isLocalStatusRefreshing ? "正在读取本机状态" : healthSummary.title}</strong>
+          <p>{isLocalStatusRefreshing ? "Lengrvis 会刷新版本、服务和电脑健康快照；不会联网查询、下载或安装更新。" : healthSummary.detail}</p>
         </div>
-        <button className="button button--primary" type="button" onClick={() => void onRefresh()} disabled={isRefreshing}>
-          {isRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
-          {isRefreshing ? "检查中" : hasDiagnostics ? "重新检查" : "立即只读检查"}
+        <button className="button button--primary" type="button" onClick={() => void refreshLocalStatus()} disabled={isLocalStatusRefreshing}>
+          {isLocalStatusRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
+          {isLocalStatusRefreshing ? "刷新中" : hasDiagnostics ? "刷新本机状态" : "立即只读检查"}
         </button>
+      </div>
+
+      <div className="system-support-flow" aria-label="桌面诊断快捷操作">
+        <div className="system-support-action">
+          <div className="system-support-action__body">
+            <RefreshCw size={18} aria-hidden="true" />
+            <div>
+              <strong>刷新本机状态</strong>
+              <span>读取版本、服务、CPU、内存、磁盘和进程快照；不会自动更新系统或应用。</span>
+            </div>
+          </div>
+          <button
+            className="button button--primary"
+            data-testid="system-update-refresh-button"
+            type="button"
+            onClick={() => void refreshLocalStatus()}
+            disabled={isLocalStatusRefreshing}
+          >
+            {isLocalStatusRefreshing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+            {isLocalStatusRefreshing ? "刷新中" : updateChannel.userActionLabel || "刷新本机状态"}
+          </button>
+        </div>
+
+        {onExportDiagnostics ? (
+          <div className="diagnostic-export diagnostic-export--support" data-testid="diagnostic-export-card">
+            <div className="diagnostic-export__body">
+              <Archive size={18} aria-hidden="true" />
+              <div>
+                <strong>遇到问题时导出诊断包</strong>
+                <span>支持包会尽量使用脱敏路径和本机范围摘要，包含版本、服务状态、网络接口、进程摘要和最近失败统计；不包含你的文档正文、文件内容或密钥。它用于信任的支持排查，不是可公开发布的报告。</span>
+              </div>
+            </div>
+            <div className="diagnostic-export__actions">
+              <button
+                className="button button--primary"
+                data-testid="diagnostic-export-button"
+                type="button"
+                onClick={() => void exportDiagnostics()}
+                disabled={isExportingDiagnostics}
+              >
+                {isExportingDiagnostics ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <Archive size={16} aria-hidden="true" />}
+                {isExportingDiagnostics ? "正在导出" : "导出诊断包"}
+              </button>
+              {diagnosticExport.status === "success" && diagnosticExport.path && onRevealPath ? (
+                <button className="button button--secondary" type="button" onClick={() => void revealDiagnosticPackage()}>
+                  <FolderOpen size={16} aria-hidden="true" />
+                  打开所在位置
+                </button>
+              ) : null}
+            </div>
+            {diagnosticExport.status !== "idle" ? (
+              <div
+                className={`diagnostic-export__status diagnostic-export__status--${diagnosticExport.status}`}
+                data-testid="diagnostic-export-status"
+                aria-live="polite"
+              >
+                {diagnosticExport.status === "success" ? <CheckCircle2 size={14} aria-hidden="true" /> : <XCircle size={14} aria-hidden="true" />}
+                <span>
+                  {diagnosticExport.message}
+                  {diagnosticExport.status === "success" && diagnosticExport.bytes ? `（${formatBytes(diagnosticExport.bytes)}）` : ""}
+                </span>
+              </div>
+            ) : null}
+            {diagnosticExport.status === "success" && diagnosticExport.path ? (
+              <div className="diagnostic-export__path" data-testid="diagnostic-export-path">
+                <span>本机保存位置：仅用于在这台电脑上打开，不建议公开完整路径。</span>
+                <code>{diagnosticExport.path}</code>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="system-support-action">
+          <div className="system-support-action__body">
+            <FolderOpen size={18} aria-hidden="true" />
+            <div>
+              <strong>打开日志/说明位置</strong>
+              <span>日志用于排查故障；发布说明用于确认安装包信息，不代表在线更新已经完成。</span>
+            </div>
+          </div>
+          <div className="system-support-action__buttons">
+            <button
+              className="button button--secondary"
+              type="button"
+              onClick={() => void revealLocalPath(primaryLogDir)}
+              disabled={!primaryLogDir || !onRevealPath}
+            >
+              <FolderOpen size={16} aria-hidden="true" />
+              {primaryLogDir ? "打开日志位置" : "刷新后显示日志"}
+            </button>
+            {releaseNotesPath ? (
+              <button
+                className="button button--secondary"
+                data-testid="system-release-notes-button"
+                type="button"
+                onClick={() => void revealLocalPath(releaseNotesPath)}
+                disabled={!onRevealPath}
+              >
+                <FileText size={16} aria-hidden="true" />
+                打开说明位置
+              </button>
+            ) : (
+              <button className="button button--secondary" type="button" disabled>
+                <FileText size={16} aria-hidden="true" />
+                未附带说明
+              </button>
+            )}
+          </div>
+          {pathRevealError ? <span className="system-path-error">{pathRevealError}</span> : null}
+        </div>
       </div>
 
       <div className="system-health-banner">
@@ -227,33 +339,6 @@ export function SystemInfoPanel({
             </div>
           </div>
         </div>
-        <div className="diagnostic-export__actions">
-          <button
-            className="button button--secondary"
-            data-testid="system-update-refresh-button"
-            type="button"
-            onClick={() => void checkUpdateStatus()}
-            disabled={isRefreshing || updateCheck.status === "checking"}
-          >
-            {updateCheck.status === "checking" || isRefreshing ? (
-              <Loader2 className="settings-spinner" size={16} aria-hidden="true" />
-            ) : (
-              <RefreshCw size={16} aria-hidden="true" />
-            )}
-            {updateCheck.status === "checking" || isRefreshing ? "刷新中" : updateChannel.userActionLabel || "刷新本机状态"}
-          </button>
-          {releaseNotesPath && onRevealPath ? (
-            <button
-              className="button button--secondary"
-              data-testid="system-release-notes-button"
-              type="button"
-              onClick={() => void revealLocalPath(releaseNotesPath)}
-            >
-              <FileText size={16} aria-hidden="true" />
-              打开说明位置
-            </button>
-          ) : null}
-        </div>
       </div>
 
       <div className="system-section" data-testid="system-update-next-steps">
@@ -269,57 +354,7 @@ export function SystemInfoPanel({
             </div>
           ))}
         </div>
-        {pathRevealError ? <span className="system-path-error">{pathRevealError}</span> : null}
       </div>
-
-      {onExportDiagnostics ? (
-        <div className="diagnostic-export" data-testid="diagnostic-export-card">
-          <div className="diagnostic-export__body">
-            <Archive size={18} aria-hidden="true" />
-            <div>
-              <strong>遇到问题时导出诊断包</strong>
-              <span>支持包会尽量使用脱敏路径和本机范围摘要，包含版本、服务状态、网络接口、进程摘要和最近失败统计；不需要打开配置文件，也不包含你的文档正文、文件内容或密钥。</span>
-            </div>
-          </div>
-          <div className="diagnostic-export__actions">
-            <button
-              className="button button--primary"
-              data-testid="diagnostic-export-button"
-              type="button"
-              onClick={() => void exportDiagnostics()}
-              disabled={isExportingDiagnostics}
-            >
-              {isExportingDiagnostics ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <Archive size={16} aria-hidden="true" />}
-              {isExportingDiagnostics ? "正在导出" : "导出诊断包"}
-            </button>
-            {diagnosticExport.status === "success" && diagnosticExport.path && onRevealPath ? (
-              <button className="button button--secondary" type="button" onClick={() => void revealDiagnosticPackage()}>
-                <FolderOpen size={16} aria-hidden="true" />
-                打开所在位置
-              </button>
-            ) : null}
-          </div>
-          {diagnosticExport.status !== "idle" ? (
-            <div
-              className={`diagnostic-export__status diagnostic-export__status--${diagnosticExport.status}`}
-              data-testid="diagnostic-export-status"
-              aria-live="polite"
-            >
-              {diagnosticExport.status === "success" ? <CheckCircle2 size={14} aria-hidden="true" /> : <XCircle size={14} aria-hidden="true" />}
-              <span>
-                {diagnosticExport.message}
-                {diagnosticExport.status === "success" && diagnosticExport.bytes ? `（${formatBytes(diagnosticExport.bytes)}）` : ""}
-              </span>
-            </div>
-          ) : null}
-          {diagnosticExport.status === "success" && diagnosticExport.path ? (
-            <div className="diagnostic-export__path" data-testid="diagnostic-export-path">
-              <span>本机保存位置：仅用于在这台电脑上打开，不建议公开完整路径。</span>
-              <code>{diagnosticExport.path}</code>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
 
       <div className="system-grid">
         <SystemMetric label="应用版本" value={`桌面 ${info.appVersion || "未知"}`} />
@@ -433,7 +468,7 @@ function buildUpdateSummary(
   if (state.status === "checking") {
     return {
       title,
-      detail: "正在刷新本机版本、服务状态和诊断快照；不会联网查询、下载或自动安装更新。",
+      detail: "正在刷新本机版本、服务状态和诊断快照；不会联网查询，也不会下载或安装更新。",
       shortLabel: "本机检查中",
       tone: "warning"
     };
@@ -442,7 +477,7 @@ function buildUpdateSummary(
     const checkedAt = state.checkedAt ? ` 上次检查：${formatDateTime(state.checkedAt)}。` : "";
     return {
       title,
-      detail: `已刷新当前安装版本和后端版本。${channelDetail}${checkedAt}`,
+      detail: `已刷新当前安装版本和后端版本。${channelDetail} 本页不会下载或安装更新；如需确认新版，请查看安装包或本地发布说明。${checkedAt}`,
       shortLabel: channelLabel,
       tone: steadyTone
     };
@@ -457,7 +492,7 @@ function buildUpdateSummary(
   }
   return {
     title,
-    detail: `${channelDetail} “刷新本机状态”只会刷新本机版本和服务信息。`,
+    detail: `${channelDetail} “刷新本机状态”只会刷新本机版本和服务信息，并更新诊断快照；不会下载或安装更新。`,
     shortLabel: channelLabel,
     tone: steadyTone
   };

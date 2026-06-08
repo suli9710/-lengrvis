@@ -17,6 +17,7 @@ from app.core.schemas import AgentMessage, Approval, ApprovalStatus, MessageType
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.policy.redaction import redact_value
 from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_api_token_headers
+from app.security.lan import is_mobile_token_websocket_path, is_secure_mobile_transport
 from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     mobile_token_from_websocket,
@@ -297,6 +298,10 @@ async def notification_messages(websocket: WebSocket):
 async def mobile_notifications(websocket: WebSocket, token: str = ""):
     from app.security.mobile_jwt import decode_mobile_token
 
+    client_host = websocket.client.host if websocket.client else ""
+    if not is_secure_mobile_transport(client_host, websocket.url.scheme):
+        await websocket.close(code=1008)
+        return
     try:
         claims = decode_mobile_token(mobile_token_from_websocket(websocket, token), allowed_scopes={TOKEN_SCOPE})
     except HTTPException:
@@ -571,8 +576,7 @@ def _full_backend_ws_url(path: str, query: str) -> str:
 
 
 def _is_mobile_ws_path(path: str) -> bool:
-    normalized = "/" + path.lstrip("/")
-    return normalized.startswith("/ws/mobile/") or normalized.startswith("/api/ws/mobile/") or normalized.startswith("/ws/remote/") or normalized.startswith("/api/ws/remote/")
+    return is_mobile_token_websocket_path(path)
 
 
 def _is_mobile_or_remote_proxy_path(path: str) -> bool:

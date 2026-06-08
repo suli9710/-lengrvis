@@ -345,6 +345,99 @@ def test_mobile_companion_redacts_sensitive_non_privacy_task_text(monkeypatch, t
     assert "owner@example.com" not in payload_text
 
 
+def test_mobile_companion_hides_task_evidence_locators_from_task_payloads(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    metadata = _mobile_task_metadata(token)
+    metadata["mobile_companion"]["debug_evidence"] = {
+        "recording_url": "/api/tasks/task_metadata_secret/recordings/metadata-frame.png",
+        "recording_id": "rec_metadata_secret_1234567890",
+        "file_name": "metadata-step-after-20260608T120000000000Z.png",
+        "token": "recording-secret-token-1234567890",
+    }
+    task = Task(
+        user_goal="Review /tmp/mobile-private/input.csv before sending a phone update",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+        metadata=metadata,
+    )
+    task.final_summary = (
+        f"Desktop evidence: /api/tasks/{task.id}/timeline "
+        f"replay_url=/api/tasks/{task.id}/replay "
+        f"recording_id=rec_sensitive1234567890 "
+        "file_name=step_1-after-20260608T120000000000Z.png "
+        "desktop result stored at C:/Users/Suli/private/tool-result.txt"
+    )
+    db.upsert_model("tasks", task)
+
+    list_response = client.get("/api/mobile/tasks", headers={"Authorization": f"Bearer {token}"})
+    detail_response = client.get(f"/api/mobile/tasks/{task.id}", headers={"Authorization": f"Bearer {token}"})
+    pause_response = client.post(f"/api/mobile/tasks/{task.id}/pause", headers={"Authorization": f"Bearer {token}"})
+
+    assert list_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert pause_response.status_code == 200
+    listed_task = next(item for item in list_response.json()["tasks"] if item["id"] == task.id)
+    assert listed_task["content_redacted"] is True
+    assert detail_response.json()["content_redacted"] is True
+    assert pause_response.json()["content_redacted"] is True
+    assert "[desktop evidence hidden]" in listed_task["summary"]
+    payload_text = json.dumps(
+        {
+            "list": list_response.json(),
+            "detail": detail_response.json(),
+            "pause": pause_response.json(),
+        },
+        ensure_ascii=False,
+    )
+    for fragment in (
+        "/api/tasks/",
+        "/tmp/mobile-private/input.csv",
+        "C:/Users/Suli/private/tool-result.txt",
+        "step_1-after-20260608T120000000000Z.png",
+        "rec_sensitive1234567890",
+        "debug_evidence",
+        "metadata-frame.png",
+        "rec_metadata_secret_1234567890",
+        "recording-secret-token-1234567890",
+    ):
+        assert fragment not in payload_text
+
+
+def test_mobile_companion_hides_structured_tool_evidence_in_task_text(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="Summarize /var/mobile-private/report.pdf for the phone",
+        final_summary=(
+            'model_action={"tool_name":"browser.fill","args":{"value":"secret form value"}} '
+            'tool_result={"path":"C:/Users/Suli/private/result.txt"}'
+        ),
+        metadata=_mobile_task_metadata(token),
+    )
+    db.upsert_model("tasks", task)
+
+    response = client.get(f"/api/mobile/tasks/{task.id}", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    assert payload["summary"] == "[desktop evidence hidden]"
+    assert payload["content_redacted"] is True
+    for fragment in (
+        "model_action",
+        "tool_result",
+        "secret form value",
+        "C:/Users/Suli/private/result.txt",
+        "/var/mobile-private/report.pdf",
+    ):
+        assert fragment not in payload_text
+
+
 def test_mobile_companion_status_view_returns_404_for_missing_task(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -635,6 +728,58 @@ def test_mobile_companion_follow_up_creates_related_computer_task(monkeypatch, t
     assert "桌面上的临时文件" in captured["goal"]
 
 
+def test_mobile_companion_follow_up_redacts_non_privacy_source_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    source = Task(
+        user_goal=(
+            "打开 C:/Users/Suli/private-contract.txt 并查看 "
+            "/api/tasks/task_secret/replay recording_id=rec_secret1234567890"
+        ),
+        mode="hybrid",
+        metadata=_mobile_task_metadata(token),
+    )
+    db.upsert_model("tasks", source)
+    captured: dict[str, str] = {}
+
+    def fake_delegate_mobile_task(
+        goal: str,
+        mode: str,
+        *,
+        reply: str,
+        agent_hint: str,
+        metadata: dict | None = None,
+    ) -> ChatResponse:
+        captured.update({"goal": goal, "mode": mode, "agent_hint": agent_hint})
+        task = Task(user_goal=goal, mode=mode, metadata=metadata or {})
+        db.upsert_model("tasks", task)
+        return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
+
+    monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
+
+    response = client.post(
+        f"/api/mobile/tasks/{source.id}/follow-up",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"instruction": "继续检查桌面上的临时文件。"},
+    )
+
+    assert response.status_code == 201
+    payload_text = json.dumps(response.json(), ensure_ascii=False)
+    assert "原任务上下文（已脱敏）" in captured["goal"]
+    assert "[本地路径]" in captured["goal"]
+    assert "[desktop evidence hidden]" in captured["goal"]
+    for fragment in (
+        "C:/Users/Suli/private-contract.txt",
+        "private-contract",
+        "/api/tasks/task_secret/replay",
+        "rec_secret1234567890",
+    ):
+        assert fragment not in captured["goal"]
+        assert fragment not in payload_text
+
+
 def test_mobile_companion_follow_up_does_not_echo_privacy_task_text(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -783,7 +928,7 @@ def test_pair_confirm_rate_limits_failed_attempts_by_client(monkeypatch, tmp_pat
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _clear_pairing_failures()
-    client = TestClient(app, client=("192.0.2.88", 50100))
+    client = TestClient(app, client=("192.0.2.88", 50100), base_url="https://testserver")
 
     for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
         response = client.post("/api/pair/confirm", json={"code": "ffffff", "device_name": "Phone"})
@@ -1865,6 +2010,144 @@ def test_mobile_approval_payload_redacts_sensitive_preview(monkeypatch, tmp_path
     assert "[REDACTED" in payload_text or "***" in payload_text
 
 
+def test_mobile_approval_payload_redacts_model_action_args(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    approval = Approval(
+        task_id="task_mobile_model_action_secret",
+        step_id="step_1",
+        message="Approve model action args",
+        model_action={
+            "kind": "tool_call",
+            "tool_name": "browser.fill",
+            "args": {
+                "path": "C:/Users/Suli/private/payroll.xlsx",
+                "url": "https://example.com/form?token=model-action-secret-token",
+                "selector": "#password",
+                "value": "raw form secret value",
+            },
+        },
+        engineering_boundary={
+            "model_action": {
+                "kind": "tool_call",
+                "tool_name": "browser.fill",
+                "args": {
+                    "path": "C:/Users/Suli/private/nested-payroll.xlsx",
+                    "selector": "#nested-password",
+                    "value": "nested raw form secret value",
+                    "token": "nested-model-action-secret-token",
+                },
+            },
+            "support_note": "Nested approval evidence at C:/Users/Suli/private/nested-payroll.xlsx",
+        },
+    )
+    db.upsert_model("approvals", approval)
+    publish_approval_created(approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    detail_response = client.get(
+        f"/api/mobile/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert pending_response.status_code == 200
+    assert detail_response.status_code == 200
+    pending_payload = pending_response.json()[0]
+    detail_payload = detail_response.json()["approval"]
+    for payload in (pending_payload, detail_payload):
+        assert payload["model_action"]["redacted"] is True
+        assert payload["model_action"]["args"] == {
+            "redacted": True,
+            "field_count": 4,
+        }
+        assert "keys" not in payload["model_action"]["args"]
+        assert payload["engineering_boundary"]["model_action"]["redacted"] is True
+        assert payload["engineering_boundary"]["model_action"]["args"] == {
+            "redacted": True,
+            "field_count": 4,
+        }
+        assert "keys" not in payload["engineering_boundary"]["model_action"]["args"]
+    payload_text = json.dumps({"pending": pending_payload, "detail": detail_payload}, ensure_ascii=False)
+    assert "C:/Users/Suli/private/payroll.xlsx" not in payload_text
+    assert "C:/Users/Suli/private/nested-payroll.xlsx" not in payload_text
+    assert "model-action-secret-token" not in payload_text
+    assert "nested-model-action-secret-token" not in payload_text
+    assert "#password" not in payload_text
+    assert "#nested-password" not in payload_text
+    assert "raw form secret value" not in payload_text
+    assert "nested raw form secret value" not in payload_text
+
+
+def test_mobile_approval_payload_hides_sensitive_model_action_arg_names_across_mobile_surfaces(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+
+    approval = Approval(
+        task_id="task_mobile_model_action_arg_name_secret",
+        step_id="step_1",
+        message="Approve model action arg name redaction",
+        model_action={
+            "kind": "tool_call",
+            "tool_name": "browser.fill",
+            "args": {
+                "debug_evidence_recording_url_q9x": "/api/tasks/task_arg_key/recordings/key-frame.png",
+                "screenshot_file_name_q9x": "step-after-20260608T120000000000Z.png",
+                "C:/Users/Suli/private/arg-key.txt": "C:/Users/Suli/private/arg-value.txt",
+                "token_arg_name_secret_q9x": "arg-value-secret-token-1234567890",
+            },
+        },
+    )
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        db.upsert_model("approvals", approval)
+        publish_approval_created(approval)
+        event = websocket.receive_json()
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    detail_response = client.get(
+        f"/api/mobile/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert pending_response.status_code == 200
+    assert detail_response.status_code == 200
+    pending_payload = pending_response.json()[0]
+    detail_payload = detail_response.json()["approval"]
+    assert event["type"] == "approval_created"
+    for payload in (pending_payload, detail_payload, event["approval"]):
+        assert payload["model_action"]["args"] == {"redacted": True, "field_count": 4}
+        assert "keys" not in payload["model_action"]["args"]
+    payload_text = json.dumps(
+        {"pending": pending_payload, "detail": detail_payload, "event": event},
+        ensure_ascii=False,
+    )
+    for fragment in (
+        "debug_evidence_recording_url_q9x",
+        "screenshot_file_name_q9x",
+        "C:/Users/Suli/private/arg-key.txt",
+        "token_arg_name_secret_q9x",
+        "/api/tasks/task_arg_key/recordings/key-frame.png",
+        "step-after-20260608T120000000000Z.png",
+        "C:/Users/Suli/private/arg-value.txt",
+        "arg-value-secret-token-1234567890",
+    ):
+        assert fragment not in payload_text
+
+
 def test_mobile_approval_payload_redacts_sensitive_message(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -1892,6 +2175,121 @@ def test_mobile_approval_payload_redacts_sensitive_message(monkeypatch, tmp_path
     payload_text = json.dumps({"pending": pending_response.json(), "detail": detail_response.json()}, ensure_ascii=False)
     assert "secret-token-raw-message-1234567890" not in payload_text
     assert "token=[REDACTED]" in payload_text
+
+
+def test_mobile_approval_detail_redacts_local_paths_in_text_fields(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="Review C:/Users/Suli/private/payroll.xlsx before approval",
+        final_summary="Summary mentions C:/Users/Suli/private/final-summary.txt",
+    )
+    db.upsert_model("tasks", task)
+    step = PlanStep(
+        task_id=task.id,
+        order=1,
+        agent_name="ComputerAgent",
+        tool_name="files.read",
+        description="Read C:/Users/Suli/private/step-description.txt",
+        expected_observation="Expected C:/Users/Suli/private/observation.txt",
+    )
+    plan = Plan(
+        task_id=task.id,
+        goal="Plan for C:/Users/Suli/private/plan-goal.txt",
+        assumptions=["Assume C:/Users/Suli/private/assumption.txt exists"],
+        steps=[step],
+    )
+    db.upsert_model("plans", plan)
+    approval = Approval(
+        task_id=task.id,
+        step_id=step.id,
+        message="Approve reading C:/Users/Suli/private/approval-message.txt",
+        dry_run_summary="Dry run touched C:/Users/Suli/private/dry-run.txt",
+    )
+    db.upsert_model("approvals", approval)
+    publish_approval_created(approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    detail_response = client.get(
+        f"/api/mobile/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert pending_response.status_code == 200
+    assert detail_response.status_code == 200
+    payload_text = json.dumps({"pending": pending_response.json(), "detail": detail_response.json()}, ensure_ascii=False)
+    for fragment in (
+        "C:/Users/Suli/private/payroll.xlsx",
+        "C:/Users/Suli/private/final-summary.txt",
+        "C:/Users/Suli/private/step-description.txt",
+        "C:/Users/Suli/private/observation.txt",
+        "C:/Users/Suli/private/plan-goal.txt",
+        "C:/Users/Suli/private/assumption.txt",
+        "C:/Users/Suli/private/approval-message.txt",
+        "C:/Users/Suli/private/dry-run.txt",
+    ):
+        assert fragment not in payload_text
+    assert "[REDACTED_LOCAL_PATH]" in payload_text
+
+
+def test_mobile_approval_detail_summarizes_task_metadata_debug_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    metadata = _mobile_task_metadata(token)
+    metadata["mobile_companion"]["debug_evidence"] = {
+        "recording_url": "/api/tasks/task_metadata_secret/recordings/metadata-frame.png",
+        "recording_id": "rec_metadata_secret_1234567890",
+        "file_name": "metadata-step-after-20260608T120000000000Z.png",
+        "token": "recording-secret-token-1234567890",
+        "local_path": "C:/Users/Suli/private/metadata-frame.png",
+    }
+    metadata["debug_evidence"] = {
+        "recording_url": "/api/tasks/task_top_secret/recordings/top-frame.png",
+        "recording_id": "rec_top_metadata_secret_1234567890",
+    }
+    metadata["local_path"] = "C:/Users/Suli/private/task-metadata.json"
+    task = Task(
+        user_goal="Review metadata before mobile approval",
+        final_summary="Ready for approval",
+        metadata=metadata,
+    )
+    approval = Approval(task_id=task.id, step_id="step_1", message="Approve metadata summary")
+    db.upsert_model("tasks", task)
+    db.upsert_model("approvals", approval)
+
+    response = client.get(
+        f"/api/mobile/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task"]["metadata"] == {"redacted": True, "field_count": len(metadata)}
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    for fragment in (
+        "debug_evidence",
+        "recording_url",
+        "recording_id",
+        "file_name",
+        "local_path",
+        "/api/tasks/task_metadata_secret/recordings/metadata-frame.png",
+        "/api/tasks/task_top_secret/recordings/top-frame.png",
+        "metadata-frame.png",
+        "metadata-step-after-20260608T120000000000Z.png",
+        "rec_metadata_secret_1234567890",
+        "rec_top_metadata_secret_1234567890",
+        "recording-secret-token-1234567890",
+        "C:/Users/Suli/private/metadata-frame.png",
+        "C:/Users/Suli/private/task-metadata.json",
+    ):
+        assert fragment not in payload_text
 
 
 def test_desktop_approval_payload_hides_binding_resource_state(monkeypatch, tmp_path):
@@ -2249,6 +2647,14 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
             step_id="step_1",
             message="Approve from phone with token=secret-message-ws-1234567890",
             diff_preview={"value": "Authorization Bearer secret-token-1234567890"},
+            model_action={
+                "kind": "tool_call",
+                "tool_name": "browser.fill",
+                "args": {
+                    "url": "https://example.com/form?token=secret-ws-model-action-token",
+                    "value": "secret ws form value",
+                },
+            },
         )
         db.upsert_model("approvals", approval)
         publish_approval_created(approval)
@@ -2259,6 +2665,13 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
     assert event["type"] == "approval_created"
     assert "secret-token-1234567890" not in event_text
     assert "secret-message-ws-1234567890" not in event_text
+    assert "secret-ws-model-action-token" not in event_text
+    assert "secret ws form value" not in event_text
+    assert event["approval"]["model_action"]["args"] == {
+        "redacted": True,
+        "field_count": 2,
+    }
+    assert "keys" not in event["approval"]["model_action"]["args"]
 
 
 def _paired_token(client: TestClient) -> str:

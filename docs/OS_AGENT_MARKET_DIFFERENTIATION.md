@@ -32,7 +32,7 @@ Lengrvis 当前最可信的市场叙事不是“全面替代某个 OS Agent”�
 | ONNX/硬件加速 | 有 WinML / DirectML / OpenVINO / CPU provider 检测、健康检查、warmup/test_generate 框架 | `backend/app/llm/onnx_provider.py` |
 | 文件环境感知 | `FileWatcher` 已用 watchdog 监听授权目录并增量更新 FTS；启动时接入 environment stream | `backend/app/indexer/file_watcher.py`、`backend/app/main.py` |
 | 调度任务 | croniter 单进程调度器，可触发 Orchestrator 执行任务，并发通知 | `backend/app/services/scheduler_service.py` |
-| 移动端审批 | Android companion 已有配对 payload 解析、JWT、审批列表、审批详情、批准/拒绝、WebSocket 通知和隐私保护通知正文 | `mobile/src/screens/PairScreen.tsx`、`mobile/App.tsx`、`backend/app/api/routes_mobile.py`、`backend/app/services/mobile_pairing_service.py` |
+| 移动端审批 | Android companion 已有配对 payload 解析、内置 QR 扫码/粘贴/手动 fallback、JWT、审批列表、审批详情、批准/拒绝、WebSocket 通知和隐私保护通知正文 | `mobile/src/screens/PairScreen.tsx`、`mobile/scripts/mobile-token-smoke.cjs`、`mobile/App.tsx`、`backend/app/api/routes_mobile.py`、`backend/app/services/mobile_pairing_service.py` |
 | 远程桌面 | 有屏幕流、输入 WebSocket、移动 token scope、输入审批链、只读/短授权输入/结束接管状态；默认由 `remote_desktop_enabled` 控制 | `backend/app/api/routes_remote.py`、`backend/app/services/remote_desktop_service.py`、`mobile/src/screens/RemoteScreen.tsx` |
 | 通知 | 后端通过 AgentBus 发布通知；桌面 `NotificationBridge` 监听通知 WebSocket 并投递 Electron Notification；移动通知默认隐藏敏感正文 | `backend/app/services/notification_service.py`、`desktop/src/main/notifications.ts`、`mobile/src/notifications.ts` |
 | 可扩展性 | Skill YAML + 沙盒 + 安全审查 + 动态工具注册；MCP registry 可适配工具定义 | `backend/app/skills/*`、`backend/app/mcp/*` |
@@ -138,7 +138,7 @@ Lengrvis 有 ONNX provider、WinML/DirectML/OpenVINO 检测和 warmup/test_gener
 Lengrvis 有应用扫描、启动、卸载和 Excel COM，但缺 WPS/Office 全套、微信/浏览器收藏/邮件/日历/网盘/图片管理等消费常用 App 的稳定集成。个人 OS Agent 的粘性来自“真能替我操作常用软件”，不是只会列进程或打开设置。
 
 **跨端体验已有闭环雏形，但还不是发布级远控产品**
-Android companion 已覆盖配对、审批、任务状态、只读屏幕流、短授权远程输入、结束接管和 LAN/TLS 风险提示。它已经超过“只有审批列表”的阶段，但仍需要真实手机 QR 扫码、网络穿透、证书信任链、锁屏/权限、延迟、输入映射和移动端继续/发起任务的产品化证据。腾讯 Marvis 已把手机操控电脑放在官网核心卖点，Claude Code 也强调从手机把任务路由到本机；Lengrvis 应先把“手机看进度、看屏幕、批准/拒绝、短授权接管、可撤销”做成可信闭环。
+Android companion 已覆盖配对、内置 QR 扫码/粘贴入口、审批、任务状态、只读屏幕流、短授权远程输入、结束接管和 LAN/TLS 风险提示。它已经超过“只有审批列表”的阶段，但仍需要真实手机/模拟器扫码配对、网络穿透、证书信任链、锁屏/权限、延迟、输入映射和移动端继续/发起任务的产品化证据；当前源码 smoke 只能证明扫码路径存在，不能替代真实设备闭环。腾讯 Marvis 已把手机操控电脑放在官网核心卖点，Claude Code 也强调从手机把任务路由到本机；Lengrvis 应先把“手机看进度、看屏幕、批准/拒绝、短授权接管、可撤销”做成可信闭环。
 
 **消费级 UX 和可信解释不足**  
 Lengrvis 桌面端已有办公室 Agent、能力卡、审批弹窗、设置页，但仍需要针对普通用户的任务模板、错误恢复、权限解释、模型安装引导、隐私状态指示、任务回放和“失败时下一步怎么办”。

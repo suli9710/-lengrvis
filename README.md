@@ -4,8 +4,8 @@
 
 | 平台 | 状态 | 当前交付 | 已知限制 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包已有 portable 首屏 smoke：packaged renderer 已观察到 `/api/system/diagnostics`，NL 命令 dock 已观察到 `/api/runs` 和后端只读系统诊断任务证据；仍需 clean-machine、真实设备和候选版本人工验收。 |
-| Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 需要与电脑在可访问网络内；完整应用商店分发未完成。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包已有 portable 首屏 smoke：packaged renderer 已观察到 `/api/system/diagnostics`，NL 命令 dock 已观察到 `/api/runs` 和后端只读系统诊断任务证据；这不是任务结果完成签收，仍需 clean-machine、真实设备和候选版本人工验收。 |
+| Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 移动审批和远程 WS 脱敏已有后端目标证据；真机 LAN/WSS、证书信任路径和完整应用商店分发未完成。 |
 | macOS 桌面 | Preview | macOS 后端构建脚本与 DMG 脚本存在 | 不作为 0-90 天主线，需在 macOS 主机验证。 |
 | iOS Companion | Planned | 暂不交付 | 等 Android companion 闭环稳定后再排期。 |
 
@@ -20,8 +20,17 @@
 ## 普通用户配置与诊断入口
 
 - 配置 AI、隐私模式、本地模型、硬件加速和手机配对时，优先打开桌面窗口里的“设置”。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
-- 应用能打开但任务异常时，打开“系统信息”，先刷新只读诊断；需要反馈问题时再点“导出诊断包”。诊断包会包含版本、服务状态、本机路径、网络接口、进程和启动项摘要，但不包含你的文档正文或密钥。
-- 应用打不开时，双击 `Start-Lengrvis-Debug.cmd`，它会显示已脱敏的最近启动日志摘要和下一步。
+- 应用能打开但任务异常时，打开“系统信息”。这里会显示桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明入口。
+- “刷新本机状态”只刷新当前安装版本、后端状态和诊断快照；当前没有完整在线自动更新、下载更新或自动安装更新通道。
+- 需要反馈问题时再点“导出诊断包”。诊断包会写入本机数据目录下的 `diagnostic-packages`，包含版本、服务状态、本机范围摘要、网络接口、进程、启动项和最近失败统计；导出内容会尽量把 data/database/log 绝对路径、进程用户名、密钥、任务正文、设备名、配对码、grant id 和模型路径脱敏。
+- 诊断包不是“可公开发布材料”：界面可能显示本机保存位置方便你打开文件，分享前仍应确认没有不该外发的路径、日志片段或组织信息。
+- 应用打不开时，双击 `Start-Lengrvis-Debug.cmd`，它会显示已脱敏的最近启动日志摘要和下一步；完整日志位置通常在仓库 `logs` 目录或应用数据目录的 `logs` 目录，能打开应用时也可在“系统信息”里查看。
+
+## 任务证据与录屏隐私
+
+- 任务步骤录屏/截图默认不采集。只有你明确开启任务录屏（开发/测试环境可用 `LENGRVIS_TASK_RECORDING_ENABLED=true`，测试可用 `LENGRVIS_TASK_RECORDING_FORCE=1`）时，才会把截图作为本机 task recording 写入数据目录；不要在含私人资料的 profile 上随手开启。
+- 任务 timeline、replay、任务列表、agent messages、safety reviews、progress 和 explain 接口只返回 redacted summary、状态、计数和边界标签。它们不会返回截图 URL、截图文件名、recording id、raw tool args/result、隐藏 prompt、任务 metadata、review reasons 或文件正文。
+- 诊断包导出只保留 task recording 的状态边界，例如是否开启和默认 opt-in 策略；不会把录屏图片、截图文件名或 task recording 路径放进支持包。原始截图只能通过显式本机文件名路线读取，不能从公开 timeline/replay 自动发现。
 
 ## 产品说明
 
@@ -198,6 +207,18 @@ mobile remote-input grant smoke passed
 desktop smoke passed
 ```
 
+诊断和产品化边界的针对性证据：
+
+```powershell
+python -m pytest backend\tests\test_system_diagnostics.py -q
+python -m pytest backend\tests\test_remote_desktop.py -q
+python -m pytest backend\tests\test_mobile_pairing.py -q -k "mobile_approval_payload_redacts_model_action_args or mobile_approval_detail_redacts_local_paths_in_text_fields or mobile_approval_websocket_redacts_created_event"
+npm --prefix desktop run smoke:system-diagnostics-ui
+npm run smoke:portable-first-screen
+```
+
+本轮目标结果包括 diagnostics `8 passed`、remote WS `25 passed`、移动审批 nested args/本地路径脱敏 `3 passed, 79 deselected`。这些证据分别覆盖诊断 payload/export 脱敏、远程屏幕/输入 WebSocket 泛化错误、移动审批 list/detail/WebSocket event 脱敏、Vite 预览中的版本与本机刷新 UI，以及 packaged portable 的只读诊断/命令 dock 证据；它们不等同于完整 crash/update pipeline、在线自动更新、真机 LAN/WSS 验收或 clean-machine RC sign-off。
+
 跳过项是当前 Windows shell 没有创建符号链接权限。
 
 端到端 QA 和发布门禁见：
@@ -217,7 +238,7 @@ npm run qa:gate
 npm run release:check
 ```
 
-发布候选若需要证明打包 GUI 首屏和只读任务入口，再跑 `npm run smoke:portable-first-screen`。最新开发工作区证据目录为 `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259`：只读入口观察到 packaged renderer `/api/system/diagnostics`；自然语言 dock 观察到 `/api/runs` 与后端 read-only/system diagnostics task evidence。该证据不能替代 clean-machine、真实设备或人工 RC sign-off。移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
+发布候选若需要收集打包 GUI 首屏和只读任务入口证据，再跑 `npm run smoke:portable-first-screen`。最新开发工作区证据目录为 `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259`：只读入口观察到 packaged renderer `/api/system/diagnostics`；自然语言 dock 观察到 `/api/runs` 与后端 read-only/system diagnostics task evidence。该证据只覆盖 packaged command-dock 提交和只读任务证据，不能替代 clean-machine、真实设备、人工 RC sign-off 或 completed task-result sign-off。移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
 
 ## 打包
 
@@ -291,16 +312,19 @@ npm --prefix desktop run dist:mac:arm64
 - `WebSocket /ws/tasks/{task_id}` — 实时 Agent 消息流
 
 任务与审批：
-- `GET /api/tasks`、`GET /api/tasks/{task_id}/timeline`、`GET /api/tasks/{task_id}/agent-messages`、`GET /api/tasks/{task_id}/safety-reviews`
+- `GET /api/tasks`、`GET /api/tasks/{task_id}/timeline`、`GET /api/tasks/{task_id}/replay`、`GET /api/tasks/{task_id}/agent-messages`、`GET /api/tasks/{task_id}/safety-reviews`
+- 上述任务证据接口是公开安全视图：返回 redacted summary、状态、计数、边界事件和截图存在标记，不返回 raw tool args/result、文件正文、隐藏 prompt、review reasons、截图 URL、截图文件名或 recording id。
+- `GET /api/tasks/{task_id}/recordings/{file_name}` 只用于显式本机查看单个录屏帧；`file_name` 不会出现在 timeline/replay/诊断导出里。
 - `GET /api/approvals/pending`、`POST /api/approvals/{approval_id}/approve`、`POST /api/approvals/{approval_id}/reject`
 
 移动端远程审批：
 - `POST /api/pair/code` — 桌面端生成一次性 LAN 配对码
 - `POST /api/pair` — Android 伴侣 App 用配对码换取移动端 JWT
-- `GET /api/mobile/approvals/pending`、`POST /api/mobile/approvals/{approval_id}/decision` — Bearer JWT 保护的审批接口
+- `GET /api/mobile/approvals/pending`、`GET /api/mobile/approvals/{approval_id}`、`POST /api/mobile/approvals/{approval_id}/decision` — Bearer JWT 保护的审批接口；手机端 payload 会脱敏 nested model action args、本地路径、selector、token、value 和 support-only 细节。
 - `GET /api/mobile/tasks`、`POST /api/mobile/tasks/{task_id}/pause|resume|cancel` — 手机端监督电脑任务，不暴露内部 plan args。
 - `POST /api/mobile/remote-input-grants/{grant_id}/token`、`DELETE /api/mobile/remote-input-grants/{grant_id}` — 手机端领取或结束短期远程输入授权。
 - `WebSocket /ws/mobile/approvals` — 手机端订阅审批创建/决策事件；令牌通过 `Sec-WebSocket-Protocol: lengrvis.mobile.token.<token>` 传递，避免进入 URL 日志。
+- `WebSocket /ws/remote/screen` 与 `/ws/remote/input` — 远程屏幕和短期远程输入；客户端错误只返回泛化 code/message，底层异常细节只进入已脱敏的本机审计/日志。
 
 Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` 启动。手机真机访问时，后端需要监听局域网地址，例如 `.\scripts\start_app.ps1 -BackendHost 0.0.0.0`；远程 LAN 客户端默认只能访问移动端配对与审批接口，桌面端完整 API 仍限制为本机访问。
 
@@ -338,9 +362,11 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 ## 当前限制
 
 - 真正的本地推理（Ollama / LM Studio / llama.cpp-compatible server）需用户自行安装并启动；隐私模式探测不到本地后端时会明确失败。
+- 桌面端当前只展示本机版本、后端版本、本地发布说明和“刷新本机状态”；完整在线自动更新、自动下载/安装更新、crash/update pipeline 和 clean-machine RC sign-off 尚未完成。
+- 任务录屏/截图默认 opt-in，公开 timeline/replay 只提供脱敏摘要；真实 Electron replay UX、手机端任务证据 UX、真实设备录屏/截图证据和外发诊断包安全复核仍需候选版本验证。
 - 硬件加速配置已接入桌面端 Settings：可设置 `onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference`，并通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 做可用性检查。
 - Windows GUI automation is implemented through UIAutomation COM, screenshots, window focus, semantic element lookup, and mouse/keyboard fallback input. Mutating GUI actions still require dry-run + user approval, and policy blocks credential, payment, one-time-code, and token text entry.
-- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的输入。
+- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的输入。远程 WS 错误对客户端应保持泛化；本轮 `backend\tests\test_remote_desktop.py` 目标重跑为 `25 passed`，覆盖 auth/scope、query-token rejection、revoke/expiry/disable close behavior、invalid control、screen capture failure、unsupported input、policy/tool rejection 与 remote input unexpected exception redaction，真实手机/WSS 弱网、锁屏、后台、错误态截图和证书信任路径仍需补证据。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
 
 ## Phase 5 AI OS Loop

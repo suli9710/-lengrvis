@@ -12,7 +12,15 @@ from app.core.schemas import Run, RunEngine, RunPhase
 from app.main import app
 from app.guardian import create_guardian_app
 from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX, signed_desktop_resource_query
+from app.security.mobile_jwt import (
+    MOBILE_AUTH_WS_PROTOCOL_PREFIX,
+    REMOTE_VIEW_SCOPE,
+    TOKEN_SCOPE,
+    issue_mobile_token,
+)
+from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import mobile_pairing_service
+from app.services.settings_service import update_settings
 from tls_test_material import write_lan_tls_material
 
 
@@ -26,24 +34,67 @@ def _enable_lan_tls(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
 
 
-def test_remote_lan_client_can_redeem_but_not_create_pairing_codes_or_use_desktop_apis(monkeypatch, tmp_path):
+def _enable_remote_desktop() -> None:
+    patch = {"remote_desktop_enabled": True}
+    confirmation = create_settings_confirmation(patch)
+    if confirmation.get("required"):
+        patch["confirmation_nonce"] = confirmation["nonce"]
+    update_settings(patch)
+
+
+def test_remote_lan_client_needs_https_for_mobile_token_paths(monkeypatch, tmp_path):
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
     db.init_db()
     loopback = TestClient(app, client=("127.0.0.1", 50100))
     remote = TestClient(app, client=("192.168.1.22", 50100))
+    secure_remote = TestClient(app, client=("192.168.1.22", 50100), base_url="https://testserver")
 
     assert remote.post("/api/pair/code").status_code == 403
     assert remote.post("/api/pair/request").status_code == 403
     code_response = remote.post("/api/pair")
-    assert code_response.status_code in {401, 422}
+    assert code_response.status_code == 403
     assert remote.get("/api/tasks").status_code == 403
 
     code = loopback.post("/api/pair/code").json()["code"]
     pair_response = remote.post("/api/pair", json={"code": code, "device_name": "LAN phone"})
+    assert pair_response.status_code == 403
+
+    code = loopback.post("/api/pair/code").json()["code"]
+    pair_response = secure_remote.post("/api/pair", json={"code": code, "device_name": "LAN phone"})
     assert pair_response.status_code == 200
-    assert pair_response.json()["token"]
+    token = pair_response.json()["token"]
+    assert token
+    code = loopback.post("/api/pair/code").json()["code"]
+    assert remote.post("/api/pair/confirm", json={"code": code, "device_name": "LAN phone"}).status_code == 403
+    confirm_response = secure_remote.post("/api/pair/confirm", json={"code": code, "device_name": "LAN phone"})
+    assert confirm_response.status_code == 200
+    assert remote.get("/api/mobile/devices", headers={"Authorization": f"Bearer {token}"}).status_code == 403
+    assert secure_remote.get("/api/mobile/devices", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+
+def test_guardian_remote_lan_client_needs_https_for_mobile_token_paths(monkeypatch, tmp_path):
+    _enable_lan_tls(monkeypatch, tmp_path)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
+    db.init_db()
+    guardian = create_guardian_app()
+    loopback = TestClient(guardian, client=("127.0.0.1", 50100))
+    remote = TestClient(guardian, client=("192.168.1.22", 50100))
+    secure_remote = TestClient(guardian, client=("192.168.1.22", 50100), base_url="https://testserver")
+
+    assert remote.post("/api/pair/code").status_code == 403
+    assert remote.post("/api/pair/request").status_code == 403
+    code = loopback.post("/api/pair/code").json()["code"]
+    assert remote.post("/api/pair", json={"code": code, "device_name": "Guardian LAN phone"}).status_code == 403
+
+    code = loopback.post("/api/pair/code").json()["code"]
+    pair_response = secure_remote.post("/api/pair", json={"code": code, "device_name": "Guardian LAN phone"})
+    assert pair_response.status_code == 200
+    token = pair_response.json()["token"]
+    assert remote.get("/api/mobile/devices", headers={"Authorization": f"Bearer {token}"}).status_code == 403
+    assert secure_remote.get("/api/mobile/devices", headers={"Authorization": f"Bearer {token}"}).status_code == 200
 
 
 def test_remote_lan_client_cannot_open_desktop_task_websocket(monkeypatch, tmp_path):
@@ -56,6 +107,100 @@ def test_remote_lan_client_cannot_open_desktop_task_websocket(monkeypatch, tmp_p
             raise AssertionError("Remote desktop WebSocket should be blocked")
     except WebSocketDisconnect as exc:
         assert exc.code == 1008
+
+
+def test_remote_lan_mobile_and_remote_websockets_require_wss(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_lan_ws", device_name="LAN Phone")
+    mobile_token = issue_mobile_token(
+        device_id="mobile_lan_ws",
+        device_name="LAN Phone",
+        scope=[TOKEN_SCOPE, REMOTE_VIEW_SCOPE],
+    )
+    grant = mobile_pairing_service.create_remote_input_grant("mobile_lan_ws")
+    remote_input_token = mobile_pairing_service.claim_remote_input_grant_token(
+        grant["grant_id"],
+        {"device_id": "mobile_lan_ws", "device_name": "LAN Phone"},
+    )["token"]
+    client = TestClient(app, client=("192.168.1.22", 50100))
+    loopback_client = TestClient(app, client=("127.0.0.1", 50100))
+
+    for path, token in (
+        ("/ws/mobile/approvals", mobile_token),
+        ("/api/ws/mobile/approvals", mobile_token),
+        ("/ws/remote/screen", mobile_token),
+        ("/api/ws/remote/input", remote_input_token),
+    ):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                path,
+                subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+            ):
+                raise AssertionError(f"Remote LAN WebSocket {path} should require WSS")
+        assert exc_info.value.code == 1008
+
+    with client.websocket_connect(
+        "wss://testserver/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{mobile_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+    with client.websocket_connect(
+        "wss://testserver/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{remote_input_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+    with loopback_client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{mobile_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+    with loopback_client.websocket_connect(
+        "/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{remote_input_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+
+
+def test_guardian_remote_lan_mobile_and_remote_websockets_are_not_desktop_proxied(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    mobile_pairing_service._upsert_mobile_device(device_id="guardian_lan_ws", device_name="Guardian LAN Phone")
+    mobile_token = issue_mobile_token(
+        device_id="guardian_lan_ws",
+        device_name="Guardian LAN Phone",
+        scope=[TOKEN_SCOPE],
+    )
+    import app.api.routes_guardian as routes_guardian
+
+    async def fail_if_proxied(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Guardian mobile/remote WebSocket namespace should not proxy to the full backend")
+
+    monkeypatch.setattr(routes_guardian.runtime, "ensure_full_backend", fail_if_proxied)
+    guardian = create_guardian_app()
+    client = TestClient(guardian, client=("192.168.1.22", 50100))
+
+    for path in ("/ws/mobile/approvals", "/api/ws/mobile/approvals"):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                path,
+                subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{mobile_token}"],
+            ):
+                raise AssertionError(f"Guardian mobile WebSocket {path} should require WSS")
+        assert exc_info.value.code == 1008
+
+    with client.websocket_connect(
+        "wss://testserver/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{mobile_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+
+    for path in ("/ws/remote/screen", "/api/ws/remote/screen", "/ws/remote/input", "/api/ws/remote/input"):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(path):
+                raise AssertionError(f"Guardian remote WebSocket {path} should be reserved and closed")
+        assert exc_info.value.code == 1008
 
 
 def test_remote_lan_client_cannot_open_guardian_catch_all_websocket_without_desktop_token(monkeypatch, tmp_path):
@@ -108,6 +253,36 @@ def test_remote_lan_client_with_desktop_token_can_reach_guardian_catch_all_webso
     assert seen["proxied"] is True
 
 
+def test_guardian_mobile_ws_roots_are_not_desktop_proxied(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
+    db.init_db()
+
+    import app.api.routes_guardian as routes_guardian
+
+    seen: dict[str, object] = {"proxied": False}
+
+    async def fail_if_proxied(*args, **kwargs):  # noqa: ANN002, ANN003
+        seen["proxied"] = True
+        raise AssertionError("mobile/remote WebSocket roots should not be proxied to the full backend")
+
+    monkeypatch.setattr(routes_guardian.runtime, "shell_mode", "foreground")
+    monkeypatch.setattr(routes_guardian.runtime, "ensure_full_backend", fail_if_proxied)
+    client = TestClient(create_guardian_app(), client=("192.168.1.22", 50100))
+
+    for path in ("/ws/mobile", "/api/ws/mobile", "/ws/remote", "/api/ws/remote"):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                path,
+                subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}desktop-secret"],
+            ):
+                raise AssertionError(f"{path} should be reserved for mobile transport")
+        assert exc_info.value.code == 1008
+
+    assert seen["proxied"] is False
+
+
 def test_guardian_http_proxy_rejects_mobile_and_remote_namespaces(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
@@ -134,7 +309,7 @@ def test_guardian_http_proxy_rejects_mobile_and_remote_namespaces(monkeypatch, t
         "/api/mobile/nonexistent",
     ):
         response = client.get(path)
-        assert response.status_code in {401, 404}
+        assert response.status_code in {401, 403, 404}
 
 
 def test_remote_lan_client_cannot_trigger_local_model_install_websocket(monkeypatch, tmp_path):

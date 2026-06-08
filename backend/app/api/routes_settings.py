@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -15,6 +18,7 @@ from app.llm.onnx_provider import (
     warmup as onnx_warmup,
 )
 from app.llm.registry import get_effective_settings
+from app.policy.redaction import redact_public_text
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
 from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.security.sensitive_confirmation import (
@@ -40,13 +44,9 @@ from app.tools.vision_tools import image_embedding_health, test_image_embedding
 
 router = APIRouter()
 ws_router = APIRouter()
-_INSTALLABLE_LOCAL_MODELS = {
-    ollama_service.RECOMMENDED_MODEL,
-    ollama_service.FALLBACK_SMALL_MODEL,
-    ollama_service.FALLBACK_MEDIUM_MODEL,
-    "llama3.2:3b",
-}
-
+_PUBLIC_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
+_PUBLIC_PATH_KEYS = {"path", "model_path", "models_path", "manifest_path", "bundle_manifest_path"}
+_PUBLIC_PATH_KEY_SUFFIXES = ("_path", "_dir", "_directory", "_file")
 
 @router.get("/settings")
 def settings():
@@ -113,7 +113,7 @@ def confirm_permission_policy_relaxation(payload: dict):
 
 @router.get("/settings/local-llm/health")
 def local_llm_health():
-    return health_snapshot(get_effective_settings())
+    return _public_local_model_payload(health_snapshot(get_effective_settings()))
 
 
 @router.get("/settings/llm/health")
@@ -195,12 +195,20 @@ async def ollama_status():
 
 @router.get("/settings/local-model/setup-plan")
 async def local_model_setup_plan(model: str | None = None):
-    return await ollama_service.setup_plan(model)
+    try:
+        target = _allowed_install_model(model) if model else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await ollama_service.setup_plan(target)
 
 
 @router.get("/settings/local-model/readiness")
 def local_model_readiness(model: str | None = None):
-    return ollama_service.hardware_readiness(model)
+    try:
+        target = _allowed_install_model(model) if model else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ollama_service.hardware_readiness(target)
 
 
 @router.post("/settings/ollama/install")
@@ -214,8 +222,11 @@ async def ollama_start():
 
 
 @router.post("/settings/ollama/pull")
-async def ollama_pull(payload: dict = {}):
-    model = payload.get("model")
+async def ollama_pull(payload: dict | None = None):
+    try:
+        model = _allowed_install_model((payload or {}).get("model"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return await ollama_service.pull_model(model)
 
 
@@ -263,10 +274,27 @@ async def install_local_model_stream(websocket: WebSocket, model: str | None = N
 
 
 def _allowed_install_model(model: str | None) -> str:
-    normalized = str(model or "").strip()
-    if not normalized:
-        return ollama_service.RECOMMENDED_MODEL
-    if normalized not in _INSTALLABLE_LOCAL_MODELS:
-        allowed = ", ".join(sorted(_INSTALLABLE_LOCAL_MODELS))
-        raise ValueError(f"Local model install is restricted to supported models: {allowed}")
-    return normalized
+    return ollama_service.normalize_install_model(model)
+
+
+def _public_local_model_payload(value: Any, key: str = "") -> Any:
+    if isinstance(value, dict):
+        return {str(item_key): _public_local_model_payload(item, str(item_key)) for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [_public_local_model_payload(item, key) for item in value]
+    if isinstance(value, str):
+        normalized_key = key.replace("-", "_").casefold()
+        if _public_local_model_secret_location_key(normalized_key):
+            return ""
+        without_urls = _PUBLIC_URL_RE.sub("[REDACTED_URL]", value)
+        return redact_public_text(without_urls)
+    return value
+
+
+def _public_local_model_secret_location_key(normalized_key: str) -> bool:
+    return (
+        normalized_key.endswith("url")
+        or normalized_key in _PUBLIC_PATH_KEYS
+        or normalized_key.endswith(_PUBLIC_PATH_KEY_SUFFIXES)
+        or "path" in normalized_key
+    )

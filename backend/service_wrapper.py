@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, Callable
 
 import uvicorn
@@ -37,6 +37,9 @@ SERVICE_OPTION_PROJECT_ROOT = "ProjectRoot"
 SERVICE_OPTION_BACKEND_HOST = "BackendHost"
 SERVICE_OPTION_BACKEND_PORT = "BackendPort"
 SERVICE_OPTION_BACKEND_LOG_LEVEL = "BackendLogLevel"
+SERVICE_OPTION_LAN_TLS_ENABLED = "LanTlsEnabled"
+SERVICE_OPTION_LAN_TLS_CERT_FILE = "LanTlsCertFile"
+SERVICE_OPTION_LAN_TLS_KEY_FILE = "LanTlsKeyFile"
 SERVICE_COMMANDS = {
     "debug",
     "install",
@@ -79,6 +82,8 @@ class BackendConfig:
     host: str
     port: int
     log_level: str
+    ssl_certfile: str = ""
+    ssl_keyfile: str = ""
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,7 @@ def _service_exe_args() -> str:
 
 
 def get_backend_config() -> BackendConfig:
+    settings = _load_base_settings()
     host = _env("LENGRVIS_BACKEND_HOST") or _get_service_option(
         SERVICE_OPTION_BACKEND_HOST,
         "127.0.0.1",
@@ -120,7 +126,38 @@ def get_backend_config() -> BackendConfig:
         SERVICE_OPTION_BACKEND_LOG_LEVEL,
         "info",
     )
-    return BackendConfig(host=host, port=port, log_level=log_level)
+    tls_enabled = _lan_tls_enabled(settings)
+    ssl_certfile = _env("LENGRVIS_LAN_TLS_CERT_FILE") or _get_service_option(
+        SERVICE_OPTION_LAN_TLS_CERT_FILE,
+        str(getattr(settings, "lan_tls_cert_file", "") or ""),
+    )
+    ssl_keyfile = _env("LENGRVIS_LAN_TLS_KEY_FILE") or _get_service_option(
+        SERVICE_OPTION_LAN_TLS_KEY_FILE,
+        str(getattr(settings, "lan_tls_key_file", "") or ""),
+    )
+    return BackendConfig(
+        host=host,
+        port=port,
+        log_level=log_level,
+        ssl_certfile=ssl_certfile if tls_enabled and ssl_certfile and ssl_keyfile else "",
+        ssl_keyfile=ssl_keyfile if tls_enabled and ssl_certfile and ssl_keyfile else "",
+    )
+
+
+def _load_base_settings() -> Any:
+    try:
+        from app.config import get_base_settings
+
+        return get_base_settings()
+    except Exception:  # noqa: BLE001 - service startup must still surface uvicorn config errors.
+        return SimpleNamespace(lan_tls_enabled=False, lan_tls_cert_file="", lan_tls_key_file="")
+
+
+def _lan_tls_enabled(settings: Any) -> bool:
+    configured = _env("LENGRVIS_LAN_TLS_ENABLED") or _get_service_option(SERVICE_OPTION_LAN_TLS_ENABLED, "")
+    if configured:
+        return str(configured).strip().lower() in {"1", "true", "yes", "on"}
+    return bool(getattr(settings, "lan_tls_enabled", False))
 
 
 def import_pywin32_service_modules() -> Pywin32ServiceModules | None:
@@ -179,6 +216,9 @@ def apply_service_runtime_options() -> None:
         SERVICE_OPTION_BACKEND_HOST: "LENGRVIS_BACKEND_HOST",
         SERVICE_OPTION_BACKEND_PORT: "LENGRVIS_BACKEND_PORT",
         SERVICE_OPTION_BACKEND_LOG_LEVEL: "LENGRVIS_BACKEND_LOG_LEVEL",
+        SERVICE_OPTION_LAN_TLS_ENABLED: "LENGRVIS_LAN_TLS_ENABLED",
+        SERVICE_OPTION_LAN_TLS_CERT_FILE: "LENGRVIS_LAN_TLS_CERT_FILE",
+        SERVICE_OPTION_LAN_TLS_KEY_FILE: "LENGRVIS_LAN_TLS_KEY_FILE",
     }
     for option, env_key in option_to_env.items():
         try:
@@ -247,13 +287,16 @@ def load_backend_app() -> Any:
 
 def create_uvicorn_server(*, uvicorn_module: Any = uvicorn) -> uvicorn.Server:
     config = get_backend_config()
-    uvicorn_config = uvicorn_module.Config(
-        load_backend_app(),
-        host=config.host,
-        port=config.port,
-        log_level=config.log_level,
-        timeout_graceful_shutdown=10,
-    )
+    uvicorn_options = {
+        "host": config.host,
+        "port": config.port,
+        "log_level": config.log_level,
+        "timeout_graceful_shutdown": 10,
+    }
+    if config.ssl_certfile and config.ssl_keyfile:
+        uvicorn_options["ssl_certfile"] = config.ssl_certfile
+        uvicorn_options["ssl_keyfile"] = config.ssl_keyfile
+    uvicorn_config = uvicorn_module.Config(load_backend_app(), **uvicorn_options)
     return uvicorn_module.Server(uvicorn_config)
 
 
@@ -399,6 +442,9 @@ def _parse_cli(argv: list[str]) -> Namespace:
     parser.add_argument("--backend-host", default=None)
     parser.add_argument("--backend-port", default=None)
     parser.add_argument("--backend-log-level", default=None)
+    parser.add_argument("--lan-tls-enabled", action="store_true", default=None)
+    parser.add_argument("--lan-tls-cert-file", default=None)
+    parser.add_argument("--lan-tls-key-file", default=None)
     parsed, service_args = parser.parse_known_args(remainder)
     parsed.command = command
     parsed.service_args = service_args
@@ -413,11 +459,19 @@ def _normalize_command(command: str) -> str:
 
 
 def _persist_service_options(args: Namespace, modules: Pywin32ServiceModules) -> None:
+    lan_tls_enabled = (
+        "true"
+        if args.lan_tls_enabled
+        else _env("LENGRVIS_LAN_TLS_ENABLED", _get_service_option(SERVICE_OPTION_LAN_TLS_ENABLED, "false"))
+    )
     options = {
         SERVICE_OPTION_PROJECT_ROOT: args.project_root,
         SERVICE_OPTION_BACKEND_HOST: args.backend_host or _env("LENGRVIS_BACKEND_HOST", "127.0.0.1"),
         SERVICE_OPTION_BACKEND_PORT: args.backend_port or _env("LENGRVIS_BACKEND_PORT", "8000"),
         SERVICE_OPTION_BACKEND_LOG_LEVEL: args.backend_log_level or _env("LENGRVIS_BACKEND_LOG_LEVEL", "info"),
+        SERVICE_OPTION_LAN_TLS_ENABLED: lan_tls_enabled,
+        SERVICE_OPTION_LAN_TLS_CERT_FILE: args.lan_tls_cert_file or _env("LENGRVIS_LAN_TLS_CERT_FILE", ""),
+        SERVICE_OPTION_LAN_TLS_KEY_FILE: args.lan_tls_key_file or _env("LENGRVIS_LAN_TLS_KEY_FILE", ""),
     }
     for key, value in options.items():
         modules.win32serviceutil.SetServiceCustomOption(SERVICE_NAME, key, str(value))

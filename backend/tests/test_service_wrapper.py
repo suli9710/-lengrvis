@@ -143,6 +143,9 @@ def test_create_uvicorn_server_loads_backend_app_after_runtime_options(monkeypat
     monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
     monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
     monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_CERT_FILE", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_KEY_FILE", raising=False)
     monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "127.0.0.2")
     monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "9001")
     monkeypatch.setenv("LENGRVIS_BACKEND_LOG_LEVEL", "warning")
@@ -168,6 +171,44 @@ def test_create_uvicorn_server_loads_backend_app_after_runtime_options(monkeypat
         port=9001,
         log_level="warning",
         timeout_graceful_shutdown=10,
+    )
+    uvicorn_module.Server.assert_called_once_with(fake_config)
+
+
+def test_create_uvicorn_server_passes_lan_tls_material_to_uvicorn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cert = tmp_path / "lan.crt"
+    key = tmp_path / "lan.key"
+    cert.write_text("cert", encoding="utf-8")
+    key.write_text("key", encoding="utf-8")
+    monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "0.0.0.0")
+    monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "9443")
+    monkeypatch.setenv("LENGRVIS_BACKEND_LOG_LEVEL", "info")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
+    app = object()
+
+    fake_config = MagicMock(name="Config")
+    fake_server = MagicMock(name="Server")
+    uvicorn_module = SimpleNamespace(
+        Config=MagicMock(return_value=fake_config),
+        Server=MagicMock(return_value=fake_server),
+    )
+
+    with patch.object(service_wrapper, "load_backend_app", return_value=app), patch.object(
+        service_wrapper, "import_pywin32_service_modules", return_value=None
+    ):
+        server = service_wrapper.create_uvicorn_server(uvicorn_module=uvicorn_module)
+
+    assert server is fake_server
+    uvicorn_module.Config.assert_called_once_with(
+        app,
+        host="0.0.0.0",
+        port=9443,
+        log_level="info",
+        timeout_graceful_shutdown=10,
+        ssl_certfile=str(cert),
+        ssl_keyfile=str(key),
     )
     uvicorn_module.Server.assert_called_once_with(fake_config)
 
@@ -360,6 +401,11 @@ def test_main_persists_install_options() -> None:
                 "9000",
                 "--backend-log-level",
                 "debug",
+                "--lan-tls-enabled",
+                "--lan-tls-cert-file",
+                "C:/certs/lengrvis.crt",
+                "--lan-tls-key-file",
+                "C:/certs/lengrvis.key",
             ]
         )
 
@@ -373,6 +419,9 @@ def test_main_persists_install_options() -> None:
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendHost", "0.0.0.0")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendPort", "9000")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendLogLevel", "debug")
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsEnabled", "true")
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsCertFile", "C:/certs/lengrvis.crt")
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsKeyFile", "C:/certs/lengrvis.key")
 
 
 def test_main_runs_service_dispatcher() -> None:

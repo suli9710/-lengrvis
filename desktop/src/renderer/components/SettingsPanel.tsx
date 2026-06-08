@@ -365,14 +365,14 @@ export function SettingsPanel({
     if (!pairing) return;
     const payload = buildMobilePairingQrContent(pairing).value;
     if (!navigator.clipboard?.writeText) {
-      setPairingCopyStatus("剪贴板不可用，可手动复制下方文本。");
+      setPairingCopyStatus("剪贴板不可用，请打开手机 App 扫码。");
       return;
     }
     try {
       await navigator.clipboard.writeText(payload);
-      setPairingCopyStatus("已复制配对信息。");
+      setPairingCopyStatus("已复制备用配对信息；优先使用二维码扫码。");
     } catch {
-      setPairingCopyStatus("复制失败，可手动复制下方文本。");
+      setPairingCopyStatus("复制失败，请打开手机 App 扫码。");
     }
   };
 
@@ -1103,25 +1103,26 @@ export function SettingsPanel({
 
           <div className="mobile-pairing">
             <div className="mobile-pairing__copy">
-              <strong>手机配对</strong>
-              <span>把桌面生成的配对信息交给手机端，地址、端口和一次性配对码会一起带过去。</span>
+              <strong>手机扫码配对</strong>
+              <span>点击生成后，打开手机 App 的扫码入口扫二维码；桌面地址、端口和一次性配对码会一起带过去。</span>
               {pairing ? (
-                <div className="mobile-pairing__payload" aria-label="手机配对信息">
+                <div className="mobile-pairing__payload" aria-label="手机扫码配对状态">
                   <div className="mobile-pairing__payload-head">
                     <small>
-                      服务器：{pairingBaseUrl} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
+                      二维码已生成：{pairingBaseUrl} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
                     </small>
                     <button
                       type="button"
                       className="button button--ghost mobile-pairing__copy-button"
                       onClick={() => void copyPairingPayload()}
-                      aria-label="复制手机配对信息"
-                      title="复制手机配对信息"
+                      aria-label="复制备用手机配对信息"
+                      title="复制备用手机配对信息"
                     >
                       {pairingCopyStatus.startsWith("已复制") ? <CheckCircle2 size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-                      复制
+                      备用复制
                     </button>
                   </div>
+                  <small>优先扫码；复制只是备用，不会在界面展开 token。</small>
                   {pairingCopyStatus ? (
                     <small className="mobile-pairing__copy-status" role="status">
                       {pairingCopyStatus}
@@ -1134,8 +1135,9 @@ export function SettingsPanel({
                   ) : null}
                 </div>
               ) : (
-                <small>点击生成后复制整段配对信息；手机端可直接识别同一段内容。</small>
+                <small>先生成二维码，然后打开手机 App 扫码。无需手动输入局域网地址或 token。</small>
               )}
+              <small>HTTPS/WSS 会直接用于手机连接；局域网 HTTP 会被拦截，请在电脑端启用 HTTPS/WSS 后重新生成。</small>
               {pairedDevices.length ? (
                 <ul className="mobile-pairing__devices" aria-label="已配对手机">
                   {pairedDevices.map((device) => {
@@ -2208,10 +2210,10 @@ function PairingVisualCode({ code, qrContent }: { code?: string; qrContent?: Mob
         >
           <div className="mobile-pairing__qr-head">
             <QrCode size={16} aria-hidden="true" />
-            <span>扫码配对</span>
+            <span>打开手机 App 扫码</span>
           </div>
           {qrImage ? (
-            <img className="mobile-pairing__qr-image" src={qrImage} alt="手机配对二维码" />
+            <img className="mobile-pairing__qr-image" src={qrImage} alt="打开手机 App 扫描的配对二维码" />
           ) : (
             <div className="mobile-pairing__matrix" aria-hidden="true">
               {bits.map((active, index) => (

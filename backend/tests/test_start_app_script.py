@@ -308,6 +308,20 @@ def test_portable_first_screen_smoke_attempts_natural_language_read_only_task_ev
     assert "packaged command dock send remained disabled after renderer/backend readiness wait" in text
     assert "backend task/run evidence will be verified separately" in text
     assert "lengrvis-api-request" in text
+    assert "function Get-SmokeCollectionItems" in text
+    assert "function Get-SmokeRecordIds" in text
+    assert "BaselineTaskIds" in text
+    assert "BaselineRunIds" in text
+    assert "Write-Output -NoEnumerate $set" in text
+    assert "$baselineTaskIdSet = New-SmokeStringSet -Values $BaselineTaskIds" in text
+    assert "$baselineRunIdSet = New-SmokeStringSet -Values $BaselineRunIds" in text
+    assert "$taskId -and -not $baselineTaskIdSet.Contains($taskId)" in text
+    assert "$runId -and -not $baselineRunIdSet.Contains($runId)" in text
+    assert "could not capture natural-language backend baseline before packaged prompt submission" in text
+    assert "backend evidence observed after renderer bridge submission attempt, but no packaged /api/chat or /api/runs POST was observed; keeping natural-language evidence unsupported" in text
+    assert "inferNaturalLanguagePostFromBackend" not in text
+    assert "inferred: true" not in text
+    assert "$messages.Count -gt 0 -or" not in text
     assert "natural-language command dock displayed clear visible safe failure before submit; no packaged task submission was possible" in text
     assert "visible safe failure is not accepted as natural-language task evidence" in text
     assert "natural-language visible safe failure side-effect check failed" in text
@@ -344,7 +358,10 @@ def test_portable_docs_do_not_overclaim_gui_task_automation(project_root: Path) 
     assert "observes `/api/chat` or `/api/runs` and a related task/run" in release_gate
     assert "If CDP or the packaged renderer cannot be automated, the strict script exits 2 with `[unsupported]`" in release_gate
     assert "packaged renderer DOM automation to click the read-only" in parity
-    assert "does not prove a natural-language agent task" in parity
+    assert "observed packaged renderer `POST /api/runs`" in parity
+    assert "Record this as packaged natural-language command-dock submission plus read-only/system diagnostics task evidence" in parity
+    assert "does not prove clean-machine release-candidate install" in parity
+    assert "full natural-language agent task completion loop" in parity
     assert "separate manual release evidence" in parity
 
 

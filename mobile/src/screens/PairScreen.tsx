@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -66,6 +66,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const [failure, setFailure] = useState<PairingFailureNotice | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [scanLocked, setScanLocked] = useState(false);
+  const scanLockedRef = useRef(false);
   const [isCameraPermissionBusy, setIsCameraPermissionBusy] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
@@ -126,11 +127,20 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
     setPairCode(payload.code);
   };
 
+  const updateScanLocked = (locked: boolean) => {
+    scanLockedRef.current = locked;
+    setScanLocked(locked);
+  };
+
   const openScanner = async () => {
     setFailure(null);
-    setScanLocked(false);
+    updateScanLocked(false);
     if (cameraPermission?.granted) {
       setIsScanning(true);
+      return;
+    }
+    if (cameraPermission && !cameraPermission.canAskAgain) {
+      setFailure(cameraPermissionFailureNotice(false));
       return;
     }
 
@@ -143,24 +153,23 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       }
       setFailure(cameraPermissionFailureNotice(nextPermission.canAskAgain));
     } catch {
-      setFailure({
-        title: "无法打开相机",
-        detail: "手机没有成功打开相机权限请求。",
-        action: "请确认系统没有限制相机后重试；也可以直接粘贴电脑端二维码内容。",
-      });
+      setFailure(cameraUnavailableFailureNotice());
     } finally {
       setIsCameraPermissionBusy(false);
     }
   };
 
-  const closeScanner = () => {
+  const closeScanner = (nextFailure?: PairingFailureNotice) => {
     setIsScanning(false);
-    setScanLocked(false);
+    updateScanLocked(false);
+    if (nextFailure) {
+      setFailure(nextFailure);
+    }
   };
 
   const handleBarcodeScanned = (result: BarcodeScanningResult) => {
-    if (scanLocked) return;
-    setScanLocked(true);
+    if (scanLockedRef.current) return;
+    updateScanLocked(true);
     try {
       const payload = parsePairingPayload(result.data);
       setPairingPayload(result.data);
@@ -225,9 +234,9 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
     }
     if (baseUrlSecurity.isInsecureLan) {
       setFailure({
-        title: "需要启用 HTTPS",
-        detail: "为了保护手机 token、远程输入授权和屏幕连接，非本机局域网不能再通过 HTTP 配对。",
-        action: "请在电脑端启用 HTTPS/WSS 或使用受信任证书后，重新生成配对信息。",
+        title: "需要安全连接",
+        detail: "为了保护手机配对和远程操作，这个普通网络地址不能直接连接。",
+        action: "请在电脑端开启安全连接后，重新生成配对信息。",
       });
       return;
     }
@@ -236,9 +245,9 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
     try {
       const nextSession = await pairWithBackend(baseUrlSecurity.normalizedBaseUrl, code, Device.deviceName ?? "安卓设备");
       if (requiresServerTrustConfirmation(nextSession)) {
-        Alert.alert("核对电脑证书", serverTrustConfirmationMessage(nextSession), [
+        Alert.alert("确认这是你的电脑", serverTrustConfirmationMessage(nextSession), [
           { text: "取消", style: "cancel" },
-          { text: "已核对并保存", onPress: () => void persistPairedSession(nextSession) },
+          { text: "确认并保存", onPress: () => void persistPairedSession(nextSession) },
         ]);
         return;
       }
@@ -251,7 +260,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} testID="pair-screen">
       <StatusBar barStyle="dark-content" backgroundColor="#f7f9fb" />
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.screen}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -281,6 +290,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                   disabled={isCameraPermissionBusy}
                   onPress={() => void openScanner()}
                   style={({ pressed }) => [styles.scanButton, pressed && styles.pressed, isCameraPermissionBusy && styles.scanButtonDisabled]}
+                  testID="pair-open-scanner-button"
                 >
                   {isCameraPermissionBusy ? <ActivityIndicator size="small" color="#0e5f76" /> : <Camera size={16} color="#0e5f76" />}
                   <Text style={styles.scanButtonText}>{isCameraPermissionBusy ? "请求相机权限" : "打开相机扫码"}</Text>
@@ -296,6 +306,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                 onChangeText={handlePayloadChange}
                 placeholder="粘贴电脑端二维码内容或配对信息"
                 style={[styles.input, styles.payloadInput]}
+                testID="pair-payload-input"
                 textAlignVertical="top"
                 value={pairingPayload}
               />
@@ -309,6 +320,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               accessibilityState={{ expanded: showManualEntry }}
               onPress={() => setShowManualEntry((current) => !current)}
               style={styles.manualToggle}
+              testID="pair-manual-toggle"
             >
               <Text style={styles.manualToggleText}>{showManualEntry ? "收起手动输入" : "无法粘贴？手动输入"}</Text>
             </Pressable>
@@ -317,7 +329,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               <View style={styles.manualPanel}>
                 <Text style={styles.label}>电脑地址</Text>
                 <TextInput
-                  accessibilityHint="输入电脑端 Lengrvis 显示的 HTTPS 地址"
+                  accessibilityHint="输入电脑端 Lengrvis 显示的地址"
                   accessibilityLabel="电脑地址"
                   autoCapitalize="none"
                   autoCorrect={false}
@@ -328,6 +340,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                   }}
                   placeholder="电脑端显示的地址"
                   style={styles.input}
+                  testID="pair-base-url-input"
                   value={baseUrl}
                 />
                 {securityHint ? (
@@ -354,6 +367,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                   }}
                   placeholder="6 位字母或数字"
                   style={[styles.input, styles.codeInput]}
+                  testID="pair-code-input"
                   value={pairCode}
                 />
               </View>
@@ -369,6 +383,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               disabled={!canSubmit}
               onPress={() => void handlePair()}
               style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, !canSubmit && styles.disabledButton]}
+              testID="pair-submit-button"
             >
               {isBusy ? <ActivityIndicator color="#ffffff" /> : <Link2 size={18} color="#ffffff" />}
               <Text style={styles.primaryButtonText}>{primaryButtonLabel}</Text>
@@ -389,12 +404,12 @@ function PairingScanner({
 }: {
   visible: boolean;
   scanLocked: boolean;
-  onClose: () => void;
+  onClose: (notice?: PairingFailureNotice) => void;
   onScanned: (result: BarcodeScanningResult) => void;
 }) {
   return (
-    <Modal animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen" visible={visible}>
-      <SafeAreaView accessibilityViewIsModal style={styles.scannerScreen}>
+    <Modal animationType="slide" onRequestClose={() => onClose()} presentationStyle="fullScreen" testID="pairing-scanner-modal" visible={visible}>
+      <SafeAreaView accessibilityLabel="扫码配对" accessibilityViewIsModal style={styles.scannerScreen} testID="pairing-scanner-screen">
         <StatusBar barStyle="light-content" backgroundColor="#101820" />
         <View style={styles.scannerHeader}>
           <QrCode size={22} color="#ffffff" />
@@ -403,19 +418,24 @@ function PairingScanner({
             accessibilityHint="返回配对输入页面"
             accessibilityLabel="关闭扫码"
             accessibilityRole="button"
-            onPress={onClose}
+            onPress={() => onClose()}
             style={({ pressed }) => [styles.scannerCloseButton, pressed && styles.pressed]}
+            testID="pairing-scanner-close-button"
           >
             <X size={22} color="#ffffff" />
           </Pressable>
         </View>
         <CameraView
-          accessibilityLabel="相机取景框"
+          accessibilityHint="只识别二维码，识别后会自动关闭相机"
+          accessibilityLabel="二维码扫码取景框"
           barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+          facing="back"
+          onMountError={() => onClose(cameraUnavailableFailureNotice())}
           onBarcodeScanned={scanLocked ? undefined : onScanned}
           style={styles.cameraPreview}
+          testID="pairing-scanner-camera"
         />
-        <View style={styles.scannerHint}>
+        <View style={styles.scannerHint} testID="pairing-scanner-hint">
           {scanLocked ? <ActivityIndicator color="#ffffff" /> : null}
           <Text style={styles.scannerHintTitle}>{scanLocked ? "正在识别二维码" : "将电脑端二维码放入取景框"}</Text>
           <Text style={styles.scannerHintText}>{scanLocked ? "如果内容不是 Lengrvis 配对信息，手机会回到上一页并给出下一步。" : "识别后会自动填入电脑地址和 6 位配对码。"}</Text>
@@ -427,7 +447,7 @@ function PairingScanner({
 
 function PairingFailure({ notice }: { notice: PairingFailureNotice }) {
   return (
-    <View accessibilityLiveRegion="assertive" accessibilityRole="alert" style={styles.failureNotice}>
+    <View accessibilityLiveRegion="assertive" accessibilityRole="alert" style={styles.failureNotice} testID="pair-failure-notice">
       <Text style={styles.failureTitle}>{notice.title}</Text>
       <Text style={styles.failureText}>{notice.detail}</Text>
       {notice.checks?.map((check) => (
@@ -446,7 +466,11 @@ function PairingPayloadStatus({ payload, state }: { payload: PairingPayload; sta
   const isDanger = notice.tone === "danger";
   const isWarning = notice.tone === "warning";
   return (
-    <View accessibilityLiveRegion="polite" style={[styles.detectedNotice, isWarning && styles.detectedNoticeWarning, isDanger && styles.detectedNoticeDanger]}>
+    <View
+      accessibilityLiveRegion="polite"
+      style={[styles.detectedNotice, isWarning && styles.detectedNoticeWarning, isDanger && styles.detectedNoticeDanger]}
+      testID="pair-payload-status"
+    >
       <Text style={[styles.detectedTitle, isDanger && styles.detectedTitleDanger]}>{notice.title}</Text>
       <Text style={[styles.detectedText, isDanger && styles.detectedTextDanger]}>{notice.detail}</Text>
     </View>
@@ -458,8 +482,8 @@ function pairingPayloadNotice(payload: PairingPayload, state: PairingPayloadSecu
   if (state.status === "requires_https_wss") {
     return {
       tone: "danger",
-      title: "需要启用 HTTPS/WSS",
-      detail: `${validityText} 但电脑地址是局域网 HTTP，不能直接连接；请在电脑端启用 HTTPS/WSS 或使用受信任证书后重新生成。`,
+      title: "需要安全连接",
+      detail: `${validityText} 但这个电脑地址还不是安全连接。请在电脑端开启安全连接后重新生成。`,
     };
   }
   if (state.status === "loopback") {
@@ -487,7 +511,7 @@ function pairingPayloadNotice(payload: PairingPayload, state: PairingPayloadSecu
     return {
       tone: "safe",
       title: "已识别安全配对信息",
-      detail: `${validityText} 手机将使用 HTTPS/WSS 加密连接电脑。`,
+      detail: `${validityText} 手机将加密连接这台电脑。`,
     };
   }
   return {
@@ -504,8 +528,8 @@ function baseUrlSecurityHint(value: string): SecurityNotice | null {
     if (security.isHttps) {
       return {
         tone: "safe",
-        title: "安全连接",
-        detail: "手机会通过加密连接访问电脑。若电脑使用本地证书，首次连接需要你核对证书。",
+        title: "安全连接已开启",
+        detail: "手机会加密连接这台电脑。首次连接时可能需要你确认一次。",
       };
     }
     if (security.isLoopback) {
@@ -518,8 +542,8 @@ function baseUrlSecurityHint(value: string): SecurityNotice | null {
     if (security.isInsecureLan) {
       return {
         tone: "danger",
-        title: "需要启用 HTTPS",
-        detail: "非本机局域网 HTTP 已被阻断。请在电脑端启用 HTTPS/WSS 或使用受信任证书后重新生成配对信息。",
+        title: "需要安全连接",
+        detail: "这个电脑地址还不是安全连接。请在电脑端开启安全连接后重新生成配对信息。",
       };
     }
     return null;
@@ -536,9 +560,9 @@ function serverTrustConfirmationMessage(session: PairingSession): string {
   const tls = session.baseUrlSecurity.serverTls;
   const fingerprint = formatTlsFingerprint(tls?.fingerprintSha256);
   return [
-    "电脑返回的 HTTPS 证书需要你手动核对或信任。移动端会保存本次返回的信任信息用于展示，不会安装系统证书。",
-    fingerprint ? `SHA-256 指纹：${fingerprint}` : "后端未提供证书指纹，请在电脑端核对证书信息后再保存。",
-    "如果手机仍无法连接，请先在手机系统或浏览器中信任该证书，或在桌面端改用受信任证书。",
+    "这台电脑使用了本地安全设置，手机需要你确认一次。",
+    fingerprint ? `电脑指纹：${fingerprint}` : "如果你不确定，请先取消，并在电脑端重新生成配对信息。",
+    "确认它和电脑端显示的一致后再保存；不确定时请取消。",
   ].join("\n\n");
 }
 
@@ -553,7 +577,7 @@ function cameraPermissionFailureNotice(canAskAgain: boolean | undefined): Pairin
   if (canAskAgain === false) {
     return {
       title: "需要在系统设置打开相机",
-      detail: "手机已经拒绝了 Lengrvis 的相机权限，应用内暂时不能再次弹出授权窗口。",
+      detail: "手机已经关闭了 Lengrvis 的相机权限，应用内暂时不能再次弹出授权窗口。",
       action: "请到系统设置里允许 Lengrvis 使用相机；不方便授权时，也可以复制电脑端二维码内容后粘贴。",
     };
   }
@@ -561,6 +585,14 @@ function cameraPermissionFailureNotice(canAskAgain: boolean | undefined): Pairin
     title: "需要相机权限",
     detail: "手机没有授权 Lengrvis 使用相机，因此暂时不能扫码。",
     action: "请再次点击“打开相机扫码”并允许相机权限；也可以直接粘贴电脑端二维码内容。",
+  };
+}
+
+function cameraUnavailableFailureNotice(): PairingFailureNotice {
+  return {
+    title: "无法打开相机",
+    detail: "手机暂时没有可用的相机取景框。",
+    action: "请检查系统相机权限后重试；也可以直接粘贴电脑端二维码内容。",
   };
 }
 
@@ -582,7 +614,7 @@ function pairingButtonLabel({
 }
 
 function blockedPairingButtonLabel(status: PairingPayloadSecurityState["status"]): string {
-  if (status === "requires_https_wss") return "等待 HTTPS/WSS 配对信息";
+  if (status === "requires_https_wss") return "等待安全配对信息";
   if (status === "loopback") return "等待电脑地址";
   if (status === "expired") return "重新生成配对码";
   if (status === "invalid_address") return "等待完整配对信息";
@@ -638,9 +670,9 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source
   }
   if (error instanceof InsecureLanBaseUrlError) {
     return {
-      title: "需要启用 HTTPS",
-      detail: "为了保护手机 token、远程输入授权和屏幕连接，非本机局域网不能再通过 HTTP 配对。",
-      action: "请在电脑端启用 HTTPS/WSS 或使用受信任证书后，重新生成配对信息。",
+      title: "需要安全连接",
+      detail: "为了保护手机配对和远程操作，这个普通网络地址不能直接连接。",
+      action: "请在电脑端开启安全连接后，重新生成配对信息。",
     };
   }
 
@@ -680,9 +712,9 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source
   }
   if (security?.isHttps && isNetworkOrCertificateError(message)) {
     return {
-      title: "无法信任电脑证书",
-      detail: "手机没有和这台电脑建立安全连接。",
-      action: "请在手机系统或浏览器中信任电脑端证书，或让电脑端使用受信任证书。",
+      title: "需要确认这台电脑",
+      detail: "手机还没有和这台电脑建立安全连接。",
+      action: "请按电脑端提示确认安全连接后重试；不确定时请重新生成配对信息。",
     };
   }
   if (isNetworkError(message)) {
@@ -692,7 +724,7 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source
       checks: [
         { title: "不在同一网络", detail: "手机和电脑不在同一个 Wi-Fi 时会出现这个提示。" },
         { title: "网络被隔离", detail: "公司网络、访客 Wi-Fi、VPN 或热点隔离可能会阻止手机访问电脑。" },
-        { title: "后端未启动", detail: "如果已经同网，请在电脑端打开 Lengrvis，并保持配对页处于可用状态。" },
+        { title: "电脑端未打开", detail: "如果已经同网，请在电脑端打开 Lengrvis，并保持配对页处于可用状态。" },
       ],
       action: "确认后在电脑端重新生成配对信息，再回到手机重试。",
     };

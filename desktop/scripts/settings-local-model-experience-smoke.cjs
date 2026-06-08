@@ -81,6 +81,40 @@ const cleanMachineSetupPlan = {
   bundled_model_configured: false,
   bundle_manifest: { present: false },
   next_action: "install_runtime",
+  repair_action: {
+    code: "install_runtime",
+    label: "Install Ollama runtime",
+    detail: "Install Ollama, then Lengrvis can start the local service and prepare the model."
+  },
+  evidence: [
+    {
+      key: "hardware",
+      ok: true,
+      detail: "Memory, disk, and CPU are ready for qwen2.5:3b."
+    },
+    {
+      key: "runtime",
+      ok: false,
+      value: "missing",
+      path: "",
+      detail: "No Ollama runtime executable was found."
+    },
+    {
+      key: "bundle_manifest",
+      ok: false,
+      path: "",
+      value: "",
+      detail: "No Ollama bundle manifest was found."
+    },
+    {
+      key: "bundled_model",
+      ok: false,
+      models_path: "",
+      model_manifest_path: "",
+      configured: false,
+      detail: "Bundled qwen2.5:3b is not proven available; missing bundled runtime, bundled models directory, model manifest, valid bundle manifest."
+    }
+  ],
   steps: [
     {
       key: "hardware",
@@ -145,6 +179,7 @@ const backendDiagnostics = {
 
 async function main() {
   runSourceAssertions();
+  assertCleanMachineSetupPlanContract();
   assertBuiltRendererExists();
 
   const previewPort = Number(process.env.LENGRVIS_SETTINGS_LOCAL_MODEL_PORT) || await getFreePort();
@@ -165,6 +200,25 @@ async function main() {
 
   console.log(
     `settings local model experience smoke passed; screenshots: ${evidenceScreenshotPaths().join(", ")}`
+  );
+}
+
+function assertCleanMachineSetupPlanContract() {
+  assert.equal(cleanMachineSetupPlan.ready, false, "clean machine setup plan must not report local model readiness");
+  assert.equal(cleanMachineSetupPlan.runtime_source, "missing", "clean machine setup plan should report missing runtime");
+  assert.equal(cleanMachineSetupPlan.bundled_runtime_available, false, "clean machine setup plan must not claim bundled runtime");
+  assert.equal(cleanMachineSetupPlan.bundled_models_available, false, "clean machine setup plan must not claim bundled model store");
+  assert.equal(cleanMachineSetupPlan.bundled_model_available, false, "clean machine setup plan must not claim default offline model availability");
+  assert.deepEqual(cleanMachineSetupPlan.bundle_manifest, { present: false }, "clean machine setup plan needs explicit missing manifest evidence");
+  assert.equal(cleanMachineSetupPlan.next_action, "install_runtime", "clean machine next action should install the local runtime");
+  assert.equal(cleanMachineSetupPlan.repair_action.code, "install_runtime", "clean machine repair action should install runtime");
+  assert.ok(
+    cleanMachineSetupPlan.evidence.some((item) => item.key === "bundle_manifest" && item.ok === false),
+    "clean machine setup plan should include missing bundle manifest evidence"
+  );
+  assert.ok(
+    cleanMachineSetupPlan.evidence.some((item) => item.key === "bundled_model" && item.ok === false),
+    "clean machine setup plan should include missing bundled model evidence"
   );
 }
 

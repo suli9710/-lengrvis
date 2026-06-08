@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ except Exception:  # pragma: no cover - optional in stripped-down test envs
     psutil = None  # type: ignore[assignment]
 
 from app.core.audit import record
+from app.policy.redaction import redact_public_text
 
 OLLAMA_API = "http://127.0.0.1:11434"
 RECOMMENDED_MODEL = "qwen2.5:3b"
@@ -58,6 +60,8 @@ _BUNDLED_MANIFEST_RELATIVE_PATHS = (
     ("resources", "ollama-bundle-manifest.json"),
     ("ollama-bundle-manifest.json",),
 )
+_PUBLIC_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
+_MAX_PUBLIC_ERROR_CHARS = 600
 
 
 def normalize_install_model(model: str | None) -> str:
@@ -71,6 +75,33 @@ def normalize_install_model(model: str | None) -> str:
     return normalized
 
 
+def _public_text(value: Any, fallback: str = "Local AI action failed.") -> str:
+    text = str(value or fallback)
+    without_urls = _PUBLIC_URL_RE.sub("[REDACTED_URL]", text)
+    redacted = redact_public_text(without_urls)
+    redacted = " ".join(redacted.split())
+    if len(redacted) > _MAX_PUBLIC_ERROR_CHARS:
+        return f"{redacted[: _MAX_PUBLIC_ERROR_CHARS - 1].rstrip()}..."
+    return redacted
+
+
+def _public_model_name(model: str) -> str:
+    return _public_text(model, fallback=RECOMMENDED_MODEL)
+
+
+def _public_model_names(models: list[str]) -> list[str]:
+    return [_public_model_name(model) for model in models if str(model or "").strip()]
+
+
+def _public_bundle_manifest_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    public = dict(summary)
+    if "path" in public:
+        public["path"] = ""
+    if "error" in public:
+        public["error"] = _public_text(public["error"], fallback="Bundle manifest could not be read.")
+    return public
+
+
 async def status() -> dict[str, Any]:
     """Return Ollama installation and runtime status."""
     target = RECOMMENDED_MODEL
@@ -80,7 +111,7 @@ async def status() -> dict[str, Any]:
     bundled_models_dir = _bundled_ollama_models_dir()
     bundled_model_available = _bundled_model_available(target)
     bundled_model_configured = _bundled_model_configured(target)
-    bundle_manifest = _ollama_bundle_manifest_summary()
+    bundle_manifest = _public_bundle_manifest_summary(_ollama_bundle_manifest_summary())
     if not installed:
         next_action = _setup_next_action(
             readiness,
@@ -99,9 +130,9 @@ async def status() -> dict[str, Any]:
             "readiness": readiness,
             "runtime_source": runtime_source,
             "bundled_runtime_available": bundled_runtime_available(),
-            "bundled_runtime_path": _safe_runtime_path(runtime_source),
+            "bundled_runtime_path": "",
             "bundled_models_available": bundled_models_dir is not None,
-            "bundled_models_path": str(bundled_models_dir) if bundled_models_dir else "",
+            "bundled_models_path": "",
             "bundled_model_available": bundled_model_available,
             "bundled_model_configured": bundled_model_configured,
             "bundle_manifest": bundle_manifest,
@@ -133,15 +164,15 @@ async def status() -> dict[str, Any]:
     return {
         "installed": True,
         "running": running,
-        "models": models,
+        "models": _public_model_names(models),
         "recommended_model": target,
         "has_recommended": has_recommended,
         "readiness": readiness,
         "runtime_source": runtime_source,
         "bundled_runtime_available": runtime_source == "bundled",
-        "bundled_runtime_path": _safe_runtime_path(runtime_source),
+        "bundled_runtime_path": "",
         "bundled_models_available": bundled_models_dir is not None,
-        "bundled_models_path": str(bundled_models_dir) if bundled_models_dir else "",
+        "bundled_models_path": "",
         "bundled_model_available": bundled_model_available,
         "bundled_model_configured": bundled_model_configured,
         "bundle_manifest": bundle_manifest,
@@ -173,7 +204,7 @@ async def setup_plan(model: str | None = None) -> dict[str, Any]:
     bundled_models_dir = _bundled_ollama_models_dir()
     bundled_model_available = _bundled_model_available(target)
     bundled_model_configured = _bundled_model_configured(target) and (not running or has_model)
-    bundle_manifest = _ollama_bundle_manifest_summary()
+    bundle_manifest = _public_bundle_manifest_summary(_ollama_bundle_manifest_summary())
     next_action = _setup_next_action(
         readiness,
         installed,
@@ -189,13 +220,13 @@ async def setup_plan(model: str | None = None) -> dict[str, Any]:
         "readiness": readiness,
         "installed": installed,
         "running": running,
-        "models": models,
+        "models": _public_model_names(models),
         "has_model": has_model,
         "runtime_source": runtime_source,
         "bundled_runtime_available": bundled_available,
-        "bundled_runtime_path": _safe_runtime_path(runtime_source),
+        "bundled_runtime_path": "",
         "bundled_models_available": bundled_models_dir is not None,
-        "bundled_models_path": str(bundled_models_dir or ""),
+        "bundled_models_path": "",
         "bundled_model_available": bundled_model_available,
         "bundled_model_configured": bundled_model_configured,
         "bundle_manifest": bundle_manifest,
@@ -352,14 +383,14 @@ async def install() -> dict[str, Any]:
             "ok": True,
             "message": "Bundled Ollama runtime is ready.",
             "source": source,
-            "executable": _ollama_executable(),
+            "executable": "",
         }
     if source == "system":
         return {
             "ok": True,
             "message": "Ollama is already installed.",
             "source": source,
-            "executable": _ollama_executable(),
+            "executable": "",
         }
 
     if sys.platform != "win32":
@@ -375,13 +406,21 @@ async def install() -> dict[str, Any]:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
         ok = proc.returncode == 0
         record("ollama.install", "OllamaService", {"ok": ok, "returncode": proc.returncode})
+        message = stdout.decode(errors="replace").strip() if ok else stderr.decode(errors="replace").strip()
+        if not ok:
+            failure = _ollama_action_error(message or f"winget exited with {proc.returncode}.", "install_runtime")
+            failure["source"] = "winget"
+            return failure
         return {
             "ok": ok,
-            "message": stdout.decode(errors="replace").strip() if ok else stderr.decode(errors="replace").strip(),
+            "message": _public_text(message, fallback="Ollama installed successfully."),
             "source": "winget",
         }
     except FileNotFoundError:
-        return _ollama_action_error("winget not found. Please install Ollama manually from https://ollama.com", "install_runtime")
+        return _ollama_action_error(
+            "winget not found. Install Ollama manually from the official Ollama website, then retry.",
+            "install_runtime",
+        )
     except asyncio.TimeoutError:
         return _ollama_action_error("Installation timed out after 120 seconds.", "install_runtime")
     except Exception as exc:
@@ -411,10 +450,15 @@ async def start_server() -> dict[str, Any]:
             creationflags=creationflags,
             env=env,
         )
-        record("ollama.start", "OllamaService", {"ok": True, "models_dir": str(models_dir) if models_dir else ""})
-        return {"ok": True, "message": "Ollama server is starting.", "models_dir": str(models_dir) if models_dir else ""}
+        record("ollama.start", "OllamaService", {"ok": True, "models_dir_configured": bool(models_dir)})
+        return {
+            "ok": True,
+            "message": "Ollama server is starting.",
+            "models_dir": "",
+            "models_dir_configured": bool(models_dir),
+        }
     except Exception as exc:
-        record("ollama.start", "OllamaService", {"ok": False, "error": str(exc)})
+        record("ollama.start", "OllamaService", {"ok": False, "error": _public_text(exc)})
         return _ollama_action_error(str(exc), "start_runtime")
 
 
@@ -548,14 +592,14 @@ def _ollama_bundle_manifest_summary() -> dict[str, Any]:
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
-        return {"present": True, "valid": False, "path": str(path), "error": str(exc)}
+        return {"present": True, "valid": False, "path": "", "error": _public_text(exc)}
     runtime_summary = data.get("runtime", {}).get("summary", {}) if isinstance(data, dict) else {}
     models_payload = data.get("models", {}) if isinstance(data, dict) else {}
     models_summary = models_payload.get("summary", {}) if isinstance(models_payload, dict) else {}
     return {
         "present": True,
         "valid": data.get("schema") == 1 and bool(data.get("accepted_licenses")),
-        "path": str(path),
+        "path": "",
         "model": str(data.get("model", "")),
         "accepted_licenses": bool(data.get("accepted_licenses")),
         "runtime_sha256": str(runtime_summary.get("sha256", "")),
@@ -617,14 +661,14 @@ def _bundled_model_evidence(
         "complete": complete,
         "runtime_available": runtime_available,
         "runtime_source": source,
-        "runtime_path": runtime_path,
+        "runtime_path": "",
         "models_available": models_available,
-        "models_path": str(models_dir or ""),
+        "models_path": "",
         "model_manifest_present": model_manifest_present,
-        "model_manifest_path": str(model_manifest_path or ""),
+        "model_manifest_path": "",
         "bundle_manifest_present": bool(bundle_manifest.get("present")),
         "bundle_manifest_valid": manifest_valid,
-        "bundle_manifest_path": str(bundle_manifest.get("path") or ""),
+        "bundle_manifest_path": "",
         "manifest_model": manifest_model,
         "manifest_model_matches": manifest_model_matches,
         "configured": configured,
@@ -786,26 +830,35 @@ def _setup_next_action(
 def _setup_repair_action(next_action: str, target: str) -> dict[str, str]:
     actions = {
         "hardware_blocked": {
-            "code": "free_resources_or_use_cloud",
-            "label": "Free resources or use efficiency mode",
-            "detail": "Free memory or disk space, then check again; otherwise keep using efficiency mode.",
+            "code": "free_resources_for_local_ai",
+            "label": "Free resources for local AI",
+            "detail": (
+                "Free memory or disk space, or choose a smaller supported local model, then check again. "
+                "Privacy mode stays local-only and will not silently use cloud or mock AI."
+            ),
         },
         "install_runtime": {
             "code": "install_runtime",
             "label": "Install Ollama runtime",
-            "detail": "Install Ollama, then Lengrvis can start the local service and prepare the model.",
+            "detail": (
+                "Install Ollama, then retry setup so Lengrvis can start the local service and prepare the model. "
+                "Privacy tasks stay paused until a local runtime is available."
+            ),
         },
         "start_runtime": {
             "code": "start_runtime",
             "label": "Start local AI service",
-            "detail": "Start Ollama so Lengrvis can inspect local models.",
+            "detail": (
+                "Start Ollama, or close any stuck Ollama process and retry. "
+                "Lengrvis will not switch privacy tasks to cloud or mock AI while the service is down."
+            ),
         },
         "restart_runtime_with_bundled_models": {
             "code": "restart_runtime_with_bundled_models",
             "label": "Restart Ollama with bundled models",
             "detail": (
-                "Stop the currently running Ollama service, then retry so Lengrvis can start it "
-                "with the bundled model directory."
+                "Close Ollama, then retry setup so Lengrvis can restart it with the included local model files. "
+                "Privacy tasks stay local-only until Ollama lists the model."
             ),
         },
         "use_bundled_model": {
@@ -816,7 +869,11 @@ def _setup_repair_action(next_action: str, target: str) -> dict[str, str]:
         "download_model": {
             "code": "download_model",
             "label": "Download recommended model",
-            "detail": f"Download {target} through Ollama before privacy tasks can use local AI.",
+            "detail": (
+                f"Keep Ollama running and download {target}. If this app should include the model, "
+                "verify the bundled model package, then retry setup. "
+                "Privacy tasks stay local-only until the model is present."
+            ),
         },
         "ready": {
             "code": "none",
@@ -834,6 +891,58 @@ def _setup_repair_action(next_action: str, target: str) -> dict[str, str]:
     )
 
 
+def _ollama_action_error(error: str, next_action: str, model: str = RECOMMENDED_MODEL) -> dict[str, Any]:
+    target = model if model in INSTALLABLE_LOCAL_MODELS else RECOMMENDED_MODEL
+    return {
+        "ok": False,
+        "status": "error",
+        "model": _public_model_name(model or target),
+        "error": _public_text(error),
+        "next_action": next_action,
+        "repair_action": _setup_repair_action(next_action, target),
+        "evidence": _setup_evidence(
+            readiness=hardware_readiness(target),
+            installed=is_installed(),
+            running=False,
+            models=[],
+            target=target,
+            runtime_source=_ollama_runtime_source(),
+            bundled_model_available=_bundled_model_available(target),
+            bundled_model_configured=False,
+        ),
+    }
+
+
+def _progress_error(
+    phase: str,
+    error: str,
+    next_action: str,
+    model: str,
+    *,
+    readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    target = model if model in INSTALLABLE_LOCAL_MODELS else RECOMMENDED_MODEL
+    current_readiness = readiness or hardware_readiness(target)
+    return {
+        "phase": phase,
+        "status": "error",
+        "model": _public_model_name(model or target),
+        "error": _public_text(error),
+        "next_action": next_action,
+        "repair_action": _setup_repair_action(next_action, target),
+        "evidence": _setup_evidence(
+            readiness=current_readiness,
+            installed=is_installed(),
+            running=False,
+            models=[],
+            target=target,
+            runtime_source=_ollama_runtime_source(),
+            bundled_model_available=_bundled_model_available(target),
+            bundled_model_configured=False,
+        ),
+    }
+
+
 def _setup_evidence(
     *,
     readiness: dict[str, Any],
@@ -847,7 +956,6 @@ def _setup_evidence(
 ) -> list[dict[str, Any]]:
     bundle = _bundled_model_evidence(target, runtime_source=runtime_source, models=models)
     has_model = _has_model(models, target)
-    runtime_path = _safe_runtime_path(runtime_source) or _system_ollama_executable() or ""
     return [
         {
             "key": "hardware",
@@ -858,7 +966,7 @@ def _setup_evidence(
             "key": "runtime",
             "ok": installed,
             "value": runtime_source,
-            "path": runtime_path,
+            "path": "",
             "detail": _runtime_evidence_detail(installed, runtime_source),
         },
         {
@@ -870,23 +978,23 @@ def _setup_evidence(
             "key": "model",
             "ok": has_model,
             "value": target,
-            "models_seen": models,
+            "models_seen": _public_model_names(models),
             "detail": f"{target} is listed by Ollama." if has_model else f"{target} is not listed by Ollama.",
         },
         {
             "key": "bundle_manifest",
             "ok": bool(bundle["bundle_manifest_valid"] and bundle["manifest_model_matches"]),
-            "path": bundle["bundle_manifest_path"],
+            "path": "",
             "value": bundle["manifest_model"],
             "detail": _bundle_manifest_evidence_detail(bundle, target),
         },
         {
             "key": "bundled_model",
             "ok": bundled_model_available,
-            "models_path": bundle["models_path"],
-            "model_manifest_path": bundle["model_manifest_path"],
+            "models_path": "",
+            "model_manifest_path": "",
             "configured": bundled_model_configured,
-            "detail": _bundled_model_evidence_detail(bundle, target),
+            "detail": _bundled_model_evidence_detail(bundle, target, bundled_model_configured),
         },
     ]
 
@@ -911,7 +1019,7 @@ def _bundle_manifest_evidence_detail(bundle: dict[str, Any], target: str) -> str
     return f"Ollama bundle manifest proves that {target} is included."
 
 
-def _bundled_model_evidence_detail(bundle: dict[str, Any], target: str) -> str:
+def _bundled_model_evidence_detail(bundle: dict[str, Any], target: str, configured: bool) -> str:
     missing = []
     if not bundle["runtime_available"]:
         missing.append("bundled runtime")
@@ -923,7 +1031,7 @@ def _bundled_model_evidence_detail(bundle: dict[str, Any], target: str) -> str:
         missing.append("valid bundle manifest")
     if missing:
         return f"Bundled {target} is not proven available; missing " + ", ".join(missing) + "."
-    if not bundle["configured"]:
+    if not configured:
         return f"Bundled {target} is proven available, but Ollama is not configured to read the bundled model directory."
     return f"Bundled {target} is proven available and the preferred model directory points to it."
 
@@ -1027,7 +1135,7 @@ async def pull_model_streaming(model: str | None = None):
                         completed = data.get("completed", 0)
                         pct = round(completed / total * 100, 1) if total else 0
                         yield {
-                            "status": data.get("status", "downloading"),
+                            "status": _public_text(data.get("status", "downloading"), fallback="downloading"),
                             "total": total,
                             "completed": completed,
                             "percent": pct,
@@ -1043,15 +1151,36 @@ async def pull_model_streaming(model: str | None = None):
 async def install_local_model(model: str | None = None):
     """Full install flow: detect Ollama -> install if needed -> pull model.
     Yields progress dicts for WebSocket streaming."""
-    readiness = hardware_readiness(model)
-    target = model or str(readiness["recommended_model"])
+    try:
+        requested_model = normalize_install_model(model) if model else None
+    except ValueError as exc:
+        yield _progress_error("model", str(exc), "download_model", str(model or ""))
+        return
+
+    readiness = hardware_readiness(requested_model)
+    try:
+        target = normalize_install_model(requested_model or str(readiness["recommended_model"]))
+    except ValueError as exc:
+        yield _progress_error("model", str(exc), "download_model", str(readiness.get("recommended_model") or ""))
+        return
 
     if not readiness["can_install"]:
         yield {
             "phase": "hardware",
             "status": "error",
-            "error": readiness["reason"],
+            "error": _public_text(readiness["reason"], fallback="Local AI hardware requirements are not met."),
             "readiness": readiness,
+            "repair_action": _setup_repair_action("hardware_blocked", target),
+            "evidence": _setup_evidence(
+                readiness=readiness,
+                installed=is_installed(),
+                running=False,
+                models=[],
+                target=target,
+                runtime_source=_ollama_runtime_source(),
+                bundled_model_available=_bundled_model_available(target),
+                bundled_model_configured=False,
+            ),
         }
         return
 
@@ -1068,7 +1197,13 @@ async def install_local_model(model: str | None = None):
         yield {"phase": "install", "status": "installing", "message": "Installing Ollama..."}
         result = await install()
         if not result.get("ok"):
-            yield {"phase": "install", "status": "error", "error": result.get("error", "Installation failed")}
+            yield _progress_error(
+                "install",
+                result.get("error", "Installation failed"),
+                "install_runtime",
+                target,
+                readiness=readiness,
+            )
             return
         yield {"phase": "install", "status": "done", "message": "Ollama installed successfully."}
     else:
@@ -1081,13 +1216,15 @@ async def install_local_model(model: str | None = None):
         yield {"phase": "start", "status": "starting", "message": "Starting Ollama server..."}
         start_result = await start_server()
         if not start_result.get("ok"):
-            yield {
-                "phase": "start",
-                "status": "error",
-                "error": start_result.get("error") or start_result.get("message") or "Ollama server could not be started.",
-            }
+            yield _progress_error(
+                "start",
+                start_result.get("error") or start_result.get("message") or "Ollama server could not be started.",
+                "start_runtime",
+                target,
+                readiness=readiness,
+            )
             return
-        started_with_lengrvis_models = bool(start_result.get("models_dir"))
+        started_with_lengrvis_models = bool(start_result.get("models_dir_configured") or start_result.get("models_dir"))
         yield {"phase": "start", "status": "waiting", "message": "Waiting for Ollama server to start..."}
         for _ in range(10):
             await asyncio.sleep(2)
@@ -1095,7 +1232,13 @@ async def install_local_model(model: str | None = None):
                 running = True
                 break
         if not running:
-            yield {"phase": "start", "status": "error", "error": "Ollama server not responding. Please start it manually."}
+            yield _progress_error(
+                "start",
+                "Ollama server not responding. Please start it manually.",
+                "start_runtime",
+                target,
+                readiness=readiness,
+            )
             return
     yield {"phase": "start", "status": "done", "message": "Ollama server is running."}
 
@@ -1105,25 +1248,52 @@ async def install_local_model(model: str | None = None):
         yield {"phase": "switch", "status": "done", "message": f"Local model {target} is ready.", "model": target}
         return
 
-    if started_with_lengrvis_models and _bundled_model_available(target):
-        yield {
-            "phase": "pull",
-            "status": "skipped",
-            "message": f"Bundled model {target} is ready; no download is needed.",
-            "model": target,
-        }
-        yield {"phase": "switch", "status": "done", "message": f"Bundled local model {target} is ready.", "model": target}
-        return
-
-    if _bundled_model_available(target):
+    bundled_model_available = _bundled_model_available(target)
+    if bundled_model_available and started_with_lengrvis_models:
         yield {
             "phase": "pull",
             "status": "error",
             "error": (
-                f"Bundled model {target} is available, but the running Ollama service is not using "
-                "the Lengrvis bundled model directory. Stop the existing Ollama service and try again."
+                f"Bundled model {target} files were found, but Ollama did not list the model after startup. "
+                "Download the model, or verify the bundled model package and retry setup."
             ),
             "model": target,
+            "next_action": "download_model",
+            "repair_action": _setup_repair_action("download_model", target),
+            "evidence": _setup_evidence(
+                readiness=readiness,
+                installed=True,
+                running=True,
+                models=models,
+                target=target,
+                runtime_source=_ollama_runtime_source(),
+                bundled_model_available=True,
+                bundled_model_configured=False,
+            ),
+        }
+        return
+
+    if bundled_model_available:
+        yield {
+            "phase": "pull",
+            "status": "error",
+            "error": (
+                f"Bundled model {target} files were found, but Ollama did not list the model. "
+                "Close Ollama and retry setup so Lengrvis can restart it with the included local model files."
+            ),
+            "model": target,
+            "next_action": "restart_runtime_with_bundled_models",
+            "repair_action": _setup_repair_action("restart_runtime_with_bundled_models", target),
+            "evidence": _setup_evidence(
+                readiness=readiness,
+                installed=True,
+                running=True,
+                models=models,
+                target=target,
+                runtime_source=_ollama_runtime_source(),
+                bundled_model_available=True,
+                bundled_model_configured=False,
+            ),
         }
         return
 
@@ -1131,14 +1301,38 @@ async def install_local_model(model: str | None = None):
     pull_succeeded = False
     yield {"phase": "pull", "status": "starting", "model": target}
     async for progress in pull_model_streaming(target):
-        yield {"phase": "pull", **progress}
         if progress.get("status") == "error":
+            yield {
+                "phase": "pull",
+                **progress,
+                "model": _public_model_name(str(progress.get("model") or target)),
+                "error": _public_text(progress.get("error"), fallback="Model download failed."),
+                "repair_action": progress.get("repair_action") or _setup_repair_action("download_model", target),
+                "evidence": progress.get("evidence")
+                or _setup_evidence(
+                    readiness=readiness,
+                    installed=True,
+                    running=True,
+                    models=models,
+                    target=target,
+                    runtime_source=_ollama_runtime_source(),
+                    bundled_model_available=False,
+                    bundled_model_configured=False,
+                ),
+            }
             return
+        yield {"phase": "pull", **progress}
         if progress.get("status") == "success":
             pull_succeeded = True
 
     if not pull_succeeded:
-        yield {"phase": "pull", "status": "error", "error": f"Model {target} did not finish downloading."}
+        yield _progress_error(
+            "pull",
+            f"Model {target} did not finish downloading.",
+            "download_model",
+            target,
+            readiness=readiness,
+        )
         return
 
     # Step 4: Switch provider
