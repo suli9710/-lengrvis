@@ -102,8 +102,8 @@ class OrchestratorAgent:
             task.final_summary = final_summary
         return safe_transition(task, status, actor=self.name)
 
-    def create_task_shell(self, goal: str, mode: str) -> Task:
-        task = Task(user_goal=goal, mode=mode, status=TaskStatus.PLANNING)
+    def create_task_shell(self, goal: str, mode: str, *, metadata: dict[str, Any] | None = None) -> Task:
+        task = Task(user_goal=goal, mode=mode, status=TaskStatus.PLANNING, metadata=dict(metadata or {}))
         db.upsert_model("tasks", task)
         record("task.created", self.name, {"goal": goal, "mode": mode}, task_id=task.id)
         self.bus.publish_text(

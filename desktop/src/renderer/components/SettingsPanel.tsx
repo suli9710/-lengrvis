@@ -1,9 +1,11 @@
-import { AlertCircle, CheckCircle2, Download, KeyRound, Loader2, MousePointer2, Play, Plus, Save, ShieldCheck, Square, Trash2, XCircle } from "lucide-react";
+import { AlertCircle, CheckCircle2, Copy, Download, KeyRound, Loader2, MousePointer2, Play, Plus, QrCode, Save, ShieldCheck, Square, Trash2, XCircle } from "lucide-react";
+import QRCode from "qrcode";
 import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   AppSettings,
+  ApiMethod,
   ApiResponse,
   BackendStatus,
   LLMCostSummary,
@@ -15,7 +17,17 @@ import type {
   LocalModelSetupPlan,
   McpServerConfig
 } from "../../shared/types";
-import type { LengrvisApiClient, MobileDevice, MobilePairingCode, RealtimeConnectionStatus, RemoteInputGrant } from "../lib/apiClient";
+import { buildMobilePairingQrContent, formatMobilePairingBaseUrl } from "../../shared/mobilePairingPayload";
+import type { MobilePairingQrContent } from "../../shared/mobilePairingPayload";
+import {
+  buildRendererLoopbackBackendApiUrl,
+  buildRendererLoopbackBackendWebSocketUrl,
+  type LengrvisApiClient,
+  type MobileDevice,
+  type MobilePairingCode,
+  type RealtimeConnectionStatus,
+  type RemoteInputGrant
+} from "../lib/apiClient";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import { activeRemoteInputGrantForDevice, mobileDeviceCanReceiveRemoteInputGrant } from "../lib/remoteInputGrant";
 import { zhBackendState, zhRealtimeConnectionStatus, zhRealtimeShortStatus } from "../lib/zh";
@@ -134,22 +146,10 @@ const DEFAULT_PERMISSION_RULE_DRAFT = {
   reason: "周末禁止删除文件。"
 };
 
-interface InstallModelRequest {
-  model: string;
-}
-
 interface InstallModelProgress {
   stage: string;
   percent: number;
   error?: string;
-}
-
-interface InstallModelStartResponse {
-  ok?: boolean;
-  message?: string;
-  error?: string;
-  progress?: unknown;
-  final?: unknown;
 }
 
 type InstallModelStatus = "idle" | "installing" | "completed" | "error";
@@ -190,6 +190,7 @@ export function SettingsPanel({
   const [isSaving, setIsSaving] = useState(false);
   const [pairing, setPairing] = useState<MobilePairingCode | null>(null);
   const [pairingError, setPairingError] = useState("");
+  const [pairingCopyStatus, setPairingCopyStatus] = useState("");
   const [isPairing, setIsPairing] = useState(false);
   const [pairedDevices, setPairedDevices] = useState<MobileDevice[]>([]);
   const [revokingDeviceId, setRevokingDeviceId] = useState("");
@@ -208,6 +209,7 @@ export function SettingsPanel({
   const [hardwareSmokeStatus, setHardwareSmokeStatus] = useState("");
   const [hardwareSmoke, setHardwareSmoke] = useState<HardwareAccelerationSmokePayload | null>(null);
   const [saveError, setSaveError] = useState("");
+  const [privacyModeStatus, setPrivacyModeStatus] = useState("");
   const privacyEntryRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -330,6 +332,7 @@ export function SettingsPanel({
   const save = async () => {
     setIsSaving(true);
     setSaveError("");
+    setPrivacyModeStatus("");
     try {
       await onSave(draft);
     } catch (error) {
@@ -342,6 +345,7 @@ export function SettingsPanel({
   const createPairingCode = async () => {
     setIsPairing(true);
     setPairingError("");
+    setPairingCopyStatus("");
     try {
       const response = await api.createMobilePairingCode();
       if (response.ok && response.data) {
@@ -354,6 +358,21 @@ export function SettingsPanel({
       setPairingError(readableError(error, "无法生成配对码"));
     } finally {
       setIsPairing(false);
+    }
+  };
+
+  const copyPairingPayload = async () => {
+    if (!pairing) return;
+    const payload = buildMobilePairingQrContent(pairing).value;
+    if (!navigator.clipboard?.writeText) {
+      setPairingCopyStatus("剪贴板不可用，可手动复制下方文本。");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(payload);
+      setPairingCopyStatus("已复制配对信息。");
+    } catch {
+      setPairingCopyStatus("复制失败，可手动复制下方文本。");
     }
   };
 
@@ -445,15 +464,10 @@ export function SettingsPanel({
     try {
       const rule = buildPermissionRule(permissionDraft);
       const confirmation = await api.confirmPermissionRuleChange(rule);
-      const query = confirmation.ok && confirmation.data?.required && confirmation.data.nonce
-        ? { confirmation_nonce: confirmation.data.nonce }
+      const confirmationNonce = confirmation.ok && confirmation.data?.required && confirmation.data.nonce
+        ? confirmation.data.nonce
         : undefined;
-      const response = await api.request<BackendPermissionPolicy, BackendPermissionRule>({
-        endpoint: "/api/settings/permission-policy/rules",
-        method: "POST",
-        query,
-        body: rule
-      });
+      const response = await api.upsertPermissionRule(rule, confirmationNonce);
       if (response.ok && response.data) {
         setPermissionPolicy(mapPermissionPolicy(response.data));
         setPermissionStatus("权限规则已保存。");
@@ -470,13 +484,10 @@ export function SettingsPanel({
   const deletePermissionRule = async (ruleId: string) => {
     setPermissionStatus("");
     const confirmation = await api.confirmPermissionRuleDelete(ruleId);
-    const response = await api.request<{ ok: boolean; policy: BackendPermissionPolicy }>({
-      endpoint: `/api/settings/permission-policy/rules/${encodeURIComponent(ruleId)}`,
-      method: "DELETE",
-      query: confirmation.ok && confirmation.data?.required && confirmation.data.nonce
-        ? { confirmation_nonce: confirmation.data.nonce }
-        : undefined
-    });
+    const confirmationNonce = confirmation.ok && confirmation.data?.required && confirmation.data.nonce
+      ? confirmation.data.nonce
+      : undefined;
+    const response = await api.deletePermissionRule(ruleId, confirmationNonce);
     if (response.ok && response.data) {
       setPermissionPolicy(mapPermissionPolicy(response.data.policy));
       setPermissionStatus("权限规则已删除。");
@@ -513,11 +524,16 @@ export function SettingsPanel({
     setDraft(nextDraft);
     setIsSaving(true);
     setSaveError("");
+    setPrivacyModeStatus("");
     try {
       await onSave(nextDraft);
-      await refreshLocalLlmHealth();
+      const refreshedHealth = await refreshLocalLlmHealth();
+      if (!refreshedHealth?.available) {
+        setPrivacyModeStatus("隐私模式已开启，本地 AI 尚未就绪；后续隐私任务会停在本地修复步骤，不会静默回退云端。");
+      }
     } catch (error) {
       setDraft(previousDraft);
+      setPrivacyModeStatus("");
       setSaveError(readableError(error, "无法切换到隐私模式"));
     } finally {
       setIsSaving(false);
@@ -529,6 +545,7 @@ export function SettingsPanel({
       return;
     }
     setSaveError("");
+    setPrivacyModeStatus("");
     setDraft((current) => ({ ...current, mode: value }));
   };
   const hardwareRuntime = providerToRuntime(draft.onnxExecutionProvider);
@@ -537,6 +554,9 @@ export function SettingsPanel({
   const realtimeStatusProblem = Boolean(
     realtimeStatus && ["unauthorized", "policy_violation", "error", "closed", "bad_message"].includes(realtimeStatus.state)
   );
+  const pairingQrContent = pairing ? buildMobilePairingQrContent(pairing) : null;
+  const pairingBaseUrl = pairing ? formatMobilePairingBaseUrl(pairing) : "";
+  const pairingTransportWarning = pairingBaseUrl ? mobilePairingTransportWarning(pairingBaseUrl) : "";
   return (
     <Panel
       title="设置"
@@ -550,6 +570,7 @@ export function SettingsPanel({
       <div className="settings-grid">
         <fieldset className="mcp-servers settings-grid__full">
           <legend>基础设置</legend>
+          <p className="muted">这里是普通用户的统一配置入口；不需要手动编辑 .env 或 config.yaml。</p>
           <div className="settings-grid settings-grid--balanced">
             <label className="field settings-grid__full">
               <span>模式</span>
@@ -573,6 +594,11 @@ export function SettingsPanel({
               </div>
               {draft.mode === "privacy" || draft.mode === "hybrid" ? (
                 <LocalLlmHealthNotice health={effectiveLocalLlmHealth} />
+              ) : null}
+              {privacyModeStatus ? (
+                <small className="settings-status settings-status--error" role="status">
+                  {privacyModeStatus}
+                </small>
               ) : null}
               <ModelBoundaryProfile
                 mode={draft.mode}
@@ -1078,12 +1104,38 @@ export function SettingsPanel({
           <div className="mobile-pairing">
             <div className="mobile-pairing__copy">
               <strong>手机配对</strong>
-              <span>在 Android 伴侣应用中输入服务器地址和一次性配对码。</span>
+              <span>把桌面生成的配对信息交给手机端，地址、端口和一次性配对码会一起带过去。</span>
               {pairing ? (
-                <small>
-                  服务器：{formatMobilePairingServer(pairing)} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
-                </small>
-              ) : null}
+                <div className="mobile-pairing__payload" aria-label="手机配对信息">
+                  <div className="mobile-pairing__payload-head">
+                    <small>
+                      服务器：{pairingBaseUrl} · {new Date(pairing.expires_at).toLocaleTimeString()} 过期
+                    </small>
+                    <button
+                      type="button"
+                      className="button button--ghost mobile-pairing__copy-button"
+                      onClick={() => void copyPairingPayload()}
+                      aria-label="复制手机配对信息"
+                      title="复制手机配对信息"
+                    >
+                      {pairingCopyStatus.startsWith("已复制") ? <CheckCircle2 size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+                      复制
+                    </button>
+                  </div>
+                  {pairingCopyStatus ? (
+                    <small className="mobile-pairing__copy-status" role="status">
+                      {pairingCopyStatus}
+                    </small>
+                  ) : null}
+                  {pairingTransportWarning ? (
+                    <small className="mobile-pairing__error" role="status">
+                      {pairingTransportWarning}
+                    </small>
+                  ) : null}
+                </div>
+              ) : (
+                <small>点击生成后复制整段配对信息；手机端可直接识别同一段内容。</small>
+              )}
               {pairedDevices.length ? (
                 <ul className="mobile-pairing__devices" aria-label="已配对手机">
                   {pairedDevices.map((device) => {
@@ -1172,7 +1224,7 @@ export function SettingsPanel({
               </small>
               {pairingError ? <small className="mobile-pairing__error">{pairingError}</small> : null}
             </div>
-            <PairingVisualCode code={pairing?.code} />
+            <PairingVisualCode code={pairing?.code} qrContent={pairingQrContent} />
             <button className="button button--secondary" onClick={() => void createPairingCode()} disabled={isPairing} type="button">
               {isPairing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <KeyRound size={16} aria-hidden="true" />}
               生成配对码
@@ -1217,17 +1269,28 @@ function LocalModelInstaller({
     stage: "选择模型后即可安装到本地推理环境。",
     percent: 0
   });
+  const [selectedSetupPlan, setSelectedSetupPlan] = useState<LocalModelSetupPlan | null>(setupPlan);
+  const [isCheckingSetupPlan, setIsCheckingSetupPlan] = useState(false);
   const closeProgressSocketRef = useRef<() => void>();
 
   const isInstalling = status === "installing";
-  const canInstall = readiness?.canInstall ?? true;
+  const effectiveSetupPlan = selectedSetupPlan ?? setupPlan;
+  const effectiveReadiness = effectiveSetupPlan?.readiness ?? readiness;
+  const canInstall = effectiveSetupPlan?.canInstall ?? readiness?.canInstall ?? true;
   const lastError = status === "error" ? progress.error || progress.stage : "";
 
   useEffect(() => {
-    if (readiness?.recommendedModel && status === "idle") {
-      setModel(localModelOptionValue(readiness.recommendedModel));
+    const recommendedModel = effectiveReadiness?.recommendedModel;
+    if (recommendedModel && status === "idle") {
+      setModel(localModelOptionValue(recommendedModel));
     }
-  }, [readiness?.recommendedModel, status]);
+  }, [effectiveReadiness?.recommendedModel, status]);
+
+  useEffect(() => {
+    if (setupPlan && localModelOptionValue(setupPlan.model) === model) {
+      setSelectedSetupPlan(setupPlan);
+    }
+  }, [model, setupPlan]);
 
   const closeProgressSocket = useCallback(() => {
     closeProgressSocketRef.current?.();
@@ -1235,6 +1298,24 @@ function LocalModelInstaller({
   }, []);
 
   useEffect(() => closeProgressSocket, [closeProgressSocket]);
+
+  const refreshSelectedSetupPlan = useCallback(async () => {
+    setIsCheckingSetupPlan(true);
+    try {
+      const response = await api.getLocalModelSetupPlan(model);
+      if (response.ok && response.data) {
+        setSelectedSetupPlan(response.data);
+        return response.data;
+      }
+    } finally {
+      setIsCheckingSetupPlan(false);
+    }
+    return null;
+  }, [api, model]);
+
+  useEffect(() => {
+    void refreshSelectedSetupPlan();
+  }, [refreshSelectedSetupPlan]);
 
   const applyProgress = useCallback(
     (nextProgress: InstallModelProgress) => {
@@ -1252,9 +1333,10 @@ function LocalModelInstaller({
         setSocketStatus("closed");
         closeProgressSocket();
         void onHealthRefresh?.();
+        void refreshSelectedSetupPlan();
       }
     },
-    [closeProgressSocket, onHealthRefresh]
+    [closeProgressSocket, onHealthRefresh, refreshSelectedSetupPlan]
   );
 
   const startInstallRequest = useCallback(
@@ -1264,14 +1346,7 @@ function LocalModelInstaller({
         setProgress({ stage: fallbackStage, percent: 1 });
       }
 
-      const response = window.lengrvis?.localModel
-        ? (await window.lengrvis.localModel.install({ model }) as ApiResponse<InstallModelStartResponse>)
-        : await api.request<InstallModelStartResponse, InstallModelRequest>({
-            endpoint: "/api/settings/install-local-model",
-            method: "POST",
-            body: { model },
-            timeoutMs: 30_000
-          });
+      const response = await api.installLocalModel({ model });
 
       if (!response.ok) {
         setStatus("error");
@@ -1303,6 +1378,7 @@ function LocalModelInstaller({
         setSocketStatus("closed");
         setStatus("completed");
         void onHealthRefresh?.();
+        void refreshSelectedSetupPlan();
         return;
       }
 
@@ -1315,7 +1391,7 @@ function LocalModelInstaller({
             }
       );
     },
-    [api, applyProgress, closeProgressSocket, model, onHealthRefresh]
+    [api, applyProgress, closeProgressSocket, model, onHealthRefresh, refreshSelectedSetupPlan]
   );
 
   const openProgressSocket = useCallback((): boolean => {
@@ -1380,7 +1456,7 @@ function LocalModelInstaller({
           setSocketStatus("closed");
           if (!receivedProgress && !fallbackStarted) {
             fallbackStarted = true;
-            void startInstallRequest("进度连接不可用，已切换为普通安装请求...");
+            void startInstallRequest("进度连接不可用，已切换为普通安装请求；仍会继续完成本地模型准备。");
           } else {
             setStatus("error");
             setProgress({
@@ -1416,14 +1492,14 @@ function LocalModelInstaller({
     if (!canInstall) {
       setStatus("error");
       setProgress({
-        stage: readiness?.reason ?? "This computer is below the minimum local AI requirements.",
+        stage: effectiveReadiness?.reason ?? "这台电脑暂不满足本地 AI 推荐条件。",
         percent: 0,
-        error: readiness?.reason ?? "This computer is below the minimum local AI requirements."
+        error: effectiveReadiness?.reason ?? "这台电脑暂不满足本地 AI 推荐条件。"
       });
       return;
     }
     setStatus("installing");
-    setProgress({ stage: "正在准备安装...", percent: 0 });
+    setProgress({ stage: installModelStartStage(effectiveSetupPlan, model), percent: 0 });
     const usingSocket = openProgressSocket();
     if (usingSocket) {
       return;
@@ -1446,8 +1522,8 @@ function LocalModelInstaller({
       <PrivacyReadinessPanel
         mode={mode}
         health={health}
-        setupPlan={setupPlan}
-        checking={isInstalling}
+        setupPlan={effectiveSetupPlan}
+        checking={isInstalling || isCheckingSetupPlan}
         error={lastError}
         onPrimaryAction={() => void installModel()}
         onRefresh={() => void onHealthRefresh?.()}
@@ -1457,13 +1533,13 @@ function LocalModelInstaller({
         <div className="local-model-installer__copy">
           <strong>本地 AI 手动设置</strong>
           <span>
-            上方按钮会按当前下一步自动处理；需要换模型时，可在这里手动选择。
+            {localModelInstallerHint(effectiveSetupPlan, model)}
           </span>
         </div>
         <Badge tone={tone}>{zhInstallModelStatus(status, socketStatus)}</Badge>
       </div>
 
-      {readiness ? <LocalModelReadinessView readiness={readiness} /> : null}
+      {effectiveReadiness ? <LocalModelReadinessView readiness={effectiveReadiness} /> : null}
 
       <div className="local-model-installer__controls">
         <label className="field">
@@ -1602,7 +1678,7 @@ function PrivacyReadinessPanel({
       {setupPlan ? (
         <PrivacyBundleStatus setupPlan={setupPlan} />
       ) : null}
-      <p className="privacy-readiness__note">隐私模式会优先使用本机模型处理文件名、文档摘要和系统信息；没有本地 AI 时不会静默退回云端。</p>
+      <p className="privacy-readiness__note">主按钮会按顺序完成 Ollama 安装、启动和模型下载/随包启用；失败会停在本地修复步骤，不会静默回退云端。</p>
     </section>
   );
 }
@@ -1706,19 +1782,22 @@ function privacyReadinessPrimaryAction(
   if (blocked || setupPlan?.nextAction === "hardware_blocked") {
     return { label: "电脑条件暂不满足", disabled: true, kind: "blocked" };
   }
+  if (setupPlan?.nextAction === "install_runtime") {
+    return { label: `一键安装 Ollama + 准备 ${setupPlan.model || "推荐模型"}`, disabled: false, kind: "download" };
+  }
   if (setupPlan?.nextAction === "start_runtime" && setupPlan.bundledModelAvailable) {
-    return { label: "下一步：启动随包本地 AI", disabled: false, kind: "bundled" };
+    return { label: "一键启动 Ollama + 启用随包模型", disabled: false, kind: "bundled" };
   }
   if (setupPlan?.nextAction === "start_runtime") {
-    return { label: "下一步：启动本地 AI 服务", disabled: false, kind: "start" };
+    return { label: "一键启动 Ollama + 检查模型", disabled: false, kind: "start" };
   }
   if (setupPlan?.nextAction === "use_bundled_model") {
-    return { label: "下一步：启用随包模型", disabled: false, kind: "bundled" };
+    return { label: "一键启用随包模型", disabled: false, kind: "bundled" };
   }
   if (setupPlan?.nextAction === "download_model") {
-    return { label: "下一步：下载推荐模型", disabled: false, kind: "download" };
+    return { label: `一键下载 ${setupPlan.model || "推荐模型"}`, disabled: false, kind: "download" };
   }
-  return { label: "下一步：准备本地 AI", disabled: false, kind: "enable" };
+  return { label: "一键准备本地 AI", disabled: false, kind: "enable" };
 }
 
 function privacyReadinessPrimaryIcon(
@@ -1774,7 +1853,12 @@ function zhLocalModelSetupStepLabel(key: string, fallback: string): string {
   if (key === "hardware") return "检查电脑条件";
   if (key === "runtime") return "准备本地 AI 运行时";
   if (key === "server") return "启动本地 AI 服务";
-  if (key === "model") return "下载推荐模型";
+  if (key === "model") {
+    const normalized = fallback.toLowerCase();
+    if (normalized.includes("bundled")) return "启用随包模型";
+    if (normalized.includes("use local")) return "确认本地模型";
+    return "下载推荐模型";
+  }
   return fallback || "准备本地 AI";
 }
 
@@ -1788,6 +1872,9 @@ function zhLocalModelSetupDetail(
     if (state === "done") return `这台电脑已满足 ${model || "推荐模型"} 的本地运行条件。`;
     if (state === "blocked") return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
     return fallback || "会检查内存、磁盘空间和 CPU 是否适合本地模型。";
+  }
+  if (key === "runtime" && fallback.includes("bundled")) {
+    return state === "done" ? "随包 Ollama 运行时已可用。" : "将使用随包 Ollama 运行时，无需另外安装。";
   }
   if (key === "runtime") return state === "done" ? "Ollama 已安装。" : "Lengrvis 可以在 Windows 上自动安装 Ollama。";
   if (key === "server") return state === "done" ? "Ollama 服务正在运行。" : "安装完成后，Lengrvis 会启动本地 AI 服务。";
@@ -1815,6 +1902,33 @@ function LocalModelReadinessView({ readiness }: { readiness: LocalModelReadiness
       {readiness.gpuSummary ? <small>GPU: {readiness.gpuSummary}</small> : null}
     </div>
   );
+}
+
+function installModelStartStage(setupPlan: LocalModelSetupPlan | null, model: string): string {
+  const target = setupPlanActionModel(setupPlan, model);
+  if (setupPlan?.nextAction === "hardware_blocked") return "电脑条件暂不满足，本次不会继续安装。";
+  if (setupPlan?.nextAction === "install_runtime") return `正在一键准备 ${target}：安装 Ollama、启动服务、准备模型。`;
+  if (setupPlan?.nextAction === "start_runtime") return `正在启动 Ollama，并检查 ${target} 是否已可用。`;
+  if (setupPlan?.nextAction === "use_bundled_model") return `正在启用随包模型 ${target}，无需下载。`;
+  if (setupPlan?.nextAction === "download_model") return `正在下载 ${target} 到本机 Ollama。`;
+  if (setupPlan?.nextAction === "ready") return `${target} 已就绪，正在复查本地 AI 状态。`;
+  return `正在一键准备 ${target}：检查 Ollama、启动服务、下载或启用模型。`;
+}
+
+function localModelInstallerHint(setupPlan: LocalModelSetupPlan | null, model: string): string {
+  const target = setupPlanActionModel(setupPlan, model);
+  if (!setupPlan) return `上方按钮会按顺序检查 Ollama、启动服务，并准备 ${target}。`;
+  if (setupPlan.nextAction === "hardware_blocked") return "电脑条件不足时不会继续安装；释放内存或磁盘后可重新检查。";
+  if (setupPlan.nextAction === "install_runtime") return `上方按钮会安装 Ollama、启动服务、准备 ${target}。`;
+  if (setupPlan.nextAction === "start_runtime") return `上方按钮会启动 Ollama，然后继续准备 ${target}。`;
+  if (setupPlan.nextAction === "use_bundled_model") return `${target} 已随安装包提供，上方按钮会启用它，不走下载。`;
+  if (setupPlan.nextAction === "download_model") return `Ollama 已运行，上方按钮会把 ${target} 下载到本机。`;
+  if (setupPlan.nextAction === "ready") return `${target} 已就绪；需要换模型时，可在这里手动选择。`;
+  return `上方按钮会按当前下一步自动处理 ${target}。`;
+}
+
+function setupPlanActionModel(setupPlan: LocalModelSetupPlan | null, model: string): string {
+  return setupPlan?.model || model || "推荐模型";
 }
 
 function zhInstallModelStatus(status: InstallModelStatus, socketStatus: InstallModelSocketStatus) {
@@ -1861,11 +1975,13 @@ function subscribeInstallModelProgressSocket(
     return null;
   }
 
-  return subscribeInstallModelWebOnlyDevSocket(buildInstallModelWebSocketUrl(baseUrl, path, model), handlers);
+  const url = buildInstallModelWebSocketUrl(baseUrl, path, model);
+  if (!url) return null;
+  return subscribeInstallModelWebOnlyDevSocket(url, handlers);
 }
 
 function isInstallModelWebOnlyDevFallbackEnabled(): boolean {
-  return !window.lengrvis?.realtime && import.meta.env.DEV;
+  return !window.lengrvis && import.meta.env.DEV;
 }
 
 function subscribeInstallModelWebOnlyDevSocket(
@@ -1886,25 +2002,8 @@ function subscribeInstallModelWebOnlyDevSocket(
   };
 }
 
-function buildInstallModelWebSocketUrl(baseUrl: string, path: string, model: string): string {
-  const url = new URL(path, getInstallModelBackendBaseUrl(baseUrl));
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("model", model);
-  return url.toString();
-}
-
-function getInstallModelBackendBaseUrl(baseUrl: string): string {
-  const candidate = window.lengrvis?.backendBaseUrl || baseUrl || "http://127.0.0.1:8000";
-  return /^https?:\/\//i.test(candidate) ? candidate : "http://127.0.0.1:8000";
-}
-
-function formatMobilePairingServer(pairing: MobilePairingCode): string {
-  const origin = pairing.server.origin || pairing.server_origin;
-  if (origin) {
-    return origin;
-  }
-  const scheme = pairing.server.scheme || (pairing.https_enabled ? "https" : "http");
-  return `${scheme}://${pairing.server.host}:${pairing.server.port}`;
+function buildInstallModelWebSocketUrl(baseUrl: string, path: string, model: string): string | null {
+  return buildRendererLoopbackBackendWebSocketUrl(baseUrl, path, { model });
 }
 
 function parseInstallModelProgress(data: unknown): InstallModelProgress | null {
@@ -1944,7 +2043,12 @@ function readInstallModelProgress(payload: unknown): InstallModelProgress | null
     return null;
   }
 
-  const direct = payload as Partial<InstallModelProgress> & { message?: unknown; status?: unknown; phase?: unknown };
+  const direct = payload as Partial<InstallModelProgress> & {
+    message?: unknown;
+    status?: unknown;
+    phase?: unknown;
+    model?: unknown;
+  };
 
   const hasStage = typeof direct.stage === "string" || typeof direct.message === "string";
   const hasPercent = typeof direct.percent === "number";
@@ -1954,11 +2058,11 @@ function readInstallModelProgress(payload: unknown): InstallModelProgress | null
   }
 
   const phase = typeof direct.phase === "string" ? direct.phase : "";
+  const model = typeof direct.model === "string" ? direct.model : "";
+  const message = typeof direct.message === "string" ? direct.message : "";
   const stage = typeof direct.stage === "string"
     ? direct.stage
-    : typeof direct.message === "string"
-      ? direct.message
-      : installModelStatusLabel(status, phase);
+    : installModelStatusLabel(status, phase, model, message);
 
   return normalizeInstallModelProgress({
     stage,
@@ -1967,19 +2071,46 @@ function readInstallModelProgress(payload: unknown): InstallModelProgress | null
   });
 }
 
-function installModelStatusLabel(status: string, phase: string): string {
-  if (status === "success" || status === "done") return phase ? `${phase} 完成` : "本地模型已就绪";
-  if (status === "error") return "安装失败";
-  if (status === "skipped") return phase ? `${phase} 已跳过` : "步骤已跳过";
+function installModelStatusLabel(status: string, phase: string, model = "", message = ""): string {
+  const target = model || "推荐模型";
+  if (status === "error") return message ? `安装失败：${message}` : "安装失败";
+  if (phase === "hardware") {
+    if (status === "done" || status === "success") return message || "电脑条件已通过。";
+    return message || "正在检查电脑条件。";
+  }
+  if (phase === "install") {
+    if (status === "done") return "Ollama 运行时已安装。";
+    if (status === "skipped") return "Ollama 已安装，继续下一步。";
+    return message || "正在安装 Ollama 运行时...";
+  }
+  if (phase === "start") {
+    if (status === "done") return "Ollama 本地服务已启动。";
+    if (status === "waiting") return "正在等待 Ollama 本地服务响应...";
+    if (status === "starting") return "正在启动 Ollama 本地服务...";
+    return message || "正在检查 Ollama 本地服务。";
+  }
+  if (phase === "pull") {
+    if (status === "skipped" && /bundled|随包/i.test(message)) return `${target} 已随包提供，无需下载。`;
+    if (status === "skipped") return `${target} 已在本机，无需重复下载。`;
+    if (status === "success" || status === "done") return `${target} 已下载到本机。`;
+    return message ? `正在下载 ${target}：${message}` : `正在下载 ${target}...`;
+  }
+  if (phase === "switch") {
+    if (status === "done" || status === "success") return `${target} 已就绪；隐私模式失败时不会静默回退云端。`;
+    return `正在确认 ${target} 可用于隐私模式。`;
+  }
+  if (status === "success" || status === "done") return "本地模型已就绪";
+  if (status === "skipped") return message || "步骤已跳过";
   if (status === "waiting") return "等待本地运行时启动...";
   if (status === "starting") return "正在开始模型安装...";
   if (status === "installing") return "正在安装本地运行时...";
-  return "正在安装本地模型...";
+  return message || "正在安装本地模型...";
 }
 
 function installModelStatusPercent(status: string, phase: string): number {
   if ((status === "success" || status === "done") && phase === "switch") return 100;
   if (status === "error") return 0;
+  if (phase === "hardware") return status === "done" ? 8 : 4;
   if (phase === "install") return status === "skipped" || status === "done" ? 25 : 12;
   if (phase === "start") return status === "done" ? 35 : 28;
   if (phase === "pull") return status === "success" ? 92 : 42;
@@ -2008,21 +2139,95 @@ function clampPercent(percent: number) {
   return Math.max(0, Math.min(100, Math.round(percent)));
 }
 
-function PairingVisualCode({ code }: { code?: string }) {
+function mobilePairingTransportWarning(baseUrl: string): string {
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== "http:" || isLoopbackHostname(parsed.hostname)) return "";
+    return "当前配对地址是局域网 HTTP。手机端会阻断 token 配对，请在电脑端启用 HTTPS/WSS 或受信任证书后重新生成。";
+  } catch {
+    return "";
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return normalized === "localhost" || normalized === "::1" || normalized.startsWith("127.");
+}
+
+function PairingVisualCode({ code, qrContent }: { code?: string; qrContent?: MobilePairingQrContent | null }) {
   const normalized = code ?? "------";
+  const [qrImage, setQrImage] = useState<string | null>(null);
+  const [qrError, setQrError] = useState("");
   const bits = Array.from({ length: 36 }, (_, index) => {
     const charCode = normalized.charCodeAt(index % normalized.length) || 45;
     return (charCode + index * 7) % 3 !== 0;
   });
 
+  useEffect(() => {
+    let cancelled = false;
+    setQrError("");
+    if (!qrContent?.value) {
+      setQrImage(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void QRCode.toDataURL(qrContent.value, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 148,
+      color: {
+        dark: "#0f172a",
+        light: "#ffffff"
+      }
+    }).then((value) => {
+      if (!cancelled) setQrImage(value);
+    }).catch(() => {
+      if (!cancelled) {
+        setQrImage(null);
+        setQrError("二维码暂时无法生成，可复制配对信息。");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [qrContent?.value]);
+
   return (
     <div className="mobile-pairing__visual" aria-label={code ? `配对码 ${code}` : "尚未生成配对码"}>
       <div className="mobile-pairing__code">{normalized}</div>
-      <div className="mobile-pairing__matrix" aria-hidden="true">
-        {bits.map((active, index) => (
-          <span key={index} className={active ? "mobile-pairing__cell mobile-pairing__cell--active" : "mobile-pairing__cell"} />
-        ))}
-      </div>
+      {qrContent ? (
+        <div
+          className="mobile-pairing__qr-ready"
+          data-mobile-pairing-qr="ready"
+          data-qr-encoding={qrContent.encoding}
+          data-qr-length={qrContent.length}
+          data-qr-mime-type={qrContent.mime_type}
+        >
+          <div className="mobile-pairing__qr-head">
+            <QrCode size={16} aria-hidden="true" />
+            <span>扫码配对</span>
+          </div>
+          {qrImage ? (
+            <img className="mobile-pairing__qr-image" src={qrImage} alt="手机配对二维码" />
+          ) : (
+            <div className="mobile-pairing__matrix" aria-hidden="true">
+              {bits.map((active, index) => (
+                <span key={index} className={active ? "mobile-pairing__cell mobile-pairing__cell--active" : "mobile-pairing__cell"} />
+              ))}
+            </div>
+          )}
+          {qrError ? <small className="mobile-pairing__qr-error">{qrError}</small> : null}
+        </div>
+      ) : (
+        <div className="mobile-pairing__matrix" aria-hidden="true">
+          {bits.map((active, index) => (
+            <span key={index} className={active ? "mobile-pairing__cell mobile-pairing__cell--active" : "mobile-pairing__cell"} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2245,6 +2450,92 @@ interface OllamaStatus {
   has_recommended?: boolean;
 }
 
+interface OllamaActionResult {
+  ok: boolean;
+  model?: string;
+  message?: string;
+  error?: string;
+}
+
+interface OllamaSetupRequest<TBody = unknown> {
+  endpoint: string;
+  method?: ApiMethod;
+  body?: TBody;
+}
+
+async function requestOllamaSetup<TResponse, TBody = unknown>(
+  request: OllamaSetupRequest<TBody>
+): Promise<ApiResponse<TResponse>> {
+  if (window.lengrvis) {
+    return window.lengrvis.api.request<TResponse, TBody>({
+      endpoint: request.endpoint,
+      method: request.method,
+      body: request.body
+    });
+  }
+  return requestOllamaSetupDirect<TResponse, TBody>(request);
+}
+
+async function requestOllamaSetupDirect<TResponse, TBody = unknown>(
+  request: OllamaSetupRequest<TBody>
+): Promise<ApiResponse<TResponse>> {
+  const receivedAt = new Date().toISOString();
+  const url = buildRendererLoopbackBackendApiUrl(undefined, request.endpoint);
+  if (!url) {
+    return {
+      ok: false,
+      status: 0,
+      error: { message: "Web 调试后端仅允许连接本机 HTTP(S) 地址。" },
+      receivedAt
+    };
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: request.method ?? "GET",
+      headers: request.body ? { "Content-Type": "application/json" } : {},
+      body: request.body ? JSON.stringify(request.body) : undefined
+    });
+    const data = await parseOllamaSetupResponse(response);
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        error: { message: ollamaSetupErrorMessage(data, response.statusText || `HTTP ${response.status}`), details: data },
+        receivedAt
+      };
+    }
+    return { ok: true, status: response.status, data: data as TResponse, receivedAt };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: { message: error instanceof Error ? error.message : "Ollama 请求失败" },
+      receivedAt
+    };
+  }
+}
+
+async function parseOllamaSetupResponse(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
+function ollamaSetupErrorMessage(data: unknown, fallback: string): string {
+  if (data && typeof data === "object") {
+    const direct = (data as { message?: unknown }).message;
+    if (typeof direct === "string") return direct;
+    const error = (data as { error?: unknown }).error;
+    if (typeof error === "string") return error;
+  }
+  return fallback;
+}
+
 interface HardwareAccelerationCardProps {
   api: LengrvisApiClient;
   settings: AppSettings;
@@ -2446,14 +2737,7 @@ function OllamaSetup() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const doRequest = window.lengrvis
-        ? window.lengrvis.api.request<OllamaStatus>
-        : async (req: { endpoint: string }) => {
-            const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`);
-            const data = await resp.json();
-            return { ok: resp.ok, data } as { ok: true; data: OllamaStatus };
-          };
-      const resp = await doRequest({ endpoint: "/api/settings/ollama/status" });
+      const resp = await requestOllamaSetup<OllamaStatus>({ endpoint: "/api/settings/ollama/status" });
       if (resp.ok && resp.data) {
         setOllamaStatus(resp.data);
         setError(null);
@@ -2471,14 +2755,9 @@ function OllamaSetup() {
     setInstalling(true);
     setError(null);
     try {
-      const doRequest = window.lengrvis?.ollama
-        ? () => window.lengrvis.ollama.install() as Promise<ApiResponse<{ ok: boolean; message?: string; error?: string }>>
-        : async (req: { endpoint: string; method?: string }) => {
-            const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`, { method: req.method ?? "GET" });
-            const data = await resp.json();
-            return { ok: resp.ok, data } as { ok: true; data: { ok: boolean; message?: string; error?: string } };
-          };
-      const resp = await doRequest({ endpoint: "/api/settings/ollama/install", method: "POST" });
+      const resp = window.lengrvis?.ollama
+        ? await window.lengrvis.ollama.install() as ApiResponse<OllamaActionResult>
+        : await requestOllamaSetup<OllamaActionResult>({ endpoint: "/api/settings/ollama/install", method: "POST" });
       if (resp.ok && resp.data) {
         if (!resp.data.ok) {
           setError(resp.data.error || "安装失败");
@@ -2496,19 +2775,9 @@ function OllamaSetup() {
     setPulling(true);
     setError(null);
     try {
-      const doRequest = window.lengrvis?.ollama
-        ? (req: { body?: { model?: string } }) =>
-            window.lengrvis.ollama.pull(req.body) as Promise<ApiResponse<{ ok: boolean; model?: string; message?: string; error?: string }>>
-        : async (req: { endpoint: string; method?: string; body?: unknown }) => {
-            const resp = await fetch(`http://127.0.0.1:8000${req.endpoint}`, {
-              method: req.method ?? "GET",
-              headers: req.body ? { "Content-Type": "application/json" } : {},
-              body: req.body ? JSON.stringify(req.body) : undefined,
-            });
-            const data = await resp.json();
-            return { ok: resp.ok, data } as { ok: true; data: { ok: boolean; model?: string; message?: string; error?: string } };
-          };
-      const resp = await doRequest({ endpoint: "/api/settings/ollama/pull", method: "POST", body: {} });
+      const resp = window.lengrvis?.ollama
+        ? await window.lengrvis.ollama.pull({}) as ApiResponse<OllamaActionResult>
+        : await requestOllamaSetup<OllamaActionResult>({ endpoint: "/api/settings/ollama/pull", method: "POST", body: {} });
       if (resp.ok && resp.data) {
         if (!resp.data.ok) {
           setError(resp.data.error || "模型拉取失败");

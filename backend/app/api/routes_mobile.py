@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from app.agents.supervisor_agent import SupervisorDecision
 from app.api import routes_approvals
+from app.core import db
 from app.core.errors import StateTransitionError
+from app.policy.redaction import redact_value
 from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     decode_mobile_token,
@@ -95,6 +98,15 @@ MOBILE_TASK_AGENT_HINTS = {
     "document-qa": "DocumentAgent",
 }
 
+MOBILE_TASK_TITLE_FALLBACK = "Lengrvis 任务"
+MOBILE_TASK_PRIVACY_TITLE = "隐私任务"
+MOBILE_TASK_PRIVACY_SUMMARY = "隐私模式：请在电脑端查看任务详情。"
+MOBILE_TASK_METADATA_SOURCE = "mobile_companion"
+MOBILE_LOCAL_PATH_RE = re.compile(
+    r"(?i)(?:[A-Za-z]:[\\/][^\s,;，。；、]+|(?:/Users|/home)/[^\s,;，。；、]+|~[\\/][^\s,;，。；、]+)"
+)
+MOBILE_TERMINAL_TASK_PHASES = {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED}
+
 
 @router.get("/mobile/approvals/pending")
 def pending_mobile_approvals(token: dict = Depends(require_mobile_token)) -> list[dict]:
@@ -144,8 +156,22 @@ def revoke_mobile_device(device_id: str, token: dict = Depends(require_mobile_to
 
 @router.get("/mobile/tasks")
 def list_mobile_tasks(token: dict = Depends(require_mobile_token)) -> dict:
-    tasks = sorted(list_tasks(), key=lambda item: item.updated_at, reverse=True)
+    tasks = sorted(
+        [task for task in list_tasks() if _mobile_task_allowed(task, token)],
+        key=lambda item: item.updated_at,
+        reverse=True,
+    )
     return {"tasks": [_mobile_task_payload(task) for task in tasks[:20]]}
+
+
+@router.get("/mobile/tasks/{task_id}")
+def get_mobile_task_status(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
+    try:
+        task = get_task(task_id)
+        _raise_if_mobile_task_disallowed(task, token)
+        return _mobile_task_payload(task)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Task not found") from None
 
 
 @router.post("/mobile/tasks", status_code=201)
@@ -153,13 +179,15 @@ async def create_mobile_task(request: MobileTaskCreateRequest, token: dict = Dep
     goal = _mobile_task_template_goal(request)
     template_id = _normalize_mobile_template_id(request.template_id)
     template = get_task_starter_template(template_id)
+    metadata = _mobile_task_source_metadata(token, action="template", template_id=template_id)
     response = _delegate_mobile_task_or_error(
         goal,
         request.mode,
         reply=f"已从手机 Companion 发起「{template['label']}」任务，电脑端会继续执行并保留审批边界。",
         agent_hint=MOBILE_TASK_AGENT_HINTS.get(template_id, "OrchestratorAgent"),
+        metadata=metadata,
     )
-    return _mobile_task_created_response(response)
+    return _mobile_task_created_response(response, metadata=metadata)
 
 
 @router.post("/mobile/tasks/{task_id}/follow-up", status_code=201)
@@ -172,23 +200,28 @@ async def create_mobile_task_follow_up(
         source_task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
+    _raise_if_mobile_task_disallowed(source_task, token)
     instruction = request.instruction.strip()
     if not instruction:
         raise HTTPException(status_code=422, detail="Missing follow-up instruction")
     mode = request.mode or source_task.mode or "hybrid"
+    metadata = _mobile_task_source_metadata(token, action="follow_up", source_task_id=source_task.id)
     response = _delegate_mobile_task_or_error(
         _mobile_task_follow_up_goal(source_task, instruction),
         mode,
         reply="已从手机 Companion 添加补充指令，电脑端会作为相关任务继续处理。",
         agent_hint="OrchestratorAgent",
+        metadata=metadata,
     )
-    return _mobile_task_created_response(response, source_task_id=source_task.id)
+    return _mobile_task_created_response(response, metadata=metadata, source_task_id=source_task.id)
 
 
 @router.post("/mobile/tasks/{task_id}/pause")
 def pause_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
     try:
-        _ensure_mobile_task_pauseable(get_task(task_id))
+        task = get_task(task_id)
+        _raise_if_mobile_task_disallowed(task, token)
+        _ensure_mobile_task_pauseable(task)
         return _mobile_task_payload(set_task_status(task_id, TaskStatus.PAUSED, strict=True))
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
@@ -199,6 +232,7 @@ def pause_mobile_task(task_id: str, token: dict = Depends(require_mobile_token))
 @router.post("/mobile/tasks/{task_id}/resume")
 def resume_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
     try:
+        _raise_if_mobile_task_disallowed(get_task(task_id), token)
         return _mobile_task_payload(resume_task(task_id, strict=True))
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
@@ -209,6 +243,7 @@ def resume_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)
 @router.post("/mobile/tasks/{task_id}/cancel")
 def cancel_mobile_task(task_id: str, token: dict = Depends(require_mobile_token)) -> dict:
     try:
+        _raise_if_mobile_task_disallowed(get_task(task_id), token)
         return _mobile_task_payload(set_task_status(task_id, TaskStatus.CANCELLED, strict=True))
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
@@ -254,6 +289,14 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
                 "type": "connected",
                 "device_id": claims.get("device_id"),
                 "pending": mobile_pairing_service.list_pending_approvals(claims),
+                "tasks": [
+                    _mobile_task_payload(task)
+                    for task in sorted(
+                        [item for item in list_tasks() if _mobile_task_allowed(item, claims)],
+                        key=lambda item: item.updated_at,
+                        reverse=True,
+                    )[:20]
+                ],
             }
         )
         while True:
@@ -264,15 +307,12 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
                 if not _mobile_event_allowed(event, claims):
                     continue
                 if event.get("type") == "mobile_device_revoked":
-                    await websocket.send_json(event)
+                    await websocket.send_json(_safe_mobile_event(event))
                     await websocket.close(code=1008)
                     return
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
-                if notification_alias and event.get("type") == "approval_created":
-                    await websocket.send_json({"type": "approval_notification", "approval": event.get("approval")})
-                else:
-                    await websocket.send_json(event)
+                await websocket.send_json(_safe_mobile_event(event, notification_alias=notification_alias))
             except asyncio.TimeoutError:
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
@@ -301,14 +341,69 @@ def _mobile_event_allowed(event: dict, claims: dict) -> bool:
     return mobile_pairing_service.mobile_claims_can_access_approval(approval, claims)
 
 
+def _safe_mobile_event(event: dict, *, notification_alias: bool = False) -> dict:
+    event_type = str(event.get("type") or "")
+    if event_type in {"approval_created", "approval_decided"}:
+        payload_type = "approval_notification" if notification_alias and event_type == "approval_created" else event_type
+        approval = event.get("approval")
+        safe_approval = mobile_pairing_service.safe_approval_payload(approval) if isinstance(approval, dict) else {}
+        return {"type": payload_type, "approval": safe_approval}
+    if event_type in {"remote_input_grant_created", "remote_input_grant_revoked"}:
+        return {
+            "type": event_type,
+            "device_id": str(event.get("device_id") or ""),
+            "grant": _safe_remote_input_grant_event(event.get("grant")),
+        }
+    if event_type == "mobile_device_revoked":
+        device = event.get("device") if isinstance(event.get("device"), dict) else {}
+        return {
+            "type": event_type,
+            "device_id": str(event.get("device_id") or device.get("device_id") or ""),
+            "device": {
+                "device_id": str(device.get("device_id") or event.get("device_id") or ""),
+                "device_name": str(device.get("device_name") or "Android device"),
+                "status": str(device.get("status") or "revoked"),
+                "revoked_at": str(device.get("revoked_at") or ""),
+                "updated_at": str(device.get("updated_at") or ""),
+            },
+        }
+    if event_type == "heartbeat":
+        return {"type": "heartbeat"}
+    return {"type": event_type or "event"}
+
+
+def _safe_remote_input_grant_event(value: object) -> dict:
+    grant = value if isinstance(value, dict) else {}
+    return {
+        "id": str(grant.get("id") or grant.get("grant_id") or ""),
+        "status": str(grant.get("status") or "active"),
+        "scope": str(grant.get("scope") or "remote:input"),
+        "created_at": str(grant.get("created_at") or ""),
+        "expires_at": str(grant.get("expires_at") or ""),
+        "revoked_at": str(grant.get("revoked_at") or ""),
+    }
+
+
 def _mobile_task_payload(task: Task) -> dict:
-    title, summary = _mobile_task_text(task)
+    title, summary, content_redacted = _mobile_task_text(task)
+    status = _mobile_task_status(task)
+    available_actions = _mobile_task_available_actions(task)
     return {
         "id": task.id,
         "title": title,
-        "status": _mobile_task_status(task),
+        "status": status,
+        "status_label": _mobile_task_status_label(status),
+        "status_detail": _mobile_task_status_detail(status),
         "mode": task.mode,
         "summary": summary,
+        "available_actions": available_actions,
+        "can_pause": "pause" in available_actions,
+        "can_resume": "resume" in available_actions,
+        "can_cancel": "cancel" in available_actions,
+        "can_follow_up": "follow_up" in available_actions,
+        "is_terminal": _mobile_task_is_terminal(task),
+        "content_redacted": content_redacted,
+        "privacy_redacted": task.mode == "privacy",
         "created_at": task.created_at,
         "updated_at": task.updated_at,
     }
@@ -322,10 +417,88 @@ def _mobile_task_status(task: Task) -> str:
     return str(task.status.value if hasattr(task.status, "value") else task.status)
 
 
-def _mobile_task_text(task: Task) -> tuple[str, str]:
+def _mobile_task_text(task: Task) -> tuple[str, str, bool]:
     if task.mode == "privacy":
-        return "隐私任务", "隐私模式：请在电脑端查看任务详情。"
-    return (task.user_goal[:120] or "Lengrvis 任务", task.final_summary[:240])
+        return MOBILE_TASK_PRIVACY_TITLE, MOBILE_TASK_PRIVACY_SUMMARY, True
+    title, title_redacted = _safe_mobile_task_text(task.user_goal, limit=120, fallback=MOBILE_TASK_TITLE_FALLBACK)
+    summary, summary_redacted = _safe_mobile_task_text(task.final_summary, limit=240, fallback="")
+    return title, summary, title_redacted or summary_redacted
+
+
+def _safe_mobile_task_text(value: object, *, limit: int, fallback: str) -> tuple[str, bool]:
+    raw = str(value or "").strip()
+    if not raw:
+        return fallback, False
+    redacted = redact_value(raw)
+    safe = str(redacted if redacted is not None else "").strip()
+    safe = MOBILE_LOCAL_PATH_RE.sub("[本地路径]", safe)
+    safe = " ".join(safe.split())
+    truncated = len(safe) > limit
+    safe = safe[:limit].strip() or fallback
+    return safe, safe != raw or truncated
+
+
+def _mobile_task_available_actions(task: Task) -> list[str]:
+    actions: list[str] = []
+    if _mobile_task_can_pause(task):
+        actions.append("pause")
+    if _mobile_task_can_resume(task):
+        actions.append("resume")
+    if _mobile_task_can_cancel(task):
+        actions.append("cancel")
+    if not _mobile_task_is_terminal(task):
+        actions.append("follow_up")
+    return actions
+
+
+def _mobile_task_can_pause(task: Task) -> bool:
+    return task.status == TaskPhase.EXECUTION and task.execution_stage == ExecutionStage.STEP_RUNNING
+
+
+def _mobile_task_can_resume(task: Task) -> bool:
+    return task.status == TaskPhase.EXECUTION and task.execution_stage == ExecutionStage.PAUSED
+
+
+def _mobile_task_can_cancel(task: Task) -> bool:
+    return task.status not in MOBILE_TERMINAL_TASK_PHASES
+
+
+def _mobile_task_is_terminal(task: Task) -> bool:
+    return task.status in MOBILE_TERMINAL_TASK_PHASES
+
+
+def _mobile_task_status_label(status: str) -> str:
+    return {
+        "created": "已创建",
+        "goal_analysis": "分析目标",
+        "planning": "规划中",
+        "consultation": "协作中",
+        "plan_review": "计划确认",
+        "execution": "运行中",
+        "waiting_approval": "等待审批",
+        "paused": "已暂停",
+        "final_review": "最终检查",
+        "completed": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+    }.get(status, status or "未知状态")
+
+
+def _mobile_task_status_detail(status: str) -> str:
+    return {
+        "created": "电脑端已收到任务，正在排队准备。",
+        "goal_analysis": "电脑端正在理解目标。",
+        "planning": "电脑端正在规划执行步骤。",
+        "consultation": "多个 Agent 正在协作确认路径。",
+        "plan_review": "电脑端正在检查计划边界。",
+        "execution": "电脑端正在执行任务，可从手机暂停或取消。",
+        "waiting_approval": "电脑端正在等待审批，请在手机审批区处理。",
+        "paused": "任务已暂停，可从手机继续。",
+        "final_review": "电脑端正在整理最终结果。",
+        "completed": "任务已结束，可查看电脑端结果。",
+        "failed": "任务执行失败，请回到电脑端查看详情。",
+        "cancelled": "任务已取消。",
+    }.get(status, "任务状态已同步。")
 
 
 def _mobile_task_template_goal(request: MobileTaskCreateRequest) -> str:
@@ -361,13 +534,27 @@ def _mobile_task_follow_up_goal(source_task: Task, instruction: str) -> str:
     )
 
 
-def _delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
-    return delegate_task(goal, mode, SupervisorDecision(delegate=True, reply=reply, agent_hint=agent_hint))
+def _delegate_mobile_task(
+    goal: str,
+    mode: str,
+    *,
+    reply: str,
+    agent_hint: str,
+    metadata: dict | None = None,
+) -> ChatResponse:
+    return delegate_task(goal, mode, SupervisorDecision(delegate=True, reply=reply, agent_hint=agent_hint), metadata=metadata)
 
 
-def _delegate_mobile_task_or_error(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+def _delegate_mobile_task_or_error(
+    goal: str,
+    mode: str,
+    *,
+    reply: str,
+    agent_hint: str,
+    metadata: dict | None = None,
+) -> ChatResponse:
     try:
-        return _delegate_mobile_task(goal, mode, reply=reply, agent_hint=agent_hint)
+        return _delegate_mobile_task(goal, mode, reply=reply, agent_hint=agent_hint, metadata=metadata)
     except HTTPException:
         raise
     except Exception as exc:
@@ -377,13 +564,20 @@ def _delegate_mobile_task_or_error(goal: str, mode: str, *, reply: str, agent_hi
         ) from exc
 
 
-def _mobile_task_created_response(response: ChatResponse, *, source_task_id: str = "") -> dict:
+def _mobile_task_created_response(
+    response: ChatResponse,
+    *,
+    metadata: dict | None = None,
+    source_task_id: str = "",
+) -> dict:
     if not response.delegated or not response.task_id:
         raise HTTPException(status_code=409, detail=response.message or "Mobile task request was not delegated to a computer task.")
     try:
         task = get_task(response.task_id)
     except KeyError:
         raise HTTPException(status_code=409, detail="Mobile task request was accepted but no computer task was created.") from None
+    if metadata:
+        task = _attach_mobile_task_metadata(task, metadata)
     return {
         "task": _mobile_task_payload(task),
         "message": response.message,
@@ -395,3 +589,70 @@ def _ensure_mobile_task_pauseable(task: Task) -> None:
     if task.status == TaskPhase.EXECUTION and task.execution_stage == ExecutionStage.STEP_RUNNING:
         return
     raise HTTPException(status_code=409, detail="Only actively running tasks can be paused.")
+
+
+def _mobile_task_source_metadata(
+    claims: dict,
+    *,
+    action: str,
+    template_id: str = "",
+    source_task_id: str = "",
+) -> dict:
+    device_id = str(claims.get("device_id") or "").strip()
+    metadata = {
+        "source": MOBILE_TASK_METADATA_SOURCE,
+        "source_device_id": device_id,
+        "allowed_device_ids": [device_id] if device_id else [],
+        "action": action,
+    }
+    if template_id:
+        metadata["template_id"] = template_id
+    if source_task_id:
+        metadata["source_task_id"] = source_task_id
+    return {"mobile_companion": metadata}
+
+
+def _attach_mobile_task_metadata(task: Task, metadata: dict) -> Task:
+    merged = dict(task.metadata or {})
+    for key, value in metadata.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = dict(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    task.metadata = merged
+    db.upsert_model("tasks", task)
+    return task
+
+
+def _raise_if_mobile_task_disallowed(task: Task, claims: dict) -> None:
+    if not _mobile_task_allowed(task, claims):
+        raise HTTPException(status_code=403, detail="Mobile token is not allowed to access this task.")
+
+
+def _mobile_task_allowed(task: Task, claims: dict) -> bool:
+    device_id = str(claims.get("device_id") or "").strip()
+    if not device_id:
+        return False
+    metadata = task.metadata if isinstance(task.metadata, dict) else {}
+    companion = metadata.get("mobile_companion") if isinstance(metadata.get("mobile_companion"), dict) else {}
+    if str(companion.get("source") or "") != MOBILE_TASK_METADATA_SOURCE:
+        return False
+    allowed = set(_mobile_text_list(companion.get("allowed_device_ids")))
+    source_device_id = str(companion.get("source_device_id") or "").strip()
+    if source_device_id:
+        allowed.add(source_device_id)
+    return device_id in allowed
+
+
+def _mobile_text_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.replace(",", " ").split() if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        items: list[str] = []
+        for item in value:
+            items.extend(_mobile_text_list(item))
+        return items
+    text = str(value or "").strip()
+    return [text] if text else []

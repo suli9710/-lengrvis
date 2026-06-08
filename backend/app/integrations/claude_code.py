@@ -19,13 +19,11 @@ from app.orchestration.execution_models import EngineTurnResult, RunObservation,
 VENDORED_CLAUDE_CODE_ROOT = PROJECT_ROOT / "vendor" / "claude-code"
 VENDOR_ROOT_ENV = "LENGRVIS_CLAUDE_CODE_VENDOR_ROOT"
 COMMAND_ENV = "LENGRVIS_CLAUDE_CODE_COMMAND"
-DEFAULT_PERMISSION_MODE = "acceptEdits"
+DEFAULT_PERMISSION_MODE = "default"
 DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Read",
     "Grep",
     "Glob",
-    "Edit",
-    "Write",
     "Bash(git status:*)",
     "Bash(git diff:*)",
     "Bash(git log:*)",
@@ -34,10 +32,9 @@ DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
     "Bash(python -m pytest:*)",
     "Bash(npm test:*)",
     "Bash(pnpm test:*)",
-    "Agent",
 )
 MAX_ADAPTER_EVENTS = 500
-FORBIDDEN_ALLOWED_TOOLS: tuple[str, ...] = ("Bash", "Bash(*)")
+FORBIDDEN_ALLOWED_TOOLS: tuple[str, ...] = ("Bash", "Bash(*)", "Edit", "Write", "Agent")
 BLOCKED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 FORBIDDEN_CLI_FLAGS: tuple[str, ...] = ("--dangerously-skip-permissions", "--allow-dangerously-skip-permissions")
 OPENAI_MODEL_ENV_KEYS: tuple[str, ...] = (
@@ -442,7 +439,8 @@ def default_allowed_tools() -> tuple[str, ...]:
 def validate_allowed_tools(allowed_tools: Sequence[str]) -> tuple[str, ...]:
     normalized = tuple(str(tool).strip() for tool in allowed_tools if str(tool).strip())
     for tool in normalized:
-        if tool in FORBIDDEN_ALLOWED_TOOLS:
+        tool_name = tool.split("(", 1)[0]
+        if tool in FORBIDDEN_ALLOWED_TOOLS or tool_name in {"Edit", "Write", "Agent"}:
             raise ValueError(f"Unsafe Claude Code allowedTools entry is not permitted: {tool}")
         if tool.startswith("Bash(") and not _is_allowed_bash_tool(tool):
             raise ValueError(f"Unsafe Claude Code Bash allowedTools entry is not permitted: {tool}")

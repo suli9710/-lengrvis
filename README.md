@@ -4,7 +4,7 @@
 
 | 平台 | 状态 | 当前交付 | 已知限制 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包仍需在真实机器做启动到首屏的人工验收。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包已有 portable 首屏 smoke；仍需在真实机器做读只任务和候选版本人工验收。 |
 | Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 需要与电脑在可访问网络内；完整应用商店分发未完成。 |
 | macOS 桌面 | Preview | macOS 后端构建脚本与 DMG 脚本存在 | 不作为 0-90 天主线，需在 macOS 主机验证。 |
 | iOS Companion | Planned | 暂不交付 | 等 Android companion 闭环稳定后再排期。 |
@@ -12,16 +12,22 @@
 ## 普通用户快速开始
 
 1. 双击 `启动 Lengrvis.cmd` 启动 Lengrvis。
-2. 第一次启动可能会安装依赖，通常需要 1-5 分钟；之后启动一般在 20-60 秒内完成。命令行窗口会显示“正在启动”“已启动”或失败原因。
+2. 正式发布包会直接启动已打包好的产物，不会在第一次启动时现场运行 `pip install` 或 `npm install`。命令行窗口会显示“正在启动”“已启动”或失败原因。
 3. 启动成功后会打开 Lengrvis 桌面窗口。首屏可以直接从“整理下载目录、总结本地文档、查找大文件、检查电脑状态、文档问答”开始，每个模板都会显示本机处理、云端边界、审批、回滚和预计耗时。
 4. 如果启动失败，请先双击 `Start-Lengrvis-Debug.cmd`，它会把最近的错误日志打印出来；完整日志在 `logs` 文件夹。
-5. 开发者说明保留在下面；普通使用只需要优先看这一节。
+5. 如果你下载的是源码或 Git 仓库，请先看下面的“源码开发 setup”；源码依赖安装不属于普通用户启动路径。
+
+## 普通用户配置与诊断入口
+
+- 配置 AI、隐私模式、本地模型、硬件加速和手机配对时，优先打开桌面窗口里的“设置”。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
+- 应用能打开但任务异常时，打开“系统信息”，先刷新只读诊断；需要反馈问题时再点“导出诊断包”。诊断包会包含版本、服务状态、本机路径、网络接口、进程和启动项摘要，但不包含你的文档正文或密钥。
+- 应用打不开时，双击 `Start-Lengrvis-Debug.cmd`，它会显示已脱敏的最近启动日志摘要和下一步。
 
 ## 产品说明
 
-这是一个 Windows 优先的本地电脑 AI 管家原型，定位更接近腾讯同类 OS Agent 式个人 OS Agent：用户用自然语言描述目标，系统通过多 Agent 协作理解任务、规划步骤、调用本地工具，并在修改文件或系统设置前进行安全审核和用户确认。
+这是一个 Windows 优先的本机 OS agent / 电脑管家原型。它不是某个竞品的替代品，也不主打云端万能工作台；当前最清晰的差异化是围绕用户自己的电脑做可审计、可扩展、可自托管的任务执行：用自然语言描述目标，系统通过多 Agent 协作理解任务、规划步骤、调用本地工具，并在修改文件或系统设置前进行安全审核和用户确认。
 
-当前版本不是纯聊天机器人，也不是开发者控制台。桌面端第一屏已经改成消费级电脑助手体验：一句话任务入口、隐私/混合/效率模式、文件/文档/图片/电脑/应用/网页能力卡、手机审批与屏幕查看入口、Agent 进度和安全审批。
+当前版本不是纯聊天机器人，也不是开发者控制台。桌面端第一屏已经改成消费级电脑助手体验：一句话任务入口、隐私/混合/效率模式、文件/文档/图片/电脑/应用/网页能力卡、手机审批与屏幕查看入口、Agent 进度和安全审批。与发布级 OS AI 产品相比，它仍需要补齐本地模型开箱即用、跨端分发、App 深度集成和真实设备验收。
 
 ## 架构
 
@@ -29,7 +35,7 @@
 desktop/                 Electron + React + TypeScript 桌面端
 backend/app/             FastAPI 后端、Agent、策略、工具、索引、服务
 backend/tests/           pytest 契约测试和 smoke 测试
-scripts/                 PowerShell 开发、测试和打包脚本
+scripts/                 PowerShell 启动、开发 setup、测试和打包脚本
 test_data/               授权目录、策略和隐私测试数据
 ```
 
@@ -93,17 +99,27 @@ test_data/               授权目录、策略和隐私测试数据
 - 回滚工具（逆序重放 rollback_info）。
 - 状态机审计/严格模式（默认审计同步，strict 模式非法转移抛错）。
 
-## 安装
+## 源码开发 setup
+
+正式发布包不需要执行本节；普通用户解压完整发布包后直接双击 `启动 Lengrvis.cmd`。只有从源码或 Git 仓库运行时，才需要先安装开发依赖：
+
+```powershell
+.\scripts\setup_dev.ps1
+```
+
+`setup_dev.ps1` 会创建 `.venv`、安装 Python 开发依赖，并按 `desktop/package-lock.json` 安装桌面/前端依赖。
+
+如需手动排查，等价命令是：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
 python -m pip install -r requirements-dev.txt
-npm --prefix desktop install
+npm --prefix desktop ci
 ```
 
-可选真实 AI 配置：
+开发者可选真实 AI 配置（普通用户请在桌面“设置”里完成配置，不要手动编辑 `.env` 或 `config.yaml`）：
 
 ```powershell
 Copy-Item .env.example .env
@@ -137,6 +153,14 @@ LENGRVIS_WIRE_API=responses
 不配置 `LENGRVIS_API_KEY` 时，效率/混合模式可按 `LENGRVIS_ALLOW_MOCK_FALLBACK` 使用 `MockProvider` 做开发演示。隐私模式始终需要真实本地 LLM 后端。
 
 ## 运行
+
+已完成源码 setup 后，可以启动完整应用：
+
+```powershell
+.\Start-Lengrvis.cmd
+```
+
+也可以分开启动开发服务。
 
 启动完整后端：
 
@@ -315,7 +339,7 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 - 真正的本地推理（Ollama / LM Studio / llama.cpp-compatible server）需用户自行安装并启动；隐私模式探测不到本地后端时会明确失败。
 - 硬件加速配置已接入桌面端 Settings：可设置 `onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference`，并通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 做可用性检查。
 - Windows GUI automation is implemented through UIAutomation COM, screenshots, window focus, semantic element lookup, and mouse/keyboard fallback input. Mutating GUI actions still require dry-run + user approval, and policy blocks credential, payment, one-time-code, and token text entry.
-- 手机端已支持移动审批和只读远程屏幕查看；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。手机端仍不能从远程屏幕页面控制电脑，所有远程输入继续走审批与安全策略。
+- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的输入。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
 
 ## Phase 5 AI OS Loop

@@ -32,7 +32,7 @@ import type {
   FileSearchResult
 } from "../../shared/types";
 import type { BackendClusterEntry, FileClusterOptions, LengrvisApiClient } from "../lib/apiClient";
-import { isPathWithinScope, parentDirectory } from "../lib/documentScope";
+import { documentScopesForFiles, mergeScopePaths } from "../lib/documentScope";
 import { motionAwareScrollBehavior } from "../lib/motion";
 import { zhUserFacingError } from "../lib/zh";
 import type { ConnectionState } from "../store";
@@ -337,30 +337,41 @@ export function FileSearchPanel({
     }
   };
 
-  const ensureDocumentScope = useCallback(async (filePath: string): Promise<boolean> => {
-    const folderPath = parentDirectory(filePath);
-    if (!folderPath || isPathWithinScope(filePath, allowedDirectories)) return true;
+  const ensureDocumentScopes = useCallback(async (filePaths: string[]): Promise<boolean> => {
+    const missingScopes = documentScopesForFiles(filePaths, allowedDirectories);
+    if (!missingScopes.length) return true;
 
+    const nextAllowedDirectories = mergeScopePaths([...allowedDirectories, ...missingScopes]);
+    const nextWorkspaceRoot = nextAllowedDirectories.includes(currentScope) ? currentScope : nextAllowedDirectories[0] || settings.workspaceRoot;
     setScopeError(null);
     setScopeNotice(null);
     setIsSavingScope(true);
     try {
       await onSaveSettings({
         ...settings,
-        workspaceRoot: folderPath,
-        allowedDirectories: [folderPath]
+        workspaceRoot: nextWorkspaceRoot,
+        allowedDirectories: nextAllowedDirectories
       });
-      setManualScope(folderPath);
-      setScopeNotice(`已把文档所在文件夹设为当前范围：${compactPath(folderPath)}。后续读取和总结只会访问这个文件夹。`);
+      setManualScope(nextWorkspaceRoot);
+      setScopeNotice(
+        missingScopes.length === 1
+          ? `已授权文档所在文件夹：${compactPath(missingScopes[0])}。`
+          : `已授权 ${missingScopes.length} 个文档所在文件夹。`
+      );
       return true;
     } catch (error) {
       setScopeError(userFileError(error, "保存文档所在文件夹范围失败，请稍后重试。"));
-      setDocumentError("已选中文档，但当前范围保存失败。请手动选择这个文档所在文件夹后再读取或总结。");
+      setDocumentError("已选中文档，但当前范围保存失败。请手动选择文档所在文件夹后再继续。");
       return false;
     } finally {
       setIsSavingScope(false);
     }
-  }, [allowedDirectories, onSaveSettings, settings]);
+  }, [allowedDirectories, currentScope, onSaveSettings, settings]);
+
+  const ensureDocumentScope = useCallback(
+    async (filePath: string): Promise<boolean> => ensureDocumentScopes([filePath]),
+    [ensureDocumentScopes]
+  );
 
   const chooseFolder = async () => {
     const directoryChooser = window.lengrvis?.dialog.chooseDirectory;
@@ -704,6 +715,8 @@ export function FileSearchPanel({
       setDocumentError(currentValidation ? `第一份文档：${currentValidation}` : `第二份文档：${compareValidation}`);
       return;
     }
+    const scopeReady = await ensureDocumentScopes([selectedDocumentPathValue, compareDocumentPathValue]);
+    if (!scopeReady) return;
     setIsDocumentWorking(true);
     setDocumentWorkingAction("compare");
     setDocumentNotice("正在分析两份文档差异...");

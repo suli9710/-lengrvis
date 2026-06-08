@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 import { existsSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 
 import {
   API_REQUEST_ALLOWED_KEYS,
   API_REQUEST_DENIED_EXACT_PATHS,
+  API_REQUEST_DENIED_METHOD_PATHS,
   API_REQUEST_DENIED_PATH_PREFIXES,
   API_REQUEST_SECURITY_LIMITS,
   IPC_CHANNELS
@@ -13,9 +15,20 @@ import type {
   ApiQueryValue,
   ApiRequest,
   ApiResponse,
+  BackendStatus,
+  DocumentAskRequest,
+  DocumentCompareRequest,
+  DocumentParseRequest,
+  DesktopPermissionPolicyRelaxationRequest,
+  DesktopPermissionRule,
+  DesktopPermissionRuleDeleteRequest,
+  DesktopPermissionRuleUpsertRequest,
+  DesktopRunStartRequest,
+  DesktopSettingsPatch,
   MobilePairingRemoteInputGrantRequest,
   MobilePairingRevokeRemoteInputGrantRequest
 } from "../shared/types";
+import { assertLoopbackBackendUrl } from "./backendUrl";
 import type { BackendProcessManager } from "./backendProcess";
 import { pathToFileURL } from "node:url";
 
@@ -24,9 +37,103 @@ const DEFAULT_REMOTE_INPUT_GRANT_TTL_SECONDS = 300;
 const ALLOWED_API_METHODS = new Set<ApiMethod>(["GET", "POST", "PUT", "PATCH", "DELETE"]);
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["https:", "http:", "mailto:"]);
 const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
+const DOCUMENT_QUESTION_MAX_CHARS = 8_000;
+const DOCUMENT_FOCUS_MAX_CHARS = 4_000;
 const API_REQUEST_ALLOWED_KEY_SET = new Set<string>(API_REQUEST_ALLOWED_KEYS);
 const API_REQUEST_DENIED_EXACT_PATH_SET = new Set<string>(API_REQUEST_DENIED_EXACT_PATHS);
+const API_REQUEST_DENIED_METHOD_PATH_RULES = API_REQUEST_DENIED_METHOD_PATHS;
 const API_REQUEST_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const DOCUMENT_PARSE_ALLOWED_KEYS = new Set(["path", "includeText", "include_text"]);
+const DOCUMENT_ASK_ALLOWED_KEYS = new Set(["path", "documentId", "document_id", "question", "topK", "top_k"]);
+const DOCUMENT_COMPARE_ALLOWED_KEYS = new Set(["paths", "focus"]);
+const SETTINGS_EGRESS_CONFIRMATION_FIELDS = new Set(["base_url", "wire_api"]);
+const SETTINGS_NATIVE_CONFIRMATION_FIELDS = new Set([
+  "allowed_directories",
+  "allow_browser_network",
+  "allow_cloud_context",
+  "allow_file_content_upload",
+  "app_allowlist",
+  "mcp_servers",
+  "remote_desktop_enabled"
+]);
+const RUN_MODES = new Set(["privacy", "efficiency", "hybrid"]);
+const RUN_ENGINES = new Set(["auto", "os", "developer"]);
+const PERMISSION_EFFECTS = new Set(["allow", "deny"]);
+const PERMISSION_RELAXATION_ACTIONS = new Set(["upsert_rule", "delete_rule", "replace_policy"]);
+const SETTINGS_PATCH_VALUE_KINDS: Record<
+  string,
+  "string" | "number" | "boolean" | "stringArray" | "mcpServers"
+> = {
+  provider_name: "string",
+  base_url: "string",
+  model: "string",
+  review_model: "string",
+  wire_api: "string",
+  requires_openai_auth: "boolean",
+  model_reasoning_effort: "string",
+  disable_response_storage: "boolean",
+  temperature: "number",
+  max_tokens: "number",
+  timeout: "number",
+  llm_api_max_retries: "number",
+  llm_api_retry_backoff_seconds: "number",
+  llm_api_circuit_failure_threshold: "number",
+  llm_api_circuit_cooldown_seconds: "number",
+  model_context_window: "number",
+  model_auto_compact_token_limit: "number",
+  allowed_directories: "stringArray",
+  allow_browser_network: "boolean",
+  remote_desktop_enabled: "boolean",
+  app_allowlist: "stringArray",
+  browser_max_page_bytes: "number",
+  browser_screenshot_dir: "string",
+  onnx_model_path: "string",
+  onnx_execution_provider: "string",
+  onnx_provider_preference: "string",
+  onnx_directml_device_id: "string",
+  onnx_openvino_device: "string",
+  onnx_openvino_cache_dir: "string",
+  onnx_warm_on_startup: "boolean",
+  onnx_model_family: "string",
+  embedding_backend: "string",
+  onnx_embedding_model_path: "string",
+  onnx_embedding_execution_provider: "string",
+  onnx_embedding_model_id: "string",
+  onnx_embedding_max_batch_size: "number",
+  image_embedding_backend: "string",
+  onnx_image_embedding_model_path: "string",
+  onnx_image_embedding_execution_provider: "string",
+  onnx_image_embedding_model_id: "string",
+  onnx_image_embedding_max_batch_size: "number",
+  ocr_backend: "string",
+  ocr_execution_provider: "string",
+  ocr_openvino_model_dir: "string",
+  ocr_openvino_device: "string",
+  ocr_lang: "string",
+  ocr_min_confidence: "number",
+  ocr_batch_size: "number",
+  mode: "string",
+  permission_mode: "string",
+  allow_cloud_context: "boolean",
+  allow_file_content_upload: "boolean",
+  confirmation_nonce: "string",
+  mcp_servers: "mcpServers"
+};
+const MCP_SERVER_ALLOWED_KEYS = new Set(["id", "name", "url", "command", "args", "enabled", "transport", "auth"]);
+const PERMISSION_RULE_ALLOWED_KEYS = new Set([
+  "id",
+  "name",
+  "effect",
+  "tool",
+  "tools",
+  "path_pattern",
+  "path_patterns",
+  "time_window",
+  "time_windows",
+  "enabled",
+  "reason"
+]);
+const PERMISSION_TIME_WINDOW_ALLOWED_KEYS = new Set(["days", "start", "end", "timezone"]);
 
 class ApiRequestValidationError extends Error {
   constructor(message: string) {
@@ -48,6 +155,8 @@ interface ApiRequestValidationOptions {
 }
 
 export function registerIpcHandlers(backend: BackendProcessManager): void {
+  const documentPathGrants = new Set<string>();
+
   ipcMain.handle(IPC_CHANNELS.backendStatus, (event) => {
     assertTrustedRenderer(event);
     return backend.getStatus();
@@ -77,6 +186,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
   ipcMain.handle(IPC_CHANNELS.getFileIcon, async (event, filePath: string) => {
     assertTrustedRenderer(event);
     return getFileIconDataUrl(filePath);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.showItemInFolder, async (event, filePath: unknown) => {
+    assertTrustedRenderer(event);
+    return showItemInFolder(validateBridgePathValue(filePath, "file path to reveal"));
   });
 
   ipcMain.handle(IPC_CHANNELS.chooseDirectory, async (event) => {
@@ -132,7 +246,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
       ]
     };
     const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
-    return result.canceled ? null : result.filePaths[0] ?? null;
+    const picked = result.canceled ? null : result.filePaths[0] ?? null;
+    if (picked) {
+      rememberDocumentPathGrant(documentPathGrants, picked);
+    }
+    return picked;
   });
 
   ipcMain.handle(IPC_CHANNELS.knownFolders, (event) => {
@@ -170,6 +288,12 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.apiRequest, async (event, request: ApiRequest) => {
     assertTrustedRenderer(event);
+    if (isRendererTaskSubmissionRequest(request)) {
+      const backendNotReady = await ensureBackendReadyForRendererSubmission(backend);
+      if (backendNotReady) {
+        return backendNotReady;
+      }
+    }
     return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken());
   });
 
@@ -251,6 +375,126 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     });
   });
 
+  ipcMain.handle(IPC_CHANNELS.runsStart, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const backendNotReady = await ensureBackendReadyForRendererSubmission(backend);
+    if (backendNotReady) {
+      return backendNotReady;
+    }
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/runs",
+      method: "POST",
+      body: validateRunStartRequest(request)
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.systemDiagnosticsExport, async (event) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/system/diagnostics/export",
+      method: "POST"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.documentsParse, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateDocumentParseRequest(request);
+    await ensureDocumentReadGrant(event, documentPathGrants, [body.path]);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/documents/parse",
+      method: "POST",
+      body
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.documentsAsk, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateDocumentAskRequest(request);
+    await ensureDocumentReadGrant(event, documentPathGrants, body.path ? [body.path] : []);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/documents/ask",
+      method: "POST",
+      body
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.documentsCompare, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateDocumentCompareRequest(request);
+    await ensureDocumentReadGrant(event, documentPathGrants, body.paths);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/documents/compare",
+      method: "POST",
+      body
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsConfirmSensitiveChange, async (event, patch: unknown) => {
+    assertTrustedRenderer(event);
+    const safePatch = validateSettingsPatchRequest(patch);
+    if (settingsNativeChangeRequiresConfirmation(safePatch)) {
+      await confirmNativeDesktopAction(event, {
+        title: "Confirm settings change",
+        message: "Allow Lengrvis to prepare a sensitive settings change?",
+        detail: "This may enable capabilities such as remote desktop, file content upload, expanded folders, cloud context, or MCP tools."
+      });
+    }
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/confirm-sensitive-change",
+      method: "POST",
+      body: safePatch
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsSave, async (event, patch: unknown) => {
+    assertTrustedRenderer(event);
+    const safePatch = validateSettingsPatchRequest(patch);
+    if (settingsEgressChangeRequiresConfirmation(safePatch) && !safePatch.confirmation_nonce) {
+      throw new ApiRequestValidationError("Sensitive LLM endpoint settings require a prior confirmation");
+    }
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings",
+      method: "POST",
+      body: safePatch
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.permissionPolicyConfirmRelaxation, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const safeRequest = validatePermissionPolicyRelaxationRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm permission policy change",
+      message: "Allow Lengrvis to prepare a permission policy relaxation?",
+      detail: "This can change what tools the agent may use. Continue only if you intended to edit the policy."
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/permission-policy/confirm-relaxation",
+      method: "POST",
+      body: safeRequest
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.permissionPolicyUpsertRule, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const safeRequest = validatePermissionRuleUpsertRequest(request);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/permission-policy/rules",
+      method: "POST",
+      query: safeRequest.confirmationNonce ? { confirmation_nonce: safeRequest.confirmationNonce } : undefined,
+      body: safeRequest.rule
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.permissionPolicyDeleteRule, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const safeRequest = validatePermissionRuleDeleteRequest(request);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/settings/permission-policy/rules/${encodeURIComponent(safeRequest.ruleId)}`,
+      method: "DELETE",
+      query: safeRequest.confirmationNonce ? { confirmation_nonce: safeRequest.confirmationNonce } : undefined
+    });
+  });
+
   ipcMain.handle(IPC_CHANNELS.mobilePairingCreateCode, async (event) => {
     assertTrustedRenderer(event);
     return proxyExplicitDesktopBridgeRequest(backend, {
@@ -285,6 +529,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
       1,
       86_400
     );
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm remote input",
+      message: "Allow this paired mobile device to send remote input?",
+      detail: `Device id: ${safeDeviceId}\nExpires in: ${expiresInSeconds} seconds\n\nThe grant can be revoked from the desktop or mobile app.`
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: `/api/pair/devices/${encodeURIComponent(safeDeviceId)}/remote-input-grants`,
       method: "POST",
@@ -313,6 +562,130 @@ function proxyExplicitDesktopBridgeRequest<TData>(
   });
 }
 
+async function ensureBackendReadyForRendererSubmission(
+  backend: BackendProcessManager
+): Promise<ApiResponse<never> | null> {
+  const receivedAt = new Date().toISOString();
+  try {
+    const status = await backend.enterForeground("renderer_task_submit");
+    if (status.health?.ok || (status.state === "running" && !status.health)) {
+      return null;
+    }
+    return backendNotReadyResponse(status, receivedAt);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      error: {
+        code: "BACKEND_NOT_READY",
+        message: error instanceof Error ? error.message : "Backend is not ready for task submission"
+      },
+      receivedAt
+    };
+  }
+}
+
+function backendNotReadyResponse(status: BackendStatus, receivedAt: string): ApiResponse<never> {
+  return {
+    ok: false,
+    status: 503,
+    error: {
+      code: "BACKEND_NOT_READY",
+      message: status.message
+        ? `Backend is not ready for task submission: ${status.message}`
+        : "Backend is not ready for task submission",
+      details: { backendStatus: status }
+    },
+    receivedAt
+  };
+}
+
+function isRendererTaskSubmissionRequest(request: unknown): boolean {
+  if (!isPlainRecord(request) || typeof request.endpoint !== "string") {
+    return false;
+  }
+  const method = typeof request.method === "string" ? request.method.toUpperCase() : "GET";
+  if (method !== "POST") {
+    return false;
+  }
+  return (
+    request.endpoint === "/api/chat" ||
+    (request.endpoint.startsWith("/api/perception/suggestions/") && request.endpoint.endsWith("/launch"))
+  );
+}
+
+function rememberDocumentPathGrant(grants: Set<string>, filePath: string): void {
+  grants.add(normalizeDocumentGrantPath(filePath));
+}
+
+async function ensureDocumentReadGrant(
+  event: IpcMainInvokeEvent,
+  grants: Set<string>,
+  paths: string[]
+): Promise<void> {
+  const ungranted = [...new Set(paths)].filter((filePath) => !grants.has(normalizeDocumentGrantPath(filePath)));
+  if (!ungranted.length) {
+    return;
+  }
+
+  if (typeof dialog.showMessageBox !== "function") {
+    throw new ApiRequestValidationError("Document access requires a desktop confirmation dialog");
+  }
+
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const detail = ungranted.map((filePath) => `- ${filePath}`).join("\n");
+  const options = {
+    type: "question" as const,
+    buttons: ["Allow for this app session", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: "Confirm document access",
+    message: ungranted.length === 1 ? "Allow Lengrvis to read this document?" : "Allow Lengrvis to read these documents?",
+    detail: `This may include document text. The selected path stays available until the desktop app exits.\n\n${detail}`
+  };
+  const result = window
+    ? await dialog.showMessageBox(window, options)
+    : await dialog.showMessageBox(options);
+
+  if (result.response !== 0) {
+    throw new ApiRequestValidationError("Document access was not confirmed");
+  }
+  for (const filePath of ungranted) {
+    rememberDocumentPathGrant(grants, filePath);
+  }
+}
+
+async function confirmNativeDesktopAction(
+  event: IpcMainInvokeEvent,
+  options: { title: string; message: string; detail: string }
+): Promise<void> {
+  if (typeof dialog.showMessageBox !== "function") {
+    throw new ApiRequestValidationError("Sensitive desktop action requires a native confirmation dialog");
+  }
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const messageBoxOptions = {
+    type: "question" as const,
+    buttons: ["Allow once", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    title: options.title,
+    message: options.message,
+    detail: options.detail
+  };
+  const result = window
+    ? await dialog.showMessageBox(window, messageBoxOptions)
+    : await dialog.showMessageBox(messageBoxOptions);
+  if (result.response !== 0) {
+    throw new ApiRequestValidationError("Sensitive desktop action was not confirmed");
+  }
+}
+
+function normalizeDocumentGrantPath(filePath: string): string {
+  return resolvePath(filePath).toLowerCase();
+}
+
 async function getFileIconDataUrl(filePath: string): Promise<string | null> {
   if (typeof filePath !== "string" || !filePath.trim() || filePath.includes("\0")) {
     return null;
@@ -328,6 +701,25 @@ async function getFileIconDataUrl(filePath: string): Promise<string | null> {
     return icon.toDataURL();
   } catch {
     return null;
+  }
+}
+
+function showItemInFolder(filePath: string): { ok: boolean; path: string; revealed: boolean; shown: boolean; error?: string } {
+  const resolved = resolvePath(filePath);
+  if (!existsSync(resolved)) {
+    return { ok: false, path: resolved, revealed: false, shown: false, error: "Path does not exist" };
+  }
+  try {
+    shell.showItemInFolder(resolved);
+    return { ok: true, path: resolved, revealed: true, shown: true };
+  } catch (error) {
+    return {
+      ok: false,
+      path: resolved,
+      revealed: false,
+      shown: false,
+      error: error instanceof Error ? error.message : "Could not reveal path"
+    };
   }
 }
 
@@ -416,10 +808,7 @@ export function buildRequestUrl(baseUrl: string, request: ApiRequest): URL {
 }
 
 function buildValidatedRequestUrl(baseUrl: string, request: ValidatedApiRequest): URL {
-  const backendUrl = new URL(baseUrl);
-  if (!["http:", "https:"].includes(backendUrl.protocol)) {
-    throw new ApiRequestValidationError("Backend API base URL must be HTTP(S)");
-  }
+  const backendUrl = loopbackBackendUrlForApiRequest(baseUrl);
 
   const backendOrigin = backendUrl.origin;
   const url = new URL(request.endpoint, backendUrl);
@@ -437,14 +826,22 @@ function buildValidatedRequestUrl(baseUrl: string, request: ValidatedApiRequest)
   return url;
 }
 
+function loopbackBackendUrlForApiRequest(baseUrl: string): URL {
+  try {
+    return assertLoopbackBackendUrl(baseUrl, "Desktop API token request");
+  } catch (error) {
+    throw new ApiRequestValidationError(error instanceof Error ? error.message : "Desktop API token requests require a loopback backend base URL");
+  }
+}
+
 function validateApiRequest(request: unknown, options: ApiRequestValidationOptions = {}): ValidatedApiRequest {
   if (!isPlainRecord(request)) {
     throw new ApiRequestValidationError("Renderer API request is malformed");
   }
 
   rejectUnexpectedApiRequestKeys(request);
-  const endpoint = validateApiEndpoint(request.endpoint, options);
   const method = validateApiMethod(request.method);
+  const endpoint = validateApiEndpoint(request.endpoint, method, options);
   const query = validateApiQuery(request.query);
   const timeoutMs = validateApiTimeout(request.timeoutMs);
   const serializedBody = serializeApiRequestBody(request, method);
@@ -460,7 +857,7 @@ function rejectUnexpectedApiRequestKeys(request: Record<string, unknown>): void 
   }
 }
 
-function validateApiEndpoint(value: unknown, options: ApiRequestValidationOptions = {}): string {
+function validateApiEndpoint(value: unknown, method: ApiMethod, options: ApiRequestValidationOptions = {}): string {
   if (typeof value !== "string") {
     throw new ApiRequestValidationError("Renderer API endpoint is required");
   }
@@ -507,12 +904,12 @@ function validateApiEndpoint(value: unknown, options: ApiRequestValidationOption
 
   const normalizedPath = `/${segments.filter(Boolean).join("/")}`;
   if (!options.allowDeniedDesktopBridgePath) {
-    rejectDeniedApiPath(normalizedPath);
+    rejectDeniedApiPath(normalizedPath, method);
   }
   return value;
 }
 
-function rejectDeniedApiPath(pathname: string): void {
+function rejectDeniedApiPath(pathname: string, method: ApiMethod): void {
   if (API_REQUEST_DENIED_EXACT_PATH_SET.has(pathname)) {
     throw new ApiRequestValidationError("Renderer API endpoint requires an explicit desktop bridge");
   }
@@ -520,6 +917,19 @@ function rejectDeniedApiPath(pathname: string): void {
     API_REQUEST_DENIED_PATH_PREFIXES.some(
       (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
     )
+  ) {
+    throw new ApiRequestValidationError("Renderer API endpoint requires an explicit desktop bridge");
+  }
+  if (
+    API_REQUEST_DENIED_METHOD_PATH_RULES.some((rule) => {
+      if (rule.method !== method) {
+        return false;
+      }
+      if ("path" in rule) {
+        return pathname === rule.path;
+      }
+      return pathname.startsWith(rule.pathPrefix);
+    })
   ) {
     throw new ApiRequestValidationError("Renderer API endpoint requires an explicit desktop bridge");
   }
@@ -624,6 +1034,15 @@ function validatePlainBridgeBody(value: unknown, label: string): Record<string, 
   return value;
 }
 
+function rejectUnexpectedBridgeKeys(request: Record<string, unknown>, allowedKeys: ReadonlySet<string>, label: string): void {
+  for (const key of Object.keys(request)) {
+    assertSafeFieldName(key, `${label} key`, API_REQUEST_SECURITY_LIMITS.maxQueryKeyChars);
+    if (!allowedKeys.has(key)) {
+      throw new ApiRequestValidationError(`${label} field is not allowed: ${key}`);
+    }
+  }
+}
+
 function validateBridgePathValue(value: unknown, label: string): string {
   if (typeof value !== "string") {
     throw new ApiRequestValidationError(`${label} is required`);
@@ -648,6 +1067,377 @@ function validateOptionalModelRequest(value: unknown, label: string): { model?: 
     throw new ApiRequestValidationError("model is invalid");
   }
   return { model };
+}
+
+function validateRunStartRequest(value: unknown): DesktopRunStartRequest {
+  const request = validatePlainBridgeBody(value, "run start request");
+  const message = validateBridgeStringValue(request.message, "run message", 20_000, {
+    allowEmpty: false,
+    trim: true
+  });
+  const mode = validateBridgeEnum<DesktopRunStartRequest["mode"] & string>(request.mode, "run mode", RUN_MODES, "efficiency");
+  const engine = validateBridgeEnum<DesktopRunStartRequest["engine"] & string>(request.engine, "run engine", RUN_ENGINES, "auto");
+  return { message, mode, engine };
+}
+
+function validateDocumentParseRequest(value: unknown): { path: string; include_text?: boolean } {
+  const request = validatePlainBridgeBody(value, "document parse request") as DocumentParseRequest & Record<string, unknown>;
+  rejectUnexpectedBridgeKeys(request, DOCUMENT_PARSE_ALLOWED_KEYS, "document parse request");
+  const body: { path: string; include_text?: boolean } = {
+    path: validateBridgePathValue(request.path, "document path")
+  };
+  const includeText = request.includeText ?? request.include_text;
+  if (includeText !== undefined) {
+    body.include_text = validateBridgeBoolean(includeText, "document includeText");
+  }
+  return body;
+}
+
+function validateDocumentAskRequest(value: unknown): { path?: string; document_id?: string; question: string; top_k?: number } {
+  const request = validatePlainBridgeBody(value, "document ask request") as DocumentAskRequest & Record<string, unknown>;
+  rejectUnexpectedBridgeKeys(request, DOCUMENT_ASK_ALLOWED_KEYS, "document ask request");
+  const body: { path?: string; document_id?: string; question?: string; top_k?: number } = {};
+  if (request.path !== undefined && request.path !== null && request.path !== "") {
+    body.path = validateBridgePathValue(request.path, "document path");
+  }
+  const documentId = request.documentId ?? request.document_id;
+  if (documentId !== undefined && documentId !== null && documentId !== "") {
+    body.document_id = validateBridgeStringValue(documentId, "document id", 512, {
+      allowEmpty: false,
+      trim: true
+    });
+  }
+  if (!body.path && !body.document_id) {
+    throw new ApiRequestValidationError("document ask request requires a path or document id");
+  }
+  body.question = validateBridgeStringValue(request.question, "document question", DOCUMENT_QUESTION_MAX_CHARS, {
+    allowEmpty: false,
+    trim: true
+  });
+  const topK = request.topK ?? request.top_k;
+  if (topK !== undefined) {
+    body.top_k = validateBridgePositiveInteger(topK, "document topK", 5, 1, 20);
+  }
+  return body as { path?: string; document_id?: string; question: string; top_k?: number };
+}
+
+function validateDocumentCompareRequest(value: unknown): { paths: string[]; focus?: string } {
+  const request = validatePlainBridgeBody(value, "document compare request") as DocumentCompareRequest & Record<string, unknown>;
+  rejectUnexpectedBridgeKeys(request, DOCUMENT_COMPARE_ALLOWED_KEYS, "document compare request");
+  const paths = validateBridgeStringArray(request.paths, "document compare paths", 2, 4096);
+  if (paths.length !== 2) {
+    throw new ApiRequestValidationError("document compare requires exactly two paths");
+  }
+  const body: { paths: string[]; focus?: string } = { paths };
+  if (request.focus !== undefined && request.focus !== null && request.focus !== "") {
+    body.focus = validateBridgeStringValue(request.focus, "document compare focus", DOCUMENT_FOCUS_MAX_CHARS, {
+      allowEmpty: false,
+      trim: true
+    });
+  }
+  return body;
+}
+
+function validateSettingsPatchRequest(value: unknown): DesktopSettingsPatch {
+  const request = validatePlainBridgeBody(value, "settings patch");
+  const entries = Object.entries(request);
+  if (entries.length > API_REQUEST_SECURITY_LIMITS.maxBodyObjectKeys) {
+    throw new ApiRequestValidationError("settings patch has too many fields");
+  }
+
+  const patch: DesktopSettingsPatch = {};
+  for (const [key, item] of entries) {
+    assertSafeFieldName(key, "settings patch key", API_REQUEST_SECURITY_LIMITS.maxQueryKeyChars);
+    const kind = SETTINGS_PATCH_VALUE_KINDS[key];
+    if (!kind) {
+      throw new ApiRequestValidationError(`settings patch field is not allowed: ${key}`);
+    }
+    if (item === undefined) {
+      continue;
+    }
+    if (item === null) {
+      throw new ApiRequestValidationError(`settings patch field is invalid: ${key}`);
+    }
+
+    if (kind === "string") {
+      patch[key] = validateBridgeStringValue(item, `settings patch ${key}`, key === "confirmation_nonce" ? 256 : 4096, {
+        allowEmpty: true,
+        trim: true
+      });
+    } else if (kind === "number") {
+      patch[key] = validateBridgeFiniteNumber(item, `settings patch ${key}`);
+    } else if (kind === "boolean") {
+      patch[key] = validateBridgeBoolean(item, `settings patch ${key}`);
+    } else if (kind === "stringArray") {
+      patch[key] = validateBridgeStringArray(item, `settings patch ${key}`, 256, 4096);
+    } else {
+      patch[key] = validateMcpServers(item);
+    }
+  }
+
+  return patch;
+}
+
+function settingsEgressChangeRequiresConfirmation(patch: DesktopSettingsPatch): boolean {
+  return Object.keys(patch).some((key) => SETTINGS_EGRESS_CONFIRMATION_FIELDS.has(key));
+}
+
+function settingsNativeChangeRequiresConfirmation(patch: DesktopSettingsPatch): boolean {
+  return Object.keys(patch).some((key) => SETTINGS_NATIVE_CONFIRMATION_FIELDS.has(key));
+}
+
+function validatePermissionPolicyRelaxationRequest(value: unknown): Record<string, unknown> {
+  const request = validatePlainBridgeBody(value, "permission policy confirmation request");
+  const action = validateBridgeEnum<DesktopPermissionPolicyRelaxationRequest["action"]>(
+    request.action,
+    "permission policy action",
+    PERMISSION_RELAXATION_ACTIONS
+  );
+  if (action === "upsert_rule") {
+    return { action, rule: validatePermissionRule(request.rule) };
+  }
+  if (action === "delete_rule") {
+    return {
+      action,
+      rule_id: validateBridgeIdentifier(request.ruleId ?? request.rule_id, "permission rule id")
+    };
+  }
+  return { action, policy: validatePermissionPolicy(request.policy) };
+}
+
+function validatePermissionRuleUpsertRequest(value: unknown): DesktopPermissionRuleUpsertRequest {
+  const request = validatePlainBridgeBody(value, "permission rule upsert request");
+  return {
+    rule: validatePermissionRule(request.rule),
+    confirmationNonce: validateOptionalConfirmationNonce(request.confirmationNonce ?? request.confirmation_nonce)
+  };
+}
+
+function validatePermissionRuleDeleteRequest(value: unknown): DesktopPermissionRuleDeleteRequest {
+  const request = validatePlainBridgeBody(value, "permission rule delete request");
+  return {
+    ruleId: validateBridgeIdentifier(request.ruleId ?? request.rule_id, "permission rule id"),
+    confirmationNonce: validateOptionalConfirmationNonce(request.confirmationNonce ?? request.confirmation_nonce)
+  };
+}
+
+function validatePermissionPolicy(value: unknown): { rules?: DesktopPermissionRule[] } {
+  const request = validatePlainBridgeBody(value, "permission policy");
+  for (const key of Object.keys(request)) {
+    if (key !== "rules") {
+      throw new ApiRequestValidationError(`permission policy field is not allowed: ${key}`);
+    }
+  }
+  if (request.rules === undefined) {
+    return {};
+  }
+  if (!Array.isArray(request.rules) || request.rules.length > 200) {
+    throw new ApiRequestValidationError("permission policy rules are invalid");
+  }
+  return { rules: request.rules.map((rule) => validatePermissionRule(rule)) };
+}
+
+function validatePermissionRule(value: unknown): DesktopPermissionRule {
+  const request = validatePlainBridgeBody(value, "permission rule");
+  for (const key of Object.keys(request)) {
+    assertSafeFieldName(key, "permission rule key", API_REQUEST_SECURITY_LIMITS.maxQueryKeyChars);
+    if (!PERMISSION_RULE_ALLOWED_KEYS.has(key)) {
+      throw new ApiRequestValidationError(`permission rule field is not allowed: ${key}`);
+    }
+  }
+
+  const rule: DesktopPermissionRule = {};
+  if (request.id !== undefined) {
+    rule.id = validateBridgeIdentifier(request.id, "permission rule id");
+  }
+  if (request.name !== undefined) {
+    rule.name = validateBridgeStringValue(request.name, "permission rule name", 256, { allowEmpty: true, trim: true });
+  }
+  if (request.effect !== undefined) {
+    rule.effect = validateBridgeEnum<"allow" | "deny">(request.effect, "permission rule effect", PERMISSION_EFFECTS);
+  }
+  if (request.tool !== undefined) {
+    rule.tool = validateBridgeStringValue(request.tool, "permission rule tool", 256, { allowEmpty: true, trim: true });
+  }
+  if (request.tools !== undefined) {
+    rule.tools = validateBridgeStringArray(request.tools, "permission rule tools", 100, 256);
+  }
+  if (request.path_pattern !== undefined) {
+    rule.path_pattern = validateBridgeStringValue(request.path_pattern, "permission rule path pattern", 4096, {
+      allowEmpty: true,
+      trim: true
+    });
+  }
+  if (request.path_patterns !== undefined) {
+    rule.path_patterns = validateBridgeStringArray(request.path_patterns, "permission rule path patterns", 200, 4096);
+  }
+  if (request.time_window !== undefined) {
+    rule.time_window = request.time_window === null ? null : validatePermissionTimeWindow(request.time_window);
+  }
+  if (request.time_windows !== undefined) {
+    if (!Array.isArray(request.time_windows) || request.time_windows.length > 50) {
+      throw new ApiRequestValidationError("permission rule time windows are invalid");
+    }
+    rule.time_windows = request.time_windows.map((window) => validatePermissionTimeWindow(window));
+  }
+  if (request.enabled !== undefined) {
+    rule.enabled = validateBridgeBoolean(request.enabled, "permission rule enabled");
+  }
+  if (request.reason !== undefined) {
+    rule.reason = validateBridgeStringValue(request.reason, "permission rule reason", 2048, { allowEmpty: true, trim: true });
+  }
+  return rule;
+}
+
+function validatePermissionTimeWindow(value: unknown): NonNullable<DesktopPermissionRule["time_window"]> {
+  const request = validatePlainBridgeBody(value, "permission time window");
+  for (const key of Object.keys(request)) {
+    assertSafeFieldName(key, "permission time window key", API_REQUEST_SECURITY_LIMITS.maxQueryKeyChars);
+    if (!PERMISSION_TIME_WINDOW_ALLOWED_KEYS.has(key)) {
+      throw new ApiRequestValidationError(`permission time window field is not allowed: ${key}`);
+    }
+  }
+
+  const timeWindow: NonNullable<DesktopPermissionRule["time_window"]> = {};
+  if (request.days !== undefined) {
+    if (!Array.isArray(request.days) || request.days.length > 31) {
+      throw new ApiRequestValidationError("permission time window days are invalid");
+    }
+    timeWindow.days = request.days.map((day) => {
+      if (typeof day === "number" && Number.isInteger(day) && day >= 0 && day <= 6) {
+        return day;
+      }
+      return validateBridgeStringValue(day, "permission time window day", 32, { allowEmpty: false, trim: true });
+    });
+  }
+  if (request.start !== undefined) {
+    timeWindow.start = validateBridgeStringValue(request.start, "permission time window start", 16, {
+      allowEmpty: false,
+      trim: true
+    });
+  }
+  if (request.end !== undefined) {
+    timeWindow.end = validateBridgeStringValue(request.end, "permission time window end", 16, {
+      allowEmpty: false,
+      trim: true
+    });
+  }
+  if (request.timezone !== undefined) {
+    timeWindow.timezone = validateBridgeStringValue(request.timezone, "permission time window timezone", 128, {
+      allowEmpty: true,
+      trim: true
+    });
+  }
+  return timeWindow;
+}
+
+function validateMcpServers(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value) || value.length > 50) {
+    throw new ApiRequestValidationError("settings patch mcp_servers is invalid");
+  }
+  return value.map((server, index) => validateMcpServer(server, index));
+}
+
+function validateMcpServer(value: unknown, index: number): Record<string, unknown> {
+  const request = validatePlainBridgeBody(value, `settings patch mcp_servers[${index}]`);
+  for (const key of Object.keys(request)) {
+    assertSafeFieldName(key, "MCP server key", API_REQUEST_SECURITY_LIMITS.maxQueryKeyChars);
+    if (!MCP_SERVER_ALLOWED_KEYS.has(key)) {
+      throw new ApiRequestValidationError(`MCP server field is not allowed: ${key}`);
+    }
+  }
+
+  const server: Record<string, unknown> = {};
+  for (const key of ["id", "name", "url", "command", "transport"]) {
+    if (request[key] !== undefined) {
+      server[key] = validateBridgeStringValue(request[key], `MCP server ${key}`, key === "name" ? 256 : 4096, {
+        allowEmpty: true,
+        trim: true
+      });
+    }
+  }
+  if (request.args !== undefined) {
+    server.args = validateBridgeStringArray(request.args, "MCP server args", 100, 4096);
+  }
+  if (request.enabled !== undefined) {
+    server.enabled = validateBridgeBoolean(request.enabled, "MCP server enabled");
+  }
+  if (request.auth !== undefined) {
+    if (!isPlainRecord(request.auth)) {
+      throw new ApiRequestValidationError("MCP server auth must be an object");
+    }
+    assertJsonSafeValue(request.auth, 0, new WeakSet<object>());
+    server.auth = JSON.parse(JSON.stringify(request.auth)) as Record<string, unknown>;
+  }
+  return server;
+}
+
+function validateOptionalConfirmationNonce(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  return validateBridgeIdentifier(value, "confirmation nonce");
+}
+
+function validateBridgeEnum<T extends string>(
+  value: unknown,
+  label: string,
+  allowed: ReadonlySet<string>,
+  defaultValue?: T
+): T {
+  if (value === undefined || value === null || value === "") {
+    if (defaultValue !== undefined) {
+      return defaultValue;
+    }
+    throw new ApiRequestValidationError(`${label} is required`);
+  }
+  if (typeof value !== "string") {
+    throw new ApiRequestValidationError(`${label} is invalid`);
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!allowed.has(normalized)) {
+    throw new ApiRequestValidationError(`${label} is invalid`);
+  }
+  return normalized as T;
+}
+
+function validateBridgeBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new ApiRequestValidationError(`${label} must be a boolean`);
+  }
+  return value;
+}
+
+function validateBridgeFiniteNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) {
+    throw new ApiRequestValidationError(`${label} must be a finite number`);
+  }
+  return value;
+}
+
+function validateBridgeStringArray(value: unknown, label: string, maxItems: number, maxChars: number): string[] {
+  if (!Array.isArray(value) || value.length > maxItems) {
+    throw new ApiRequestValidationError(`${label} must be an array`);
+  }
+  return value.map((item, index) =>
+    validateBridgeStringValue(item, `${label}[${index}]`, maxChars, { allowEmpty: false, trim: true })
+  );
+}
+
+function validateBridgeStringValue(
+  value: unknown,
+  label: string,
+  maxChars: number,
+  options: { allowEmpty?: boolean; trim?: boolean } = {}
+): string {
+  if (typeof value !== "string") {
+    throw new ApiRequestValidationError(`${label} must be a string`);
+  }
+  const result = options.trim ? value.trim() : value;
+  if ((!options.allowEmpty && !result) || result.length > maxChars || result.includes("\0") || /[\u0000-\u001F\u007F]/.test(result)) {
+    throw new ApiRequestValidationError(`${label} is invalid`);
+  }
+  return result;
 }
 
 function validateBridgePositiveInteger(

@@ -1,23 +1,28 @@
 import { ipcMain, type IpcMainInvokeEvent, type WebContents } from "electron";
 
-import { IPC_CHANNELS } from "../shared/ipc";
+import { API_REQUEST_SECURITY_LIMITS, IPC_CHANNELS } from "../shared/ipc";
 import type {
+  ApiQueryValue,
   DesktopWebSocketBridgeEvent,
   DesktopWebSocketOpenRequest,
   DesktopWebSocketOpenResult,
   DesktopWebSocketSubscribeRequest
 } from "../shared/types";
 import type { BackendProcessManager } from "./backendProcess";
+import { assertLoopbackBackendUrl } from "./backendUrl";
 import { assertTrustedRenderer } from "./ipc";
 
 export const DESKTOP_WS_PROTOCOL_PREFIX = "lengrvis.desktop.token.";
 const WEB_SOCKET_PROTOCOL_TOKEN_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const DESKTOP_WS_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 interface DesktopSocketEntry {
   sender: WebContents;
   socket: WebSocket;
   onSenderDestroyed: () => void;
 }
+
+type ValidatedDesktopWebSocketQuery = Record<string, Exclude<ApiQueryValue, null | undefined>>;
 
 export function registerDesktopWebSocketIpcHandlers(backend: BackendProcessManager): void {
   const sockets = new Map<string, DesktopSocketEntry>();
@@ -111,36 +116,133 @@ export function buildBackendWebSocketUrl(
   endpoint: string,
   query?: DesktopWebSocketSubscribeRequest["query"]
 ): string {
-  if (!endpoint || typeof endpoint !== "string") {
+  const safeEndpoint = validateDesktopWebSocketEndpoint(endpoint);
+  const safeQuery = validateDesktopWebSocketQuery(query);
+
+  const backendUrl = assertLoopbackBackendUrl(baseUrl, "Desktop WebSocket");
+
+  const url = new URL(safeEndpoint, backendUrl);
+  if (url.origin !== backendUrl.origin) {
+    throw new Error("Desktop WebSocket endpoint escaped the configured backend origin");
+  }
+
+  for (const [key, value] of Object.entries(safeQuery ?? {})) {
+    url.searchParams.set(key, String(value));
+  }
+
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
+function validateDesktopWebSocketEndpoint(endpoint: unknown): string {
+  if (typeof endpoint !== "string") {
     throw new Error("Desktop WebSocket endpoint is required");
+  }
+  if (!endpoint || endpoint.length > API_REQUEST_SECURITY_LIMITS.maxEndpointChars) {
+    throw new Error("Desktop WebSocket endpoint length is invalid");
+  }
+  if (endpoint.trim() !== endpoint || /\s|[\u0000-\u001F\u007F]/.test(endpoint)) {
+    throw new Error("Desktop WebSocket endpoint contains unsafe characters");
+  }
+  if (endpoint.includes("?") || endpoint.includes("#")) {
+    throw new Error("Desktop WebSocket endpoint must not include query strings or fragments");
   }
   if (
     !endpoint.startsWith("/") ||
     endpoint.startsWith("//") ||
+    endpoint.includes("//") ||
     endpoint.includes("\\") ||
     /^[a-z][a-z0-9+.-]*:/i.test(endpoint)
   ) {
     throw new Error("Desktop WebSocket endpoints must be backend-relative");
   }
-
-  const backendUrl = new URL(baseUrl);
-  if (!["http:", "https:"].includes(backendUrl.protocol)) {
-    throw new Error("Desktop WebSocket backend baseUrl must be HTTP(S)");
+  if (/%2f|%5c/i.test(endpoint)) {
+    throw new Error("Desktop WebSocket endpoint must not contain encoded path separators");
   }
 
-  const url = new URL(endpoint, backendUrl);
-  if (url.origin !== backendUrl.origin) {
-    throw new Error("Desktop WebSocket endpoint escaped the configured backend origin");
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(endpoint);
+  } catch {
+    throw new Error("Desktop WebSocket endpoint encoding is invalid");
+  }
+  if (decodedPath.includes("\\") || decodedPath.includes("//")) {
+    throw new Error("Desktop WebSocket endpoint contains unsafe path separators");
+  }
+  if (
+    decodedPath !== "/ws" &&
+    !decodedPath.startsWith("/ws/") &&
+    decodedPath !== "/api/ws" &&
+    !decodedPath.startsWith("/api/ws/")
+  ) {
+    throw new Error("Desktop WebSocket endpoints must target backend WebSocket paths");
+  }
+  if (decodedPath.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new Error("Desktop WebSocket endpoint contains unsafe path segments");
   }
 
-  for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== null && value !== undefined) {
-      url.searchParams.set(key, String(value));
+  return endpoint;
+}
+
+function validateDesktopWebSocketQuery(query: unknown): ValidatedDesktopWebSocketQuery | undefined {
+  if (query === undefined) {
+    return undefined;
+  }
+  if (!isPlainRecord(query)) {
+    throw new Error("Desktop WebSocket query must be an object");
+  }
+
+  const entries = Object.entries(query);
+  if (entries.length > API_REQUEST_SECURITY_LIMITS.maxQueryParams) {
+    throw new Error("Desktop WebSocket query has too many parameters");
+  }
+
+  let totalBytes = 0;
+  const safeQuery: ValidatedDesktopWebSocketQuery = {};
+  for (const [key, value] of entries) {
+    assertSafeWebSocketQueryKey(key);
+    if (value === null || value === undefined) {
+      continue;
     }
+    if (!["string", "number", "boolean"].includes(typeof value)) {
+      throw new Error("Desktop WebSocket query values must be primitive");
+    }
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new Error("Desktop WebSocket query number is invalid");
+    }
+    const stringValue = String(value);
+    const valueBytes = Buffer.byteLength(stringValue, "utf8");
+    if (valueBytes > API_REQUEST_SECURITY_LIMITS.maxQueryValueChars) {
+      throw new Error("Desktop WebSocket query value is too large");
+    }
+    totalBytes += Buffer.byteLength(key, "utf8") + valueBytes;
+    safeQuery[key] = value as Exclude<ApiQueryValue, null | undefined>;
   }
 
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+  if (totalBytes > API_REQUEST_SECURITY_LIMITS.maxQueryBytes) {
+    throw new Error("Desktop WebSocket query is too large");
+  }
+
+  return Object.keys(safeQuery).length ? safeQuery : undefined;
+}
+
+function assertSafeWebSocketQueryKey(key: string): void {
+  if (
+    !key ||
+    key.length > API_REQUEST_SECURITY_LIMITS.maxQueryKeyChars ||
+    /[\u0000-\u001F\u007F]/.test(key) ||
+    DESKTOP_WS_RESERVED_KEYS.has(key)
+  ) {
+    throw new Error("Desktop WebSocket query key is invalid");
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function closeDesktopSocket(sockets: Map<string, DesktopSocketEntry>, socketId?: string): void {

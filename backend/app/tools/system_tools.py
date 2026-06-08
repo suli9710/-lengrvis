@@ -3,16 +3,20 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import subprocess
 from typing import Any
 
 from app.core.audit import record
 from app.core.paths import resolve_authorized
+from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 
 logger = logging.getLogger(__name__)
+LOCAL_AI_PATH_RE = re.compile(r"(?i)(?:[A-Za-z]:[\\/][^\s,;，。；、]+|(?:/Users|/home)/[^\s,;，。；、]+|~[\\/][^\s,;，。；、]+)")
+LOCAL_AI_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
 
 
 def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -277,12 +281,34 @@ def get_processes(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
         return {"error": str(exc), "processes": []}
 
 
+def local_ai_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from app.llm.local_provider import health_snapshot
+        from app.llm.registry import get_effective_settings
+
+        timeout = float(args.get("timeout") or 0.25)
+        snapshot = health_snapshot(get_effective_settings(), timeout=max(0.05, min(timeout, 1.5)))
+    except Exception as exc:  # noqa: BLE001 - diagnostics should report status, not fail the system check.
+        return {
+            "scope": "local_only",
+            "available": False,
+            "selected_backend_kind": "",
+            "probe_order": [],
+            "error": "Local AI readiness check failed.",
+            "error_type": exc.__class__.__name__,
+            "readiness": {"can_install": False, "recommended_model": "", "reason": ""},
+            "onnx": {"available": False, "configured_model": False, "model_present": False},
+        }
+    return _safe_local_ai_status(snapshot)
+
+
 def diagnostics(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     info = get_info(args, context)
     disks = get_disks(args, context)
     network = get_network(args, context)
     battery = get_battery(args, context)
     processes = get_processes({"limit": 8}, context)
+    local_ai = local_ai_status({}, context)
     suggestions = []
     memory_total = int(info.get("memory_total") or 0)
     memory_available = int(info.get("memory_available") or 0)
@@ -296,8 +322,65 @@ def diagnostics(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
         "network": network.get("network", {}),
         "battery": battery.get("battery"),
         "top_processes": processes.get("processes", []),
+        "local_ai": local_ai,
         "suggestions": suggestions,
     }
+
+
+def _safe_local_ai_status(snapshot: dict[str, Any]) -> dict[str, Any]:
+    selected = snapshot.get("selected_backend")
+    selected_backend = selected if isinstance(selected, dict) else {}
+    onnx = snapshot.get("onnx")
+    onnx_payload = onnx if isinstance(onnx, dict) else {}
+    readiness = snapshot.get("readiness")
+    readiness_payload = readiness if isinstance(readiness, dict) else {}
+    selected_kind = str(selected_backend.get("kind") or snapshot.get("kind") or "")
+    selected_model = _safe_model_label(selected_backend.get("model"))
+    return {
+        "scope": "local_only",
+        "available": bool(snapshot.get("available")),
+        "selected_backend_kind": selected_kind,
+        "selected_model": selected_model,
+        "models_count": _safe_count(snapshot.get("models") or selected_backend.get("models")),
+        "probe_order": [str(item) for item in list(snapshot.get("probe_order") or [])],
+        "error": _safe_diagnostic_text(snapshot.get("error")),
+        "readiness": {
+            "can_install": bool(readiness_payload.get("can_install")),
+            "recommended_model": _safe_model_label(readiness_payload.get("recommended_model")),
+            "reason": _safe_diagnostic_text(readiness_payload.get("reason")),
+        },
+        "onnx": {
+            "available": bool(onnx_payload.get("available")),
+            "configured_model": bool(onnx_payload.get("model_path")),
+            "model_present": bool(onnx_payload.get("available")),
+            "execution_provider": str(
+                onnx_payload.get("provider")
+                or onnx_payload.get("execution_provider")
+                or onnx_payload.get("selected_provider")
+                or ""
+            ),
+        },
+    }
+
+
+def _safe_count(value: Any) -> int:
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    return 0
+
+
+def _safe_model_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or "\\" in text or "/" in text:
+        return ""
+    return text[:120]
+
+
+def _safe_diagnostic_text(value: Any, *, limit: int = 300) -> str:
+    text = str(redact_value(str(value or "")) or "")
+    text = LOCAL_AI_URL_RE.sub("[url]", text)
+    text = LOCAL_AI_PATH_RE.sub("[local path]", text)
+    return text[:limit]
 
 
 def register(registry) -> None:
@@ -311,6 +394,7 @@ def register(registry) -> None:
         ("system.find_large_files", find_large_files, RiskLevel.R0_READ_ONLY),
         ("system.cleanup_suggestions", cleanup_suggestions, RiskLevel.R0_READ_ONLY),
         ("system.get_processes", get_processes, RiskLevel.R0_READ_ONLY),
+        ("system.local_ai_status", local_ai_status, RiskLevel.R0_READ_ONLY),
         ("system.diagnostics", diagnostics, RiskLevel.R0_READ_ONLY),
     ]
     for name, fn, risk in defs:

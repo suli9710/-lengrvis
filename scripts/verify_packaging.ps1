@@ -102,6 +102,101 @@ function Test-ZipDirectoryEntry([System.IO.Compression.ZipArchive]$Zip, [string]
     Write-Host "[ok] zip directory $Normalized contains files"
 }
 
+function Add-ReleaseSourceMapPolicyResult {
+    param(
+        [string]$Label,
+        [System.Collections.Generic.List[string]]$Findings
+    )
+
+    if ($Findings.Count -eq 0) {
+        Write-Host "[ok] $Label has no release source maps"
+        return
+    }
+
+    $Preview = @($Findings | Select-Object -First 20)
+    $More = if ($Findings.Count -gt 20) { "; ... $($Findings.Count - 20) more" } else { "" }
+    $Failures.Add("$Label contains release source map artifacts: $($Preview -join '; ')$More")
+}
+
+function Test-ReleaseSourceMapFreeDirectory {
+    param(
+        [string]$Label,
+        [string]$Path
+    )
+
+    $FullPath = Resolve-ProjectPath $Path
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Container)) {
+        return
+    }
+
+    $Findings = New-Object System.Collections.Generic.List[string]
+    $Files = @(Get-ChildItem -LiteralPath $FullPath -File -Recurse -Force -ErrorAction SilentlyContinue)
+    foreach ($File in $Files) {
+        $Relative = $File.FullName
+        try {
+            $Relative = $File.FullName.Substring($Root.Path.Length).TrimStart('\', '/')
+        }
+        catch {
+        }
+
+        if ($File.Extension.Equals(".map", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $Findings.Add("$Relative is a source map file")
+            continue
+        }
+
+        if ($File.Extension -in @(".js", ".css")) {
+            $HasSourceMappingUrl = Select-String -LiteralPath $File.FullName -SimpleMatch "sourceMappingURL=" -Quiet -ErrorAction SilentlyContinue
+            if ($HasSourceMappingUrl) {
+                $Findings.Add("$Relative contains sourceMappingURL")
+            }
+        }
+    }
+
+    Add-ReleaseSourceMapPolicyResult -Label $Label -Findings $Findings
+}
+
+function Test-ZipReleaseSourceMapFree {
+    param(
+        [System.IO.Compression.ZipArchive]$Zip,
+        [string]$Label,
+        [string]$Prefix
+    )
+
+    $NormalizedPrefix = ($Prefix -replace "\\", "/").TrimEnd("/") + "/"
+    $Findings = New-Object System.Collections.Generic.List[string]
+    foreach ($Entry in $Zip.Entries) {
+        $EntryName = $Entry.FullName -replace "\\", "/"
+        if (-not $EntryName.StartsWith($NormalizedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if ($Entry.Length -le 0) {
+            continue
+        }
+
+        if ($EntryName.EndsWith(".map", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $Findings.Add("$EntryName is a source map file")
+            continue
+        }
+
+        if ($EntryName.EndsWith(".js", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $EntryName.EndsWith(".css", [System.StringComparison]::OrdinalIgnoreCase)) {
+            $Stream = $Entry.Open()
+            $Reader = New-Object System.IO.StreamReader($Stream, [System.Text.Encoding]::UTF8, $true)
+            try {
+                $Text = $Reader.ReadToEnd()
+                if ($Text.Contains("sourceMappingURL=")) {
+                    $Findings.Add("$EntryName contains sourceMappingURL")
+                }
+            }
+            finally {
+                $Reader.Dispose()
+            }
+        }
+    }
+
+    Add-ReleaseSourceMapPolicyResult -Label $Label -Findings $Findings
+}
+
 function Test-PEExecutableHeader {
     param(
         [string]$Label,
@@ -798,6 +893,7 @@ $PortableOllamaManifest = Join-Path $PortablePath "resources\ollama-bundle-manif
 $BackendExePath = Join-Path $DistPath "backend.exe"
 $PortableLauncherPath = Join-Path $PortablePath "Lengrvis.exe"
 $PortableBackendExePath = Join-Path $PortablePath "resources\backend\backend.exe"
+$PortableAppDistPath = Join-Path $PortablePath "resources\app\dist"
 
 Test-RequiredDirectory "dist directory" $DistPath
 Test-RequiredFile "backend executable" $BackendExePath
@@ -805,7 +901,7 @@ Test-RequiredDirectory "portable directory" $PortablePath
 Test-RequiredFile "portable launcher" $PortableLauncherPath
 Test-RequiredFile "portable backend executable" $PortableBackendExePath
 Test-RequiredDirectory "portable app resources" (Join-Path $PortablePath "resources\app")
-Test-RequiredDirectory "portable renderer dist" (Join-Path $PortablePath "resources\app\dist")
+Test-RequiredDirectory "portable renderer dist" $PortableAppDistPath
 Test-RequiredFile "portable app package manifest" (Join-Path $PortablePath "resources\app\package.json")
 Test-RequiredFile "portable zip" $PortableZipPath
 Test-RequiredFile "self-extracting executable" $SelfExtractingPath
@@ -822,6 +918,7 @@ if ($RequireBundledOllama) {
     Test-RequiredFile "portable Ollama bundle manifest" $PortableOllamaManifest
     Test-OllamaBundleManifest -ManifestPath $PortableOllamaManifest -RuntimeDir $PortableOllamaDir -ModelsDir $PortableOllamaModelsDir
 }
+Test-ReleaseSourceMapFreeDirectory -Label "portable app dist" -Path $PortableAppDistPath
 
 if (Test-Path -LiteralPath $PortableZipPath -PathType Leaf) {
     $Zip = [System.IO.Compression.ZipFile]::OpenRead($PortableZipPath)
@@ -829,6 +926,7 @@ if (Test-Path -LiteralPath $PortableZipPath -PathType Leaf) {
         Test-ZipEntry $Zip "Lengrvis.exe"
         Test-ZipEntry $Zip "resources/backend/backend.exe"
         Test-ZipEntry $Zip "resources/app/package.json"
+        Test-ZipReleaseSourceMapFree -Zip $Zip -Label "portable zip app dist" -Prefix "resources/app/dist"
         if ($RequireBundledOllama) {
             Test-ZipEntry $Zip "resources/ollama-bundle-manifest.json"
             Test-ZipDirectoryEntry $Zip "resources/ollama"

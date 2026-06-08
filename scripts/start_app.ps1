@@ -9,7 +9,8 @@
     [string]$TlsKeyFile = "",
     [switch]$CheckOnly,
     [switch]$Detached,
-    [switch]$Desktop
+    [switch]$Desktop,
+    [switch]$PrintRecentLogs
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +39,9 @@ $startedBackend = $null
 $startedFrontend = $null
 $startedDesktop = $null
 $leaveProcessesRunning = $false
+$RedactedLogValue = "[redacted]"
+$SensitiveLogKeyPattern = "x-lengrvis-desktop-token|authorization|cookie|set-cookie|api[_-]?key|apikey|desktop[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|oauth[_-]?token|client[_-]?secret|token|secret|password|passwd|pwd|jwt|session(?:[_-]?id)?|otp|passcode|one[_-]?time[_-]?code|verification[_-]?code"
+$SensitiveUrlParamPattern = "access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|oauth[_-]?token|desktop[_-]?token|token|api[_-]?key|apikey|key|client[_-]?secret|secret|password|passwd|pwd|authorization|auth|cookie|session(?:[_-]?id)?|jwt|code|otp|passcode|one[_-]?time[_-]?code|verification[_-]?code"
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -46,6 +50,28 @@ function Write-Step([string]$Message) {
 
 function Format-DependencyList([string[]]$Items) {
     return ($Items | ForEach-Object { "  - $_" }) -join "`n"
+}
+
+function Write-NextStep([string]$FailureMessage) {
+    Write-Host ""
+    Write-Host "下一步：" -ForegroundColor Yellow
+    if ($FailureMessage -match "端口\s+\d+\s+已被") {
+        Write-Host "  关闭占用该端口的程序，然后重新启动 Lengrvis。" -ForegroundColor Yellow
+        Write-Host "  开发者也可以改用其他端口参数重新运行 start_app.ps1。" -ForegroundColor Yellow
+        return
+    }
+    if ($FailureMessage -match "LAN HTTPS|证书|私钥") {
+        Write-Host "  检查 LAN HTTPS 证书和私钥路径是否正确，或先关闭 LAN HTTPS 后重试。" -ForegroundColor Yellow
+        return
+    }
+    if ($FailureMessage -match "依赖|Python|npm|Node.js|桌面运行时|setup_dev") {
+        Write-Host "  普通用户：请确认你拿到的是完整发布包，不要只复制脚本文件。" -ForegroundColor Yellow
+        Write-Host "  普通用户不要自行编辑 .env 或 config.yaml；配置请在应用设置里完成。" -ForegroundColor Yellow
+        Write-Host "  源码开发者：请先运行 scripts\setup_dev.ps1，完成后再启动。" -ForegroundColor Yellow
+        return
+    }
+    Write-Host "  双击 Start-Lengrvis-Debug.cmd 查看最近错误；完整日志在 logs 文件夹。" -ForegroundColor Yellow
+    Write-Host "  普通用户不要自行编辑 .env 或 config.yaml；配置请在应用设置里完成。" -ForegroundColor Yellow
 }
 
 function Find-Python {
@@ -57,7 +83,7 @@ function Find-Python {
     if ($python) {
         return $python.Source
     }
-    throw "未找到 Python。请先安装 Python 3.12+，或在项目目录创建 .venv。"
+    throw "未找到 Python 3.12+。"
 }
 
 function Find-Npm {
@@ -69,11 +95,87 @@ function Find-Npm {
     if ($npm) {
         return $npm.Source
     }
-    throw "未找到 npm。请先安装 Node.js 20+。"
+    throw "未找到 npm/Node.js 20+。"
 }
 
 function Test-TruthyEnv([string]$Value) {
     return $Value -and $Value.ToLowerInvariant() -in @("1", "true", "yes", "on")
+}
+
+function Redact-UrlText([string]$Text) {
+    $redacted = [regex]::Replace($Text, "(?i)(https?://)[^/\s:@]+:[^/\s@]+@", "`${1}$RedactedLogValue`:$RedactedLogValue@")
+    return [regex]::Replace($redacted, "(?i)([?&#](?:$SensitiveUrlParamPattern)=)[^&#\s]+", "`${1}$RedactedLogValue")
+}
+
+function Redact-LogText([string]$Text) {
+    if ($null -eq $Text) {
+        return ""
+    }
+
+    $redacted = [string]$Text
+    $redacted = [regex]::Replace($redacted, "-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", "[redacted:private-key]")
+    $redacted = [regex]::Replace(
+        $redacted,
+        "https?://[^\s'`"<>]+",
+        [System.Text.RegularExpressions.MatchEvaluator]{ param($match) Redact-UrlText $match.Value }
+    )
+    $redacted = [regex]::Replace($redacted, "(?i)\b(Authorization)\s*:\s*[^\r\n]+", "`${1}: $RedactedLogValue")
+    $redacted = [regex]::Replace($redacted, "(?i)\b(Set-Cookie|Cookie)\s*:\s*[^\r\n]+", "`${1}: $RedactedLogValue")
+    $redacted = [regex]::Replace($redacted, "(?i)(--?(?:$SensitiveLogKeyPattern)\b(?:=|\s+|[`"']?\s*,\s*[`"']?))[^`"',\s\]]+", "`${1}$RedactedLogValue")
+    $redacted = [regex]::Replace($redacted, "(?i)([`"']?\b(?:$SensitiveLogKeyPattern)\b[`"']?\s*[:=]\s*[`"']?)(?:Bearer\s+)?[^`"',;\s}&]+", "`${1}$RedactedLogValue")
+    $redacted = [regex]::Replace($redacted, "(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", "Bearer $RedactedLogValue")
+    $redacted = [regex]::Replace($redacted, "\bsk-(?:proj-)?[A-Za-z0-9_-]{8,}\b", "sk-$RedactedLogValue")
+    return $redacted
+}
+
+function Get-RedactedLogTail([string]$LogPath, [int]$Tail = 40) {
+    if (-not (Test-Path -LiteralPath $LogPath)) {
+        return ""
+    }
+
+    $lines = Get-Content -LiteralPath $LogPath -Tail $Tail -ErrorAction SilentlyContinue
+    return ($lines | ForEach-Object { Redact-LogText ([string]$_) }) -join "`n"
+}
+
+function Add-RedactedLogTail([string]$Current, [string]$LogPath, [int]$Tail = 40) {
+    if (-not (Test-Path -LiteralPath $LogPath)) {
+        return $Current
+    }
+
+    $tailText = Get-RedactedLogTail $LogPath $Tail
+    return "$Current`n[$LogPath]`n$tailText"
+}
+
+function Show-RecentRedactedLogs([int]$Tail = 80, [int]$FileCount = 2) {
+    $groups = @(
+        [pscustomobject]@{ Label = "Recent backend error logs (redacted tail)"; Filter = "backend*.err.log" },
+        [pscustomobject]@{ Label = "Recent frontend error logs (redacted tail)"; Filter = "frontend*.err.log" },
+        [pscustomobject]@{ Label = "Recent desktop error logs (redacted tail)"; Filter = "desktop*.err.log" }
+    )
+
+    foreach ($group in $groups) {
+        Write-Host ""
+        Write-Host "---- $($group.Label) ----"
+        $files = Get-ChildItem -Path $LogDir -Filter $group.Filter -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First $FileCount
+        if (-not $files) {
+            Write-Host "(none)"
+            continue
+        }
+
+        foreach ($file in $files) {
+            Write-Host ""
+            Write-Host "---- logs\$($file.Name) (last $Tail lines, redacted) ----"
+            $tailText = Get-RedactedLogTail $file.FullName $Tail
+            if ($tailText) {
+                Write-Host $tailText
+            }
+            else {
+                Write-Host "(empty)"
+            }
+        }
+    }
 }
 
 function Resolve-LaunchPath([string]$Path) {
@@ -147,6 +249,39 @@ function Test-WorkspaceProcess([string]$CommandLine) {
     return $CommandLine -and $CommandLine.ToLowerInvariant().Contains($Root.Path.ToLowerInvariant())
 }
 
+function Stop-VerifiedListenProcess(
+    [int]$Port,
+    [object]$Process,
+    [string]$Purpose,
+    [switch]$IgnoreOwnershipChange,
+    [System.Management.Automation.ActionPreference]$StopErrorAction = [System.Management.Automation.ActionPreference]::Stop,
+    [int]$SettleMilliseconds = 500
+) {
+    if (-not $Process) {
+        return $false
+    }
+
+    $processId = [int]$Process.ProcessId
+    $current = Get-ListenProcess $Port
+    if (-not $current) {
+        return $false
+    }
+
+    $currentPid = [int]$current.ProcessId
+    if ($currentPid -ne $processId) {
+        $message = "跳过停止 $Purpose 进程：端口 $Port 的监听 PID 已从 $processId 变为 $currentPid。"
+        if ($IgnoreOwnershipChange) {
+            Write-Host $message -ForegroundColor Yellow
+            return $false
+        }
+        throw $message
+    }
+
+    Stop-Process -Id $processId -Force -ErrorAction $StopErrorAction
+    Start-Sleep -Milliseconds $SettleMilliseconds
+    return $true
+}
+
 function Test-PackagedLengrvisBackend([string]$CommandLine) {
     $lower = if ($CommandLine) { $CommandLine.ToLowerInvariant() } else { "" }
     return $lower.Contains("\lengrvis\resources\backend\backend.exe")
@@ -157,17 +292,20 @@ function Test-UvicornLengrvisBackend([string]$CommandLine) {
     return $lower.Contains("uvicorn") -and ($lower.Contains("backend.main:app") -or $lower.Contains("backend.main:full_app"))
 }
 
+function Test-LengrvisFrontendProcess([string]$CommandLine) {
+    $lower = if ($CommandLine) { $CommandLine.ToLowerInvariant() } else { "" }
+    if (-not (Test-WorkspaceProcess $CommandLine)) {
+        return $false
+    }
+    return $lower.Contains("\desktop\node_modules\") -or $lower.Contains("vite") -or $lower.Contains("dev:web")
+}
+
 function Stop-FullBackendIfWorkspaceOwned {
     $fullBackendProcess = Get-ListenProcess 8001
     if (-not $fullBackendProcess) {
         return
     }
-    $commandLine = [string]$fullBackendProcess.CommandLine
-    if ((Test-WorkspaceProcess $commandLine) -or $commandLine.ToLowerInvariant().Contains("backend.main:full_app")) {
-        Write-Step "正在关闭旧的完整后端进程（端口 8001）"
-        Stop-Process -Id $fullBackendProcess.ProcessId -Force -ErrorAction Stop
-        Start-Sleep -Milliseconds 500
-    }
+    throw "完整后端端口 8001 已被占用。为避免误关用户手动启动的服务，请先关闭占用该端口的程序后再启动 Lengrvis。"
 }
 
 function Stop-WorkspaceProcessOnPort([int]$Port, [string]$Purpose) {
@@ -177,13 +315,6 @@ function Stop-WorkspaceProcessOnPort([int]$Port, [string]$Purpose) {
     }
 
     $commandLine = [string]$process.CommandLine
-    if (Test-WorkspaceProcess $commandLine) {
-        Write-Step "正在关闭旧的 $Purpose 进程（端口 $Port）"
-        Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-        Start-Sleep -Milliseconds 500
-        return
-    }
-
     throw "端口 $Port 已被其他程序占用：$commandLine"
 }
 
@@ -194,20 +325,15 @@ function Stop-WorkspaceListenerOnPort([int]$Port, [string]$Purpose) {
             return
         }
 
-        $commandLine = [string]$process.CommandLine
-        if (Test-WorkspaceProcess $commandLine) {
-            Write-Step "正在清理本次启动留下的 $Purpose 进程（端口 $Port）"
-            Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Milliseconds 500
-        }
+        Write-Host "跳过按端口清理 $Purpose：只停止本次启动记录的进程，避免误关用户手动启动的服务。" -ForegroundColor Yellow
     }
     catch {
-        Write-Host "清理 $Purpose 进程时遇到问题：$($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "清理 $Purpose 进程时遇到问题：$(Redact-LogText $_.Exception.Message)" -ForegroundColor Yellow
     }
 }
 
 function Ensure-NodeDependencies([string]$Npm, [bool]$NeedsDesktop) {
-    # Legacy switch: keep accepting callers that explicitly opted out of install/check.
+    # Legacy switch: keep accepting callers that explicitly opted out of dependency checks.
     if ($SkipInstall) {
         return
     }
@@ -230,37 +356,13 @@ function Ensure-NodeDependencies([string]$Npm, [bool]$NeedsDesktop) {
         return
     }
 
-    if (-not $InstallMissingDependencies) {
-        $missingList = Format-DependencyList $missingDependencies
-        throw @"
-缺少桌面/前端依赖：
+    $missingList = Format-DependencyList $missingDependencies
+    throw @"
+缺少桌面/前端运行依赖：
 $missingList
 
-正式/产品启动不会现场运行 npm install。
-开发环境请先运行：
-  .\scripts\dev.ps1 -InstallMissingDependencies
-也可以手动运行：
-  $Npm --prefix desktop install
-如确需由本启动脚本安装，重新运行：
-  .\scripts\start_app.ps1 -InstallMissingDependencies
+正式启动不会现场运行 npm install。
 "@
-    }
-
-    Write-Step "正在安装桌面依赖（显式开发安装模式）"
-    & $Npm --prefix $DesktopDir install
-    if ($LASTEXITCODE -ne 0) {
-        throw "桌面依赖安装失败。请查看上方输出或 logs 文件夹。"
-    }
-
-    $remainingDependencies = @()
-    foreach ($path in $requiredPaths) {
-        if (-not (Test-Path $path)) {
-            $remainingDependencies += $path
-        }
-    }
-    if ($remainingDependencies.Count -ne 0) {
-        throw "桌面依赖安装后仍缺少：`n$(Format-DependencyList $remainingDependencies)"
-    }
 }
 
 function Get-MissingPythonRequirements([string]$Python) {
@@ -337,7 +439,7 @@ if missing:
 }
 
 function Ensure-PythonDependencies([string]$Python) {
-    # Legacy switch: keep accepting callers that explicitly opted out of install/check.
+    # Legacy switch: keep accepting callers that explicitly opted out of dependency checks.
     if ($SkipInstall) {
         return
     }
@@ -347,32 +449,13 @@ function Ensure-PythonDependencies([string]$Python) {
         return
     }
 
-    if (-not $InstallMissingDependencies) {
-        $missingList = Format-DependencyList $missingDependencies
-        throw @"
+    $missingList = Format-DependencyList $missingDependencies
+    throw @"
 缺少后端 Python 依赖：
 $missingList
 
 正式/产品启动不会现场运行 pip install。
-开发环境请先运行：
-  .\scripts\dev.ps1 -InstallMissingDependencies
-也可以手动运行：
-  $Python -m pip install -r backend\requirements.txt
-如确需由本启动脚本安装，重新运行：
-  .\scripts\start_app.ps1 -InstallMissingDependencies
 "@
-    }
-
-    Write-Step "正在安装后端依赖（显式开发安装模式）"
-    & $Python -m pip install -r (Join-Path $Root "backend\requirements.txt")
-    if ($LASTEXITCODE -ne 0) {
-        throw "后端依赖安装失败。请查看上方输出或 logs 文件夹。"
-    }
-
-    $remainingDependencies = @(Get-MissingPythonRequirements $Python)
-    if ($remainingDependencies.Count -ne 0) {
-        throw "后端依赖安装后仍缺少：`n$(Format-DependencyList $remainingDependencies)"
-    }
 }
 
 function Test-DesktopBuildFresh {
@@ -420,22 +503,14 @@ function Start-Backend([string]$Python, [object]$LanTlsConfig) {
     $existing = Get-ListenProcess $BackendPort
     if ($existing) {
         $commandLine = [string]$existing.CommandLine
-        if (Test-PackagedLengrvisBackend $commandLine) {
-            Write-Step "正在关闭已安装版 Lengrvis 后端，改用当前目录版本"
-            Stop-Process -Id $existing.ProcessId -Force -ErrorAction Stop
-            Start-Sleep -Milliseconds 700
+        if (Test-Health) {
+            Write-Step "后端服务已在运行：$BackendUrl"
+            return $null
         }
-        elseif ((Test-WorkspaceProcess $commandLine) -or (Test-UvicornLengrvisBackend $commandLine)) {
-            if (Test-Health) {
-                Write-Step "后端服务已在运行：$BackendUrl"
-                return $null
-            }
-            Stop-Process -Id $existing.ProcessId -Force -ErrorAction Stop
-            Start-Sleep -Milliseconds 500
+        if (Test-PackagedLengrvisBackend $commandLine -or (Test-WorkspaceProcess $commandLine)) {
+            throw "后端端口 $BackendPort 已被已有 Lengrvis/工作区进程占用，但健康检查未通过。为避免误关用户手动启动的服务，请先关闭该进程后重试：$commandLine"
         }
-        else {
-            throw "后端端口 $BackendPort 已被其他程序占用：$commandLine"
-        }
+        throw "后端端口 $BackendPort 已被其他程序占用：$commandLine"
     }
 
     Write-Step "正在启动后端服务：$BackendUrl"
@@ -467,10 +542,7 @@ function Start-Backend([string]$Python, [object]$LanTlsConfig) {
 
     $tail = ""
     foreach ($logPath in @($BackendStdoutLog, $BackendStderrLog)) {
-        if (Test-Path $logPath) {
-            $tail += "`n[$logPath]`n"
-            $tail += (Get-Content -Path $logPath -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
-        }
+        $tail = Add-RedactedLogTail $tail $logPath 40
     }
     throw "后端服务启动超时。请查看日志：$BackendStdoutLog 和 $BackendStderrLog`n最近日志：$tail"
 }
@@ -479,23 +551,17 @@ function Start-Frontend([string]$Npm) {
     $existing = Get-ListenProcess $FrontendPort
     if ($existing) {
         $commandLine = [string]$existing.CommandLine
-        if (Test-WorkspaceProcess $commandLine) {
+        if (Test-LengrvisFrontendProcess $commandLine) {
             try {
                 $response = Invoke-WebRequest -Uri $FrontendUrl -UseBasicParsing -TimeoutSec 2
                 if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
                     Write-Step "界面服务已在运行：$FrontendUrl"
                     return $null
                 }
-            }
-            catch {
-                Write-Step "正在关闭旧的界面服务进程（端口 $FrontendPort）"
-                Stop-Process -Id $existing.ProcessId -Force -ErrorAction Stop
-                Start-Sleep -Milliseconds 500
+            } catch {
             }
         }
-        else {
-            throw "界面服务端口 $FrontendPort 已被其他程序占用：$commandLine"
-        }
+        throw "界面服务端口 $FrontendPort 已被占用，但无法复用。为避免误关用户手动启动的服务，请先关闭该进程后重试：$commandLine"
     }
 
     Write-Step "正在启动界面服务：$FrontendUrl"
@@ -526,10 +592,7 @@ function Start-Frontend([string]$Npm) {
 
     $tail = ""
     foreach ($logPath in @($FrontendStdoutLog, $FrontendStderrLog)) {
-        if (Test-Path $logPath) {
-            $tail += "`n[$logPath]`n"
-            $tail += (Get-Content -Path $logPath -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
-        }
+        $tail = Add-RedactedLogTail $tail $logPath 40
     }
     throw "界面服务启动超时。请查看日志：$FrontendStdoutLog 和 $FrontendStderrLog`n最近日志：$tail"
 }
@@ -548,7 +611,7 @@ function Get-RunningDesktopProcess([string]$ElectronPath) {
 function Start-DesktopShell {
     $electron = Join-Path $DesktopDir "node_modules\electron\dist\electron.exe"
     if (-not (Test-Path $electron)) {
-        throw "未找到桌面运行时：$electron。请先运行 npm --prefix desktop install。"
+        throw "未找到桌面运行时：$electron。"
     }
 
     $existing = Get-RunningDesktopProcess $electron
@@ -604,10 +667,7 @@ function Start-DesktopShell {
 
         $tail = ""
         foreach ($logPath in @($DesktopStdoutLog, $DesktopStderrLog)) {
-            if (Test-Path $logPath) {
-                $tail += "`n[$logPath]`n"
-                $tail += (Get-Content -Path $logPath -Tail 40 -ErrorAction SilentlyContinue) -join "`n"
-            }
+            $tail = Add-RedactedLogTail $tail $logPath 40
         }
         throw "桌面窗口启动后立即退出，退出代码 $exitCode。请查看日志：$DesktopStderrLog`n最近日志：$tail"
     }
@@ -616,9 +676,18 @@ function Start-DesktopShell {
     return $process
 }
 
+if ($PrintRecentLogs) {
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    Show-RecentRedactedLogs
+    exit 0
+}
+
 try {
     Set-Location $Root
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    if ($InstallMissingDependencies) {
+        throw "start_app.ps1 不再安装依赖，避免普通用户首次启动被网络或 registry 影响。"
+    }
     $lanTlsConfig = Resolve-LanTlsConfig
     if ($lanTlsConfig.Enabled) {
         $BackendScheme = "https"
@@ -687,11 +756,12 @@ try {
     }
 }
 catch {
+    $failureMessage = Redact-LogText $_.Exception.Message
     Write-Host ""
     Write-Host "启动失败：" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host $failureMessage -ForegroundColor Red
     Write-Host "日志文件夹：$LogDir" -ForegroundColor Yellow
-    Write-Host "也可以双击 Start-Lengrvis-Debug.cmd 查看最近错误。" -ForegroundColor Yellow
+    Write-NextStep $failureMessage
     exit 1
 }
 finally {
@@ -706,13 +776,5 @@ finally {
     if (-not $leaveProcessesRunning -and $startedBackend -and -not $startedBackend.HasExited) {
         Write-Step "正在停止本次启动的后端服务"
         Stop-Process -Id $startedBackend.Id -Force -ErrorAction SilentlyContinue
-    }
-    if (-not $leaveProcessesRunning) {
-        if ($startedFrontend) {
-            Stop-WorkspaceListenerOnPort $FrontendPort "界面服务"
-        }
-        if ($startedBackend) {
-            Stop-WorkspaceListenerOnPort $BackendPort "后端服务"
-        }
     }
 }

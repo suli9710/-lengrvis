@@ -48,6 +48,19 @@ PLAN_SCHEMA: dict[str, Any] = {
 
 DELETE_TERMS = ("delete", "remove", "trash", "删除", "删掉", "移除", "清理")
 UNINSTALL_TERMS = ("uninstall", "卸载")
+SYSTEM_CHECK_TERMS = (
+    "检查电脑状态",
+    "检查这台电脑",
+    "电脑状态",
+    "系统体检",
+    "运行状态",
+    "关键进程",
+    "本地 ai",
+    "本地ai",
+    "computer status",
+    "system status",
+    "diagnostics",
+)
 DRIVE_CLEANUP_RE = re.compile(r"(?P<drive>[a-zA-Z])\s*盘")
 PATH_SUFFIXES = (
     " 这个文件夹",
@@ -84,6 +97,10 @@ class PlannerAgent(BaseAgent):
             self._publish_plan(task_id, deterministic_plan)
             return deterministic_plan
         deterministic_plan = self._deterministic_uninstall_plan(task_id, goal, tools)
+        if deterministic_plan:
+            self._publish_plan(task_id, deterministic_plan)
+            return deterministic_plan
+        deterministic_plan = self._deterministic_system_check_plan(task_id, goal, tools)
         if deterministic_plan:
             self._publish_plan(task_id, deterministic_plan)
             return deterministic_plan
@@ -416,6 +433,32 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=True,
         )
 
+    def _deterministic_system_check_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+        if "system.diagnostics" not in tools or not self._has_system_check_intent(goal):
+            return None
+
+        step = PlanStep(
+            id="step_1",
+            task_id=task_id,
+            order=1,
+            agent_name="ComputerAgent",
+            tool_name="system.diagnostics",
+            description="只读检查系统、磁盘、关键进程和本地 AI 状态。",
+            args={},
+            expected_observation="已完成只读电脑状态检查，未修改系统设置或文件。",
+            risk_level=RiskLevel.R0_READ_ONLY,
+            requires_approval=False,
+            rollback_strategy="当前步骤只读取状态，不修改系统，无需回滚。",
+        )
+        return Plan(
+            task_id=task_id,
+            goal=goal,
+            assumptions=["检测到电脑状态检查请求；使用确定性只读系统诊断计划，不需要 LLM 规划。"],
+            steps=[step],
+            global_risk_level=RiskLevel.R0_READ_ONLY,
+            requires_user_approval=False,
+        )
+
     def _has_delete_intent(self, goal: str) -> bool:
         normalized = goal.lower()
         return any(term in normalized for term in DELETE_TERMS)
@@ -446,6 +489,16 @@ class PlannerAgent(BaseAgent):
     def _has_uninstall_intent(self, goal: str) -> bool:
         normalized = goal.lower()
         return any(term in normalized for term in UNINSTALL_TERMS)
+
+    def _has_system_check_intent(self, goal: str) -> bool:
+        normalized = goal.casefold()
+        if any(term.casefold() in normalized for term in SYSTEM_CHECK_TERMS):
+            return True
+        return (
+            "检查" in goal
+            and ("电脑" in goal or "系统" in goal)
+            and any(term in goal for term in ("状态", "磁盘", "内存", "进程", "可用性"))
+        )
 
     def _extract_uninstall_query(self, goal: str) -> str:
         query = goal.strip()

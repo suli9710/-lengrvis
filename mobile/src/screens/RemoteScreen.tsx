@@ -576,9 +576,9 @@ function remoteTransportNotice(connectionInfo: WebSocketConnectionInfo): Transpo
   if (security.isInsecureLan) {
     return {
       tone: "danger",
-      title: "LAN HTTP / ws 明文通道",
-      detail: `${httpScheme}/ws 连接 ${security.host}，${tokenNote}。`,
-      warning: security.warning,
+      title: "LAN HTTP 已阻断",
+      detail: `${httpScheme}/ws 不能承载手机 token、屏幕或远程输入连接。`,
+      warning: "请在电脑端启用 HTTPS/WSS 或使用受信任证书后重新配对。",
     };
   }
   return {

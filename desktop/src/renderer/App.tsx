@@ -19,6 +19,7 @@ import type {
   AppSettings,
   ApprovalRequest,
   AuditLogEntry,
+  BackendStatus,
   ChatMessage,
   ContextUsage,
   FileSearchMeta,
@@ -147,6 +148,8 @@ const BrowserActivityPanel = lazy(() => import("./components/BrowserActivityPane
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
 const SkillsView = lazy(() => import("./views/SkillsView").then((module) => ({ default: module.SkillsView })));
 const LocalLibraryView = lazy(() => import("./views/LocalLibraryView").then((module) => ({ default: module.LocalLibraryView })));
+
+const TASK_SUBMIT_BACKEND_READY_TIMEOUT_MS = 5_000;
 
 export function App() {
   const api = useMemo(() => new LengrvisApiClient(), []);
@@ -448,7 +451,68 @@ export function App() {
     }
   }, [activeView, api]);
 
+  const markBackendResponsive = (message = "后端已响应任务请求") => {
+    const currentStatus = backendStatusRef.current;
+    if (currentStatus.state === "running" && currentStatus.health?.ok) return;
+    const nextStatus = {
+      ...currentStatus,
+      state: "running" as const,
+      message,
+      health: {
+        ...currentStatus.health,
+        ok: true
+      },
+      lastCheckedAt: new Date().toISOString()
+    };
+    backendStatusRef.current = nextStatus;
+    setBackendStatus(nextStatus);
+  };
+
+  const ensureBackendReadyForTaskSubmit = async (): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const status = await withTimeout(
+        api.getBackendStatus(),
+        TASK_SUBMIT_BACKEND_READY_TIMEOUT_MS,
+        "连接检查超时"
+      );
+      backendStatusRef.current = status;
+      setBackendStatus(status);
+      if (status.health?.ok || (status.state === "running" && !status.health)) {
+        markBackendResponsive(status.message ?? "后端已连接，可以启动任务");
+        return { ok: true };
+      }
+      const healthProbeStatus = await api.probeBackendHealth(status.baseUrl);
+      if (isBackendTaskSubmitReady(healthProbeStatus)) {
+        backendStatusRef.current = {
+          ...status,
+          ...healthProbeStatus,
+          message: healthProbeStatus.message ?? status.message ?? "后端已连接，可以启动任务"
+        };
+        setBackendStatus(backendStatusRef.current);
+        markBackendResponsive(backendStatusRef.current.message);
+        return { ok: true };
+      }
+      const healthReason = status.health && !status.health.ok ? "健康检查还没通过" : "";
+      return {
+        ok: false,
+        error: status.message
+          ? `Lengrvis 服务还没连上：${status.message}${healthReason ? `，${healthReason}` : ""}。输入内容已保留，可以稍后重试。`
+          : `Lengrvis 服务还没连上${healthReason ? `：${healthReason}` : ""}。输入内容已保留，可以稍后重试。`
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: `Lengrvis 服务还没连上：${readableError(error, "连接检查失败")}。输入内容已保留，可以稍后重试。`
+      };
+    }
+  };
+
   const sendMessage = async (content: string): Promise<{ ok: boolean; error?: string }> => {
+    const readiness = await ensureBackendReadyForTaskSubmit();
+    if (!readiness.ok) {
+      return readiness;
+    }
+
     const userMessage: ChatMessage = {
       id: `local-${crypto.randomUUID()}`,
       role: "user",
@@ -460,13 +524,17 @@ export function App() {
 
     setMessages((current) => [...current, userMessage]);
     try {
-      let result = await api.sendChat({ content, mode });
-      if (!result.ok) {
+      const preferRun = isReadOnlySystemDiagnosticsPrompt(content);
+      let result = preferRun
+        ? await api.startRun({ content, mode })
+        : await api.sendChat({ content, mode });
+      if (!result.ok && !preferRun) {
         result = await api.startRun({ content, mode });
       }
 
       const response = result.data;
       if (result.ok && response) {
+        markBackendResponsive();
         setMessages((current) => [...current, response.message]);
         if (response.taskUpdates?.length) {
           response.taskUpdates.forEach((task) => chatStartedTaskIds.current.add(task.id));
@@ -508,6 +576,22 @@ export function App() {
   };
 
   const executeSuggestion = async (suggestion: IntentSuggestion) => {
+    const readiness = await ensureBackendReadyForTaskSubmit();
+    if (!readiness.ok) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: `local-${crypto.randomUUID()}`,
+          role: "assistant",
+          author: "Lengrvis",
+          content: readiness.error ?? "建议任务没有启动成功，输入内容未发送，可以稍后重试。",
+          createdAt: new Date().toISOString(),
+          status: "failed"
+        }
+      ]);
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: `local-${crypto.randomUUID()}`,
       role: "user",
@@ -552,10 +636,6 @@ export function App() {
   const submitHeroPrompt = async () => {
     const value = draft.trim();
     if (!value || heroSubmitInFlight.current) return;
-    if (connectionState === "offline") {
-      setHeroSubmitError("Lengrvis 服务还没连上。请先刷新连接，输入内容我会保留。");
-      return;
-    }
 
     heroSubmitInFlight.current = true;
     setHeroSubmitting(true);
@@ -671,6 +751,21 @@ export function App() {
       setLocalLlmHealth(null);
     }
     return nextSystemInfo;
+  };
+
+  const exportDiagnosticsPackage = async () => {
+    const result = await api.exportDiagnosticsPackage();
+    if (!result.ok || !result.data) {
+      throw new Error(result.error?.message ?? "无法导出诊断包");
+    }
+    return result.data;
+  };
+
+  const revealPath = async (path: string) => {
+    const result = await api.showItemInFolder(path);
+    if (!result.ok || result.data?.ok === false) {
+      throw new Error(result.error?.message ?? result.data?.error ?? "无法打开所在位置");
+    }
   };
 
   const refreshTaskSnapshot = useCallback(async () => {
@@ -1068,6 +1163,7 @@ export function App() {
           <section className="detail-grid">
             <SystemInfoPanel
               info={systemInfo}
+              backendStatus={backendStatus}
               isRefreshing={isCheckingComputer}
               onRefresh={async () => {
                 setIsCheckingComputer(true);
@@ -1077,6 +1173,8 @@ export function App() {
                   setIsCheckingComputer(false);
                 }
               }}
+              onExportDiagnostics={exportDiagnosticsPackage}
+              onRevealPath={revealPath}
               onOpenSettings={openWindowsSettings}
             />
             <PlanViewer plan={plan} />
@@ -1132,7 +1230,7 @@ export function App() {
         ) : null}
 
         {activeView === "settings" ? (
-          <section className="detail-grid">
+          <section className="detail-grid detail-grid--settings">
             <Suspense fallback={<RouteLoading />}>
               <SettingsPanel
                 settings={settings}
@@ -1154,9 +1252,12 @@ export function App() {
             </Suspense>
             <SystemInfoPanel
               info={systemInfo}
+              backendStatus={backendStatus}
               onRefresh={async () => {
                 await refreshSystemInfo();
               }}
+              onExportDiagnostics={exportDiagnosticsPackage}
+              onRevealPath={revealPath}
               onOpenSettings={openWindowsSettings}
             />
           </section>
@@ -1241,6 +1342,29 @@ function latestLegacyTaskIdFromEvents(
 
 function requiresLocalLlmHealth(mode: AssistantMode): boolean {
   return mode === "privacy" || mode === "hybrid";
+}
+
+function isBackendTaskSubmitReady(status: BackendStatus | null): status is BackendStatus {
+  return Boolean(status?.health?.ok || (status?.state === "running" && !status?.health));
+}
+
+function isReadOnlySystemDiagnosticsPrompt(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) return false;
+  const hasDiagnosticsAction =
+    normalized.includes("\u68c0\u67e5") ||
+    normalized.includes("\u67e5\u770b") ||
+    normalized.includes("\u8bca\u65ad") ||
+    normalized.includes("diagnostics") ||
+    normalized.includes("system status") ||
+    normalized.includes("computer status");
+  const hasComputerTarget =
+    normalized.includes("\u8fd9\u53f0\u7535\u8111") ||
+    normalized.includes("\u7535\u8111") ||
+    normalized.includes("\u7cfb\u7edf") ||
+    normalized.includes("computer") ||
+    normalized.includes("system");
+  return hasDiagnosticsAction && hasComputerTarget;
 }
 
 function buildHomeReadinessItems({
@@ -1387,7 +1511,6 @@ function connectionStateFromBackendAndRealtime(
   if (backendStatus.state !== "running") return "offline";
   if (!realtimeStatus) return "online";
   if (realtimeStatus.state === "connecting" || realtimeStatus.state === "reconnecting") return "checking";
-  if (["unauthorized", "policy_violation", "error", "closed"].includes(realtimeStatus.state)) return "offline";
   return "online";
 }
 
@@ -1618,6 +1741,16 @@ function isMojibakeLike(value: string): boolean {
   const questionMarks = (compact.match(/\?/g) ?? []).length;
   if (questionMarks >= 3 && questionMarks / compact.length > 0.2) return true;
   return /�|Ã|Â|ä¸|ç®|å·|æ/.test(compact);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => window.clearTimeout(timer));
+  });
 }
 
 function readableError(error: unknown, fallback: string): string {

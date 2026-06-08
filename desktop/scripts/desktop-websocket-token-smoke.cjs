@@ -50,11 +50,49 @@ assert.equal(
   "wss://localhost:8443/api/ws/settings/install-local-model?model=qwen2.5%3A3b"
 );
 
+for (const baseUrl of ["http://192.168.1.20:8000", "https://api.example.test"]) {
+  assert.throws(
+    () => buildBackendWebSocketUrl(baseUrl, "/ws/tasks/task-1"),
+    /loopback backend base URL/,
+    `desktop token-bearing WebSocket must reject non-loopback backend ${baseUrl}`
+  );
+}
+
 for (const endpoint of ["ws://127.0.0.1:8000/ws/tasks/1", "//evil.test/ws", "api/ws", "/api\\ws"]) {
   assert.throws(
     () => buildBackendWebSocketUrl("http://127.0.0.1:8000", endpoint),
     /backend-relative/,
     `endpoint ${endpoint} must be rejected`
+  );
+}
+
+for (const endpoint of ["/ws/tasks/task-1?desktop_token=leak", "/ws/tasks/task-1#fragment"]) {
+  assert.throws(
+    () => buildBackendWebSocketUrl("http://127.0.0.1:8000", endpoint),
+    /query strings or fragments/,
+    `endpoint ${endpoint} must not smuggle URL state`
+  );
+}
+
+for (const endpoint of ["/ws//tasks/task-1", "/ws/%2e%2e/api/ws/browser-host", "/ws/%2Ftasks/task-1"]) {
+  assert.throws(
+    () => buildBackendWebSocketUrl("http://127.0.0.1:8000", endpoint),
+    /backend-relative|unsafe path|encoded path|unsafe path segments/,
+    `endpoint ${endpoint} must not bypass backend WebSocket path validation`
+  );
+}
+
+for (const [name, query] of [
+  ["array query", ["cursor"]],
+  ["nested query value", { cursor: { next: 1 } }],
+  ["unsafe query key", { "bad\nkey": "cursor" }],
+  ["unsafe reserved key", { constructor: "polluted" }],
+  ["non-finite query number", { cursor: Number.POSITIVE_INFINITY }]
+]) {
+  assert.throws(
+    () => buildBackendWebSocketUrl("http://127.0.0.1:8000", "/ws/tasks/task-1", query),
+    /query/,
+    `${name} must be rejected before opening a token-bearing desktop WebSocket`
   );
 }
 

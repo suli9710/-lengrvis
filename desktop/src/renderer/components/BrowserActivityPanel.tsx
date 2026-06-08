@@ -185,6 +185,7 @@ export function BrowserActivityPanel({
       }
       if (!result.ok) {
         onErrorChange(result.error ?? `${label} failed`);
+        return;
       }
       if (backendCommand) {
         const backendResult = await backendCommand(activeSession.id);

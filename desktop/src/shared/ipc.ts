@@ -14,6 +14,16 @@ export const IPC_CHANNELS = {
   ollamaInstall: "lengrvis:ollama:install",
   ollamaPull: "lengrvis:ollama:pull",
   ollamaStart: "lengrvis:ollama:start",
+  runsStart: "lengrvis:runs:start",
+  systemDiagnosticsExport: "lengrvis:system:diagnostics-export",
+  documentsParse: "lengrvis:documents:parse",
+  documentsAsk: "lengrvis:documents:ask",
+  documentsCompare: "lengrvis:documents:compare",
+  settingsConfirmSensitiveChange: "lengrvis:settings:confirm-sensitive-change",
+  settingsSave: "lengrvis:settings:save",
+  permissionPolicyConfirmRelaxation: "lengrvis:settings:permission-policy:confirm-relaxation",
+  permissionPolicyUpsertRule: "lengrvis:settings:permission-policy:upsert-rule",
+  permissionPolicyDeleteRule: "lengrvis:settings:permission-policy:delete-rule",
   mobilePairingCreateCode: "lengrvis:mobile-pairing:create-code",
   mobilePairingListDevices: "lengrvis:mobile-pairing:list-devices",
   mobilePairingRevokeDevice: "lengrvis:mobile-pairing:revoke-device",
@@ -21,6 +31,7 @@ export const IPC_CHANNELS = {
   mobilePairingRevokeRemoteInputGrant: "lengrvis:mobile-pairing:revoke-remote-input-grant",
   openExternal: "lengrvis:shell:open-external",
   getFileIcon: "lengrvis:shell:get-file-icon",
+  showItemInFolder: "lengrvis:shell:show-item-in-folder",
   chooseDirectory: "lengrvis:dialog:choose-directory",
   chooseDocument: "lengrvis:dialog:choose-document",
   knownFolders: "lengrvis:dialog:known-folders",
@@ -65,6 +76,7 @@ export const API_REQUEST_ALLOWED_KEYS = ["endpoint", "method", "query", "body", 
 
 export const API_REQUEST_DENIED_PATH_PREFIXES = [
   "/api/dev",
+  "/api/documents",
   "/api/index",
   "/api/mobile",
   "/api/pair",
@@ -88,10 +100,21 @@ export const API_REQUEST_DENIED_EXACT_PATHS = [
   "/api/files/cleanup/execute",
   "/api/files/cleanup/rollback",
   "/api/perception/capture",
+  "/api/system/diagnostics/export",
   "/api/settings/install-local-model",
   "/api/settings/ollama/install",
   "/api/settings/ollama/pull",
   "/api/settings/ollama/start",
   "/api/skills/import",
   "/api/skills/refresh"
+] as const;
+
+export const API_REQUEST_DENIED_METHOD_PATHS = [
+  { method: "POST", pathPrefix: "/api/runs" },
+  { method: "POST", path: "/api/settings" },
+  { method: "POST", path: "/api/settings/confirm-sensitive-change" },
+  { method: "PUT", path: "/api/settings/permission-policy" },
+  { method: "POST", pathPrefix: "/api/settings/permission-policy/rules" },
+  { method: "DELETE", pathPrefix: "/api/settings/permission-policy/rules" },
+  { method: "POST", path: "/api/settings/permission-policy/confirm-relaxation" }
 ] as const;

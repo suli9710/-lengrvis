@@ -48,8 +48,6 @@ def test_default_allowed_tools_are_controlled_and_do_not_include_unrestricted_ba
         "Read",
         "Grep",
         "Glob",
-        "Edit",
-        "Write",
         "Bash(git status:*)",
         "Bash(git diff:*)",
         "Bash(git log:*)",
@@ -58,9 +56,9 @@ def test_default_allowed_tools_are_controlled_and_do_not_include_unrestricted_ba
         "Bash(python -m pytest:*)",
         "Bash(npm test:*)",
         "Bash(pnpm test:*)",
-        "Agent",
     )
     assert validate_allowed_tools(tools) == tools
+    assert "Agent" not in tools
 
 
 @pytest.mark.parametrize(
@@ -71,6 +69,10 @@ def test_default_allowed_tools_are_controlled_and_do_not_include_unrestricted_ba
         "Bash(git commit:*)",
         "Bash(rm:*)",
         "Bash(npm install:*)",
+        "Edit",
+        "Write",
+        "Agent",
+        "Agent(subagent:*)",
     ],
 )
 def test_allowed_tools_reject_unsafe_bash(tool: str) -> None:
@@ -92,10 +94,13 @@ def test_command_uses_stream_json_allowed_tools_and_never_skip_permissions(tmp_p
     assert "--add-dir" in command
     assert command[command.index("--add-dir") + 1] == str(tmp_path.resolve())
     assert "--permission-mode" in command
-    assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+    assert command[command.index("--permission-mode") + 1] == "default"
     assert "--allowedTools" in command
     allowed_tools = command[command.index("--allowedTools") + 1]
-    assert "Read,Grep,Glob,Edit,Write" in allowed_tools
+    assert "Read,Grep,Glob" in allowed_tools
+    assert "Edit" not in allowed_tools
+    assert "Write" not in allowed_tools
+    assert "Agent" not in allowed_tools
     assert "Bash(*)" not in allowed_tools
     assert "--dangerously-skip-permissions" not in command
     assert command[command.index("--max-turns") + 1] == "3"

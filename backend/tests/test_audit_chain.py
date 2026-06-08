@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.core import db
 from app.core.audit import record
@@ -143,3 +145,38 @@ def test_audit_verify_route(monkeypatch, tmp_path):
     assert payload["checked"] == 1
     assert payload["last_event_id"]
     assert payload["failure_reason"] == ""
+
+
+def test_audit_hmac_secret_is_generated_and_reused(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
+    db.init_db()
+
+    first = record("security.local_secret_first", "pytest", {"ok": True})
+    secret_path = tmp_path / db.AUDIT_HMAC_SECRET_FILE
+    stored_secret = secret_path.read_text(encoding="utf-8").strip()
+    second = record("security.local_secret_second", "pytest", {"ok": True})
+
+    assert secret_path.exists()
+    assert len(stored_secret) == 64
+    assert first.hmac
+    assert second.hmac
+    assert secret_path.read_text(encoding="utf-8").strip() == stored_secret
+    assert db.verify_audit_log()["ok"] is True
+
+
+def test_audit_hmac_secret_unavailable_does_not_fall_back_to_empty_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
+    db.init_db()
+    original_write_text = Path.write_text
+
+    def fail_audit_secret_write(self, *args, **kwargs):  # noqa: ANN001, ANN202
+        if self.name == db.AUDIT_HMAC_SECRET_FILE:
+            raise OSError("blocked audit secret write")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_audit_secret_write)
+
+    with pytest.raises(RuntimeError, match="Audit HMAC secret is unavailable"):
+        record("security.no_empty_secret", "pytest", {"ok": True})

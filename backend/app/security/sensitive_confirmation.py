@@ -22,6 +22,7 @@ SENSITIVE_ENABLE_SETTINGS = {
     "allow_cloud_context",
     "allow_file_content_upload",
 }
+LLM_EGRESS_SETTINGS = {"base_url", "provider_name", "wire_api"}
 _TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS sensitive_confirmations (
     nonce TEXT PRIMARY KEY,
@@ -65,6 +66,18 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         new_value = _truthy(payload.get("requires_openai_auth"))
         if old_value and not new_value:
             changes.append({"kind": "settings_disable_auth", "key": "requires_openai_auth", "from": old_value, "to": new_value})
+    for key in sorted(LLM_EGRESS_SETTINGS):
+        if key not in payload:
+            continue
+        old_value = _normalized_setting_value(key, getattr(settings, key, ""))
+        new_value = _normalized_setting_value(key, payload.get(key))
+        if old_value != new_value:
+            changes.append({"kind": "settings_llm_egress_change", "key": key, "from": old_value, "to": new_value})
+    if "mode" in payload:
+        old_mode = _normalized_setting_value("mode", getattr(settings, "mode", ""))
+        new_mode = _normalized_setting_value("mode", payload.get("mode"))
+        if old_mode != new_mode and new_mode != "privacy":
+            changes.append({"kind": "settings_llm_egress_change", "key": "mode", "from": old_mode, "to": new_mode})
     if "allowed_directories" in payload:
         additions = _added_values(getattr(settings, "allowed_directories", []) or [], payload.get("allowed_directories") or [])
         if additions:
@@ -145,6 +158,13 @@ def _create_confirmation(scope: str, changes: list[dict[str, Any]]) -> dict[str,
         "expires_at": expires_at.isoformat(),
         "changes": changes,
     }
+
+
+def _normalized_setting_value(key: str, value: Any) -> str:
+    text = str(value or "").strip()
+    if key in {"mode", "provider_name", "wire_api"}:
+        return text.lower()
+    return text
 
 
 def _consume_confirmation(nonce: str, scope: str, changes: list[dict[str, Any]]) -> None:

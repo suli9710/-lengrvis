@@ -1,6 +1,7 @@
 import type {
   AgentConversation,
   ApiRequest,
+  ApiQueryValue,
   ApiResponse,
   AppSettings,
   ApprovalDecision,
@@ -29,6 +30,7 @@ import type {
   CleanupScanRequest,
   ContextUsage,
   DesktopWebSocketSubscribeRequest,
+  DiagnosticExportResult,
   DocumentAskRequest,
   DocumentAskResponse,
   DocumentCitation,
@@ -73,6 +75,7 @@ import type {
   TaskExplainReview,
   TaskExplainStep
 } from "../../shared/types";
+import type { DesktopMobilePairingCode } from "../../shared/mobilePairingPayload";
 import {
   zhApprovalType,
   zhBackendTaskStatus,
@@ -83,7 +86,7 @@ import {
   zhUserFacingError
 } from "./zh";
 
-const FALLBACK_BACKEND_URL = "http://127.0.0.1:8000";
+export const FALLBACK_BACKEND_URL = "http://127.0.0.1:8000";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const WS_RETRY_DELAY_MS = 2_500;
 
@@ -118,6 +121,29 @@ export interface JsonRealtimeHandlers<TMessage> {
   onBadMessage?: (status: RealtimeConnectionStatus & { state: "bad_message"; rawMessage: string }) => void;
 }
 
+export interface LocalModelInstallRequest {
+  model?: string;
+}
+
+export interface LocalModelInstallResponse {
+  ok?: boolean;
+  model?: string;
+  message?: string;
+  error?: string;
+  progress?: unknown;
+  final?: unknown;
+}
+
+export interface OllamaActionResponse {
+  ok?: boolean;
+  model?: string;
+  message?: string;
+  error?: string;
+  source?: string;
+  executable?: string;
+  models_dir?: string;
+}
+
 export class LengrvisApiClient {
   private lastLoadedSettings: AppSettings | null = null;
 
@@ -145,6 +171,26 @@ export class LengrvisApiClient {
       };
     }
     return window.lengrvis.backend.getStatus();
+  }
+
+  async probeBackendHealth(baseUrl?: string): Promise<BackendStatus | null> {
+    const startedAt = Date.now();
+    const backendBaseUrl = getBackendBaseUrl(baseUrl);
+    const health = await requestBackendDirect<{ status?: string }>(backendBaseUrl, {
+      endpoint: "/api/health",
+      timeoutMs: 1500
+    });
+    if (!health.ok) return null;
+    return {
+      state: "running",
+      baseUrl: backendBaseUrl,
+      message: "后端已响应任务请求",
+      lastCheckedAt: new Date().toISOString(),
+      health: {
+        ok: true,
+        latencyMs: Date.now() - startedAt
+      }
+    };
   }
 
   startBackend(): Promise<BackendStatus> {
@@ -226,15 +272,19 @@ export class LengrvisApiClient {
   }
 
   startRun(body: ChatRequest): Promise<ApiResponse<ChatResponse>> {
-    return this.request<BackendRunCreateResponse, BackendRunCreateRequest>({
-      endpoint: "/api/runs",
-      method: "POST",
-      body: {
-        message: body.content,
-        mode: body.mode ?? "efficiency",
-        engine: "auto"
-      }
-    }).then((response) =>
+    const requestBody: BackendRunCreateRequest = {
+      message: body.content,
+      mode: body.mode ?? "efficiency",
+      engine: "auto"
+    };
+    const responsePromise = window.lengrvis?.runs
+      ? window.lengrvis.runs.start(requestBody) as Promise<ApiResponse<BackendRunCreateResponse>>
+      : this.request<BackendRunCreateResponse, BackendRunCreateRequest>({
+          endpoint: "/api/runs",
+          method: "POST",
+          body: requestBody
+        });
+    return responsePromise.then((response) =>
       mapResponse(response, (data) => ({
         runId: data.run_id,
         engine: data.engine,
@@ -592,6 +642,54 @@ export class LengrvisApiClient {
     }).then((response) => mapResponse(response, mapLocalModelSetupPlan));
   }
 
+  installLocalModel(request: LocalModelInstallRequest = {}): Promise<ApiResponse<LocalModelInstallResponse>> {
+    const body = compactLocalModelRequest(request);
+    if (window.lengrvis?.localModel) {
+      return window.lengrvis.localModel.install(body) as Promise<ApiResponse<LocalModelInstallResponse>>;
+    }
+    return this.request<LocalModelInstallResponse, LocalModelInstallRequest>({
+      endpoint: "/api/settings/install-local-model",
+      method: "POST",
+      body,
+      timeoutMs: 120_000
+    });
+  }
+
+  installOllama(): Promise<ApiResponse<OllamaActionResponse>> {
+    if (window.lengrvis?.ollama) {
+      return window.lengrvis.ollama.install() as Promise<ApiResponse<OllamaActionResponse>>;
+    }
+    return this.request<OllamaActionResponse>({
+      endpoint: "/api/settings/ollama/install",
+      method: "POST",
+      timeoutMs: 120_000
+    });
+  }
+
+  startOllama(): Promise<ApiResponse<OllamaActionResponse>> {
+    if (window.lengrvis?.ollama) {
+      return window.lengrvis.ollama.start() as Promise<ApiResponse<OllamaActionResponse>>;
+    }
+    return this.request<OllamaActionResponse>({
+      endpoint: "/api/settings/ollama/start",
+      method: "POST",
+      timeoutMs: 30_000
+    });
+  }
+
+  pullOllama(model?: string): Promise<ApiResponse<OllamaActionResponse>> {
+    const body = compactLocalModelRequest({ model });
+    if (window.lengrvis?.ollama) {
+      return window.lengrvis.ollama.pull(body) as Promise<ApiResponse<OllamaActionResponse>>;
+    }
+    return this.request<OllamaActionResponse, LocalModelInstallRequest>({
+      endpoint: "/api/settings/ollama/pull",
+      method: "POST",
+      body,
+      timeoutMs: 120_000
+    });
+  }
+
   getLlmHealth(): Promise<ApiResponse<LLMHealthStatus>> {
     return this.request<BackendLlmHealth>({
       endpoint: "/api/settings/llm/health",
@@ -671,19 +769,24 @@ export class LengrvisApiClient {
 
   async saveSettings(settings: AppSettings): Promise<ApiResponse<AppSettings>> {
     const body = settingsPatchFor(settings, this.lastLoadedSettings);
-    const confirmation = await this.request<SensitiveChangeConfirmation, Partial<BackendSettings>>({
-      endpoint: "/api/settings/confirm-sensitive-change",
-      method: "POST",
-      body
-    });
+    const confirmation = window.lengrvis?.settings
+      ? await window.lengrvis.settings.confirmSensitiveChange(body as Record<string, unknown>) as ApiResponse<SensitiveChangeConfirmation>
+      : await this.request<SensitiveChangeConfirmation, Partial<BackendSettings>>({
+          endpoint: "/api/settings/confirm-sensitive-change",
+          method: "POST",
+          body
+        });
     if (confirmation.ok && confirmation.data?.required && confirmation.data.nonce) {
       body.confirmation_nonce = confirmation.data.nonce;
     }
-    return this.request<BackendSettings, Partial<BackendSettings>>({
-      endpoint: "/api/settings",
-      method: "POST",
-      body
-    }).then((response) => {
+    const responsePromise = window.lengrvis?.settings
+      ? window.lengrvis.settings.save(body as Record<string, unknown>) as Promise<ApiResponse<BackendSettings>>
+      : this.request<BackendSettings, Partial<BackendSettings>>({
+          endpoint: "/api/settings",
+          method: "POST",
+          body
+        });
+    return responsePromise.then((response) => {
       const mapped = mapResponse(response, mapSettings);
       if (mapped.ok && mapped.data) {
         mapped.data = mergeDesktopOnlySettings(mapped.data, settings);
@@ -694,6 +797,11 @@ export class LengrvisApiClient {
   }
 
   async confirmPermissionRuleChange(rule: BackendPermissionRule): Promise<ApiResponse<SensitiveChangeConfirmation>> {
+    if (window.lengrvis?.permissionPolicy) {
+      return window.lengrvis.permissionPolicy.confirmRelaxation({ action: "upsert_rule", rule }) as Promise<
+        ApiResponse<SensitiveChangeConfirmation>
+      >;
+    }
     return this.request<SensitiveChangeConfirmation, { action: string; rule: BackendPermissionRule }>({
       endpoint: "/api/settings/permission-policy/confirm-relaxation",
       method: "POST",
@@ -702,10 +810,40 @@ export class LengrvisApiClient {
   }
 
   async confirmPermissionRuleDelete(ruleId: string): Promise<ApiResponse<SensitiveChangeConfirmation>> {
+    if (window.lengrvis?.permissionPolicy) {
+      return window.lengrvis.permissionPolicy.confirmRelaxation({ action: "delete_rule", ruleId }) as Promise<
+        ApiResponse<SensitiveChangeConfirmation>
+      >;
+    }
     return this.request<SensitiveChangeConfirmation, { action: string; rule_id: string }>({
       endpoint: "/api/settings/permission-policy/confirm-relaxation",
       method: "POST",
       body: { action: "delete_rule", rule_id: ruleId }
+    });
+  }
+
+  upsertPermissionRule(rule: BackendPermissionRule, confirmationNonce?: string): Promise<ApiResponse<BackendPermissionPolicy>> {
+    if (window.lengrvis?.permissionPolicy) {
+      return window.lengrvis.permissionPolicy.upsertRule({ rule, confirmationNonce }) as Promise<ApiResponse<BackendPermissionPolicy>>;
+    }
+    return this.request<BackendPermissionPolicy, BackendPermissionRule>({
+      endpoint: "/api/settings/permission-policy/rules",
+      method: "POST",
+      query: confirmationNonce ? { confirmation_nonce: confirmationNonce } : undefined,
+      body: rule
+    });
+  }
+
+  deletePermissionRule(ruleId: string, confirmationNonce?: string): Promise<ApiResponse<{ ok: boolean; policy: BackendPermissionPolicy }>> {
+    if (window.lengrvis?.permissionPolicy) {
+      return window.lengrvis.permissionPolicy.deleteRule({ ruleId, confirmationNonce }) as Promise<
+        ApiResponse<{ ok: boolean; policy: BackendPermissionPolicy }>
+      >;
+    }
+    return this.request<{ ok: boolean; policy: BackendPermissionPolicy }>({
+      endpoint: `/api/settings/permission-policy/rules/${encodeURIComponent(ruleId)}`,
+      method: "DELETE",
+      query: confirmationNonce ? { confirmation_nonce: confirmationNonce } : undefined
     });
   }
 
@@ -739,7 +877,7 @@ export class LengrvisApiClient {
         nodeVersion: window.lengrvis?.versions.node ?? "未知",
         platform: info.system ?? info.platform ?? window.lengrvis?.platform ?? "未知",
         arch: info.machine ?? "未知",
-        backendBaseUrl: "http://127.0.0.1:8000",
+        backendBaseUrl: window.lengrvis?.backendBaseUrl ?? FALLBACK_BACKEND_URL,
         diagnostics: diagnosticsResponse.ok && diagnosticsResponse.data
           ? mapDiagnostic(diagnosticsResponse.data, startupResponse.data?.startup_items)
           : undefined,
@@ -754,6 +892,17 @@ export class LengrvisApiClient {
           : undefined
       }))
     );
+  }
+
+  exportDiagnosticsPackage(): Promise<ApiResponse<DiagnosticExportResult>> {
+    const request = window.lengrvis?.system
+      ? window.lengrvis.system.exportDiagnosticsPackage() as Promise<ApiResponse<BackendDiagnosticExportResult>>
+      : this.request<BackendDiagnosticExportResult>({
+          endpoint: "/api/system/diagnostics/export",
+          method: "POST",
+          timeoutMs: 10_000
+        });
+    return request.then((response) => mapResponse(response, mapDiagnosticExportResult));
   }
 
   listApps(): Promise<ApiResponse<InstalledApp[]>> {
@@ -771,42 +920,75 @@ export class LengrvisApiClient {
     }).then((response) => mapResponse(response, mapFileRevealResult));
   }
 
+  async showItemInFolder(path: string): Promise<ApiResponse<FileRevealResult>> {
+    if (!window.lengrvis?.shell.showItemInFolder) {
+      return this.revealFile(path);
+    }
+    const receivedAt = new Date().toISOString();
+    try {
+      const result = await window.lengrvis.shell.showItemInFolder(path);
+      return {
+        ok: result.ok,
+        status: result.ok ? 200 : 400,
+        data: result,
+        error: result.ok ? undefined : { message: result.error ?? "无法打开所在位置" },
+        receivedAt
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        error: { message: zhUserFacingError(error instanceof Error ? error.message : "无法打开所在位置") },
+        receivedAt
+      };
+    }
+  }
+
   parseDocument(body: DocumentParseRequest): Promise<ApiResponse<DocumentIR>> {
-    return this.request<BackendDocumentIR, BackendDocumentParseRequest>({
-      endpoint: "/api/documents/parse",
-      method: "POST",
-      body: {
-        path: body.path,
-        include_text: body.includeText
-      },
-      timeoutMs: 30_000
-    }).then((response) => mapResponse(response, mapDocumentIR));
+    const request = window.lengrvis?.documents
+      ? window.lengrvis.documents.parse(body) as Promise<ApiResponse<BackendDocumentIR>>
+      : this.request<BackendDocumentIR, BackendDocumentParseRequest>({
+          endpoint: "/api/documents/parse",
+          method: "POST",
+          body: {
+            path: body.path,
+            include_text: body.includeText
+          },
+          timeoutMs: 30_000
+        });
+    return request.then((response) => mapResponse(response, mapDocumentIR));
   }
 
   askDocument(body: DocumentAskRequest): Promise<ApiResponse<DocumentAskResponse>> {
-    return this.request<BackendDocumentAskResponse, BackendDocumentAskRequest>({
-      endpoint: "/api/documents/ask",
-      method: "POST",
-      body: {
-        path: body.path,
-        document_id: body.documentId,
-        question: body.question,
-        top_k: body.topK
-      },
-      timeoutMs: 30_000
-    }).then((response) => mapResponse(response, mapDocumentAskResponse));
+    const request = window.lengrvis?.documents
+      ? window.lengrvis.documents.ask(body) as Promise<ApiResponse<BackendDocumentAskResponse>>
+      : this.request<BackendDocumentAskResponse, BackendDocumentAskRequest>({
+          endpoint: "/api/documents/ask",
+          method: "POST",
+          body: {
+            path: body.path,
+            document_id: body.documentId,
+            question: body.question,
+            top_k: body.topK
+          },
+          timeoutMs: 30_000
+        });
+    return request.then((response) => mapResponse(response, mapDocumentAskResponse));
   }
 
   compareDocuments(body: DocumentCompareRequest): Promise<ApiResponse<DocumentCompareResponse>> {
-    return this.request<BackendDocumentCompareResponse, BackendDocumentCompareRequest>({
-      endpoint: "/api/documents/compare",
-      method: "POST",
-      body: {
-        paths: body.paths,
-        focus: body.focus
-      },
-      timeoutMs: 45_000
-    }).then((response) => mapResponse(response, mapDocumentCompareResponse));
+    const request = window.lengrvis?.documents
+      ? window.lengrvis.documents.compare(body) as Promise<ApiResponse<BackendDocumentCompareResponse>>
+      : this.request<BackendDocumentCompareResponse, BackendDocumentCompareRequest>({
+          endpoint: "/api/documents/compare",
+          method: "POST",
+          body: {
+            paths: body.paths,
+            focus: body.focus
+          },
+          timeoutMs: 45_000
+        });
+    return request.then((response) => mapResponse(response, mapDocumentCompareResponse));
   }
 
   scanCleanup(body: CleanupScanRequest = {}): Promise<ApiResponse<CleanupPlan>> {
@@ -1424,22 +1606,142 @@ async function requestBackendDirect<TResponse, TBody = unknown>(
 }
 
 function buildRequestUrl(baseUrl: string, request: ApiRequest): URL {
-  if (/^https?:\/\//i.test(request.endpoint)) {
-    throw new Error("Renderer API requests must use backend-relative endpoints");
+  const url = buildRendererLoopbackBackendApiUrl(baseUrl, request.endpoint, request.query);
+  if (!url) {
+    throw new Error("Renderer direct backend requests require a loopback HTTP(S) backend");
   }
-
-  const normalizedEndpoint = request.endpoint.startsWith("/") ? request.endpoint : `/${request.endpoint}`;
-  const url = new URL(normalizedEndpoint, baseUrl);
-  for (const [key, value] of Object.entries(request.query ?? {})) {
-    if (value !== null && value !== undefined) {
-      url.searchParams.set(key, String(value));
-    }
-  }
-  return url;
+  return new URL(url);
 }
 
-function getBackendBaseUrl(): string {
-  return window.lengrvis?.backendBaseUrl ?? FALLBACK_BACKEND_URL;
+function getBackendBaseUrl(baseUrl?: string): string {
+  return normalizeRendererLoopbackBackendBaseUrl(baseUrl ?? window.lengrvis?.backendBaseUrl) ?? FALLBACK_BACKEND_URL;
+}
+
+export function normalizeRendererLoopbackBackendBaseUrl(baseUrl?: string): string | null {
+  const candidate = typeof baseUrl === "string" && baseUrl.trim() ? baseUrl.trim() : FALLBACK_BACKEND_URL;
+  try {
+    const url = new URL(candidate);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    if (!isRendererLoopbackHostname(url.hostname)) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+export function buildRendererLoopbackBackendApiUrl(
+  baseUrl: string | undefined,
+  endpoint: string,
+  query?: Record<string, ApiQueryValue>
+): string | null {
+  const backendBaseUrl = normalizeRendererLoopbackBackendBaseUrl(baseUrl);
+  if (!backendBaseUrl) return null;
+
+  const safeEndpoint = validateRendererBackendRelativeEndpoint(endpoint, ["/api"]);
+  const url = new URL(safeEndpoint, backendBaseUrl);
+  if (url.origin !== new URL(backendBaseUrl).origin) return null;
+  appendRendererBackendQuery(url, query);
+  return url.toString();
+}
+
+export function absoluteRendererLoopbackBackendUrl(pathOrUrl: string, baseUrl?: string): string {
+  if (!pathOrUrl) return "";
+  const backendBaseUrl = normalizeRendererLoopbackBackendBaseUrl(baseUrl);
+  if (!backendBaseUrl) return "";
+  try {
+    const url = new URL(pathOrUrl, backendBaseUrl);
+    if (url.origin !== new URL(backendBaseUrl).origin) return "";
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    if (!isRendererLoopbackHostname(url.hostname)) return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+export function buildRendererLoopbackBackendWebSocketUrl(
+  baseUrl: string | undefined,
+  endpoint: string,
+  query?: Record<string, ApiQueryValue>
+): string | null {
+  const backendBaseUrl = normalizeRendererLoopbackBackendBaseUrl(baseUrl);
+  if (!backendBaseUrl) return null;
+
+  const safeEndpoint = validateRendererBackendRelativeEndpoint(endpoint, ["/ws", "/api/ws"]);
+  const url = new URL(safeEndpoint, backendBaseUrl);
+  if (url.origin !== new URL(backendBaseUrl).origin) return null;
+  appendRendererBackendQuery(url, query);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
+}
+
+function validateRendererBackendRelativeEndpoint(endpoint: string, allowedRoots: readonly string[]): string {
+  if (typeof endpoint !== "string") {
+    throw new Error("Renderer backend endpoint is required");
+  }
+  if (!endpoint || endpoint.length > 512) {
+    throw new Error("Renderer backend endpoint length is invalid");
+  }
+  if (endpoint.trim() !== endpoint || /\s|[\u0000-\u001F\u007F]/.test(endpoint)) {
+    throw new Error("Renderer backend endpoint contains unsafe characters");
+  }
+  if (endpoint.includes("?") || endpoint.includes("#")) {
+    throw new Error("Renderer backend endpoint must not include query strings or fragments");
+  }
+  if (
+    !endpoint.startsWith("/") ||
+    endpoint.startsWith("//") ||
+    endpoint.includes("//") ||
+    endpoint.includes("\\") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(endpoint)
+  ) {
+    throw new Error("Renderer backend endpoints must be backend-relative");
+  }
+  if (/%2f|%5c/i.test(endpoint)) {
+    throw new Error("Renderer backend endpoint must not contain encoded path separators");
+  }
+
+  let decodedPath = "";
+  try {
+    decodedPath = decodeURIComponent(endpoint);
+  } catch {
+    throw new Error("Renderer backend endpoint encoding is invalid");
+  }
+  if (decodedPath.includes("\\") || decodedPath.includes("//")) {
+    throw new Error("Renderer backend endpoint contains unsafe path separators");
+  }
+  if (decodedPath.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new Error("Renderer backend endpoint contains unsafe path segments");
+  }
+  if (!allowedRoots.some((root) => decodedPath === root || decodedPath.startsWith(`${root}/`))) {
+    throw new Error("Renderer backend endpoint targets an unsupported backend path");
+  }
+  return endpoint;
+}
+
+function appendRendererBackendQuery(url: URL, query?: Record<string, ApiQueryValue>): void {
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value === null || value === undefined) continue;
+    if (!isSafeRendererBackendQueryKey(key)) {
+      throw new Error("Renderer backend query key is unsafe");
+    }
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      throw new Error("Renderer backend query value must be finite");
+    }
+    if (!["string", "number", "boolean"].includes(typeof value)) {
+      throw new Error("Renderer backend query values must be primitive");
+    }
+    url.searchParams.set(key, String(value));
+  }
+}
+
+function isSafeRendererBackendQueryKey(key: string): boolean {
+  return !["__proto__", "constructor", "prototype"].includes(key) && /^[A-Za-z0-9_.:-]{1,96}$/.test(key);
+}
+
+function isRendererLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "::1" || normalized === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(normalized);
 }
 
 function subscribeJsonRealtime<TMessage>(
@@ -1461,11 +1763,19 @@ function subscribeJsonRealtime<TMessage>(
     return () => undefined;
   }
 
-  return subscribeWebOnlyDevJsonStream(buildWebSocketUrlFromEndpoint(getBackendBaseUrl(), request), request, handlers);
+  const url = buildRendererLoopbackBackendWebSocketUrl(getBackendBaseUrl(), request.endpoint, request.query);
+  if (!url) {
+    emitRealtimeStatus(request, handlers, "error", {
+      message: "Renderer web-only realtime fallback requires a loopback backend"
+    });
+    return () => undefined;
+  }
+
+  return subscribeWebOnlyDevJsonStream(url, request, handlers);
 }
 
 function isWebOnlyDevRealtimeFallbackEnabled(): boolean {
-  return !window.lengrvis?.realtime && import.meta.env.DEV;
+  return !window.lengrvis && import.meta.env.DEV;
 }
 
 function subscribeDesktopJsonStream<TMessage>(
@@ -1704,21 +2014,8 @@ function rawRealtimeMessage(value: unknown): string {
   return String(value);
 }
 
-function buildWebSocketUrlFromEndpoint(baseUrl: string, request: DesktopWebSocketSubscribeRequest): string {
-  const url = new URL(request.endpoint, baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  for (const [key, value] of Object.entries(request.query ?? {})) {
-    if (value !== null && value !== undefined) {
-      url.searchParams.set(key, String(value));
-    }
-  }
-  return url.toString();
-}
-
 function buildBrowserSessionWebSocketUrl(baseUrl: string, sessionId: string): string {
-  const url = new URL(`/api/ws/browser/sessions/${encodeURIComponent(sessionId)}`, baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
+  return buildRendererLoopbackBackendWebSocketUrl(baseUrl, `/api/ws/browser/sessions/${encodeURIComponent(sessionId)}`) ?? "";
 }
 
 function makeWebSocketErrorEvent(message?: string): Event {
@@ -1763,6 +2060,11 @@ function mapResponse<TInput, TOutput>(
     data: mapper(response.data),
     receivedAt: response.receivedAt
   };
+}
+
+function compactLocalModelRequest(request: LocalModelInstallRequest): LocalModelInstallRequest {
+  const model = String(request.model ?? "").trim();
+  return model ? { model } : {};
 }
 
 function mapTaskState(status: string): TaskEvent["state"] {
@@ -2410,9 +2712,8 @@ function dedupeFrames<TFrame extends { phase: string; capturedAt: string; url?: 
   return result;
 }
 
-function absoluteBackendUrl(path: string): string {
-  if (/^https?:\/\//i.test(path)) return path;
-  return new URL(path, getBackendBaseUrl()).toString();
+function absoluteBackendUrl(path: string): string | undefined {
+  return absoluteRendererLoopbackBackendUrl(path, getBackendBaseUrl()) || undefined;
 }
 
 function mapAgentKind(kind?: string): NonNullable<AgentConversation["messages"][number]["kind"]> {
@@ -3097,6 +3398,7 @@ function mapFileRevealResult(result: BackendFileRevealResult): FileRevealResult 
     ok: result.ok !== false,
     path: optionalString(result.path),
     revealed: Boolean(result.revealed),
+    shown: Boolean(result.shown ?? result.revealed),
     error: optionalString(result.error)
   };
 }
@@ -3135,8 +3437,12 @@ function mapInstalledSkill(skill: BackendInstalledSkill): InstalledSkill {
       description: String(tool.description ?? ""),
       agentOwner: String(tool.agent_owner ?? ""),
       risk: String(tool.risk ?? ""),
+      permissions: Array.isArray(tool.permissions) ? tool.permissions.map(String) : [],
       executionType: String(tool.execution_type ?? ""),
-      entry: String(tool.entry ?? "")
+      entry: String(tool.entry ?? ""),
+      supportsDryRun: Boolean(tool.supports_dry_run),
+      requiresAuthorizedPath: Boolean(tool.requires_authorized_path),
+      rollbackHint: String(tool.rollback_hint ?? "")
     })),
     safety: {
       ok: Boolean(skill.safety?.ok),
@@ -3252,8 +3558,67 @@ function mapDiagnostic(data: BackendSystemDiagnostics, startupItems?: BackendSta
     battery: data.battery,
     topProcesses: (data.top_processes ?? []).map(mapProcess),
     startupItems: (startupItems ?? []).map(mapStartupItem),
-    suggestions: (data.suggestions ?? []).map(zhBackendText)
+    suggestions: (data.suggestions ?? []).map(zhBackendText),
+    product: data.product
+      ? {
+          name: data.product.name ? String(data.product.name) : undefined,
+          version: data.product.version ? String(data.product.version) : undefined
+        }
+      : undefined,
+    updateChannel: data.update_channel
+      ? {
+          configured: Boolean(data.update_channel.configured),
+          status: data.update_channel.status ? String(data.update_channel.status) : undefined,
+          label: data.update_channel.label ? String(data.update_channel.label) : undefined,
+          detail: data.update_channel.detail ? String(data.update_channel.detail) : undefined,
+          checkAction: data.update_channel.check_action ? String(data.update_channel.check_action) : undefined,
+          offlineOnly: data.update_channel.offline_only === undefined ? undefined : Boolean(data.update_channel.offline_only)
+        }
+      : undefined,
+    localPaths: data.local_paths
+      ? {
+          dataDir: data.local_paths.data_dir ? String(data.local_paths.data_dir) : undefined,
+          database: data.local_paths.database ? String(data.local_paths.database) : undefined,
+          logDirs: (data.local_paths.log_dirs ?? []).map(String)
+        }
+      : undefined,
+    audit: data.audit
+      ? {
+          verification: plainRecord(data.audit.verification),
+          latestEvent: plainRecord(data.audit.latest_event) ?? null
+        }
+      : undefined,
+    lanTransport: plainRecord(data.lan_transport),
+    recentCounts: numberRecord(data.recent_counts),
+    recentFailureCounts: numberRecord(data.recent_failure_counts),
+    diagnosticHints: (data.diagnostic_hints ?? []).map(zhBackendText),
+    diagnosticScope: data.diagnostic_scope ? String(data.diagnostic_scope) : undefined
   };
+}
+
+function mapDiagnosticExportResult(data: BackendDiagnosticExportResult): DiagnosticExportResult {
+  return {
+    ok: data.ok !== false,
+    path: String(data.path ?? ""),
+    filename: String(data.filename ?? ""),
+    createdAt: String(data.created_at ?? ""),
+    bytes: Number(data.bytes ?? 0),
+    scope: String(data.scope ?? "local_only"),
+    error: data.error ? String(data.error) : undefined
+  };
+}
+
+function plainRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+
+function numberRecord(value: Record<string, unknown> | undefined): Record<string, number> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, item]) => [key, Number(item)] as const)
+      .filter(([, item]) => Number.isFinite(item))
+  );
 }
 
 function formatDiffPreview(diffPreview: unknown): string {
@@ -3499,7 +3864,7 @@ interface BackendChatResponse {
 
 interface BackendRunCreateRequest {
   message: string;
-  mode: string;
+  mode: "privacy" | "efficiency" | "hybrid";
   engine: "auto" | "os" | "developer";
 }
 
@@ -4031,22 +4396,7 @@ interface BackendCleanupExecutionResult {
   errors?: unknown;
 }
 
-export interface MobilePairingCode {
-  code: string;
-  expires_at: string;
-  expires_in: number;
-  server: {
-    host: string;
-    port: number;
-    scheme?: string;
-    origin?: string;
-    transport_security?: Record<string, unknown>;
-  };
-  server_origin?: string;
-  transport_security?: Record<string, unknown>;
-  https_enabled?: boolean;
-  trust_required?: boolean;
-}
+export interface MobilePairingCode extends DesktopMobilePairingCode {}
 
 export interface MobileDevice {
   device_id: string;
@@ -4240,6 +4590,11 @@ interface SensitiveChangeConfirmation {
   nonce?: string;
   expires_at?: string;
   changes?: Array<Record<string, unknown>>;
+}
+
+interface BackendPermissionPolicy {
+  rules?: BackendPermissionRule[];
+  updated_at?: string;
 }
 
 interface BackendPermissionRule {
@@ -4794,6 +5149,7 @@ interface BackendFileRevealResult {
   ok?: boolean;
   path?: string;
   revealed?: boolean;
+  shown?: boolean;
   error?: string;
 }
 
@@ -4842,6 +5198,42 @@ interface BackendSystemDiagnostics {
   battery?: Record<string, unknown> | null;
   top_processes?: BackendProcess[];
   suggestions?: string[];
+  product?: {
+    name?: string;
+    version?: string;
+  };
+  update_channel?: {
+    configured?: boolean;
+    status?: string;
+    label?: string;
+    detail?: string;
+    check_action?: string;
+    offline_only?: boolean;
+  };
+  local_paths?: {
+    data_dir?: string;
+    database?: string;
+    log_dirs?: string[];
+  };
+  audit?: {
+    verification?: Record<string, unknown>;
+    latest_event?: Record<string, unknown> | null;
+  };
+  lan_transport?: Record<string, unknown>;
+  recent_counts?: Record<string, unknown>;
+  recent_failure_counts?: Record<string, unknown>;
+  diagnostic_hints?: string[];
+  diagnostic_scope?: string;
+}
+
+interface BackendDiagnosticExportResult {
+  ok?: boolean;
+  path?: string;
+  filename?: string;
+  created_at?: string;
+  bytes?: number;
+  scope?: string;
+  error?: string;
 }
 
 interface BackendBrowserLink {
@@ -4948,9 +5340,13 @@ interface BackendSkillTool {
   description?: string;
   agent_owner?: string;
   risk?: string;
+  permissions?: unknown[];
   input_schema?: unknown;
   execution_type?: string;
   entry?: string;
+  supports_dry_run?: boolean;
+  requires_authorized_path?: boolean;
+  rollback_hint?: string;
 }
 
 interface BackendSkillSafetyIssue {

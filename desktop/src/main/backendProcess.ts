@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { cwd as getCwd } from "node:process";
 
 import type { BackendStatus } from "../shared/types";
+import { assertLoopbackBackendUrl } from "./backendUrl";
 import { resolveDesktopApiToken } from "./desktopApiToken";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
@@ -14,6 +15,26 @@ const RUNTIME_STATUS_ENDPOINT = "/api/runtime/status";
 const RUNTIME_FOREGROUND_ENDPOINT = "/api/runtime/foreground";
 const RUNTIME_BACKGROUND_ENDPOINT = "/api/runtime/background";
 const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
+const REDACTED_LOG_VALUE = "[redacted]";
+const SENSITIVE_LOG_KEY_PATTERN =
+  "x-lengrvis-desktop-token|authorization|cookie|set-cookie|api[_-]?key|apikey|desktop[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|oauth[_-]?token|client[_-]?secret|token|secret|password|passwd|pwd|jwt|session(?:[_-]?id)?|otp|passcode|one[_-]?time[_-]?code|verification[_-]?code";
+const SENSITIVE_URL_PARAM_PATTERN =
+  "access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|oauth[_-]?token|desktop[_-]?token|token|api[_-]?key|apikey|key|client[_-]?secret|secret|password|passwd|pwd|authorization|auth|cookie|session(?:[_-]?id)?|jwt|code|otp|passcode|one[_-]?time[_-]?code|verification[_-]?code";
+const URL_IN_TEXT_REGEX = /https?:\/\/[^\s'"<>]+/gi;
+const SENSITIVE_URL_PARAM_REGEX = new RegExp(`([?&#](?:${SENSITIVE_URL_PARAM_PATTERN})=)[^&#\\s]+`, "gi");
+const CLI_SECRET_ARG_REGEX = new RegExp(
+  `(--?(?:${SENSITIVE_LOG_KEY_PATTERN})\\b(?:=|\\s+|["']?\\s*,\\s*["']?))[^"',\\s\\]]+`,
+  "gi"
+);
+const KEY_VALUE_SECRET_REGEX = new RegExp(
+  `(["']?\\b(?:${SENSITIVE_LOG_KEY_PATTERN})\\b["']?\\s*[:=]\\s*["']?)(?:Bearer\\s+)?[^"',;\\s}&]+`,
+  "gi"
+);
+const AUTHORIZATION_HEADER_REGEX = /\b(Authorization)\s*:\s*[^\r\n]+/gi;
+const COOKIE_HEADER_REGEX = /\b(Set-Cookie|Cookie)\s*:\s*[^\r\n]+/gi;
+const BEARER_TOKEN_REGEX = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi;
+const OPENAI_KEY_REGEX = /\bsk-(?:proj-)?[A-Za-z0-9_-]{8,}\b/g;
+const PRIVATE_KEY_BLOCK_REGEX = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
 const DEFAULT_WINDOWS_SERVICE_NAMES = [
   "LengrvisBackend",
   "Lengrvis Backend",
@@ -184,7 +205,7 @@ export class BackendProcessManager {
         this.status = this.makeStatus("error", error.message);
       });
 
-      return this.refreshStatus("running", "后端进程已启动");
+      return this.refreshStatus("starting", "Backend process started; waiting for health check");
     } catch (error) {
       const message = error instanceof Error ? error.message : "无法启动后端进程";
       this.status = this.makeStatus("error", message);
@@ -223,7 +244,7 @@ export class BackendProcessManager {
       return this.start();
     }
 
-    const processState = this.child && !this.child.killed ? "running" : this.status.state;
+    const processState = this.child && !this.child.killed ? "starting" : this.status.state;
     return this.refreshStatus(processState, this.status.message);
   }
 
@@ -294,7 +315,11 @@ export class BackendProcessManager {
         runtime
       );
     } else {
-      this.status = this.makeStatus(fallbackState, fallbackMessage, health, runtime);
+      const state = fallbackState === "running" ? "starting" : fallbackState;
+      const message = fallbackState === "running" && !fallbackMessage
+        ? "Backend process is running; waiting for health check"
+        : fallbackMessage;
+      this.status = this.makeStatus(state, message, health, runtime);
     }
 
     return this.status;
@@ -318,10 +343,11 @@ export class BackendProcessManager {
   }
 
   private withRuntimeModeError(status: BackendStatus, mode: "foreground" | "background", error: Error): BackendStatus {
+    const message = redactBackendLogText(error.message);
     return {
       ...status,
-      message: `Backend stayed available, but could not enter ${mode} runtime mode: ${error.message}`,
-      runtimeModeError: error.message,
+      message: `Backend stayed available, but could not enter ${mode} runtime mode: ${message}`,
+      runtimeModeError: message,
       lastCheckedAt: new Date().toISOString()
     };
   }
@@ -437,11 +463,59 @@ function resolveResourcesDir(command: string): string {
   return packagedResourcesDir;
 }
 
-async function writeBackendLog(message: string): Promise<void> {
+export function redactBackendLogText(message: string): string {
+  return message
+    .replace(PRIVATE_KEY_BLOCK_REGEX, "[redacted:private-key]")
+    .replace(URL_IN_TEXT_REGEX, (match) => redactLogUrl(match))
+    .replace(AUTHORIZATION_HEADER_REGEX, `$1: ${REDACTED_LOG_VALUE}`)
+    .replace(COOKIE_HEADER_REGEX, `$1: ${REDACTED_LOG_VALUE}`)
+    .replace(CLI_SECRET_ARG_REGEX, `$1${REDACTED_LOG_VALUE}`)
+    .replace(KEY_VALUE_SECRET_REGEX, `$1${REDACTED_LOG_VALUE}`)
+    .replace(BEARER_TOKEN_REGEX, `Bearer ${REDACTED_LOG_VALUE}`)
+    .replace(OPENAI_KEY_REGEX, `sk-${REDACTED_LOG_VALUE}`);
+}
+
+function redactLogUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username) {
+      parsed.username = REDACTED_LOG_VALUE;
+    }
+    if (parsed.password) {
+      parsed.password = REDACTED_LOG_VALUE;
+    }
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (isSensitiveUrlParam(key)) {
+        parsed.searchParams.set(key, REDACTED_LOG_VALUE);
+      }
+    }
+    parsed.hash = redactLogUrlFragment(parsed.hash);
+    return parsed.toString();
+  } catch {
+    return redactLogUrlFragment(value.replace(SENSITIVE_URL_PARAM_REGEX, `$1${REDACTED_LOG_VALUE}`));
+  }
+}
+
+function redactLogUrlFragment(hash: string): string {
+  if (!hash) {
+    return hash;
+  }
+  return hash.replace(SENSITIVE_URL_PARAM_REGEX, `$1${REDACTED_LOG_VALUE}`);
+}
+
+function isSensitiveUrlParam(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[-.]/g, "_");
+  return /(?:^|_)(?:token|secret|password|passwd|pwd|authorization|auth|cookie|session|jwt|otp|passcode|code|key)(?:_|$)/.test(normalized)
+    || normalized === "apikey"
+    || normalized.endsWith("_api_key")
+    || normalized.endsWith("_client_secret");
+}
+
+export async function writeBackendLog(message: string): Promise<void> {
   try {
     const logDir = app.getPath("userData");
     await mkdir(logDir, { recursive: true });
-    await appendFile(join(logDir, "backend-process.log"), `[${new Date().toISOString()}] ${message}\n`, "utf8");
+    await appendFile(join(logDir, "backend-process.log"), `[${new Date().toISOString()}] ${redactBackendLogText(message)}\n`, "utf8");
   } catch {
     // Logging must never block app startup.
   }
@@ -545,7 +619,8 @@ async function probeRuntimeStatus(baseUrl: string): Promise<Partial<BackendStatu
 
 async function postRuntimeMode(baseUrl: string, endpoint: string, reason: string, desktopApiToken: string): Promise<Error | null> {
   try {
-    const response = await fetch(new URL(endpoint, baseUrl), {
+    const backendUrl = assertLoopbackBackendUrl(baseUrl, "Runtime mode desktop token request");
+    const response = await fetch(new URL(endpoint, backendUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json", [DESKTOP_API_TOKEN_HEADER]: desktopApiToken },
       body: JSON.stringify({ reason }),

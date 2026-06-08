@@ -8,12 +8,14 @@ import { Badge, Panel } from "./Panel";
 interface ChatPanelProps {
   messages: ChatMessage[];
   connectionState: "online" | "offline" | "checking";
-  onSend: (content: string) => Promise<unknown>;
+  onSend: (content: string) => Promise<SendResult>;
   onExecuteSuggestion?: (suggestion: IntentSuggestion) => Promise<void>;
   initialDraft?: string;
   autoFocus?: boolean;
   suggestions?: IntentSuggestion[];
 }
+
+type SendResult = { ok: boolean; error?: string } | void;
 
 export function ChatPanel({
   messages,
@@ -26,6 +28,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [draft, setDraft] = useState(initialDraft);
   const [isSending, setIsSending] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [executingSuggestionId, setExecutingSuggestionId] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const hasDraft = draft.trim().length > 0;
@@ -47,9 +50,19 @@ export function ChatPanel({
     }
 
     setDraft("");
+    setSubmitError(null);
     setIsSending(true);
     try {
-      await onSend(content);
+      const result = await onSend(content);
+      if (isSendFailure(result)) {
+        setDraft(content);
+        setSubmitError(result.error ?? "消息没有发送成功，输入内容已保留，可以稍后重试。");
+        window.setTimeout(() => inputRef.current?.focus(), 0);
+      }
+    } catch (error) {
+      setDraft(content);
+      setSubmitError(formatSendError(error));
+      window.setTimeout(() => inputRef.current?.focus(), 0);
     } finally {
       setIsSending(false);
     }
@@ -145,6 +158,8 @@ export function ChatPanel({
           }}
           placeholder="让 Lengrvis 帮你找文件、总结文档，或检查这台电脑。"
           rows={3}
+          aria-invalid={Boolean(submitError)}
+          aria-describedby={submitError ? "chat-composer-error" : undefined}
         />
         <button
           className="button button--primary composer__send"
@@ -154,9 +169,23 @@ export function ChatPanel({
           <Send size={16} aria-hidden="true" />
           {isSending ? "发送中" : "发送"}
         </button>
+        {submitError ? (
+          <p className="field-error composer__error" id="chat-composer-error" role="alert">
+            {submitError}
+          </p>
+        ) : null}
       </div>
     </Panel>
   );
+}
+
+function isSendFailure(result: SendResult): result is { ok: false; error?: string } {
+  return Boolean(result && typeof result === "object" && "ok" in result && !result.ok);
+}
+
+function formatSendError(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return zhUserFacingError(message || "消息没有发送成功，输入内容已保留，可以稍后重试。");
 }
 
 function MessageContent({ message }: { message: ChatMessage }) {

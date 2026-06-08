@@ -18,10 +18,34 @@ from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 
-def test_route_engine_auto_selects_developer_for_repo_goals() -> None:
-    decision = route_engine("fix failing backend pytest around planner imports")
+def test_route_engine_auto_selects_developer_for_read_only_repo_goals() -> None:
+    decision = route_engine("inspect repository git status")
 
     assert decision.selected_engine == "developer"
+    assert decision.requested_engine == "auto"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "fix failing backend pytest around planner imports",
+        "make failing pytest pass",
+        "address failing backend tests",
+        "rename module import",
+    ],
+)
+def test_route_engine_auto_selects_os_for_write_intent_repo_goals(goal: str) -> None:
+    decision = route_engine(goal)
+
+    assert decision.selected_engine == "os"
+    assert decision.requested_engine == "auto"
+    assert "write-intent" in decision.reason
+
+
+def test_route_engine_auto_write_intent_ignores_developer_fallback() -> None:
+    decision = route_engine("implement missing backend test coverage", fallback_engine="developer")
+
+    assert decision.selected_engine == "os"
     assert decision.requested_engine == "auto"
 
 
@@ -29,6 +53,14 @@ def test_route_engine_auto_selects_os_for_browser_goals() -> None:
     decision = route_engine("open the browser and click the account settings")
 
     assert decision.selected_engine == "os"
+
+
+def test_route_engine_auto_selects_os_for_chinese_system_diagnostics() -> None:
+    decision = route_engine("帮我检查这台电脑", fallback_engine="developer")
+
+    assert decision.selected_engine == "os"
+    assert decision.requested_engine == "auto"
+    assert "system diagnostics" in decision.reason
 
 
 def test_route_engine_explicit_override_wins() -> None:
@@ -84,11 +116,38 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 
     assert result.finished is True
     assert result.state.phase == RunPhase.COMPLETED
-    assert result.state.current_plan["writes_enabled"] is True
+    assert result.state.current_plan["writes_enabled"] is False
     assert result.state.current_plan["allowed_tools"] == list(default_allowed_tools())
     assert result.outputs["claude_code"]["ok"] is True
     assert result.outputs["claude_code"]["tool_events"][0]["name"] == "Read"
     assert result.state.observations[0].source == "claude_code.stream_json"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsafe_tool", ["Edit", "Agent"])
+async def test_developer_engine_rejects_write_capable_tools_before_launch(tmp_path, monkeypatch, unsafe_tool: str) -> None:
+    async def fail_run_claude_code(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        raise AssertionError("unsafe developer tool allowlists must be rejected before launch")
+
+    monkeypatch.setattr("app.orchestration.developer_engine.run_claude_code", fail_run_claude_code)
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
+        store=InMemoryRunStore(),
+        claude_code_config=ClaudeCodeConfig(command=(sys.executable, "-c", "print('should not run')"), allowed_tools=("Read", unsafe_tool)),
+    )
+
+    state = await engine.start_run("edit repository files", "efficiency", "developer")
+    result = await engine.run_turn(state)
+
+    assert state.phase == RunPhase.FAILED
+    assert state.current_plan["allowed_tools"] == []
+    assert state.current_plan["writes_enabled"] is False
+    assert state.current_plan["claude_code_enabled"] is False
+    assert state.current_plan["steps"][0]["status"] == "failed"
+    assert "Unsafe Claude Code allowedTools" in state.current_plan["safety_error"]
+    assert result.finished is True
+    assert result.state.phase == RunPhase.FAILED
+    assert result.message == "Run is already failed."
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 
 import type { LocalLibraryItem, LocalLibraryResponse } from "../../shared/types";
-import type { LengrvisApiClient } from "../lib/apiClient";
+import { absoluteRendererLoopbackBackendUrl, type LengrvisApiClient } from "../lib/apiClient";
 import { sectionForView, type LocalLibrarySection } from "./localLibrarySections";
 
 interface LocalLibraryViewProps {
@@ -177,7 +177,7 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
   }, [sectionMeta.apiSection]);
 
   const items = library?.items ?? [];
-  const backendBaseUrl = window.lengrvis?.backendBaseUrl ?? "http://127.0.0.1:8000";
+  const backendBaseUrl = window.lengrvis?.backendBaseUrl;
   const selectedIconUrl = selectedItem ? fileIcons[selectedItem.path] || selectedItem.iconUrl || "" : "";
 
   useEffect(() => {
@@ -393,9 +393,9 @@ function FileIcon({ item, iconUrl, large = false }: { item: LocalLibraryItem; ic
   return <FolderOpen size={large ? 54 : 20} aria-hidden="true" />;
 }
 
-function absolutePreviewUrl(baseUrl: string, previewUrl: string): string {
+function absolutePreviewUrl(baseUrl: string | undefined, previewUrl: string): string {
   if (!previewUrl) return "";
-  return new URL(previewUrl, baseUrl).toString();
+  return absoluteRendererLoopbackBackendUrl(previewUrl, baseUrl);
 }
 
 function formatBytes(value: number): string {
