@@ -111,6 +111,23 @@ export function SystemInfoPanel({
   const healthSummary = buildHealthSummary({ hasDiagnostics, diagnostics, memoryUsedPercent, largestDisk });
   const updateSummary = buildUpdateSummary(updateCheck, info, backendVersion, updateChannel);
   const isLocalStatusRefreshing = isRefreshing || updateCheck.status === "checking";
+  const supportRedaction = diagnostics?.supportPackageRedaction;
+  const supportReview = supportRedaction?.externalReview;
+  const supportPackagePublicSafe = supportRedaction?.externalSharingSafe === true;
+  const supportRawPublicSafe = supportRedaction?.publicSafe === true;
+  const supportSafetySignalsConsistent = supportRedaction?.safetySignalsConsistent === true;
+  const supportReviewRequired =
+    !supportPackagePublicSafe ||
+    supportRedaction?.reviewBeforeExternalSharing !== false ||
+    supportRedaction?.externalSharingAllowed !== true ||
+    supportRedaction?.failClosed !== false ||
+    supportReview?.requiredBeforeExternalSharing !== false ||
+    supportReview?.externalSharingAllowed !== true ||
+    supportReview?.failClosed !== false ||
+    supportRedaction?.currentResponse?.externalReviewRequired !== false;
+  const supportChecklistCount = supportReview?.checklistCount ?? 0;
+  const supportBlockingReasons = supportRedaction?.blockingReasons ?? [];
+  const supportFieldStateLabel = supportSafetySignalsConsistent ? "复核字段一致" : "字段不一致/不完整，按禁止外发处理";
 
   const refreshLocalStatus = async () => {
     if (isLocalStatusRefreshing) return;
@@ -136,9 +153,12 @@ export function SystemInfoPanel({
       if (!result?.ok || !result.path) {
         throw new Error(result?.error || "诊断包导出失败，请刷新后再试。");
       }
+      const safetyNote = supportPackagePublicSafe
+        ? "当前复核字段显示已确认；仍只应按信任支持材料处理，公开发布前需要另行审批。"
+        : "外发前仍需人工复核，当前不是 public-safe 报告。";
       setDiagnosticExport({
         status: "success",
-        message: `诊断包已生成：${result.filename || compactPath(result.path)}。下方显示的是本机保存位置，方便你打开文件；不要把完整路径当作可公开信息，诊断包也只建议发给信任的支持人员。`,
+        message: `诊断包已生成：${result.filename || compactPath(result.path)}。下方显示的是本机保存位置，方便你打开文件；普通页面仍可能显示本机路径；不要把完整路径当作可公开信息；${safetyNote}`,
         path: result.path,
         bytes: result.bytes
       });
@@ -225,8 +245,23 @@ export function SystemInfoPanel({
               <Archive size={18} aria-hidden="true" />
               <div>
                 <strong>遇到问题时导出诊断包</strong>
-                <span>支持包会尽量使用脱敏路径和本机范围摘要，包含版本、服务状态、网络接口、进程摘要和最近失败统计；不包含你的文档正文、文件内容或密钥。它用于信任的支持排查，不是可公开发布的报告。</span>
+                <span>支持包会尽量使用脱敏路径和本机范围摘要，包含版本、服务状态、网络接口、进程摘要和最近失败统计；不包含你的文档正文、文件内容或密钥。本页的日志位置等普通页面字段仍可能显示本机路径；导出的包用于信任的支持排查，不是可公开发布的报告。</span>
               </div>
+            </div>
+            <div
+              className="diagnostic-export__review"
+              data-testid="diagnostic-export-review"
+              data-public-safe={supportRawPublicSafe ? "true" : "false"}
+              data-external-sharing-safe={supportPackagePublicSafe ? "true" : "false"}
+              data-safety-signals-consistent={supportSafetySignalsConsistent ? "true" : "false"}
+              data-review-required={supportReviewRequired ? "true" : "false"}
+              data-blocking-reasons={supportBlockingReasons.join(",")}
+            >
+              <span>{supportPackagePublicSafe ? "复核字段已确认 · 不代表公开发布许可" : "不可公开分享"}</span>
+              <span>{`public_safe=${supportRawPublicSafe ? "true" : "false"}`}</span>
+              <span>{supportReviewRequired ? "外发前需人工复核" : "仍需确认接收方范围"}</span>
+              <span>{supportFieldStateLabel}</span>
+              <span>{supportChecklistCount ? `${supportChecklistCount} 项复核清单` : "等待复核清单"}</span>
             </div>
             <div className="diagnostic-export__actions">
               <button

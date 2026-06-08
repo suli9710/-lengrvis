@@ -1680,7 +1680,14 @@ function PrivacyReadinessPanel({
       {setupPlan ? (
         <PrivacyBundleStatus setupPlan={setupPlan} />
       ) : null}
-      <p className="privacy-readiness__note">主按钮会按顺序完成 Ollama 安装、启动和模型下载/随包启用；失败会停在本地修复步骤，不会静默回退云端。</p>
+      {setupPlan ? (
+        <LocalModelEvidenceSummary setupPlan={setupPlan} />
+      ) : null}
+      <p className="privacy-readiness__note">
+        {mode === "efficiency"
+          ? "开启隐私模式只会关闭云端辅助并检查本地 AI；下一步再按提示准备本地模型，不会静默回退云端。"
+          : "主按钮会按顺序完成 Ollama 安装、启动和模型下载/随包启用；失败会停在本地修复步骤，不会静默回退云端。"}
+      </p>
     </section>
   );
 }
@@ -1849,6 +1856,33 @@ function PrivacyBundleStatus({ setupPlan }: { setupPlan: LocalModelSetupPlan }) 
       </span>
     </div>
   );
+}
+
+function LocalModelEvidenceSummary({ setupPlan }: { setupPlan: LocalModelSetupPlan }) {
+  const evidenceCount = setupPlan.evidence.length;
+  const failedCount = setupPlan.evidence.filter((item) => !item.ok).length;
+  const verification = setupPlan.verification;
+  const repair = setupPlan.repairAction;
+  const redaction = verification?.pathsRedacted === false ? "路径脱敏待确认" : "路径已脱敏";
+  const status = verification?.ready || setupPlan.ready ? "本地 AI 已验证可用" : `下一步：${repair?.label || zhLocalModelAction(setupPlan.nextAction)}`;
+  return (
+    <div className="local-model-evidence-summary" aria-label="本地 AI 证据摘要">
+      <span>{redaction}</span>
+      <span>{status}</span>
+      <span>{evidenceCount ? `${evidenceCount} 条证据，${failedCount} 条待处理` : "等待后端证据"}</span>
+    </div>
+  );
+}
+
+function zhLocalModelAction(action: string): string {
+  if (action === "hardware_blocked") return "释放内存或磁盘后重试";
+  if (action === "install_runtime") return "安装本地 AI 运行时";
+  if (action === "start_runtime") return "启动本地 AI 服务";
+  if (action === "use_bundled_model") return "启用随包模型";
+  if (action === "download_model") return "下载推荐模型";
+  if (action === "ready") return "本地 AI 已就绪";
+  if (action === "restart_runtime_with_bundled_models") return "用随包模型重启本地服务";
+  return "继续本地 AI 设置";
 }
 
 function zhLocalModelSetupStepLabel(key: string, fallback: string): string {

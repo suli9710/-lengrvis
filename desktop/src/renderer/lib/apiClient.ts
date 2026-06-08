@@ -44,6 +44,7 @@ import type {
   FileRevealResult,
   HardwareAccelerationSmokePayload,
   HardwareAccelerationStatusPayload,
+  IndexStatus,
   InstalledApp,
   InstalledSkill,
   IntentSuggestion,
@@ -65,6 +66,7 @@ import type {
   SystemDiagnostic,
   SystemInfo,
   SystemProcess,
+  TaskCompletionEvidence,
   TaskEvent,
   TaskBoundaryEvent,
   RunEventPayload,
@@ -602,7 +604,8 @@ export class LengrvisApiClient {
             count: numberOrZero(meta.count),
             scanned: numberOrZero(meta.scanned),
             truncated: Boolean(meta.truncated),
-            status: meta.status ?? "ok"
+            status: meta.status ?? "ok",
+            indexStatus: mapIndexStatus(data.index_status)
           }
         };
       })
@@ -2138,7 +2141,11 @@ function mapRunTaskEvent(run: BackendRunState): TaskEvent {
     createdAt: run.created_at || new Date().toISOString(),
     updatedAt: run.updated_at || run.created_at || new Date().toISOString(),
     recordings: [],
-    cleanupPlan
+    cleanupPlan,
+    completionEvidence: mapOptionalTaskCompletionEvidence(run.completion_evidence, {
+      resultVerified: run.result_verified,
+      completedResult: run.completed_result
+    })
   };
 }
 
@@ -2266,6 +2273,28 @@ function mapCommandExecutionResult(result: BackendCommandExecutionResult): Comma
   };
 }
 
+function mapIndexStatus(status?: BackendIndexStatus | null): IndexStatus | undefined {
+  if (!status) return undefined;
+  const failure = status.latest_failure;
+  return {
+    status: String(status.status ?? "empty"),
+    filesIndexed: numberOrZero(status.files_indexed),
+    chunksIndexed: numberOrZero(status.chunks_indexed),
+    embeddingsIndexed: numberOrZero(status.embeddings_indexed),
+    bytesIndexed: numberOrZero(status.bytes_indexed),
+    lastIndexedAt: String(status.last_indexed_at ?? ""),
+    lastModifiedAt: String(status.last_modified_at ?? ""),
+    retryHint: String(status.retry_hint ?? ""),
+    latestFailure: failure
+      ? {
+          at: String(failure.at ?? ""),
+          pathLabel: String(failure.path_label ?? failure.path ?? ""),
+          message: String(failure.message ?? "")
+        }
+      : null
+  };
+}
+
 function mapLocalLibraryResponse(data: BackendLocalLibraryResponse): LocalLibraryResponse {
   return {
     section: String(data.section ?? "gallery"),
@@ -2278,7 +2307,8 @@ function mapLocalLibraryResponse(data: BackendLocalLibraryResponse): LocalLibrar
     stats: {
       size: Number(data.stats?.size ?? 0),
       byExtension: data.stats?.by_extension ?? {}
-    }
+    },
+    indexStatus: mapIndexStatus(data.index_status)
   };
 }
 
@@ -2520,7 +2550,11 @@ function mapTaskEvent(task: BackendTask): TaskEvent {
     updatedAt: task.updated_at,
     recordings: [],
     cleanupPlan,
-    boundaryEvents: mapBoundaryEvents(task.boundary_events)
+    boundaryEvents: mapBoundaryEvents(task.boundary_events),
+    completionEvidence: mapOptionalTaskCompletionEvidence(task.completion_evidence, {
+      resultVerified: task.result_verified,
+      completedResult: task.completed_result
+    })
   };
 }
 
@@ -2569,6 +2603,12 @@ function cleanupPlanFromTimeline(timeline: BackendTimeline): CleanupPlan | undef
 }
 
 function mapTaskExplain(data: BackendTaskExplain): TaskExplain {
+  const finalResult = data.final_result ?? {};
+  const completionEvidence = mapTaskCompletionEvidence(finalResult.completion_evidence ?? data.completion_evidence, {
+    resultVerified: finalResult.result_verified ?? data.result_verified,
+    completedResult: finalResult.completed_result ?? data.completed_result,
+    evidenceKind: finalResult.evidence_kind ?? data.evidence_kind
+  });
   return {
     taskId: String(data.task_id ?? ""),
     userGoal: zhBackendText(String(data.user_goal ?? "")),
@@ -2602,11 +2642,13 @@ function mapTaskExplain(data: BackendTaskExplain): TaskExplain {
     globalSafetyReviews: (data.global_safety_reviews ?? []).map(mapExplainReview),
     steps: (data.steps ?? []).map(mapExplainStep),
     subagentSuggestions: (data.subagent_suggestions ?? []).map(mapExplainMessage),
+    completionEvidence,
     finalResult: {
-      status: String(data.final_result?.status ?? ""),
-      summary: zhBackendText(String(data.final_result?.summary ?? "")),
-      safetyReviews: (data.final_result?.safety_reviews ?? []).map(mapExplainReview),
-      evidence: (data.final_result?.evidence ?? []).map(mapExplainEvidence)
+      status: String(finalResult.status ?? ""),
+      summary: zhBackendText(String(finalResult.summary ?? "")),
+      safetyReviews: (finalResult.safety_reviews ?? []).map(mapExplainReview),
+      evidence: (finalResult.evidence ?? []).map(mapExplainEvidence),
+      completionEvidence
     },
     chain: (data.chain ?? []).map(mapExplainChainItem)
   };
@@ -2688,6 +2730,178 @@ function mapExplainEvidence(item: BackendTaskExplainEvidence): TaskExplainEviden
     stepId: item.step_id ? String(item.step_id) : undefined,
     summary: zhBackendText(String(item.summary ?? ""))
   };
+}
+
+function mapOptionalTaskCompletionEvidence(
+  value: unknown,
+  fallback: BackendTaskCompletionEvidenceFallback = {}
+): TaskCompletionEvidence | undefined {
+  if (!hasTaskCompletionEvidenceInput(value, fallback)) return undefined;
+  return mapTaskCompletionEvidence(value, fallback);
+}
+
+function mapTaskCompletionEvidence(
+  value: unknown,
+  fallback: BackendTaskCompletionEvidenceFallback = {}
+): TaskCompletionEvidence {
+  const record = recordOrUndefined(value);
+  const evidenceKind = firstNonEmptyString(
+    record?.level,
+    record?.evidence_kind,
+    record?.evidenceKind,
+    record?.kind,
+    record?.type,
+    record?.status,
+    typeof value === "string" ? value : undefined,
+    fallback.evidenceKind
+  ) ?? "";
+  const normalizedKind = normalizeCompletionEvidenceKind(evidenceKind);
+  const level = taskCompletionEvidenceLevelFromValue(record?.level ?? normalizedKind);
+  const resultVerified = booleanOrUndefined(record?.result_verified ?? record?.resultVerified ?? fallback.resultVerified) === true;
+  const completedResult = record?.completed_result ?? record?.completedResult ?? fallback.completedResult;
+  const hasCompletedResult = hasCompletedResultEvidence(completedResult);
+  const status = normalizeTaskCompletionEvidenceStatus(level, normalizedKind, resultVerified, hasCompletedResult);
+  const resultArtifacts = arrayOfObjects(record?.result_artifacts ?? record?.resultArtifacts).map((item) => ({
+    kind: String(item.kind ?? ""),
+    label: zhBackendText(String(item.label ?? "")),
+    redacted: item.redacted !== false,
+    count: Number.isFinite(Number(item.count)) ? Number(item.count) : undefined
+  }));
+  const missing = Array.isArray(record?.missing)
+    ? record.missing.map((item) => zhBackendText(String(item))).filter(Boolean)
+    : taskCompletionEvidenceMissing(status, resultVerified, hasCompletedResult);
+  const signoff = Boolean(record?.signoff);
+  return {
+    level,
+    status,
+    evidenceKind: normalizedKind,
+    resultVerified,
+    resultArtifacts: resultArtifacts.length ? resultArtifacts : taskCompletionEvidenceArtifacts(status),
+    missing,
+    signoff,
+    summary: taskCompletionEvidenceSummary(status, missing),
+    privacyNote: "仅展示证据状态，不展示原始证据内容。"
+  };
+}
+
+function hasTaskCompletionEvidenceInput(value: unknown, fallback: BackendTaskCompletionEvidenceFallback): boolean {
+  return Boolean(
+    recordOrUndefined(value) ||
+      (typeof value === "string" && value.trim()) ||
+      fallback.resultVerified !== undefined ||
+      fallback.completedResult !== undefined ||
+      fallback.evidenceKind !== undefined
+  );
+}
+
+function taskCompletionEvidenceLevelFromValue(value: unknown): TaskCompletionEvidence["level"] {
+  const kind = normalizeCompletionEvidenceKind(String(value ?? ""));
+  if (kind === "completed_result" || kind === "verified_completed_result") return "completed_result";
+  if (kind === "safe_failure" || kind === "failed_safely" || kind === "safe_failed") return "safe_failure";
+  if (kind === "visible_progress" || kind === "progress" || kind === "tool_progress") return "visible_progress";
+  if (kind === "task_created" || kind === "task_evidence" || kind === "task_evidence_only") return "task_created";
+  return "submission";
+}
+
+function normalizeTaskCompletionEvidenceStatus(
+  level: TaskCompletionEvidence["level"],
+  kind: string,
+  resultVerified: boolean,
+  hasCompletedResult: boolean
+): TaskCompletionEvidence["status"] {
+  if (level === "completed_result" && resultVerified) return "verified_completed_result";
+  if (level === "safe_failure") return "safe_failure";
+  if (level === "visible_progress") return "visible_progress";
+  if (level === "submission" || level === "task_created") return "task_evidence_only";
+  if (kind === "safe_failure" || kind === "failed_safely" || kind === "safe_failed") return "safe_failure";
+  if (kind === "visible_progress" || kind === "progress" || kind === "tool_progress") return "visible_progress";
+  if (
+    kind === "task_evidence_only" ||
+    kind === "task_evidence" ||
+    kind === "evidence_only" ||
+    kind === "submission" ||
+    kind === "task_submission" ||
+    kind === "command_submission" ||
+    kind.includes("submission") ||
+    kind.includes("task_evidence")
+  ) {
+    return "task_evidence_only";
+  }
+  if ((kind === "completed_result" || kind === "verified_completed_result" || hasCompletedResult) && resultVerified) {
+    return "verified_completed_result";
+  }
+  return "unverified";
+}
+
+function taskCompletionEvidenceSummary(status: TaskCompletionEvidence["status"], missing: string[] = []): string {
+  switch (status) {
+    case "verified_completed_result":
+      return "后端确认这是 completed_result，且 result_verified=true。";
+    case "task_evidence_only":
+      return "只记录到提交或任务过程证据，不能当作最终结果。";
+    case "visible_progress":
+      return missing.length
+        ? `能看到任务有进展，但还缺少 ${missing.slice(0, 2).join("、")}。`
+        : "能看到任务有进展，但还没有最终结果验证。";
+    case "safe_failure":
+      return "任务安全失败，没有可验证的最终结果。";
+    default:
+      return "还没有可验证的最终结果证据。";
+  }
+}
+
+function taskCompletionEvidenceArtifacts(status: TaskCompletionEvidence["status"]): TaskCompletionEvidence["resultArtifacts"] {
+  if (status === "verified_completed_result") {
+    return [{ kind: "completed_result", label: "最终结果证据已脱敏记录", redacted: true }];
+  }
+  if (status === "visible_progress") {
+    return [{ kind: "visible_progress", label: "可见进度证据已脱敏记录", redacted: true }];
+  }
+  if (status === "task_evidence_only") {
+    return [{ kind: "task_evidence", label: "任务过程证据已脱敏记录", redacted: true }];
+  }
+  if (status === "safe_failure") {
+    return [{ kind: "safe_failure", label: "安全失败记录已脱敏", redacted: true }];
+  }
+  return [];
+}
+
+function taskCompletionEvidenceMissing(
+  status: TaskCompletionEvidence["status"],
+  resultVerified: boolean,
+  hasCompletedResult: boolean
+): string[] {
+  if (status === "verified_completed_result") return [];
+  const missing = [];
+  if (!hasCompletedResult) missing.push("completed_result");
+  if (!resultVerified) missing.push("result_verified");
+  return missing;
+}
+
+function normalizeCompletionEvidenceKind(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s.-]+/g, "_");
+}
+
+function hasCompletedResultEvidence(value: unknown): boolean {
+  if (value === undefined || value === null || value === false) return false;
+  return !(typeof value === "string" && !value.trim());
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function booleanOrUndefined(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes"].includes(normalized)) return true;
+    if (["false", "0", "no"].includes(normalized)) return false;
+  }
+  return undefined;
 }
 
 function mergeRecording(
@@ -3373,8 +3587,52 @@ function mapLocalModelSetupPlan(plan: BackendLocalModelSetupPlan): LocalModelSet
       state: mapLocalModelSetupStepState(step.state),
       detail: String(step.detail ?? "")
     })),
-    nextAction: String(plan.next_action ?? "")
+    nextAction: String(plan.next_action ?? ""),
+    repairAction: mapLocalModelRepairAction(plan.repair_action),
+    verification: mapLocalModelVerification(plan.verification),
+    evidence: (plan.evidence ?? []).map(mapLocalModelEvidenceItem)
   };
+}
+
+function mapLocalModelRepairAction(action?: BackendLocalModelRepairAction): LocalModelSetupPlan["repairAction"] {
+  if (!action || typeof action !== "object") return undefined;
+  return {
+    code: String(action.code ?? ""),
+    label: String(action.label ?? ""),
+    detail: String(action.detail ?? "")
+  };
+}
+
+function mapLocalModelVerification(verification?: BackendLocalModelVerification): LocalModelSetupPlan["verification"] {
+  if (!verification || typeof verification !== "object") return undefined;
+  return {
+    ready: Boolean(verification.ready),
+    nextAction: String(verification.next_action ?? ""),
+    pathsRedacted: verification.paths_redacted !== false,
+    privacyFallback: String(verification.privacy_fallback ?? "")
+  };
+}
+
+function mapLocalModelEvidenceItem(item: BackendLocalModelEvidenceItem): LocalModelSetupPlan["evidence"][number] {
+  return {
+    key: String(item.key ?? ""),
+    ok: Boolean(item.ok),
+    detail: String(item.detail ?? ""),
+    valueLabel: localModelEvidenceValueLabel(item)
+  };
+}
+
+function localModelEvidenceValueLabel(item: BackendLocalModelEvidenceItem): string {
+  if (item.value !== undefined && item.value !== null && typeof item.value !== "object") {
+    return String(item.value);
+  }
+  if (Array.isArray(item.failed_checks) && item.failed_checks.length) {
+    return `${item.failed_checks.length} checks need attention`;
+  }
+  if (item.configured !== undefined) {
+    return item.configured ? "configured" : "not configured";
+  }
+  return item.ok ? "ok" : "needs attention";
 }
 
 function mapLocalModelBundleManifest(manifest?: BackendLocalModelBundleManifest): LocalModelSetupPlan["bundleManifest"] {
@@ -3621,7 +3879,8 @@ function mapDiagnostic(data: BackendSystemDiagnostics, startupItems?: BackendSta
     recentCounts: numberRecord(data.recent_counts),
     recentFailureCounts: numberRecord(data.recent_failure_counts),
     diagnosticHints: (data.diagnostic_hints ?? []).map(zhBackendText),
-    diagnosticScope: data.diagnostic_scope ? String(data.diagnostic_scope) : undefined
+    diagnosticScope: data.diagnostic_scope ? String(data.diagnostic_scope) : undefined,
+    supportPackageRedaction: mapSupportPackageRedaction(data.support_package_redaction)
   };
 }
 
@@ -3635,6 +3894,110 @@ function mapDiagnosticExportResult(data: BackendDiagnosticExportResult): Diagnos
     scope: String(data.scope ?? "local_only"),
     error: data.error ? String(data.error) : undefined
   };
+}
+
+function mapSupportPackageRedaction(
+  redaction?: BackendSupportPackageRedaction
+): SystemDiagnostic["supportPackageRedaction"] {
+  if (!redaction || typeof redaction !== "object") return undefined;
+  const currentResponse =
+    redaction.current_response && typeof redaction.current_response === "object"
+      ? {
+          publicSafe: redaction.current_response.public_safe === true,
+          containsLocalPaths: redaction.current_response.contains_local_paths === true,
+          externalReviewRequired: redaction.current_response.external_review_required !== false
+        }
+      : undefined;
+  const externalReview =
+    redaction.external_review && typeof redaction.external_review === "object" ? redaction.external_review : undefined;
+  const externalReviewStatus = String(externalReview?.status ?? "manual_review_required");
+  const packagePublicSafe = redaction.public_safe === true;
+  const packageReviewRequired = redaction.review_before_external_sharing !== false;
+  const packageExternalSharingAllowed = redaction.external_sharing_allowed === true;
+  const packageFailClosed = redaction.fail_closed !== false;
+  const responsePublicSafe = currentResponse?.publicSafe === true;
+  const responseReviewRequired = currentResponse?.externalReviewRequired !== false;
+  const responseContainsLocalPaths = currentResponse?.containsLocalPaths === true;
+  const reviewPublicSafe = externalReview?.public_safe === true;
+  const reviewRequired = externalReview?.required_before_external_sharing !== false;
+  const reviewExternalSharingAllowed = externalReview?.external_sharing_allowed === true;
+  const reviewFailClosed = externalReview?.fail_closed !== false;
+  const reviewStatusAllowsSharing = externalReviewStatusAllowsSharing(externalReviewStatus);
+  const publicSafeSignals = [
+    packagePublicSafe,
+    ...(currentResponse ? [responsePublicSafe] : []),
+    ...(externalReview ? [reviewPublicSafe] : [])
+  ];
+  const reviewRequiredSignals = [
+    packageReviewRequired,
+    ...(currentResponse ? [responseReviewRequired] : []),
+    ...(externalReview ? [reviewRequired] : [])
+  ];
+  const safetySignalsConsistent =
+    Boolean(currentResponse) &&
+    Boolean(externalReview) &&
+    allBooleanSignalsMatch(publicSafeSignals) &&
+    allBooleanSignalsMatch(reviewRequiredSignals) &&
+    !(responseContainsLocalPaths && publicSafeSignals.some(Boolean)) &&
+    !(!reviewStatusAllowsSharing && !reviewRequired && reviewPublicSafe);
+  const blockingReasons = [
+    !packagePublicSafe ? "package_public_safe_false" : "",
+    packageReviewRequired ? "package_review_required" : "",
+    !packageExternalSharingAllowed ? "package_external_sharing_allowed_false" : "",
+    packageFailClosed ? "package_fail_closed" : "",
+    !currentResponse ? "current_response_missing" : "",
+    currentResponse && !responsePublicSafe ? "current_response_public_safe_false" : "",
+    responseContainsLocalPaths ? "current_response_contains_local_paths" : "",
+    responseReviewRequired ? "current_response_review_required" : "",
+    !externalReview ? "external_review_missing" : "",
+    externalReview && !reviewPublicSafe ? "external_review_public_safe_false" : "",
+    reviewRequired ? "external_review_required" : "",
+    externalReview && !reviewExternalSharingAllowed ? "external_review_external_sharing_allowed_false" : "",
+    externalReview && reviewFailClosed ? "external_review_fail_closed" : "",
+    !reviewStatusAllowsSharing ? "external_review_status_not_approved" : "",
+    !safetySignalsConsistent ? "safety_signals_inconsistent_or_incomplete" : ""
+  ].filter(Boolean);
+  const externalSharingSafe = blockingReasons.length === 0;
+  return {
+    appliesTo: redaction.applies_to ? String(redaction.applies_to) : undefined,
+    scope: String(redaction.scope ?? "local_only"),
+    intendedAudience: String(redaction.intended_audience ?? "trusted_support"),
+    publicSafe: packagePublicSafe,
+    reviewBeforeExternalSharing: packageReviewRequired,
+    externalSharingAllowed: packageExternalSharingAllowed,
+    failClosed: packageFailClosed,
+    guidance: redaction.guidance ? zhBackendText(String(redaction.guidance)) : "",
+    currentResponse,
+    externalReview: externalReview
+      ? {
+          status: externalReviewStatus,
+          requiredBeforeExternalSharing: reviewRequired,
+          publicSafe: externalReview.public_safe === true,
+          externalSharingAllowed: reviewExternalSharingAllowed,
+          failClosed: reviewFailClosed,
+          checklistCount: Array.isArray(externalReview.checklist) ? externalReview.checklist.length : 0
+        }
+      : undefined,
+    externalSharingSafe,
+    safetySignalsConsistent,
+    blockingReasons
+  };
+}
+
+function allBooleanSignalsMatch(values: boolean[]): boolean {
+  if (values.length <= 1) return true;
+  return values.every((value) => value === values[0]);
+}
+
+function externalReviewStatusAllowsSharing(status: string): boolean {
+  return [
+    "approved",
+    "clear",
+    "cleared",
+    "external_sharing_approved",
+    "reviewed",
+    "safe_to_share"
+  ].includes(status.trim().toLowerCase());
 }
 
 function plainRecord(value: Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
@@ -3931,6 +4294,9 @@ interface BackendRunState {
   cleanup_plan?: unknown;
   cleanupPlan?: unknown;
   diff_preview?: unknown;
+  completion_evidence?: unknown;
+  result_verified?: unknown;
+  completed_result?: unknown;
 }
 
 interface BackendRunEvent extends RunEventPayload {
@@ -3971,6 +4337,9 @@ interface BackendTask {
   cleanupPlan?: unknown;
   diff_preview?: unknown;
   boundary_events?: BackendBoundaryEvent[];
+  completion_evidence?: unknown;
+  result_verified?: unknown;
+  completed_result?: unknown;
 }
 
 interface BackendTimeline {
@@ -4015,6 +4384,12 @@ interface BackendStepRecordingFrame {
   width?: number;
   height?: number;
   error?: string;
+}
+
+interface BackendTaskCompletionEvidenceFallback {
+  resultVerified?: unknown;
+  completedResult?: unknown;
+  evidenceKind?: unknown;
 }
 
 export type BackendTaskStreamEvent =
@@ -4183,11 +4558,21 @@ interface BackendTaskExplain {
   global_safety_reviews?: BackendTaskExplainReview[];
   steps?: BackendTaskExplainStep[];
   subagent_suggestions?: BackendTaskExplainMessage[];
+  completion_evidence?: unknown;
+  result_verified?: unknown;
+  completed_result?: unknown;
+  evidence_kind?: string;
+  evidence_summary?: string;
   final_result?: {
     status?: string;
     summary?: string;
     safety_reviews?: BackendTaskExplainReview[];
     evidence?: BackendTaskExplainEvidence[];
+    completion_evidence?: unknown;
+    result_verified?: unknown;
+    completed_result?: unknown;
+    evidence_kind?: string;
+    evidence_summary?: string;
   };
   chain?: BackendTaskExplainChainItem[];
 }
@@ -4457,9 +4842,27 @@ export interface RemoteInputGrantIssueResult {
   device?: MobileDevice;
 }
 
+interface BackendIndexStatus {
+  status?: string;
+  files_indexed?: number | string;
+  chunks_indexed?: number | string;
+  embeddings_indexed?: number | string;
+  bytes_indexed?: number | string;
+  last_indexed_at?: string;
+  last_modified_at?: string;
+  retry_hint?: string;
+  latest_failure?: {
+    at?: string;
+    path_label?: string;
+    path?: string;
+    message?: string;
+  } | null;
+}
+
 interface BackendFileSearchResponse {
   index_results?: Array<{ file_id?: string; path: string; snippet?: string }>;
   name_results?: Array<{ path: string; name?: string }>;
+  index_status?: BackendIndexStatus;
   name_search?: {
     count?: number | string;
     scanned?: number | string;
@@ -4498,6 +4901,7 @@ interface BackendLocalLibraryResponse {
     size?: number;
     by_extension?: Record<string, number>;
   };
+  index_status?: BackendIndexStatus;
 }
 
 export interface BackendClusterEntry {
@@ -4855,6 +5259,28 @@ interface BackendLocalModelSetupStep {
   detail?: string;
 }
 
+interface BackendLocalModelRepairAction {
+  code?: string;
+  label?: string;
+  detail?: string;
+}
+
+interface BackendLocalModelVerification {
+  ready?: boolean;
+  next_action?: string;
+  paths_redacted?: boolean;
+  privacy_fallback?: string;
+}
+
+interface BackendLocalModelEvidenceItem {
+  key?: string;
+  ok?: boolean;
+  detail?: string;
+  value?: unknown;
+  failed_checks?: unknown[];
+  configured?: boolean;
+}
+
 interface BackendLocalModelSetupPlan {
   ready?: boolean;
   can_install?: boolean;
@@ -4874,6 +5300,9 @@ interface BackendLocalModelSetupPlan {
   bundle_manifest?: BackendLocalModelBundleManifest;
   steps?: BackendLocalModelSetupStep[];
   next_action?: string;
+  repair_action?: BackendLocalModelRepairAction;
+  verification?: BackendLocalModelVerification;
+  evidence?: BackendLocalModelEvidenceItem[];
 }
 
 interface BackendLocalModelBundleManifest {
@@ -5261,6 +5690,31 @@ interface BackendSystemDiagnostics {
   recent_failure_counts?: Record<string, unknown>;
   diagnostic_hints?: string[];
   diagnostic_scope?: string;
+  support_package_redaction?: BackendSupportPackageRedaction;
+}
+
+interface BackendSupportPackageRedaction {
+  applies_to?: string;
+  scope?: string;
+  intended_audience?: string;
+  public_safe?: boolean;
+  review_before_external_sharing?: boolean;
+  external_sharing_allowed?: boolean;
+  fail_closed?: boolean;
+  current_response?: {
+    public_safe?: boolean;
+    contains_local_paths?: boolean;
+    external_review_required?: boolean;
+  };
+  guidance?: string;
+  external_review?: {
+    status?: string;
+    required_before_external_sharing?: boolean;
+    public_safe?: boolean;
+    external_sharing_allowed?: boolean;
+    fail_closed?: boolean;
+    checklist?: unknown[];
+  };
 }
 
 interface BackendDiagnosticExportResult {

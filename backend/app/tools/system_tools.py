@@ -47,19 +47,47 @@ def get_disks(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     try:
         import psutil
 
-        return {
-            "disks": [
+        disks: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = []
+        for partition in psutil.disk_partitions(all=False):
+            if _skip_disk_partition(partition):
+                skipped.append({"mountpoint": str(partition.mountpoint), "reason": "non_fixed_or_remote"})
+                continue
+            try:
+                usage = psutil.disk_usage(partition.mountpoint)._asdict()
+            except Exception as exc:  # noqa: BLE001 - diagnostics must stay best-effort.
+                errors.append({"mountpoint": str(partition.mountpoint), "error": str(exc)})
+                continue
+            disks.append(
                 {
-                    "device": p.device,
-                    "mountpoint": p.mountpoint,
-                    "fstype": p.fstype,
-                    "usage": psutil.disk_usage(p.mountpoint)._asdict(),
+                    "device": partition.device,
+                    "mountpoint": partition.mountpoint,
+                    "fstype": partition.fstype,
+                    "usage": usage,
                 }
-                for p in psutil.disk_partitions()
-            ]
-        }
+            )
+        return {"disks": disks, "skipped": skipped[:8], "errors": errors[:8]}
     except Exception as exc:
         return {"error": str(exc), "disks": []}
+
+
+def _skip_disk_partition(partition: Any) -> bool:
+    mountpoint = str(getattr(partition, "mountpoint", "") or "").strip()
+    device = str(getattr(partition, "device", "") or "").strip()
+    fstype = str(getattr(partition, "fstype", "") or "").strip().lower()
+    opts = {
+        item.strip().lower()
+        for item in str(getattr(partition, "opts", "") or "").replace(";", ",").split(",")
+        if item.strip()
+    }
+    if not mountpoint or not fstype:
+        return True
+    if {"cdrom", "remote", "network"}.intersection(opts):
+        return True
+    if device.startswith("\\\\"):
+        return True
+    return False
 
 
 def get_network(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -308,7 +336,7 @@ def diagnostics(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
     network = get_network(args, context)
     battery = get_battery(args, context)
     processes = get_processes({"limit": 8}, context)
-    local_ai = local_ai_status({}, context)
+    local_ai = _quick_local_ai_status()
     suggestions = []
     memory_total = int(info.get("memory_total") or 0)
     memory_available = int(info.get("memory_available") or 0)
@@ -324,6 +352,25 @@ def diagnostics(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
         "top_processes": processes.get("processes", []),
         "local_ai": local_ai,
         "suggestions": suggestions,
+    }
+
+
+def _quick_local_ai_status() -> dict[str, Any]:
+    configured = any(
+        str(os.getenv(name) or "").strip()
+        for name in (
+            "LENGRVIS_ONNX_MODEL_PATH",
+            "LENGRVIS_ONNX_MODELS_DIR",
+            "OLLAMA_MODELS",
+            "LENGRVIS_LLM_BASE_URL",
+        )
+    )
+    return {
+        "scope": "local_only",
+        "probe_mode": "summary_only",
+        "configured": configured,
+        "full_probe_deferred": True,
+        "detail": "Full local model runtime checks run from Settings, not from the general system diagnostics refresh.",
     }
 
 

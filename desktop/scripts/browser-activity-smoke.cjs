@@ -69,6 +69,27 @@ const systemDiagnostics = {
 
 const smokeDocumentPath = "C:\\Users\\Smoke\\Documents\\Quarterly Plan.md";
 const smokeCompareDocumentPath = "C:\\Users\\Smoke\\Documents\\Quarterly Plan v2.md";
+const readyIndexStatus = {
+  status: "ready",
+  files_indexed: 3,
+  chunks_indexed: 4,
+  embeddings_indexed: 4,
+  bytes_indexed: 8192,
+  last_indexed_at: "2026-05-27T00:02:30.000Z",
+  last_modified_at: "2026-05-27T00:02:00.000Z",
+  retry_hint: "",
+  latest_failure: null
+};
+const degradedIndexStatus = {
+  ...readyIndexStatus,
+  status: "degraded",
+  latest_failure: {
+    at: "2026-05-27T00:03:00.000Z",
+    path_label: "Quarterly Plan.md",
+    message: "embedding service offline"
+  },
+  retry_hint: "Retry rebuild after the local embedding service recovers."
+};
 const pilotTask = {
   id: "task-pilot-smoke",
   user_goal: "清理下载目录的大文件",
@@ -218,7 +239,8 @@ async function installApiMocks(page, options = {}) {
       total: 0,
       scanned: 0,
       truncated: false,
-      stats: { size: 0, by_extension: {} }
+      stats: { size: 0, by_extension: {} },
+      index_status: readyIndexStatus
     });
     if (url.pathname === "/api/current-plan") return json({});
     if (url.pathname === "/api/settings") return json({ allowed_directories: allowedDirectories });
@@ -249,7 +271,8 @@ async function installApiMocks(page, options = {}) {
             scanned: 42,
             truncated: false,
             status: "ok"
-          }
+          },
+          index_status: readyIndexStatus
         });
       }
       if (fileSearchMode === "success") {
@@ -267,7 +290,8 @@ async function installApiMocks(page, options = {}) {
             scanned: 42,
             truncated: false,
             status: "ok"
-          }
+          },
+          index_status: degradedIndexStatus
         });
       }
       return route.fulfill({
@@ -424,7 +448,7 @@ async function assertComputerCheckEntry(page, counters) {
   const systemInfoRequestsBefore = counters.systemInfoRequests ?? 0;
   await page.getByRole("button", { name: quickTemplateButtonNames.checkComputer }).click();
   await page.getByText(/系统信息|绯荤粺淇℃伅/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/一键只读检查|涓€閿彧璇绘鏌?/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/一键只读检查|立即只读检查|刷新本机状态|涓€閿彧璇绘鏌?/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/只读诊断，不改设置|鍙璇婃柇锛屼笉鏀硅缃?/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/Lengrvis 连接|Lengrvis 杩炴帴/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/任务状态|浠诲姟鐘舵€?/).first().waitFor({ timeout: 10_000 });
@@ -454,6 +478,7 @@ async function assertTaskPilotApprovalAction(page) {
   await page.getByRole("dialog").waitFor({ timeout: 10_000 });
   await page.getByText(/清理计划审批|审批|准备清理下载目录的大文件/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/决策总览|鍐崇瓥鎬昏/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/安全核对/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/影响范围|褰卞搷鑼冨洿/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/恢复方式|鎭㈠鏂瑰紡/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/批准前不会移动或删除任何文件|等待你批准|鎵瑰噯鍓嶄笉浼氱Щ鍔ㄦ垨鍒犻櫎|绛夊緟浣犳壒鍑?/).first().waitFor({ timeout: 10_000 });
@@ -503,6 +528,7 @@ async function searchSuccessfulDocument(page) {
   await page.getByText("Quarterly Plan.md").first().waitFor({ timeout: 10_000 });
   await page.getByText(/Users\/Smoke\/Documents|Smoke\/Documents/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/launch checklist and customer notes/i).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/索引可用但需要留意|embedding service offline/).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /^读取$/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /^总结$/ }).first().waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /^打开位置$/ }).first().waitFor({ timeout: 10_000 });

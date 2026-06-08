@@ -12,6 +12,11 @@ from app.main import app
 from app.services import local_library_service
 
 
+@pytest.fixture(autouse=True)
+def local_library_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+
+
 def test_local_library_only_uses_explicitly_allowed_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     pictures = tmp_path / "user" / "Pictures"
@@ -40,6 +45,7 @@ def test_local_library_only_uses_explicitly_allowed_roots(monkeypatch: pytest.Mo
     assert str(workspace.resolve(strict=False)) in result["roots"]
     assert str(pictures.resolve(strict=False)) not in result["roots"]
     assert str(documents.resolve(strict=False)) not in result["roots"]
+    assert result["index_status"]["status"] == "empty"
 
 
 def test_local_library_preview_requires_explicit_authorized_root(

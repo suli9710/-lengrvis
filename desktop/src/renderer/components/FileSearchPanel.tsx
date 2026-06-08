@@ -29,7 +29,8 @@ import type {
   DocumentCompareResponse,
   DocumentIR,
   FileSearchMeta,
-  FileSearchResult
+  FileSearchResult,
+  IndexStatus
 } from "../../shared/types";
 import type { BackendClusterEntry, FileClusterOptions, LengrvisApiClient } from "../lib/apiClient";
 import { documentScopesForFiles, mergeScopePaths } from "../lib/documentScope";
@@ -234,6 +235,10 @@ export function FileSearchPanel({
         ? { tone: "info" as const, text: "正在切换搜索范围，请稍等一下。" }
         : noticeForSearchStatus(searchStatus, searchMessage, results.length, searchMeta),
     [isSavingScope, results.length, searchMessage, searchMeta, searchStatus]
+  );
+  const indexStatusNotice = useMemo(
+    () => noticeForIndexStatus(searchMeta?.indexStatus),
+    [searchMeta?.indexStatus]
   );
 
   const shortcuts: KnownFolderShortcut[] = useMemo(
@@ -1007,6 +1012,7 @@ export function FileSearchPanel({
             ) : null}
           </div>
           {searchNotice ? <p className={`file-status file-status--${searchNotice.tone}`} role={searchNotice.tone === "error" ? "alert" : "status"}>{searchNotice.text}</p> : null}
+          {indexStatusNotice ? <p className={`file-status file-status--${indexStatusNotice.tone}`} role="status">{indexStatusNotice.text}</p> : null}
           <div className="file-results">
             {searchStatus === "loading" || isSearching ? (
               <p className="empty-state">正在查找当前范围里的匹配文件...</p>
@@ -1764,6 +1770,53 @@ function noticeForSearchStatus(
     default:
       return null;
   }
+}
+
+function noticeForIndexStatus(status?: IndexStatus | null): { tone: SearchNoticeTone; text: string } | null {
+  if (!status) return null;
+  const latest = formatIndexTimestamp(status.lastIndexedAt);
+  const count = formatCount(status.filesIndexed);
+  if (status.status === "ready") {
+    return {
+      tone: "success",
+      text: latest
+        ? `全文索引已就绪：${count} 个文件，最近更新 ${latest}。`
+        : `全文索引已就绪：${count} 个文件。`
+    };
+  }
+  if (status.status === "degraded") {
+    const failure = status.latestFailure?.message ? `最近失败：${status.latestFailure.message}。` : "";
+    const retry = status.retryHint || "修复本地嵌入服务后，可重建索引或重新搜索。";
+    return {
+      tone: "empty",
+      text: `索引可用但需要留意：${count} 个文件${latest ? `，最近更新 ${latest}` : ""}。${failure}${retry}`
+    };
+  }
+  if (status.status === "empty") {
+    return {
+      tone: "info",
+      text: status.retryHint || "全文索引暂时为空；文件名搜索仍会实时扫描。重建索引后可搜索文档正文。"
+    };
+  }
+  if (status.status === "missing_scope") {
+    return {
+      tone: "info",
+      text: status.retryHint || "先选择授权文件夹，再开始索引或搜索文件。"
+    };
+  }
+  return null;
+}
+
+function formatIndexTimestamp(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
 }
 
 function userFileError(error: unknown, fallback: string): string {

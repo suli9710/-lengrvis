@@ -236,6 +236,14 @@ def _diagnostics_payload(request: Request) -> dict[str, Any]:
             "product_funnel": product_funnel,
             "diagnostic_hints": _diagnostic_hints(verification, metrics),
             "diagnostic_scope": "local_only",
+            "support_package_redaction": _support_package_redaction_guidance(
+                {
+                    "data_dir": str(Path(settings.data_dir)),
+                    "database": str(db.db_path()),
+                    "log_dirs": _log_dirs(settings.data_dir),
+                },
+                current_response_contains_local_paths=True,
+            ),
         }
     )
     return base
@@ -249,7 +257,10 @@ def _diagnostics_export_payload(request: Request) -> dict[str, Any]:
     export_payload = dict(redacted) if isinstance(redacted, dict) else {"diagnostics": redacted}
     _normalize_support_package_update_channel(export_payload)
     export_payload["local_paths"] = _support_package_local_paths(local_paths)
-    export_payload["support_package_redaction"] = _support_package_redaction_guidance(local_paths)
+    export_payload["support_package_redaction"] = _support_package_redaction_guidance(
+        local_paths,
+        current_response_contains_local_paths=False,
+    )
     return export_payload
 
 
@@ -538,14 +549,45 @@ def _normalize_support_package_update_channel(export_payload: dict[str, Any]) ->
         release_notes["path_redacted"] = True
 
 
-def _support_package_redaction_guidance(local_paths: dict[str, Any]) -> dict[str, Any]:
+def _support_package_redaction_guidance(
+    local_paths: dict[str, Any],
+    *,
+    current_response_contains_local_paths: bool,
+) -> dict[str, Any]:
     log_dirs = local_paths.get("log_dirs") if isinstance(local_paths.get("log_dirs"), list) else []
+    external_review = _support_package_external_review_metadata()
+    response_kind = (
+        "diagnostics_get_response" if current_response_contains_local_paths else "diagnostics_export_payload"
+    )
+    local_path_state = "full_local_paths_present" if current_response_contains_local_paths else "path_labels_only"
     return {
         "schema_version": 1,
+        "applies_to": "diagnostics_export_payload",
         "scope": "local_only",
         "intended_audience": "trusted_support",
         "public_safe": False,
+        "fail_closed": True,
+        "review_status": external_review["status"],
+        "review_required": True,
         "review_before_external_sharing": True,
+        "external_sharing_allowed": False,
+        "current_response": {
+            "public_safe": False,
+            "contains_local_paths": current_response_contains_local_paths,
+            "external_review_required": True,
+        },
+        "current_response_contract": {
+            "schema_version": 1,
+            "response_kind": response_kind,
+            "public_safe": False,
+            "contains_local_paths": current_response_contains_local_paths,
+            "local_path_state": local_path_state,
+            "review_status": external_review["status"],
+            "review_required": True,
+            "external_sharing_allowed": False,
+            "machine_decision": "block_external_sharing_until_manual_review",
+        },
+        "checklist_summary": external_review["checklist_summary"],
         "local_paths": "redacted_to_path_labels",
         "local_path_labels": {
             "data_dir": "app_data_dir",
@@ -561,8 +603,9 @@ def _support_package_redaction_guidance(local_paths: dict[str, Any]) -> dict[str
         "model_paths": "redacted",
         "task_recording": "status_only_no_images_or_file_names",
         "release_notes_path": "redacted_to_path_label_when_present",
-        "full_local_paths_removed": True,
-        "external_review": _support_package_external_review_metadata(),
+        "full_local_paths_removed": not current_response_contains_local_paths,
+        "export_full_local_paths_removed": True,
+        "external_review": external_review,
         "guidance": (
             "优先发送这个脱敏 JSON 支持包，不要直接发送原始日志；原始日志、截图和任务记录仍可能包含私人内容，"
             "外发前需要单独检查。"
@@ -571,49 +614,81 @@ def _support_package_redaction_guidance(local_paths: dict[str, Any]) -> dict[str
 
 
 def _support_package_external_review_metadata() -> dict[str, Any]:
+    checklist = [
+        {
+            "id": "scope_and_audience",
+            "label": "Confirm local-only trusted-support scope",
+            "status": "requires_reviewer_confirmation",
+            "required": True,
+        },
+        {
+            "id": "raw_logs_and_artifacts",
+            "label": "Confirm no raw logs, screenshots, or recording files are attached",
+            "status": "export_metadata_only",
+            "required": True,
+        },
+        {
+            "id": "local_paths",
+            "label": "Confirm local paths are labels only",
+            "status": "automated_redaction_applied",
+            "required": True,
+        },
+        {
+            "id": "secrets_and_identifiers",
+            "label": "Confirm tokens, credentials, device, grant, and pairing identifiers are redacted",
+            "status": "automated_redaction_applied",
+            "required": True,
+        },
+        {
+            "id": "task_content",
+            "label": "Confirm task prompts, goals, messages, and approvals are redacted",
+            "status": "automated_redaction_applied",
+            "required": True,
+        },
+        {
+            "id": "external_sharing_decision",
+            "label": "Record a human decision before external sharing",
+            "status": "pending",
+            "required": True,
+        },
+    ]
     return {
         "schema_version": 1,
         "status": "manual_review_required",
+        "review_status": "manual_review_required",
+        "review_required": True,
         "required_before_external_sharing": True,
         "public_safe": False,
-        "checklist": [
-            {
-                "id": "scope_and_audience",
-                "label": "Confirm local-only trusted-support scope",
-                "status": "requires_reviewer_confirmation",
-                "required": True,
-            },
-            {
-                "id": "raw_logs_and_artifacts",
-                "label": "Confirm no raw logs, screenshots, or recording files are attached",
-                "status": "export_metadata_only",
-                "required": True,
-            },
-            {
-                "id": "local_paths",
-                "label": "Confirm local paths are labels only",
-                "status": "automated_redaction_applied",
-                "required": True,
-            },
-            {
-                "id": "secrets_and_identifiers",
-                "label": "Confirm tokens, credentials, device, grant, and pairing identifiers are redacted",
-                "status": "automated_redaction_applied",
-                "required": True,
-            },
-            {
-                "id": "task_content",
-                "label": "Confirm task prompts, goals, messages, and approvals are redacted",
-                "status": "automated_redaction_applied",
-                "required": True,
-            },
-            {
-                "id": "external_sharing_decision",
-                "label": "Record a human decision before external sharing",
-                "status": "pending",
-                "required": True,
-            },
-        ],
+        "external_sharing_allowed": False,
+        "fail_closed": True,
+        "machine_decision": "block_external_sharing_until_manual_review",
+        "checklist_summary": _support_package_external_review_checklist_summary(checklist),
+        "checklist": checklist,
+    }
+
+
+def _support_package_external_review_checklist_summary(checklist: list[dict[str, Any]]) -> dict[str, Any]:
+    status_counts: dict[str, int] = {}
+    required_pending_statuses = {"pending", "requires_reviewer_confirmation"}
+    required = 0
+    required_pending = 0
+    all_required_have_status = True
+    for item in checklist:
+        status = str(item.get("status") or "")
+        if status:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        if item.get("required") is True:
+            required += 1
+            if not status:
+                all_required_have_status = False
+            if status in required_pending_statuses:
+                required_pending += 1
+    return {
+        "total": len(checklist),
+        "required": required,
+        "required_pending": required_pending,
+        "all_required_have_status": all_required_have_status,
+        "status_counts": status_counts,
     }
 
 

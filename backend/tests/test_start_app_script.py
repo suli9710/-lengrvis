@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
+import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tls_test_material import write_lan_tls_material
 
 
 def _start_app_text(project_root: Path) -> str:
@@ -19,12 +24,40 @@ def _portable_first_screen_smoke_text(project_root: Path) -> str:
     return (project_root / "scripts" / "portable_first_screen_smoke.ps1").read_text(encoding="utf-8")
 
 
+def _mobile_lan_wss_preflight_text(project_root: Path) -> str:
+    return (project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1").read_text(encoding="utf-8")
+
+
+def _release_evidence_packet_text(project_root: Path) -> str:
+    return (project_root / "scripts" / "collect_release_evidence_packet.ps1").read_text(encoding="utf-8")
+
+
+def _diagnostics_external_review_packet_text(project_root: Path) -> str:
+    return (
+        project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"
+    ).read_text(encoding="utf-8")
+
+
+def _local_model_clean_machine_evidence_template_text(project_root: Path) -> str:
+    return (
+        project_root / "scripts" / "collect_local_model_clean_machine_evidence_template.ps1"
+    ).read_text(encoding="utf-8")
+
+
 def _readme_text(project_root: Path) -> str:
     return (project_root / "README.md").read_text(encoding="utf-8")
 
 
 def _release_gate_text(project_root: Path) -> str:
     return (project_root / "docs" / "qa" / "release-gate.md").read_text(encoding="utf-8")
+
+
+def _package_json(project_root: Path) -> dict[str, object]:
+    return json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+
+
+def _real_device_mobile_matrix_text(project_root: Path) -> str:
+    return (project_root / "docs" / "qa" / "real-device-mobile-matrix.md").read_text(encoding="utf-8")
 
 
 def _e2e_acceptance_matrix_text(project_root: Path) -> str:
@@ -41,6 +74,87 @@ def _agentic_product_evals_text(project_root: Path) -> str:
 
 def _parity_text(project_root: Path) -> str:
     return (project_root / "docs" / "LENGRVIS_PARITY.md").read_text(encoding="utf-8")
+
+
+def _write_settings_local_model_smoke_artifacts(qa_root: Path) -> None:
+    qa_root.mkdir()
+    for name in (
+        "settings-local-model-experience-smoke-desktop.png",
+        "settings-local-model-experience-smoke-desktop-setup.png",
+        "settings-local-model-experience-smoke-narrow.png",
+        "settings-local-model-experience-smoke-narrow-setup.png",
+    ):
+        (qa_root / name).write_bytes(b"redacted-smoke-artifact")
+
+
+def _write_portable_status_log(root: Path, text: str) -> Path:
+    run_root = root / "run-20260608-154045-41396-6013e259"
+    run_root.mkdir(parents=True)
+    status_log = run_root / "portable.status.log"
+    status_log.write_text(text, encoding="utf-8")
+    return status_log
+
+
+def _run_release_evidence_packet_for_portable_status_log(
+    project_root: Path,
+    tmp_path: Path,
+    status_lines: list[str],
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(portable_root, "\n".join(status_lines))
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    return result, evidence_root
+
+
+def _preflight_clean_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in (
+        "LENGRVIS_BACKEND_HOST",
+        "LENGRVIS_BACKEND_PORT",
+        "LENGRVIS_LAN_PUBLIC_BASE_URL",
+        "LENGRVIS_LAN_TLS_ENABLED",
+        "LENGRVIS_LAN_TLS_CERT_FILE",
+        "LENGRVIS_LAN_TLS_KEY_FILE",
+    ):
+        env.pop(key, None)
+    return env
 
 
 def _launcher_cmd_text(project_root: Path) -> str:
@@ -199,6 +313,78 @@ def test_launchers_warn_non_developers_not_to_edit_env_or_config(project_root: P
     assert "Write-NextStep $failureMessage" in start_app_text
 
 
+def test_root_evidence_scripts_are_discoverable_and_non_signoff(project_root: Path) -> None:
+    package_json = _package_json(project_root)
+    scripts = package_json["scripts"]
+    assert isinstance(scripts, dict)
+
+    expected_helpers = {
+        "evidence:release": "collect_release_evidence_packet.ps1",
+        "evidence:mobile-lan-wss": "verify_mobile_lan_wss_preflight.ps1",
+        "evidence:local-model-template": "collect_local_model_clean_machine_evidence_template.ps1",
+        "evidence:diagnostics-review": "collect_diagnostics_external_review_packet.ps1",
+    }
+
+    for script_name, helper_name in expected_helpers.items():
+        assert scripts[script_name] == (
+            f"powershell -ExecutionPolicy Bypass -File ./scripts/{helper_name}"
+        )
+        assert "pass" not in script_name
+        assert "signoff" not in script_name
+        assert "ready" not in script_name
+
+        command = scripts[script_name].lower()
+        assert "install" not in command
+        assert "ollama pull" not in command
+        assert "signoff" not in command
+        assert "public_safe=true" not in command
+
+
+def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
+    project_root: Path,
+) -> None:
+    readme = _readme_text(project_root)
+    release_gate = _release_gate_text(project_root)
+
+    aliases = (
+        "npm run evidence:release",
+        "npm run evidence:mobile-lan-wss",
+        "npm run evidence:local-model-template",
+        "npm run evidence:diagnostics-review",
+    )
+    for alias in aliases:
+        assert alias in readme
+        assert alias in release_gate
+
+    raw_helpers = (
+        r".\scripts\collect_release_evidence_packet.ps1",
+        r".\scripts\verify_mobile_lan_wss_preflight.ps1",
+        r".\scripts\collect_local_model_clean_machine_evidence_template.ps1",
+        r".\scripts\collect_diagnostics_external_review_packet.ps1",
+    )
+    for helper in raw_helpers:
+        assert helper in release_gate
+
+    assert "证据 helper 新手入口" in readme
+    assert "输出只能作为 evidence/template/preflight 记录" in readme
+    assert "不是 clean-machine pass" in readme
+    assert "real-device pass" in readme
+    assert "`public_safe=true`" in readme
+    assert "completed task-result signoff" in readme
+
+    assert "newcomer-friendly entrypoints" in release_gate
+    assert "only produce evidence/template/preflight artifacts" in release_gate
+    assert "not clean-machine passes" in release_gate
+    assert "real-device passes" in release_gate
+    assert "public-safe/signoff" in release_gate
+    assert "completed task-result signoff" in release_gate
+    assert "Raw PowerShell equivalent:" in release_gate
+    assert "not true local model install/start/pull evidence" in release_gate
+    assert "not release-candidate sign-off" in release_gate
+    assert "public_safe=false" in release_gate
+    assert "not as a pass" in release_gate
+
+
 def test_desktop_copy_exposes_settings_and_diagnostics_as_user_entrypoints(project_root: Path) -> None:
     settings_text = (project_root / "desktop" / "src" / "renderer" / "components" / "SettingsPanel.tsx").read_text(encoding="utf-8")
     system_info_text = (project_root / "desktop" / "src" / "renderer" / "components" / "SystemInfoPanel.tsx").read_text(encoding="utf-8")
@@ -206,7 +392,8 @@ def test_desktop_copy_exposes_settings_and_diagnostics_as_user_entrypoints(proje
     assert "统一配置入口" in settings_text
     assert "不需要手动编辑 .env 或 config.yaml" in settings_text
     assert "导出诊断包" in system_info_text
-    assert "不需要打开配置文件" in system_info_text
+    assert "只读诊断，不改设置" in system_info_text
+    assert "不是可公开发布的报告" in system_info_text
 
 
 def test_portable_first_screen_smoke_proves_read_only_diagnostics(project_root: Path) -> None:
@@ -325,6 +512,12 @@ def test_portable_first_screen_smoke_attempts_natural_language_read_only_task_ev
     assert "natural-language command dock displayed clear visible safe failure before submit; no packaged task submission was possible" in text
     assert "visible safe failure is not accepted as natural-language task evidence" in text
     assert "natural-language visible safe failure side-effect check failed" in text
+    assert "function Get-CompletionEvidenceSummary" in text
+    assert 'Get-SmokeJson -Url "$BackendUrl/api/tasks/$taskId/explain"' in text
+    assert 'Get-SmokeJson -Url "$BackendUrl/api/tasks/$runTaskId/explain"' in text
+    assert "completion_evidence.level=$level result_verified=$resultVerifiedText" in text
+    assert "$completionEvidence = Get-CompletionEvidenceSummary $taskExplainPayload" in text
+    assert "$completionEvidence = Get-CompletionEvidenceSummary $runTaskExplainPayload" in text
     assert "portable renderer DOM natural-language read-only task evidence passed" in text
     assert "natural-language renderer DOM evidence failed" in text
     assert "read-only entry evidence remains valid but must not be counted as natural-language task evidence" in text
@@ -365,6 +558,24 @@ def test_portable_docs_do_not_overclaim_gui_task_automation(project_root: Path) 
     assert "separate manual release evidence" in parity
 
 
+def test_portable_docs_route_completed_result_claims_through_completion_evidence(project_root: Path) -> None:
+    release_gate = _release_gate_text(project_root)
+    matrix = _e2e_acceptance_matrix_text(project_root)
+    agentic_evals = _agentic_product_evals_text(project_root)
+
+    for text in (release_gate, matrix, agentic_evals):
+        assert "completion_evidence" in text
+        assert "completed_result" in text
+        assert "result_verified=true" in text
+
+    assert "`submission`, `task_created`, and `visible_progress` levels are not completed-result evidence" in release_gate
+    assert "`completion_evidence.signoff` remains false" in release_gate
+    assert "Product/API explain evidence should use `completion_evidence`" in matrix
+    assert "`completed_result` with `result_verified=true` is still not RC sign-off" in matrix
+    assert "that remains result evidence, not result quality or release sign-off" in agentic_evals
+    assert "`completion_evidence.signoff` remains false" in agentic_evals
+
+
 def test_portable_docs_reference_latest_natural_language_evidence(project_root: Path) -> None:
     release_gate = _release_gate_text(project_root)
     matrix = _e2e_acceptance_matrix_text(project_root)
@@ -388,6 +599,2853 @@ def test_portable_docs_reference_latest_natural_language_evidence(project_root: 
 
     assert "send stayed disabled" not in combined
     assert "visible safe-failure plus zero-write safety evidence" not in combined
+
+
+def test_mobile_lan_wss_preflight_script_is_non_destructive_and_redacted(project_root: Path) -> None:
+    text = _mobile_lan_wss_preflight_text(project_root)
+
+    assert "LENGRVIS_BACKEND_HOST" in text
+    assert "LENGRVIS_BACKEND_PORT" in text
+    assert "LENGRVIS_LAN_PUBLIC_BASE_URL" in text
+    assert "LENGRVIS_LAN_TLS_ENABLED" in text
+    assert "LENGRVIS_LAN_TLS_CERT_FILE" in text
+    assert "LENGRVIS_LAN_TLS_KEY_FILE" in text
+    assert "lengrvis.mobile_pairing.qr" in text
+    assert "lengrvis.mobile_pairing" in text
+    assert "websocket_approvals_url_redacted" in text
+    assert "websocket_remote_input_url_redacted" in text
+    assert "evidence-summary.redacted.json" in text
+    assert "redacted_evidence_summary_path" in text
+    assert "manual_real_device_evidence_template" in text
+    assert "manual_real_device_evidence_required" in text
+    assert "real_device_result" in text
+    assert "uncollected" in text
+    assert "blocked_reason_redacted" in text
+    assert "must_not_be_recorded_as" in text
+    assert "Token-bearing mobile LAN flows require HTTPS and WSS" in text
+    assert "Non-loopback HTTP/ws is blocked-path evidence only" in text
+    assert "This preflight does not use a phone, emulator, camera, QR scanner, or real WSS connection" in text
+    assert "must not be recorded as real-device pass evidence" in text
+    assert "0.0.0.0 is a bind address" in text
+    assert "loopback-only" in text
+    assert "exit 1" in text
+
+    assert "Start-Process" not in text
+    assert "Invoke-WebRequest" not in text
+    assert "Invoke-RestMethod" not in text
+    assert "Import-Certificate" not in text
+    assert "certutil" not in text.lower()
+    assert "Set-Content -LiteralPath $summaryPath" in text
+
+
+def test_release_gate_recommends_mobile_lan_wss_preflight_without_overclaim(project_root: Path) -> None:
+    release_gate = _release_gate_text(project_root)
+
+    assert r".\scripts\verify_mobile_lan_wss_preflight.ps1" in release_gate
+    assert r".tmp\mobile-lan-wss-preflight\...\evidence-summary.redacted.json" in release_gate
+    assert "backend host/public URL/cert environment" in release_gate
+    assert "certificate host coverage for the advertised origin" in release_gate
+    assert "certificate host mismatch" in release_gate
+    assert "backend host/public URL/cert env" in release_gate
+    assert "QR payload shape" in release_gate
+    assert "HTTPS/WSS requirement wording" in release_gate
+    assert "without using a phone, emulator, camera, QR scanner, or real WSS connection" in release_gate
+    assert "It must not be recorded as a real-device pass" in release_gate
+    assert "manual_real_device_evidence_template" in release_gate
+    assert "real_device_result=uncollected" in release_gate
+    assert "must_not_be_recorded_as=real-device pass evidence" in release_gate
+    assert "blocked_reason_redacted" in release_gate
+    assert "does not replace a real phone/emulator camera/QR path, actual WSS connection, or explicit Android/emulator certificate trust evidence" in release_gate
+    assert "Mobile LAN/WSS prerequisite preflight" in release_gate
+    assert "it is not real-device pass evidence" in release_gate
+    assert "mobile real-device redacted template" in release_gate
+
+
+def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root: Path) -> None:
+    package = _package_json(project_root)
+    scripts = package["scripts"]
+    expected_aliases = {
+        "evidence:release",
+        "evidence:mobile-lan-wss",
+        "evidence:local-model-template",
+        "evidence:diagnostics-review",
+    }
+    forbidden_name_pattern = re.compile(
+        r"pass|passed|signoff|sign-off|signed-off|approved|approval|public-safe|ready",
+        re.IGNORECASE,
+    )
+
+    evidence_aliases = {name for name in scripts if name.startswith("evidence:")}
+    assert evidence_aliases == expected_aliases
+    for alias in evidence_aliases:
+        assert not forbidden_name_pattern.search(alias)
+
+    docs_to_check = [
+        project_root / "README.md",
+        project_root / "docs" / "LENGRVIS_PARITY.md",
+        project_root / "docs" / "qa" / "agentic-product-evals.md",
+        project_root / "docs" / "qa" / "e2e-acceptance-matrix.md",
+        project_root / "docs" / "qa" / "real-device-mobile-matrix.md",
+        project_root / "docs" / "qa" / "release-gate.md",
+    ]
+    alias_mention_pattern = re.compile(r"npm run (evidence:[a-z0-9:-]+)", re.IGNORECASE)
+    no_overclaim_phrases = [
+        "not as a pass",
+        "not a pass",
+        "not clean-machine passes",
+        "not real-device passes",
+        "not real-device pass",
+        "not release-candidate sign-off",
+        "not completed task-result sign-off",
+        "not true local model",
+        "not public-safe/signoff",
+        "handoff template",
+        "template only",
+        "contract summary only",
+        "cannot replace",
+        "does not replace",
+        "public_safe=false",
+        "not public-safe",
+        "not release sign-off",
+        "不是签收",
+        "不是 clean-machine pass",
+        "不是 real-device pass",
+        "不是 `public_safe=true`",
+        "不是 public-safe/signoff",
+    ]
+
+    for doc_path in docs_to_check:
+        text = doc_path.read_text(encoding="utf-8")
+        for match in alias_mention_pattern.finditer(text):
+            alias = match.group(1)
+            context = text[max(0, match.start() - 700): match.end() + 700].lower()
+            assert alias in expected_aliases
+            assert any(phrase in context for phrase in no_overclaim_phrases), (
+                f"{doc_path} mentions npm run {alias} without nearby no-overclaim wording"
+            )
+
+
+def test_release_evidence_packet_script_is_read_only_and_redacted(project_root: Path) -> None:
+    text = _release_evidence_packet_text(project_root)
+
+    assert "release-evidence-packet.redacted.json" in text
+    assert "release-evidence-packet.redacted.md" in text
+    assert "mobile_lan_wss_preflight" in text
+    assert "PortableFirstScreenEvidenceRoot" in text
+    assert "portable_first_screen_smoke" in text
+    assert "portable.status.log" in text
+    assert "latest_redacted_status_log" in text
+    assert "not completed task-result sign-off" in text
+    assert "packet_is_pass = $false" in text
+    assert "agent_task_completion_signoff = $false" in text
+    assert "result_quality_signoff = $false" in text
+    assert "evidence_count_is_not_acceptance_count = $true" in text
+    assert "source_artifacts_read_for_summary = $true" in text
+    assert "secrets_or_tokens_emitted = $false" in text
+    assert "ollama_local_model_contracts" in text
+    assert "LocalModelCleanMachineEvidenceRoot" in text
+    assert "local-model-clean-machine-evidence.redacted.json" in text
+    assert "local_model_clean_machine_template" in text
+    assert "latest_redacted_clean_machine_template" in text
+    assert "latest local-model clean-machine helper artifact failed fail-closed validation" in text
+    assert "diagnostics_external_review" in text
+    assert "DiagnosticsReviewEvidenceRoot" in text
+    assert "diagnostics-external-review.redacted.json" in text
+    assert "latest_redacted_review_packet" in text
+    assert "settings_local_model_smoke" in text
+    assert "contract_count" in text
+    assert "expected_public_safe = $false" in text
+    assert "clean_machine_signoff = $false" in text
+    assert "local_model_install_pass = $false" in text
+    assert "local_model_start_pass = $false" in text
+    assert "local_model_pull_pass = $false" in text
+    assert "real_device_signoff = $false" in text
+    assert "release_candidate_signoff = $false" in text
+    assert "not_clean_machine_or_signoff" in text
+    assert "not real-device pass evidence" in text
+    assert "not clean-machine local model install evidence" in text
+    assert "not external public-safety approval" in text
+    assert "not a human content review sign-off" in text
+    assert "not packaged Settings evidence" in text
+    assert "workspace-relative paths or file labels only" in text
+    assert "starts_product_processes = $false" in text
+    assert "performs_network_requests = $false" in text
+    assert "changes_backend_product_logic = $false" in text
+    assert "changes_desktop_ui = $false" in text
+    assert "changes_mobile_app = $false" in text
+    assert "natural_language_completion_evidence" in text
+    assert "completion_evidence\\.level" in text
+    assert '$naturalLanguageCompletionLevel -eq "completed_result" -and $naturalLanguageResultVerified -and -not $naturalLanguageSignoff' in text
+    assert "natural-language pass line reports result_verified without completed_result level" in text
+    assert "natural-language pass line must not report completion_evidence signoff" in text
+
+    assert "Start-Process" not in text
+    assert "Stop-Process" not in text
+    assert "Invoke-WebRequest" not in text
+    assert "Invoke-RestMethod" not in text
+    assert "Import-Certificate" not in text
+    assert "certutil" not in text.lower()
+    assert "Copy-Item" not in text
+    assert "Move-Item" not in text
+    assert "Remove-Item" not in text
+    assert "Set-Content -LiteralPath $jsonPath" in text
+    assert "Set-Content -LiteralPath $markdownPath" in text
+
+
+def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root: Path, tmp_path: Path) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    mobile_root = tmp_path / "mobile-lan-wss-preflight"
+    mobile_run = mobile_root / "run-20260608-000000-000"
+    mobile_run.mkdir(parents=True)
+    (mobile_run / "evidence-summary.redacted.json").write_text(
+        json.dumps(
+            {
+                "result": "ready_for_manual_real_device_evidence",
+                "generated_at_utc": "2026-06-08T00:00:00.0000000Z",
+                "backend": {
+                    "host_redacted": "[redacted-host]",
+                    "public_base_url_redacted": "https://[redacted-host]:9443",
+                    "websocket_approvals_url_redacted": "wss://[redacted-host]:9443/ws/mobile/approvals",
+                    "websocket_remote_input_url_redacted": "wss://[redacted-host]:9443/ws/remote/input",
+                },
+                "lan_tls": {
+                    "enabled": True,
+                    "tls_material_valid": True,
+                    "tls_host_valid": True,
+                },
+                "qr_payload_shape": {
+                    "transport_security_status": "https_ready_preflight",
+                    "transport_security_tls_ready": True,
+                },
+                "issues": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    qa_root.mkdir()
+    for name in (
+        "settings-local-model-experience-smoke-desktop.png",
+        "settings-local-model-experience-smoke-desktop-setup.png",
+        "settings-local-model-experience-smoke-narrow.png",
+        "settings-local-model-experience-smoke-narrow-setup.png",
+    ):
+        (qa_root / name).write_bytes(b"redacted-smoke-artifact")
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(mobile_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "Release evidence packet summary" in output
+    assert "Ollama/local-model contracts" in output
+    assert "public_safe=False" in output
+    assert str(tmp_path) not in output
+
+    json_outputs = list(evidence_root.rglob("release-evidence-packet.redacted.json"))
+    markdown_outputs = list(evidence_root.rglob("release-evidence-packet.redacted.md"))
+    assert len(json_outputs) == 1
+    assert len(markdown_outputs) == 1
+
+    packet_text = json_outputs[0].read_text(encoding="utf-8-sig")
+    markdown_text = markdown_outputs[0].read_text(encoding="utf-8-sig")
+    assert str(tmp_path) not in packet_text
+    assert str(tmp_path) not in markdown_text
+
+    packet = json.loads(packet_text)
+    expected_ollama_contracts = sum(
+        len(re.findall(r"^(?:async\s+def|def)\s+test_", (project_root / path).read_text(encoding="utf-8"), flags=re.MULTILINE))
+        for path in (
+            "backend/tests/test_ollama_service.py",
+            "backend/tests/test_ollama_install_endpoint.py",
+        )
+    )
+
+    assert packet["summary"]["clean_machine_signoff"] is False
+    assert packet["summary"]["packet_is_pass"] is False
+    assert packet["summary"]["evidence_count_is_not_acceptance_count"] is True
+    assert packet["summary"]["agent_task_completion_signoff"] is False
+    assert packet["summary"]["result_quality_signoff"] is False
+    assert packet["summary"]["portable_natural_language_scope"] == "submission_plus_read_only_routing_evidence_only"
+    assert packet["summary"]["local_model_install_pass"] is False
+    assert packet["summary"]["local_model_start_pass"] is False
+    assert packet["summary"]["local_model_pull_pass"] is False
+    assert packet["summary"]["real_device_signoff"] is False
+    assert packet["summary"]["release_candidate_signoff"] is False
+    assert packet["summary"]["diagnostics_public_safe"] is False
+    assert packet["summary"]["packet_status"] == "redacted_partial_evidence_summary"
+    assert "Packet role: evidence index only; packet_is_pass=false" in markdown_text
+    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["result"] == "ready_for_manual_real_device_evidence"
+    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["backend"]["public_base_url_redacted"] == "https://[redacted-host]:9443"
+    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"]["transport_security_status"] == "https_ready_preflight"
+    assert packet["evidence"]["ollama_local_model_contracts"]["contract_count"] == expected_ollama_contracts
+    assert packet["evidence"]["ollama_local_model_contracts"]["latest_execution_status"] == "not_run_by_this_packet"
+    local_model_template = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
+    assert local_model_template["found"] is False
+    assert local_model_template["clean_machine_signoff"] is False
+    assert local_model_template["local_model_install_pass"] is False
+    assert local_model_template["local_model_start_pass"] is False
+    assert local_model_template["local_model_pull_pass"] is False
+    assert packet["evidence"]["diagnostics_external_review"]["expected_external_review_status"] == "manual_review_required"
+    assert packet["evidence"]["diagnostics_external_review"]["expected_public_safe"] is False
+    assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["found"] is False
+    assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["public_safe"] is False
+    assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["external_sharing_allowed"] is False
+    assert packet["evidence"]["settings_local_model_smoke"]["present_artifact_count"] == 4
+    assert "not release-candidate sign-off" in "\n".join(packet["not_clean_machine_or_signoff"]).lower()
+    assert "It is not release-candidate sign-off" in markdown_text
+
+
+def test_release_evidence_packet_fail_closes_unredacted_mobile_preflight_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    mobile_root = tmp_path / "mobile-lan-wss-preflight"
+    mobile_run = mobile_root / "run-malformed-mobile"
+    mobile_run.mkdir(parents=True)
+    (mobile_run / "evidence-summary.redacted.json").write_text(
+        json.dumps(
+            {
+                "result": "ready_for_manual_real_device_evidence",
+                "generated_at_utc": "2026-06-08T00:00:00.0000000Z",
+                "backend": {
+                    "host_redacted": "10.0.0.42",
+                    "public_base_url_redacted": "https://10.0.0.42:9443?token=mobile-secret",
+                    "websocket_approvals_url_redacted": "wss://10.0.0.42:9443/ws/mobile/approvals?token=mobile-secret",
+                    "websocket_remote_input_url_redacted": "wss://10.0.0.42:9443/ws/remote/input?token=mobile-secret",
+                },
+                "lan_tls": {
+                    "enabled": "false",
+                    "tls_material_valid": "false",
+                    "tls_host_valid": "false",
+                },
+                "qr_payload_shape": {
+                    "transport_security_status": "https_ready_preflight",
+                    "transport_security_tls_ready": "false",
+                },
+                "issues": ["token=mobile-secret"],
+                "warnings": ["private host 10.0.0.42"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(mobile_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "latest mobile LAN/WSS preflight artifact failed redacted contract validation" in output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((output, packet_text, markdown_text))
+    for raw in ("10.0.0.42", "mobile-secret", "?token="):
+        assert raw not in combined
+
+    packet = json.loads(packet_text)
+    mobile_summary = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["packet_is_pass"] is False
+    assert mobile_summary["source_contract_status"] == "source_contract_mismatch"
+    assert mobile_summary["result"] == "source_contract_mismatch"
+    assert mobile_summary["backend"] == {
+        "host_redacted": "invalid_redacted",
+        "public_base_url_redacted": "invalid_redacted",
+        "websocket_approvals_url_redacted": "invalid_redacted",
+        "websocket_remote_input_url_redacted": "invalid_redacted",
+    }
+    assert mobile_summary["lan_tls"] == {
+        "enabled": False,
+        "tls_material_valid": False,
+        "tls_host_valid": False,
+    }
+    assert mobile_summary["qr_payload_shape"]["transport_security_status"] == "source_contract_mismatch"
+    assert mobile_summary["qr_payload_shape"]["transport_security_tls_ready"] is False
+    mismatch_reasons = "\n".join(mobile_summary["mismatch_reasons"])
+    assert "backend.host_redacted is not a safe redacted host label" in mismatch_reasons
+    assert "backend.public_base_url_redacted is not a safe redacted origin" in mismatch_reasons
+    assert "backend.websocket_approvals_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
+    assert "lan_tls.enabled is not a JSON boolean" in mismatch_reasons
+    assert "qr_payload_shape.transport_security_tls_ready is not a JSON boolean" in mismatch_reasons
+
+
+def test_release_evidence_packet_fail_closes_unparseable_mobile_preflight_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    mobile_root = tmp_path / "mobile-lan-wss-preflight"
+    mobile_run = mobile_root / "run-unparseable-mobile"
+    mobile_run.mkdir(parents=True)
+    (mobile_run / "evidence-summary.redacted.json").write_text(
+        '{"result": "ready_for_manual_real_device_evidence",',
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(mobile_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "latest mobile LAN/WSS preflight artifact could not be parsed" in output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+    mobile_summary = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["packet_is_pass"] is False
+    assert mobile_summary["source_contract_status"] == "source_contract_mismatch"
+    assert mobile_summary["parse_error"] == "latest JSON artifact could not be parsed"
+    assert mobile_summary["result"] == "source_contract_mismatch"
+
+
+def test_release_evidence_packet_fail_closes_ready_mobile_preflight_missing_redacted_urls(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    mobile_root = tmp_path / "mobile-lan-wss-preflight"
+    mobile_run = mobile_root / "run-ready-missing-urls"
+    mobile_run.mkdir(parents=True)
+    (mobile_run / "evidence-summary.redacted.json").write_text(
+        json.dumps(
+            {
+                "result": "ready_for_manual_real_device_evidence",
+                "generated_at_utc": "2026-06-08T00:00:00.0000000Z",
+                "backend": {
+                    "host_redacted": "[redacted-host]",
+                    "public_base_url_redacted": "",
+                    "websocket_approvals_url_redacted": "",
+                    "websocket_remote_input_url_redacted": "",
+                },
+                "lan_tls": {
+                    "enabled": True,
+                    "tls_material_valid": True,
+                    "tls_host_valid": True,
+                },
+                "qr_payload_shape": {
+                    "transport_security_status": "https_ready_preflight",
+                    "transport_security_tls_ready": True,
+                },
+                "issues": [],
+                "warnings": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(mobile_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "latest mobile LAN/WSS preflight artifact failed redacted contract validation" in output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+    mobile_summary = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert mobile_summary["source_contract_status"] == "source_contract_mismatch"
+    assert mobile_summary["result"] == "source_contract_mismatch"
+    assert mobile_summary["backend"]["public_base_url_redacted"] == "invalid_redacted"
+    assert mobile_summary["backend"]["websocket_approvals_url_redacted"] == "invalid_redacted"
+    assert mobile_summary["backend"]["websocket_remote_input_url_redacted"] == "invalid_redacted"
+    mismatch_reasons = "\n".join(mobile_summary["mismatch_reasons"])
+    assert "ready mobile preflight is missing backend.public_base_url_redacted" in mismatch_reasons
+    assert "ready mobile preflight is missing backend.websocket_approvals_url_redacted" in mismatch_reasons
+    assert "ready mobile preflight is missing backend.websocket_remote_input_url_redacted" in mismatch_reasons
+
+
+def test_release_evidence_packet_redacts_sensitive_evidence_root_labels(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    raw_root_label = "mobile-192.168.56.10-token=mobile-secret-client_secret=client-secret"
+    mobile_root = tmp_path / raw_root_label
+    mobile_root.mkdir()
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(mobile_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((output, packet_text, markdown_text))
+    for raw in ("192.168.56.10", "mobile-secret", "client-secret", "token=mobile-secret", "client_secret=client-secret"):
+        assert raw not in combined
+    assert "[redacted-host]" in packet_text
+    assert "[redacted-sensitive]=[redacted]" in packet_text
+
+
+def test_release_evidence_packet_consumes_local_model_clean_machine_template(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    local_model_root = tmp_path / "local-model-clean-machine-evidence"
+    runtime_source = tmp_path / "runtime" / "Contoso-token-secret-sk-proj-RUNTIME1234.exe"
+    artifact_path = tmp_path / "qa artifacts" / "Contoso-token=artifact-secret-sk-proj-ARTIFACT1234.log"
+    template_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_local_model_clean_machine_evidence_template.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(local_model_root),
+            "-Candidate",
+            "rc-Contoso-token-secret-sk-proj-CANDIDATE1234",
+            "-EvidenceMode",
+            "clean-machine",
+            "-Platform",
+            "Windows x64",
+            "-Runtime",
+            "Ollama",
+            "-RuntimeVersion",
+            "0.5.7",
+            "-RuntimeSource",
+            str(runtime_source),
+            "-Model",
+            "qwen2.5:3b",
+            "-ModelVersion",
+            "sha256:abc123",
+            "-ModelSource",
+            "https://models.example.test/Contoso/token=local-model-secret/private-model",
+            "-BlockedReason",
+            "Manual run blocked by token=local-model-secret",
+            "-Artifact",
+            str(artifact_path),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    template_output = template_result.stdout + template_result.stderr
+    assert template_result.returncode == 0, template_output
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(local_model_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 0, release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((template_output, release_output, packet_text, markdown_text))
+    for raw in (
+        str(tmp_path),
+        "Contoso",
+        "token-secret",
+        "sk-proj-CANDIDATE1234",
+        "sk-proj-RUNTIME1234",
+        "sk-proj-ARTIFACT1234",
+        "artifact-secret",
+        "local-model-secret",
+        "private-model",
+        "models.example.test",
+    ):
+        assert raw not in combined
+
+    packet = json.loads(packet_text)
+    local_summary = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
+    assert packet["summary"]["source_contract_failures"] == 0
+    assert packet["summary"]["clean_machine_signoff"] is False
+    assert packet["summary"]["local_model_install_pass"] is False
+    assert packet["summary"]["local_model_start_pass"] is False
+    assert packet["summary"]["local_model_pull_pass"] is False
+    assert local_summary["found"] is True
+    assert local_summary["marker"] == "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS"
+    assert local_summary["source_contract_status"] == "valid_not_signoff_template"
+    assert local_summary["mismatch_reasons"] == []
+    assert local_summary["template_status"] == "manual_review_ready"
+    assert local_summary["clean_machine_signoff"] is False
+    assert local_summary["local_model_install_pass"] is False
+    assert local_summary["local_model_start_pass"] is False
+    assert local_summary["local_model_pull_pass"] is False
+    assert local_summary["real_install_start_pull_pass"] is False
+    assert local_summary["release_candidate_signoff"] is False
+    assert local_summary["missing_required_fields_count"] == 0
+    assert local_summary["blocked_reason_count"] == 1
+    assert local_summary["observed_artifact_count"] == 1
+    assert "not true local model install pass" in packet["evidence"]["local_model_clean_machine_template"]["not_signoff"]
+    assert "Local model clean-machine template: found=True" in markdown_text
+
+
+def test_release_evidence_packet_consumes_portable_first_screen_status_log(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(
+        portable_root,
+        "\n".join(
+            [
+                "[pass] portable renderer DOM read-only task evidence passed: clicked '检查电脑状态' and observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy (log=C:\\Users\\Suli\\Desktop\\mavris\\.tmp\\portable-first-screen-smoke\\run-private\\portable-renderer-dom-evidence.log); no chat/run/task writes and no diagnostics export package after GUI click (tasks=0; runs=0; chat messages=0; diagnostic-packages=0)",
+                "[pass] portable renderer DOM natural-language read-only task evidence passed: submitted natural-language prompt through packaged command dock and observed expected POST /api/runs; backend task/run evidence will be verified separately (log=C:\\Users\\Suli\\Desktop\\mavris\\.tmp\\portable-first-screen-smoke\\run-private\\portable-renderer-natural-language-evidence.log); natural-language prompt created read-only/system diagnostics task task_99963aecac4841d2af25feb2f675c2ad; completion_evidence.level=visible_progress result_verified=false (tasks=1, relatedTasks=1, runs=1, relatedRuns=0, chat messages=0, diagnostic-packages=0)",
+                "[pass] portable first-screen/read-only diagnostics smoke passed: read-only diagnostics GET succeeded with scope=local_only, product=Lengrvis, temp data dir confirmed; no export/write endpoint invoked; health=http://127.0.0.1:53913/health; window pid=35416; window title='Lengrvis'; renderer DOM evidence=passed; natural-language renderer DOM evidence=passed",
+            ]
+        ),
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 0, release_output
+    assert str(tmp_path) not in release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    assert str(tmp_path) not in packet_text
+    assert "task_99963aecac4841d2af25feb2f675c2ad" not in packet_text
+    assert "task_99963aecac4841d2af25feb2f675c2ad" not in markdown_text
+
+    packet = json.loads(packet_text)
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    assert portable_summary["found"] is True
+    assert portable_summary["source_contract_status"] == "valid_limited_evidence_log"
+    assert portable_summary["first_screen_read_only_pass"] is True
+    assert portable_summary["renderer_dom_read_only_evidence"] == "passed"
+    assert portable_summary["natural_language_submission_evidence"] == "packaged_command_dock_submission_plus_read_only_task_evidence"
+    assert portable_summary["observed_post_endpoint"] == "/api/runs"
+    assert portable_summary["task_evidence_kind"] == "read_only_system_diagnostics_task_or_run"
+    assert portable_summary["read_only_counts"] == {
+        "tasks": 0,
+        "runs": 0,
+        "chat_messages": 0,
+        "diagnostic_packages": 0,
+    }
+    assert portable_summary["natural_language_counts"] == {
+        "tasks": 1,
+        "related_tasks": 1,
+        "runs": 1,
+        "related_runs": 0,
+        "chat_messages": 0,
+        "diagnostic_packages": 0,
+    }
+    assert portable_summary["natural_language_completion_evidence"] == {
+        "level": "visible_progress",
+        "result_verified": False,
+        "completed_result_evidence": False,
+        "signoff": False,
+    }
+    assert packet["redaction"]["source_artifacts_read_for_summary"] is True
+    assert packet["redaction"]["secrets_or_tokens_emitted"] is False
+    assert "secrets_or_tokens_read" not in packet["redaction"]
+    assert portable_summary["clean_machine_signoff"] is False
+    assert portable_summary["completed_task_result_signoff"] is False
+    assert portable_summary["release_candidate_signoff"] is False
+    assert "not completed task-result sign-off" in packet["evidence"]["portable_first_screen_smoke"]["not_signoff"]
+    assert "completion_evidence.level=visible_progress" in markdown_text
+    assert "completed_result_evidence=False" in markdown_text
+    assert "Portable first-screen smoke: found=True" in markdown_text
+
+
+def test_release_evidence_packet_records_completed_result_evidence_without_signoff(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(
+        portable_root,
+        "\n".join(
+            [
+                "[pass] portable renderer DOM read-only task evidence passed: clicked '检查电脑状态' and observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy; no chat/run/task writes and no diagnostics export package after GUI click (tasks=0; runs=0; chat messages=0; diagnostic-packages=0)",
+                "[pass] portable renderer DOM natural-language read-only task evidence passed: submitted natural-language prompt through packaged command dock and observed expected POST /api/runs; natural-language prompt created read-only/system diagnostics task task_99963aecac4841d2af25feb2f675c2ad; completion_evidence.level=completed_result result_verified=true (tasks=1, relatedTasks=1, runs=1, relatedRuns=0, chat messages=0, diagnostic-packages=0)",
+                "[pass] portable first-screen/read-only diagnostics smoke passed: read-only diagnostics GET succeeded with scope=local_only, product=Lengrvis, temp data dir confirmed; no export/write endpoint invoked; renderer DOM evidence=passed; natural-language renderer DOM evidence=passed",
+            ]
+        ),
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 0, release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+
+    packet = json.loads(packet_text)
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    assert portable_summary["source_contract_status"] == "valid_limited_evidence_log"
+    assert portable_summary["natural_language_submission_evidence"] == "packaged_command_dock_submission_plus_read_only_task_evidence"
+    assert portable_summary["natural_language_completion_evidence"] == {
+        "level": "completed_result",
+        "result_verified": True,
+        "completed_result_evidence": True,
+        "signoff": False,
+    }
+    assert portable_summary["completed_task_result_signoff"] is False
+    assert packet["summary"]["agent_task_completion_signoff"] is False
+    assert packet["summary"]["result_quality_signoff"] is False
+    assert "completion_evidence.level=completed_result" in markdown_text
+    assert "result_verified=True" in markdown_text
+    assert "completed_result_evidence=True" in markdown_text
+    assert "task_99963aecac4841d2af25feb2f675c2ad" not in packet_text
+    assert "task_99963aecac4841d2af25feb2f675c2ad" not in markdown_text
+
+
+@pytest.mark.parametrize(
+    (
+        "level",
+        "result_verified",
+        "signoff",
+        "expected_returncode",
+        "expected_mismatch",
+    ),
+    [
+        ("completed_result", False, False, 0, ""),
+        ("submission", False, False, 0, ""),
+        ("task_created", False, False, 0, ""),
+        ("visible_progress", False, False, 0, ""),
+        ("safe_failure", False, False, 0, ""),
+        (
+            "visible_progress",
+            True,
+            False,
+            1,
+            "natural-language pass line reports result_verified without completed_result level",
+        ),
+        (
+            "completed_result",
+            True,
+            True,
+            1,
+            "natural-language pass line must not report completion_evidence signoff",
+        ),
+    ],
+)
+def test_release_evidence_packet_does_not_mark_unverified_or_non_completed_levels_as_completed_result_evidence(
+    project_root: Path,
+    tmp_path: Path,
+    level: str,
+    result_verified: bool,
+    signoff: bool,
+    expected_returncode: int,
+    expected_mismatch: str,
+) -> None:
+    result_verified_text = str(result_verified).lower()
+    signoff_text = str(signoff).lower()
+    release_result, evidence_root = _run_release_evidence_packet_for_portable_status_log(
+        project_root,
+        tmp_path,
+        [
+            "[pass] portable renderer DOM read-only task evidence passed: clicked 'status' and observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy; no chat/run/task writes and no diagnostics export package after GUI click (tasks=0; runs=0; chat messages=0; diagnostic-packages=0)",
+            f"[pass] portable renderer DOM natural-language read-only task evidence passed: submitted natural-language prompt through packaged command dock and observed expected POST /api/runs; natural-language prompt created read-only/system diagnostics task task_completion; completion_evidence.level={level} result_verified={result_verified_text} signoff={signoff_text} (tasks=1, relatedTasks=1, runs=1, relatedRuns=0, chat messages=0, diagnostic-packages=0)",
+            "[pass] portable first-screen/read-only diagnostics smoke passed: read-only diagnostics GET succeeded with scope=local_only, product=Lengrvis, temp data dir confirmed; no export/write endpoint invoked; renderer DOM evidence=passed; natural-language renderer DOM evidence=passed",
+        ],
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == expected_returncode, release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    completion_evidence = portable_summary["natural_language_completion_evidence"]
+
+    assert completion_evidence["level"] == level
+    assert completion_evidence["result_verified"] is result_verified
+    assert completion_evidence["completed_result_evidence"] is False
+    assert completion_evidence["signoff"] is False
+    assert portable_summary["completed_task_result_signoff"] is False
+    assert packet["summary"]["agent_task_completion_signoff"] is False
+    assert packet["summary"]["result_quality_signoff"] is False
+
+    if expected_mismatch:
+        assert portable_summary["source_contract_status"] == "source_contract_mismatch"
+        assert expected_mismatch in "\n".join(portable_summary["mismatch_reasons"])
+    else:
+        assert portable_summary["source_contract_status"] == "valid_limited_evidence_log"
+        assert portable_summary["mismatch_reasons"] == []
+
+
+def test_release_evidence_packet_sanitizes_portable_status_log_and_does_not_overclaim(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(
+        portable_root,
+        "\n".join(
+            [
+                "[info] started portable launcher pid 123; token=portable-secret; temp state C:\\Users\\Suli\\Contoso-token-secret\\private",
+                "[unsupported] portable renderer DOM natural-language read-only task evidence unavailable: packaged command dock disabled; read-only entry evidence remains valid but must not be counted as natural-language task evidence",
+                "[pass] portable first-screen/read-only diagnostics smoke passed: read-only diagnostics GET succeeded with scope=local_only, product=Lengrvis, temp data dir confirmed; no export/write endpoint invoked",
+            ]
+        ),
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 0, release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((release_output, packet_text, markdown_text))
+    for raw in (
+        str(tmp_path),
+        "portable-secret",
+        "Contoso",
+        "token-secret",
+        r"C:\Users\Suli",
+    ):
+        assert raw not in combined
+
+    packet = json.loads(packet_text)
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    assert portable_summary["source_contract_status"] == "limited_or_incomplete_evidence_log"
+    assert portable_summary["first_screen_read_only_pass"] is False
+    assert portable_summary["renderer_dom_read_only_evidence"] == "unsupported"
+    assert portable_summary["natural_language_submission_evidence"] == "unsupported"
+    assert portable_summary["observed_post_endpoint"] == ""
+    assert portable_summary["clean_machine_signoff"] is False
+    assert portable_summary["completed_task_result_signoff"] is False
+    assert portable_summary["release_candidate_signoff"] is False
+    assert packet["redaction"]["source_artifacts_read_for_summary"] is True
+    assert packet["redaction"]["secrets_or_tokens_emitted"] is False
+    assert "secrets_or_tokens_read" not in packet["redaction"]
+    assert "completed task-result sign-off" in "\n".join(packet["evidence"]["portable_first_screen_smoke"]["not_signoff"])
+
+
+def test_release_evidence_packet_fail_closes_empty_portable_status_log(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(portable_root, "")
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    assert "latest portable first-screen status log could not be read or was empty" in release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["packet_is_pass"] is False
+    assert portable_summary["source_contract_status"] == "source_contract_mismatch"
+    assert portable_summary["first_screen_read_only_pass"] is False
+    assert portable_summary["natural_language_submission_evidence"] == "not_observed"
+    assert portable_summary["clean_machine_signoff"] is False
+    assert portable_summary["completed_task_result_signoff"] is False
+    assert portable_summary["release_candidate_signoff"] is False
+
+
+def test_release_evidence_packet_fail_closes_generic_natural_language_pass_log(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(
+        portable_root,
+        "\n".join(
+            [
+                "[pass] portable renderer DOM read-only task evidence passed: clicked '检查电脑状态' and observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy; no chat/run/task writes and no diagnostics export package after GUI click (tasks=0; runs=0; chat messages=0; diagnostic-packages=0)",
+                "[pass] portable renderer DOM natural-language read-only task evidence passed: submitted natural-language prompt through packaged command dock and observed expected POST /api/runs; generic task created without diagnostics relation (tasks=1, runs=1, chat messages=0, diagnostic-packages=0)",
+                "[pass] portable first-screen/read-only diagnostics smoke passed: read-only diagnostics GET succeeded with scope=local_only, product=Lengrvis, temp data dir confirmed; no export/write endpoint invoked; renderer DOM evidence=passed; natural-language renderer DOM evidence=passed",
+            ]
+        ),
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    assert "latest portable first-screen status log failed limited-evidence validation" in release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["packet_is_pass"] is False
+    assert portable_summary["source_contract_status"] == "source_contract_mismatch"
+    assert portable_summary["first_screen_read_only_pass"] is False
+    assert portable_summary["renderer_dom_read_only_evidence"] == "passed"
+    assert portable_summary["natural_language_submission_evidence"] == "source_contract_mismatch"
+    assert portable_summary["observed_post_endpoint"] == "/api/runs"
+    assert portable_summary["task_evidence_kind"] == "not_observed"
+    assert portable_summary["natural_language_counts"] == {
+        "tasks": 1,
+        "related_tasks": 0,
+        "runs": 1,
+        "related_runs": 0,
+        "chat_messages": 0,
+        "diagnostic_packages": 0,
+    }
+    mismatch_reasons = "\n".join(portable_summary["mismatch_reasons"])
+    assert "natural-language pass line does not prove POST plus read-only task/run evidence" in mismatch_reasons
+    assert "natural-language pass line does not prove read-only/system diagnostics task or run semantics" in mismatch_reasons
+    assert "natural-language pass line does not prove related read-only/system diagnostics task or run evidence" in mismatch_reasons
+
+
+def test_release_evidence_packet_fail_closes_natural_language_pass_without_related_counts(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(
+        portable_root,
+        "\n".join(
+            [
+                "[pass] portable renderer DOM read-only task evidence passed: clicked '检查电脑状态' and observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy; no chat/run/task writes and no diagnostics export package after GUI click (tasks=0; runs=0; chat messages=0; diagnostic-packages=0)",
+                "[pass] portable renderer DOM natural-language read-only task evidence passed: submitted natural-language prompt through packaged command dock and observed expected POST /api/runs; natural-language prompt created read-only/system diagnostics task task_123 (tasks=1, runs=0, chat messages=0, diagnostic-packages=0)",
+                "[pass] portable first-screen/read-only diagnostics smoke passed: read-only diagnostics GET succeeded with scope=local_only, product=Lengrvis, temp data dir confirmed; no export/write endpoint invoked; renderer DOM evidence=passed; natural-language renderer DOM evidence=passed",
+            ]
+        ),
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert portable_summary["source_contract_status"] == "source_contract_mismatch"
+    assert portable_summary["natural_language_submission_evidence"] == "source_contract_mismatch"
+    assert portable_summary["observed_post_endpoint"] == "/api/runs"
+    assert portable_summary["task_evidence_kind"] == "not_observed"
+    assert portable_summary["natural_language_counts"] == {
+        "tasks": 1,
+        "related_tasks": 0,
+        "runs": 0,
+        "related_runs": 0,
+        "chat_messages": 0,
+        "diagnostic_packages": 0,
+    }
+    mismatch_reasons = "\n".join(portable_summary["mismatch_reasons"])
+    assert "natural-language pass line does not prove POST plus read-only task/run evidence" in mismatch_reasons
+    assert "natural-language pass line does not prove related read-only/system diagnostics task or run evidence" in mismatch_reasons
+    assert "natural-language pass line does not prove read-only/system diagnostics task or run semantics" not in mismatch_reasons
+
+
+def test_release_evidence_packet_fail_closes_malformed_portable_pass_log(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    portable_root = tmp_path / "portable-first-screen-smoke"
+    _write_portable_status_log(
+        portable_root,
+        "\n".join(
+            [
+                "[pass] portable renderer DOM read-only task evidence passed: clicked '检查电脑状态' but missing side-effect counts",
+                "[pass] portable renderer DOM natural-language read-only task evidence passed: submitted natural-language prompt through packaged command dock and observed expected POST /api/runs; missing backend task/run counts",
+                "[fail] portable first-screen/read-only diagnostics smoke errored before readiness was proven token=portable-secret",
+            ]
+        ),
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-PortableFirstScreenEvidenceRoot",
+            str(portable_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    assert "latest portable first-screen status log failed limited-evidence validation" in release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((release_output, packet_text))
+    assert str(tmp_path) not in combined
+    assert "portable-secret" not in combined
+
+    packet = json.loads(packet_text)
+    portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["packet_is_pass"] is False
+    assert portable_summary["source_contract_status"] == "source_contract_mismatch"
+    assert portable_summary["first_screen_read_only_pass"] is False
+    assert portable_summary["natural_language_submission_evidence"] == "source_contract_mismatch"
+    assert portable_summary["clean_machine_signoff"] is False
+    assert portable_summary["completed_task_result_signoff"] is False
+    assert portable_summary["release_candidate_signoff"] is False
+    mismatch_reasons = "\n".join(portable_summary["mismatch_reasons"])
+    assert "portable status log contains pass and fail/blocked lines" in mismatch_reasons
+    assert "read-only pass line does not prove zero task/run/chat/export side effects" in mismatch_reasons
+    assert "natural-language pass line does not prove POST plus read-only task/run evidence" in mismatch_reasons
+    assert "portable status log is missing final first-screen pass line" in mismatch_reasons
+
+
+def test_release_evidence_packet_fail_closes_malformed_local_model_template_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    local_model_root = tmp_path / "local-model-clean-machine-evidence"
+    malformed_root = local_model_root / "run-malformed"
+    malformed_root.mkdir(parents=True)
+    (malformed_root / "local-model-clean-machine-evidence.redacted.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "generated_by": "sk-proj-LOCALMODELSECRET1234",
+                "marker": "sk-proj-LOCALMODELSECRET1234",
+                "summary": {
+                    "template_status": r"C:\Users\Suli\Contoso\ready?token=local-model-secret",
+                    "clean_machine_signoff": True,
+                    "local_model_install_pass": True,
+                    "local_model_start_pass": True,
+                    "local_model_pull_pass": True,
+                    "real_install_start_pull_pass": True,
+                    "release_candidate_signoff": True,
+                    "missing_required_fields": [],
+                },
+                "readonly_scope": {
+                    "starts_product_processes": True,
+                    "performs_network_requests": True,
+                    "installs_runtime": True,
+                    "starts_runtime": True,
+                    "pulls_models": True,
+                    "runs_model_inference": True,
+                },
+                "redaction": {
+                    "raw_logs_included": True,
+                    "secrets_or_tokens_read": True,
+                    "urls_redacted": False,
+                },
+                "evidence_template": {
+                    "template_status": "clean_machine_local_model_ready",
+                    "runtime": {"status": "verified"},
+                    "model": {"status": "verified"},
+                    "must_not_be_recorded_as": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(local_model_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    assert "latest local-model clean-machine helper artifact failed fail-closed validation" in release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((release_output, packet_text))
+    for raw in (
+        str(tmp_path),
+        "sk-proj-LOCALMODELSECRET1234",
+        "local-model-secret",
+        "Contoso",
+    ):
+        assert raw not in combined
+
+    packet = json.loads(packet_text)
+    local_summary = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["source_contract_failures"] == 1
+    assert local_summary["source_contract_status"] == "source_contract_mismatch"
+    assert local_summary["marker"] == "invalid_redacted"
+    assert local_summary["template_status"] == "invalid_redacted"
+    assert local_summary["clean_machine_signoff"] is False
+    assert local_summary["local_model_install_pass"] is False
+    assert local_summary["local_model_start_pass"] is False
+    assert local_summary["local_model_pull_pass"] is False
+    assert local_summary["real_install_start_pull_pass"] is False
+    assert local_summary["release_candidate_signoff"] is False
+    mismatch_reasons = "\n".join(local_summary["mismatch_reasons"])
+    assert "marker is missing or not NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS" in mismatch_reasons
+    assert "schema_version is not 1" in mismatch_reasons
+    assert "generated_by is not the local-model clean-machine helper" in mismatch_reasons
+    assert "summary.clean_machine_signoff is not false" in mismatch_reasons
+    assert "summary.local_model_install_pass is not false" in mismatch_reasons
+    assert "summary.local_model_start_pass is not false" in mismatch_reasons
+    assert "summary.local_model_pull_pass is not false" in mismatch_reasons
+    assert "summary.real_install_start_pull_pass is not false" in mismatch_reasons
+    assert "summary.release_candidate_signoff is not false" in mismatch_reasons
+    assert "readonly_scope.starts_product_processes is not false" in mismatch_reasons
+    assert "redaction.urls_redacted is not true" in mismatch_reasons
+    assert "evidence_template.runtime.status is not unverified_by_this_helper" in mismatch_reasons
+    assert "must_not_be_recorded_as is missing true local model install pass" in mismatch_reasons
+
+
+def test_release_evidence_packet_rejects_string_boolean_local_model_template_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    local_model_root = tmp_path / "local-model-clean-machine-evidence"
+    malformed_root = local_model_root / "run-string-booleans"
+    malformed_root.mkdir(parents=True)
+    (malformed_root / "local-model-clean-machine-evidence.redacted.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_by": "scripts/collect_local_model_clean_machine_evidence_template.ps1",
+                "marker": "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS",
+                "summary": {
+                    "template_status": "manual_review_ready",
+                    "clean_machine_signoff": "false",
+                    "local_model_install_pass": "false",
+                    "local_model_start_pass": "false",
+                    "local_model_pull_pass": "false",
+                    "real_install_start_pull_pass": "false",
+                    "release_candidate_signoff": "false",
+                    "missing_required_fields": [],
+                },
+                "readonly_scope": {
+                    "starts_product_processes": "false",
+                    "performs_network_requests": "false",
+                    "installs_runtime": "false",
+                    "starts_runtime": "false",
+                    "pulls_models": "false",
+                    "runs_model_inference": "false",
+                },
+                "redaction": {
+                    "raw_logs_included": "false",
+                    "secrets_or_tokens_read": "false",
+                    "urls_redacted": "true",
+                },
+                "evidence_template": {
+                    "template_status": "manual_clean_machine_local_model_evidence_required",
+                    "runtime": {"status": "unverified_by_this_helper"},
+                    "model": {"status": "unverified_by_this_helper"},
+                    "must_not_be_recorded_as": [
+                        "true local model install pass",
+                        "true local model start pass",
+                        "true local model pull pass",
+                        "clean-machine local-model readiness",
+                        "release-candidate sign-off",
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(local_model_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    local_summary = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
+    assert local_summary["source_contract_status"] == "source_contract_mismatch"
+    assert local_summary["marker"] == "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS"
+    assert local_summary["template_status"] == "manual_review_ready"
+    assert local_summary["clean_machine_signoff"] is False
+    assert local_summary["local_model_install_pass"] is False
+    assert local_summary["local_model_start_pass"] is False
+    assert local_summary["local_model_pull_pass"] is False
+    mismatch_reasons = "\n".join(local_summary["mismatch_reasons"])
+    assert "summary.clean_machine_signoff is not false" in mismatch_reasons
+    assert "summary.local_model_install_pass is not false" in mismatch_reasons
+    assert "summary.local_model_start_pass is not false" in mismatch_reasons
+    assert "summary.local_model_pull_pass is not false" in mismatch_reasons
+    assert "summary.real_install_start_pull_pass is not false" in mismatch_reasons
+    assert "summary.release_candidate_signoff is not false" in mismatch_reasons
+    assert "readonly_scope.starts_product_processes is not false" in mismatch_reasons
+    assert "readonly_scope.performs_network_requests is not false" in mismatch_reasons
+    assert "redaction.raw_logs_included is not false" in mismatch_reasons
+    assert "redaction.urls_redacted is not true" in mismatch_reasons
+
+
+def test_release_evidence_packet_consumes_diagnostics_external_review_template(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    diagnostics_package = tmp_path / "diagnostic-packages" / "lengrvis-diagnostics-review.json"
+    _write_diagnostics_support_package(diagnostics_package, generated_at="2026-06-09T00:00:00+00:00")
+    diagnostics_review_root = tmp_path / "diagnostics-external-review"
+    review_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-DiagnosticsPackagePath",
+            str(diagnostics_package),
+            "-EvidenceRoot",
+            str(diagnostics_review_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    assert review_result.returncode == 0, review_result.stdout + review_result.stderr
+
+    qa_root = tmp_path / "qa-evidence"
+    qa_root.mkdir()
+    for name in (
+        "settings-local-model-experience-smoke-desktop.png",
+        "settings-local-model-experience-smoke-desktop-setup.png",
+        "settings-local-model-experience-smoke-narrow.png",
+        "settings-local-model-experience-smoke-narrow-setup.png",
+    ):
+        (qa_root / name).write_bytes(b"redacted-smoke-artifact")
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(diagnostics_review_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 0, release_output
+    assert str(tmp_path) not in release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
+    assert review_summary["found"] is True
+    assert review_summary["marker"] == "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF"
+    assert review_summary["source_contract_status"] == "valid_not_signoff_template"
+    assert review_summary["mismatch_reasons"] == []
+    assert review_summary["review_status"] == "manual_external_review_template_ready"
+    assert review_summary["public_safe"] is False
+    assert review_summary["external_sharing_allowed"] is False
+    assert review_summary["human_review_signoff"] is False
+    assert review_summary["template_is_human_signoff"] is False
+    assert review_summary["checklist_count"] == 6
+    assert packet["summary"]["source_contract_failures"] == 0
+    assert packet["summary"]["diagnostics_public_safe"] is False
+
+
+def test_release_evidence_packet_fail_closes_malformed_diagnostics_review_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    diagnostics_review_root = tmp_path / "diagnostics-external-review"
+    malformed_root = diagnostics_review_root / "run-malformed"
+    malformed_root.mkdir(parents=True)
+    (malformed_root / "diagnostics-external-review.redacted.json").write_text(
+        json.dumps(
+            {
+                "marker": "sk-proj-RELEASESECRET1234",
+                "summary": {
+                    "status": r"C:\Users\Suli\Contoso\approved?token=release-secret",
+                    "public_safe": True,
+                    "required_before_external_sharing": False,
+                    "human_review_signoff": True,
+                    "external_public_safe_signoff": True,
+                    "template_is_human_signoff": True,
+                    "external_sharing_allowed": True,
+                },
+                "review_template": {
+                    "public_safe": True,
+                    "checklist": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    qa_root.mkdir()
+    for name in (
+        "settings-local-model-experience-smoke-desktop.png",
+        "settings-local-model-experience-smoke-desktop-setup.png",
+        "settings-local-model-experience-smoke-narrow.png",
+        "settings-local-model-experience-smoke-narrow-setup.png",
+    ):
+        (qa_root / name).write_bytes(b"redacted-smoke-artifact")
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(diagnostics_review_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    assert "latest diagnostics external-review helper artifact failed fail-closed validation" in release_output
+    assert str(tmp_path) not in release_output
+    assert "sk-proj-RELEASESECRET1234" not in release_output
+    assert "release-secret" not in release_output
+    assert "Contoso" not in release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    assert "sk-proj-RELEASESECRET1234" not in packet_text
+    assert "release-secret" not in packet_text
+    assert "Contoso" not in packet_text
+    packet = json.loads(
+        packet_text
+    )
+    review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["source_contract_failures"] == 1
+    assert review_summary["source_contract_status"] == "source_contract_mismatch"
+    assert review_summary["marker"] == "invalid_redacted"
+    assert review_summary["review_status"] == "invalid_redacted"
+    assert review_summary["public_safe"] is False
+    assert review_summary["external_sharing_allowed"] is False
+    assert review_summary["human_review_signoff"] is False
+    assert review_summary["template_is_human_signoff"] is False
+    mismatch_reasons = "\n".join(review_summary["mismatch_reasons"])
+    assert "marker is missing or not NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF" in mismatch_reasons
+    assert "review status is not manual_external_review_template_ready" in mismatch_reasons
+    assert "summary.public_safe is not false" in mismatch_reasons
+    assert "summary.required_before_external_sharing is not true" in mismatch_reasons
+    assert "summary.human_review_signoff is not false" in mismatch_reasons
+    assert "summary.external_public_safe_signoff is not false" in mismatch_reasons
+    assert "summary.template_is_human_signoff is not false" in mismatch_reasons
+    assert "summary.external_sharing_allowed is not false" in mismatch_reasons
+    assert "review_template.public_safe is not false" in mismatch_reasons
+
+
+def test_release_evidence_packet_rejects_string_boolean_diagnostics_review_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    diagnostics_review_root = tmp_path / "diagnostics-external-review"
+    malformed_root = diagnostics_review_root / "run-string-booleans"
+    malformed_root.mkdir(parents=True)
+    (malformed_root / "diagnostics-external-review.redacted.json").write_text(
+        json.dumps(
+            {
+                "marker": "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF",
+                "summary": {
+                    "status": "manual_external_review_template_ready",
+                    "public_safe": "false",
+                    "required_before_external_sharing": "true",
+                    "human_review_signoff": "false",
+                    "external_public_safe_signoff": "false",
+                    "template_is_human_signoff": "false",
+                    "external_sharing_allowed": "false",
+                },
+                "review_template": {
+                    "public_safe": "false",
+                    "checklist": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    qa_root.mkdir()
+    for name in (
+        "settings-local-model-experience-smoke-desktop.png",
+        "settings-local-model-experience-smoke-desktop-setup.png",
+        "settings-local-model-experience-smoke-narrow.png",
+        "settings-local-model-experience-smoke-narrow-setup.png",
+    ):
+        (qa_root / name).write_bytes(b"redacted-smoke-artifact")
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(diagnostics_review_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
+    assert review_summary["source_contract_status"] == "source_contract_mismatch"
+    assert review_summary["marker"] == "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF"
+    assert review_summary["review_status"] == "manual_external_review_template_ready"
+    assert review_summary["public_safe"] is False
+    mismatch_reasons = "\n".join(review_summary["mismatch_reasons"])
+    assert "summary.public_safe is not false" in mismatch_reasons
+    assert "summary.required_before_external_sharing is not true" in mismatch_reasons
+    assert "summary.human_review_signoff is not false" in mismatch_reasons
+    assert "summary.external_public_safe_signoff is not false" in mismatch_reasons
+    assert "summary.template_is_human_signoff is not false" in mismatch_reasons
+    assert "summary.external_sharing_allowed is not false" in mismatch_reasons
+    assert "review_template.public_safe is not false" in mismatch_reasons
+
+
+def _write_diagnostics_support_package(path: Path, *, generated_at: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": generated_at,
+                "diagnostic_scope": "local_only",
+                "diagnostics": {
+                    "diagnostic_scope": "local_only",
+                    "product": {"name": "Lengrvis", "version": "0.1.0"},
+                    "local_paths": {
+                        "data_dir": r"C:\Users\Suli\Contoso\LengrvisData",
+                        "database": r"C:\Users\Suli\Contoso\LengrvisData\lengrvis.db",
+                    },
+                    "top_processes": [
+                        {
+                            "name": "Lengrvis.exe",
+                            "username": "Suli",
+                            "command_line": "Authorization: Bearer diagnostics-secret-token",
+                        }
+                    ],
+                    "support_debug": {
+                        "note": "callback=https://private.example.test/path?token=diagnostics-url-secret",
+                    },
+                    "support_package_redaction": {
+                        "schema_version": 1,
+                        "applies_to": "diagnostics_export_payload",
+                        "scope": "local_only",
+                        "intended_audience": "trusted_support",
+                        "public_safe": False,
+                        "review_before_external_sharing": True,
+                        "current_response": {
+                            "public_safe": False,
+                            "contains_local_paths": False,
+                            "external_review_required": True,
+                        },
+                        "external_review": {
+                            "schema_version": 1,
+                            "status": "manual_review_required",
+                            "required_before_external_sharing": True,
+                            "public_safe": False,
+                            "checklist": [
+                                {
+                                    "id": "external_sharing_decision",
+                                    "status": "pending",
+                                    "required": True,
+                                }
+                            ],
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_diagnostics_external_review_packet_script_is_read_only_and_not_signoff(project_root: Path) -> None:
+    text = _diagnostics_external_review_packet_text(project_root)
+
+    assert "diagnostics-external-review.redacted.json" in text
+    assert "diagnostics-external-review.redacted.md" in text
+    assert "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF" in text
+    assert "manual_external_diagnostics_review_required" in text
+    assert "public_safe = $false" in text
+    assert "required_before_external_sharing = $true" in text
+    assert "human_review_signoff = $false" in text
+    assert "external_public_safe_signoff = $false" in text
+    assert "template_is_human_signoff = $false" in text
+    assert "starts_product_processes = $false" in text
+    assert "performs_network_requests = $false" in text
+    assert "uploads_external_services = $false" in text
+    assert "installs_dependencies = $false" in text
+    assert "external_service_data_read = $false" in text
+    assert "package_payload_copied = $false" in text
+    assert "external public-safe signoff" in text
+    assert "permission to publish diagnostics" in text
+    assert "human reviewer approval" in text
+    assert "public_safe remains false" in text
+
+    assert "Start-Process" not in text
+    assert "Stop-Process" not in text
+    assert "Invoke-WebRequest" not in text
+    assert "Invoke-RestMethod" not in text
+    assert "curl" not in text.lower()
+    assert "pip install" not in text.lower()
+    assert "npm install" not in text.lower()
+    assert "Copy-Item" not in text
+    assert "Move-Item" not in text
+    assert "Remove-Item" not in text
+    assert "public_safe = $true" not in text
+    assert "Set-Content -LiteralPath $jsonPath" in text
+    assert "Set-Content -LiteralPath $markdownPath" in text
+
+
+def test_diagnostics_external_review_packet_outputs_latest_redacted_template(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    diagnostics_root = tmp_path / "diagnostic-packages"
+    old_package = diagnostics_root / "lengrvis-diagnostics-old.json"
+    latest_package = diagnostics_root / "lengrvis-diagnostics-new.json"
+    _write_diagnostics_support_package(old_package, generated_at="2026-06-08T00:00:00+00:00")
+    _write_diagnostics_support_package(latest_package, generated_at="2026-06-09T00:00:00+00:00")
+    os.utime(old_package, (1_700_000_000, 1_700_000_000))
+    os.utime(latest_package, (1_800_000_000, 1_800_000_000))
+
+    evidence_root = tmp_path / "diagnostics-external-review"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-DiagnosticsRoot",
+            str(diagnostics_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "Diagnostics external review template" in output
+    assert "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF" in output
+    assert "public_safe remains false" in output
+    for raw in (
+        str(tmp_path),
+        r"C:\Users\Suli",
+        "Contoso",
+        "diagnostics-secret-token",
+        "diagnostics-url-secret",
+        "private.example.test",
+    ):
+        assert raw not in output
+
+    json_outputs = list(evidence_root.rglob("diagnostics-external-review.redacted.json"))
+    markdown_outputs = list(evidence_root.rglob("diagnostics-external-review.redacted.md"))
+    assert len(json_outputs) == 1
+    assert len(markdown_outputs) == 1
+
+    packet_text = json_outputs[0].read_text(encoding="utf-8-sig")
+    markdown_text = markdown_outputs[0].read_text(encoding="utf-8-sig")
+    for raw in (
+        str(tmp_path),
+        r"C:\Users\Suli",
+        "Contoso",
+        "diagnostics-secret-token",
+        "diagnostics-url-secret",
+        "private.example.test",
+    ):
+        assert raw not in packet_text
+        assert raw not in markdown_text
+    assert '"public_safe": true' not in packet_text.lower()
+
+    packet = json.loads(packet_text)
+    assert packet["marker"] == "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF"
+    assert packet["summary"]["status"] == "manual_external_review_template_ready"
+    assert packet["summary"]["public_safe"] is False
+    assert packet["summary"]["required_before_external_sharing"] is True
+    assert packet["summary"]["human_review_signoff"] is False
+    assert packet["summary"]["external_public_safe_signoff"] is False
+    assert packet["summary"]["template_is_human_signoff"] is False
+    assert packet["readonly_scope"]["starts_product_processes"] is False
+    assert packet["readonly_scope"]["performs_network_requests"] is False
+    assert packet["readonly_scope"]["uploads_external_services"] is False
+    assert packet["redaction"]["external_service_data_read"] is False
+    assert packet["input_diagnostics_package"]["selection_mode"] == "latest"
+    assert packet["input_diagnostics_package"]["package_label"] == "lengrvis-diagnostics-new.json"
+    assert packet["source_redaction_contract"]["package_public_safe_observation"] == "false"
+    assert packet["source_redaction_contract"]["external_review_public_safe_observation"] == "false"
+    assert packet["source_redaction_contract"]["external_review_status"] == "manual_review_required"
+    assert packet["review_template"]["public_safe"] is False
+    assert packet["review_template"]["human_decision"] == "pending"
+    assert "external public-safe signoff" in packet["review_template"]["must_not_be_recorded_as"]
+    assert "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF" in markdown_text
+    assert "This template is not human reviewer approval" in markdown_text
+
+
+def test_diagnostics_external_review_packet_uses_specified_package_path(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    diagnostics_root = tmp_path / "diagnostic-packages"
+    latest_package = diagnostics_root / "lengrvis-diagnostics-latest.json"
+    specified_package = tmp_path / "manual package" / "lengrvis-diagnostics-specified.json"
+    _write_diagnostics_support_package(latest_package, generated_at="2026-06-09T00:00:00+00:00")
+    _write_diagnostics_support_package(specified_package, generated_at="2026-06-08T12:00:00+00:00")
+    os.utime(latest_package, (1_800_000_000, 1_800_000_000))
+    os.utime(specified_package, (1_700_000_000, 1_700_000_000))
+
+    evidence_root = tmp_path / "specified-review"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-DiagnosticsRoot",
+            str(diagnostics_root),
+            "-DiagnosticsPackagePath",
+            str(specified_package),
+            "-EvidenceRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert str(tmp_path) not in output
+    packet = json.loads(
+        next(evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    assert packet["input_diagnostics_package"]["selection_mode"] == "specified"
+    assert packet["input_diagnostics_package"]["package_label"] == "lengrvis-diagnostics-specified.json"
+    assert packet["input_diagnostics_package"]["package_label"] != "lengrvis-diagnostics-latest.json"
+    assert packet["summary"]["public_safe"] is False
+    assert packet["summary"]["template_is_human_signoff"] is False
+
+
+def test_diagnostics_external_review_packet_redacts_sensitive_package_basename(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    specified_package = (
+        tmp_path
+        / "manual package"
+        / "Contoso-token-secret-sk-proj-ABCDEFGH.json"
+    )
+    _write_diagnostics_support_package(specified_package, generated_at="2026-06-09T00:00:00+00:00")
+
+    evidence_root = tmp_path / "sensitive-name-review"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-DiagnosticsPackagePath",
+            str(specified_package),
+            "-EvidenceRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    packet_text = next(evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("diagnostics-external-review.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((output, packet_text, markdown_text))
+    for raw in (
+        str(tmp_path),
+        "Contoso",
+        "Contoso-token-secret",
+        "token-secret",
+        "sk-proj-ABCDEFGH",
+    ):
+        assert raw not in combined
+
+    packet = json.loads(packet_text)
+    package_label = packet["input_diagnostics_package"]["package_label"]
+    assert package_label != "Contoso-token-secret-sk-proj-ABCDEFGH.json"
+    assert "[redacted" in package_label
+    assert packet["summary"]["public_safe"] is False
+    assert packet["summary"]["template_is_human_signoff"] is False
+
+
+def test_diagnostics_external_review_packet_blocks_missing_latest_and_specified_path(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    empty_root = tmp_path / "empty-diagnostic-packages"
+    empty_root.mkdir()
+    latest_evidence_root = tmp_path / "missing-latest-review"
+    latest_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-DiagnosticsRoot",
+            str(empty_root),
+            "-EvidenceRoot",
+            str(latest_evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    latest_output = latest_result.stdout + latest_result.stderr
+
+    assert latest_result.returncode == 1, latest_output
+    assert "blocked_missing_diagnostics_package" in latest_output
+    assert str(tmp_path) not in latest_output
+    latest_packet = json.loads(
+        next(latest_evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    assert latest_packet["summary"]["status"] == "blocked_missing_diagnostics_package"
+    assert latest_packet["summary"]["public_safe"] is False
+    assert latest_packet["input_diagnostics_package"]["selection_mode"] == "latest"
+    assert latest_packet["input_diagnostics_package"]["package_found"] is False
+    assert "no diagnostics package JSON was found" in "\n".join(latest_packet["issues_redacted"])
+
+    missing_path = tmp_path / "private-sk-diagnostics-secret" / "missing-diagnostics.json"
+    specified_evidence_root = tmp_path / "missing-specified-review"
+    specified_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-DiagnosticsPackagePath",
+            str(missing_path),
+            "-EvidenceRoot",
+            str(specified_evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    specified_output = specified_result.stdout + specified_result.stderr
+
+    assert specified_result.returncode == 1, specified_output
+    assert "blocked_missing_diagnostics_package" in specified_output
+    assert str(tmp_path) not in specified_output
+    assert "private-sk-diagnostics-secret" not in specified_output
+    specified_packet = json.loads(
+        next(specified_evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    assert specified_packet["summary"]["status"] == "blocked_missing_diagnostics_package"
+    assert specified_packet["summary"]["public_safe"] is False
+    assert specified_packet["input_diagnostics_package"]["selection_mode"] == "specified"
+    assert specified_packet["input_diagnostics_package"]["package_found"] is False
+    assert specified_packet["input_diagnostics_package"]["package_label"] == "missing-diagnostics.json"
+    assert "specified diagnostics package was not found" in "\n".join(specified_packet["issues_redacted"])
+
+
+def test_local_model_clean_machine_evidence_template_script_is_read_only_and_redacted(project_root: Path) -> None:
+    text = _local_model_clean_machine_evidence_template_text(project_root)
+
+    assert "local-model-clean-machine-evidence.redacted.json" in text
+    assert "local-model-clean-machine-evidence.redacted.md" in text
+    assert "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS" in text
+    assert "runtime.name" in text
+    assert "runtime.version" in text
+    assert "model.name" in text
+    assert "model.version" in text
+    assert "blocked_reason_redacted" in text
+    assert "clean_machine_signoff = $false" in text
+    assert "local_model_install_pass = $false" in text
+    assert "local_model_start_pass = $false" in text
+    assert "local_model_pull_pass = $false" in text
+    assert "real_install_start_pull_pass = $false" in text
+    assert "starts_product_processes = $false" in text
+    assert "performs_network_requests = $false" in text
+    assert "installs_runtime = $false" in text
+    assert "starts_runtime = $false" in text
+    assert "pulls_models = $false" in text
+    assert "runs_model_inference = $false" in text
+    assert "workspace-relative paths or file labels only" in text
+
+    assert "Start-Process" not in text
+    assert "Stop-Process" not in text
+    assert "Invoke-WebRequest" not in text
+    assert "Invoke-RestMethod" not in text
+    assert "ollama pull" not in text.lower()
+    assert "ollama serve" not in text.lower()
+    assert "/api/settings/install-local-model" not in text
+    assert "pip install" not in text.lower()
+    assert "npm install" not in text.lower()
+    assert "Copy-Item" not in text
+    assert "Move-Item" not in text
+    assert "Remove-Item" not in text
+    assert "Set-Content -LiteralPath $jsonPath" in text
+    assert "Set-Content -LiteralPath $markdownPath" in text
+
+
+def test_local_model_clean_machine_evidence_template_outputs_redacted_json_and_markdown(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    evidence_root = tmp_path / "local-model-clean-machine-evidence"
+    runtime_path = tmp_path / "private-runtime" / "ollama.exe"
+    artifact_path = tmp_path / "qa artifacts" / "manual local model evidence.log"
+    blocked_reason = (
+        r"Manual run blocked by proxy token=local-model-secret and private path "
+        r"C:\Users\Suli\private\models"
+    )
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_local_model_clean_machine_evidence_template.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-Candidate",
+            "rc-2026-06-08",
+            "-EvidenceMode",
+            "clean-machine",
+            "-Platform",
+            "Windows x64",
+            "-Runtime",
+            "Ollama",
+            "-RuntimeVersion",
+            "0.5.7",
+            "-RuntimeSource",
+            str(runtime_path),
+            "-Model",
+            "qwen2.5:3b",
+            "-ModelVersion",
+            "sha256:abc123",
+            "-ModelSource",
+            "https://models.example.test/private?q=token-secret",
+            "-BlockedReason",
+            blocked_reason,
+            "-Artifact",
+            str(artifact_path),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "Local model clean-machine evidence template" in output
+    assert "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS" in output
+    assert str(tmp_path) not in output
+    assert "local-model-secret" not in output
+    assert "C:\\Users\\Suli" not in output
+
+    json_outputs = list(evidence_root.rglob("local-model-clean-machine-evidence.redacted.json"))
+    markdown_outputs = list(evidence_root.rglob("local-model-clean-machine-evidence.redacted.md"))
+    assert len(json_outputs) == 1
+    assert len(markdown_outputs) == 1
+
+    packet_text = json_outputs[0].read_text(encoding="utf-8-sig")
+    markdown_text = markdown_outputs[0].read_text(encoding="utf-8-sig")
+    assert str(tmp_path) not in packet_text
+    assert str(tmp_path) not in markdown_text
+    assert "local-model-secret" not in packet_text
+    assert "local-model-secret" not in markdown_text
+    assert "C:\\Users\\Suli" not in packet_text
+    assert "C:\\Users\\Suli" not in markdown_text
+
+    packet = json.loads(packet_text)
+    assert packet["marker"] == "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS"
+    assert packet["summary"]["template_status"] == "manual_review_ready"
+    assert packet["summary"]["clean_machine_signoff"] is False
+    assert packet["summary"]["local_model_install_pass"] is False
+    assert packet["summary"]["local_model_start_pass"] is False
+    assert packet["summary"]["local_model_pull_pass"] is False
+    assert packet["summary"]["real_install_start_pull_pass"] is False
+    assert packet["readonly_scope"]["starts_product_processes"] is False
+    assert packet["readonly_scope"]["performs_network_requests"] is False
+    assert packet["readonly_scope"]["installs_runtime"] is False
+    assert packet["readonly_scope"]["starts_runtime"] is False
+    assert packet["readonly_scope"]["pulls_models"] is False
+    assert packet["readonly_scope"]["runs_model_inference"] is False
+    assert packet["evidence_template"]["template_status"] == "manual_clean_machine_local_model_evidence_required"
+    assert packet["evidence_template"]["runtime"]["name"] == "Ollama"
+    assert packet["evidence_template"]["runtime"]["version"] == "0.5.7"
+    assert packet["evidence_template"]["runtime"]["source"] == "ollama.exe"
+    assert packet["evidence_template"]["model"]["name"] == "qwen2.5:3b"
+    assert packet["evidence_template"]["model"]["version"] == "sha256:abc123"
+    assert packet["evidence_template"]["model"]["source"] == "https://[redacted-host]/[redacted-path]"
+    assert packet["evidence_template"]["blocked_reason_redacted"] == [
+        "Manual run blocked by proxy token=[redacted] and private path [redacted-path]"
+    ]
+    assert packet["evidence_template"]["observed_artifacts_redacted"] == [
+        "manual local model evidence.log"
+    ]
+    assert "true local model install pass" in packet["evidence_template"]["must_not_be_recorded_as"]
+    assert "Marker: NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS" in markdown_text
+    assert "true local model pull pass" in markdown_text
+
+
+def test_local_model_clean_machine_evidence_template_redacts_sensitive_labels(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    evidence_root = tmp_path / "local-model-clean-machine-evidence"
+    runtime_path = tmp_path / "runtime" / "Contoso-token-secret-sk-proj-RUNTIME1234.exe"
+    artifact_path = tmp_path / "qa artifacts" / "Contoso-token=artifact-secret-sk-proj-ARTIFACT1234.log"
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_local_model_clean_machine_evidence_template.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-Candidate",
+            "rc-Contoso-token-secret-sk-proj-CANDIDATE1234",
+            "-EvidenceMode",
+            "clean-machine",
+            "-Platform",
+            "Windows x64",
+            "-Runtime",
+            "Ollama",
+            "-RuntimeVersion",
+            "0.5.7",
+            "-RuntimeSource",
+            str(runtime_path),
+            "-Model",
+            "qwen2.5:3b",
+            "-ModelVersion",
+            "sha256:abc123",
+            "-ModelSource",
+            "https://models.example.test/Contoso/token=local-model-secret/private-model",
+            "-BlockedReason",
+            "Manual run blocked by token=local-model-secret",
+            "-Artifact",
+            str(artifact_path),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    packet_text = next(evidence_root.rglob("local-model-clean-machine-evidence.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("local-model-clean-machine-evidence.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((output, packet_text, markdown_text))
+    for raw in (
+        str(tmp_path),
+        "Contoso",
+        "token-secret",
+        "sk-proj-CANDIDATE1234",
+        "sk-proj-RUNTIME1234",
+        "sk-proj-ARTIFACT1234",
+        "artifact-secret",
+        "local-model-secret",
+        "private-model",
+        "models.example.test",
+    ):
+        assert raw not in combined
+
+    packet = json.loads(packet_text)
+    assert "[redacted" in packet["evidence_template"]["candidate"]
+    assert "[redacted" in packet["evidence_template"]["runtime"]["source"]
+    assert packet["evidence_template"]["model"]["source"] == "https://[redacted-host]/[redacted-path]"
+    assert "[redacted" in packet["evidence_template"]["observed_artifacts_redacted"][0]
+    assert packet["summary"]["clean_machine_signoff"] is False
+    assert packet["summary"]["real_install_start_pull_pass"] is False
+
+
+def test_release_gate_recommends_release_evidence_packet_without_overclaim(project_root: Path) -> None:
+    release_gate = _release_gate_text(project_root)
+
+    assert r".\scripts\collect_release_evidence_packet.ps1" in release_gate
+    assert r".tmp\release-evidence-packet\...\release-evidence-packet.redacted.json" in release_gate
+    assert r".tmp\release-evidence-packet\...\release-evidence-packet.redacted.md" in release_gate
+    assert "Ollama/local-model contract count" in release_gate
+    assert "support_package_redaction.external_review" in release_gate
+    assert "public_safe=false" in release_gate
+    assert "latest portable first-screen/read-only/natural-language status-log summary" in release_gate
+    assert "Portable status-log coverage is packaged window/backend/local-only diagnostics plus command-dock submission/task-evidence coverage only" in release_gate
+    assert "latest local-model clean-machine handoff template status" in release_gate
+    assert "Settings local-model smoke artifact paths" in release_gate
+    assert "not clean-machine local-model readiness" in release_gate
+    assert "not true local model install/start/pull evidence" in release_gate
+    assert "not real-device mobile evidence" in release_gate
+    assert "not release-candidate sign-off" in release_gate
+    assert "not completed task-result sign-off" in release_gate
+    assert r".\scripts\collect_local_model_clean_machine_evidence_template.ps1" in release_gate
+    assert r".tmp\local-model-clean-machine-evidence\...\local-model-clean-machine-evidence.redacted.json" in release_gate
+    assert r".tmp\local-model-clean-machine-evidence\...\local-model-clean-machine-evidence.redacted.md" in release_gate
+    assert "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS" in release_gate
+    assert "runtime/model/version/blocked reason fields" in release_gate
+    assert "not true local model install/start/pull evidence" in release_gate
+
+
+def test_real_device_mobile_matrix_documents_redacted_template_without_overclaim(project_root: Path) -> None:
+    matrix = _real_device_mobile_matrix_text(project_root)
+
+    assert "manual_real_device_evidence_template" in matrix
+    assert "`template_status` stays `manual_real_device_evidence_required`" in matrix
+    assert "`real_device_result` stays `uncollected`" in matrix
+    assert "`must_not_be_recorded_as` stays `real-device pass evidence`" in matrix
+    assert "`blocked_reason_redacted`" in matrix
+    assert "Leave as `uncollected` unless real camera/QR and device HTTPS/WSS evidence is attached" in matrix
+    assert "do not paste token-bearing URLs" in matrix
+
+
+def test_mobile_lan_wss_preflight_accepts_valid_https_tls_without_overclaiming(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    cert, key = write_lan_tls_material(tmp_path)
+    evidence_root = tmp_path / "mobile-lan-wss-preflight"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1"),
+            "-Root",
+            str(project_root),
+            "-BackendHost",
+            "192.168.56.10",
+            "-BackendPort",
+            "9443",
+            "-PublicBaseUrl",
+            "https://lengrvis.local:9443",
+            "-EnableLanTls",
+            "-TlsCertFile",
+            str(cert),
+            "-TlsKeyFile",
+            str(key),
+            "-EvidenceRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        env=_preflight_clean_env(),
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "[ready] LAN/WSS prerequisites are ready for manual Android/emulator evidence collection." in output
+    assert "This is still not a real-device pass; record it only as prereq/config evidence." in output
+    assert str(cert) not in output
+    assert str(key) not in output
+
+    summaries = list(evidence_root.rglob("evidence-summary.redacted.json"))
+    assert len(summaries) == 1
+    summary_text = summaries[0].read_text(encoding="utf-8-sig")
+    assert str(cert) not in summary_text
+    assert str(key) not in summary_text
+
+    summary = json.loads(summary_text)
+    assert summary["result"] == "ready_for_manual_real_device_evidence"
+    assert "must not be recorded as real-device pass evidence" in summary["non_evidence_warning"]
+    assert summary["backend"]["public_base_url_redacted"] == "https://[redacted-host]:9443"
+    assert summary["backend"]["websocket_approvals_url_redacted"].startswith("wss://[redacted-host]:9443/")
+    assert summary["lan_tls"]["tls_material_valid"] is True
+    assert summary["lan_tls"]["tls_host_valid"] is True
+    assert summary["lan_tls"]["cert_file_label"] == cert.name
+    assert summary["lan_tls"]["key_file_label"] == key.name
+    assert summary["qr_payload_shape"]["transport_security_status"] == "https_ready_preflight"
+    assert summary["qr_payload_shape"]["transport_security_tls_ready"] is True
+    assert "Actual HTTPS/WSS connection from that device" in summary["next_manual_evidence_needed"]
+    template = summary["manual_real_device_evidence_template"]
+    assert template["template_status"] == "manual_real_device_evidence_required"
+    assert template["real_device_result"] == "uncollected"
+    assert template["preflight_blocked"] is False
+    assert template["may_be_recorded_as"] == "preflight/config evidence only"
+    assert template["must_not_be_recorded_as"] == "real-device pass evidence"
+    assert template["blocked_reason_redacted"] == []
+    assert "mobile token" in template["required_redactions"]
+    assert "hostnames/IP addresses unless explicitly local-only" in template["required_redactions"]
+    assert template["fields"]["https_origin_redacted"] == "https://[redacted-host]:9443"
+    assert template["fields"]["approval_wss_origin_redacted"].startswith("wss://[redacted-host]:9443/")
+    assert template["fields"]["camera_qr_path_evidence"] == "uncollected"
+    assert template["fields"]["actual_device_https_wss_evidence"] == "uncollected"
+    assert template["fields"]["artifact_redaction_review"] == "uncollected"
+
+
+def test_mobile_lan_wss_preflight_blocks_certificate_host_mismatch(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    cert, key = write_lan_tls_material(tmp_path)
+    evidence_root = tmp_path / "mobile-lan-wss-preflight"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1"),
+            "-Root",
+            str(project_root),
+            "-BackendHost",
+            "192.168.56.10",
+            "-BackendPort",
+            "9443",
+            "-PublicBaseUrl",
+            "https://wrong-host.local:9443",
+            "-EnableLanTls",
+            "-TlsCertFile",
+            str(cert),
+            "-TlsKeyFile",
+            str(key),
+            "-EvidenceRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        env=_preflight_clean_env(),
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "[ready]" not in output
+    assert "certificate does not cover advertised public host" in output
+    assert str(cert) not in output
+    assert str(key) not in output
+
+    summaries = list(evidence_root.rglob("evidence-summary.redacted.json"))
+    assert len(summaries) == 1
+    summary_text = summaries[0].read_text(encoding="utf-8-sig")
+    assert str(cert) not in summary_text
+    assert str(key) not in summary_text
+    summary = json.loads(summary_text)
+    assert summary["result"] == "blocked"
+    assert summary["lan_tls"]["tls_material_validation_attempted"] is True
+    assert summary["lan_tls"]["tls_material_valid"] is False
+    assert summary["lan_tls"]["tls_host_valid"] is False
+    assert summary["qr_payload_shape"]["transport_security_status"] == "https_wss_preflight_blocked"
+    template = summary["manual_real_device_evidence_template"]
+    assert template["real_device_result"] == "uncollected"
+    assert template["preflight_blocked"] is True
+    assert any(
+        "certificate does not cover advertised public host" in reason
+        for reason in template["blocked_reason_redacted"]
+    )
+    assert template["fields"]["actual_device_https_wss_evidence"] == "uncollected"
+
+
+def test_mobile_lan_wss_preflight_default_blocked_summary_is_not_real_device_evidence(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    evidence_root = tmp_path / "mobile-lan-wss-preflight"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        env=_preflight_clean_env(),
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "[blocked] Mobile LAN/WSS prerequisites are not safe to use for release evidence:" in output
+    assert "This preflight does not use a phone, emulator, camera, QR scanner, or real WSS connection" in output
+    assert "[ready]" not in output
+
+    summaries = list(evidence_root.rglob("evidence-summary.redacted.json"))
+    assert len(summaries) == 1
+    summary = json.loads(summaries[0].read_text(encoding="utf-8-sig"))
+    assert summary["result"] == "blocked"
+    assert "must not be recorded as real-device pass evidence" in summary["non_evidence_warning"]
+    assert summary["lan_tls"]["tls_material_validation_attempted"] is False
+    assert summary["lan_tls"]["tls_host_valid"] is False
+    assert summary["qr_payload_shape"]["transport_security_status"] == "https_wss_preflight_blocked"
+    assert summary["qr_payload_shape"]["transport_security_tls_ready"] is False
+    template = summary["manual_real_device_evidence_template"]
+    assert template["template_status"] == "manual_real_device_evidence_required"
+    assert template["real_device_result"] == "uncollected"
+    assert template["preflight_blocked"] is True
+    assert template["must_not_be_recorded_as"] == "real-device pass evidence"
+    assert any("loopback-only" in reason for reason in template["blocked_reason_redacted"])
+    assert template["fields"]["camera_qr_path_evidence"] == "uncollected"
 
 
 def test_start_app_recent_log_summary_redacts_secrets(project_root: Path) -> None:

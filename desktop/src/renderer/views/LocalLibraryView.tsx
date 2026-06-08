@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import type { LocalLibraryItem, LocalLibraryResponse } from "../../shared/types";
+import type { IndexStatus, LocalLibraryItem, LocalLibraryResponse } from "../../shared/types";
 import { absoluteRendererLoopbackBackendUrl, type LengrvisApiClient } from "../lib/apiClient";
 import { sectionForView, type LocalLibrarySection } from "./localLibrarySections";
 
@@ -179,6 +179,7 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
   const items = library?.items ?? [];
   const backendBaseUrl = window.lengrvis?.backendBaseUrl;
   const selectedIconUrl = selectedItem ? fileIcons[selectedItem.path] || selectedItem.iconUrl || "" : "";
+  const indexSummary = libraryIndexSummary(library?.indexStatus);
 
   useEffect(() => {
     if (!window.lengrvis?.shell.getFileIcon) return;
@@ -245,6 +246,7 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
           <span>{items.length} 项</span>
           <span>{formatBytes(library?.stats.size ?? 0)}</span>
           <span>{library?.roots[0] ?? "未配置授权目录"}</span>
+          {indexSummary ? <span className="library-summary__index" title={indexSummary}>{indexSummary}</span> : null}
           {library?.truncated ? <span>仅显示前 {items.length} 项</span> : null}
         </div>
 
@@ -376,6 +378,38 @@ function isDocumentItem(item: LocalLibraryItem): boolean {
     ".html",
     ".htm"
   ].includes(extension);
+}
+
+function libraryIndexSummary(status?: IndexStatus): string {
+  if (!status) return "";
+  const count = Math.max(0, status.filesIndexed).toLocaleString("zh-CN");
+  const updated = formatIndexDate(status.lastIndexedAt);
+  if (status.status === "ready") {
+    return updated ? `索引 ${count} 个，更新 ${updated}` : `索引 ${count} 个`;
+  }
+  if (status.status === "degraded") {
+    const detail = status.latestFailure?.message || status.retryHint || "最近处理失败";
+    return `索引需重试：${detail}`;
+  }
+  if (status.status === "empty") {
+    return "全文索引为空，文件名浏览仍可用";
+  }
+  if (status.status === "missing_scope") {
+    return "未选择授权目录";
+  }
+  return "";
+}
+
+function formatIndexDate(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
 }
 
 function FileIcon({ item, iconUrl, large = false }: { item: LocalLibraryItem; iconUrl?: string; large?: boolean }) {

@@ -187,6 +187,26 @@ export interface LocalModelSetupStep {
   detail: string;
 }
 
+export interface LocalModelRepairAction {
+  code: string;
+  label: string;
+  detail: string;
+}
+
+export interface LocalModelEvidenceItem {
+  key: string;
+  ok: boolean;
+  detail: string;
+  valueLabel: string;
+}
+
+export interface LocalModelVerificationSummary {
+  ready: boolean;
+  nextAction: string;
+  pathsRedacted: boolean;
+  privacyFallback: string;
+}
+
 export interface LocalModelSetupPlan {
   ready: boolean;
   canInstall: boolean;
@@ -217,6 +237,9 @@ export interface LocalModelSetupPlan {
   };
   steps: LocalModelSetupStep[];
   nextAction: "hardware_blocked" | "install_runtime" | "start_runtime" | "use_bundled_model" | "download_model" | "ready" | string;
+  repairAction?: LocalModelRepairAction;
+  verification?: LocalModelVerificationSummary;
+  evidence: LocalModelEvidenceItem[];
 }
 
 export interface LLMCapabilities {
@@ -481,6 +504,7 @@ export interface TaskEvent {
   recordings?: TaskStepRecording[];
   cleanupPlan?: CleanupPlan;
   boundaryEvents?: TaskBoundaryEvent[];
+  completionEvidence?: TaskCompletionEvidence;
 }
 
 export interface TaskStepRecordingFrame {
@@ -498,6 +522,39 @@ export interface TaskStepRecording {
   toolName: string;
   agent: string;
   frames: TaskStepRecordingFrame[];
+}
+
+export type TaskCompletionEvidenceLevel =
+  | "submission"
+  | "task_created"
+  | "visible_progress"
+  | "completed_result"
+  | "safe_failure";
+
+export type TaskCompletionEvidenceStatus =
+  | "unverified"
+  | "task_evidence_only"
+  | "visible_progress"
+  | "safe_failure"
+  | "verified_completed_result";
+
+export interface TaskCompletionArtifact {
+  kind: string;
+  label: string;
+  redacted: boolean;
+  count?: number;
+}
+
+export interface TaskCompletionEvidence {
+  level: TaskCompletionEvidenceLevel;
+  status: TaskCompletionEvidenceStatus;
+  evidenceKind: string;
+  resultVerified: boolean;
+  resultArtifacts: TaskCompletionArtifact[];
+  missing: string[];
+  signoff: boolean;
+  summary: string;
+  privacyNote?: string;
 }
 
 export interface TaskExplainEvidence {
@@ -599,11 +656,13 @@ export interface TaskExplain {
   globalSafetyReviews: TaskExplainReview[];
   steps: TaskExplainStep[];
   subagentSuggestions: TaskExplainMessage[];
+  completionEvidence: TaskCompletionEvidence;
   finalResult: {
     status: string;
     summary: string;
     safetyReviews: TaskExplainReview[];
     evidence: TaskExplainEvidence[];
+    completionEvidence: TaskCompletionEvidence;
   };
   chain: TaskExplainChainItem[];
 }
@@ -875,11 +934,28 @@ export interface FileSearchResult {
   score: number;
 }
 
+export interface IndexStatus {
+  status: "missing_scope" | "empty" | "ready" | "degraded" | string;
+  filesIndexed: number;
+  chunksIndexed: number;
+  embeddingsIndexed: number;
+  bytesIndexed: number;
+  lastIndexedAt: string;
+  lastModifiedAt: string;
+  retryHint: string;
+  latestFailure?: {
+    at: string;
+    pathLabel: string;
+    message: string;
+  } | null;
+}
+
 export interface FileSearchMeta {
   count: number;
   scanned: number;
   truncated: boolean;
   status?: "missing_scope" | "empty_query" | "ok" | string;
+  indexStatus?: IndexStatus;
 }
 
 export interface FileSearchResponse {
@@ -919,6 +995,7 @@ export interface LocalLibraryResponse {
   scanned: number;
   truncated: boolean;
   stats: LocalLibraryStats;
+  indexStatus?: IndexStatus;
 }
 
 export interface InstalledApp {
@@ -1004,6 +1081,37 @@ export interface SystemDiagnosticAudit {
   latestEvent?: Record<string, unknown> | null;
 }
 
+export interface SystemDiagnosticExternalReview {
+  status: string;
+  requiredBeforeExternalSharing: boolean;
+  publicSafe: boolean;
+  externalSharingAllowed: boolean;
+  failClosed: boolean;
+  checklistCount: number;
+}
+
+export interface SystemDiagnosticCurrentResponseReview {
+  publicSafe: boolean;
+  containsLocalPaths: boolean;
+  externalReviewRequired: boolean;
+}
+
+export interface SystemDiagnosticSupportPackageRedaction {
+  appliesTo?: string;
+  scope: string;
+  intendedAudience: string;
+  publicSafe: boolean;
+  reviewBeforeExternalSharing: boolean;
+  externalSharingAllowed: boolean;
+  failClosed: boolean;
+  guidance: string;
+  currentResponse?: SystemDiagnosticCurrentResponseReview;
+  externalReview?: SystemDiagnosticExternalReview;
+  externalSharingSafe: boolean;
+  safetySignalsConsistent: boolean;
+  blockingReasons: string[];
+}
+
 export interface SystemDiagnostic {
   info: Record<string, unknown>;
   disks: DiskInfo[];
@@ -1021,6 +1129,7 @@ export interface SystemDiagnostic {
   recentFailureCounts?: Record<string, number>;
   diagnosticHints?: string[];
   diagnosticScope?: string;
+  supportPackageRedaction?: SystemDiagnosticSupportPackageRedaction;
 }
 
 export interface DiagnosticExportResult {

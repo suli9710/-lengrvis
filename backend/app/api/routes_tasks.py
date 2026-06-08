@@ -13,7 +13,7 @@ from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.policy.redaction import redact_public_text, redact_value
 from app.services import task_recording_service
-from app.services.task_explain_service import build_task_explain
+from app.services.task_explain_service import build_task_completion_evidence, build_task_explain
 from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
 from app.tools import rollback_tools
 
@@ -267,8 +267,18 @@ def _merge_step_recording(
 @router.get("/tasks")
 def tasks():
     task_items = list_tasks()
-    boundary_events = _boundary_events_for_tasks([task.id for task in task_items])
-    return [_task_payload(task, boundary_events=boundary_events.get(task.id, [])) for task in task_items]
+    task_ids = [task.id for task in task_items]
+    source_records = _boundary_source_records_for_tasks(task_ids)
+    boundary_events = _boundary_events_from_source_records(task_ids, source_records)
+    completion_evidence = _completion_evidence_for_tasks(task_items, source_records)
+    return [
+        _task_payload(
+            task,
+            boundary_events=boundary_events.get(task.id, []),
+            completion_evidence=completion_evidence.get(task.id),
+        )
+        for task in task_items
+    ]
 
 
 @router.get("/tasks/{task_id}")
@@ -286,24 +296,34 @@ def timeline(task_id: str):
     messages = db.fetch_many_by_fields("agent_messages", {"task_id": task_id})
     reviews = db.fetch_many_by_fields("safety_reviews", {"task_id": task_id})
     boundary_events = _boundary_events(task_id, messages=messages, reviews=reviews)
+    completion_evidence = (
+        build_task_completion_evidence(task_model, messages=messages, reviews=reviews) if task_model else _empty_completion_evidence()
+    )
     return {
         "task": task_id,
         "messages": [_public_agent_message(item) for item in messages],
         "reviews": [_public_review(review) for review in reviews],
         "recordings": _public_step_recordings(task_id),
         "boundary_events": boundary_events,
-        "evidence_summary": _task_evidence_summary(task_model, boundary_events),
+        "evidence_summary": _task_evidence_summary(task_model, boundary_events, completion_evidence=completion_evidence),
     }
 
 
-def _task_payload(task: Task, *, boundary_events: list[dict] | None = None) -> dict:
+def _task_payload(
+    task: Task,
+    *,
+    boundary_events: list[dict] | None = None,
+    completion_evidence: dict[str, Any] | None = None,
+) -> dict:
     payload = task.model_dump(mode="json")
     payload["user_goal"] = _public_detail(str(payload.get("user_goal") or ""), limit=1000)
     payload["final_summary"] = _public_detail(str(payload.get("final_summary") or ""), limit=2000)
     payload["metadata"] = _redacted_public_field(payload.get("metadata") or {})
     events = boundary_events if boundary_events is not None else _boundary_events(task.id)
+    completion = completion_evidence if completion_evidence is not None else build_task_completion_evidence(task)
     payload["boundary_events"] = events
-    payload["evidence_summary"] = _task_evidence_summary(task, events)
+    payload["completion_evidence"] = completion
+    payload["evidence_summary"] = _task_evidence_summary(task, events, completion_evidence=completion)
     return payload
 
 
@@ -312,9 +332,28 @@ def _boundary_events_for_tasks(task_ids: list[str]) -> dict[str, list[dict]]:
     if not unique_task_ids:
         return {}
 
-    messages_by_task = _recent_records_by_task("agent_messages", unique_task_ids)
-    reviews_by_task = _recent_records_by_task("safety_reviews", unique_task_ids)
-    audits_by_task = _recent_records_by_task("audit_events", unique_task_ids)
+    return _boundary_events_from_source_records(unique_task_ids, _boundary_source_records_for_tasks(unique_task_ids))
+
+
+def _boundary_source_records_for_tasks(task_ids: list[str]) -> dict[str, dict[str, list[dict]]]:
+    unique_task_ids = [task_id for task_id in dict.fromkeys(task_ids) if task_id]
+    if not unique_task_ids:
+        return {"messages": {}, "reviews": {}, "audits": {}}
+    return {
+        "messages": _recent_records_by_task("agent_messages", unique_task_ids),
+        "reviews": _recent_records_by_task("safety_reviews", unique_task_ids),
+        "audits": _recent_records_by_task("audit_events", unique_task_ids),
+    }
+
+
+def _boundary_events_from_source_records(
+    task_ids: list[str],
+    source_records: dict[str, dict[str, list[dict]]],
+) -> dict[str, list[dict]]:
+    unique_task_ids = [task_id for task_id in dict.fromkeys(task_ids) if task_id]
+    messages_by_task = source_records.get("messages", {})
+    reviews_by_task = source_records.get("reviews", {})
+    audits_by_task = source_records.get("audits", {})
     return {
         task_id: _boundary_events(
             task_id,
@@ -323,6 +362,24 @@ def _boundary_events_for_tasks(task_ids: list[str]) -> dict[str, list[dict]]:
             audits=audits_by_task.get(task_id, []),
         )
         for task_id in unique_task_ids
+    }
+
+
+def _completion_evidence_for_tasks(
+    tasks: list[Task],
+    source_records: dict[str, dict[str, list[dict]]],
+) -> dict[str, dict[str, Any]]:
+    messages_by_task = source_records.get("messages", {})
+    reviews_by_task = source_records.get("reviews", {})
+    audits_by_task = source_records.get("audits", {})
+    return {
+        task.id: build_task_completion_evidence(
+            task,
+            messages=messages_by_task.get(task.id, []),
+            reviews=reviews_by_task.get(task.id, []),
+            audits=audits_by_task.get(task.id, []),
+        )
+        for task in tasks
     }
 
 
@@ -502,7 +559,12 @@ def _boundary_events(
     return ordered[-20:]
 
 
-def _task_evidence_summary(task: Task | None, boundary_events: list[dict]) -> dict[str, Any]:
+def _task_evidence_summary(
+    task: Task | None,
+    boundary_events: list[dict],
+    *,
+    completion_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     counts = {
         "events": len(boundary_events),
         "review_checkpoints": sum(1 for event in boundary_events if event.get("kind") in REVIEW_EVENT_KINDS),
@@ -524,17 +586,31 @@ def _task_evidence_summary(task: Task | None, boundary_events: list[dict]) -> di
     if not evidence:
         evidence.append("No review or boundary evidence has been recorded yet.")
 
-    status = _task_status_summary(task)
+    completion_evidence = completion_evidence if completion_evidence is not None else (
+        build_task_completion_evidence(task) if task else _empty_completion_evidence()
+    )
+    status = _task_status_summary(task, completion_evidence)
     return {
         "status": status,
         "evidence": evidence[:4],
-        "next_step": _task_next_step(task, counts),
+        "next_step": _task_next_step(task, counts, completion_evidence),
         "counts": counts,
+        "completion_evidence": completion_evidence,
         "privacy_note": EVIDENCE_PRIVACY_NOTE,
     }
 
 
-def _task_status_summary(task: Task | None) -> str:
+def _empty_completion_evidence() -> dict[str, Any]:
+    return {
+        "level": "submission",
+        "result_verified": False,
+        "result_artifacts": [],
+        "missing": ["task record"],
+        "signoff": False,
+    }
+
+
+def _task_status_summary(task: Task | None, completion_evidence: dict[str, Any]) -> str:
     if task is None:
         return "Task record unavailable."
     status = _enum_text(task.status)
@@ -542,7 +618,9 @@ def _task_status_summary(task: Task | None) -> str:
     if stage == "awaiting_approval":
         return "Waiting for approval before the agent continues."
     if status == "completed":
-        return "Completed with an auditable evidence trail."
+        if _completion_result_verified(task, completion_evidence):
+            return "Completed with verified result evidence; manual sign-off is still separate."
+        return "Completed, but result evidence is not verified yet."
     if status == "failed":
         return "Failed; review the evidence trail before retrying."
     if status == "cancelled":
@@ -554,7 +632,7 @@ def _task_status_summary(task: Task | None) -> str:
     return f"Task status: {status or 'unknown'}."
 
 
-def _task_next_step(task: Task | None, counts: dict[str, int]) -> str:
+def _task_next_step(task: Task | None, counts: dict[str, int], completion_evidence: dict[str, Any]) -> str:
     status = _enum_text(task.status) if task else ""
     stage = _enum_text(task.execution_stage) if task else ""
     if stage == "awaiting_approval":
@@ -562,10 +640,22 @@ def _task_next_step(task: Task | None, counts: dict[str, int]) -> str:
     if counts["items_needing_attention"]:
         return "Review the flagged checkpoint and decide whether to continue, revise, or stop."
     if status == "completed":
-        return "Open the task explanation to inspect the decision chain."
+        if _completion_result_verified(task, completion_evidence):
+            return "Open the task explanation to inspect the verified result evidence before manual sign-off."
+        return "Open the task explanation and collect missing result evidence before treating the result as done."
     if counts["events"] == 0:
         return "Let the run continue until the first reviewed step is recorded."
     return "Keep monitoring; the summary will update as more steps are reviewed."
+
+
+def _completion_result_verified(task: Task | None, completion_evidence: dict[str, Any]) -> bool:
+    if task is None or _enum_text(task.status) != "completed":
+        return False
+    return (
+        completion_evidence.get("level") == "completed_result"
+        and completion_evidence.get("result_verified") is True
+        and completion_evidence.get("signoff") is False
+    )
 
 
 def _enum_text(value: Any) -> str:

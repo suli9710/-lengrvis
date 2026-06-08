@@ -24,10 +24,13 @@ def add_directory(path: str, *, confirmation_nonce: str | None = None) -> dict:
 def search_files(query: str) -> dict:
     settings = get_effective_settings()
     normalized_query = query.strip()
+    index = FTSIndex()
+    index_status = index.status(settings.allowed_directories)
     if not settings.allowed_directories:
         return {
             "index_results": [],
             "name_results": [],
+            "index_status": index_status,
             "name_search": {
                 "count": 0,
                 "scanned": 0,
@@ -39,6 +42,7 @@ def search_files(query: str) -> dict:
         return {
             "index_results": [],
             "name_results": [],
+            "index_status": index_status,
             "name_search": {
                 "count": 0,
                 "scanned": 0,
@@ -49,7 +53,7 @@ def search_files(query: str) -> dict:
 
     indexed = [
         item
-        for item in FTSIndex().search(normalized_query)
+        for item in index.search(normalized_query)
         if _within_allowed_directories(str(item.get("path") or ""), settings.allowed_directories)
     ]
     names = search_by_name(
@@ -59,6 +63,7 @@ def search_files(query: str) -> dict:
     return {
         "index_results": indexed,
         "name_results": names.get("results", []),
+        "index_status": index_status,
         "name_search": {
             "count": names.get("count", 0),
             "scanned": names.get("scanned", 0),

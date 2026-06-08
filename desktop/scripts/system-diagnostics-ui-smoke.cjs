@@ -77,6 +77,37 @@ const backendDiagnostics = {
     database: "C:\\Users\\Smoke\\AppData\\Local\\Lengrvis\\lengrvis.db",
     log_dirs: ["C:\\Users\\Smoke\\AppData\\Local\\Lengrvis\\logs"]
   },
+  support_package_redaction: {
+    scope: "local_only",
+    intended_audience: "trusted_support",
+    public_safe: false,
+    review_before_external_sharing: true,
+    external_sharing_allowed: false,
+    fail_closed: true,
+    current_response: {
+      // Deliberately inconsistent: the UI must fail closed when safety fields disagree.
+      public_safe: true,
+      contains_local_paths: true,
+      external_review_required: false
+    },
+    external_review: {
+      status: "manual_review_required",
+      // Deliberately inconsistent: the UI must fail closed while public_safe is false.
+      required_before_external_sharing: false,
+      public_safe: false,
+      external_sharing_allowed: false,
+      fail_closed: true,
+      checklist: [
+        { id: "scope_and_audience", required: true },
+        { id: "raw_logs_and_artifacts", required: true },
+        { id: "local_paths", required: true },
+        { id: "secrets_and_identifiers", required: true },
+        { id: "task_content", required: true },
+        { id: "external_sharing_decision", required: true }
+      ]
+    },
+    guidance: "外发前需要人工复核。"
+  },
   diagnostic_hints: ["local_only"]
 };
 
@@ -90,6 +121,7 @@ const backendSettings = {
 
 async function main() {
   assertBuiltRendererExists();
+  assertSystemInfoSourceDoesNotOverclaimExternalSharing();
 
   const previewPort = Number(process.env.LENGRVIS_SYSTEM_DIAGNOSTICS_UI_PORT) || await getFreePort();
   const previewUrl = `http://${previewHost}:${previewPort}`;
@@ -153,6 +185,15 @@ function assertBuiltRendererExists() {
   assert.ok(
     fs.existsSync(indexPath),
     "renderer preview build is missing; run `npm run build:renderer` before system diagnostics UI smoke"
+  );
+}
+
+function assertSystemInfoSourceDoesNotOverclaimExternalSharing() {
+  const source = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "components", "SystemInfoPanel.tsx"), "utf8");
+  assert.doesNotMatch(
+    source,
+    /可外发|外发复核已通过/,
+    "SystemInfoPanel source must not present diagnostics review fields as external-sharing approval"
   );
 }
 
@@ -233,7 +274,36 @@ async function assertDiagnosticExportEntry(page, counters) {
   assert.match(exportText, /本机范围摘要/, "diagnostics export copy should frame the package as local-scope diagnostics");
   assert.match(exportText, /版本、服务状态、网络接口/, "diagnostics export copy should describe support bundle contents");
   assert.match(exportText, /不包含你的文档正文、文件内容或密钥/, "diagnostics export copy should make privacy boundary visible");
+  assert.match(exportText, /普通页面字段仍可能显示本机路径/, "diagnostics export copy should warn that regular UI fields may still show local paths");
   assertNoOverpromisingPathCopy(exportText, "diagnostics export copy must not imply the full path is safe to publish");
+  const review = page.getByTestId("diagnostic-export-review");
+  const reviewText = await review.innerText();
+  assert.equal(await review.getAttribute("data-public-safe"), "false", "raw package public_safe should remain testable");
+  assert.equal(await review.getAttribute("data-external-sharing-safe"), "false", "inconsistent safety fields must fail closed");
+  assert.equal(await review.getAttribute("data-safety-signals-consistent"), "false", "inconsistent safety fields should be surfaced for tests");
+  assert.equal(await review.getAttribute("data-review-required"), "true", "unsafe packages should require external review");
+  assert.match(
+    await review.getAttribute("data-blocking-reasons"),
+    /safety_signals_inconsistent_or_incomplete/,
+    "inconsistent safety fields should expose a machine-testable blocking reason"
+  );
+  assert.match(
+    await review.getAttribute("data-blocking-reasons"),
+    /package_fail_closed/,
+    "diagnostics export should honor backend fail_closed safety metadata"
+  );
+  assert.match(
+    await review.getAttribute("data-blocking-reasons"),
+    /external_review_external_sharing_allowed_false/,
+    "diagnostics export should honor external_sharing_allowed=false"
+  );
+  assert.match(reviewText, /public_safe=false/, "diagnostics export should expose that the support package is not public-safe");
+  assert.match(reviewText, /不可公开分享/, "diagnostics export should use beginner-facing unsafe-to-share copy");
+  assert.match(reviewText, /外发前需人工复核/, "diagnostics export should require manual review before external sharing");
+  assert.match(reviewText, /字段不一致\/不完整，按禁止外发处理/, "diagnostics export should explain fail-closed handling for inconsistent fields");
+  assert.doesNotMatch(reviewText, /可外发/, "diagnostics export must not display external-share-safe copy when fields disagree");
+  assert.doesNotMatch(reviewText, /外发复核已通过/, "diagnostics export must not present review metadata as sharing approval");
+  assert.match(reviewText, /6 项复核清单/, "diagnostics export should surface the external review checklist count");
   assert.equal(counters.diagnosticExportRequests, 0, "diagnostics package should not be exported before user action");
   assert.equal(counters.diagnosticExportAnyRequests, 0, "diagnostics export endpoint should not be requested before user action");
   assert.deepEqual(counters.postRequests, [], "system diagnostics view should not POST to the backend before the explicit export action");
@@ -248,6 +318,9 @@ async function assertDiagnosticExportEntry(page, counters) {
   const statusText = await status.innerText();
   assert.match(statusText, /诊断包已生成/, "export action should report the generated diagnostics package");
   assert.match(statusText, /不要把完整路径当作可公开信息/, "success status should not imply that full local paths are public-safe");
+  assert.match(statusText, /普通页面仍可能显示本机路径/, "success status should preserve the local-path caveat");
+  assert.match(statusText, /外发前仍需人工复核/, "success status should keep the manual external-review boundary visible");
+  assert.match(statusText, /当前不是 public-safe 报告/, "success status should explicitly avoid public-safe claims");
   assertNoOverpromisingPathCopy(statusText, "success status must not overpromise local path safety");
 
   const pathText = await page.getByTestId("diagnostic-export-path").innerText();
@@ -308,6 +381,7 @@ async function assertDiagnosticsLayout(page, label) {
       ["update detail", "[data-testid='system-update-detail']"],
       ["update facts", ".system-update-card__facts"],
       ["diagnostics export copy", "[data-testid='diagnostic-export-card'] .diagnostic-export__body span"],
+      ["diagnostics export review", "[data-testid='diagnostic-export-review'] span"],
       ["diagnostics export status", "[data-testid='diagnostic-export-status'] span"],
       ["diagnostics saved path", "[data-testid='diagnostic-export-path']"],
       ["log path", ".system-path-row code"]

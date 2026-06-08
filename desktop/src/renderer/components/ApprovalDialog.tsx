@@ -135,6 +135,7 @@ export function ApprovalDialog({
               suggestions={cleanupGroups.suggestions}
             />
           ) : null}
+          <ApprovalSafetyChecklist summary={buildSafetyChecklist(approval, cleanupPlan, cleanupGroups)} />
           <ApprovalEngineeringBoundary approval={approval} />
           <dl className="detail-list">
             <div>
@@ -179,6 +180,26 @@ export function ApprovalDialog({
         </footer>
       </div>
     </div>
+  );
+}
+
+function ApprovalSafetyChecklist({ summary }: { summary: ApprovalSafetyChecklistSummary }) {
+  return (
+    <section className={`approval-safety approval-safety--${summary.tone}`} aria-label="安全核对">
+      <div className="approval-safety__header">
+        <span>安全核对</span>
+        <strong>{summary.title}</strong>
+      </div>
+      <p>{summary.detail}</p>
+      <div className="approval-safety__grid">
+        {summary.items.map((item) => (
+          <span key={item.label}>
+            <em>{item.label}</em>
+            <strong>{item.value}</strong>
+          </span>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -421,6 +442,87 @@ interface ApprovalDecisionSummary {
   recovery: string;
   guard: string;
   tone: "safe" | "warning" | "danger";
+}
+
+interface ApprovalSafetyChecklistSummary {
+  title: string;
+  detail: string;
+  tone: "safe" | "warning" | "danger";
+  items: Array<{ label: string; value: string }>;
+}
+
+function buildSafetyChecklist(
+  approval: ApprovalRequest,
+  plan: CleanupPlan | undefined,
+  groups: ReturnType<typeof splitCleanupItems>
+): ApprovalSafetyChecklistSummary {
+  const boundary = objectValue(approval.engineeringBoundary);
+  const boundaryTool = objectValue(boundary.tool);
+  const boundaryDryRun = objectValue(boundary.dry_run);
+  const effects = approval.toolEffects?.length ? approval.toolEffects : stringList(boundaryTool.effects);
+  const resources = approval.resourceKinds?.length ? approval.resourceKinds : stringList(boundaryTool.resource_kinds);
+  const riskIsHigh = approval.riskLevel === "high" || approval.riskLevel === "critical";
+  const hasPermanentDelete = groups.permanent.length > 0;
+  const hasTrash = groups.trash.length > 0;
+  const hasDryRun = Boolean(plan || approval.dryRunSummary || textValue(boundaryDryRun.summary));
+  const effectSummary = approvalEffectSummary(effects);
+  const resourceSummary = approvalResourceSummary(resources);
+  const recovery = hasPermanentDelete
+    ? "含不可恢复项"
+    : hasTrash
+      ? "可从回收站恢复"
+      : plan
+        ? "本次不直接删除"
+        : "按动作决定";
+  const preview = hasDryRun ? "已有执行前预览" : "未看到预览";
+  const title = hasPermanentDelete || approval.riskLevel === "critical"
+    ? "不确定就先拒绝"
+    : riskIsHigh
+      ? "只在完全确认后批准"
+      : hasDryRun
+        ? "核对无误后再批准"
+        : "先要求更清楚的预览";
+  const detail = hasPermanentDelete
+    ? "这里包含永久删除或高影响动作。除非路径、数量、恢复方式都和你的目标一致，否则选择拒绝。"
+    : riskIsHigh
+      ? "这是高影响操作。请确认它只会作用在你期望的任务、文件或应用上。"
+      : hasDryRun
+        ? "系统已经停在审批点，批准前不会继续执行。请按影响范围和恢复方式核对。"
+        : "当前信息偏少。看不懂动作、范围或后果时，拒绝是更安全的选择。";
+  const tone = hasPermanentDelete || approval.riskLevel === "critical" ? "danger" : riskIsHigh || !hasDryRun ? "warning" : "safe";
+
+  return {
+    title,
+    detail,
+    tone,
+    items: [
+      { label: "影响", value: effectSummary },
+      { label: "对象", value: resourceSummary },
+      { label: "预览", value: preview },
+      { label: "恢复", value: recovery }
+    ]
+  };
+}
+
+function approvalEffectSummary(effects: string[]): string {
+  const normalized = effects.map((effect) => effect.toLowerCase());
+  if (normalized.some((effect) => /delete|remove|clean|trash/.test(effect))) return "删除或清理";
+  if (normalized.some((effect) => /write|modify|edit|update|create|move/.test(effect))) return "写入或修改";
+  if (normalized.some((effect) => /input|click|type|ui|gui/.test(effect))) return "控制界面";
+  if (normalized.some((effect) => /network|http|browser|web/.test(effect))) return "联网或浏览";
+  if (normalized.some((effect) => /message|send|mail|chat/.test(effect))) return "发送内容";
+  if (normalized.some((effect) => /read|open|list/.test(effect))) return "读取或打开";
+  return effects.length ? effects.slice(0, 2).join(", ") : "未声明";
+}
+
+function approvalResourceSummary(resources: string[]): string {
+  const normalized = resources.map((resource) => resource.toLowerCase());
+  if (normalized.some((resource) => /file|folder|path|document/.test(resource))) return "文件或文档";
+  if (normalized.some((resource) => /app|window|screen|desktop|ui/.test(resource))) return "应用或窗口";
+  if (normalized.some((resource) => /network|web|url|browser/.test(resource))) return "网页或网络";
+  if (normalized.some((resource) => /message|mail|chat/.test(resource))) return "消息内容";
+  if (normalized.some((resource) => /system|process|shell/.test(resource))) return "系统资源";
+  return resources.length ? resources.slice(0, 2).join(", ") : "未声明";
 }
 
 function buildDecisionSummary(

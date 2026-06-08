@@ -154,12 +154,25 @@ def _package_summary(package: LoadedSkillPackage, *, status: str) -> dict[str, A
                 "entry": tool.execution.entry,
                 "supports_dry_run": tool.supports_dry_run,
                 "requires_authorized_path": tool.requires_authorized_path,
+                "smoke_tests": [_public_smoke_test_summary(smoke_test) for smoke_test in tool.smoke_tests],
                 "rollback_hint": tool.rollback_hint,
             }
             for tool in definition.tools
         ],
         "safety": package.safety_report.model_dump(),
         "error": "",
+    }
+
+
+def _public_smoke_test_summary(smoke_test: Any) -> dict[str, Any]:
+    args = smoke_test.args if isinstance(smoke_test.args, dict) else {}
+    expected = smoke_test.expected if isinstance(smoke_test.expected, dict) else {}
+    return {
+        "name": smoke_test.name,
+        "description": smoke_test.description,
+        "has_args": bool(args),
+        "arg_keys": sorted(str(key) for key in args.keys()),
+        "expected_keys": sorted(str(key) for key in expected.keys()),
     }
 
 
