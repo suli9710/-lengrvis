@@ -267,6 +267,8 @@ def test_portable_first_screen_smoke_forbids_renderer_export_and_write_side_effe
     assert "read-only GUI evidence cannot rely on web fallback requests" in text
     assert "natural-language GUI evidence cannot rely on web fallback state" in text
     assert "read-only renderer API call outside allowlist after system-check click" in text
+    assert "system-check click did not invoke /api/system/diagnostics through the packaged renderer" in text
+    assert "observed packaged renderer /api/system/diagnostics plus read-only diagnostics copy" in text
     assert 'const forbiddenWritePrefixes = ["/api/runs", "/api/chat", "/api/tasks"];' not in text
     assert "function Test-NoPortableWriteSideEffects" in text
     assert 'Url = "$BackendUrl/api/tasks"' in text
@@ -304,6 +306,9 @@ def test_portable_first_screen_smoke_attempts_natural_language_read_only_task_ev
     assert "safeFailureRun=$runId phase=$runPhase" in text
     assert "safeFailureChatWithoutTaskOrRun=true" in text
     assert "natural-language prompt did not expose concrete read-only/system diagnostics task or run evidence" in text
+    assert "$highRiskPattern" in text
+    assert "trash|rollback|uninstall" not in text
+    assert "delete|remove" not in text
     assert "natural-language result proven by visible safe failure copy" not in text
     assert "natural-language prompt returned clear safe failure copy without creating task/run records" not in text
     assert 'Get-SmokeJson -Url "$BackendUrl/api/runs/$runId/timeline"' in text

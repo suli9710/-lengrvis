@@ -776,8 +776,7 @@ export interface DocumentParseRequest {
 }
 
 export interface DocumentAskRequest {
-  path?: string;
-  documentId?: string;
+  path: string;
   question: string;
   topK?: number;
 }
