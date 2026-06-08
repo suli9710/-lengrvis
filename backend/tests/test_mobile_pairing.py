@@ -180,6 +180,7 @@ def test_mobile_companion_lists_task_summaries_without_plan_args(monkeypatch, tm
         user_goal="整理下载目录并给出清理建议",
         mode="hybrid",
         final_summary="已扫描文件，等待用户确认。",
+        metadata=_mobile_task_metadata(token),
     )
     db.upsert_model("tasks", task)
     plan = Plan(
@@ -205,6 +206,15 @@ def test_mobile_companion_lists_task_summaries_without_plan_args(monkeypatch, tm
     assert payload["title"] == "整理下载目录并给出清理建议"
     assert payload["mode"] == "hybrid"
     assert payload["summary"] == "已扫描文件，等待用户确认。"
+    assert payload["status_label"] == "已创建"
+    assert payload["status_detail"]
+    assert payload["available_actions"] == ["cancel", "follow_up"]
+    assert payload["can_cancel"] is True
+    assert payload["can_pause"] is False
+    assert payload["can_resume"] is False
+    assert payload["can_follow_up"] is True
+    assert payload["is_terminal"] is False
+    assert payload["content_redacted"] is False
     assert "steps" not in payload
     assert "args" not in payload
     assert "secret_path" not in json.dumps(payload)
@@ -219,6 +229,7 @@ def test_mobile_companion_redacts_privacy_task_text(monkeypatch, tmp_path):
         user_goal="总结 C:/Users/example/private-contract.txt 的付款条款",
         mode="privacy",
         final_summary="private-contract.txt 写了 100 万付款。",
+        metadata=_mobile_task_metadata(token),
     )
     db.upsert_model("tasks", task)
 
@@ -229,8 +240,89 @@ def test_mobile_companion_redacts_privacy_task_text(monkeypatch, tmp_path):
     assert payload["id"] == task.id
     assert payload["title"] == "隐私任务"
     assert payload["summary"] == "隐私模式：请在电脑端查看任务详情。"
+    assert payload["content_redacted"] is True
+    assert payload["privacy_redacted"] is True
     assert "private-contract" not in json.dumps(payload, ensure_ascii=False)
     assert "100 万" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_mobile_companion_redacts_sensitive_non_privacy_task_text(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="检查 C:/Users/example/private-contract.txt 并使用 token=secret-token-raw-list-1234567890",
+        mode="hybrid",
+        final_summary="完成，password=abc1234567890，联系 owner@example.com。",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+        metadata=_mobile_task_metadata(token),
+    )
+    db.upsert_model("tasks", task)
+
+    response = client.get(f"/api/mobile/tasks/{task.id}", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    payload_text = json.dumps(payload, ensure_ascii=False)
+    assert payload["id"] == task.id
+    assert payload["status"] == "execution"
+    assert payload["status_label"] == "运行中"
+    assert payload["status_detail"] == "电脑端正在执行任务，可从手机暂停或取消。"
+    assert payload["available_actions"] == ["pause", "cancel", "follow_up"]
+    assert payload["can_pause"] is True
+    assert payload["can_resume"] is False
+    assert payload["can_cancel"] is True
+    assert payload["content_redacted"] is True
+    assert "[本地路径]" in payload["title"]
+    assert "private-contract" not in payload_text
+    assert "secret-token-raw-list-1234567890" not in payload_text
+    assert "abc1234567890" not in payload_text
+    assert "owner@example.com" not in payload_text
+
+
+def test_mobile_companion_status_view_returns_404_for_missing_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+
+    response = client.get("/api/mobile/tasks/task_missing", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Task not found"
+
+
+def test_mobile_companion_blocks_cross_device_task_access(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    owner_token = _paired_token(client)
+    other_token = _paired_token(client)
+    task = Task(
+        user_goal="第一台手机发起的任务",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.STEP_RUNNING,
+        metadata=_mobile_task_metadata(owner_token),
+    )
+    db.upsert_model("tasks", task)
+
+    owner_list = client.get("/api/mobile/tasks", headers={"Authorization": f"Bearer {owner_token}"})
+    other_list = client.get("/api/mobile/tasks", headers={"Authorization": f"Bearer {other_token}"})
+    detail = client.get(f"/api/mobile/tasks/{task.id}", headers={"Authorization": f"Bearer {other_token}"})
+    pause = client.post(f"/api/mobile/tasks/{task.id}/pause", headers={"Authorization": f"Bearer {other_token}"})
+    follow_up = client.post(
+        f"/api/mobile/tasks/{task.id}/follow-up",
+        headers={"Authorization": f"Bearer {other_token}"},
+        json={"instruction": "继续检查"},
+    )
+
+    assert task.id in [item["id"] for item in owner_list.json()["tasks"]]
+    assert task.id not in [item["id"] for item in other_list.json()["tasks"]]
+    assert detail.status_code == 403
+    assert pause.status_code == 403
+    assert follow_up.status_code == 403
 
 
 def test_mobile_companion_can_cancel_task(monkeypatch, tmp_path):
@@ -238,7 +330,7 @@ def test_mobile_companion_can_cancel_task(monkeypatch, tmp_path):
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
-    task = Task(user_goal="稍后取消的任务")
+    task = Task(user_goal="稍后取消的任务", metadata=_mobile_task_metadata(token))
     db.upsert_model("tasks", task)
 
     response = client.post(
@@ -249,6 +341,9 @@ def test_mobile_companion_can_cancel_task(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json()["id"] == task.id
     assert response.json()["status"] == "cancelled"
+    assert response.json()["status_label"] == "已取消"
+    assert response.json()["available_actions"] == []
+    assert response.json()["is_terminal"] is True
 
 
 def test_mobile_companion_cannot_cancel_terminal_task(monkeypatch, tmp_path):
@@ -256,7 +351,7 @@ def test_mobile_companion_cannot_cancel_terminal_task(monkeypatch, tmp_path):
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
-    task = Task(user_goal="已经完成的任务", status=TaskPhase.COMPLETED)
+    task = Task(user_goal="已经完成的任务", status=TaskPhase.COMPLETED, metadata=_mobile_task_metadata(token))
     db.upsert_model("tasks", task)
 
     response = client.post(
@@ -278,6 +373,7 @@ def test_mobile_companion_can_pause_and_resume_task(monkeypatch, tmp_path):
         user_goal="可暂停的任务",
         status=TaskPhase.EXECUTION,
         execution_stage=ExecutionStage.STEP_RUNNING,
+        metadata=_mobile_task_metadata(token),
     )
     db.upsert_model("tasks", task)
 
@@ -288,6 +384,9 @@ def test_mobile_companion_can_pause_and_resume_task(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["status"] == "paused"
+    assert response.json()["status_label"] == "已暂停"
+    assert response.json()["available_actions"] == ["resume", "cancel", "follow_up"]
+    assert response.json()["can_resume"] is True
 
     def fake_resume_task(task_id: str, *, strict: bool | None = None) -> Task:
         assert strict is True
@@ -306,6 +405,7 @@ def test_mobile_companion_can_pause_and_resume_task(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["status"] == "execution"
+    assert response.json()["available_actions"] == ["pause", "cancel", "follow_up"]
 
 
 def test_mobile_companion_cannot_pause_waiting_approval_task(monkeypatch, tmp_path):
@@ -317,6 +417,7 @@ def test_mobile_companion_cannot_pause_waiting_approval_task(monkeypatch, tmp_pa
         user_goal="等待审批的任务",
         status=TaskPhase.EXECUTION,
         execution_stage=ExecutionStage.AWAITING_APPROVAL,
+        metadata=_mobile_task_metadata(token),
     )
     db.upsert_model("tasks", task)
 
@@ -338,9 +439,16 @@ def test_mobile_companion_can_start_template_task(monkeypatch, tmp_path):
     token = _paired_token(client)
     captured: dict[str, str] = {}
 
-    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+    def fake_delegate_mobile_task(
+        goal: str,
+        mode: str,
+        *,
+        reply: str,
+        agent_hint: str,
+        metadata: dict | None = None,
+    ) -> ChatResponse:
         captured.update({"goal": goal, "mode": mode, "agent_hint": agent_hint})
-        task = Task(user_goal=goal, mode=mode)
+        task = Task(user_goal=goal, mode=mode, metadata=metadata or {})
         db.upsert_model("tasks", task)
         return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
 
@@ -373,7 +481,15 @@ def test_mobile_companion_task_start_conflicts_when_no_computer_task_created(mon
     client = TestClient(app)
     token = _paired_token(client)
 
-    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+    def fake_delegate_mobile_task(
+        goal: str,
+        mode: str,
+        *,
+        reply: str,
+        agent_hint: str,
+        metadata: dict | None = None,
+    ) -> ChatResponse:
+        assert metadata
         return ChatResponse(message="需要在电脑端补充任务范围。", delegated=False, agent=agent_hint)
 
     monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
@@ -394,7 +510,15 @@ def test_mobile_companion_task_start_returns_stable_error_when_delegate_fails(mo
     client = TestClient(app)
     token = _paired_token(client)
 
-    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+    def fake_delegate_mobile_task(
+        goal: str,
+        mode: str,
+        *,
+        reply: str,
+        agent_hint: str,
+        metadata: dict | None = None,
+    ) -> ChatResponse:
+        assert metadata
         raise RuntimeError("task bus unavailable")
 
     monkeypatch.setattr("app.api.routes_mobile._delegate_mobile_task", fake_delegate_mobile_task)
@@ -414,13 +538,20 @@ def test_mobile_companion_follow_up_creates_related_computer_task(monkeypatch, t
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
-    source = Task(user_goal="整理下载目录", mode="hybrid")
+    source = Task(user_goal="整理下载目录", mode="hybrid", metadata=_mobile_task_metadata(token))
     db.upsert_model("tasks", source)
     captured: dict[str, str] = {}
 
-    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+    def fake_delegate_mobile_task(
+        goal: str,
+        mode: str,
+        *,
+        reply: str,
+        agent_hint: str,
+        metadata: dict | None = None,
+    ) -> ChatResponse:
         captured.update({"goal": goal, "mode": mode, "agent_hint": agent_hint})
-        task = Task(user_goal=goal, mode=mode)
+        task = Task(user_goal=goal, mode=mode, metadata=metadata or {})
         db.upsert_model("tasks", task)
         return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
 
@@ -450,13 +581,21 @@ def test_mobile_companion_follow_up_does_not_echo_privacy_task_text(monkeypatch,
         user_goal="总结 C:/Users/example/private-contract.txt 的付款条款",
         mode="privacy",
         final_summary="private-contract.txt 写了 100 万付款。",
+        metadata=_mobile_task_metadata(token),
     )
     db.upsert_model("tasks", source)
     captured: dict[str, str] = {}
 
-    def fake_delegate_mobile_task(goal: str, mode: str, *, reply: str, agent_hint: str) -> ChatResponse:
+    def fake_delegate_mobile_task(
+        goal: str,
+        mode: str,
+        *,
+        reply: str,
+        agent_hint: str,
+        metadata: dict | None = None,
+    ) -> ChatResponse:
         captured.update({"goal": goal, "mode": mode})
-        task = Task(user_goal=goal, mode=mode, final_summary="private-contract.txt still secret")
+        task = Task(user_goal=goal, mode=mode, final_summary="private-contract.txt still secret", metadata=metadata or {})
         db.upsert_model("tasks", task)
         return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
 
@@ -1844,6 +1983,49 @@ def test_mobile_approval_websocket_accepts_token_subprotocol(monkeypatch, tmp_pa
     assert connected["type"] == "connected"
 
 
+def test_mobile_notification_websocket_connected_tasks_are_redacted(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    task = Task(
+        user_goal="检查 C:/Users/example/private-contract.txt token=secret-token-ws-task-1234567890",
+        mode="hybrid",
+        final_summary="password=abc1234567890",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.PAUSED,
+        metadata=_mobile_task_metadata(token),
+    )
+    private_task = Task(
+        user_goal="总结 C:/Users/example/private-medical.txt",
+        mode="privacy",
+        final_summary="包含私人诊断。",
+        metadata=_mobile_task_metadata(token),
+    )
+    db.upsert_model("tasks", task)
+    db.upsert_model("tasks", private_task)
+
+    with client.websocket_connect(
+        "/ws/mobile/notifications",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        connected = websocket.receive_json()
+
+    connected_text = json.dumps(connected, ensure_ascii=False)
+    tasks_by_id = {item["id"]: item for item in connected["tasks"]}
+    assert connected["type"] == "connected"
+    assert tasks_by_id[task.id]["status"] == "paused"
+    assert tasks_by_id[task.id]["available_actions"] == ["resume", "cancel", "follow_up"]
+    assert tasks_by_id[task.id]["content_redacted"] is True
+    assert tasks_by_id[private_task.id]["title"] == "隐私任务"
+    assert tasks_by_id[private_task.id]["privacy_redacted"] is True
+    assert "private-contract" not in connected_text
+    assert "secret-token-ws-task-1234567890" not in connected_text
+    assert "abc1234567890" not in connected_text
+    assert "private-medical" not in connected_text
+    assert "私人诊断" not in connected_text
+
+
 def test_mobile_approval_websocket_closes_when_device_revoked(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -1963,6 +2145,18 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
 def _paired_token(client: TestClient) -> str:
     code = client.post("/api/pair/code").json()["code"]
     return client.post("/api/pair", json={"code": code, "device_name": "Test Phone"}).json()["token"]
+
+
+def _mobile_task_metadata(token: str) -> dict:
+    device_id = decode_mobile_token(token)["device_id"]
+    return {
+        "mobile_companion": {
+            "source": "mobile_companion",
+            "source_device_id": device_id,
+            "allowed_device_ids": [device_id],
+            "action": "test",
+        }
+    }
 
 
 def _enable_remote_desktop() -> None:

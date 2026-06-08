@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -123,7 +124,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
         assert any(event.get("event") == "run.started" for event in replayed)
 
 
-def test_auto_routing_selects_developer_for_code_goal(monkeypatch, tmp_path):
+def test_auto_routing_uses_os_for_write_intent_code_goal(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
@@ -147,8 +148,109 @@ def test_auto_routing_selects_developer_for_code_goal(monkeypatch, tmp_path):
             json={"message": "fix failing pytest in backend", "mode": "privacy", "engine": "auto"},
         )
         assert created.status_code == 200
-        assert created.json()["engine"] == "developer"
-    assert len(scheduled) == 1
+        assert created.json()["engine"] == "os"
+    assert len(scheduled) == 2
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "帮我检查这台电脑",
+        "run system diagnostics",
+        "run computer diagnostics",
+    ],
+)
+def test_run_api_system_diagnostics_stays_os_local_only(monkeypatch, tmp_path, message):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    monkeypatch.setenv("LENGRVIS_DEFAULT_ENGINE", "developer")
+    db.init_db()
+
+    provider_calls: list[str] = []
+
+    def fail_provider(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        provider_calls.append("planner_provider")
+        raise AssertionError("system diagnostics must use the deterministic local-only plan.")
+
+    monkeypatch.setattr("app.agents.planner_agent.get_provider", fail_provider)
+
+    with TestClient(_test_app()) as client:
+        created = client.post(
+            "/api/runs",
+            json={"message": message, "mode": "privacy", "engine": "auto"},
+        )
+        assert created.status_code == 200
+        run = created.json()
+        assert run["engine"] == "os"
+        final = _wait_for_phase(client, run["run_id"], "completed", "failed", "denied")
+        assert final["phase"] == "completed"
+
+        timeline = client.get(f"/api/runs/{run['run_id']}/timeline").json()
+        progress = client.get(f"/api/runs/{run['run_id']}/progress").json()
+
+    assert provider_calls == []
+    assert timeline["run"]["requested_engine"] == "auto"
+    assert timeline["run"]["engine"] == "os"
+    assert "read-only system diagnostics" in timeline["events"][0]["payload"]["transition_reason"]
+
+    plan_events = [
+        event
+        for event in timeline["events"]
+        if event["name"] == "plan.generated" and event["payload"].get("structured_payload", {}).get("steps")
+    ]
+    assert plan_events
+    step = plan_events[-1]["payload"]["structured_payload"]["steps"][0]
+    assert step["tool_name"] == "system.diagnostics"
+    assert step["risk_level"] == RiskLevel.R0_READ_ONLY.value
+    assert step["requires_approval"] is False
+    assert db.fetch_many("approvals", "task_id = ?", (timeline["run"]["task_id"],), limit=10) == []
+
+    engine_event_outputs = [
+        event
+        for event in timeline["events"]
+        if event["name"] == "tool.result" and event["payload"].get("tool_name") == "events"
+    ]
+    assert engine_event_outputs
+    os_events = engine_event_outputs[-1]["payload"]["output"]
+    diagnostics_result = next(
+        event
+        for event in os_events
+        if event.get("event") == "tool.result"
+        and event.get("tool_result", {}).get("output", {}).get("local_ai", {}).get("scope") == "local_only"
+    )
+    diagnostics = diagnostics_result["tool_result"]["output"]
+
+    step_outcome_events = [
+        event
+        for event in timeline["events"]
+        if event["name"] == "tool.result" and event["payload"].get("tool_name") == "step_outcomes"
+    ]
+    assert step_outcome_events
+    step_outcome = next(
+        outcome
+        for outcome in step_outcome_events[-1]["payload"]["output"]
+        if outcome["tool_name"] == "system.diagnostics"
+    )
+    assert step_outcome["kind"] == "succeeded"
+    assert diagnostics["local_ai"]["scope"] == "local_only"
+    assert {"info", "disks", "network", "battery", "top_processes", "suggestions"}.issubset(diagnostics)
+
+    tool = register_all_tools(load_skills=False).get("system.diagnostics")
+    assert tool.risk_level == RiskLevel.R0_READ_ONLY
+    assert tool.is_read_only() is True
+    assert tool.external_network is False
+    assert tool.effects == ["read", "inspect"]
+    assert tool.resource_kinds == ["system"]
+
+    assert progress["engine"] == "os"
+    assert progress["phase"] == "completed"
+    assert any(
+        event["payload"].get("structured_payload", {}).get("tool_name") == "system.diagnostics"
+        and event["payload"].get("structured_payload", {}).get("status") == "completed"
+        for event in progress["progress"]
+    )
 
 
 def test_run_start_failure_redacts_error_in_state_and_timeline(monkeypatch, tmp_path):

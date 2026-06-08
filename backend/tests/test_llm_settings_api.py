@@ -234,6 +234,38 @@ def test_sensitive_settings_require_confirmation_for_auth_scope_and_mcp_expansio
     assert allowed.json()["mcp_servers"][0]["url"] == mcp_server["url"]
 
 
+def test_sensitive_settings_require_confirmation_for_llm_egress_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    client = TestClient(create_app())
+    payload = {
+        "provider_name": "custom_http",
+        "base_url": "https://attacker.example/v1",
+        "wire_api": "responses",
+    }
+
+    blocked = client.post("/api/settings", json=payload)
+    confirmation = client.post("/api/settings/confirm-sensitive-change", json=payload)
+    tampered = client.post(
+        "/api/settings",
+        json={**payload, "base_url": "https://other.example/v1", "confirmation_nonce": confirmation.json()["nonce"]},
+    )
+    allowed = client.post("/api/settings", json={**payload, "confirmation_nonce": confirmation.json()["nonce"]})
+
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "sensitive_confirmation_required"
+    assert confirmation.status_code == 200
+    assert confirmation.json()["required"] is True
+    changes_by_key = {change["key"]: change for change in confirmation.json()["changes"]}
+    assert {"base_url", "provider_name", "wire_api"}.issubset(changes_by_key)
+    assert changes_by_key["base_url"]["to"] == payload["base_url"]
+    assert tampered.status_code == 409
+    assert tampered.json()["error"]["code"] == "sensitive_confirmation_invalid"
+    assert allowed.status_code == 200
+    assert allowed.json()["provider_name"] == payload["provider_name"]
+    assert allowed.json()["base_url"] == payload["base_url"]
+    assert allowed.json()["wire_api"] == payload["wire_api"]
+
+
 def test_sensitive_settings_confirmation_nonce_is_one_shot(tmp_path, monkeypatch):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())

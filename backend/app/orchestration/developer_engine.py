@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config import AppSettings, PROJECT_ROOT
-from app.orchestration.claude_code_config import ClaudeCodeConfig, default_allowed_tools
+from app.orchestration.claude_code_config import ClaudeCodeConfig, default_allowed_tools, validate_allowed_tools
 from app.orchestration.claude_code_runner import (
     ClaudeCodeStreamSummary,
     cancel_claude_code_run,
@@ -39,24 +39,32 @@ class DeveloperExecutionEngine(ExecutionEngine):
         self.use_claude_code = use_claude_code
 
     async def start_run(self, goal: str, mode: str, engine: EngineSelection = "auto") -> RunState:
+        tool_safety_error = ""
+        try:
+            allowed_tools = claude_code_developer_tool_names(self.claude_code_config)
+        except ValueError as exc:
+            allowed_tools = ()
+            tool_safety_error = f"Developer engine tool allowlist rejected: {exc}"
+        phase = RunPhase.FAILED if tool_safety_error else RunPhase.PLANNING
         state = RunState(
             run_id=self.store.new_id("devrun"),
             engine="developer",
-            phase=RunPhase.PLANNING,
+            phase=phase,
             goal=goal,
             mode=mode,
-            transition_reason="developer Claude Code run created",
+            transition_reason=tool_safety_error or "developer Claude Code run created",
             current_plan={
                 "summary": "Run Claude Code headless with Lengrvis-controlled OpenAI config and tool permissions.",
                 "adapter": "claude_code_headless_stream_json",
                 "workspace": _default_workspace(self.settings),
                 "model": self.settings.model,
-                "allowed_tools": list(claude_code_developer_tool_names(self.claude_code_config)),
-                "permission_mode": "acceptEdits",
-                "claude_code_enabled": self.use_claude_code,
+                "allowed_tools": list(allowed_tools),
+                "permission_mode": _config_for_settings(self.settings, self.claude_code_config).permission_mode,
+                "claude_code_enabled": self.use_claude_code and not tool_safety_error,
                 "dangerously_skip_permissions": False,
-                "writes_enabled": self.use_claude_code,
-                "steps": [{"id": "claude_code_run", "tool": "claude_code", "status": "pending"}],
+                "writes_enabled": False,
+                **({"safety_error": tool_safety_error} if tool_safety_error else {}),
+                "steps": [{"id": "claude_code_run", "tool": "claude_code", "status": "failed" if tool_safety_error else "pending"}],
             },
         )
         return self.store.put(state)
@@ -127,7 +135,7 @@ def readonly_developer_tool_names() -> tuple[str, ...]:
 
 def claude_code_developer_tool_names(config: ClaudeCodeConfig | None = None) -> tuple[str, ...]:
     configured = getattr(config, "allowed_tools", None)
-    return tuple(str(tool) for tool in configured) if configured else default_allowed_tools()
+    return validate_allowed_tools(tuple(str(tool) for tool in configured)) if configured else default_allowed_tools()
 
 
 def _config_for_settings(settings: AppSettings, config: ClaudeCodeConfig | None) -> ClaudeCodeConfig:

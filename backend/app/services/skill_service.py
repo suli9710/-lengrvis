@@ -148,9 +148,13 @@ def _package_summary(package: LoadedSkillPackage, *, status: str) -> dict[str, A
                 "description": tool.description,
                 "agent_owner": definition.effective_agent_owner(tool),
                 "risk": definition.effective_risk(tool).value,
+                "permissions": definition.effective_permissions(tool),
                 "input_schema": tool.input_schema,
                 "execution_type": tool.execution.type.value,
                 "entry": tool.execution.entry,
+                "supports_dry_run": tool.supports_dry_run,
+                "requires_authorized_path": tool.requires_authorized_path,
+                "rollback_hint": tool.rollback_hint,
             }
             for tool in definition.tools
         ],

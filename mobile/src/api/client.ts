@@ -247,11 +247,13 @@ export interface WebSocketConnectionInfo {
 }
 
 const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token.";
-export const INSECURE_LAN_HTTP_WARNING = "当前电脑地址使用非本机 HTTP，手机 token、远程输入授权和屏幕连接会在局域网内明文传输。请只在可信网络继续，推荐在桌面端启用 HTTPS。";
+export const INSECURE_LAN_HTTP_WARNING = "当前电脑地址使用非本机 HTTP，手机 token、远程输入授权和屏幕连接不能通过局域网明文传输。请在桌面端启用 HTTPS/WSS 或使用受信任证书后重新配对。";
 export const SELF_SIGNED_TLS_WARNING = "此服务器使用自签或未受系统信任的 HTTPS 证书。请在电脑端核对证书指纹；手机系统信任前，本应用不会安装证书。";
-export const BACKEND_TLS_DISABLED_WARNING = "后端当前未启用 TLS。请输入 HTTPS 地址，或只在可信局域网内临时确认 HTTP 连接。";
+export const BACKEND_TLS_DISABLED_WARNING = "后端当前未启用 TLS。请输入 HTTPS 地址；非本机局域网 HTTP 不能承载手机 token、屏幕或远程输入连接。";
 
 export class AuthExpiredError extends Error {
+  readonly status = 401;
+
   constructor(message = "这台手机已断开连接。请在 Lengrvis 中重新连接。") {
     super(message);
     this.name = "AuthExpiredError";
@@ -259,9 +261,23 @@ export class AuthExpiredError extends Error {
 }
 
 export class ForbiddenError extends Error {
+  readonly status = 403;
+
   constructor(message = "这台手机没有权限执行该操作。") {
     super(message);
     this.name = "ForbiddenError";
+  }
+}
+
+export class BackendHttpError extends Error {
+  readonly status: number;
+  readonly detail: string;
+
+  constructor(status: number, detail: string) {
+    super(detail || "Lengrvis 未能完成该请求，请重试。");
+    this.name = "BackendHttpError";
+    this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -305,15 +321,17 @@ export async function pairWithBackend(
 }
 
 export async function listPendingApprovals(session: PairingSession): Promise<BackendApproval[]> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/approvals/pending`, {
-    headers: authHeaders(session.token),
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/pending`, {
+    headers: authHeaders(safeSession.token),
   });
   return parseJson<BackendApproval[]>(response);
 }
 
 export async function getApprovalDetail(session: PairingSession, approvalId: string): Promise<ApprovalDetail> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}`, {
-    headers: authHeaders(session.token),
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}`, {
+    headers: authHeaders(safeSession.token),
   });
   return parseJson<ApprovalDetail>(response);
 }
@@ -323,25 +341,28 @@ export async function submitApprovalDecision(
   approvalId: string,
   decision: "approved" | "denied",
 ): Promise<BackendApproval> {
+  const safeSession = assertSafePairingSession(session);
   const action = decision === "approved" ? "approve" : "reject";
-  const response = await fetch(`${session.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/${action}`, {
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/${action}`, {
     method: "POST",
-    headers: authHeaders(session.token),
+    headers: authHeaders(safeSession.token),
   });
   return parseJson<BackendApproval>(response);
 }
 
 export async function disconnectMobileDevice(session: PairingSession): Promise<void> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/devices/${encodeURIComponent(session.deviceId)}`, {
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/devices/${encodeURIComponent(safeSession.deviceId)}`, {
     method: "DELETE",
-    headers: authHeaders(session.token),
+    headers: authHeaders(safeSession.token),
   });
   await parseJson<unknown>(response);
 }
 
 export async function listMobileTasks(session: PairingSession): Promise<MobileTask[]> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/tasks`, {
-    headers: authHeaders(session.token),
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/tasks`, {
+    headers: authHeaders(safeSession.token),
   });
   const payload = await parseJson<{ tasks: MobileTask[] }>(response);
   return payload.tasks;
@@ -351,9 +372,10 @@ export async function createMobileTask(
   session: PairingSession,
   request: { template_id: MobileTaskTemplateId; user_input?: string; mode: MobileTaskMode },
 ): Promise<MobileTaskLaunchResult> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/tasks`, {
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/tasks`, {
     method: "POST",
-    headers: jsonAuthHeaders(session.token),
+    headers: jsonAuthHeaders(safeSession.token),
     body: JSON.stringify(request),
   });
   return parseJson<MobileTaskLaunchResult>(response);
@@ -364,9 +386,10 @@ export async function submitMobileTaskFollowUp(
   taskId: string,
   request: { instruction: string; mode?: MobileTaskMode },
 ): Promise<MobileTaskLaunchResult> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/follow-up`, {
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/follow-up`, {
     method: "POST",
-    headers: jsonAuthHeaders(session.token),
+    headers: jsonAuthHeaders(safeSession.token),
     body: JSON.stringify(request),
   });
   return parseJson<MobileTaskLaunchResult>(response);
@@ -377,25 +400,28 @@ export async function submitMobileTaskCommand(
   taskId: string,
   command: "pause" | "resume" | "cancel",
 ): Promise<MobileTask> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/${command}`, {
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/${command}`, {
     method: "POST",
-    headers: authHeaders(session.token),
+    headers: authHeaders(safeSession.token),
   });
   return parseJson<MobileTask>(response);
 }
 
 export async function claimRemoteInputGrantToken(session: PairingSession, grantId: string): Promise<RemoteInputGrantToken> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}/token`, {
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}/token`, {
     method: "POST",
-    headers: authHeaders(session.token),
+    headers: authHeaders(safeSession.token),
   });
   return parseJson<RemoteInputGrantToken>(response);
 }
 
 export async function revokeRemoteInputGrant(session: PairingSession, grantId: string): Promise<RemoteInputGrant> {
-  const response = await fetch(`${session.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}`, {
+  const safeSession = assertSafePairingSession(session);
+  const response = await fetch(`${safeSession.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}`, {
     method: "DELETE",
-    headers: authHeaders(session.token),
+    headers: authHeaders(safeSession.token),
   });
   return parseJson<RemoteInputGrant>(response);
 }
@@ -483,15 +509,38 @@ export function describeBaseUrlSecurity(value: string, pairingMetadata?: unknown
 }
 
 export function assertSafeBaseUrl(value: string, options: BaseUrlSafetyOptions = {}): BaseUrlSecurity {
+  void options;
   const security = describeBaseUrlSecurity(value);
-  if (security.isInsecureLan && !options.allowInsecureLan) {
+  if (security.isInsecureLan) {
     throw new InsecureLanBaseUrlError(security);
   }
   return security;
 }
 
+export function describeSessionBaseUrlSecurity(session: Pick<PairingSession, "baseUrl" | "baseUrlSecurity" | "security">): BaseUrlSecurity {
+  const pairingMetadata =
+    session.security ??
+    session.baseUrlSecurity?.backendSecurity ??
+    (session.baseUrlSecurity?.serverTls ? { tls: session.baseUrlSecurity.serverTls } : undefined);
+  return describeBaseUrlSecurity(session.baseUrl, pairingMetadata);
+}
+
+export function assertSafePairingSession(session: PairingSession): PairingSession {
+  const baseUrlSecurity = describeSessionBaseUrlSecurity(session);
+  if (baseUrlSecurity.isInsecureLan) {
+    throw new InsecureLanBaseUrlError(baseUrlSecurity);
+  }
+  return {
+    ...session,
+    baseUrl: baseUrlSecurity.normalizedBaseUrl,
+    baseUrlSecurity,
+    ...(baseUrlSecurity.backendSecurity ? { security: baseUrlSecurity.backendSecurity } : {}),
+  };
+}
+
 function webSocketConnectionInfo(session: PairingSession, pathname: string, protocols: string[] = []): WebSocketConnectionInfo {
-  const security = session.baseUrlSecurity ?? describeBaseUrlSecurity(session.baseUrl);
+  const safeSession = assertSafePairingSession(session);
+  const security = safeSession.baseUrlSecurity;
   const url = new URL(pathname, security.normalizedBaseUrl);
   url.protocol = security.webSocketProtocol;
   return {
@@ -844,16 +893,32 @@ function isLoopbackHostname(hostname: string): boolean {
 async function parseJson<T>(response: Response): Promise<T> {
   const data = await response.json().catch(() => undefined);
   if (!response.ok) {
-    const detail = data && typeof data === "object" && "detail" in data ? String((data as { detail?: unknown }).detail) : "";
+    const detail = responseDetailMessage(data);
     if (response.status === 401) {
       throw new AuthExpiredError(detail || undefined);
     }
     if (response.status === 403) {
       throw new ForbiddenError(detail || undefined);
     }
-    throw new Error(detail || "Lengrvis 未能完成该请求，请重试。");
+    throw new BackendHttpError(response.status, detail);
   }
   return data as T;
+}
+
+function responseDetailMessage(data: unknown): string {
+  if (!data || typeof data !== "object" || !("detail" in data)) return "";
+  const detail = (data as { detail?: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => (item && typeof item === "object" && "msg" in item ? String((item as { msg?: unknown }).msg) : ""))
+      .filter(Boolean);
+    return messages.join("；");
+  }
+  if (detail && typeof detail === "object" && "msg" in detail) {
+    return String((detail as { msg?: unknown }).msg);
+  }
+  return detail === undefined || detail === null ? "" : String(detail);
 }
 
 function authHeaders(token: string): Record<string, string> {

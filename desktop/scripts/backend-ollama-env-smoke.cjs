@@ -104,11 +104,18 @@ global.fetch = async (url, options = {}) => {
     );
 
     const foregroundStatus = await manager.enterForeground("smoke_foreground");
-    assert.equal(foregroundStatus.state, "running", "runtime mode POST failure should not stop the backend lifecycle");
+    assert.equal(foregroundStatus.state, "starting", "failed health should remain starting instead of reporting a ready backend");
     assert.match(foregroundStatus.runtimeModeError, /503.*guardian not ready/);
     assert.match(foregroundStatus.message, /could not enter foreground runtime mode/);
     assert.ok(runtimeModeRequest, "foreground runtime mode should be attempted");
     assert.equal(runtimeModeRequest.options.headers["X-Lengrvis-Desktop-Token"], manager.getDesktopApiToken());
+
+    runtimeModeRequest = null;
+    const remoteBaseUrlManager = new BackendProcessManager({ baseUrl: "https://api.example.test" });
+    const remoteForegroundStatus = await remoteBaseUrlManager.enterForeground("remote_foreground");
+    assert.equal(remoteForegroundStatus.state, "starting", "non-loopback runtime mode guard should not report a ready backend without health");
+    assert.match(remoteForegroundStatus.runtimeModeError, /loopback backend base URL/);
+    assert.equal(runtimeModeRequest, null, "runtime mode guard must reject non-loopback backend before sending desktop token");
 
     console.log("Backend bundled Ollama env smoke passed");
   } finally {

@@ -25,6 +25,60 @@ export interface ApiResponse<TData = unknown> {
   receivedAt: string;
 }
 
+export type DesktopRunMode = "privacy" | "efficiency" | "hybrid";
+export type DesktopRunEngine = "auto" | "os" | "developer";
+
+export interface DesktopRunStartRequest {
+  message: string;
+  mode?: DesktopRunMode;
+  engine?: DesktopRunEngine;
+}
+
+export type DesktopSettingsPatch = Record<string, unknown>;
+
+export interface DesktopSensitiveChangeConfirmation {
+  required?: boolean;
+  nonce?: string;
+  expires_at?: string;
+  changes?: Array<Record<string, unknown>>;
+}
+
+export interface DesktopPermissionTimeWindow {
+  days?: Array<number | string>;
+  start?: string;
+  end?: string;
+  timezone?: string;
+}
+
+export interface DesktopPermissionRule {
+  id?: string;
+  name?: string;
+  effect?: "allow" | "deny";
+  tool?: string;
+  tools?: string[];
+  path_pattern?: string;
+  path_patterns?: string[];
+  time_window?: DesktopPermissionTimeWindow | null;
+  time_windows?: DesktopPermissionTimeWindow[];
+  enabled?: boolean;
+  reason?: string;
+}
+
+export type DesktopPermissionPolicyRelaxationRequest =
+  | { action: "upsert_rule"; rule: DesktopPermissionRule }
+  | { action: "delete_rule"; ruleId: string }
+  | { action: "replace_policy"; policy: { rules?: DesktopPermissionRule[] } };
+
+export interface DesktopPermissionRuleUpsertRequest {
+  rule: DesktopPermissionRule;
+  confirmationNonce?: string;
+}
+
+export interface DesktopPermissionRuleDeleteRequest {
+  ruleId: string;
+  confirmationNonce?: string;
+}
+
 export interface DesktopWebSocketSubscribeRequest {
   endpoint: string;
   query?: Record<string, ApiQueryValue>;
@@ -881,6 +935,7 @@ export interface FileRevealResult {
   ok: boolean;
   path?: string;
   revealed?: boolean;
+  shown?: boolean;
   error?: string;
 }
 
@@ -914,6 +969,31 @@ export interface DiskInfo {
   usage?: DiskUsage;
 }
 
+export interface SystemDiagnosticProduct {
+  name?: string;
+  version?: string;
+}
+
+export interface SystemDiagnosticUpdateChannel {
+  configured: boolean;
+  status?: "not_configured" | string;
+  label?: string;
+  detail?: string;
+  checkAction?: "refresh_local_status" | string;
+  offlineOnly?: boolean;
+}
+
+export interface SystemDiagnosticLocalPaths {
+  dataDir?: string;
+  database?: string;
+  logDirs: string[];
+}
+
+export interface SystemDiagnosticAudit {
+  verification?: Record<string, unknown>;
+  latestEvent?: Record<string, unknown> | null;
+}
+
 export interface SystemDiagnostic {
   info: Record<string, unknown>;
   disks: DiskInfo[];
@@ -922,6 +1002,25 @@ export interface SystemDiagnostic {
   topProcesses: SystemProcess[];
   startupItems?: StartupItem[];
   suggestions: string[];
+  product?: SystemDiagnosticProduct;
+  updateChannel?: SystemDiagnosticUpdateChannel;
+  localPaths?: SystemDiagnosticLocalPaths;
+  audit?: SystemDiagnosticAudit;
+  lanTransport?: Record<string, unknown>;
+  recentCounts?: Record<string, number>;
+  recentFailureCounts?: Record<string, number>;
+  diagnosticHints?: string[];
+  diagnosticScope?: string;
+}
+
+export interface DiagnosticExportResult {
+  ok: boolean;
+  path: string;
+  filename: string;
+  createdAt: string;
+  bytes: number;
+  scope: string;
+  error?: string;
 }
 
 export interface BrowserLinkResult {
@@ -1059,8 +1158,12 @@ export interface SkillToolInfo {
   description: string;
   agentOwner: string;
   risk: string;
+  permissions: string[];
   executionType: "python" | "shell" | "http" | string;
   entry: string;
+  supportsDryRun: boolean;
+  requiresAuthorizedPath: boolean;
+  rollbackHint: string;
 }
 
 export interface SkillSafetyIssue {
@@ -1339,6 +1442,28 @@ export interface LengrvisDesktopBridge {
     pull: (request?: { model?: string }) => Promise<ApiResponse<unknown>>;
     start: () => Promise<ApiResponse<unknown>>;
   };
+  runs: {
+    start: (request: DesktopRunStartRequest) => Promise<ApiResponse<unknown>>;
+  };
+  system: {
+    exportDiagnosticsPackage: () => Promise<ApiResponse<unknown>>;
+  };
+  documents: {
+    parse: (request: DocumentParseRequest) => Promise<ApiResponse<unknown>>;
+    ask: (request: DocumentAskRequest) => Promise<ApiResponse<unknown>>;
+    compare: (request: DocumentCompareRequest) => Promise<ApiResponse<unknown>>;
+  };
+  settings: {
+    confirmSensitiveChange: (patch: DesktopSettingsPatch) => Promise<ApiResponse<DesktopSensitiveChangeConfirmation>>;
+    save: (patch: DesktopSettingsPatch) => Promise<ApiResponse<unknown>>;
+  };
+  permissionPolicy: {
+    confirmRelaxation: (
+      request: DesktopPermissionPolicyRelaxationRequest
+    ) => Promise<ApiResponse<DesktopSensitiveChangeConfirmation>>;
+    upsertRule: (request: DesktopPermissionRuleUpsertRequest) => Promise<ApiResponse<unknown>>;
+    deleteRule: (request: DesktopPermissionRuleDeleteRequest) => Promise<ApiResponse<unknown>>;
+  };
   mobilePairing: {
     createCode: () => Promise<ApiResponse<unknown>>;
     listDevices: () => Promise<ApiResponse<unknown>>;
@@ -1370,6 +1495,7 @@ export interface LengrvisDesktopBridge {
   shell: {
     openExternal: (url: string) => Promise<void>;
     getFileIcon: (path: string) => Promise<string | null>;
+    showItemInFolder: (path: string) => Promise<FileRevealResult>;
   };
   notifications: {
     show: (payload: NotificationPayload) => Promise<{ shown: boolean; reason?: string }>;

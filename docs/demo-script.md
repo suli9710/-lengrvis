@@ -1,6 +1,6 @@
 # Lengrvis Demo Script
 
-Last reviewed: 2026-06-07
+Last reviewed: 2026-06-08
 
 These scripts keep demos tied to verified product paths. Use a clean test workspace with disposable files only.
 
@@ -20,12 +20,15 @@ Data: no private files required; this path can run against an empty test profile
 1. Open the desktop home task workbench.
 2. Point to the five task templates and their trust labels: local processing, cloud boundary, approval, rollback, estimated time.
 3. Run "检查电脑状态".
-4. Open the timeline and show the Trust Manifest.
-5. Close with Settings model boundary profile: quick, privacy, hybrid. Capture the recommended model, estimated size, hardware state, speed estimate, repair action, and the "privacy failures do not auto-fall back to cloud" note.
+4. Show the visible result boundary: the first screen template names the expected output, the Home 成果区 either shows a recent system-check result or the "等待只读快照" fallback, and the Computer page says "只读诊断，不改设置".
+5. Open the timeline and show the Trust Manifest when a real task exists; for the read-only computer check, say explicitly that the smoke proves a local diagnostics path and no chat/run task is created.
+6. Close with Settings model boundary profile: quick, privacy, hybrid. Capture the recommended model, estimated size, hardware state, speed estimate, repair action, and the "privacy failures do not auto-fall back to cloud" note.
 
-Expected screen: first task starts within the workbench and produces visible timeline state.
+Expected screen: the first template path produces visible local evidence or an honest fallback, with a clear next step and no silent write action.
 
-Fallback: if backend health is unavailable, show the Settings health card and explain the exact failing dependency.
+Fallback: if backend health is unavailable, show the Home readiness item, the 成果区 "等待只读快照" card, and the disabled send-state copy; explain the exact failing dependency instead of claiming a completed task.
+
+Smoke evidence: `npm --prefix desktop run smoke:first-launch` verifies the "检查电脑状态" template button, 成果区 recent-result/fallback card, Task Workspace read-only boundary, Computer page local diagnostics copy, and the no-chat/run invariant. `npm --prefix desktop run smoke:browser-activity` keeps the empty-profile fallback on desktop and mobile viewports.
 
 ## 3 Minutes
 
@@ -75,4 +78,4 @@ Evidence to record:
 - Mobile companion flow: pairing, approval list, approve/reject, and read-only screen state when shown.
 - Skill sample: package name, manifest cards, and whether preview/rollback/handoff was verified or waived.
 - Document citation: source label, page/section when available, and disposable data set name.
-- Template path: 60-second, 3-minute, or 10-minute path used, outcome, and residual risks.
+- Template path: 60-second, 3-minute, or 10-minute path used, whether the outcome came from a real run or a smoke/mock result, the visible next step, and residual risks.

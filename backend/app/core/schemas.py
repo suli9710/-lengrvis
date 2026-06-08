@@ -250,6 +250,7 @@ class Task(BaseModel):
     execution_stage: ExecutionStage = ExecutionStage.IDLE
     mode: str = "efficiency"
     final_summary: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=now_iso)
     updated_at: str = Field(default_factory=now_iso)
 

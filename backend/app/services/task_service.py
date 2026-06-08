@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
+from typing import Any
 
 from app.agents.supervisor_agent import SupervisorAgent, SupervisorDecision
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.audit import record
-from app.core.schemas import ChatMessage, ChatResponse, OpenAIMessageRole, Task, TaskStatus
+from app.core.schemas import ChatMessage, ChatResponse, OpenAIMessageRole, RunEngine, RunPhase, Task, TaskStatus
+from app.orchestration.engine_router import route_engine
 from app.orchestration.state_machine import safe_transition
+from app.orchestration.task_phase import TaskPhase
 from app.services.task_pool import get_pool
 
 
@@ -50,6 +53,10 @@ async def handle_chat(message: str, mode: str) -> ChatResponse:
     user_message = ChatMessage(role=OpenAIMessageRole.USER, author="你", content=message)
     db.upsert_model("chat_messages", user_message)
 
+    route = route_engine(message, "auto")
+    if route.selected_engine == "os" and "system diagnostics" in route.reason:
+        return await _delegate_system_diagnostics_run(message, mode)
+
     supervisor = SupervisorAgent()
     decision = await supervisor.decide(message, mode)
     if not decision.delegate and _is_explicit_file_path_request(message):
@@ -76,6 +83,38 @@ async def handle_chat(message: str, mode: str) -> ChatResponse:
     return _delegate_task(message, mode, decision)
 
 
+async def _delegate_system_diagnostics_run(message: str, mode: str) -> ChatResponse:
+    from app.services import run_service
+
+    run = await run_service.create_run(message, mode, RunEngine.AUTO)
+    reply = "好的，这个任务和电脑/系统有关，我将分配给电脑 Agent。"
+    assistant_message = ChatMessage(
+        role=OpenAIMessageRole.ASSISTANT,
+        author="主管 Agent",
+        content=reply,
+    )
+    db.upsert_model("chat_messages", assistant_message)
+    return ChatResponse(
+        task_id=run.task_id or run.id,
+        status=_task_phase_from_run_phase(run.phase),
+        message=reply,
+        delegated=True,
+        agent="ComputerAgent",
+    )
+
+
+def _task_phase_from_run_phase(phase: RunPhase) -> TaskPhase:
+    if phase == RunPhase.COMPLETED:
+        return TaskPhase.COMPLETED
+    if phase in {RunPhase.FAILED, RunPhase.DENIED}:
+        return TaskPhase.FAILED
+    if phase == RunPhase.CANCELLED:
+        return TaskPhase.CANCELLED
+    if phase in {RunPhase.RUNNING, RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED}:
+        return TaskPhase.EXECUTION
+    return TaskPhase.PLANNING
+
+
 def _is_explicit_file_path_request(message: str) -> bool:
     normalized = message.lower()
     return bool(PATH_ACTION_RE.search(message)) and any(term in normalized for term in FILE_ACTION_TERMS)
@@ -86,9 +125,9 @@ def _is_uninstall_request(message: str) -> bool:
     return any(term in normalized for term in UNINSTALL_TERMS)
 
 
-def _delegate_task(message: str, mode: str, decision: SupervisorDecision) -> ChatResponse:
+def _delegate_task(message: str, mode: str, decision: SupervisorDecision, *, metadata: dict[str, Any] | None = None) -> ChatResponse:
     orchestrator = OrchestratorAgent()
-    task = orchestrator.create_task_shell(message, mode)
+    task = orchestrator.create_task_shell(message, mode, metadata=metadata)
     record(
         "supervisor.decision",
         "SupervisorAgent",

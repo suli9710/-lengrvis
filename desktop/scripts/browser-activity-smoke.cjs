@@ -1,11 +1,13 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require("@playwright/test");
 
 const previewUrl = "http://127.0.0.1:4173";
 const desktopRoot = path.resolve(__dirname, "..");
+const browserActivityPanelSource = path.join(desktopRoot, "src", "renderer", "components", "BrowserActivityPanel.tsx");
 
 const session = {
   id: "backend-only-session",
@@ -137,6 +139,15 @@ function assertNoSecretPayload(value, label) {
   assert.equal(text.includes("password123"), false, `${label} should not include raw form text`);
   assert.equal(text.includes("top-secret observation"), false, `${label} should not include raw observed page text`);
   assert.equal(text.includes("#password"), false, `${label} should not include sensitive selectors`);
+}
+
+function assertBrowserHostFailureStopsBackendCommand() {
+  const source = fs.readFileSync(browserActivityPanelSource, "utf8");
+  assert.match(
+    source,
+    /if \(!result\.ok\) \{\s*onErrorChange\(result\.error \?\? `\$\{label\} failed`\);\s*return;\s*\}\s*if \(backendCommand\)/s,
+    "BrowserActivityPanel must not call backend session commands after a failed BrowserHost command"
+  );
 }
 
 function startPreview() {
@@ -338,6 +349,20 @@ async function assertHomeQuickTemplates(page) {
   }
   await page.getByText(/Task Workspace/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/成果区|鎴愭灉鍖?/).first().waitFor({ timeout: 10_000 });
+  await assertComputerTemplateFallback(page);
+}
+
+async function assertComputerTemplateFallback(page) {
+  const templateButton = page.getByTestId("office-template-check-computer");
+  await templateButton.waitFor({ timeout: 10_000 });
+  const templateText = await templateButton.innerText();
+  assert.match(templateText, /产出/, "computer template should disclose the expected output before it is launched");
+  assert.match(templateText, /健康状态|缺失依赖|下一步修复入口/, "computer template should name the result a user can verify");
+  assert.match(templateText, /只读|不上云|无改动/, "computer template should keep the local read-only boundary visible");
+
+  const outcomeText = await page.getByTestId("home-outcome-computer").innerText();
+  assert.match(outcomeText, /等待只读快照/, "computer template fallback should not claim a result before one exists");
+  assert.match(outcomeText, /可一键启动只读检查/, "computer template fallback should explain the next safe action");
 }
 
 async function assertDocumentQuickEntry(page) {
@@ -594,6 +619,7 @@ async function returnToSearchTab(page) {
   let browser;
   try {
     await waitForPreview();
+    assertBrowserHostFailureStopsBackendCommand();
     console.log("launching Chromium");
     browser = await chromium.launch();
 
@@ -860,6 +886,30 @@ async function returnToSearchTab(page) {
         assert.deepEqual(FakeWebSocket.last.protocols, ["lengrvis.desktop.token.desktop-secret"]);
         FakeWebSocket.last.listeners.open();
         assert.equal(sentMessages[0].type, "snapshot", "BrowserHost WS bridge should send snapshots after protocol auth");
+        FakeWebSocket.last.listeners.message({
+          data: JSON.stringify({ type: "takeover", request_id: "takeover-1", session_id: "sensitive" })
+        });
+        FakeWebSocket.last.listeners.message({
+          data: JSON.stringify({
+            type: "action",
+            request_id: "action-1",
+            session_id: "sensitive",
+            action: { kind: "click", selector: "#submit" }
+          })
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const remoteWriteResults = sentMessages.filter((message) => message.type === "result");
+        assert.equal(remoteWriteResults.length, 2, "BrowserHost WS bridge should answer denied remote write requests");
+        assert.deepEqual(
+          remoteWriteResults.map((message) => [message.request_id, message.ok]),
+          [
+            ["takeover-1", false],
+            ["action-1", false]
+          ],
+          "BrowserHost WS bridge must not execute remote takeover or action messages without a grant"
+        );
+        assert.match(remoteWriteResults[0].error, /approval grant/);
+        assert.match(remoteWriteResults[1].error, /approval grant/);
         bridge.stop();
       } finally {
         global.WebSocket = originalWebSocket;

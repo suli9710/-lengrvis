@@ -640,7 +640,8 @@ export function registerBrowserHostIpcHandlers({
   });
   handle(IPC_CHANNELS.browserHostTakeover, (event, sessionId) => {
     assertBrowserHostRenderer(event);
-    return sanitizeActionResultForRenderer(host.takeover(String(sessionId)));
+    void sessionId;
+    return deniedRendererBrowserHostWrite(host, "BrowserHost takeover requires an approval grant.");
   });
   handle(IPC_CHANNELS.browserHostRelease, (event, sessionId) => {
     assertBrowserHostRenderer(event);
@@ -652,8 +653,24 @@ export function registerBrowserHostIpcHandlers({
   });
   handle(IPC_CHANNELS.browserHostAction, async (event, request) => {
     assertBrowserHostRenderer(event);
-    const actionRequest = request as BrowserHostActionRequest;
-    return sanitizeActionResultForRenderer(await host.performAction(actionRequest.sessionId, actionRequest.action));
+    const actionRequest = request as Partial<BrowserHostActionRequest> | undefined;
+    const action = actionRequest?.action;
+    if (!isReadOnlyBrowserHostAction(action)) {
+      return deniedRendererBrowserHostWrite(host, "BrowserHost input actions require an approval grant.");
+    }
+    return sanitizeActionResultForRenderer(await host.performAction(String(actionRequest?.sessionId ?? ""), action));
+  });
+}
+
+function isReadOnlyBrowserHostAction(action: BrowserAction | undefined): action is BrowserAction {
+  return action?.kind === "observe" || action?.kind === "screenshot";
+}
+
+function deniedRendererBrowserHostWrite(host: Pick<BrowserHostIpcTarget, "getSnapshot">, error: string): BrowserHostActionResult {
+  return sanitizeActionResultForRenderer({
+    ok: false,
+    error,
+    snapshot: host.getSnapshot()
   });
 }
 
@@ -752,7 +769,7 @@ export class BrowserHostWebSocketBridge {
         result = this.browserHost.resume(message.session_id);
         break;
       case "takeover":
-        result = this.browserHost.takeover(message.session_id);
+        result = this.deniedRemoteWriteAction("BrowserHost remote takeover requires a desktop approval grant.");
         break;
       case "release":
         result = this.browserHost.release(message.session_id);
@@ -761,7 +778,9 @@ export class BrowserHostWebSocketBridge {
         result = await this.browserHost.stop(message.session_id);
         break;
       case "action":
-        result = await this.browserHost.performAction(message.session_id, message.action);
+        result = isReadOnlyBrowserHostAction(message.action)
+          ? await this.browserHost.performAction(message.session_id, message.action)
+          : this.deniedRemoteWriteAction("BrowserHost remote actions require a desktop approval grant.");
         break;
       default:
         result = { ok: true, snapshot: this.browserHost.getSnapshot() };
@@ -782,6 +801,14 @@ export class BrowserHostWebSocketBridge {
   private send(payload: unknown): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify(payload));
+  }
+
+  private deniedRemoteWriteAction(error: string): BrowserHostActionResult {
+    return {
+      ok: false,
+      error,
+      snapshot: this.browserHost.getSnapshot()
+    };
   }
 }
 

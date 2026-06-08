@@ -2,6 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 
 import {
+  InsecureLanBaseUrlError,
+  assertSafePairingSession,
   describeBaseUrlSecurity,
   mergeBaseUrlSecurityMetadata,
   normalizePairingSecurityMetadata,
@@ -23,6 +25,10 @@ export async function loadSession(): Promise<PairingSession | null> {
     const parsed = JSON.parse(raw) as StoredSessionMetadata;
     if (!parsed.baseUrl || !parsed.deviceId) return null;
     const baseUrlSecurity = restoredBaseUrlSecurity(parsed);
+    if (baseUrlSecurity.isInsecureLan) {
+      await clearSession();
+      return null;
+    }
     const session = {
       baseUrl: baseUrlSecurity.normalizedBaseUrl,
       baseUrlSecurity,
@@ -46,19 +52,23 @@ export async function loadSession(): Promise<PairingSession | null> {
 }
 
 export async function saveSession(session: PairingSession): Promise<void> {
-  const sessionSecurity = session.security ?? session.baseUrlSecurity?.backendSecurity;
+  const safeSession = assertSafePairingSession(session);
+  const sessionSecurity = safeSession.security ?? safeSession.baseUrlSecurity?.backendSecurity;
   const baseUrlSecurity = mergeBaseUrlSecurityMetadata(
-    describeBaseUrlSecurity(session.baseUrl),
-    normalizePairingSecurityMetadata(sessionSecurity, session.baseUrlSecurity),
+    describeBaseUrlSecurity(safeSession.baseUrl),
+    normalizePairingSecurityMetadata(sessionSecurity, safeSession.baseUrlSecurity),
   );
+  if (baseUrlSecurity.isInsecureLan) {
+    throw new InsecureLanBaseUrlError(baseUrlSecurity);
+  }
   const metadata = {
     baseUrl: baseUrlSecurity.normalizedBaseUrl,
     baseUrlSecurity,
-    deviceId: session.deviceId,
-    ...(session.server ? { server: session.server } : {}),
+    deviceId: safeSession.deviceId,
+    ...(safeSession.server ? { server: safeSession.server } : {}),
     ...(baseUrlSecurity.backendSecurity ? { security: baseUrlSecurity.backendSecurity } : {}),
   };
-  await SecureStore.setItemAsync(TOKEN_KEY, session.token);
+  await SecureStore.setItemAsync(TOKEN_KEY, safeSession.token);
   await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(metadata));
 }
 

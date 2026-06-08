@@ -1,19 +1,19 @@
 # Lengrvis 与个人 OS Agent 市场竞品差异评价
 
-> 版本：2026-05-27  
-> 用途：技术路线判断  
+> 版本：2026-06-08
+> 用途：技术路线判断与对外叙事校准
 > 口径：以个人 OS Agent 为主线，开发者 Agent 仅作为邻近参照  
-> 方法：本地仓库静态审计 + 公开资料交叉验证；结论按“事实 / 推断 / 建议”分层
+> 方法：本地仓库静态审计 + 公开资料交叉验证；所有结论区分“事实 / 推断 / 建议”，避免把代码路径写成发布级体验
 
 ## 1. 执行摘要
 
-Lengrvis 当前不是普通聊天机器人，也不只是开发者控制台。按仓库实证，它更接近一个 **Windows 优先、本地优先、多 Agent 编排的个人 OS Agent/电脑管家原型**：用户用自然语言提交目标，后端由 Orchestrator、Planner、Supervisor、SafetyReview、OSExecutionEngine、Memory 等实质组件负责任务理解、计划、监督和状态推进；File、Document、Computer、App、Browser、Search 等领域 Agent 更准确地说是 domain shell agents，提供 owner/prompt/allowed tools 边界并共享 `act()`。系统调用本地文件、系统、浏览器、文档、应用、远程桌面、Skill 和 MCP 工具，并在修改文件、浏览器提交、远程输入等高风险动作前走 dry-run 与审批。
+Lengrvis 当前最可信的市场叙事不是“全面替代某个 OS Agent”，而是 **Windows-first 的本机 OS agent 技术底盘**：它围绕用户自己的文件、文档、系统、浏览器、应用、移动审批和远程桌面来执行任务，并把风险分级、dry-run、审批绑定、审计和扩展协议放在产品核心。这个定位天然比云端通用 Agent 更窄，但也更容易形成差异化：本机执行、可审计、可扩展、可自托管。
 
-与腾讯同类 OS Agent 相比，Lengrvis 的底层工程骨架更透明：风险等级、路径沙盒、审批绑定、审计日志、Skill 安全审查、工具注册、上下文管理、移动审批和远程桌面后端都有可读代码支撑。但腾讯同类 OS Agent 的产品化能力明显领先：官方已提供 Windows、macOS、Android 下载入口，强调端侧大模型、本地模式文件 0 上传、手机实时操控电脑、AI 图库/文档库、系统设置与文件理解等消费级能力。Lengrvis 的最大差距不是“有没有 Agent 架构”，而是 **端侧模型开箱即用、跨端体验、NPU/端侧加速、发布级应用生态集成和消费级打磨**。
+按仓库实证，Lengrvis 的实质编排组件是 Orchestrator、Planner、Supervisor、SafetyReview、OSExecutionEngine 和 Memory；File、Document、Computer、App、Browser、Search 更准确地说是 domain shell agents，提供 owner/prompt/allowed tools 边界并共享 `act()`。正常成功路径大量依赖 deterministic fast path、PolicyEngine、ToolRuntime 和 schema validation，LLM 主要介入规划、文档 AI、失败恢复和复杂改参。这种口径比“很多个完全自主 Agent”更诚实，也更适合做安全可靠的 OS 自动化。
 
-与 OpenAI ChatGPT Agent、Manus、Genspark 这类云端通用 Agent 相比，Lengrvis 的差异在本地 PC 执行面：它直接围绕 Windows 文件、系统、应用、审批和远程控制建模，而不是主要在云端虚拟电脑或网页工作区里完成任务。与 Microsoft Copilot/Copilot+ PC 相比，Lengrvis 没有 Windows 原生入口和 Phi Silica/NPU 级端侧能力，但有更可控的独立 Agent runtime、插件化工具边界和更细的审批审计模型。与 Anthropic Computer Use/Claude Code 相比，Lengrvis 更偏个人电脑助手；Claude Code 更偏开发者工作流，Computer Use 更偏 API 能力。
+与腾讯 Marvis、Microsoft Copilot+ PC 等发布级 OS AI 产品相比，Lengrvis 不应硬碰平台分发、端侧模型品牌和消费级图库/跨端打磨。它的可辩护差异是工程透明度和控制面：R0-R4 风险等级、路径沙盒、审批绑定、审计日志、Skill 安全审查、工具注册、上下文管理、移动审批和远程输入授权都有可读代码支撑。与 OpenAI ChatGPT Agent、Manus、Genspark 这类云端通用 Agent 相比，Lengrvis 的优势不是通用智能，而是能直接在本机 PC 上处理私域文件、系统状态、App 和审批闭环。与 Claude Code/Computer Use 相比，Lengrvis 应服务普通电脑用户，而不是主要服务代码仓库。
 
-**判断**：Lengrvis 若继续对标个人 OS Agent，最值得打的差异化不是“比大厂模型更强”，而是“可审计、可扩展、可本地部署、可控地接管个人电脑”。下一阶段优先级应围绕开箱即用本地模型、发布级移动/远控闭环、文件与应用增量感知、App Integration Protocol 和硬件加速落地。
+**判断**：Lengrvis 的路线图应从“追平别人所有表面能力”转向“把本机可控执行做深”：隐私/本地模型开箱路径、移动审批/只读查看/短授权输入、文件索引与文档引用、App Integration Protocol、Skill/MCP 生态、发布证据门禁。只在这些证据充分时，才对外写“可演示”或“可发布”。
 
 ## 2. 本地项目事实基线
 
@@ -27,13 +27,14 @@ Lengrvis 当前不是普通聊天机器人，也不只是开发者控制台。�
 | 安全模型 | R0-R4 风险等级；R2/R3 操作走 dry-run、审批、绑定校验；R4 阻断 | `backend/app/policy/risk.py`、`backend/app/policy/policy_engine.py`、`backend/app/orchestration/tool_runtime.py` |
 | 文件与文档 | FTS5、语义搜索、重复文件、文件操作、PDF/DOCX/XLSX/PPTX/CSV 抽取、OCR、文档摘要/问答/报告 | `backend/app/tools/file_tools.py`、`backend/app/tools/document_tools.py`、`backend/app/services/document_service.py` |
 | 浏览器自动化 | 会话、观察、截图、导航、点击、填表、提交；写动作支持 dry-run 和审批 | `backend/app/tools/browser_tools.py`、`backend/app/services/browser_activity_runtime.py` |
-| 本地/云模型路由 | efficiency / privacy / hybrid；隐私模式优先 ONNX，再探测 Ollama、LM Studio、llama.cpp | `backend/app/llm/registry.py`、`backend/app/llm/local_provider.py` |
+| 本地/云模型路由 | efficiency / privacy / hybrid；隐私模式优先 ONNX，再探测 Ollama、LM Studio、llama.cpp；无本地后端时明确失败，不静默回退 Mock | `backend/app/llm/registry.py`、`backend/app/llm/local_provider.py` |
+| 本地模型准备 | Settings/后端已有 Ollama 状态、硬件 readiness、setup-plan、install/start/pull/install-local-model 与 WebSocket 进度；默认发布包仍不捆绑离线模型 | `backend/app/api/routes_settings.py`、`backend/app/services/ollama_service.py`、`desktop/src/renderer/components/SettingsPanel.tsx` |
 | ONNX/硬件加速 | 有 WinML / DirectML / OpenVINO / CPU provider 检测、健康检查、warmup/test_generate 框架 | `backend/app/llm/onnx_provider.py` |
 | 文件环境感知 | `FileWatcher` 已用 watchdog 监听授权目录并增量更新 FTS；启动时接入 environment stream | `backend/app/indexer/file_watcher.py`、`backend/app/main.py` |
 | 调度任务 | croniter 单进程调度器，可触发 Orchestrator 执行任务，并发通知 | `backend/app/services/scheduler_service.py` |
-| 移动端审批 | Android companion 已有配对、JWT、审批列表、审批详情、批准/拒绝、WebSocket 通知 | `mobile/App.tsx`、`backend/app/api/routes_mobile.py`、`backend/app/services/mobile_pairing_service.py` |
-| 远程桌面 | 有屏幕流、输入 WebSocket、移动 token scope、输入审批链；默认由 `remote_desktop_enabled` 控制 | `backend/app/api/routes_remote.py`、`backend/app/services/remote_desktop_service.py` |
-| 通知 | 当前为 AgentBus 通知和移动审批通知基础设施，不是完整 OS 原生通知中心 | `backend/app/services/notification_service.py` |
+| 移动端审批 | Android companion 已有配对 payload 解析、JWT、审批列表、审批详情、批准/拒绝、WebSocket 通知和隐私保护通知正文 | `mobile/src/screens/PairScreen.tsx`、`mobile/App.tsx`、`backend/app/api/routes_mobile.py`、`backend/app/services/mobile_pairing_service.py` |
+| 远程桌面 | 有屏幕流、输入 WebSocket、移动 token scope、输入审批链、只读/短授权输入/结束接管状态；默认由 `remote_desktop_enabled` 控制 | `backend/app/api/routes_remote.py`、`backend/app/services/remote_desktop_service.py`、`mobile/src/screens/RemoteScreen.tsx` |
+| 通知 | 后端通过 AgentBus 发布通知；桌面 `NotificationBridge` 监听通知 WebSocket 并投递 Electron Notification；移动通知默认隐藏敏感正文 | `backend/app/services/notification_service.py`、`desktop/src/main/notifications.ts`、`mobile/src/notifications.ts` |
 | 可扩展性 | Skill YAML + 沙盒 + 安全审查 + 动态工具注册；MCP registry 可适配工具定义 | `backend/app/skills/*`、`backend/app/mcp/*` |
 
 ### 2.2 当前成熟度判断
@@ -93,11 +94,11 @@ Manus 官网主打“Hands On AI”，入口任务包括创建 slides、建网�
 
 ## 5. 三类差异
 
-### 5.1 Lengrvis 已领先或更有差异化的地方
+### 5.1 Lengrvis 更有差异化的地方
 
 **安全与审计透明度**  
 事实：Lengrvis 的 R0-R4 风险等级、dry-run、审批绑定、审批消费防重放、路径沙盒、PII 脱敏、Skill 安全审查都在代码中可查。
-推断：在公开资料层面，大厂产品通常会描述隐私和安全原则，但很少暴露到工具级风险模型和审批绑定细节。Lengrvis 对企业、专业用户、自托管用户的“可解释安全”更有差异化。
+推断：在公开资料层面，成熟消费产品通常会描述隐私和安全原则，但不会把工具级风险模型和审批绑定细节暴露成可自查的工程资产。Lengrvis 对企业、专业用户、自托管用户的“可解释安全”更有差异化。
 
 **本地执行面更可控**  
 事实：Lengrvis 的工具面围绕用户本机：文件、系统、应用、浏览器、Excel、远程桌面、UI 自动化、调度、环境流。
@@ -127,8 +128,8 @@ Lengrvis 已有 Android companion、LAN 配对、JWT、审批 WebSocket、远程
 
 ### 5.3 明显短板
 
-**端侧模型没有开箱即用**  
-这是 P0。腾讯同类 OS Agent 和 Microsoft Copilot+ PC 都把“端侧/本地”做成用户能感知的产品能力。Lengrvis 目前更像“能探测和接入本地模型”，用户仍需安装 Ollama/LM Studio/llama.cpp 或准备 ONNX GenAI 模型。对普通用户来说，这就是“不能开箱用隐私模式”。
+**本地模型入口已产品化，但默认仍不是离线开箱**
+这是 P0。腾讯 Marvis 和 Microsoft Copilot+ PC 都把“端侧/本地”做成用户能感知的产品能力。Lengrvis 现在已经不只是“能探测本地模型”：Settings 和后端已有 Ollama 安装、启动、拉取推荐模型、硬件 readiness、setup-plan 和失败修复入口。但默认 Windows portable/zip/SFX 仍不捆绑 Ollama 离线模型或 GPU runtime，候选版本还需要 clean-machine local model smoke 才能写成“开箱可用”。
 
 **NPU/硬件加速还停在框架层**  
 Lengrvis 有 ONNX provider、WinML/DirectML/OpenVINO 检测和 warmup/test_generate，但缺默认模型包、量化模型选择、设备兼容矩阵、fallback 策略和安装体验。Microsoft 与腾讯都把端侧模型/NPU作为核心卖点，Lengrvis 必须把“可配置框架”推进到“默认可运行”。
@@ -136,8 +137,8 @@ Lengrvis 有 ONNX provider、WinML/DirectML/OpenVINO 检测和 warmup/test_gener
 **App 深度集成不足**  
 Lengrvis 有应用扫描、启动、卸载和 Excel COM，但缺 WPS/Office 全套、微信/浏览器收藏/邮件/日历/网盘/图片管理等消费常用 App 的稳定集成。个人 OS Agent 的粘性来自“真能替我操作常用软件”，不是只会列进程或打开设置。
 
-**跨端体验仍是工程能力，不是产品闭环**  
-Android companion 主要围绕审批；远程桌面后端默认关闭，仍需产品化。腾讯同类 OS Agent 已把手机操控电脑放在官网核心卖点，Claude Code 也强调从手机把开发任务路由到本机。Lengrvis 应尽快把“手机审批”升级为“手机看进度、接管、批准、恢复、通知”的闭环。
+**跨端体验已有闭环雏形，但还不是发布级远控产品**
+Android companion 已覆盖配对、审批、任务状态、只读屏幕流、短授权远程输入、结束接管和 LAN/TLS 风险提示。它已经超过“只有审批列表”的阶段，但仍需要真实手机 QR 扫码、网络穿透、证书信任链、锁屏/权限、延迟、输入映射和移动端继续/发起任务的产品化证据。腾讯 Marvis 已把手机操控电脑放在官网核心卖点，Claude Code 也强调从手机把任务路由到本机；Lengrvis 应先把“手机看进度、看屏幕、批准/拒绝、短授权接管、可撤销”做成可信闭环。
 
 **消费级 UX 和可信解释不足**  
 Lengrvis 桌面端已有办公室 Agent、能力卡、审批弹窗、设置页，但仍需要针对普通用户的任务模板、错误恢复、权限解释、模型安装引导、隐私状态指示、任务回放和“失败时下一步怎么办”。
@@ -287,7 +288,7 @@ Microsoft 有 Windows 原生入口和 NPU，腾讯有应用生态和消费级分
 **应对**：保留并强化 R0-R4、dry-run、审批绑定、不可变 preview、回滚和审计；高风险任务默认拒绝或手动交接。
 
 **风险 4：报告可能高估已实现能力**  
-部分模块有实现但未达到消费级体验，例如远程桌面默认关闭、ONNX 依赖外部模型、移动端主要做审批。
+部分模块有实现但未达到消费级体验，例如远程桌面默认关闭、ONNX 依赖外部模型、本地模型默认不随包离线可用、移动远控仍缺真实手机/网络/证书信任链证据。
 
 **应对**：所有路线评估都区分“代码路径存在”和“发布级体验完成”。
 
@@ -295,12 +296,12 @@ Microsoft 有 Windows 原生入口和 NPU，腾讯有应用生态和消费级分
 
 Lengrvis 与市场同类产品的核心差异可以浓缩为一句话：
 
-**Lengrvis 更像一个可审计、可扩展、可本地部署的个人电脑 Agent 技术底盘；腾讯同类 OS Agent、Microsoft Copilot+ PC 更像发布级 OS AI 产品；OpenAI/Manus/Genspark 更像云端通用任务 Agent；Anthropic Claude Code 更像开发者工作流 Agent。**
+**Lengrvis 是一个 Windows-first、本机执行、可审计、可扩展、可自托管的个人电脑 Agent 技术底盘；Marvis/Copilot+ PC 更像发布级 OS AI 产品；ChatGPT Agent/Manus/Genspark 更像云端通用任务 Agent；Claude Code 更像开发者工作流 Agent。**
 
 因此，Lengrvis 的下一步不应盲目追逐“万能 Agent”，而应把已有底盘产品化为三个明确卖点：
 
-1. **本地隐私可信**：文件、文档、系统信息默认可在本机处理，上传边界透明。
-2. **电脑任务可控执行**：所有真实修改都有 preview、审批、审计和回滚思路。
+1. **本地隐私可信**：文件、文档、系统信息优先在本机处理；隐私模式不可用时明确失败，不静默回云端。
+2. **电脑任务可控执行**：真实修改都应有 preview、审批、审计、撤销或 handoff 思路。
 3. **长尾应用可扩展**：Skill/MCP/App Integration Protocol 支撑个人和企业自定义工作流。
 
 只要 P0 的本地模型开箱即用补齐，P1 的移动审批/通知/文件索引/App 集成产品化，Lengrvis 就能避开和大厂正面拼模型的陷阱，形成“本地可控 OS Agent”的清晰技术路线。
@@ -316,17 +317,23 @@ Lengrvis 与市场同类产品的核心差异可以浓缩为一句话：
 - `backend/app/llm/registry.py`
 - `backend/app/llm/local_provider.py`
 - `backend/app/llm/onnx_provider.py`
+- `backend/app/api/routes_settings.py`
+- `backend/app/services/ollama_service.py`
 - `backend/app/orchestration/tool_runtime.py`
 - `backend/app/policy/policy_engine.py`
 - `backend/app/indexer/file_watcher.py`
 - `backend/app/api/routes_mobile.py`
 - `backend/app/api/routes_remote.py`
+- `desktop/src/main/notifications.ts`
+- `desktop/src/renderer/components/SettingsPanel.tsx`
 - `desktop/src/renderer/App.tsx`
 - `mobile/App.tsx`
+- `mobile/src/screens/PairScreen.tsx`
+- `mobile/src/screens/RemoteScreen.tsx`
 
 ### 公开资料
 
-- 腾讯同类 OS Agent 官网：腾讯同类产品官网/
+- 腾讯 Marvis 官网：https://marvis.qq.com/
 - OpenAI，Introducing ChatGPT agent：https://openai.com/index/introducing-chatgpt-agent/
 - OpenAI，Introducing Operator：https://openai.com/index/introducing-operator/
 - OpenAI Help Center，ChatGPT agent：https://help.openai.com/en/articles/11752874-chatgpt-agent

@@ -8,6 +8,7 @@
     "android": "expo start --android",
     "typecheck": "tsc --noEmit",
     "smoke:token": "node scripts/mobile-token-smoke.cjs",
+    "smoke:task-companion": "node scripts/mobile-task-companion-smoke.cjs",
     "smoke:remote-input-grant": "node scripts/remote-input-grant-smoke.cjs"
   },
   "dependencies": {

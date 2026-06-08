@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.core import db
 from app.main import create_app
+from app.skills.loader import load_skill_package
 from app.tools.registry import registry as tool_registry
 
 
@@ -66,6 +67,76 @@ def test_skill_routes_list_import_and_refresh(monkeypatch, tmp_path: Path):
     refresh_response = client.post("/api/skills/refresh")
     assert refresh_response.status_code == 200
     assert refresh_response.json()["skill_count"] == 1
+
+
+def test_skill_route_imports_product_manifest_showcase_into_real_catalog(
+    monkeypatch,
+    tmp_path: Path,
+    test_data_dir: Path,
+):
+    data_dir = tmp_path / "data"
+    install_dir = data_dir / "skills"
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(install_dir))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.delenv("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", raising=False)
+    db.init_db()
+
+    source = test_data_dir / "skills" / "product_manifest_showcase"
+    client = TestClient(create_app())
+
+    import_response = client.post("/api/skills/import", json={"path": str(source)})
+    assert import_response.status_code == 200
+    import_payload = import_response.json()
+    assert import_payload["skill"]["name"] == "product-manifest-showcase"
+    assert import_payload["refresh"]["skill_count"] == 1
+
+    list_response = client.get("/api/skills")
+    assert list_response.status_code == 200
+    catalog = list_response.json()
+    assert catalog["count"] == 1
+    assert Path(catalog["install_directory"]).resolve(strict=False) == install_dir.resolve(strict=False)
+
+    skill = next(skill for skill in catalog["skills"] if skill["name"] == "product-manifest-showcase")
+    assert skill["version"] == "0.1.0"
+    assert skill["agent_owner"] == "AppAgent"
+    assert skill["risk"] == "R3_DESTRUCTIVE_OR_SYSTEM"
+    assert skill["status"] == "ready"
+    assert skill["error"] == ""
+    assert skill["safety"]["issues"] == []
+    assert skill["root"] == import_payload["skill"]["root"]
+    assert skill["manifest_path"] == import_payload["skill"]["manifest_path"]
+    assert source.resolve(strict=True) != Path(skill["root"]).resolve(strict=True)
+    assert install_dir.resolve(strict=False) in Path(skill["manifest_path"]).resolve(strict=True).parents
+
+    tool = skill["tools"][0]
+    assert tool["name"] == "skill.product_manifest.showcase"
+    assert tool["agent_owner"] == "AppAgent"
+    assert tool["risk"] == "R3_DESTRUCTIVE_OR_SYSTEM"
+    assert tool["permissions"] == [
+        "filesystem.read",
+        "filesystem.write",
+        "filesystem.delete",
+        "ui.control",
+        "network.external",
+        "messaging.send",
+    ]
+    assert "legacy.unspecified" not in tool["permissions"]
+    assert tool["supports_dry_run"] is True
+    assert tool["requires_authorized_path"] is True
+    assert tool["execution_type"] == "python"
+    assert tool["entry"] == "handlers/intent.py"
+    assert {"path", "message", "endpoint", "dry_run"}.issubset(tool["input_schema"]["properties"])
+    assert tool["input_schema"]["required"] == ["path", "message"]
+    assert "Preview must list each file, UI, network, messaging, and delete operation" in tool["rollback_hint"]
+    assert "hand off to the user" in tool["rollback_hint"]
+
+    installed_package = load_skill_package(Path(skill["root"]))
+    installed_tool = installed_package.definition.tools[0]
+    assert installed_tool.smoke_tests[0].name == "product-manifest-boundaries-preview"
+    assert installed_tool.smoke_tests[0].args["dry_run"] is True
+    assert installed_tool.smoke_tests[0].expected == {"ok": True, "dry_run": True}
+    assert installed_package.definition.effective_permissions(installed_tool) == tool["permissions"]
 
 
 def test_skill_route_imports_zip(monkeypatch, tmp_path: Path):

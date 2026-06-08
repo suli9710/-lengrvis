@@ -179,11 +179,11 @@ function SkillRow({ skill }: { skill: InstalledSkill }) {
         <span>{skillManifestSummary(skill)}</span>
       </div>
 
-      <div className="skill-permissions" aria-label="Skill Product Manifest 权限卡">
+      <div className="skill-permissions" aria-label="Manifest 声明权限与文本推断信号">
         {skillPermissionCards(skill).map((permission) => (
           <span key={permission.label} className={`skill-permission skill-permission--${permission.tone}`}>
             <strong>{permission.label}</strong>
-            <em>{permission.detail}</em>
+            <em>{permission.source}：{permission.detail}</em>
           </span>
         ))}
       </div>
@@ -211,88 +211,178 @@ function riskTone(risk: string): "neutral" | "success" | "warning" | "danger" | 
 }
 
 type ManifestCardTone = "safe" | "review" | "danger";
+type ManifestCardSource = "Manifest 声明" | "文本提示" | "安全检查" | "未声明";
 
 interface SkillManifestCard {
   label: string;
   detail: string;
+  source: ManifestCardSource;
   tone: ManifestCardTone;
 }
 
 function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
-  const text = skillManifestText(skill);
+  const signalText = skillSignalText(skill);
+  const permissions = skillPermissions(skill);
   const executionTypes = new Set(skill.tools.map((tool) => tool.executionType));
   const risky = hasRisk(skill, "R2") || hasRisk(skill, "R3") || hasRisk(skill, "R4");
-  const destructive = hasRisk(skill, "R3") || matches(text, /delete|remove|trash|unlink|purge|clear|drop|uninstall|erase|wipe|destroy|删除|卸载|清空/);
+  const declaredDelete = hasPermission(permissions, /^filesystem\.delete$/);
+  const signalDelete = matches(signalText, /delete|remove|trash|unlink|purge|clear|drop|uninstall|erase|wipe|destroy|删除|卸载|清空/);
+  const destructive = declaredDelete || signalDelete;
   const handoff = hasRisk(skill, "R4");
   const hasDryRunIssue = skill.safety.issues.some((issue) => /dry-run|preview|supports_dry_run/i.test(`${issue.location} ${issue.message}`));
-  const rollback = matches(text, /rollback|revert|restore|undo|recover|checkpoint|回滚|恢复|撤销/);
+  const supportsPreview = skill.tools.some((tool) => tool.supportsDryRun);
+  const hasRollbackHint = skill.tools.some((tool) => tool.rollbackHint.trim().length > 0);
+  const rollbackSignal = matches(signalText, /rollback|revert|restore|undo|recover|checkpoint|handoff|hand off|回滚|恢复|撤销|人工|转交/);
 
-  const readsFiles = matches(text, /file|document|path|pdf|docx|xlsx|pptx|csv|folder|directory|read|search|scan|index|image|photo|ocr|extract|文件|文档|图片/);
-  const writesFiles = matches(text, /write|save|create|copy|move|rename|archive|zip|edit|update|export|generate|download|append|写入|保存|创建|移动|重命名/);
-  const controlsUi = matches(text, /ui|automation|click|type|keyboard|mouse|screen|window|app|excel|browser|com|settings|launch|open|焦点|窗口|点击|输入/);
-  const network = executionTypes.has("http") || matches(text, /http|https|web|browser|url|api|mail|email|calendar|slack|teams|webhook|drive|sharepoint|github|notion|network|网页|网络/);
-  const messages = matches(text, /send|message|mail|email|calendar|invite|slack|teams|webhook|post|notify|notification|sms|wechat|chat|发送|通知|消息|微信|企业微信/);
+  const declaredReadsFiles = hasPermission(permissions, /^filesystem\.read$/);
+  const signalReadsFiles = matches(signalText, /file|document|path|pdf|docx|xlsx|pptx|csv|folder|directory|read|search|scan|index|image|photo|ocr|extract|文件|文档|图片/);
+  const declaredWritesFiles = hasPermission(permissions, /^filesystem\.write$/);
+  const signalWritesFiles = matches(signalText, /write|save|create|copy|move|rename|archive|zip|edit|update|export|generate|download|append|写入|保存|创建|移动|重命名/);
+  const declaredControlsUi = hasPermission(permissions, /^ui\.(open|control|input)$/);
+  const signalControlsUi = matches(signalText, /ui|automation|click|type|keyboard|mouse|screen|window|app|excel|browser|com|settings|launch|open|焦点|窗口|点击|输入/);
+  const declaredNetwork = hasPermission(permissions, /^network\./);
+  const signalNetwork =
+    executionTypes.has("http") ||
+    matches(signalText, /http|https|web|browser|url|api|mail|email|calendar|slack|teams|webhook|drive|sharepoint|github|notion|network|网页|网络/);
+  const declaredMessages = hasPermission(permissions, /^messaging\.(send|write|create)$/);
+  const signalMessages = matches(signalText, /send|message|mail|email|calendar|invite|slack|teams|webhook|post|notify|notification|sms|wechat|chat|发送|通知|消息|微信|企业微信/);
 
   return [
-    {
+    capabilityCard({
       label: "读文件",
-      detail: readsFiles ? "可能读取授权目录或文档内容" : "未推断出文件读取",
-      tone: readsFiles ? "review" : "safe"
-    },
-    {
+      declared: declaredReadsFiles,
+      signal: signalReadsFiles,
+      declaredDetail: "可读取授权目录或文档内容",
+      signalDetail: "描述里提到读取文件，执行前需确认",
+      emptyDetail: "没有看到读取权限或文本提示",
+      declaredTone: "review",
+      signalTone: "review"
+    }),
+    capabilityCard({
       label: "写文件",
-      detail: writesFiles ? "可能创建、更新或导出文件" : "未推断出文件写入",
-      tone: writesFiles ? (destructive ? "danger" : "review") : "safe"
-    },
-    {
+      declared: declaredWritesFiles,
+      signal: signalWritesFiles,
+      declaredDetail: "可创建、更新或导出文件",
+      signalDetail: "描述里提到写入文件，执行前需确认",
+      emptyDetail: "没有看到写入权限或文本提示",
+      declaredTone: destructive ? "danger" : "review",
+      signalTone: destructive ? "danger" : "review"
+    }),
+    capabilityCard({
       label: "操作 UI",
-      detail: controlsUi ? "可能操作窗口、浏览器或本地应用" : "未推断出 UI 控制",
-      tone: controlsUi ? (hasRisk(skill, "R3") ? "danger" : "review") : "safe"
-    },
-    {
+      declared: declaredControlsUi,
+      signal: signalControlsUi,
+      declaredDetail: "可操作窗口、浏览器或本地应用",
+      signalDetail: "描述里提到 UI 自动化，执行前需确认",
+      emptyDetail: "没有看到 UI 控制权限或文本提示",
+      declaredTone: hasRisk(skill, "R3") ? "danger" : "review",
+      signalTone: hasRisk(skill, "R3") ? "danger" : "review"
+    }),
+    capabilityCard({
       label: "访问网络",
-      detail: network ? "可能访问本地服务或外部网络" : "未声明网络访问",
-      tone: network ? "review" : "safe"
-    },
-    {
+      declared: declaredNetwork,
+      signal: signalNetwork,
+      declaredDetail: "可访问本地服务或外部网络",
+      signalDetail: "执行方式或描述提示可能访问网络",
+      emptyDetail: "没有看到网络权限或文本提示",
+      declaredTone: "review",
+      signalTone: "review"
+    }),
+    capabilityCard({
       label: "发送消息",
-      detail: messages ? "可能发送通知、邮件或聊天消息" : "未推断出消息发送",
-      tone: messages ? "danger" : "safe"
-    },
-    {
+      declared: declaredMessages,
+      signal: signalMessages,
+      declaredDetail: "可发送通知、邮件或聊天消息",
+      signalDetail: "描述里提到发送消息，执行前需确认",
+      emptyDetail: "没有看到发送消息权限或文本提示",
+      declaredTone: "danger",
+      signalTone: "danger"
+    }),
+    capabilityCard({
       label: "删除数据",
-      detail: destructive ? "可能删除、卸载或清空数据" : "未推断出删除动作",
-      tone: destructive ? "danger" : "safe"
-    },
+      declared: declaredDelete,
+      signal: signalDelete,
+      declaredDetail: "可删除、卸载或清空数据",
+      signalDetail: "描述里提到删除动作，执行前需确认",
+      emptyDetail: "没有看到删除权限或文本提示",
+      declaredTone: "danger",
+      signalTone: "danger"
+    }),
     {
       label: "Preview",
-      detail: hasDryRunIssue ? "缺少 dry-run preview，需修复" : risky ? "高风险执行前需要 preview/审批" : "低风险默认无需 preview",
-      tone: hasDryRunIssue ? "danger" : risky ? "review" : "safe"
+      source: supportsPreview ? "Manifest 声明" : hasDryRunIssue || risky ? "安全检查" : "未声明",
+      detail: hasDryRunIssue ? "缺少 dry-run preview，需修复" : supportsPreview ? "支持 dry-run preview，执行前可展示计划" : risky ? "高风险执行前需要 preview/审批" : "低风险默认无需 preview",
+      tone: hasDryRunIssue ? "danger" : supportsPreview || risky ? "review" : "safe"
     },
     {
       label: "Rollback/Handoff",
-      detail: handoff ? "R4 必须转人工或拒绝" : rollback ? "推断存在回滚/恢复路径" : risky ? "需在 demo 中说明回滚或兜底" : "无高风险回滚要求",
-      tone: handoff ? "danger" : rollback ? "safe" : risky ? "review" : "safe"
+      source: handoff ? "安全检查" : hasRollbackHint ? "Manifest 声明" : rollbackSignal ? "文本提示" : risky ? "安全检查" : "未声明",
+      detail: handoff ? "R4 必须转人工或拒绝" : hasRollbackHint ? "提供回滚或人工交接说明" : rollbackSignal ? "描述里提到回滚或交接，需确认 manifest 边界" : risky ? "需在 demo 中说明回滚或兜底" : "无高风险回滚要求",
+      tone: handoff ? "danger" : hasRollbackHint || rollbackSignal || risky ? "review" : "safe"
     }
   ];
+}
+
+function capabilityCard({
+  label,
+  declared,
+  signal,
+  declaredDetail,
+  signalDetail,
+  emptyDetail,
+  declaredTone,
+  signalTone
+}: {
+  label: string;
+  declared: boolean;
+  signal: boolean;
+  declaredDetail: string;
+  signalDetail: string;
+  emptyDetail: string;
+  declaredTone: ManifestCardTone;
+  signalTone: ManifestCardTone;
+}): SkillManifestCard {
+  if (declared) {
+    return { label, source: "Manifest 声明", detail: declaredDetail, tone: declaredTone };
+  }
+  if (signal) {
+    return { label, source: "文本提示", detail: signalDetail, tone: signalTone };
+  }
+  return { label, source: "未声明", detail: emptyDetail, tone: "safe" };
 }
 
 function skillManifestSummary(skill: InstalledSkill): string {
   const executionTypes = [...new Set(skill.tools.map((tool) => tool.executionType))].filter(Boolean);
   const risk = skill.risk || "未知风险";
   const execution = executionTypes.length ? executionTypes.join(" / ") : "未声明执行方式";
-  return `${skill.tools.length} 个工具 · ${execution} · ${risk}`;
+  return `${skill.tools.length} 个工具 · ${execution} · ${risk} · 权限以 Manifest 声明为准，文本提示只作提醒`;
 }
 
-function skillManifestText(skill: InstalledSkill): string {
+function skillSignalText(skill: InstalledSkill): string {
   return [
     skill.name,
     skill.agentOwner,
     skill.risk,
     skill.error,
-    ...skill.tools.flatMap((tool) => [tool.name, tool.description, tool.agentOwner, tool.risk, tool.executionType, tool.entry]),
+    ...skill.tools.flatMap((tool) => [
+      tool.name,
+      tool.description,
+      tool.agentOwner,
+      tool.risk,
+      tool.executionType,
+      tool.entry,
+      tool.rollbackHint
+    ]),
     ...skill.safety.issues.flatMap((issue) => [issue.severity, issue.location, issue.message])
   ].filter(Boolean).join(" ").toLowerCase();
+}
+
+function skillPermissions(skill: InstalledSkill): string[] {
+  return skill.tools.flatMap((tool) => tool.permissions).map((permission) => permission.toLowerCase());
+}
+
+function hasPermission(permissions: string[], pattern: RegExp): boolean {
+  return permissions.some((permission) => pattern.test(permission));
 }
 
 function hasRisk(skill: InstalledSkill, riskPrefix: "R2" | "R3" | "R4"): boolean {

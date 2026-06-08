@@ -25,7 +25,9 @@ python -m pytest backend/tests -q --maxfail=1
 npm --prefix desktop run typecheck
 npm --prefix mobile run typecheck
 npm --prefix mobile run smoke:token
+npm --prefix mobile run smoke:task-companion
 npm --prefix mobile run smoke:remote-input-grant
+npm --prefix desktop run smoke:preload-api
 npm --prefix desktop run smoke
 ```
 
@@ -33,7 +35,8 @@ Pass criteria:
 
 - Backend, desktop, and mobile verification commands exit 0.
 - Desktop smoke commands exit 0, including document scope, remote input grant, desktop WebSocket token, IPC security, bundled backend env, and browser activity smoke.
-- Mobile smoke commands exit 0, including token subprotocol and remote-input grant lifecycle checks.
+- Desktop token-bearing bridges remain loopback-only, and preload API requests reject non-plain or prototype-polluting data before IPC.
+- Mobile smoke commands exit 0, including token subprotocol, task Companion list/start/follow-up/pause/resume/cancel, and remote-input grant lifecycle checks.
 - Dependency lock verification passes when run with `npm run deps:verify`: backend direct requirements have pinned `==` entries in `backend/requirements-lock.txt`, and desktop/mobile npm lockfiles exist with matching root package name and version. This is a direct-dependency lock gate only; upgrade to uv or pip-tools for a full resolved Python lock when that workflow is adopted.
 - Any skipped backend tests are expected platform skips and are recorded.
 
@@ -50,9 +53,9 @@ Demo pass criteria:
 - The preflight gate passes on the same candidate or has only documented, non-demo-blocking platform skips.
 - The demo starts from a clean profile or clearly labeled test workspace with no private user files, real tokens, cookies, one-time codes, payment text, or customer data.
 - The demo script covers first launch, one read-only natural-language task, one R2/R3 dry-run approval, one R4 blocked request, and one document QA answer with a citation label.
-- Platform positioning evidence is captured: Settings model boundary profile, local model readiness or smoke result, one Skill Product Manifest sample, and one template-driven demo path.
-- Mobile companion is included only if pairing, pending approvals, and approve/reject round trip were manually checked on the demo LAN or emulator setup.
-- LAN TLS readiness is recorded when a phone or emulator connects over LAN: either mark the run as HTTP dev/test-only, or record the HTTPS/WSS configuration plus the explicit certificate trust path used by that device. The gate does not install certificates or prove system trust automatically; do not claim trust-chain completion unless it was manually verified on the target OS/device.
+- Platform positioning evidence is captured: Settings model boundary profile, local model readiness or smoke result, one Skill Product Manifest sample, and one template-driven demo path. Source-level smokes may support preflight evidence, but release/demo claims need user-visible evidence. The Settings local-model Vite smoke includes 1366px desktop and 900px narrow desktop visual regression evidence, but it is not clean-machine local-model readiness, packaged Settings evidence, or release-candidate layout sign-off. Skill Product Manifest evidence must label manifest-declared permissions separately from inferred risk signals.
+- Mobile companion is included only if pairing, pending approvals, and approve/reject round trip were manually checked on the demo LAN or emulator setup, with real phone/emulator camera/QR evidence recorded when the demo claims scan-to-pair.
+- LAN TLS readiness is recorded when a phone or emulator connects over LAN: record the HTTPS/WSS configuration plus the explicit certificate trust path used by that device. Non-loopback HTTP LAN is blocked for token-bearing mobile flows and may only be recorded as blocked-path evidence. The gate does not install certificates or prove system trust automatically; do not claim trust-chain completion unless it was manually verified on the target OS/device.
 - Any P2/P3 rows skipped for the demo are recorded as residual risks, not implied passes.
 
 ## 3. Release Artifact Gate
@@ -67,6 +70,12 @@ Use the structural-only quick check when you only need artifact presence, manife
 
 ```powershell
 npm run release:quick
+```
+
+Run the independent portable launcher/backend diagnostics smoke when Windows portable artifacts are present:
+
+```powershell
+npm run smoke:portable-first-screen
 ```
 
 `release:check`, `release:gate`, `release:smoke`, and `release:quick` all include `release:safety`. Enable the strict state machine through `config.yaml` or the shell environment before running them:
@@ -95,11 +104,23 @@ Pass criteria:
 - `release:quick` is the structural-only artifact check. Use it for fast artifact validation, not for release-candidate sign-off.
 - The structural packaging verification performed by `scripts\verify_packaging.ps1` requires `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-0.1.0-x64-self-extracting.exe` unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
 - Structural verification also checks that the portable directory and portable zip contain `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.
+- Public release artifacts must not include renderer/main/preload/shared source maps. `desktop` development watch builds may keep source maps through `tsconfig.node.json`, but release builds use `tsconfig.node.release.json`, Vite production builds keep `sourcemap: false`, and `scripts\verify_packaging.ps1` rejects `.map` files or `sourceMappingURL` references under `resources\app\dist` in both the portable directory and portable zip.
 - `scripts\verify_packaging.ps1` validates PE headers and minimum sizes for `dist\backend.exe`, the portable launcher, the portable backend, and the self-extracting executable.
 - Runnable packaging smoke passes when `release:check`, `release:gate`, `release:smoke`, or `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` is used: `dist\backend.exe` and the portable backend are started from isolated state/data directories and must answer `http://127.0.0.1:<port>/health` before the smoke timeout. Successful `--version` or `--help` exits are not sufficient for this gate.
-- The portable launcher is not opened automatically during the gate; it must pass PE/header/size and packaged-resource preflight, with GUI launch left to manual sign-off.
+- The portable launcher is not opened automatically during `release:check`; it must pass PE/header/size and packaged-resource preflight there. Use `npm run smoke:portable-first-screen` as separate GUI evidence.
+- `scripts\portable_first_screen_smoke.ps1` launches `dist\Lengrvis-win-portable\Lengrvis.exe` with temporary `LENGRVIS_DATA_DIR`, `LENGRVIS_STATE_DIR`, `LENGRVIS_CONFIG_DIR`, an isolated loopback backend port, a one-time desktop API token, and a temporary loopback Electron/Chromium CDP port. It passes the first-screen smoke only when a portable window process appears, the packaged backend answers `/health`, and token-authenticated `GET /api/system/diagnostics` returns local-only Lengrvis diagnostics rooted in the temporary data/database directories without invoking diagnostics export or write endpoints.
+- The same script attempts packaged renderer DOM automation through Playwright/CDP after the launcher/window/backend gate is satisfied. Only the explicit renderer DOM evidence line counts as packaged GUI-task automation: `[pass] portable renderer DOM read-only task evidence passed: ...`. That line means the script connected to the packaged renderer, clicked the read-only system-check entry, observed system information/read-only diagnostics copy, allowed only scoped known read-only GET calls such as health, task list, LLM health/cost status, system diagnostics, system info, processes, startup items, and app list, found no diagnostics export package in the temporary data dir, and observed zero chat messages, runs, or tasks in the isolated backend after the click. Any POST/PUT/PATCH/DELETE, unknown API mutation, diagnostics export, or settings/files/apps mutation during the read-only click fails the smoke.
+- After the read-only entry evidence passes, the script separately attempts natural-language command dock evidence by submitting `帮我检查这台电脑`. Only `[pass] portable renderer DOM natural-language read-only task evidence passed: ...` counts as packaged natural-language command-dock evidence, and that pass requires a packaged renderer `/api/chat` or `/api/runs` POST plus backend read-only/system diagnostics task or run evidence. Visible safe-failure copy is still useful safety evidence when paired with zero side effects, but it is not accepted as natural-language task evidence; the script should print a natural-language `[unsupported]` line while the read-only entry passes. Any forbidden mutation or diagnostics export during this attempt fails the smoke.
+- If CDP or the packaged renderer cannot be automated, the strict script exits 2 with `[unsupported]` for renderer DOM evidence. Use `-AllowBackendOnlyPass` only when intentionally collecting legacy launcher/window/backend diagnostics evidence; record that as unsupported GUI-task automation evidence, not as a GUI-task pass.
+- If the portable directory, launcher, or packaged backend is missing, `scripts\portable_first_screen_smoke.ps1` prints `[blocked]` and exits 2. Record that as blocked artifact evidence, never as a pass.
 - If a special offline Ollama release is being prepared, rerun verification with `scripts\build_all.ps1 -VerifyOnly -RequireBundledOllama -RunExecutableSmoke` and confirm the runtime, models, bundle manifest summaries, and backend runnable smoke match the packaged files.
 - Failed executable smoke writes diagnostics under `.tmp\packaging-smoke`; missing artifacts should be rebuilt with `.\scripts\build_all.ps1` before rerunning the gate.
+
+Evidence discipline:
+
+- Record `release:check` as passing only when the whole command exits 0. If `qa:gate`, `release:safety`, structural checks, or runnable backend smoke pass before a later failure, record those as partial sub-gate evidence and keep the artifact gate failed.
+- Dirty-worktree release checks may guide development, but a release-candidate handoff must include the commit or build id, platform, exact command, strict-state-machine source, and full exit status.
+- Current workspace note, 2026-06-08: strict `npm run release:check` completed with exit 0 earlier in this workspace. After later product-hardening tests were added, the latest `npm run qa:gate` also completed with exit 0 and reported `1337 passed, 1 skipped` plus desktop/mobile typecheck, mobile behavior smoke, and desktop smoke. The strict `release:check` run additionally covered `release:safety`, structural packaging checks, portable directory/zip source-map checks, and backend/portable backend `/health` smoke. A later `npm run smoke:portable-first-screen` run exited 0 with the explicit renderer DOM read-only line in `.tmp\portable-first-screen-smoke\run-20260608-141325-18256-1520d784\portable.status.log`: the packaged renderer clicked "检查电脑状态", observed read-only system information copy, allowed only scoped known read-only GET calls, and reported `tasks=0`, `runs=0`, `chat messages=0`, and `diagnostic-packages=0`. That run also showed visible safe-failure copy after filling `帮我检查这台电脑`; after the harness tightening, this must be recorded as packaged natural-language visible safe-failure plus zero-write safety evidence, not as a natural-language task pass, completion, progress, or result artifact.
 
 ## 4. Manual P1 Sign-Off
 
@@ -111,12 +132,13 @@ Before tagging a release candidate, verify these user-visible flows against `doc
 | Agent task loop | A read-only natural-language task creates visible progress and completes or fails with actionable copy. |
 | Approval loop | One reversible action produces dry-run approval; one forbidden token/credential request is blocked. |
 | Document QA | A test document answer includes the correct source/citation label. |
-| Local/hybrid model evidence | Settings shows quick/privacy/hybrid model boundary, recommended model, size, hardware status, speed estimate, and the privacy failure path that does not auto-fall back to cloud. |
-| Skill sample | Import or display one non-private Skill/App integration sample and verify Product Manifest cards for file read/write, UI, network, messaging, delete, preview, and rollback/handoff. |
-| Mobile companion | Pairing, pending approval list, and approve/reject round trip work on LAN or documented emulator setup. |
-| LAN TLS readiness | For mobile/LAN runs, record the configured `http/ws` or `https/wss` scheme, certificate source, and explicit device trust path. Treat HTTP LAN as dev/test-only evidence, not a production TLS pass, and do not imply automatic certificate installation or trust-chain validation. |
+| Local/hybrid model evidence | Settings shows quick/privacy/hybrid model boundary, recommended model, size, hardware status, speed estimate, and the privacy failure path that does not auto-fall back to cloud. For local/offline model claims, record clean-machine or packaged-profile install/start smoke, model/runtime/version, or the exact blocked reason; Vite-preview Settings DOM smoke alone is not sufficient. The current Settings local-model smoke provides Vite/mock visual regression at 1366px desktop and 900px narrow desktop widths; still record packaged or manual evidence before calling the release-candidate Settings UX signed off. |
+| Skill sample | Import or display one non-private Skill/App integration sample and verify Product Manifest cards for file read/write, UI, network, messaging, delete, preview, and rollback/handoff. Declared permissions must be distinguished from inferred signals, which are UX hints rather than enforceable permission boundaries. Record DOM screenshot or manual import evidence; source-level assertions, mocked `/api/skills` DOM smoke, and zip/schema security validation are not real release-candidate import evidence. |
+| Mobile companion | Pairing, pending approval list, and approve/reject round trip work on LAN or documented emulator setup. If the release/demo claims QR scanning, record a real phone/emulator camera path rather than only pasted payload or QR source-generation evidence. Backend LAN TLS metadata tests may support configuration readiness, but do not replace a device trust-chain check. |
+| LAN TLS readiness | For mobile/LAN runs, record the configured `https/wss` scheme, certificate source, and explicit device trust path. Non-loopback HTTP LAN should be recorded only as a blocked-path check and must not redeem mobile tokens. Do not imply automatic certificate installation or trust-chain validation. |
 | Template demo path | One scripted template path from `docs/demo-script.md` runs against disposable data or is recorded as residual risk. |
-| Portable artifact | The release portable starts from a clean directory and can run a read-only diagnostic task. |
+| Portable artifact | `npm run smoke:portable-first-screen` reaches a visible portable window plus backend health and token-authenticated local-only diagnostics from temporary state/data. Only the explicit renderer DOM read-only line counts as packaged read-only entry automation. The explicit natural-language pass line must be classified as task-submission evidence or visible safe-failure evidence; visible safe failure plus zero writes is safety evidence, not agent task completion. If the strict script exits 2 with `[unsupported]`, or prints a natural-language `[unsupported]` line while the read-only entry passes, record the missing surface as unsupported and separately verify the release portable GUI action/result before claiming it. Do not infer natural-language task progress/result evidence from the automated backend probe or from `tasks=0` no-side-effect evidence. |
+| Diagnostics export | Export one diagnostics package from the desktop UI on a disposable profile. The local UI may show the generated package path so the user can find it, but support/shareable export contents must redact usernames, organization folders, and full data/database/log absolute paths into labels plus scope/existence evidence. |
 
 Manual checks may be waived only when the release explicitly excludes the affected surface. Record the waiver owner, reason, expiry condition, and follow-up task.
 
@@ -126,13 +148,16 @@ Do not release if any of these are true:
 
 - A P0 row in the acceptance matrix fails or is untested.
 - R2/R3 actions bypass dry-run approval, or R4 actions are no longer blocked.
-- Secrets, tokens, cookies, one-time codes, payment text, or private file contents appear in logs, URLs, audit exports, screenshots, or release notes.
+- Secrets, tokens, cookies, one-time codes, payment text, private file contents, or shareable full local paths appear in logs, URLs, audit exports, screenshots, support bundles, or release notes without an explicit local-only/internal-use label.
 - Mobile or desktop token transport moves from header/subprotocol storage into URL query strings.
+- Desktop token-bearing HTTP, WebSocket, notification, BrowserHost, or runtime-mode paths can be configured to send the desktop token to a non-loopback backend origin.
 - Release artifacts are missing backend resources or package manifests.
+- Public release artifacts contain renderer/main/preload/shared `.map` files or `sourceMappingURL` references under `resources\app\dist`.
 - Runnable packaging smoke fails, times out, or only proves file presence without executable behavior.
 - Release safety verification fails because mock fallback is enabled or strict state machine enforcement is not enabled for the release candidate.
 - The candidate requires undocumented local environment state to launch.
 - Demo or release material claims LAN TLS, HTTPS/WSS production readiness, or system certificate trust without recorded configuration and explicit device trust evidence.
+- Demo materials or release notes claim scan-to-pair, clean-machine local/offline model readiness, real Skill import evidence, natural-language packaged GUI task completion, or platform distribution sign-off when only source-level, Vite-preview, local stub, packaged renderer read-only entry, visible safe-failure, zero-write, or backend health evidence exists.
 - Demo materials or release notes claim a P2/P3 capability that was not verified or explicitly waived for this candidate.
 - Demo materials claim local/private, Skill/App integration, document citation, mobile companion, or template workflows without either recorded evidence or a named residual risk.
 
@@ -151,6 +176,7 @@ Preflight gate:
 - desktop typecheck:
 - mobile typecheck:
 - mobile token smoke:
+- mobile task companion smoke:
 - mobile remote-input grant smoke:
 - desktop smoke:
 - dependency lock verification:
@@ -158,20 +184,29 @@ Preflight gate:
 Demo-before-release gate:
 - clean profile/test workspace:
 - Settings model boundary profile:
+- Settings local-model visual regression:
 - local model smoke/readiness:
+- clean-machine local model evidence:
 - read-only task:
 - approval loop:
 - blocked risky request:
 - document QA citation:
 - Skill Product Manifest sample:
+- Skill Product Manifest DOM/screenshot:
+- diagnostics export path redaction:
 - template demo path:
 - mobile companion, if included:
+- real camera/QR pairing evidence, if claimed:
 - LAN TLS readiness, if mobile/LAN included:
 
 Artifact gate:
 - release safety verification:
 - release:quick / build_all -VerifyOnly, if run:
 - release:check / build_all -VerifyOnly -RunExecutableSmoke:
+- portable first-screen smoke:
+- portable GUI read-only task:
+- portable natural-language safe failure / task evidence:
+- packaged source-map check:
 - executable smoke logs:
 - bundled Ollama verification, if applicable:
 

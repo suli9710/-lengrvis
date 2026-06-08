@@ -455,7 +455,7 @@ export function OfficeScene({
   const blockedTaskCount = currentTasks.filter((task) => task.state === "blocked").length;
   const runningTaskCount = currentTasks.filter((task) => task.state === "running" || task.state === "queued").length;
   const draftReady = draft.trim().length > 0;
-  const canSubmit = draftReady && !isSubmitting && connectionState !== "offline";
+  const canSubmit = draftReady && !isSubmitting;
   const commandNote = commandFooterNote({
     draftReady,
     isSubmitting,
@@ -626,6 +626,8 @@ export function OfficeScene({
                 key={skill.title}
                 type="button"
                 className={selectedQuickSkill?.id === skill.id ? "office-quick-card office-quick-card--active" : "office-quick-card"}
+                data-testid={`office-template-${skill.id}`}
+                data-template-id={skill.id}
                 onClick={() => handleQuickSkillClick(skill)}
                 aria-pressed={selectedQuickSkill?.id === skill.id}
               >
@@ -656,7 +658,7 @@ export function OfficeScene({
             ))}
           </div>
           {selectedQuickSkill ? (
-            <div className="home-skill-wizard" aria-live="polite">
+            <div className="home-skill-wizard" data-testid="office-template-wizard" data-template-id={selectedQuickSkill.id} aria-live="polite">
               <div className="home-skill-wizard__head">
                 <span>任务向导</span>
                 <strong>{selectedQuickSkill.title}</strong>
@@ -678,7 +680,7 @@ export function OfficeScene({
                   <em>{selectedQuickSkill.wizard.output}</em>
                 </span>
               </div>
-              <div className="home-skill-wizard__next">
+              <div className="home-skill-wizard__next" data-testid="office-template-next-step">
                 <span>{selectedQuickSkill.kind === "prompt" ? "已填入输入框" : selectedQuickSkill.kind === "view" ? "正在打开工具区" : "只读检查启动中"}</span>
                 <strong>{selectedQuickSkill.wizard.nextStep}</strong>
               </div>
@@ -792,14 +794,14 @@ export function OfficeScene({
           </div>
         </div>
 
-        <div className="inspector-card task-workspace-card">
+        <div className="inspector-card task-workspace-card" data-testid="task-workspace-card">
           <div className="inspector-card__head">
             <strong>Task Workspace</strong>
             <span>权限与接管</span>
           </div>
           <div className="task-workspace-grid" aria-label="任务工作空间">
             {taskWorkspaceItems.map((item) => (
-              <div key={item.label} className={`task-workspace-item task-workspace-item--${item.tone}`}>
+              <div key={item.label} className={`task-workspace-item task-workspace-item--${item.tone}`} data-workspace-label={item.label}>
                 <span>{item.label}</span>
                 <strong>{item.value}</strong>
                 <em>{item.detail}</em>
@@ -808,14 +810,14 @@ export function OfficeScene({
           </div>
         </div>
 
-        <div className="inspector-card home-outcomes-card">
+        <div className="inspector-card home-outcomes-card" data-testid="home-outcomes-card">
           <div className="inspector-card__head">
             <strong>成果区</strong>
             <span>最近任务产物</span>
           </div>
           <div className="home-outcome-list" aria-label="任务成果区">
             {outcomeCards.map((card) => (
-              <article key={card.id} className={`home-outcome-card home-outcome-card--${card.tone}`}>
+              <article key={card.id} className={`home-outcome-card home-outcome-card--${card.tone}`} data-testid={`home-outcome-${card.id}`}>
                 <span>{card.eyebrow}</span>
                 <strong>{card.title}</strong>
                 <p>{card.detail}</p>
@@ -1681,7 +1683,7 @@ function commandFooterNote({
   submitError: string | null;
 }): string {
   if (submitError) return submitError;
-  if (connectionState === "offline") return "Lengrvis 服务还没连上。输入内容会保留，连接恢复后再发送。";
+  if (connectionState === "offline") return "连接状态仍在恢复；发送后会尝试启动任务，失败时会保留后端返回的原因。";
   if (isSubmitting) return "正在启动任务，返回结果前不会重复创建。";
   if (quickSkillNotice) return quickSkillNotice;
   if (draftReady) return "准备好了，发送后会进入任务流。";

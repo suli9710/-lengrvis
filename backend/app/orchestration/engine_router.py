@@ -26,9 +26,18 @@ DEFAULT_MAX_TURNS = 30
 
 _DEVELOPER_GOAL_RE = re.compile(
     r"\b("
-    r"code|repo|repository|git|diff|patch|bug|debug|test|tests|pytest|lint|typecheck|"
-    r"refactor|implement|fix|build|compile|api|backend|frontend|database|migration|"
-    r"function|class|module|package|dependency|import|stacktrace|traceback|pr|pull request"
+    r"inspect|analyze|analyse|review|explain|summarize|summarise|code|repo|repository|"
+    r"git|diff|bug|debug|test|tests|pytest|lint|typecheck|build|compile|api|backend|"
+    r"frontend|database|migration|function|class|module|package|dependency|import|"
+    r"stacktrace|traceback|pr|pull request"
+    r")\b",
+    re.IGNORECASE,
+)
+_DEVELOPER_WRITE_INTENT_RE = re.compile(
+    r"\b("
+    r"fix|patch|repair|resolve|refactor|implement|change|modify|edit|write|add|remove|"
+    r"delete|create|generate|scaffold|update|upgrade|migrate|replace|improve|rename|"
+    r"address|failing|failed|broken|pass"
     r")\b",
     re.IGNORECASE,
 )
@@ -38,6 +47,22 @@ _OS_GOAL_RE = re.compile(
     r"file manager|finder|explorer|document|spreadsheet|presentation|word|excel|powerpoint|"
     r"calendar|email|remote|ui|mouse|keyboard"
     r")\b",
+    re.IGNORECASE,
+)
+_SYSTEM_DIAGNOSTICS_RE = re.compile(
+    r"("
+    r"\b(?:system|computer|machine|pc|device)\s+(?:diagnostics?|checkup|health|status|inspection)\b|"
+    r"\b(?:diagnose|check|inspect)\s+(?:this\s+)?(?:system|computer|machine|pc|device)\b|"
+    r"(?:\u5e2e\u6211)?(?:\u68c0\u67e5|\u67e5\u770b|\u770b\u4e00\u4e0b|\u68c0\u6d4b|\u8bca\u65ad|\u4f53\u68c0)"
+    r".*(?:\u8fd9\u53f0\u7535\u8111|\u7535\u8111|\u7cfb\u7edf|\u672c\u673a|CPU|\u5185\u5b58|\u78c1\u76d8)|"
+    r"(?:\u8fd9\u53f0\u7535\u8111|\u7535\u8111|\u7cfb\u7edf|\u672c\u673a|CPU|\u5185\u5b58|\u78c1\u76d8)"
+    r".*(?:\u68c0\u67e5|\u67e5\u770b|\u770b\u4e00\u4e0b|\u68c0\u6d4b|\u8bca\u65ad|\u4f53\u68c0)"
+    r")",
+    re.IGNORECASE,
+)
+_CHINESE_SYSTEM_DIAGNOSTICS_RE = re.compile(
+    r"(?=.*(?:检查|查看|看一下|查|检测|诊断|体检|状态))"
+    r"(?=.*(?:这台电脑|电脑|磁盘|内存|进程|本地\s*AI|CPU|系统(?:状态|诊断|体检|信息|配置|运行)))",
     re.IGNORECASE,
 )
 
@@ -84,13 +109,27 @@ def route_engine(
         )
 
     normalized = goal.strip()
-    if _DEVELOPER_GOAL_RE.search(normalized) and not _OS_GOAL_RE.search(normalized):
+    developer_goal = _DEVELOPER_GOAL_RE.search(normalized)
+    os_goal = _OS_GOAL_RE.search(normalized)
+    if developer_goal and _DEVELOPER_WRITE_INTENT_RE.search(normalized):
+        return EngineRouteDecision(
+            requested_engine="auto",
+            selected_engine="os",
+            reason="write-intent development goal requires the OS approval/runtime path",
+        )
+    if _SYSTEM_DIAGNOSTICS_RE.search(normalized) or _CHINESE_SYSTEM_DIAGNOSTICS_RE.search(normalized):
+        return EngineRouteDecision(
+            requested_engine="auto",
+            selected_engine="os",
+            reason="goal matched read-only system diagnostics keywords",
+        )
+    if developer_goal and not os_goal:
         return EngineRouteDecision(
             requested_engine="auto",
             selected_engine="developer",
-            reason="goal matched developer/repository keywords",
+            reason="goal matched read-only developer/repository keywords",
         )
-    if _OS_GOAL_RE.search(normalized):
+    if os_goal:
         return EngineRouteDecision(
             requested_engine="auto",
             selected_engine="os",

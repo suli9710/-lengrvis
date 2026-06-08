@@ -8,6 +8,14 @@
 - 优先解决影响首日体验、发布可信度、跨端闭环、竞品叙事的缺口。
 - 安全问题不在本轮展开，但涉及发布阻断的安全门禁缺口会保留为产品化门禁项。
 
+## 当前证据边界快照（2026-06-08）
+
+- **最新自动门禁证据**：当前工作区最新 `npm run qa:gate` 完整通过，记录为 backend pytest `1337 passed, 1 skipped`，并包含 desktop/mobile typecheck、mobile behavior smoke 与 desktop smoke。该结果是当前 dirty workspace 的开发证据，不等同于 release candidate commit/build sign-off。
+- **Skill Product Manifest remaining gap**：自动化证据已覆盖 backend manifest/schema/catalog、非私有 showcase 样本、`legacy.unspecified` 回归，以及 `desktop/scripts/skill-manifest-ui-smoke.cjs` 的 Vite/Playwright DOM 渲染 smoke；该 smoke mock `/api/skills` 并生成 `.tmp/qa-evidence/skill-manifest-ui-smoke.png`，证明 declared permissions 与 inferred signals 在 UI 中分开标注。当前未看到真实 release-candidate import 完成证据；zip/schema path 相关测试只能算导入安全边界证据，不能写成 marketplace 或真实导入通过。剩余缺口是真实 release-candidate import path、更多生产样本、签名/市场分发证据。
+- **Portable GUI task remaining gap**：自动化证据已覆盖 `release:check` 的可执行 backend/portable backend `/health` smoke，以及 `npm run smoke:portable-first-screen` 的 portable 窗口、后端健康、token-authenticated read-only diagnostics GET 和 packaged renderer DOM 点击“检查电脑状态”；脚本确认系统信息/只读诊断文案可见且 `tasks=0`、`runs=0`、`chat messages=0`、`diagnostic-packages=0`。最新证据来源是 `.tmp\portable-first-screen-smoke\run-20260608-141325-18256-1520d784\portable.status.log`：read-only entry 为 `[pass]`；随后自然语言命令 dock 填入 `帮我检查这台电脑`，记录为 `[pass] portable renderer DOM natural-language read-only task evidence passed`，原因是 packaged command dock 显示清晰可见的安全失败文案：“后端进程已在运行，健康检查还没通过。输入内容已保留，可以稍后重试。” 同次检查仍确认 `tasks=0`、`runs=0`、`chat messages=0`、`diagnostic-packages=0`。这些零写入是只读入口和自然语言安全失败路径的安全证据，不是自然语言 agent 任务成功证据；当前 pass 只能写成“可见安全失败 + 零写入”，不能写成自然语言任务已提交、产生进度或完成。剩余缺口是 clean-machine 候选包 sign-off、自然语言 agent 任务进度/结果，以及平台分发验收。
+- **Clean-machine/local model readiness remaining gap**：自动化证据已覆盖 privacy mode 不静默回退云端、local setup-plan、文件搜索/系统诊断/确定性文档摘要 fallback，以及 `desktop/scripts/settings-local-model-experience-smoke.cjs` 的 Vite/Playwright Settings smoke；该 smoke 展示 quick/privacy/hybrid、本地模型下一步、推荐模型、大小、硬件、速度估计、“不静默回退云端”边界和 mock 下可点击的一键准备入口，并在 1366px desktop、900px narrow desktop 两个视口断言模型边界卡片、setup panel 和操作按钮没有横向溢出/挤压/重叠，生成 `.tmp/qa-evidence/settings-local-model-experience-smoke-desktop.png`、`.tmp/qa-evidence/settings-local-model-experience-smoke-desktop-setup.png`、`.tmp/qa-evidence/settings-local-model-experience-smoke-narrow.png`、`.tmp/qa-evidence/settings-local-model-experience-smoke-narrow-setup.png`。但没有证明干净机器上一键安装/启动推荐模型、bundled/offline model 可用、真实 local model smoke 或失败修复按钮闭环；该 Vite/mock 视觉回归也不是 packaged release-candidate Settings UX 签收。
+- **Mobile real camera/LAN TLS remaining gap**：自动化证据已覆盖桌面 QR payload/PNG 生成、移动端 payload parser、本地 HTTP/WS behavior stub、非 loopback HTTP LAN token-bearing flow 阻断、后端设备绑定，以及 LAN TLS ready/misconfigured metadata 的后端测试；但没有证明真机/模拟器相机扫码、真实 LAN router/firewall 路径、HTTPS/WSS 服务端到设备侧的证书信任链或显式 trust path。
+
 ## P0 发布门禁与验收
 
 - [x] **补齐 P0 gate：mobile remote-input grant smoke 必须进入统一门禁。**
@@ -15,13 +23,14 @@
   - 影响：发布流程会漏掉“远控输入授权边界”这类核心跨端能力，门禁名义上严肃，实际像纸糊的。
   - 验收：`.\scripts\run_tests.ps1`、根目录 `qa:gate`、`docs/qa/release-gate.md` 的 expanded commands 三处一致包含 mobile remote-input grant smoke。
 
-- [ ] **把 regex smoke 升级为行为级 smoke。**
-  - 证据：`mobile/scripts/mobile-token-smoke.cjs` 与 `mobile/scripts/remote-input-grant-smoke.cjs` 主要靠源码/纯函数检查，不能证明真实 HTTP/WS 流程可用。
-  - 影响：CI 能绿，但演示现场才发现 token、grant、device 绑定不通。
-  - 验收：增加最小后端测试桩或本地测试服务，覆盖配对 token、claim grant、WS protocol、grant revoke/expire 的真实调用路径。
+- [x] **把 regex smoke 升级为行为级 smoke。**
+  - 证据：`mobile/scripts/behavior-smoke-helpers.cjs` 提供本地 HTTP/WS smoke server 和原始 WebSocket 握手；`mobile/scripts/mobile-token-smoke.cjs` 会真实调用 `POST /api/pair/confirm`，验证 approvals/remote screen WebSocket 通过 `Sec-WebSocket-Protocol` 携带 token 且 URL 不含 token；`mobile/scripts/remote-input-grant-smoke.cjs` 会真实调用 grant token claim、DELETE revoke、`/ws/remote/input` 握手，并覆盖 wrong token、revoked、expired 拒绝。
+  - 已核验：2026-06-08 本地执行 `npm --prefix mobile run smoke:token` 与 `npm --prefix mobile run smoke:remote-input-grant` 均通过。
+  - 剩余边界：这是自包含本地行为桩，不等同于真机 LAN、证书信任或扫码相机路径验收；这些仍应保留在 demo/release manual evidence。
 
 - [x] **建立“一条命令发布前验证”而不是散落脚本。**
   - 证据：曾经 `scripts/run_tests.ps1`、`scripts/build_all.ps1`、`scripts/verify_packaging.ps1`、docs release gate 存在口径差；现已由根目录 `release:check` 收敛，`release:gate` 仅保留兼容别名。
+  - 当前核验：2026-06-08 严格状态机下运行 `npm run release:check` 完整 exit 0；`qa:gate`、`release:safety`、结构检查、portable directory/zip source-map 检查和 backend/portable backend runnable smoke 均通过。
   - 影响：开发者不知道哪个才是准发布标准，产品质量靠记忆力。
   - 验收：根目录提供 `release:check`，`release:gate` 作为兼容别名，发布门禁文档引用 `release:check`。
 
@@ -36,35 +45,42 @@
   - 验收：依赖清单、lockfile 或后端 requirements 变更时，QA handoff 必须记录 `npm run deps:verify` 的命令、日期、提交和结果。
 
 - [x] **补齐 LAN TLS readiness 的证据口径。**
-  - 证据：`docs/qa/release-gate.md` 和 `docs/qa/e2e-acceptance-matrix.md` 已要求移动/LAN 演示记录 `http/ws` 或 `https/wss` scheme、证书来源、设备侧显式信任路径。
-  - 剩余风险：这只是 readiness/configuration/manual evidence，不代表系统级证书信任链已经完成；HTTP LAN 仍只能算 dev/test-only。
+  - 证据：`docs/qa/release-gate.md` 和 `docs/qa/e2e-acceptance-matrix.md` 已要求移动/LAN 演示记录 `https/wss` scheme、证书来源、设备侧显式信任路径；非 loopback HTTP LAN 只能作为 blocked-path evidence，不能作为移动 token 配对通过证据。
+  - 剩余风险：这只是 readiness/configuration/manual evidence，不代表系统级证书信任链已经完成；真机 HTTPS/WSS 信任路径仍需候选版本人工证据。
   - 验收：任何 demo/release 文案提到 LAN TLS、HTTPS/WSS 或证书信任时，必须附候选版本手工证据；否则只能记为 residual risk。
 
 - [x] **补齐 Skill 样本迁移的自动/人工验收口径。**
   - 证据：`docs/qa/e2e-acceptance-matrix.md` 已把 E2E-019 写成可复制的 pytest 命令，并要求记录迁移样本 id/source、import path 和 Product Manifest 卡片证据。
-  - 剩余风险：这证明样本迁移和 manifest 风险表达有验收口径，不代表 Skill 生态已有足够多真实生产样本。
-  - 验收：每个 release candidate 至少导入或展示一个非私有迁移样本；样本不得回退到 `legacy.unspecified` 权限表达。
+  - 边界更新：Product Manifest 证据必须区分 manifest 声明的权限和从名称、描述、安全文案推断出的风险信号；推断信号只能作为 UX 提醒，不能写成权威权限边界。
+  - 剩余风险：这证明样本迁移和 manifest 风险表达有验收口径，不代表 Skill 生态已有足够多真实生产样本；也不代表当前 UI 截图已经完成“声明权限 vs 推断信号”的最终分栏验收。
+  - 验收：每个 release candidate 至少导入或展示一个非私有迁移样本；样本不得回退到 `legacy.unspecified` 权限表达；截图或 handoff notes 必须标清 declared permissions 与 inferred signals。
 
 ## P0 安装、打包、分发
 
-- [ ] **部分完成：打包验证从“文件存在”升级为“可运行”。**
+- [x] **打包验证从“文件存在”升级为“可运行”。**
   - 证据：`release:smoke` 和 `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke` 已提供 release runnable smoke；`docs/qa/release-gate.md` 与 E2E-012 已要求记录 structural verification、runnable smoke 和 `.tmp\packaging-smoke` 失败诊断。
-  - 剩余缺口：当前自动化主要证明后端可执行文件能从隔离状态/数据目录启动，并在隔离 loopback 上响应 `/health`；portable GUI 启动到首屏仍保留为人工 P1 sign-off。
-  - 验收：Windows release candidate 必须跑 `npm run release:smoke` 或等价命令；portable 首屏和读只诊断任务必须另行记录人工证据。
+  - 当前核验：2026-06-08 严格状态机下 `npm run release:check` 完整 exit 0；后续最新 `npm run qa:gate` 完整 exit 0，backend pytest `1337 passed, 1 skipped`，desktop/mobile typecheck、mobile behavior smoke 与 desktop smoke 均通过。release:check 的结构检查、`dist\backend.exe` `/health` smoke、portable backend `/health` smoke 仍以前述严格门禁结果为证据。
+  - 当前补充：2026-06-08 本地执行 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\portable_first_screen_smoke.ps1 -TimeoutSeconds 60 -RemoveTempOnPass` 通过，portable 窗口进程出现，`/health` 可达，带一次性 desktop token 的 `GET /api/system/diagnostics` 返回 `diagnostic_scope=local_only`、`product=Lengrvis`，并确认临时 data/database 路径；脚本还通过 packaged renderer DOM 点击“检查电脑状态”，观察系统信息/只读诊断文案，并确认没有 diagnostics export 包、chat/run/task 写入。
+  - 自然语言边界：最新证据日志 `.tmp\portable-first-screen-smoke\run-20260608-141325-18256-1520d784\portable.status.log` 显示 command dock 填入 `帮我检查这台电脑` 后自然语言证据为 `[pass]`，但 pass 原因是可见安全失败文案而不是任务成功：`portable-renderer-natural-language-evidence.log` 记录 `commandStatus` 为“Lengrvis 服务还没连上：后端进程已在运行，健康检查还没通过。输入内容已保留，可以稍后重试。” 同次 side-effect check 仍为 `tasks=0`、`runs=0`、`chat messages=0`、`diagnostic-packages=0`；因此只能写成 packaged command dock 可见安全失败 + 零写入，不能从该 pass 推断为自然语言 agent task 已提交、已产生进度或已成功。
+  - 剩余缺口：干净机器真实启动、自然语言 agent 任务进度/结果和候选版本 sign-off 仍保留为人工 P1 evidence；自动 gate 已覆盖 release artifacts、source-map policy、PE header、launcher preflight、backend runnable smoke、portable launcher/backend 只读诊断 smoke、packaged renderer 只读入口点击，以及自然语言 command dock 的可见安全失败/零写入路径。
+  - 验收：Windows release candidate 必须跑 `npm run release:check` 或等价命令并完整 exit 0；portable launcher/backend 只读诊断 smoke 必须单独记录；portable GUI 首屏任务仍需人工证据或后续自动化，且必须区分 read-only entry pass、natural-language visible-safe-failure pass 与 natural-language task progress/result pass。
 
 - [x] **明确发布产物矩阵：Windows、macOS、Android 分别到什么完成度。**
   - 证据：`desktop/package.json` 有 mac dist 脚本，根目录脚本和启动文档偏 Windows/PowerShell；移动端是 Expo app，但分发状态不清。
   - 影响：对外承诺跨平台，实际交付像 Windows-only 内测包。
   - 验收：README 顶部已给出平台支持表，标注 `Supported / Preview / Planned`，并写明当前交付与已知限制。
 
-- [ ] **部分完成：停止在正式启动脚本里现场安装依赖。**
-  - 证据：`scripts/start_app.ps1` 带有 npm/pip 安装路径，后端依赖存在 `>=` 风格漂移风险。
-  - 已补闭环：依赖锁验证已有 `deps:verify` 入口和 direct backend lock 证据，可在发布前阻断明显 drift。
+- [x] **停止在正式启动脚本里现场安装依赖。**
+  - 证据：`scripts/start_app.ps1` 不再执行 `pip install` / `npm install`；旧 `-InstallMissingDependencies` 参数会明确拒绝并指向 `scripts/setup_dev.ps1`；README 已拆分“正式包直接启动”和“源码开发先 setup”。
+  - 已补闭环：开发依赖安装迁到 `scripts/setup_dev.ps1` / `scripts/dev.ps1 -InstallMissingDependencies`；依赖锁验证已有 `deps:verify` 入口和 direct backend lock 证据，可在发布前阻断明显 drift。
+  - 剩余风险：`backend/requirements-lock.txt` 仍只是直接依赖锁，不是完整解析后的 Python 传递依赖锁；后续仍应迁移到 uv/pip-tools 等完整 lock workflow。
   - 影响：用户第一次启动时网络、registry、依赖新版本都可能把体验炸掉。
   - 验收：正式启动脚本只启动已锁定产物；开发环境安装迁到 `setup` 脚本；依赖使用 lock/constraints 固定。
 
 - [ ] **补齐桌面自动更新/版本展示/故障日志入口。**
-  - 证据：当前更像开发者启动器，用户侧缺少“当前版本、检查更新、导出诊断包”的明确闭环。
+  - 证据：设置/系统区域已经能展示版本、后端诊断、日志目录，并提供 `POST /api/system/diagnostics/export` 支撑的本地诊断包导出；`backend/tests/test_system_diagnostics.py` 覆盖导出包 schema、版本、路径和 secret 不泄露。
+  - 边界更新：本地 diagnostics payload 可以显示诊断包保存位置、data/database/log 路径和进程用户名，方便同机 UI 排障；面向分享的 diagnostics export 当前已写入 `support_package_redaction`，把 data/database/log 绝对路径替换为 path labels，并把进程用户名替换为本地用户标签。该证据只覆盖当前测试种子和导出包路径/用户名红线，仍不能写成完整 crash/update pipeline 或“任意日志内容都已安全公开”。
+  - 剩余缺口：自动更新/检查更新仍未完成；诊断包 UI 不能替代完整 crash/update pipeline；当前证据不能过度表述为“shareable support bundle 可以放心公开”。
   - 影响：真实用户遇到问题只能截图喊救命，不像产品。
   - 验收：设置页展示版本、构建时间、后端状态、日志目录、导出诊断包按钮。
 
@@ -77,14 +93,15 @@
 
 - [ ] **把本地模型能力做成可完成路径，而不是配置谜题。**
   - 证据：设置页已经把快速、隐私、智能混合三档做成用户可理解的 Model Boundary Profile，并展示推荐模型、大小、硬件、速度预估和修复动作。
-  - 剩余缺口：真实“一键安装/启动推荐模型”、local model smoke、失败修复按钮仍需接入后端能力；隐私模式失败不得静默回退云端。
-  - 影响：本地隐私是核心卖点，若只能看懂不能完成，仍然会被 Marvis 的本地模式包装按着打。
-  - 验收：断网时隐私模式至少完成文件搜索、简单摘要、系统查询中的两类；安装失败展示修复路径，不允许自动降级成云端处理。
+  - 当前补充：2026-06-08 `backend/tests/test_privacy_mode_offline_eval.py` 覆盖隐私模式无本地 LLM 时不构造云端/Mock provider，返回本地模型 setup-plan；同文件还证明文件搜索保持本地边界，首屏 `检查电脑状态` 可通过确定性 `system.diagnostics` 完成并展示本地 AI readiness，不需要 LLM 规划。
+  - 剩余缺口：真实“一键安装/启动推荐模型”、local model smoke、失败修复按钮和 clean-machine 候选版本证据仍需闭环；不能把当前证据表述为“默认离线模型已随包可用”。Settings DOM/screenshot 证据已补上 1366px desktop、900px narrow desktop 的 Vite/mock 视觉回归，但仍不能替代 packaged Settings UX 签收或真实本地模型运行验收。
+  - 影响：本地隐私是核心卖点，若只能看懂不能完成，仍会落后于发布级本地模式的可信体验。
+  - 验收：断网时隐私模式至少完成文件搜索、简单摘要、系统查询中的两类；安装失败展示修复路径，不允许自动降级成云端处理。当前已自动化覆盖文件搜索与系统查询，简单摘要和真实本地模型安装/运行仍需候选版本证据。
 
 - [ ] **移动端配对流程产品化。**
-  - 证据：移动端目前要求手填电脑地址和 6 位配对码，placeholder 是裸 IP。
+  - 证据：移动端已新增 pairing payload parser，behavior smoke 覆盖 JSON、`lengrvis://pair` URL 和自然语言文本中的地址/配对码解析，也会区分缺地址/缺 code；桌面端已用 `qrcode` 生成真实 PNG QR data URL 并在 Settings 面板渲染，`desktop/scripts/mobile-pairing-qr-smoke.cjs` 覆盖 payload、QR 生成和渲染断言；后端测试覆盖 LAN TLS metadata 的 ready/misconfigured 口径；移动端当前 UI 明确走“粘贴二维码内容”路径，不再把未内置相机组件的入口写成“打开扫码”。真实扫码相机路径、LAN 真机配对和设备侧证书信任验收尚未完成。
   - 影响：演示可以，普通用户会被 IP、端口、同网段这些词劝退。
-  - 验收：桌面端展示 QR code；移动端扫码配对；失败页区分“不在同一网络 / 后端未启动 / code 过期 / 权限不足”。
+  - 验收：桌面端 QR 展示已有自动化证据；剩余验收为移动端扫码配对、真机 LAN 路径，以及失败页区分“不在同一网络 / 后端未启动 / code 过期 / 权限不足”。
 
 - [x] **远程桌面/远控做成明确的模式切换。**
   - 证据：移动端已有 RemoteScreen 和 remote input grant，但产品语义仍散在审批事件里。
@@ -98,20 +115,22 @@
 
 ## P1 文档、品牌、竞品叙事
 
-- [ ] **清理 Mavris/Marvis/Lengrvis 命名残留。**
-  - 证据：工作树中存在大量 Mavris/Marvis 到 Lengrvis 的重命名痕迹，仍有旧文件删除/新增并存。
-  - 影响：竞品叫 Marvis，自己还残留 Marvis/Mavris，会显得像贴牌仿品。
-  - 验收：代码、文档、启动脚本、截图、产物名、vendor manifest 全量 grep 无非兼容必要的旧名。
+- [x] **清理旧品牌/竞品名残留。**
+  - 扫描证据：`rg -n -i "mavris|marvis"` 仅剩竞品引用、旧 env prefix 拒绝测试和本条白名单说明；`rg --files | rg -i "mavris|marvis"` 无文件名命中。
+  - 用户可见文案：README、启动脚本、package/mobile manifest/display name 未命中旧名，当前显示名统一为 Lengrvis。
+  - 保留白名单：竞品对比文档可引用腾讯 Marvis；`backend/tests/test_env_prefixes.py` 必须保留 `MARVIS_`/`MAVRIS_` 用例，证明旧环境变量前缀不会被兼容接收。
+  - 验收：代码、文档、启动脚本、截图、产物名、vendor manifest 全量 grep 无非兼容必要的旧名；后续新增外部官网/发布页/截图时必须复跑同一命名审计。
 
-- [ ] **更新过时的 parity 文档。**
-  - 证据：`docs/LENGRVIS_PARITY.md` 部分描述仍称 file watcher、手机远控为占位，但代码已实现相关能力。
-  - 影响：内部路线图不可信，外部读者会低估或误解产品。
-  - 验收：文档按当前实现重写为 `已实现 / 可演示 / 需要硬化 / 未开始` 四栏。
+- [x] **更新过时的 parity 文档。**
+  - 证据：`docs/LENGRVIS_PARITY.md` 已重写为 `已实现 / 可演示 / 需要硬化 / 未开始` 四栏路线图；file watcher、通知、手机远控、本地模型准备、release gate 等状态已按当前仓库证据重新归类。
+  - 剩余风险：这是文档口径修复，不代表四栏里“可演示/需要硬化”的能力已经获得发布级人工验收。
+  - 验收：文档不再把已接入的 file watcher、通知桥、远程屏幕/短授权输入写成纯占位，同时不把默认未捆绑本地模型写成开箱完成。
 
-- [ ] **重写竞品对比：别喊“杀手”，讲清差异化。**
+- [x] **重写竞品对比：别喊“杀手”，讲清差异化。**
   - 竞品事实：腾讯 Marvis 已有 Win/macOS/Android、本地模式、手机接管电脑；微软有 OS 原生入口和 agent workspace；OpenAI/Anthropic 强在模型与工具生态。
-  - 当前定位：Lengrvis 应打“本机 OS agent + 可审计 + 可扩展 + 自托管”，不要硬碰平台分发和大模型品牌。
-  - 验收：README/官网文案避免“全面领先”“替代 Marvis”等空话，改成具体场景对比和限制说明。
+  - 当前定位：仓库内 README 与 `docs/OS_AGENT_MARKET_DIFFERENTIATION.md` 已改为“本机 OS agent + 可审计 + 可扩展 + 自托管”，并明确不硬碰平台分发和大模型品牌。
+  - 剩余风险：若后续存在官网、发布页或外部营销文案，还需要按同一口径复核。
+  - 验收：README/docs 避免“全面领先”“替代 Marvis”等空话，改成具体场景对比、当前限制和验收证据。
 
 ### 竞品差距 Checklist
 
@@ -130,36 +149,41 @@
 
 ## P2 工程交付卫生
 
-- [ ] **源代码 map 策略产品化。**
-  - 证据：`desktop/tsconfig.node.json` 开启 source map，打包配置可能包含 dist map。
-  - 影响：调试方便，但发布包体积、内部实现暴露、崩溃定位策略混在一起。
-  - 验收：开发包保留 map；公开发布包默认去除或单独上传符号文件。
+- [x] **源代码 map 策略产品化。**
+  - 证据：开发 watch 仍使用 `desktop/tsconfig.node.json` 保留 source map；发布构建改用 `desktop/tsconfig.node.release.json`，`desktop/vite.config.ts` 显式 `sourcemap: false`，`desktop/electron-builder.yml` 排除 `dist/**/*.map`。
+  - 当前核验：2026-06-08 严格 `npm run release:check` 完整 exit 0；`desktop/scripts/source-map-policy-smoke.cjs`、portable directory source-map check、portable zip source-map check 均通过，未发现 `.js.map` 或 `sourceMappingURL`。
+  - 影响：公开发布包默认不携带 renderer/main/preload/shared source map，避免内部实现随包暴露；调试构建仍可保留 map。
+  - 验收：`npm run release:check` 必须在 portable directory/zip source-map 检查和 runnable smoke 上完整 exit 0。
 
-- [ ] **进程管理从模糊 kill 变成受控生命周期。**
-  - 证据：`scripts/start_app.ps1` 存在多处 `Stop-Process`，匹配策略偏宽。
-  - 影响：用户机器上误杀同类进程，产品观感会非常差。
-  - 验收：只管理本产品启动并记录 PID 的进程；停止前展示目标；日志记录原因。
+- [x] **进程管理从模糊 kill 变成受控生命周期。**
+  - 证据：`scripts/start_app.ps1` 对已占用的 backend/frontend 端口改为健康则复用、不可复用则提示用户关闭，不再按端口停止工作区或旧 Lengrvis 进程；最终清理只停止本次启动记录的 `$startedBackend` / `$startedFrontend` / `$startedDesktop` 进程对象。`backend/tests/test_start_app_script.py` 覆盖“不停止 workspace-owned full backend”“不按端口停止已发现进程”“复用或阻断已有 listener”。
+  - 剩余边界：真实用户机器上的端口占用提示仍需要手工可用性验证，但自动化已防止 broad port kill 回归。
+  - 验收：只管理本产品本次启动并记录 PID 的进程；占用端口给出下一步；日志记录原因。
 
-- [ ] **统一配置入口和错误文案。**
-  - 证据：环境变量、config yaml、桌面设置、启动脚本多处可配置同一类内容。
-  - 影响：问题排查复杂，用户不知道该改哪里。
-  - 验收：设置页为主入口；高级配置保留文件方式；启动失败给出“去哪里改”的精确提示。
+- [x] **统一配置入口和错误文案。**
+  - 证据：README、`Start-Lengrvis*.cmd`、`scripts/start_app.ps1`、Settings 和 System Info 均把普通用户引导到桌面设置与诊断导出；启动失败会指向日志/Debug 启动器，并提示普通用户不要自行编辑 `.env` 或 `config.yaml`。
+  - 已核验：`backend/tests/test_start_app_script.py` 覆盖普通用户配置入口、启动器文案、redacted log tail、诊断包入口和“不现场安装依赖”提示。
+  - 剩余边界：高级配置文件仍保留给开发/部署；真实安装包上的失败文案还需要候选版本人工验收。
 
-- [ ] **建立产品指标而不是只看测试绿灯。**
-  - 指标建议：首次启动成功率、配对成功率、首个任务成功率、任务平均完成时长、审批响应率、模型安装成功率。
-  - 验收：至少在本地诊断包中输出这些匿名/本地统计，便于 dogfood。
+- [x] **建立产品指标而不是只看测试绿灯。**
+  - 证据：`backend/app/core/db.py` 的 `local_product_diagnostics()` 输出匿名本地 product metrics/funnel；`backend/app/api/routes_system.py` 将其接入 `/api/system/diagnostics` 与 `/api/system/diagnostics/export`，并补充 local model/Ollama/ONNX readiness。覆盖项包括配对设备、remote input grants、tasks/runs/tool_results 成败、approval pending/approved/rejected/expired、local model next action。
+  - 已核验：2026-06-08 本地执行 `python -m pytest backend\tests\test_system_diagnostics.py -q`，结果 `4 passed`；测试确认诊断 payload/export 不包含 API key、任务正文、tool 输出 secret、approval message secret、设备名、grant id、pairing code 或模型路径原文。
+  - 边界更新：diagnostics payload 可以保留本机 UI 需要的保存位置/日志位置提示；面向分享的 export 当前已改为 redacted path labels 和本地用户标签，避免把用户名或完整 data/database/log 绝对路径当作 support bundle 证据外发；任意日志片段和组织式路径仍需要后续扩展种子覆盖。
+  - 剩余边界：这是本机匿名诊断证据，不是云端 telemetry/dashboard；首次启动成功率、模型安装成功率等仍需要后续事件埋点或 dogfood 采样才能变成长期趋势指标。
 
 ## 暂缓处理的安全硬化项
 
 这些不在本轮产品化清单中展开，但不能忘：
 
-- [ ] 移动端 LAN 明文 token 与 `ws://` 传输；当前仅补齐 TLS readiness/configuration/manual evidence，尚未完成系统级证书信任链。
-- [ ] 桌面 preload 通用 API 代理扩大 renderer XSS 影响面。
-- [ ] backend URL 任意 origin 携带桌面 token。
-- [ ] Developer Engine 的 `Edit/Write` 接入统一审批绑定。
-- [ ] Electron/electron-builder/tar/tmp 安全升级。
-- [ ] BrowserHost 远程 action 桌面侧二次 grant/approval 校验。
-- [ ] 审计链 HMAC secret 存储强度与宣传口径对齐。
+- [x] 移动端 LAN 明文 token 与 `ws://` 传输已默认阻断：非 loopback HTTP LAN 即使传入 `allowInsecureLan` 也不能配对、恢复旧 session、调用 token-bearing mobile API，或构造 approvals/remote screen/remote input WebSocket；本地 loopback HTTP 仅保留给开发/行为 smoke。证据：2026-06-08 `npm --prefix mobile run smoke:token` 覆盖旧持久化 session 清理、stale metadata 防绕过和 API/WS 拒绝。剩余风险是系统级证书信任链和真机 HTTPS/WSS 信任路径仍需人工证据。
+- [x] 桌面 preload 通用 API 代理扩大 renderer XSS 影响面已收窄：`api.request` 会递归 clone/sanitize plain JSON data，拒绝 function、symbol、accessor、非枚举字段、危险键名、class instance、File/Blob/ArrayBuffer、稀疏数组和数组额外字段。证据：2026-06-08 `npm --prefix desktop run smoke:preload-api` 通过；主进程仍保留 endpoint/method/query/body 二次校验。
+- [x] backend URL 任意 origin 携带桌面 token 已阻断：desktop token-bearing HTTP proxy、desktop realtime WebSocket、notification WebSocket、BrowserHost bridge 和 runtime foreground/background POST 均要求 loopback backend base URL；renderer web/dev fallback 也限制为 loopback。证据：2026-06-08 `npm --prefix desktop run smoke:ipc`、`npm --prefix desktop run smoke:desktop-ws`、`npm --prefix desktop run smoke:preload-api` 和完整 `npm --prefix desktop run smoke` 通过。剩余边界：普通不带 token 的健康探针和用户配置仍可显示非 loopback 失败状态，但不得携带 desktop token。
+- [x] Developer Engine 默认只读边界：`Edit`、`Write`、`Agent` 和不安全 Bash allowlist 会在启动前拒绝；写意图自动路由到 OS engine，不再让 Developer Engine 暗中获得写能力。
+  - 剩余边界：若未来要恢复“可写 Developer Engine”，必须先实现真实审批绑定、拒绝 forged `approved/approval_id`、审计脱敏和子 Agent 工具继承测试；当前产品口径是不启用这条可写路径。
+- [x] Electron/electron-builder/tar/tmp 安全升级：desktop 已升级到 `electron@42.3.3`、`electron-builder@26.15.2`；`npm --prefix desktop audit --audit-level=high` 通过并报告 `found 0 vulnerabilities`。
+- [x] BrowserHost 远程 action 桌面侧二次 grant/approval 校验。
+  - 证据：`desktop/src/main/browserHost.ts` 对 renderer/BrowserHost WS 的 takeover、click、fill、submit 等写入动作在无桌面可验证 approval grant 时拒绝，且 `desktop/scripts/ipc-security-smoke.cjs` 覆盖 forged `approved/approval_id` 不可绕过、observe/screenshot 只读动作仍可用。
+- [x] 审计链 HMAC secret 存储强度与宣传口径对齐：未配置 `LENGRVIS_AUDIT_HMAC_SECRET` 时会在本地数据目录生成并复用 `audit_hmac.secret`，写入失败时抛出 `RuntimeError`，不再静默回落到空 key。证据：2026-06-08 `python -m pytest backend/tests/test_audit_chain.py -q` 结果 `8 passed`。剩余边界：这是本地审计链防篡改证据，不是外部不可抵赖、硬件-backed key storage 或集中审计系统。
 
 ## 90 天 Beta 路线
 

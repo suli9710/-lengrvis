@@ -6,6 +6,7 @@ import { connect as connectTls, type TLSSocket } from "node:tls";
 import { IPC_CHANNELS } from "../shared/ipc";
 import type { NotificationPayload } from "../shared/types";
 import type { BackendProcessManager } from "./backendProcess";
+import { assertLoopbackBackendUrl } from "./backendUrl";
 import { buildBackendWebSocketUrl, desktopWebSocketProtocols } from "./desktopWebSocket";
 import { assertTrustedRenderer } from "./ipc";
 
@@ -213,9 +214,9 @@ function buildBackendNotificationWebSocketUrl(baseUrl: string, path: string): st
 }
 
 function normalizeConfiguredNotificationWebSocketUrl(baseUrl: string, configuredUrl: string): string {
-  const backendUrl = new URL(baseUrl);
+  const backendUrl = assertLoopbackBackendUrl(baseUrl, "Notification WebSocket");
   const notificationUrl = new URL(configuredUrl);
-  if (!["http:", "https:"].includes(backendUrl.protocol) || !["ws:", "wss:"].includes(notificationUrl.protocol)) {
+  if (!["ws:", "wss:"].includes(notificationUrl.protocol)) {
     throw new Error("Notification WebSocket URL must use the backend HTTP(S)/WS(S) protocols");
   }
 

@@ -184,7 +184,8 @@ function Get-DirectorySummary([string]$Path) {
 function New-SmokePackage {
     param(
         [string]$PackageRoot,
-        [switch]$IncludeOllama
+        [switch]$IncludeOllama,
+        [switch]$IncludeSourceMap
     )
     $dist = Join-Path $PackageRoot "dist"
     $portable = Join-Path $dist "Lengrvis-win-portable"
@@ -195,6 +196,13 @@ function New-SmokePackage {
     New-Item -ItemType Directory -Path (Join-Path $resources "app\dist") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $resources "app\package.json") -Value '{"name":"lengrvis-smoke"}' -Encoding ASCII
     New-SmokeSelfExtractingExecutable (Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe")
+
+    if ($IncludeSourceMap) {
+        $mainDir = Join-Path $resources "app\dist\main"
+        New-Item -ItemType Directory -Path $mainDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $mainDir "main.js") -Value "console.log('release smoke');`n//# sourceMappingURL=main.js.map" -Encoding ASCII
+        Set-Content -LiteralPath (Join-Path $mainDir "main.js.map") -Value '{"version":3,"sources":["src/main/main.ts"],"mappings":""}' -Encoding ASCII
+    }
 
     if ($IncludeOllama) {
         $ollamaDir = Join-Path $resources "ollama"
@@ -331,8 +339,10 @@ New-Item -ItemType Directory -Path $workspacePath -Force | Out-Null
 
 $withOllama = Join-Path $workspacePath "with-ollama"
 $withoutOllama = Join-Path $workspacePath "without-ollama"
+$withSourceMap = Join-Path $workspacePath "with-source-map"
 New-SmokePackage -PackageRoot $withOllama -IncludeOllama
 New-SmokePackage -PackageRoot $withoutOllama
+New-SmokePackage -PackageRoot $withSourceMap -IncludeSourceMap
 
 $output = Invoke-BuildVerify -ScriptName "build_all.ps1" -PackageRoot $withOllama -RequireBundledOllama
 if ($script:LastBuildAllVerifyExitCode -ne 0) {
@@ -355,6 +365,16 @@ if ($script:LastBuildAllVerifyExitCode -ne 0) {
     throw "Expected build_all -VerifyOnly to pass without bundled resources when not required:`n$output"
 }
 Write-Host "[ok] build_all verify gate remains compatible without bundled requirement"
+
+$output = Invoke-BuildVerify -ScriptName "build_all.ps1" -PackageRoot $withSourceMap
+if ($script:LastBuildAllVerifyExitCode -eq 0) {
+    throw "Expected build_all -VerifyOnly to fail when release app dist contains source maps."
+}
+$text = $output | Out-String
+if ($text -notmatch "source map") {
+    throw "Unexpected source map policy failure output:`n$text"
+}
+Write-Host "[ok] build_all verify gate rejects release source maps"
 
 $output = Invoke-BuildVerify -ScriptName "build_all.ps1" -PackageRoot $withOllama -RequireBundledOllama -RunExecutableSmoke
 if ($script:LastBuildAllVerifyExitCode -ne 0) {

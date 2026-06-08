@@ -43,7 +43,7 @@ function Find-Npm {
     if ($npm) {
         return $npm.Source
     }
-    throw "npm was not found. Install Node.js 20+, then run .\scripts\dev.ps1 -InstallMissingDependencies."
+    throw "npm was not found. Install Node.js 20+, then run .\scripts\setup_dev.ps1."
 }
 
 function Get-MissingPythonRequirements([string]$Python) {
@@ -120,19 +120,9 @@ if missing:
 }
 
 function Install-DevelopmentDependencies([string]$Python) {
-    # Product startup deliberately avoids installs; this explicit dev path may mutate the workspace.
-    Write-Step "Installing backend development dependencies"
-    & $Python -m pip install -r (Join-Path $Root "backend\requirements-dev.txt")
-    if ($LASTEXITCODE -ne 0) {
-        throw "Backend development dependency install failed. See the output above."
-    }
-
-    $npm = Find-Npm
-    Write-Step "Installing desktop/frontend development dependencies"
-    & $npm --prefix $DesktopDir install
-    if ($LASTEXITCODE -ne 0) {
-        throw "Desktop/frontend dependency install failed. See the output above."
-    }
+    # Product startup deliberately avoids installs; this explicit setup path may mutate the workspace.
+    $setupScript = Join-Path $PSScriptRoot "setup_dev.ps1"
+    & $setupScript
 }
 
 function Ensure-PythonDependencies([string]$Python) {
@@ -148,9 +138,9 @@ $missingList
 
 Product startup does not install dependencies in place.
 For a development setup, run:
-  .\scripts\dev.ps1 -InstallMissingDependencies
+  .\scripts\setup_dev.ps1
 Or install them manually:
-  $Python -m pip install -r backend\requirements-dev.txt
+  $Python -m pip install -r requirements-dev.txt
 "@
 }
 
@@ -183,4 +173,4 @@ foreach ($App in $Candidates) {
 }
 
 Write-Warning "No backend ASGI app found yet. Expected one of: $($Candidates -join ', ')"
-Write-Host "Install development dependencies with .\scripts\dev.ps1 -InstallMissingDependencies, then run scripts\test.ps1 to verify scaffolding."
+Write-Host "Install development dependencies with .\scripts\setup_dev.ps1, then run scripts\test.ps1 to verify scaffolding."

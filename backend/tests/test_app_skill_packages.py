@@ -9,7 +9,7 @@ import pytest
 
 from app.config import AppSettings
 from app.core import db
-from app.services.skill_service import SkillServiceError, import_skill
+from app.services.skill_service import SkillServiceError, import_skill, list_installed_skills
 from app.skills.loader import scan_skill_directories
 from app.tools.registry import register_all_tools
 
@@ -23,6 +23,7 @@ def test_app_skill_packages_load_from_test_data(test_data_dir: Path):
         "windows-settings-automation",
         "browser-bookmarks-import",
         "file-manager-enhanced",
+        "product-manifest-showcase",
     }.issubset(names)
     assert {
         "skill.windows_settings.preview",
@@ -30,7 +31,60 @@ def test_app_skill_packages_load_from_test_data(test_data_dir: Path):
         "skill.file_manager.batch_rename",
         "skill.file_manager.archive_by_rules",
         "skill.file_manager.zip_package",
+        "skill.product_manifest.showcase",
     }.issubset(tools)
+
+
+def test_product_manifest_showcase_proves_user_readable_permission_boundaries(test_data_dir: Path):
+    package = next(
+        package
+        for package in scan_skill_directories([test_data_dir / "skills"])
+        if package.definition.name == "product-manifest-showcase"
+    )
+    tool = package.definition.tools[0]
+    runtime_tool = package.tool_definitions[0]
+
+    assert package.safety_report.ok is True
+    assert package.definition.effective_permissions(tool) == [
+        "filesystem.read",
+        "filesystem.write",
+        "filesystem.delete",
+        "ui.control",
+        "network.external",
+        "messaging.send",
+    ]
+    assert tool.supports_dry_run is True
+    assert tool.smoke_tests[0].name == "product-manifest-boundaries-preview"
+    assert "handoff" in tool.rollback_hint.lower() or "hand off" in tool.rollback_hint.lower()
+    assert runtime_tool.capabilities == package.definition.effective_permissions(tool)
+    assert {"read", "write", "delete", "control", "send"}.issubset(set(runtime_tool.effects))
+    assert {"file", "directory", "application", "url", "message"}.issubset(set(runtime_tool.resource_kinds))
+    assert runtime_tool.external_network is True
+    assert runtime_tool.destructive is True
+
+
+def test_skill_catalog_exposes_manifest_fields_for_product_manifest_cards(test_data_dir: Path):
+    catalog = list_installed_skills(
+        AppSettings(
+            provider_name="mock",
+            skill_directories=[str(test_data_dir / "skills")],
+        )
+    )
+    skill = next(skill for skill in catalog["skills"] if skill["name"] == "product-manifest-showcase")
+    tool = skill["tools"][0]
+
+    assert skill["status"] == "ready"
+    assert tool["permissions"] == [
+        "filesystem.read",
+        "filesystem.write",
+        "filesystem.delete",
+        "ui.control",
+        "network.external",
+        "messaging.send",
+    ]
+    assert tool["supports_dry_run"] is True
+    assert tool["requires_authorized_path"] is True
+    assert "Preview must list" in tool["rollback_hint"]
 
 
 def test_zip_skill_import_rejects_manifest_schema_path_escape(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

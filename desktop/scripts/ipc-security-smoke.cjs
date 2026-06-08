@@ -4,6 +4,9 @@ const path = require("node:path");
 
 const originalLoad = Module._load;
 const ipcHandlers = new Map();
+let dialogOpenResult = { canceled: false, filePaths: ["C:\\Users\\Suli\\Documents\\picked-report.pdf"] };
+let messageBoxCalls = [];
+let messageBoxResponses = [];
 
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "electron") {
@@ -35,7 +38,13 @@ Module._load = function patchedLoad(request, parent, isMain) {
       BrowserView: class BrowserView {},
       WebContentsView: class WebContentsView {},
       Notification,
-      dialog: {},
+      dialog: {
+        showOpenDialog: async () => dialogOpenResult,
+        showMessageBox: async (...args) => {
+          messageBoxCalls.push(args);
+          return { response: messageBoxResponses.length ? messageBoxResponses.shift() : 0 };
+        }
+      },
       ipcMain: { handle: (channel, listener) => ipcHandlers.set(channel, listener) },
       shell: { openExternal: async () => undefined }
     };
@@ -45,7 +54,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
 const { IPC_CHANNELS } = require("../dist/shared/ipc.js");
 const { assertTrustedRenderer, buildRequestUrl, isTrustedRendererUrl, registerIpcHandlers } = require("../dist/main/ipc.js");
-const { registerBrowserHostIpcHandlers } = require("../dist/main/browserHost.js");
+const { BrowserHostWebSocketBridge, registerBrowserHostIpcHandlers } = require("../dist/main/browserHost.js");
 const { NotificationBridge } = require("../dist/main/notifications.js");
 
 function eventFor(url, trustedWindow = true) {
@@ -80,6 +89,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   );
 
   let backendCalls = 0;
+  let backendBaseUrl = "http://127.0.0.1:8000";
   const backend = {
     getStatus: () => {
       backendCalls += 1;
@@ -101,7 +111,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       backendCalls += 1;
       return { state: "running" };
     },
-    getBaseUrl: () => "http://127.0.0.1:8000",
+    getBaseUrl: () => backendBaseUrl,
     getDesktopApiToken: () => "desktop-secret"
   };
   registerIpcHandlers(backend);
@@ -122,6 +132,22 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   assert.equal(
     buildRequestUrl("http://127.0.0.1:8000", { endpoint: "/api/health", query: { probe: "ipc" } }).toString(),
     "http://127.0.0.1:8000/api/health?probe=ipc"
+  );
+  assert.equal(
+    buildRequestUrl("http://localhost:8000", { endpoint: "/api/health" }).toString(),
+    "http://localhost:8000/api/health"
+  );
+  assert.equal(
+    buildRequestUrl("http://[::1]:8000", { endpoint: "/api/health" }).toString(),
+    "http://[::1]:8000/api/health"
+  );
+  assert.throws(
+    () => buildRequestUrl("http://192.168.1.20:8000", { endpoint: "/api/health" }),
+    /loopback backend base URL/
+  );
+  assert.throws(
+    () => buildRequestUrl("https://api.example.test", { endpoint: "/api/health" }),
+    /loopback backend base URL/
   );
 
   const originalFetch = global.fetch;
@@ -162,7 +188,82 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     assert.equal(fetchCalls[0].init.headers["Content-Type"], "application/json");
     assert.equal(fetchCalls[0].init.body, JSON.stringify({ content: "hello" }));
 
+    fetchCalls = [];
+    const runsListResponse = await Promise.resolve(
+      apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), {
+        endpoint: "/api/runs"
+      })
+    );
+    assert.equal(runsListResponse.ok, true, "read-only run listing should still pass through generic API");
+    assert.equal(fetchCalls.length, 1, "read-only run listing should call fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/runs");
+    assert.equal(fetchCalls[0].init.method, "GET");
+
+    fetchCalls = [];
+    const settingsReadResponse = await Promise.resolve(
+      apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), {
+        endpoint: "/api/settings"
+      })
+    );
+    assert.equal(settingsReadResponse.ok, true, "read-only settings fetch should still pass through generic API");
+    assert.equal(fetchCalls.length, 1, "read-only settings fetch should call fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/settings");
+    assert.equal(fetchCalls[0].init.method, "GET");
+
+    backendBaseUrl = "https://api.example.test";
+    fetchCalls = [];
+    const remoteBackendResponse = await Promise.resolve(
+      apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), {
+        endpoint: "/api/health"
+      })
+    );
+    assert.equal(remoteBackendResponse.ok, false, "non-loopback backend base URL must fail closed before fetch");
+    assert.equal(remoteBackendResponse.error.code, "INVALID_RENDERER_API_REQUEST");
+    assert.match(remoteBackendResponse.error.message, /loopback backend base URL/);
+    assert.equal(fetchCalls.length, 0, "desktop token must not be sent to a non-loopback backend origin");
+    backendBaseUrl = "http://127.0.0.1:8000";
+
     const highRiskBridgeRequests = [
+      {
+        name: "run start through generic API",
+        request: { endpoint: "/api/runs", method: "POST", body: { message: "hello", mode: "efficiency", engine: "auto" } }
+      },
+      {
+        name: "run cancel through generic API",
+        request: { endpoint: "/api/runs/run-1/cancel", method: "POST" }
+      },
+      {
+        name: "settings sensitive confirmation through generic API",
+        request: { endpoint: "/api/settings/confirm-sensitive-change", method: "POST", body: { allow_browser_network: true } }
+      },
+      {
+        name: "settings save through generic API",
+        request: { endpoint: "/api/settings", method: "POST", body: { allow_browser_network: true } }
+      },
+      {
+        name: "permission policy replace through generic API",
+        request: { endpoint: "/api/settings/permission-policy", method: "PUT", body: { rules: [] } }
+      },
+      {
+        name: "permission policy relaxation confirmation through generic API",
+        request: {
+          endpoint: "/api/settings/permission-policy/confirm-relaxation",
+          method: "POST",
+          body: { action: "delete_rule", rule_id: "weekend_delete" }
+        }
+      },
+      {
+        name: "permission rule upsert through generic API",
+        request: {
+          endpoint: "/api/settings/permission-policy/rules",
+          method: "POST",
+          body: { id: "weekend_delete", effect: "deny", tools: ["file.trash"], path_patterns: ["*"] }
+        }
+      },
+      {
+        name: "permission rule delete through generic API",
+        request: { endpoint: "/api/settings/permission-policy/rules/weekend_delete", method: "DELETE" }
+      },
       {
         name: "command execute through generic API",
         request: { endpoint: "/api/commands/execute", method: "POST", body: { name: "settings.show", args: {} } }
@@ -226,6 +327,14 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       {
         name: "browser screenshot through generic API",
         request: { endpoint: "/api/browser/screenshot", method: "POST", body: { url: "https://example.test" } }
+      },
+      {
+        name: "document parse through generic API",
+        request: { endpoint: "/api/documents/parse", method: "POST", body: { path: "C:\\Users\\Suli\\Documents\\report.pdf" } }
+      },
+      {
+        name: "diagnostics export through generic API",
+        request: { endpoint: "/api/system/diagnostics/export", method: "POST" }
       }
     ];
 
@@ -293,7 +402,74 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       assert.equal(fetchCalls.length, 0, `${testCase.name} must be rejected before fetch`);
     }
 
+    const samplePermissionRule = {
+      id: "weekend_delete",
+      name: "Weekend delete block",
+      effect: "deny",
+      tools: ["file.trash"],
+      path_patterns: ["*"],
+      time_windows: [{ days: ["weekend"], start: "00:00", end: "23:59", timezone: "Asia/Shanghai" }],
+      enabled: true,
+      reason: "Block risky delete windows"
+    };
+
     const explicitBridgeRequests = [
+      {
+        name: "run start",
+        channel: IPC_CHANNELS.runsStart,
+        args: [{ message: "hello", mode: "efficiency", engine: "auto" }],
+        expectedUrl: "http://127.0.0.1:8000/api/runs",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ message: "hello", mode: "efficiency", engine: "auto" })
+      },
+      {
+        name: "diagnostics export",
+        channel: IPC_CHANNELS.systemDiagnosticsExport,
+        args: [],
+        expectedUrl: "http://127.0.0.1:8000/api/system/diagnostics/export",
+        expectedMethod: "POST",
+        expectedBody: undefined
+      },
+      {
+        name: "settings sensitive confirmation",
+        channel: IPC_CHANNELS.settingsConfirmSensitiveChange,
+        args: [{ allow_browser_network: true }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/confirm-sensitive-change",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ allow_browser_network: true })
+      },
+      {
+        name: "settings save",
+        channel: IPC_CHANNELS.settingsSave,
+        args: [{ allow_browser_network: true, confirmation_nonce: "confirm-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ allow_browser_network: true, confirmation_nonce: "confirm-1" })
+      },
+      {
+        name: "permission policy relaxation confirmation",
+        channel: IPC_CHANNELS.permissionPolicyConfirmRelaxation,
+        args: [{ action: "upsert_rule", rule: samplePermissionRule }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/permission-policy/confirm-relaxation",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ action: "upsert_rule", rule: samplePermissionRule })
+      },
+      {
+        name: "permission rule upsert",
+        channel: IPC_CHANNELS.permissionPolicyUpsertRule,
+        args: [{ rule: samplePermissionRule, confirmationNonce: "confirm-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/permission-policy/rules?confirmation_nonce=confirm-1",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify(samplePermissionRule)
+      },
+      {
+        name: "permission rule delete",
+        channel: IPC_CHANNELS.permissionPolicyDeleteRule,
+        args: [{ ruleId: "weekend_delete", confirmationNonce: "confirm-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/permission-policy/rules/weekend_delete?confirmation_nonce=confirm-1",
+        expectedMethod: "DELETE",
+        expectedBody: undefined
+      },
       {
         name: "command execute",
         channel: IPC_CHANNELS.commandsExecute,
@@ -385,6 +561,179 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       );
     }
 
+    const chooseDocumentHandler = ipcHandlers.get(IPC_CHANNELS.chooseDocument);
+    const documentParseHandler = ipcHandlers.get(IPC_CHANNELS.documentsParse);
+    const documentAskHandler = ipcHandlers.get(IPC_CHANNELS.documentsAsk);
+    const documentCompareHandler = ipcHandlers.get(IPC_CHANNELS.documentsCompare);
+    assert.ok(chooseDocumentHandler, "choose document handler must be registered");
+    assert.ok(documentParseHandler, "document parse bridge handler must be registered");
+    assert.ok(documentAskHandler, "document ask bridge handler must be registered");
+    assert.ok(documentCompareHandler, "document compare bridge handler must be registered");
+
+    const pickedDocument = "C:\\Users\\Suli\\Documents\\picked-report.pdf";
+    dialogOpenResult = { canceled: false, filePaths: [pickedDocument] };
+    messageBoxCalls = [];
+    fetchCalls = [];
+    const pickedPath = await Promise.resolve(chooseDocumentHandler(eventFor("http://127.0.0.1:5173/files")));
+    assert.equal(pickedPath, pickedDocument, "choose document should return the selected document path");
+    const pickedParseResponse = await Promise.resolve(
+      documentParseHandler(eventFor("http://127.0.0.1:5173/files"), { path: pickedDocument, includeText: true })
+    );
+    assert.equal(pickedParseResponse.ok, true, "picked document should be allowed without another native prompt");
+    assert.equal(messageBoxCalls.length, 0, "previously picked documents should be granted in-process");
+    assert.equal(fetchCalls.length, 1, "picked document parse should call backend once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/documents/parse");
+    assert.equal(fetchCalls[0].init.method, "POST");
+    assert.equal(fetchCalls[0].init.body, JSON.stringify({ path: pickedDocument, include_text: true }));
+
+    const pastedDocument = "C:\\Users\\Suli\\Documents\\pasted-report.pdf";
+    messageBoxCalls = [];
+    messageBoxResponses = [0];
+    fetchCalls = [];
+    const pastedAskResponse = await Promise.resolve(
+      documentAskHandler(eventFor("http://127.0.0.1:5173/files"), {
+        path: pastedDocument,
+        question: "Summarize this document",
+        topK: 3
+      })
+    );
+    assert.equal(pastedAskResponse.ok, true, "pasted document should proceed after native confirmation");
+    assert.equal(messageBoxCalls.length, 1, "pasted document should require native confirmation");
+    assert.equal(fetchCalls.length, 1, "confirmed pasted document should call backend once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/documents/ask");
+    assert.equal(fetchCalls[0].init.body, JSON.stringify({ path: pastedDocument, question: "Summarize this document", top_k: 3 }));
+
+    messageBoxCalls = [];
+    fetchCalls = [];
+    const documentIdAskResponse = await Promise.resolve(
+      documentAskHandler(eventFor("http://127.0.0.1:5173/files"), {
+        documentId: "doc-123",
+        question: "What changed?",
+        topK: 2
+      })
+    );
+    assert.equal(documentIdAskResponse.ok, true, "document id ask should call backend");
+    assert.equal(messageBoxCalls.length, 0, "document id ask should not require a path grant");
+    assert.equal(fetchCalls.length, 1, "document id ask should call backend once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/documents/ask");
+    assert.equal(fetchCalls[0].init.body, JSON.stringify({ document_id: "doc-123", question: "What changed?", top_k: 2 }));
+
+    messageBoxCalls = [];
+    messageBoxResponses = [1];
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        documentCompareHandler(eventFor("http://127.0.0.1:5173/files"), {
+          paths: ["C:\\Users\\Suli\\Documents\\left.pdf", "C:\\Users\\Suli\\Documents\\right.pdf"]
+        }),
+      /not confirmed/,
+      "document bridge should reject when native confirmation is denied"
+    );
+    assert.equal(fetchCalls.length, 0, "denied document confirmation must not call backend");
+    assert.equal(messageBoxCalls.length, 1, "denied document comparison should ask exactly once");
+
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        documentParseHandler(eventFor("http://127.0.0.1:5173/files"), {
+          path: pickedDocument,
+          headers: { Authorization: "Bearer renderer-token" }
+        }),
+      /document parse request field is not allowed/,
+      "document bridge should reject unexpected fields"
+    );
+    assert.equal(fetchCalls.length, 0, "invalid document bridge request must be rejected before fetch");
+
+    const settingsSaveHandler = ipcHandlers.get(IPC_CHANNELS.settingsSave);
+    const settingsConfirmHandler = ipcHandlers.get(IPC_CHANNELS.settingsConfirmSensitiveChange);
+    assert.ok(settingsConfirmHandler, "settings confirmation explicit bridge handler must be registered");
+    assert.ok(settingsSaveHandler, "settings save explicit bridge handler must be registered");
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        settingsSaveHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          headers: { Authorization: "Bearer renderer-token" }
+        }),
+      /settings patch field is not allowed/,
+      "settings save bridge should reject unexpected body fields"
+    );
+    assert.equal(fetchCalls.length, 0, "invalid settings save bridge request must be rejected before fetch");
+
+    messageBoxCalls = [];
+    fetchCalls = [];
+    const ordinarySettingsResponse = await Promise.resolve(
+      settingsSaveHandler(eventFor("http://127.0.0.1:5173/settings"), {
+        mode: "efficiency",
+        provider_name: "openai_compatible",
+        model: "gpt-4o-mini",
+        temperature: 0.2
+      })
+    );
+    assert.equal(ordinarySettingsResponse.ok, true, "ordinary settings save should not require sensitive confirmation");
+    assert.equal(messageBoxCalls.length, 0, "ordinary settings save must not show native sensitive confirmation");
+    assert.equal(fetchCalls.length, 1, "ordinary settings save should call backend once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/settings");
+    assert.equal(fetchCalls[0].init.method, "POST");
+    assert.equal(
+      fetchCalls[0].init.body,
+      JSON.stringify({
+        mode: "efficiency",
+        provider_name: "openai_compatible",
+        model: "gpt-4o-mini",
+        temperature: 0.2
+      })
+    );
+
+    messageBoxCalls = [];
+    fetchCalls = [];
+    const ordinaryConfirmationResponse = await Promise.resolve(
+      settingsConfirmHandler(eventFor("http://127.0.0.1:5173/settings"), {
+        mode: "efficiency",
+        provider_name: "openai_compatible",
+        model: "gpt-4o-mini"
+      })
+    );
+    assert.equal(ordinaryConfirmationResponse.ok, true, "ordinary settings confirmation preparation should still proxy");
+    assert.equal(messageBoxCalls.length, 0, "ordinary settings confirmation preparation must not show native sensitive confirmation");
+    assert.equal(fetchCalls.length, 1, "ordinary settings confirmation preparation should call backend once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/settings/confirm-sensitive-change");
+    assert.equal(fetchCalls[0].init.method, "POST");
+
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        settingsSaveHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          base_url: "https://attacker.example/v1"
+        }),
+      /prior confirmation/,
+      "settings save bridge should reject LLM endpoint changes without a bound confirmation"
+    );
+    assert.equal(fetchCalls.length, 0, "unconfirmed LLM endpoint settings must be rejected before fetch");
+
+    messageBoxCalls = [];
+    messageBoxResponses = [1];
+    fetchCalls = [];
+    await assert.rejects(
+      async () => settingsConfirmHandler(eventFor("http://127.0.0.1:5173/settings"), { remote_desktop_enabled: true }),
+      /not confirmed/,
+      "settings confirmation bridge should require native confirmation"
+    );
+    assert.equal(fetchCalls.length, 0, "denied native settings confirmation must not call backend");
+    assert.equal(messageBoxCalls.length, 1, "settings confirmation should ask exactly once");
+
+    const permissionUpsertHandler = ipcHandlers.get(IPC_CHANNELS.permissionPolicyUpsertRule);
+    assert.ok(permissionUpsertHandler, "permission rule explicit bridge handler must be registered");
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        permissionUpsertHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          rule: { ...samplePermissionRule, headers: { Authorization: "Bearer renderer-token" } }
+        }),
+      /permission rule field is not allowed/,
+      "permission rule bridge should reject unexpected rule fields"
+    );
+    assert.equal(fetchCalls.length, 0, "invalid permission rule bridge request must be rejected before fetch");
+
     const mobilePairingCreateCodeHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingCreateCode);
     assert.ok(mobilePairingCreateCodeHandler, "mobile pairing create-code handler must be registered");
     fetchCalls = [];
@@ -412,6 +761,21 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/pair/devices/phone-1/remote-input-grants");
     assert.equal(fetchCalls[0].init.method, "POST");
     assert.equal(fetchCalls[0].init.body, JSON.stringify({ expires_in: 300 }));
+
+    messageBoxCalls = [];
+    messageBoxResponses = [1];
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        mobilePairingGrantHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          deviceId: "phone-2",
+          expiresInSeconds: 300
+        }),
+      /not confirmed/,
+      "remote-input grant bridge should require native confirmation"
+    );
+    assert.equal(fetchCalls.length, 0, "denied native remote-input confirmation must not call backend");
+    assert.equal(messageBoxCalls.length, 1, "remote-input grant should ask exactly once");
   } finally {
     global.fetch = originalFetch;
   }
@@ -436,11 +800,15 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 
   const handlers = new Map();
   let calls = 0;
+  let takeoverCalls = 0;
+  let performActionCalls = 0;
+  let performedActions = [];
   const host = {
     getSnapshot: () => {
       calls += 1;
       return { sessions: [], events: [], visible: false, hostAvailable: true };
     },
+    onSnapshot: () => () => undefined,
     open: async () => {
       calls += 1;
       return {
@@ -470,6 +838,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     },
     takeover: () => {
       calls += 1;
+      takeoverCalls += 1;
       return { ok: true };
     },
     release: () => {
@@ -480,8 +849,10 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       calls += 1;
       return { ok: true };
     },
-    performAction: async () => {
+    performAction: async (sessionId, action) => {
       calls += 1;
+      performActionCalls += 1;
+      performedActions.push({ sessionId, kind: action?.kind });
       return { ok: true };
     }
   };
@@ -524,6 +895,63 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     "Navigation failed for https://example.test/#/callback?access_token=[redacted]&client_secret=[redacted]"
   );
   assert.equal(JSON.stringify(openResult).includes("secret-token"), false, "browser host action results must redact tokens in error URLs");
+
+  const takeoverHandler = handlers.get(IPC_CHANNELS.browserHostTakeover);
+  const actionHandler = handlers.get(IPC_CHANNELS.browserHostAction);
+  assert.ok(takeoverHandler, "browser host takeover handler must be registered");
+  assert.ok(actionHandler, "browser host action handler must be registered");
+
+  takeoverCalls = 0;
+  const deniedTakeover = await Promise.resolve(takeoverHandler(eventFor("http://127.0.0.1:5173/browser"), "session-1"));
+  assert.equal(deniedTakeover.ok, false, "renderer takeover should be denied without approval grant");
+  assert.match(deniedTakeover.error, /approval grant/);
+  assert.equal(takeoverCalls, 0, "renderer takeover denial must not call the host takeover method");
+
+  const deniedRendererInputActions = [
+    { name: "click", action: { kind: "click", selector: "#submit", approved: true, approval_id: "forged-approval" } },
+    { name: "fill", action: { kind: "fill", selector: "#email", text: "secret", approved: true, approval_id: "forged-approval" } },
+    { name: "submit", action: { kind: "submit", selector: "form", approved: true, approval_id: "forged-approval" } },
+    { name: "scroll", action: { kind: "scroll", fields: { y: "600" }, approved: true, approval_id: "forged-approval" } },
+    { name: "cua", action: { kind: "cua", text: "click the button", approved: true, approval_id: "forged-approval" } }
+  ];
+  for (const testCase of deniedRendererInputActions) {
+    performActionCalls = 0;
+    performedActions = [];
+    const denied = await Promise.resolve(
+      actionHandler(eventFor("http://127.0.0.1:5173/browser"), {
+        sessionId: "session-1",
+        action: testCase.action
+      })
+    );
+    assert.equal(denied.ok, false, `renderer ${testCase.name} action should be denied without a desktop approval grant`);
+    assert.match(denied.error, /approval grant/);
+    assert.equal(performActionCalls, 0, `renderer ${testCase.name} denial must not call the host action method`);
+    assert.deepEqual(performedActions, [], `renderer ${testCase.name} denial must not record host actions`);
+  }
+
+  performActionCalls = 0;
+  performedActions = [];
+  for (const testCase of [
+    { name: "observe", action: { kind: "observe" } },
+    { name: "screenshot", action: { kind: "screenshot" } }
+  ]) {
+    const result = await Promise.resolve(
+      actionHandler(eventFor("http://127.0.0.1:5173/browser"), {
+        sessionId: "session-1",
+        action: testCase.action
+      })
+    );
+    assert.equal(result.ok, true, `renderer ${testCase.name} action should remain read-only`);
+  }
+  assert.deepEqual(
+    performedActions,
+    [
+      { sessionId: "session-1", kind: "observe" },
+      { sessionId: "session-1", kind: "screenshot" }
+    ],
+    "renderer read-only BrowserHost actions should call the host exactly once each"
+  );
+  assert.equal(performActionCalls, 2, "renderer read-only BrowserHost actions should be the only host actions performed");
 
   const redactedSnapshot = {
     sessions: [
@@ -582,6 +1010,100 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   assert.equal(sanitizedText.includes("#password"), false, "browser host errors must redact sensitive selectors");
   assert.equal(sanitizedText.includes("input[name=\"password\"]"), false, "browser host errors must redact password attribute selectors");
   assert.equal(sanitizedText.includes("[data-token=\"secret-token\"]"), false, "browser host errors must redact token attribute selectors");
+
+  const originalWebSocket = global.WebSocket;
+  const sentMessages = [];
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    readyState = FakeWebSocket.OPEN;
+    listeners = {};
+
+    constructor(url, protocols) {
+      this.url = url;
+      this.protocols = protocols;
+      FakeWebSocket.last = this;
+    }
+
+    addEventListener(name, handler) {
+      this.listeners[name] = handler;
+    }
+
+    send(payload) {
+      sentMessages.push(JSON.parse(payload));
+    }
+
+    close() {
+      this.readyState = 3;
+    }
+  }
+
+  global.WebSocket = FakeWebSocket;
+  try {
+    backendBaseUrl = "http://127.0.0.1:8000";
+    FakeWebSocket.last = null;
+    const loopbackNotificationBridge = new NotificationBridge({ backend, getMainWindow: () => null });
+    loopbackNotificationBridge.startBackendListener();
+    assert.equal(FakeWebSocket.last.url, "ws://127.0.0.1:8000/ws/notifications");
+    assert.deepEqual(FakeWebSocket.last.protocols, ["lengrvis.desktop.token.desktop-secret"]);
+    loopbackNotificationBridge.stopBackendListener();
+
+    backendBaseUrl = "https://api.example.test";
+    FakeWebSocket.last = null;
+    const remoteNotificationBridge = new NotificationBridge({ backend, getMainWindow: () => null });
+    remoteNotificationBridge.startBackendListener();
+    assert.equal(FakeWebSocket.last, null, "notification bridge must not send desktop token to non-loopback backend WS");
+    remoteNotificationBridge.stopBackendListener();
+    backendBaseUrl = "http://127.0.0.1:8000";
+
+    takeoverCalls = 0;
+    performActionCalls = 0;
+    performedActions = [];
+    const bridge = new BrowserHostWebSocketBridge(host, () => "http://127.0.0.1:8000", () => "desktop-secret");
+    bridge.start();
+    assert.equal(new URL(FakeWebSocket.last.url).searchParams.get("desktop_token"), null);
+    assert.deepEqual(FakeWebSocket.last.protocols, ["lengrvis.desktop.token.desktop-secret"]);
+    FakeWebSocket.last.listeners.open();
+    assert.equal(sentMessages[0].type, "snapshot", "BrowserHost WS bridge should send snapshots after protocol auth");
+
+    const remoteWriteMessages = [
+      { type: "takeover", request_id: "takeover-1", session_id: "session-1" },
+      { type: "action", request_id: "click-1", session_id: "session-1", action: { kind: "click", selector: "#submit" } },
+      { type: "action", request_id: "fill-1", session_id: "session-1", action: { kind: "fill", selector: "#email", text: "secret" } },
+      { type: "action", request_id: "submit-1", session_id: "session-1", action: { kind: "submit", selector: "form" } }
+    ];
+    for (const message of remoteWriteMessages) {
+      FakeWebSocket.last.listeners.message({ data: JSON.stringify(message) });
+    }
+    for (const message of [
+      { type: "action", request_id: "observe-1", session_id: "session-1", action: { kind: "observe" } },
+      { type: "action", request_id: "screenshot-1", session_id: "session-1", action: { kind: "screenshot" } }
+    ]) {
+      FakeWebSocket.last.listeners.message({ data: JSON.stringify(message) });
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const remoteResults = new Map(sentMessages.filter((message) => message.type === "result").map((message) => [message.request_id, message]));
+    for (const requestId of ["takeover-1", "click-1", "fill-1", "submit-1"]) {
+      assert.equal(remoteResults.get(requestId)?.ok, false, `BrowserHost WS ${requestId} should be denied without a desktop grant`);
+      assert.match(remoteResults.get(requestId)?.error ?? "", /approval grant/);
+    }
+    assert.equal(remoteResults.get("observe-1")?.ok, true, "BrowserHost WS observe should remain read-only");
+    assert.equal(remoteResults.get("screenshot-1")?.ok, true, "BrowserHost WS screenshot should remain read-only");
+    assert.equal(takeoverCalls, 0, "BrowserHost WS takeover denial must not call the host takeover method");
+    assert.deepEqual(
+      performedActions,
+      [
+        { sessionId: "session-1", kind: "observe" },
+        { sessionId: "session-1", kind: "screenshot" }
+      ],
+      "BrowserHost WS bridge should only perform read-only remote actions without a desktop grant"
+    );
+    assert.equal(performActionCalls, 2, "BrowserHost WS bridge must not perform denied remote input actions");
+    bridge.stop();
+  } finally {
+    global.WebSocket = originalWebSocket;
+  }
 
   console.log("IPC security smoke passed");
 })();

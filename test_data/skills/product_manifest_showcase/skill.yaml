@@ -1,0 +1,85 @@
+name: product-manifest-showcase
+version: "0.1.0"
+agent_owner: AppAgent
+risk:
+  default: R3_DESTRUCTIVE_OR_SYSTEM
+permissions:
+  - filesystem.read
+  - filesystem.write
+  - filesystem.delete
+  - ui.control
+  - network.external
+  - messaging.send
+tools:
+  - name: skill.product_manifest.showcase
+    description: Preview a sample App Skill that reads and writes files, controls UI, calls a network endpoint, sends a message, deletes generated data, and shows rollback or handoff boundaries.
+    risk: R3_DESTRUCTIVE_OR_SYSTEM
+    permissions:
+      - filesystem.read
+      - filesystem.write
+      - filesystem.delete
+      - ui.control
+      - network.external
+      - messaging.send
+    supports_dry_run: true
+    requires_authorized_path: true
+    app_target:
+      app_id: product.manifest.showcase
+      display_name: Product Manifest Showcase
+      platform: windows
+      interface: ui_automation
+      window_title: Sample App
+      capabilities:
+        - preview_file_changes
+        - focus_window
+        - send_message_after_approval
+        - delete_generated_output
+    workflow:
+      target_app: product.manifest.showcase
+      action: demonstrate_permission_boundaries
+      interface: ui_automation
+      data_transfer:
+        file_path: path
+        message_text: message
+        restore_clipboard: true
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+        message:
+          type: string
+        endpoint:
+          type: string
+        dry_run:
+          type: boolean
+      required:
+        - path
+        - message
+    output_schema:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        dry_run:
+          type: boolean
+        preview:
+          type: array
+        rollback:
+          type: string
+    execution:
+      type: python
+      entry: handlers/intent.py
+      timeout_seconds: 5
+    smoke_tests:
+      - name: product-manifest-boundaries-preview
+        description: Dry-run preview lists file read/write, UI, network, messaging, delete, and rollback or handoff boundaries.
+        args:
+          path: sample.txt
+          message: hello
+          endpoint: https://example.invalid/webhook
+          dry_run: true
+        expected:
+          ok: true
+          dry_run: true
+    rollback_hint: Preview must list each file, UI, network, messaging, and delete operation before approval; rollback deletes generated outputs, restores moved files from the preview plan, or must hand off to the user for message/delete recovery when an external app cannot be undone automatically.

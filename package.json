@@ -14,7 +14,9 @@
     "release:quick": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
     "release:check": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45",
     "release:smoke": "npm run release:check",
-    "release:gate": "npm run release:check"
+    "release:gate": "npm run release:check",
+    "smoke:desktop-first-launch": "npm --prefix desktop run smoke:first-launch",
+    "smoke:portable-first-screen": "powershell -ExecutionPolicy Bypass -File ./scripts/portable_first_screen_smoke.ps1"
   },
   "engines": {
     "node": ">=20"
