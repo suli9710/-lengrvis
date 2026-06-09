@@ -35,10 +35,13 @@ const pairing = {
   code: "A1B2C3",
   expires_at: "2026-06-01T00:05:00.000Z",
   expires_in: 300,
+  token: "secret-pairing-token-must-not-render",
+  token_type: "Bearer",
   server: {
     host: "desktop.example.test",
     port: 8443,
     scheme: "https",
+    token: "secret-server-token-must-not-render",
     transport_security: {
       http_scheme: "https",
       websocket_scheme: "wss",
@@ -71,11 +74,21 @@ assert.equal(parsedQrValue.code, "A1B2C3");
 assert.equal(parsedQrValue.expires_at, "2026-06-01T00:05:00.000Z");
 assert.equal(parsedQrValue.server.origin, parsedQrValue.base_url);
 assert.equal(parsedQrValue.server.scheme, "https");
+assert.equal(parsedQrValue.server.transport_security.http_scheme, "https");
+assert.equal(parsedQrValue.server.transport_security.websocket_scheme, "wss");
+assert.equal(parsedQrValue.server.transport_security.tls_enabled, true);
 assert.equal(parsedQrValue.server.transport_security.fingerprint_sha256, "00112233445566778899aabbccddeeff");
+assert.equal(parsedQrValue.transport_security.http_scheme, "https");
+assert.equal(parsedQrValue.transport_security.websocket_scheme, "wss");
+assert.equal(parsedQrValue.transport_security.tls_enabled, true);
 assert.equal(parsedQrValue.transport_security.fingerprint_sha256, "00112233445566778899aabbccddeeff");
 assert.equal(parsedQrValue.https_enabled, true);
 assert.equal(parsedQrValue.trust_required, true);
 assert.ok(qrContent.value.length > pairing.code.length, "QR content must include the server payload, not only the short code");
+assert.equal("token" in parsedQrValue, false);
+assert.equal("token_type" in parsedQrValue, false);
+assert.equal("token" in parsedQrValue.server, false);
+assert.doesNotMatch(qrContent.value, /secret-pairing-token-must-not-render|secret-server-token-must-not-render|Bearer/);
 
 const lanHttpPairing = {
   ...pairing,
@@ -95,8 +108,14 @@ const lanHttpPairing = {
 const lanHttpQrValue = JSON.parse(buildMobilePairingQrContent(lanHttpPairing).value);
 assert.equal(lanHttpQrValue.base_url, "http://192.168.1.20:8000");
 assert.equal(lanHttpQrValue.server.scheme, "http");
+assert.equal(lanHttpQrValue.server.transport_security.http_scheme, "http");
 assert.equal(lanHttpQrValue.server.transport_security.websocket_scheme, "ws");
+assert.equal(lanHttpQrValue.server.transport_security.tls_enabled, false);
+assert.equal(lanHttpQrValue.transport_security.http_scheme, "http");
+assert.equal(lanHttpQrValue.transport_security.websocket_scheme, "ws");
+assert.equal(lanHttpQrValue.transport_security.tls_enabled, false);
 assert.equal(lanHttpQrValue.https_enabled, false);
+assert.equal(lanHttpQrValue.trust_required, false);
 
 async function main() {
   const dataUrl = await QRCode.toDataURL(qrContent.value, {

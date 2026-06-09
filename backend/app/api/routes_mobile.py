@@ -313,6 +313,7 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
                 "type": "connected",
                 "device_id": claims.get("device_id"),
                 "pending": mobile_pairing_service.list_pending_approvals(claims),
+                "remote_input_grants": mobile_pairing_service.list_active_remote_input_grants_for_claims(claims),
                 "tasks": [
                     _mobile_task_payload(task)
                     for task in sorted(
@@ -331,12 +332,12 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
                 if not _mobile_event_allowed(event, claims):
                     continue
                 if event.get("type") == "mobile_device_revoked":
-                    await websocket.send_json(_safe_mobile_event(event))
+                    await websocket.send_json(_safe_mobile_event(event, claims=claims))
                     await websocket.close(code=1008)
                     return
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
-                await websocket.send_json(_safe_mobile_event(event, notification_alias=notification_alias))
+                await websocket.send_json(_safe_mobile_event(event, notification_alias=notification_alias, claims=claims))
             except asyncio.TimeoutError:
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
@@ -365,12 +366,12 @@ def _mobile_event_allowed(event: dict, claims: dict) -> bool:
     return mobile_pairing_service.mobile_claims_can_access_approval(approval, claims)
 
 
-def _safe_mobile_event(event: dict, *, notification_alias: bool = False) -> dict:
+def _safe_mobile_event(event: dict, *, notification_alias: bool = False, claims: dict | None = None) -> dict:
     event_type = str(event.get("type") or "")
     if event_type in {"approval_created", "approval_decided"}:
         payload_type = "approval_notification" if notification_alias and event_type == "approval_created" else event_type
         approval = event.get("approval")
-        safe_approval = mobile_pairing_service.safe_approval_payload(approval) if isinstance(approval, dict) else {}
+        safe_approval = mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
         return {"type": payload_type, "approval": safe_approval}
     if event_type in {"remote_input_grant_created", "remote_input_grant_revoked"}:
         return {
@@ -405,6 +406,7 @@ def _safe_remote_input_grant_event(value: object) -> dict:
         "created_at": str(grant.get("created_at") or ""),
         "expires_at": str(grant.get("expires_at") or ""),
         "revoked_at": str(grant.get("revoked_at") or ""),
+        "binding_ref": str(grant.get("binding_ref") or ""),
     }
 
 

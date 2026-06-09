@@ -143,11 +143,19 @@ function Get-StringJsonValue($Object, [string[]]$Path) {
     return Redact-TextValue ([string]$value)
 }
 
+function Test-JsonFalse($Value) {
+    return ($Value -is [bool]) -and ($Value -eq $false)
+}
+
+function Test-JsonTrue($Value) {
+    return ($Value -is [bool]) -and ($Value -eq $true)
+}
+
 function Get-FalseObservation($Value) {
     if ($null -eq $Value) {
         return "missing"
     }
-    if ($Value -eq $false) {
+    if (Test-JsonFalse $Value) {
         return "false"
     }
     return "not_false_ignored"
@@ -157,7 +165,7 @@ function Get-RequiredObservation($Value) {
     if ($null -eq $Value) {
         return "missing"
     }
-    if ($Value -eq $true) {
+    if (Test-JsonTrue $Value) {
         return "required"
     }
     return "not_required_in_input_but_required_by_template"
@@ -235,16 +243,16 @@ if ($null -ne $selectedPackage) {
         if ($null -eq $externalReview) {
             $issues.Add("support_package_redaction.external_review is missing")
         }
-        if ((Get-JsonValue $redaction @("public_safe")) -ne $false) {
+        if (-not (Test-JsonFalse (Get-JsonValue $redaction @("public_safe")))) {
             $issues.Add("support package public-safe flag was not false in input")
         }
-        if ((Get-JsonValue $externalReview @("public_safe")) -ne $false) {
+        if (-not (Test-JsonFalse (Get-JsonValue $externalReview @("public_safe")))) {
             $issues.Add("external review public-safe flag was not false in input")
         }
         if ((Get-StringJsonValue $externalReview @("status")) -ne "manual_review_required") {
             $issues.Add("external review status is not manual_review_required")
         }
-        if ((Get-JsonValue $externalReview @("required_before_external_sharing")) -ne $true) {
+        if (-not (Test-JsonTrue (Get-JsonValue $externalReview @("required_before_external_sharing")))) {
             $issues.Add("external review is not marked required before external sharing")
         }
     }
@@ -404,6 +412,9 @@ $packet = [ordered]@{
     review_scope = [ordered]@{
         automated_redaction_template = $true
         automated_redaction_template_scope = "collects labels, contract observations, and manual checklist fields only"
+        review_fields_complete = $false
+        external_sharing_blocked = $true
+        separate_human_content_review_required = $true
         actual_package_content_review_completed = $false
         automated_template_is_actual_package_content_review = $false
         actual_content_review_required_before_external_sharing = $true
@@ -418,6 +429,9 @@ $packet = [ordered]@{
         human_review_signoff = $false
         external_public_safe_signoff = $false
         template_is_human_signoff = $false
+        review_fields_complete = $false
+        external_sharing_blocked = $true
+        separate_human_content_review_required = $true
         actual_package_content_review_completed = $false
         automated_template_only = $true
         input_issue_count = $issues.Count
@@ -430,6 +444,8 @@ $packet = [ordered]@{
         helper_can_authorize_external_sharing = $false
         actual_content_review_required = $true
         actual_content_review_completed = $false
+        external_sharing_blocked = $true
+        separate_human_content_review_required = $true
         public_safe_approval_created = $false
     }
     input_diagnostics_package = [ordered]@{
@@ -461,6 +477,9 @@ $packet = [ordered]@{
         external_sharing_allowed = $false
         claim_allowed = $false
         required_before_external_sharing = $true
+        review_fields_complete = $false
+        external_sharing_blocked = $true
+        separate_human_content_review_required = $true
         actual_package_content_review_completed = $false
         actual_exported_package_path_label = $actualExportedPackagePathLabel
         human_decision = "pending"
@@ -499,6 +518,9 @@ $markdownLines.Add("- Actual exported package path label: $($packet.input_diagno
 $markdownLines.Add("- Scope: local diagnostics package review template only; no product process starts, no network requests, no uploads, no dependency install.")
 $markdownLines.Add("- Automated redaction/template only: true")
 $markdownLines.Add("- Actual package content review completed: false")
+$markdownLines.Add("- Review fields complete: false")
+$markdownLines.Add("- External sharing blocked: true")
+$markdownLines.Add("- Separate human content review required: true")
 $markdownLines.Add("- Public safe: false")
 $markdownLines.Add("- External sharing allowed: false")
 $markdownLines.Add("- Claim allowed: false")

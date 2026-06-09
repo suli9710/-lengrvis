@@ -56,6 +56,17 @@ interface PairingFailureNotice {
 
 type PairingFailureSource = "scan" | "input";
 
+const MAX_PAIRING_PAYLOAD_LENGTH = 4096;
+const MAX_BASE_URL_LENGTH = 2048;
+const MAX_PAIRING_CODE_LENGTH = 6;
+const MAX_PAIRING_CODE_RAW_INPUT_LENGTH = 16;
+const MAX_DEVICE_NAME_LENGTH = 80;
+
+interface ProtectedPairingPayloadInput {
+  value: string;
+  wasTruncated: boolean;
+}
+
 export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) => void }) {
   const [baseUrl, setBaseUrl] = useState("");
   const [pairCode, setPairCode] = useState("");
@@ -67,16 +78,22 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const [isScanning, setIsScanning] = useState(false);
   const [scanLocked, setScanLocked] = useState(false);
   const scanLockedRef = useRef(false);
+  const pairRequestLockedRef = useRef(false);
   const [isCameraPermissionBusy, setIsCameraPermissionBusy] = useState(false);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const normalizedPairCode = normalizePairingCodeInput(pairCode);
   const activeDetectedPayload = detectedPayload;
   const securityHint = showManualEntry ? baseUrlSecurityHint(baseUrl, activeDetectedPayload?.security) : null;
+  const manualBaseUrlFormatNotice = showManualEntry && baseUrl.trim() && !isPairingBaseUrlInputReady(baseUrl) ? invalidBaseUrlFormatNotice() : null;
+  const manualBaseUrlNotice = manualBaseUrlFormatNotice ?? securityHint;
   const detectedPayloadSecurity = activeDetectedPayload ? classifyPairingPayloadSecurity(activeDetectedPayload) : null;
   const isDetectedPayloadBlocked = Boolean(detectedPayloadSecurity && !detectedPayloadSecurity.canPair);
-  const hasSubmitInput = showManualEntry ? Boolean(baseUrl.trim() && normalizedPairCode.length === 6) : Boolean(pairingPayload.trim());
+  const hasSubmitInput = showManualEntry ? Boolean(isPairingBaseUrlInputReady(baseUrl) && normalizedPairCode.length === MAX_PAIRING_CODE_LENGTH) : Boolean(pairingPayload.trim());
   const canSubmit = !isBusy && hasSubmitInput && !isDetectedPayloadBlocked;
+  const payloadAccessibilityValue = `${pairingPayload.length}/${MAX_PAIRING_PAYLOAD_LENGTH} 个字符`;
+  const baseUrlAccessibilityValue = `${baseUrl.length}/${MAX_BASE_URL_LENGTH} 个字符`;
+  const pairCodeAccessibilityValue = `${normalizedPairCode.length}/${MAX_PAIRING_CODE_LENGTH} 位`;
   const primaryButtonLabel = pairingButtonLabel({
     isBusy,
     hasSubmitInput,
@@ -92,17 +109,28 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       setPairingPayload("");
       setDetectedPayload(null);
       onPaired(session);
-    } catch (currentError) {
-      setFailure(pairingFailureNotice(currentError, session.baseUrlSecurity));
+    } catch {
+      setFailure(pairedSessionStorageFailureNotice());
     } finally {
       setIsBusy(false);
     }
   };
 
   const handlePayloadChange = (value: string) => {
-    setPairingPayload(value);
+    const protectedInput = protectPairingPayloadInput(value);
+    const nextValue = protectedInput.value;
+    setPairingPayload(nextValue);
     setFailure(null);
-    if (!value.trim()) {
+    if (protectedInput.wasTruncated) {
+      setDetectedPayload(null);
+      if (!showManualEntry) {
+        setBaseUrl("");
+        setPairCode("");
+      }
+      setFailure(pairingInputTooLongNotice("payload"));
+      return;
+    }
+    if (!nextValue.trim()) {
       setDetectedPayload(null);
       if (!showManualEntry) {
         setBaseUrl("");
@@ -111,7 +139,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       return;
     }
     try {
-      const payload = parsePairingPayload(value);
+      const payload = parsePairingPayload(nextValue);
       applyPayload(payload);
     } catch {
       setDetectedPayload(null);
@@ -134,6 +162,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   };
 
   const openScanner = async () => {
+    if (isBusy || isCameraPermissionBusy) return;
     setFailure(null);
     updateScanLocked(false);
     if (cameraPermission?.granted) {
@@ -171,93 +200,148 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const handleBarcodeScanned = (result: BarcodeScanningResult) => {
     if (scanLockedRef.current) return;
     updateScanLocked(true);
+    const protectedInput = protectPairingPayloadInput(result.data);
+    if (protectedInput.wasTruncated) {
+      setShowManualEntry(false);
+      setPairingPayload("");
+      setDetectedPayload(null);
+      setBaseUrl("");
+      setPairCode("");
+      closeScanner(pairingInputTooLongNotice("scan"));
+      return;
+    }
     try {
-      const payload = parsePairingPayload(result.data);
-      setPairingPayload(result.data);
+      const payload = parsePairingPayload(protectedInput.value);
+      setPairingPayload(protectedInput.value);
       applyPayload(payload);
+      setShowManualEntry(false);
       setFailure(null);
-      setIsScanning(false);
+      closeScanner();
     } catch (currentError) {
-      setFailure(pairingFailureNotice(currentError, undefined, "scan"));
-      setIsScanning(false);
+      setPairingPayload("");
+      setDetectedPayload(null);
+      if (!showManualEntry) {
+        setBaseUrl("");
+        setPairCode("");
+      }
+      closeScanner(pairingFailureNotice(currentError, undefined, "scan"));
     }
   };
 
-  const handlePair = async () => {
-    setFailure(null);
+  const handleManualBaseUrlChange = (value: string) => {
+    const protectedInput = protectBaseUrlInput(value);
+    setBaseUrl(protectedInput.value);
+    setDetectedPayload(null);
+    setPairingPayload("");
+    setFailure(protectedInput.notice);
+  };
 
-    let nextBaseUrl = baseUrl;
-    let nextPairCode = pairCode;
-    let nextPayload = activeDetectedPayload;
-    if (!showManualEntry && pairingPayload.trim()) {
+  const handleManualPairCodeChange = (value: string) => {
+    setPairCode(normalizePairingCodeInput(value));
+    setFailure(null);
+  };
+
+  const handleManualToggle = () => {
+    setFailure(null);
+    setShowManualEntry((current) => !current);
+  };
+
+  const handlePair = async () => {
+    if (isBusy || pairRequestLockedRef.current) return;
+    pairRequestLockedRef.current = true;
+    setIsBusy(true);
+    try {
+      setFailure(null);
+
+      let nextBaseUrl = baseUrl;
+      let nextPairCode = pairCode;
+      let nextPayload = activeDetectedPayload;
+      if (!showManualEntry && pairingPayload.trim()) {
+        try {
+          const protectedInput = protectPairingPayloadInput(pairingPayload);
+          if (protectedInput.wasTruncated) {
+            setPairingPayload(protectedInput.value);
+            setDetectedPayload(null);
+            setBaseUrl("");
+            setPairCode("");
+            setFailure(pairingInputTooLongNotice("payload"));
+            return;
+          }
+          const payload = parsePairingPayload(protectedInput.value);
+          setPairingPayload(protectedInput.value);
+          applyPayload(payload);
+          nextBaseUrl = payload.baseUrl;
+          nextPairCode = payload.code;
+          nextPayload = payload;
+        } catch (currentError) {
+          setFailure(pairingFailureNotice(currentError));
+          return;
+        }
+      }
+
+      const nextPayloadSecurity = nextPayload ? classifyPairingPayloadSecurity(nextPayload) : null;
+      if (nextPayloadSecurity && !nextPayloadSecurity.canPair) {
+        setFailure(blockedPairingPayloadFailureNotice(nextPayloadSecurity.status));
+        return;
+      }
+
+      const code = normalizePairingCodeInput(nextPairCode);
+      if (code.length !== MAX_PAIRING_CODE_LENGTH) {
+        setFailure({
+          title: "配对码不可用",
+          detail: "手机没有识别到电脑端生成的 6 位配对码。",
+          action: "请粘贴电脑端最新的配对信息；手动输入只作为备用方式。",
+        });
+        return;
+      }
+      if (!nextBaseUrl.trim()) {
+        setFailure({
+          title: "缺少电脑地址",
+          detail: "手机还不知道要连接哪台电脑。",
+          action: "请粘贴电脑端生成的配对信息；手动输入只作为备用方式。",
+        });
+        return;
+      }
+
+      let baseUrlSecurity: BaseUrlSecurity;
       try {
-        const payload = parsePairingPayload(pairingPayload);
-        applyPayload(payload);
-        nextBaseUrl = payload.baseUrl;
-        nextPairCode = payload.code;
-        nextPayload = payload;
+        baseUrlSecurity = describeBaseUrlSecurity(nextBaseUrl, nextPayload?.security);
       } catch (currentError) {
         setFailure(pairingFailureNotice(currentError));
         return;
       }
-    }
-
-    const code = normalizePairingCodeInput(nextPairCode);
-    if (code.length !== 6) {
-      setFailure({
-        title: "配对码不可用",
-        detail: "手机没有识别到电脑端生成的 6 位配对码。",
-        action: "请粘贴电脑端最新的配对信息；手动输入只作为备用方式。",
-      });
-      return;
-    }
-    if (!nextBaseUrl.trim()) {
-      setFailure({
-        title: "缺少电脑地址",
-        detail: "手机还不知道要连接哪台电脑。",
-        action: "请粘贴电脑端生成的配对信息；手动输入只作为备用方式。",
-      });
-      return;
-    }
-
-    let baseUrlSecurity: BaseUrlSecurity;
-    try {
-      baseUrlSecurity = describeBaseUrlSecurity(nextBaseUrl, nextPayload?.security);
-    } catch (currentError) {
-      setFailure(pairingFailureNotice(currentError));
-      return;
-    }
-    if (baseUrlSecurity.isLoopback) {
-      setFailure({
-        title: "这个地址不是电脑",
-        detail: "这个地址会指向手机自己，所以手机找不到你的电脑。",
-        action: "请使用电脑端 Lengrvis 生成的配对信息重新连接。",
-      });
-      return;
-    }
-    if (baseUrlSecurity.isInsecureLan) {
-      setFailure({
-        title: "需要安全连接",
-        detail: "为了保护手机配对和远程操作，这个普通网络地址不能直接连接。",
-        action: "请在电脑端开启安全连接后，重新生成配对信息。",
-      });
-      return;
-    }
-
-    setIsBusy(true);
-    try {
-      const nextSession = await pairWithBackend(baseUrlSecurity.normalizedBaseUrl, code, Device.deviceName ?? "安卓设备");
-      if (requiresServerTrustConfirmation(nextSession)) {
-        Alert.alert("确认这是你的电脑", serverTrustConfirmationMessage(nextSession), [
-          { text: "取消", style: "cancel" },
-          { text: "确认并保存", onPress: () => void persistPairedSession(nextSession) },
-        ]);
+      if (baseUrlSecurity.isLoopback) {
+        setFailure({
+          title: "这个地址不是电脑",
+          detail: "这个地址会指向手机自己，所以手机找不到你的电脑。",
+          action: "请使用电脑端 Lengrvis 生成的配对信息重新连接。",
+        });
         return;
       }
-      await persistPairedSession(nextSession);
-    } catch (currentError) {
-      setFailure(pairingFailureNotice(currentError, baseUrlSecurity));
+      if (baseUrlSecurity.isInsecureLan) {
+        setFailure({
+          title: "需要安全连接",
+          detail: "为了保护手机配对和远程操作，这个普通网络地址不能直接连接。",
+          action: "请在电脑端开启安全连接后，重新生成配对信息。",
+        });
+        return;
+      }
+
+      try {
+        const nextSession = await pairWithBackend(baseUrlSecurity.normalizedBaseUrl, code, safeDeviceName(Device.deviceName));
+        if (requiresServerTrustConfirmation(nextSession)) {
+          Alert.alert("确认这是你的电脑", serverTrustConfirmationMessage(nextSession), [
+            { text: "取消", style: "cancel" },
+            { text: "确认并保存", onPress: () => void persistPairedSession(nextSession) },
+          ], { cancelable: true });
+          return;
+        }
+        await persistPairedSession(nextSession);
+      } catch (currentError) {
+        setFailure(pairingFailureNotice(currentError, baseUrlSecurity));
+      }
     } finally {
+      pairRequestLockedRef.current = false;
       setIsBusy(false);
     }
   };
@@ -265,9 +349,13 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   return (
     <SafeAreaView style={styles.safeArea} testID="pair-screen">
       <StatusBar barStyle="dark-content" backgroundColor="#f7f9fb" />
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.screen}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <View style={styles.pairIcon}>
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.screen}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View accessibilityElementsHidden importantForAccessibility="no" style={styles.pairIcon}>
             <Smartphone size={34} color="#17323a" />
           </View>
           <Text style={styles.title}>连接 Lengrvis</Text>
@@ -276,7 +364,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
           <View style={styles.form}>
             <View style={styles.payloadPanel}>
               <View style={styles.payloadHeader}>
-                <View style={styles.payloadIcon}>
+                <View accessibilityElementsHidden importantForAccessibility="no" style={styles.payloadIcon}>
                   <QrCode size={22} color="#0e5f76" />
                 </View>
                 <View style={styles.payloadCopy}>
@@ -291,6 +379,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                   accessibilityRole="button"
                   accessibilityState={{ busy: isCameraPermissionBusy, disabled: isCameraPermissionBusy }}
                   disabled={isCameraPermissionBusy}
+                  hitSlop={10}
                   onPress={() => void openScanner()}
                   style={({ pressed }) => [styles.scanButton, pressed && styles.pressed, isCameraPermissionBusy && styles.scanButtonDisabled]}
                   testID="pair-open-scanner-button"
@@ -303,14 +392,20 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               <TextInput
                 accessibilityHint="粘贴电脑端显示的二维码文本，手机会自动识别地址和配对码"
                 accessibilityLabel="二维码内容或配对信息"
+                accessibilityValue={{ text: payloadAccessibilityValue }}
                 autoCapitalize="none"
+                autoComplete="off"
                 autoCorrect={false}
+                importantForAutofill="no"
+                maxLength={MAX_PAIRING_PAYLOAD_LENGTH}
                 multiline
                 onChangeText={handlePayloadChange}
                 placeholder="粘贴电脑端二维码内容或配对信息"
+                spellCheck={false}
                 style={[styles.input, styles.payloadInput]}
                 testID="pair-payload-input"
                 textAlignVertical="top"
+                textContentType="none"
                 value={pairingPayload}
               />
               {detectedPayload && detectedPayloadSecurity ? <PairingPayloadStatus payload={detectedPayload} state={detectedPayloadSecurity} /> : null}
@@ -321,7 +416,8 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               accessibilityLabel="手动输入配对信息"
               accessibilityRole="button"
               accessibilityState={{ expanded: showManualEntry }}
-              onPress={() => setShowManualEntry((current) => !current)}
+              hitSlop={10}
+              onPress={handleManualToggle}
               style={styles.manualToggle}
               testID="pair-manual-toggle"
             >
@@ -334,45 +430,53 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                 <TextInput
                   accessibilityHint="输入电脑端 Lengrvis 显示的地址"
                   accessibilityLabel="电脑地址"
+                  accessibilityValue={{ text: baseUrlAccessibilityValue }}
                   autoCapitalize="none"
+                  autoComplete="off"
                   autoCorrect={false}
+                  importantForAutofill="no"
                   inputMode="url"
-                  onChangeText={(value) => {
-                    setBaseUrl(value);
-                    setDetectedPayload(null);
-                    setPairingPayload("");
-                    setFailure(null);
-                  }}
+                  maxLength={MAX_BASE_URL_LENGTH}
+                  onChangeText={handleManualBaseUrlChange}
                   placeholder="电脑端显示的地址"
+                  spellCheck={false}
                   style={styles.input}
                   testID="pair-base-url-input"
+                  textContentType="none"
                   value={baseUrl}
                 />
-                {securityHint ? (
+                {manualBaseUrlNotice ? (
                   <View
+                    accessibilityLabel={`${manualBaseUrlNotice.title}。${manualBaseUrlNotice.detail}`}
+                    accessibilityLiveRegion="polite"
+                    accessibilityRole={manualBaseUrlNotice.tone === "danger" ? "alert" : undefined}
                     style={[
                       styles.securityNotice,
-                      securityHint.tone === "safe" && styles.securityNoticeSafe,
-                      securityHint.tone === "danger" && styles.securityNoticeDanger,
+                      manualBaseUrlNotice.tone === "safe" && styles.securityNoticeSafe,
+                      manualBaseUrlNotice.tone === "danger" && styles.securityNoticeDanger,
                     ]}
                   >
-                    <Text style={styles.securityNoticeTitle}>{securityHint.title}</Text>
-                    <Text style={styles.securityNoticeText}>{securityHint.detail}</Text>
+                    <Text style={styles.securityNoticeTitle}>{manualBaseUrlNotice.title}</Text>
+                    <Text style={styles.securityNoticeText}>{manualBaseUrlNotice.detail}</Text>
                   </View>
                 ) : null}
                 <Text style={styles.label}>配对码</Text>
                 <TextInput
                   accessibilityHint="输入电脑端显示的 6 位字母或数字"
                   accessibilityLabel="配对码"
+                  accessibilityValue={{ text: pairCodeAccessibilityValue }}
                   autoCapitalize="none"
+                  autoComplete="off"
                   autoCorrect={false}
-                  onChangeText={(value) => {
-                    setPairCode(normalizePairingCodeInput(value));
-                    setFailure(null);
-                  }}
+                  importantForAutofill="no"
+                  inputMode="text"
+                  maxLength={MAX_PAIRING_CODE_RAW_INPUT_LENGTH}
+                  onChangeText={handleManualPairCodeChange}
                   placeholder="6 位字母或数字"
+                  spellCheck={false}
                   style={[styles.input, styles.codeInput]}
                   testID="pair-code-input"
+                  textContentType="none"
                   value={pairCode}
                 />
               </View>
@@ -386,6 +490,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
               accessibilityRole="button"
               accessibilityState={{ disabled: !canSubmit, busy: isBusy }}
               disabled={!canSubmit}
+              hitSlop={10}
               onPress={() => void handlePair()}
               style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, !canSubmit && styles.disabledButton]}
               testID="pair-submit-button"
@@ -417,12 +522,15 @@ function PairingScanner({
       <SafeAreaView accessibilityLabel="扫码配对" accessibilityViewIsModal style={styles.scannerScreen} testID="pairing-scanner-screen">
         <StatusBar barStyle="light-content" backgroundColor="#101820" />
         <View style={styles.scannerHeader}>
-          <QrCode size={22} color="#ffffff" />
+          <View accessibilityElementsHidden importantForAccessibility="no">
+            <QrCode size={22} color="#ffffff" />
+          </View>
           <Text style={styles.scannerTitle}>扫描配对二维码</Text>
           <Pressable
             accessibilityHint="返回配对输入页面"
             accessibilityLabel="关闭扫码"
             accessibilityRole="button"
+            hitSlop={10}
             onPress={() => onClose()}
             style={({ pressed }) => [styles.scannerCloseButton, pressed && styles.pressed]}
             testID="pairing-scanner-close-button"
@@ -433,6 +541,7 @@ function PairingScanner({
         <CameraView
           accessibilityHint="只识别二维码，识别后会自动关闭相机"
           accessibilityLabel="二维码扫码取景框"
+          accessibilityRole="image"
           barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
           facing="back"
           onMountError={() => onClose(cameraUnavailableFailureNotice())}
@@ -452,7 +561,13 @@ function PairingScanner({
 
 function PairingFailure({ notice }: { notice: PairingFailureNotice }) {
   return (
-    <View accessibilityLiveRegion="assertive" accessibilityRole="alert" style={styles.failureNotice} testID="pair-failure-notice">
+    <View
+      accessibilityLabel={`${notice.title}。${notice.detail}。${notice.action}`}
+      accessibilityLiveRegion="assertive"
+      accessibilityRole="alert"
+      style={styles.failureNotice}
+      testID="pair-failure-notice"
+    >
       <Text style={styles.failureTitle}>{notice.title}</Text>
       <Text style={styles.failureText}>{notice.detail}</Text>
       {notice.checks?.map((check) => (
@@ -472,7 +587,9 @@ function PairingPayloadStatus({ payload, state }: { payload: PairingPayload; sta
   const isWarning = notice.tone === "warning";
   return (
     <View
+      accessibilityLabel={`${notice.title}。${notice.detail}`}
       accessibilityLiveRegion="polite"
+      accessibilityRole={isDanger ? "alert" : undefined}
       style={[styles.detectedNotice, isWarning && styles.detectedNoticeWarning, isDanger && styles.detectedNoticeDanger]}
       testID="pair-payload-status"
     >
@@ -626,8 +743,118 @@ function blockedPairingButtonLabel(status: PairingPayloadSecurityState["status"]
   return "检查配对信息";
 }
 
+function blockedPairingPayloadFailureNotice(status: PairingPayloadSecurityState["status"]): PairingFailureNotice {
+  if (status === "requires_https_wss") {
+    return {
+      title: "需要安全连接",
+      detail: "手机识别到这份配对信息没有使用安全连接，因此不会发送配对请求。",
+      action: "请在电脑端开启安全连接后，重新生成配对信息。",
+    };
+  }
+  if (status === "loopback") {
+    return {
+      title: "这个地址不是电脑",
+      detail: "这份配对信息里的地址会指向手机自己，所以手机不会继续连接。",
+      action: "请使用电脑端 Lengrvis 生成的配对信息重新连接。",
+    };
+  }
+  if (status === "expired") {
+    return {
+      title: "配对码已过期",
+      detail: "这份配对信息已经过期，手机不会把旧配对码发给电脑端。",
+      action: "请回到电脑端重新生成配对信息，再扫码或粘贴。",
+    };
+  }
+  return {
+    title: "配对信息不可用",
+    detail: "手机识别到这份配对信息不完整或地址不可用，因此不会发送请求。",
+    action: "请粘贴电脑端刚生成的完整配对信息。",
+  };
+}
+
+function protectPairingPayloadInput(value: string): ProtectedPairingPayloadInput {
+  const withoutUnsafeCharacters = value.replace(/[\u0000-\u001f\u007f]+/g, " ");
+  return {
+    value: withoutUnsafeCharacters.slice(0, MAX_PAIRING_PAYLOAD_LENGTH),
+    wasTruncated: withoutUnsafeCharacters.length > MAX_PAIRING_PAYLOAD_LENGTH,
+  };
+}
+
+function protectBaseUrlInput(value: string): { value: string; notice: PairingFailureNotice | null } {
+  const withoutUnsafeCharacters = value.replace(/[\u0000-\u001f\u007f\s]+/g, "");
+  const nextValue = withoutUnsafeCharacters.slice(0, MAX_BASE_URL_LENGTH);
+  if (nextValue === value) return { value: nextValue, notice: null };
+  return {
+    value: nextValue,
+    notice: withoutUnsafeCharacters.length > MAX_BASE_URL_LENGTH ? pairingInputTooLongNotice("baseUrl") : baseUrlInputCleanedNotice(),
+  };
+}
+
 function normalizePairingCodeInput(value: string): string {
-  return value.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return value.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, MAX_PAIRING_CODE_LENGTH);
+}
+
+function isPairingBaseUrlInputReady(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  try {
+    const withProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+    const parsed = new URL(withProtocol);
+    return Boolean(parsed.hostname && (parsed.protocol === "http:" || parsed.protocol === "https:"));
+  } catch {
+    return false;
+  }
+}
+
+function safeDeviceName(value: string | null): string {
+  const normalized = value?.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_DEVICE_NAME_LENGTH);
+  return normalized || "安卓设备";
+}
+
+function invalidBaseUrlFormatNotice(): SecurityNotice {
+  return {
+    tone: "danger",
+    title: "电脑地址格式错误",
+    detail: "请输入电脑端显示的地址；地址必须是 http 或 https，不能包含空格或换行。",
+  };
+}
+
+function baseUrlInputCleanedNotice(): PairingFailureNotice {
+  return {
+    title: "已整理电脑地址",
+    detail: "电脑地址不能包含空格或换行，手机已自动移除这些字符。",
+    action: "请确认地址仍和电脑端显示的一致，然后继续输入配对码。",
+  };
+}
+
+function pairingInputTooLongNotice(kind: "payload" | "baseUrl" | "scan"): PairingFailureNotice {
+  if (kind === "payload") {
+    return {
+      title: "配对信息太长",
+      detail: "这段内容超过了手机允许识别的长度，因此没有继续解析。",
+      action: "请只粘贴电脑端刚生成的二维码内容，或改用手动输入。",
+    };
+  }
+  if (kind === "scan") {
+    return {
+      title: "二维码内容太长",
+      detail: "手机扫到的内容不像 Lengrvis 配对信息，因此没有继续处理。",
+      action: "请对准电脑端 Lengrvis 配对页的二维码；如果仍失败，请复制二维码内容后粘贴。",
+    };
+  }
+  return {
+    title: "电脑地址太长",
+    detail: "手机已经停止接收超出长度限制的地址内容。",
+    action: "请只输入电脑端显示的地址，不要粘贴额外说明。",
+  };
+}
+
+function pairedSessionStorageFailureNotice(): PairingFailureNotice {
+  return {
+    title: "无法保存配对",
+    detail: "手机已收到配对结果，但没有把会话安全保存下来。",
+    action: "请确认系统安全存储可用，然后重新配对。",
+  };
 }
 
 function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source: PairingFailureSource = "input"): PairingFailureNotice {
@@ -779,9 +1006,10 @@ const styles = StyleSheet.create({
   },
   content: {
     flexGrow: 1,
-    justifyContent: "center",
+    justifyContent: "flex-start",
     padding: 24,
-    paddingBottom: 34,
+    paddingTop: Platform.select({ android: 28, default: 34 }),
+    paddingBottom: Platform.select({ android: 96, default: 34 }),
   },
   pairIcon: {
     width: 68,
@@ -849,7 +1077,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   scanButton: {
-    minHeight: 38,
+    minHeight: 48,
     maxWidth: "100%",
     borderRadius: 8,
     borderWidth: 1,
@@ -897,8 +1125,8 @@ const styles = StyleSheet.create({
     fontWeight: "900",
   },
   scannerCloseButton: {
-    width: 42,
-    height: 42,
+    width: 48,
+    height: 48,
     borderRadius: 8,
     backgroundColor: "rgba(255,255,255,0.14)",
     alignItems: "center",
@@ -984,7 +1212,7 @@ const styles = StyleSheet.create({
   },
   manualToggle: {
     alignSelf: "flex-start",
-    minHeight: 36,
+    minHeight: 48,
     justifyContent: "center",
   },
   manualToggleText: {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import os
 import subprocess
@@ -59,6 +60,8 @@ def test_pair_request_generates_code(monkeypatch, tmp_path):
     assert payload["server"]["scheme"] == "https"
     assert payload["server"]["transport_security"]["status"] == "https_ready"
     assert payload["server"]["transport_security"]["tls_ready"] is True
+    assert "token" not in payload
+    assert "token_type" not in payload
 
 
 def test_pair_request_blocks_default_http_lan_pairing(monkeypatch, tmp_path):
@@ -946,6 +949,7 @@ def test_pair_code_includes_remote_view_scope_only_when_remote_desktop_enabled(m
     claims = decode_mobile_token(token)
 
     assert set(claims["scope"].split()) == {"mobile:approval", "remote:view"}
+    assert REMOTE_INPUT_SCOPE not in claims["scope"].split()
 
 
 def test_mobile_token_survives_backend_process_restart(tmp_path):
@@ -1256,14 +1260,30 @@ def test_paired_mobile_can_read_but_not_decide_grant_bound_remote_input(monkeypa
         f"/api/mobile/approvals/{approval.id}",
         headers={"Authorization": f"Bearer {paired_token}"},
     )
-    paired_decision_response = client.post(
+    paired_approve_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {paired_token}"},
+        json={"decision": "approved"},
+    )
+    paired_reject_response = client.post(
         f"/api/mobile/approvals/{approval.id}/decision",
         headers={"Authorization": f"Bearer {paired_token}"},
         json={"decision": "denied"},
     )
+    approval_for_grant = Approval(
+        task_id="task_mobile_remote_input_grant_decidable",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve grant-token remote input",
+        source_device_id=device_id,
+        source_grant_id=grant["grant_id"],
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval_for_grant)
     grant_token = _claim_remote_input_token(client, paired_token, grant)
     grant_decision_response = client.post(
-        f"/api/mobile/approvals/{approval.id}/decision",
+        f"/api/mobile/approvals/{approval_for_grant.id}/decision",
         headers={"Authorization": f"Bearer {grant_token}"},
         json={"decision": "denied"},
     )
@@ -1271,10 +1291,65 @@ def test_paired_mobile_can_read_but_not_decide_grant_bound_remote_input(monkeypa
     assert pending_response.status_code == 200
     assert [item["id"] for item in pending_response.json()] == [approval.id]
     assert detail_response.status_code == 200
-    assert detail_response.json()["approval"]["source_grant_id"] == grant["grant_id"]
-    assert paired_decision_response.status_code == 403
+    detail_approval = detail_response.json()["approval"]
+    detail_binding = detail_approval["remote_input_binding"]
+    assert detail_binding["device_bound"] is True
+    assert detail_binding["grant_bound"] is True
+    assert detail_binding["requires_remote_input_scope"] is True
+    assert detail_binding["matches_current_device"] is True
+    assert detail_binding["binding_ref"].startswith("[remote-input-binding:")
+    assert grant["grant_id"] not in detail_binding["binding_ref"]
+    legacy_binding_ref = f"[remote-input-binding:{hashlib.sha256(grant['grant_id'].encode('utf-8')).hexdigest()[:16]}]"
+    assert detail_binding["binding_ref"] != legacy_binding_ref
+    assert "source_device_id" not in detail_approval
+    assert "source_grant_id" not in detail_approval
+    assert "allowed_device_ids" not in detail_approval
+    mobile_payload_text = json.dumps(
+        {"pending": pending_response.json(), "detail": detail_response.json()},
+        ensure_ascii=False,
+    )
+    assert device_id not in mobile_payload_text
+    assert grant["grant_id"] not in mobile_payload_text
+    assert paired_approve_response.status_code == 403
+    assert paired_reject_response.status_code == 200
+    assert paired_reject_response.json()["status"] == "rejected"
     assert grant_decision_response.status_code == 200
     assert grant_decision_response.json()["status"] == "rejected"
+
+
+def test_active_remote_input_grant_does_not_pollute_regular_mobile_approval(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    approval = Approval(
+        task_id="task_regular_mobile_approval_with_remote_grant",
+        step_id="step_1",
+        message="Approve regular mobile flow with active remote grant",
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[TOKEN_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    pending_response = client.get(
+        "/api/mobile/approvals/pending",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+    decision_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {paired_token}"},
+        json={"decision": "denied"},
+    )
+
+    assert pending_response.status_code == 200
+    assert [item["id"] for item in pending_response.json()] == [approval.id]
+    assert "remote_input_binding" not in pending_response.json()[0]
+    assert grant["grant_id"] not in json.dumps(pending_response.json(), ensure_ascii=False)
+    assert decision_response.status_code == 200
+    assert decision_response.json()["status"] == "rejected"
 
 
 def test_remote_input_scope_can_decide_remote_input(monkeypatch, tmp_path):
@@ -1306,6 +1381,48 @@ def test_remote_input_scope_can_decide_remote_input(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json()["status"] == "rejected"
+
+
+def test_remote_input_binding_state_uses_audit_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    approval = Approval(
+        task_id="task_mobile_remote_input_audit_fallback",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input with audit fallback binding",
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+    db.insert_audit_event(
+        {
+            "task_id": approval.task_id,
+            "event_type": "remote.input.approval_requested",
+            "actor": "RemoteDesktop",
+            "payload": {"approval_id": approval.id, "device_id": device_id, "grant_id": grant["grant_id"]},
+        }
+    )
+
+    detail_response = client.get(
+        f"/api/mobile/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+
+    assert detail_response.status_code == 200
+    detail_approval = detail_response.json()["approval"]
+    binding = detail_approval["remote_input_binding"]
+    assert binding["device_bound"] is True
+    assert binding["grant_bound"] is True
+    assert binding["matches_current_device"] is True
+    assert binding["binding_ref"].startswith("[remote-input-binding:")
+    assert grant["grant_id"] not in binding["binding_ref"]
+    assert device_id not in json.dumps(detail_response.json(), ensure_ascii=False)
+    assert grant["grant_id"] not in json.dumps(detail_response.json(), ensure_ascii=False)
 
 
 def test_remote_input_grant_cannot_decide_approval_from_other_grant(monkeypatch, tmp_path):
@@ -1530,6 +1647,8 @@ def test_desktop_can_issue_short_lived_remote_input_grant_for_paired_device(monk
     assert "token" not in payload
     assert "token_type" not in payload
     assert payload["expires_in"] <= mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS
+    assert payload["device"]["remote_input_grants"][0]["id"] == payload["grant_id"]
+    assert all(grant["scope"] == REMOTE_INPUT_SCOPE for grant in payload["device"]["remote_input_grants"])
     assert all(grant["status"] == "active" for grant in payload["device"]["remote_input_grants"])
     assert all("token" not in grant for grant in payload["device"]["remote_input_grants"])
 
@@ -1763,6 +1882,30 @@ def test_mobile_websocket_receives_remote_input_grant_without_token(monkeypatch,
     assert "token" not in event["grant"]
 
 
+def test_mobile_websocket_connected_snapshot_includes_active_remote_input_grant(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{paired_token}"],
+    ) as websocket:
+        connected = websocket.receive_json()
+
+    connected_text = json.dumps(connected, ensure_ascii=False)
+    assert connected["type"] == "connected"
+    assert connected["remote_input_grants"][0]["id"] == grant["grant_id"]
+    assert connected["remote_input_grants"][0]["status"] == "active"
+    assert connected["remote_input_grants"][0]["binding_ref"].startswith("[remote-input-binding:")
+    assert "token" not in grant
+    assert "token" not in connected_text
+
+
 def test_mobile_websocket_receives_remote_input_grant_revoked_without_token(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -1895,7 +2038,11 @@ def test_mobile_device_can_claim_remote_input_grant_token(monkeypatch, tmp_path)
     claims = decode_mobile_token(payload["token"], allowed_scopes={REMOTE_INPUT_SCOPE})
     assert claims["device_id"] == device_id
     assert claims["grant_id"] == grant["grant_id"]
+    assert set(claims["scope"].split()) == {REMOTE_INPUT_SCOPE}
+    assert claims["source"] == "remote_input_grant"
     assert payload["expires_in"] <= mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS
+    assert "token" not in payload["grant"]
+    assert "token_type" not in payload["grant"]
 
 
 def test_mobile_device_can_revoke_own_remote_input_grant(monkeypatch, tmp_path):
@@ -2048,6 +2195,41 @@ def test_remote_input_grant_token_cannot_use_general_mobile_resources_even_with_
     assert claim_response.status_code == 403
     assert revoke_response.status_code == 403
     assert db.fetch_one("mobile_devices", device_id)["status"] == "active"
+
+
+def test_over_scoped_remote_input_grant_token_cannot_decide_ordinary_approval(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    token = issue_mobile_token(
+        device_id=device_id,
+        device_name="Test Phone",
+        scope=[TOKEN_SCOPE, REMOTE_INPUT_SCOPE],
+        source="remote_input_grant",
+        grant_id=grant["grant_id"],
+    )
+    approval = Approval(
+        task_id="task_over_scoped_remote_input_grant_ordinary",
+        step_id="step_1",
+        approval_type="tool_call",
+        message="Ordinary approval must not accept a remote-input grant token",
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[TOKEN_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"decision": "denied"},
+    )
+
+    assert response.status_code == 403
+    assert db.fetch_one("approvals", approval.id)["status"] == "pending"
 
 
 def test_mobile_approval_payload_redacts_sensitive_preview(monkeypatch, tmp_path):
@@ -2756,6 +2938,63 @@ def test_mobile_approval_websocket_redacts_created_event(monkeypatch, tmp_path):
         "field_count": 2,
     }
     assert "keys" not in event["approval"]["model_action"]["args"]
+
+
+@pytest.mark.parametrize(
+    ("websocket_path", "event_type"),
+    [
+        ("/ws/mobile/approvals", "approval_created"),
+        ("/api/ws/mobile/approvals", "approval_created"),
+    ],
+)
+def test_mobile_approval_websocket_hides_remote_input_binding_ids(monkeypatch, tmp_path, websocket_path, event_type):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    token = _paired_token(client)
+    device_id = decode_mobile_token(token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+
+    with client.websocket_connect(
+        websocket_path,
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        connected = websocket.receive_json()
+        assert connected["type"] == "connected"
+
+        approval = Approval(
+            task_id="task_ws_remote_input_binding",
+            step_id="step_1",
+            approval_type="remote_input",
+            message="Approve remote input binding without leaking ids",
+            source_device_id=device_id,
+            source_grant_id=grant["grant_id"],
+            allowed_device_ids=[device_id],
+            required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+        )
+        db.upsert_model("approvals", approval)
+        publish_approval_created(approval)
+
+        event = websocket.receive_json()
+
+    assert event["type"] == event_type
+    event_approval = event["approval"]
+    event_binding = event_approval["remote_input_binding"]
+    assert event_binding["device_bound"] is True
+    assert event_binding["grant_bound"] is True
+    assert event_binding["requires_remote_input_scope"] is True
+    assert event_binding["matches_current_device"] is True
+    assert event_binding["binding_ref"].startswith("[remote-input-binding:")
+    assert grant["grant_id"] not in event_binding["binding_ref"]
+    legacy_binding_ref = f"[remote-input-binding:{hashlib.sha256(grant['grant_id'].encode('utf-8')).hexdigest()[:16]}]"
+    assert event_binding["binding_ref"] != legacy_binding_ref
+    assert "source_device_id" not in event_approval
+    assert "source_grant_id" not in event_approval
+    assert "allowed_device_ids" not in event_approval
+    event_text = json.dumps(event, ensure_ascii=False)
+    assert device_id not in event_text
+    assert grant["grant_id"] not in event_text
 
 
 def _paired_token(client: TestClient) -> str:

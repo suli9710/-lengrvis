@@ -221,7 +221,7 @@ npm run smoke:portable-first-screen
 git diff --check
 ```
 
-本轮目标结果包括 desktop/mobile typecheck、desktop first-launch/settings-local-model/system-diagnostics smokes、mobile token/task-companion/remote-input smokes、core backend combo `183 passed`、remote WS `28 passed`、mobile_pairing `88 passed`、Ollama backend tests `52 passed`，以及修复后的 first-launch smoke 通过。`git diff --check` exit 0，只有 LF-to-CRLF working-copy conversion warnings。`mobile_pairing` 全量结果覆盖移动审批脱敏、token scope、设备绑定、LAN TLS metadata 和 companion task 边界；Ollama 结果覆盖后端 status/setup-plan/install/start/pull/install-local-model 契约，但不代表真实机器已经完成本地模型安装、启动或拉取。上述证据还覆盖诊断 payload/export 脱敏、远程屏幕/输入 WebSocket 泛化错误、Vite 预览中的版本与本机刷新 UI、first-screen read-only 模板，以及 packaged portable 的只读诊断/命令 dock 证据；它们不等同于完整 crash/update pipeline、在线自动更新、真机 LAN/WSS 验收、clean-machine RC sign-off、completed task-result sign-off、自然语言结果质量/Task Workspace 签收或外发诊断包人工安全复核。诊断包 helper、pytest、typecheck、UI smoke 和 `git diff --check` 只能证明契约字段、脱敏种子、handoff 模板或格式卫生；外发人工复核仍不是 public-safe/sign-off。
+本轮目标结果包括 desktop/mobile typecheck、desktop mobile-pairing QR 和 remote-input grant smokes、mobile token/task-companion/remote-input smokes、backend mobile+remote targeted combined run `132 passed`，以及当前集成中的 desktop/mobile targeted smokes/typechecks 通过。scheduler/preflight 定向检查只有在附上 exact command/log 时才可引用；不要把未绑定命令的 `9 passed` 作为可复用证据计数。`git diff --check` exit 0，只有 LF-to-CRLF working-copy conversion warnings。backend mobile+remote targeted 结果覆盖移动审批脱敏、token scope、设备绑定、LAN TLS metadata、companion task 边界、远程屏幕/输入 WebSocket 泛化错误、grant revoke/expiry/disable 行为、文字/按键远控输入审批契约；active-grant guard 还需要结合 mobile/desktop remote-input smoke/source contract 来说明 remote-input approval 必须匹配当前手机 active grant。共享证据用 HMAC `binding_ref` 或 redacted active-grant label 说明匹配结果，raw `deviceId`/`grantId` 只保留在本地复现记录。Ollama 结果覆盖后端 status/setup-plan/install/start/pull/install-local-model 契约，但不代表真实机器已经完成本地模型安装、启动或拉取。上述证据还覆盖诊断 payload/export 脱敏、Vite 预览中的版本与本机刷新 UI、first-screen read-only 模板，以及 packaged portable 的只读诊断/命令 dock 证据；它们不等同于完整 crash/update pipeline、在线自动更新、真机 LAN/WSS 验收、clean-machine RC sign-off、completed task-result sign-off、自然语言结果质量/Task Workspace 签收或外发诊断包人工安全复核。诊断包 helper、pytest、typecheck、source/client smoke、UI smoke 和 `git diff --check` 只能证明契约字段、脱敏种子、handoff 模板或格式卫生；外发人工复核仍不是 public-safe/sign-off，source/smoke 证据也不能替代真实设备 LAN/WSS、证书信任路径、弱网/锁屏/后台和截图日志复核证据。
 
 跳过项是当前 Windows shell 没有创建符号链接权限。
 
@@ -242,18 +242,34 @@ npm run qa:gate
 npm run release:check
 ```
 
-证据 helper 新手入口（用于整理证据，不是签收）：
+证据 helper 新手入口（只整理材料，不产生签收）：
 
 ```powershell
 npm run evidence:release # template only; not a pass
-npm run evidence:rc-handoff -- -CandidateCommit "<commit SHA>" -BuildId "<build id>" -ArtifactLabel "<redacted artifact label>" -GateCommand "<exact command>" -GateExit "<exit code/status>" -StrictStateSource "<strict state source>" -ManualP1Check "<check/status/artifact label>" -Waiver "<none or owner/reason/expiry/follow-up>" -ResidualRisk "<risk/owner/follow-up>" # template only; not a pass
+npm run evidence:rc-handoff -- -CandidateCommit "<commit SHA>" -BuildId "<build id>" -Platform "<platform>" -ArtifactLabel "<redacted artifact label>" -GateCommand "<exact command>" -GateExit "<exit code/status>" -StrictStateSource "<strict state source>" -ManualP1Check "<check/status/artifact label>" -Waiver "<none or owner/reason/expiry/follow-up>" -ResidualRisk "<risk/owner/follow-up>" # template only; not a pass
 npm run evidence:result-quality-review -- -TaskArtifactLabel "<task/run/status-log label>" -ResultArtifactLabel "<user-visible result/artifact label>" -UserVisibleResultReview "<review notes>" -SourceArtifactCheck "<source/artifact check>" -NextStepActionabilityCheck "<next-step/actionability check>" -Reviewer "<reviewer label>" -ReviewedAtUtc "<UTC timestamp>" -BlockedReason "none" # template only; not a pass
 npm run evidence:mobile-lan-wss # prerequisite template only; not real-device pass
+npm run android:release-gate -- -PreflightOnly # source/config check only; not APK or real-device pass
+npm run evidence:android-real-device-template -- -ArtifactLabel "<redacted apk label>" -ArtifactSha256 "<sha256 if known>" -DeviceLabel "<redacted device label>" -BackendBuildLabel "<redacted backend/build label>" # template only; not real-device pass
+npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>" # strict gate; requires APK + real-device evidence
 npm run evidence:local-model-template -- -EvidenceMode clean-machine -Runtime "<runtime>" -RuntimeVersion "<version>" -Model "<model>" -ModelVersion "<version>" -BlockedReason "<redacted blocked reason>" # template only; not a pass
 npm run evidence:diagnostics-review # template only; not public-safe/signoff
 ```
 
-这组顶层 npm 命令只是包装现有 helper：`evidence:release` 生成 release evidence packet 索引，`evidence:rc-handoff` 只整理候选 commit/build、artifact label、gate command/exit、strict state source、manual P1、waiver 和 residual risk 的 handoff 模板字段，`evidence:result-quality-review` 只整理自然语言结果质量 review checklist，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态。输出只能作为 evidence/template/preflight 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、result-quality signoff、RC signoff、发布签收或 completed task-result signoff。
+这组顶层 npm 命令只是包装现有 helper：`evidence:release` 生成 release evidence packet 索引，`evidence:rc-handoff` 只整理候选 commit/build、platform、artifact label、gate command/exit、strict state source、manual P1、waiver 和 residual risk 的 handoff 模板字段，`evidence:result-quality-review` 只整理自然语言结果质量 review checklist，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`android:release-gate -PreflightOnly` 只检查 Android source/build 配置，`evidence:android-real-device-template` 只生成 fail-closed 真机证据模板，严格 `android:release-gate` 需要真实 APK 和已复核的手机/模拟器远控证据，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态。输出只能作为 evidence/template/preflight 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、result-quality signoff、RC signoff、发布签收或 completed task-result signoff；即使模板字段都填完，也必须附上完整 gate 日志、人工 P1 证据、waiver/risk 处理记录，并由 release owner 明确人工批准后，才可以进入 RC 或发布签收。
+
+新手只看这张缺口表即可，不需要额外流程：
+
+| 看到的 helper/preflight 输出 | 不能称为 | 下一步真实证据 |
+| --- | --- | --- |
+| `npm run android:release-gate -- -PreflightOnly` | Android release pass、APK install pass、real-device pass | 生成 QA APK，安装到目标 Android/模拟器，附上已复核的 camera QR、HTTPS/WSS、证书信任、远程屏幕/输入、revoke/expiry 和 artifact redaction evidence，再跑严格 `android:release-gate`。 |
+| `npm run evidence:android-real-device-template` | Android real-device pass、remote-control pass | 把它当成 `android-real-device-evidence.redacted.json` 的 fail-closed 起点；template only, not real-device pass；只有真实 APK 安装、真机/模拟器 WSS、证书信任、输入审批和脱敏复核都完成后，才能把对应字段改成 passed/true。 |
+| `npm run evidence:mobile-lan-wss` | real-device LAN/WSS pass | 按 `real-device-evidence-checklist.redacted.md` 在真实手机/模拟器上补 camera QR、approval WSS、remote screen WSS、remote input WSS、设备证书信任和截图/日志复核。 |
+| `npm run evidence:local-model-template` | clean-machine local model pass | 在干净机器或干净 profile 上记录 artifact/build/profile、runtime/model/version、install/start/pull/task-smoke outcome，或记录明确 blocked reason。 |
+| `npm run evidence:diagnostics-review` | `public_safe=true`、可外发诊断包、发布签收 | 对实际导出的诊断包做人工内容复核，记录包路径 label、日志/路径/task/model/device 检查、reviewer、timestamp、decision 和 blocked reason。 |
+| `npm run evidence:rc-handoff` 或 `npm run evidence:release` | RC signoff、release signoff | 命令输出 not a pass/signoff；补齐 candidate commit/build/platform、完整 gate 日志、manual P1、waiver/residual risk 处理，并由 release owner 单独批准。 |
+
+生成 release packet 后，先打开 `.tmp\release-evidence-packet\...\release-evidence-packet.redacted.md` 给新人看缺口，再逐项处理 `release_readiness_blockers`：clean-machine local model、真实设备 LAN/WSS、自然语言结果质量、诊断包实际内容复核和 RC handoff。所有 blocker 都有对应证据并完成 release owner 人审签收前，不要打 tag、发布、公告或对外共享诊断包。
 
 发布候选若需要收集打包 GUI 首屏和只读任务入口证据，再跑 `npm run smoke:portable-first-screen`。最新开发工作区证据目录为 `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259`：只读入口观察到 packaged renderer `/api/system/diagnostics`；自然语言 dock 观察到 `/api/runs` 与后端 read-only/system diagnostics task evidence。该证据只覆盖 packaged command-dock 提交和只读任务证据，不能替代 clean-machine、真实设备、人工 RC sign-off 或 completed task-result sign-off。诊断包外发前的人工内容复核也只是实际包内容检查，不是 `public_safe` 批准、clean-machine/RC sign-off 或发布签收；相关 helper/自动测试只能作为模板或契约证据。移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
 
@@ -306,13 +322,25 @@ npm --prefix desktop run dist:mac:arm64
 
 `dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Lengrvis-0.1.0-arm64.dmg`。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。
 
+Android QA APK 走 Expo/EAS managed 配置，源码预检和严格发布门禁分开跑：
+
+```powershell
+npm run android:release-gate -- -PreflightOnly
+npm --prefix mobile run preflight:android-release
+npm --prefix mobile run build:android:preview
+npm run evidence:android-real-device-template -- -ArtifactLabel "<redacted apk label>" -ArtifactSha256 "<sha256 if known>" -DeviceLabel "<redacted device label>" -BackendBuildLabel "<redacted backend/build label>" # template only; not real-device pass
+npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>"
+```
+
+`npm --prefix mobile run build:android:preview` 和 `build:android:production` 会先跑 `preflight:android-release`，再进入 EAS build。`mobile/eas.json` 的 `preview` profile 产出内部 QA APK；`production` profile 产出商店 AAB，但不会提交或发布到 Play。EAS project/account/credentials 不写入仓库，候选构建日志必须记录 redacted EAS project/build label。严格 gate 默认 fail-closed：没有可安装 APK、没有真实 Android/模拟器 HTTPS/WSS、扫码配对、远程屏幕、click/text/PageDown、revoke/expiry 和脱敏复核证据时，不允许宣称安卓 App 或真机远控通过；即使严格 gate 通过，也只证明该 QA APK 和真机/模拟器证据，不代表 EAS submit、Play Console 审核、灰度或正式上架。
+
 只验证已有发布产物：
 
 ```powershell
 .\scripts\build_all.ps1 -VerifyOnly
 ```
 
-默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。Settings 已提供本地模型健康检查、Ollama 安装/启动/拉取推荐模型的产品入口；Ollama 后端测试当前记录为 `52 passed`，覆盖产品入口和服务契约，但真实安装、启动和模型拉取仍按真实机器环境单独验收。隐私模式不可用时会明确失败，不会静默切到云端。
+默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。Settings 已提供本地模型健康检查、Ollama 安装/启动/拉取推荐模型的产品入口；Ollama 后端测试当前记录为 `53 passed`，覆盖产品入口和服务契约，但真实安装、启动和模型拉取仍按真实机器环境单独验收。隐私模式不可用时会明确失败，不会静默切到云端。
 
 ```powershell
 .\scripts\build_all.ps1
@@ -384,7 +412,7 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 - 任务录屏/截图默认 opt-in，公开 timeline/replay 只提供脱敏摘要；真实 Electron replay UX、手机端任务证据 UX、真实设备录屏/截图证据和外发诊断包安全复核仍需候选版本验证。诊断包外发人工复核仍不是 public-safe/sign-off，不能替代 clean-machine、RC 或发布签收。
 - 硬件加速配置已接入桌面端 Settings：可设置 `onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference`，并通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 做可用性检查。
 - Windows GUI automation is implemented through UIAutomation COM, screenshots, window focus, semantic element lookup, and mouse/keyboard fallback input. Mutating GUI actions still require dry-run + user approval, and policy blocks credential, payment, one-time-code, and token text entry.
-- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的输入。远程 WS 错误对客户端应保持泛化；本轮 `backend\tests\test_remote_desktop.py` 目标重跑为 `28 passed`，覆盖 auth/scope、query-token rejection、remote view/input 交叉 scope rejection、revoke/expiry/disable close behavior、invalid control、screen capture failure、unsupported input、policy/tool rejection 与 remote input unexpected exception redaction，真实手机/WSS 弱网、锁屏、后台、错误态截图和证书信任路径仍需补证据。
+- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的点击、文字和常用按键输入，并支持缩放/平移/横屏查看；批准 remote-input approval 前必须匹配当前手机 active grant，公开给手机和截图材料的是 HMAC 派生的 `binding_ref`/红acted active-grant label，raw `deviceId`/`grantId` 只可留在本地复现记录里；不完整/不匹配授权会被阻断。本轮 backend mobile+remote targeted combined run 为 `132 passed`，覆盖 auth/scope、query-token rejection、remote view/input 交叉 scope rejection、revoke/expiry/disable close behavior、invalid control、screen capture failure、unsupported input、policy/tool rejection、文字/按键输入审批契约、remote input unexpected exception redaction 和移动审批脱敏；active-grant approval guard 另由 mobile/desktop remote-input smoke/source contract 与后端字段断言共同支撑。scheduler/preflight 计数只有在附 exact command/log 时才可引用。这些仍是真实设备前的契约证据，真实手机/WSS 弱网、锁屏、后台、错误态截图、证书信任路径、键盘弹出/横竖屏可用性和 artifact redaction review 仍需补证据。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
 
 ## Phase 5 AI OS Loop

@@ -89,8 +89,11 @@ function loadTaskDisplayModules() {
 function assertNoRawMobileLeak(value, label = "mobile display text") {
   assert.doesNotMatch(value, /secret-token|session-token|Bearer\s+(?!\[已隐藏\])[A-Za-z0-9._~+/=-]+/i, `${label} must not expose tokens or passwords`);
   assert.doesNotMatch(value, /\b(?:token|password|secret|authorization)\b\s*[:=]\s*(?!\[已隐藏\])\S/i, `${label} must not expose secret assignments`);
+  assert.doesNotMatch(value, /\b[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASS|AUTH|CREDENTIAL)[A-Z0-9_]*\b\s*[:=]\s*(?!\[已隐藏\])\S/i, `${label} must not expose env-style secrets`);
+  assert.doesNotMatch(value, /\b(?:sk-[A-Za-z0-9_-]{20,}|github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,})\b/i, `${label} must not expose platform tokens`);
+  assert.doesNotMatch(value, /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i, `${label} must not expose email addresses`);
   assert.doesNotMatch(value, /\b(?:https?|wss?|file):\/\/|(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b|localhost(?::\d+)?/i, `${label} must not expose hosts or protocols`);
-  assert.doesNotMatch(value, /[A-Za-z]:[\\/][^\s]+|\\\\[^\\/\s]+\\[^\s]+|\/(?:Users|home|var|tmp|etc|mnt|Volumes)\b/i, `${label} must not expose raw local paths`);
+  assert.doesNotMatch(value, /[A-Za-z]:[\\/][^\s]+|\\\\[^\\/\s]+\\[^\s]+|\/(?:Users|home|var|tmp|etc|mnt|Volumes)\b|~[\\/][^\s]+/i, `${label} must not expose raw local paths`);
   assert.doesNotMatch(value, /\b(?:args|tool_args|arguments)\s*[:=]\s*(?!\[已隐藏\])\S/i, `${label} must not expose tool args`);
 }
 
@@ -179,11 +182,21 @@ function assertSafeDisplayHelpers(safeDisplay) {
   const preview = safeDisplay.safePreviewText("变更: C:\\Users\\Suli\\Desktop\\private-contract password=hunter2");
   assertNoRawMobileLeak(preview, "safePreviewText");
   assert.match(preview, /已隐藏/);
+
+  const envSecret = safeDisplay.safeDisplayText(
+    "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz reviewer=suli@example.com workspace=~/Desktop/private",
+  );
+  assertNoRawMobileLeak(envSecret, "safeDisplayText env secret");
+  assert.match(envSecret, /已隐藏/);
 }
 
 function assertTaskCompanionSourceSafety() {
   const source = fs.readFileSync(mobilePath("src/screens/ApprovalsScreen.tsx"), "utf8");
   assert.doesNotMatch(source, /D:\/Downloads|任务 Companion|return error\.message/);
+  assert.match(source, /approvalListSafety/);
+  assert.match(source, /ListEmptyComponent/);
+  assert.match(source, /refreshing=\{isRefreshing\}/);
+  assert.match(source, /重新同步/);
   assert.match(source, /taskCredibilityText/);
   assert.match(source, /taskStatusBadgeText/);
   assert.match(source, /taskStatusBadgeIsDone/);

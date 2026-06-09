@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   SafeAreaView,
@@ -11,7 +12,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { ArrowLeft, Check, X } from "lucide-react-native";
+import { ArrowLeft, Check, RefreshCcw, X } from "lucide-react-native";
 
 import {
   AuthExpiredError,
@@ -26,9 +27,12 @@ import {
 import {
   approvalApproveBlockedReason,
   approvalDecisionGuard,
+  remoteInputMobileDecisionBlockedReason,
+  type ApprovalActiveGrantContext,
   type ApprovalDecisionGuardCopy,
 } from "../approvalSafetyDisplay";
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
+import { isRemoteInputGrantUsable } from "../remoteInputGrant";
 import { safeCompactText, safeDisplayText, safePreviewText } from "../safeDisplay";
 
 export function ApprovalDetail({
@@ -50,11 +54,13 @@ export function ApprovalDetail({
   const [isLoading, setIsLoading] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
   const submitLockRef = useRef(false);
 
   useEffect(() => {
     let active = true;
     setIsLoading(true);
+    setDetail((current) => (current?.approval.id === approval.id ? current : null));
     getApprovalDetail(session, approval.id)
       .then((nextDetail) => {
         if (active) {
@@ -76,13 +82,28 @@ export function ApprovalDetail({
     return () => {
       active = false;
     };
-  }, [approval.id, session]);
+  }, [approval.id, onSessionExpired, reloadKey, session]);
+
+  const retryLoadDetail = useCallback(() => {
+    setError("");
+    setReloadKey((current) => current + 1);
+  }, []);
 
   const currentApproval = detail?.approval ?? approval;
   const pending = currentApproval.status === "pending";
   const steps = useMemo(() => detail?.plan?.steps ?? [], [detail?.plan?.steps]);
-  const decisionGuard = useMemo(() => approvalDecisionGuard(currentApproval), [currentApproval]);
-  const approveBlockedReason = useMemo(() => approvalApproveBlockedReason(currentApproval), [currentApproval]);
+  const usableRemoteInputGrant = useMemo(() => isRemoteInputGrantUsable(remoteInputGrant) ? remoteInputGrant : null, [remoteInputGrant]);
+  const activeGrantContext = useMemo<ApprovalActiveGrantContext | null>(
+    () => usableRemoteInputGrant ? { deviceId: session.deviceId, grantId: usableRemoteInputGrant.id, bindingRef: usableRemoteInputGrant.binding_ref } : null,
+    [usableRemoteInputGrant, session.deviceId],
+  );
+  const decisionGuard = useMemo(() => approvalDecisionGuard(currentApproval, activeGrantContext), [activeGrantContext, currentApproval]);
+  const approveBlockedReason = useMemo(() => approvalApproveBlockedReason(currentApproval, activeGrantContext), [activeGrantContext, currentApproval]);
+  const mobileDecisionBlockedReason = useMemo(
+    () => remoteInputMobileDecisionBlockedReason(currentApproval, activeGrantContext),
+    [activeGrantContext, currentApproval],
+  );
+  const canShowDecisionRow = pending && !isLoading && Boolean(detail) && !error;
 
   const handleDecision = async (decision: "approved" | "denied") => {
     if (submitLockRef.current) return;
@@ -96,15 +117,23 @@ export function ApprovalDetail({
         Alert.alert("审批已处理", `此审批当前状态为：${approvalStatusLabel(latest.approval.status)}。`);
         return;
       }
-      const latestApproveBlockedReason = decision === "approved" ? approvalApproveBlockedReason(latest.approval) : null;
+      const latestBlockedReason = approvalApproveBlockedReason(latest.approval, activeGrantContext);
+      const latestMobileDecisionBlockedReason = remoteInputMobileDecisionBlockedReason(latest.approval, activeGrantContext);
+      if (decision === "approved" && latestMobileDecisionBlockedReason) {
+        setDetail(latest);
+        Alert.alert("请回电脑端处理", latestMobileDecisionBlockedReason);
+        return;
+      }
+      const latestApproveBlockedReason = decision === "approved" ? latestBlockedReason : null;
       if (latestApproveBlockedReason) {
         setDetail(latest);
         Alert.alert("手机端不可批准", latestApproveBlockedReason);
         return;
       }
-      const updated = await submitApprovalDecision(session, currentApproval.id, decision, {
-        approvalType: currentApproval.approval_type,
-        remoteInputGrant,
+      const updated = await submitApprovalDecision(session, latest.approval.id, decision, {
+        approval: latest.approval,
+        approvalType: latest.approval.approval_type,
+        remoteInputGrant: usableRemoteInputGrant,
       });
       onUpdated(updated);
       onBack();
@@ -121,6 +150,10 @@ export function ApprovalDetail({
   };
 
   return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={styles.keyboardAvoiding}
+    >
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#f6f4ee" />
       <View style={styles.header}>
@@ -139,12 +172,13 @@ export function ApprovalDetail({
       </View>
 
       {isLoading ? (
-        <View style={styles.loading}>
+        <View accessible accessibilityLabel="正在加载审批详情" style={styles.loading}>
           <ActivityIndicator color="#0e5f76" />
+          <Text style={styles.loadingText}>正在加载审批详情…</Text>
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
-          {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
+          {error ? <ApprovalDetailError error={error} hasCachedDetail={Boolean(detail)} onRetry={retryLoadDetail} /> : null}
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>任务</Text>
@@ -171,9 +205,9 @@ export function ApprovalDetail({
                     <Text style={styles.meta}>
                       {[
                         safeCompactText(step.status, "状态未知"),
-                        step.risk_level ? `risk: ${safeCompactText(step.risk_level, "已隐藏")}` : "",
-                        step.trust_tier ? `trust: ${safeCompactText(step.trust_tier, "已隐藏")}` : "",
-                        step.deferred_tool ? "deferred search" : "",
+                        step.risk_level ? `风险 ${safeCompactText(step.risk_level, "已隐藏")}` : "",
+                        step.trust_tier ? `可信级别 ${safeCompactText(step.trust_tier, "已隐藏")}` : "",
+                        step.deferred_tool ? "需要电脑端继续确认" : "",
                       ].filter(Boolean).join(" · ")}
                     </Text>
                   </View>
@@ -193,44 +227,51 @@ export function ApprovalDetail({
         </ScrollView>
       )}
 
-      {pending ? (
+      {canShowDecisionRow ? (
         <View style={styles.decisionRow}>
           <Pressable
+            accessibilityHint="拒绝后电脑端不会继续执行此审批。"
             accessibilityLabel="拒绝审批"
             accessibilityRole="button"
             accessibilityState={{ disabled: isBusy, busy: isBusy }}
             disabled={isBusy}
             onPress={() => void handleDecision("denied")}
-            style={({ pressed }) => [styles.denyButton, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.denyButton,
+              pressed && styles.pressed,
+            ]}
           >
             <X size={18} color="#8c2f39" />
             <Text style={styles.denyText}>拒绝</Text>
           </Pressable>
           <Pressable
-            accessibilityHint={approveBlockedReason || decisionGuard.nextStep}
-            accessibilityLabel={approveBlockedReason ? "手机端不可批准此审批" : "批准审批"}
+            accessibilityHint={mobileDecisionBlockedReason || approveBlockedReason || decisionGuard.nextStep}
+            accessibilityLabel={mobileDecisionBlockedReason || approveBlockedReason ? "手机端不可批准此审批" : "批准审批"}
             accessibilityRole="button"
-            accessibilityState={{ disabled: isBusy || Boolean(approveBlockedReason), busy: isBusy }}
-            disabled={isBusy || Boolean(approveBlockedReason)}
+            accessibilityState={{ disabled: isBusy || Boolean(mobileDecisionBlockedReason || approveBlockedReason), busy: isBusy }}
+            disabled={isBusy || Boolean(mobileDecisionBlockedReason || approveBlockedReason)}
             onPress={() => void handleDecision("approved")}
             style={({ pressed }) => [
               styles.approveButton,
-              approveBlockedReason && styles.disabledApproveButton,
-              pressed && !approveBlockedReason && styles.pressed,
+              (mobileDecisionBlockedReason || approveBlockedReason) && styles.disabledApproveButton,
+              pressed && !mobileDecisionBlockedReason && !approveBlockedReason && styles.pressed,
             ]}
           >
             {isBusy ? <ActivityIndicator color="#ffffff" /> : <Check size={18} color="#ffffff" />}
-            <Text style={styles.approveText}>{approveBlockedReason ? "不可批准" : "批准"}</Text>
+            <Text style={styles.approveText}>{mobileDecisionBlockedReason || approveBlockedReason ? "不可批准" : "批准"}</Text>
           </Pressable>
         </View>
       ) : null}
     </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
 function ApprovalDecisionGuard({ guard }: { guard: ApprovalDecisionGuardCopy }) {
   return (
     <View
+      accessible
+      accessibilityLabel={`批准前核对：${guard.title}。${guard.detail}。${guard.approveBlockedReason || guard.nextStep}`}
       style={[
         styles.decisionGuard,
         guard.tone === "danger" && styles.decisionGuardDanger,
@@ -245,6 +286,34 @@ function ApprovalDecisionGuard({ guard }: { guard: ApprovalDecisionGuardCopy }) 
   );
 }
 
+function ApprovalDetailError({
+  error,
+  hasCachedDetail,
+  onRetry,
+}: {
+  error: string;
+  hasCachedDetail: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <View accessibilityRole="alert" style={styles.errorPanel}>
+      <Text style={styles.errorBanner}>{error}</Text>
+      {hasCachedDetail ? null : (
+        <Text style={styles.errorHint}>已保留列表里的审批摘要。完整计划和试运行预览需要重新加载。</Text>
+      )}
+      <Pressable
+        accessibilityLabel="重新加载审批详情"
+        accessibilityRole="button"
+        onPress={onRetry}
+        style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+      >
+        <RefreshCcw size={15} color="#23313d" />
+        <Text style={styles.retryText}>重新加载详情</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function ApprovalBoundarySection({ approval }: { approval: BackendApproval }) {
   const boundary = objectValue(approval.engineering_boundary);
   const tool = objectValue(boundary.tool);
@@ -253,7 +322,7 @@ function ApprovalBoundarySection({ approval }: { approval: BackendApproval }) {
   const action = safeCompactText(approval.tool_name || textValue(tool.name) || approval.approval_type, "审批动作");
   const risk = safeCompactText(approval.risk_level || textValue(tool.risk_level), "未提供");
   const trustTier = safeCompactText(approval.tool_trust_tier || textValue(tool.trust_tier), "未提供");
-  const policyMode = safeCompactText(approval.policy_mode || approval.permission_mode || textValue(boundary.policy_mode), "default");
+  const policyMode = safeCompactText(approval.policy_mode || approval.permission_mode || textValue(boundary.policy_mode), "默认");
   const effects = approval.tool_effects?.length ? approval.tool_effects : stringList(tool.effects);
   const resources = approval.resource_kinds?.length ? approval.resource_kinds : stringList(tool.resource_kinds);
   const dryRunSummary = safeDisplayText(approval.dry_run_summary || textValue(dryRun.summary), "暂无安全试运行摘要。");
@@ -265,13 +334,13 @@ function ApprovalBoundarySection({ approval }: { approval: BackendApproval }) {
       <View style={styles.boundaryGrid}>
         <BoundaryFact label="动作" value={action} />
         <BoundaryFact label="风险" value={risk} />
-        <BoundaryFact label="Trust tier" value={trustTier} />
+        <BoundaryFact label="可信级别" value={trustTier} />
         <BoundaryFact label="权限模式" value={policyMode} />
       </View>
-      <ChipRow label="Effects" values={effects} emptyText="未声明 effects" />
+      <ChipRow label="影响类型" values={effects} emptyText="未声明影响类型" />
       <ChipRow label="资源范围" values={resources} emptyText="未声明资源范围" />
       <View style={styles.boundaryBlock}>
-        <Text style={styles.boundaryLabel}>Dry-run</Text>
+        <Text style={styles.boundaryLabel}>安全预览</Text>
         <Text style={styles.boundaryText}>{dryRunSummary}</Text>
       </View>
       <View style={styles.boundaryBlock}>
@@ -335,6 +404,10 @@ function stringList(value: unknown): string[] {
 }
 
 const styles = StyleSheet.create({
+  keyboardAvoiding: {
+    flex: 1,
+    backgroundColor: "#f6f4ee",
+  },
   safeArea: {
     flex: 1,
     backgroundColor: "#f6f4ee",
@@ -377,10 +450,17 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
+    gap: 10,
+    paddingHorizontal: 24,
+  },
+  loadingText: {
+    color: "#46535f",
+    fontWeight: "800",
+    textAlign: "center",
   },
   content: {
     padding: 20,
-    paddingBottom: 120,
+    paddingBottom: Platform.select({ android: 152, default: 128 }),
     gap: 14,
   },
   section: {
@@ -545,6 +625,36 @@ const styles = StyleSheet.create({
     color: "#8c2f39",
     lineHeight: 20,
   },
+  errorPanel: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e1b8be",
+    backgroundColor: "#fff5f6",
+    padding: 12,
+    gap: 9,
+  },
+  errorHint: {
+    color: "#5f4a4f",
+    lineHeight: 20,
+  },
+  retryButton: {
+    alignSelf: "flex-start",
+    minHeight: 36,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#ffffff",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingHorizontal: 12,
+  },
+  retryText: {
+    color: "#23313d",
+    fontSize: 12,
+    fontWeight: "900",
+  },
   decisionRow: {
     position: "absolute",
     left: 0,
@@ -552,7 +662,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: 20,
+    paddingBottom: Platform.select({ android: 32, default: 20 }),
     backgroundColor: "#f6f4ee",
     borderTopWidth: 1,
     borderTopColor: "#d7dedf",
@@ -561,6 +671,7 @@ const styles = StyleSheet.create({
   },
   denyButton: {
     flex: 1,
+    minWidth: 0,
     minHeight: 48,
     borderRadius: 8,
     borderWidth: 1,
@@ -573,6 +684,7 @@ const styles = StyleSheet.create({
   },
   approveButton: {
     flex: 1,
+    minWidth: 0,
     minHeight: 48,
     borderRadius: 8,
     backgroundColor: "#1f7a4d",
@@ -585,13 +697,22 @@ const styles = StyleSheet.create({
     backgroundColor: "#8b969e",
     opacity: 0.72,
   },
+  disabledDenyButton: {
+    borderColor: "#c4cdd2",
+    backgroundColor: "#eef1f2",
+    opacity: 0.72,
+  },
   denyText: {
+    flexShrink: 1,
     color: "#8c2f39",
     fontWeight: "800",
+    textAlign: "center",
   },
   approveText: {
+    flexShrink: 1,
     color: "#ffffff",
     fontWeight: "800",
+    textAlign: "center",
   },
   pressed: {
     opacity: 0.72,

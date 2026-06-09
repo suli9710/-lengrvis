@@ -6,7 +6,7 @@ from collections import defaultdict
 from contextlib import suppress
 
 from app.core.schemas import Approval
-from app.policy.approval_binding import redacted_preview
+from app.policy.approval_binding import redacted_preview, remote_input_binding_ref
 from app.policy.redaction import redact_value
 
 
@@ -81,13 +81,15 @@ def publish_mobile_device_revoked(device: dict) -> None:
 
 
 def _safe_remote_input_grant(grant: dict) -> dict:
+    grant_id = str(grant.get("id") or grant.get("grant_id") or "")
     safe_grant = {
-        "id": str(grant.get("id") or grant.get("grant_id") or ""),
+        "id": grant_id,
         "status": str(grant.get("status") or "active"),
         "scope": str(grant.get("scope") or "remote:input"),
         "created_at": str(grant.get("created_at") or ""),
         "expires_at": str(grant.get("expires_at") or ""),
         "revoked_at": str(grant.get("revoked_at") or ""),
+        "binding_ref": remote_input_binding_ref(grant_id),
     }
     return safe_grant
 

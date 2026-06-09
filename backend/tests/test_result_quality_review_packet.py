@@ -64,6 +64,9 @@ def test_result_quality_review_packet_script_is_fail_closed_and_read_only(
     assert "signoff = $false" in text
     assert "claim_allowed = $false" in text
     assert "completed_result_evidence = $false" in text
+    assert "review_fields_complete" in text
+    assert "result_quality_claim_blocked = $true" in text
+    assert "separate_human_signoff_required = $true" in text
     assert "packet_is_rc_signoff = $false" in text
     assert "packet_is_release_signoff = $false" in text
     assert "not completed-result evidence" in text
@@ -102,6 +105,9 @@ def test_result_quality_review_packet_defaults_to_blocked_missing_fields(
     assert packet["marker"] == "NOT_RESULT_QUALITY_SIGNOFF"
     assert packet["summary"]["status"] == "blocked_missing_fields"
     assert packet["summary"]["blocked"] is True
+    assert packet["summary"]["review_fields_complete"] is False
+    assert packet["summary"]["result_quality_claim_blocked"] is True
+    assert packet["summary"]["separate_human_signoff_required"] is True
     assert packet["summary"]["signoff"] is False
     assert packet["summary"]["result_quality_signoff"] is False
     assert packet["summary"]["claim_allowed"] is False
@@ -109,6 +115,8 @@ def test_result_quality_review_packet_defaults_to_blocked_missing_fields(
     assert packet["summary"]["release_candidate_signoff"] is False
     assert packet["summary"]["release_signoff"] is False
     assert packet["claim_controls"]["not_completed_result_evidence"] is True
+    assert packet["claim_controls"]["result_quality_claim_blocked"] is True
+    assert packet["claim_controls"]["separate_human_signoff_required"] is True
     assert packet["claim_controls"]["packet_is_rc_signoff"] is False
     assert packet["claim_controls"]["packet_is_release_signoff"] is False
     assert set(packet["missing_required_fields"]) == {
@@ -178,11 +186,16 @@ def test_result_quality_review_packet_records_redacted_fields_without_signoff(
 
     assert packet["summary"]["status"] == "manual_review_fields_recorded_not_signoff"
     assert packet["summary"]["blocked"] is False
+    assert packet["summary"]["review_fields_complete"] is True
+    assert packet["summary"]["result_quality_claim_blocked"] is True
+    assert packet["summary"]["separate_human_signoff_required"] is True
     assert packet["summary"]["signoff"] is False
     assert packet["summary"]["result_quality_signoff"] is False
     assert packet["summary"]["claim_allowed"] is False
     assert packet["summary"]["completed_result_evidence"] is False
     assert packet["claim_controls"]["claim_allowed"] is False
+    assert packet["claim_controls"]["result_quality_claim_blocked"] is True
+    assert packet["claim_controls"]["separate_human_signoff_required"] is True
     assert packet["claim_controls"]["completed_result_evidence"] is False
     assert packet["claim_controls"]["packet_is_rc_signoff"] is False
     assert packet["claim_controls"]["packet_is_release_signoff"] is False
@@ -199,6 +212,9 @@ def test_result_quality_review_packet_records_redacted_fields_without_signoff(
         "must_not_be_recorded_as"
     ]
     assert "result_quality_signoff=false" in markdown
+    assert "Review fields complete: True" in markdown
+    assert "Result-quality claim blocked: true" in markdown
+    assert "Separate human sign-off required: true" in markdown
 
 
 def test_release_gate_documents_result_quality_review_helper(project_root: Path) -> None:
@@ -209,6 +225,8 @@ def test_release_gate_documents_result_quality_review_helper(project_root: Path)
     assert r".\scripts\collect_result_quality_review_packet.ps1" in release_gate
     assert "`summary.signoff=false`" in release_gate
     assert "`summary.claim_allowed=false`" in release_gate
+    assert "`summary.result_quality_claim_blocked=true`" in release_gate
+    assert "`summary.separate_human_signoff_required=true`" in release_gate
     assert "`claim_controls.completed_result_evidence=false`" in release_gate
     assert "`claim_controls.packet_is_rc_signoff=false`" in release_gate
     assert "`claim_controls.packet_is_release_signoff=false`" in release_gate

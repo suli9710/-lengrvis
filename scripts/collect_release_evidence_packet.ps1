@@ -3,10 +3,13 @@ param(
     [string]$Root = "",
     [string]$EvidenceRoot = "",
     [string]$MobilePreflightEvidenceRoot = "",
+    [string]$AndroidRealDeviceEvidenceRoot = "",
+    [string]$AndroidReleaseGateEvidenceRoot = "",
     [string]$QaEvidenceRoot = "",
     [string]$DiagnosticsReviewEvidenceRoot = "",
     [string]$ResultQualityReviewEvidenceRoot = "",
     [string]$LocalModelCleanMachineEvidenceRoot = "",
+    [string]$RcHandoffEvidenceRoot = "",
     [string]$PortableFirstScreenEvidenceRoot = ""
 )
 
@@ -40,6 +43,28 @@ function Resolve-InputPath([string]$PathValue, [string]$DefaultRelativePath) {
     return [System.IO.Path]::GetFullPath($value)
 }
 
+function Resolve-IsolatedOptionalInputPath([string]$PathValue, [string]$DefaultRelativePath, [string]$IsolatedLeafName) {
+    if (-not [string]::IsNullOrWhiteSpace($PathValue)) {
+        return Resolve-InputPath $PathValue $DefaultRelativePath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+        $rawEvidenceRoot = if ([System.IO.Path]::IsPathRooted($EvidenceRoot)) {
+            $EvidenceRoot
+        }
+        else {
+            Join-Path $resolvedRoot $EvidenceRoot
+        }
+        $fullEvidenceRoot = [System.IO.Path]::GetFullPath($rawEvidenceRoot)
+        $rootPrefix = $resolvedRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
+        if (-not $fullEvidenceRoot.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $fullEvidenceRoot) $IsolatedLeafName))
+        }
+    }
+
+    return Resolve-InputPath "" $DefaultRelativePath
+}
+
 function Get-DisplayPath([string]$PathValue) {
     if ([string]::IsNullOrWhiteSpace($PathValue)) {
         return ""
@@ -69,11 +94,14 @@ function Redact-DisplayLabel([string]$Label) {
     $text = [regex]::Replace($text, "sk-(?:proj-)?[A-Za-z0-9._-]{4,}", "sk-[redacted]")
     $text = [regex]::Replace($text, "(?i)\b(?:contoso|acme|customer)[A-Za-z0-9._-]*", "[redacted-org]")
     $text = [regex]::Replace($text, "(?i)([?&](?:token|api[_-]?key|client_secret|secret|password|code)=)[^&\s]+", '${1}[redacted]')
+    $text = [regex]::Replace($text, "(?i)([?&](?:session|cookie|pairing[_-]?code|pairingCode|one[_-]?time[_-]?code|oneTimeCode|otp)=)[^&\s]+", '${1}[redacted]')
     $text = [regex]::Replace($text, "(?i)\bhttps?://[^/\s\\]+", "https://[redacted-host]")
     $text = [regex]::Replace($text, "(?i)\bwss?://[^/\s\\]+", "wss://[redacted-host]")
     $text = [regex]::Replace($text, "\b(?:\d{1,3}\.){3}\d{1,3}\b", "[redacted-host]")
-    $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:token|api[_-]?key|secret|password|code)=[A-Za-z0-9._-]+", '${1}[redacted-sensitive]=[redacted]')
+    $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:token|api[_-]?key|secret|password|code)=[A-Za-z0-9._~+/=-]+", '${1}[redacted-sensitive]=[redacted]')
+    $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:session|cookie|pairing[_-]?code|pairingCode|one[_-]?time[_-]?code|oneTimeCode|otp)=[A-Za-z0-9._~+/=-]+", '${1}[redacted-sensitive]=[redacted]')
     $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:token|api[_-]?key|secret|password|code)(?!\=)(?:[._\-][A-Za-z0-9._-]+)?", '${1}[redacted-sensitive]')
+    $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:session|cookie|pairing[_-]?code|pairingCode|one[_-]?time[_-]?code|oneTimeCode|otp)(?!\=)(?:[._\-][A-Za-z0-9._-]+)?", '${1}[redacted-sensitive]')
     return $text
 }
 
@@ -104,9 +132,11 @@ function Redact-TextValue([string]$Value) {
     }
 
     $text = [regex]::Replace($text, "(?i)(authorization:\s*bearer\s+)[^\s,;]+", '${1}[redacted]')
-    $text = [regex]::Replace($text, "(?i)(bearer\s+)[A-Za-z0-9._~-]+", '${1}[redacted]')
-    $text = [regex]::Replace($text, "(?i)(token|api[_-]?key|client_secret|secret|password|code)=([^&\s,;]+)", '${1}=[redacted]')
-    $text = [regex]::Replace($text, "sk-[A-Za-z0-9._-]{8,}", "sk-[redacted]")
+    $text = [regex]::Replace($text, "(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", '${1}[redacted]')
+    $text = [regex]::Replace($text, "(?i)\b(set-cookie|cookie)\s*[:=]\s*[^,\r\n]+", '${1}: [redacted]')
+    $text = [regex]::Replace($text, "(?i)\b(session|cookie|token|api[_-]?key|client_secret|secret|password|code|pairing[_-]?code|pairingCode|one[_-]?time[_-]?code|oneTimeCode|otp)=([^&\s,;]+)", '${1}=[redacted]')
+    $text = [regex]::Replace($text, "(?i)\b(pairing\s+code|one[-\s]?time\s+(?:code|passcode|password)|otp)\s*[:=]?\s+[A-Za-z0-9._-]{4,}", '${1} [redacted]')
+    $text = [regex]::Replace($text, "sk-(?:proj-)?[A-Za-z0-9._-]{8,}", "sk-[redacted]")
     $text = [regex]::Replace($text, "[A-Za-z]:\\[^\s,;]+", "[redacted-path]")
     $text = [regex]::Replace($text, "(?<!\w)/(?:Users|home)/[^\s,;]+", "[redacted-path]")
     return (Redact-DisplayLabel $text)
@@ -252,6 +282,32 @@ function Test-ArrayContainsText($Value, [string]$Needle) {
         }
     }
     return $false
+}
+
+function Test-MeaningfulEvidenceValue([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    $text = $Value.Trim()
+    $lower = $text.ToLowerInvariant()
+    if ($text -match "<[^>]+>") {
+        return $false
+    }
+    if ($lower -in @("todo", "to do", "tbd", "pending", "unknown", "fixme", "placeholder", "uncollected", "blocked")) {
+        return $false
+    }
+    if ($lower -match "^(?:todo|to do|tbd|pending|unknown|fixme|placeholder)(?:$|[\s:._-])") {
+        return $false
+    }
+    return $true
+}
+
+function Test-RcGateExitValue([string]$Value) {
+    if (-not (Test-MeaningfulEvidenceValue $Value)) {
+        return $false
+    }
+    return $Value.Trim().ToLowerInvariant() -match "(exit|code|status|pass|fail|success|error|blocked|\b0\b|\b1\b)"
 }
 
 function Test-LocalModelArtifactBuildProfileStatus([string]$Value) {
@@ -432,10 +488,13 @@ function Get-FirstLogLine([string]$Text, [string]$Pattern) {
 
 $evidenceRootPath = Resolve-InputPath $EvidenceRoot ".tmp\release-evidence-packet"
 $mobileEvidenceRootPath = Resolve-InputPath $MobilePreflightEvidenceRoot ".tmp\mobile-lan-wss-preflight"
+$androidRealDeviceEvidenceRootPath = Resolve-IsolatedOptionalInputPath $AndroidRealDeviceEvidenceRoot ".tmp\android-real-device-evidence-template" "empty-android-real-device-evidence-template"
+$androidReleaseGateEvidenceRootPath = Resolve-IsolatedOptionalInputPath $AndroidReleaseGateEvidenceRoot ".tmp\android-release-gate" "empty-android-release-gate"
 $qaEvidenceRootPath = Resolve-InputPath $QaEvidenceRoot ".tmp\qa-evidence"
 $diagnosticsReviewEvidenceRootPath = Resolve-InputPath $DiagnosticsReviewEvidenceRoot ".tmp\diagnostics-external-review"
 $resultQualityReviewEvidenceRootPath = Resolve-InputPath $ResultQualityReviewEvidenceRoot ".tmp\result-quality-review"
 $localModelCleanMachineEvidenceRootPath = Resolve-InputPath $LocalModelCleanMachineEvidenceRoot ".tmp\local-model-clean-machine-evidence"
+$rcHandoffEvidenceRootPath = Resolve-InputPath $RcHandoffEvidenceRoot ".tmp\rc-handoff-template"
 $portableFirstScreenEvidenceRootPath = Resolve-InputPath $PortableFirstScreenEvidenceRoot ".tmp\portable-first-screen-smoke"
 $runStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
 $runRoot = Join-Path $evidenceRootPath "run-$runStamp"
@@ -466,6 +525,50 @@ if (-not $mobileContract.required_markers_present) {
     $contractFailures.Add("mobile LAN/WSS preflight source contract is missing required redaction or non-evidence markers")
 }
 
+$androidReleaseGateNeedles = @(
+    "android-release-gate.redacted.json",
+    "preflight_ready_not_release",
+    "Strict Android release gate requires -ArtifactPath",
+    "Strict Android release gate requires -RealDeviceEvidencePath",
+    "artifact_type=android-real-device-remote-control-evidence",
+    "artifact_not_apk_zip",
+    "installable_android_app_claim_allowed",
+    "real_device_remote_control_claim_allowed",
+    "expo_preview_is_not_release",
+    "requires_reviewed_apk_install_evidence",
+    "requires_reviewed_https_wss_remote_control_evidence",
+    "This is not an installable APK pass or real-device remote-control pass."
+)
+$androidReleaseGateContract = Get-SourceContract "scripts/verify_android_release_gate.ps1" $androidReleaseGateNeedles
+if (-not $androidReleaseGateContract.required_markers_present) {
+    $contractFailures.Add("Android release gate source contract is missing required fail-closed markers")
+}
+
+$androidRealDeviceTemplateNeedles = @(
+    "android-real-device-evidence.redacted.template.json",
+    "manual_real_device_evidence_required",
+    "real_device_pass_claim_allowed",
+    "camera_qr_pairing",
+    "https_api_reachability",
+    "certificate_trust_path",
+    "approval_wss",
+    "remote_screen_wss",
+    "remote_input_wss",
+    "click_input_approval",
+    "text_input_approval",
+    "key_pagedown_approval",
+    "mobile_end_control_readonly",
+    "desktop_revoke_readonly",
+    "grant_expiry_readonly",
+    "binding_ref",
+    "raw_device_ids_absent",
+    "raw_grant_ids_absent"
+)
+$androidRealDeviceTemplateContract = Get-SourceContract "scripts/collect_android_real_device_evidence_template.ps1" $androidRealDeviceTemplateNeedles
+if (-not $androidRealDeviceTemplateContract.required_markers_present) {
+    $contractFailures.Add("Android real-device evidence template source contract is missing required scenario or redaction markers")
+}
+
 $portableNeedles = @(
     "portable.status.log",
     "portable renderer DOM read-only task evidence passed",
@@ -479,6 +582,47 @@ $portableNeedles = @(
 $portableContract = Get-SourceContract "docs/qa/release-gate.md" $portableNeedles
 if (-not $portableContract.required_markers_present) {
     $contractFailures.Add("portable first-screen smoke source contract is missing required non-signoff markers")
+}
+
+$mobileRemoteInputUiNeedles = @(
+    "ApprovalActiveGrantContext",
+    "REMOTE_INPUT_ACTIVE_GRANT_REASON",
+    "remoteInputApprovalMatchesActiveGrant",
+    "source_device_id",
+    "source_grant_id",
+    "required_mobile_scopes",
+    "binding_ref"
+)
+$mobileRemoteInputClientNeedles = @(
+    "assertRemoteInputApprovalMatchesSession",
+    "assertRemoteInputApprovalRejectAllowedForSession",
+    "Remote input approval does not match this mobile device.",
+    "Remote input approval does not match the active mobile grant.",
+    "getApprovalDetail(session, approvalId)",
+    "remote_input_binding",
+    "binding_ref",
+    "allowed_device_ids",
+    "claimRemoteInputGrantToken(session, explicitGrantId)"
+)
+$mobileRemoteInputSmokeNeedles = @(
+    "remoteInputNoActiveGrant",
+    "remoteInputWrongActiveGrant",
+    "binding_ref",
+    "matching approval details",
+    "client-side remote-input binding failures must not reach the smoke server",
+    "remote-input approval without a cached grant token must fail closed",
+    "Approval stream connected snapshot must restore active remote-input grants after missed events"
+)
+$mobileRemoteInputContracts = @(
+    Get-SourceContract "mobile/src/approvalSafetyDisplay.ts" $mobileRemoteInputUiNeedles
+    Get-SourceContract "mobile/src/api/client.ts" $mobileRemoteInputClientNeedles
+    Get-SourceContract "mobile/scripts/remote-input-grant-smoke.cjs" $mobileRemoteInputSmokeNeedles
+)
+foreach ($contract in $mobileRemoteInputContracts) {
+    if (-not $contract.required_markers_present) {
+        $contractFailures.Add("mobile remote-input active grant source contract is missing required fail-closed markers")
+        break
+    }
 }
 $latestPortableStatus = Find-LatestTextArtifact $portableFirstScreenEvidenceRootPath "portable.status.log"
 $portableLatestSummary = if ($latestPortableStatus.found -and -not [string]::IsNullOrWhiteSpace($latestPortableStatus.text)) {
@@ -673,6 +817,17 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
     $mobileTransportSecurityStatus = [string]$latestMobile.data.qr_payload_shape.transport_security_status
     $allowedMobileResults = @("ready_for_manual_real_device_collection_only", "blocked")
     $mobileReadyStatus = $mobileResult -eq "ready_for_manual_real_device_collection_only"
+    $mobileChecklistNames = @(
+        "camera_qr",
+        "actual_https_wss",
+        "approval_wss",
+        "remote_screen_wss",
+        "remote_input_wss",
+        "certificate_trust",
+        "remote_input_grant_revoke_expiry",
+        "screenshot_log_review"
+    )
+    $mobileCollectionChecklistStatuses = [ordered]@{}
     if ($mobileResult -notin $allowedMobileResults) {
         $mobileArtifactMismatches.Add("result is not an allowed mobile preflight status")
     }
@@ -769,6 +924,15 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
     if (-not (Test-JsonFalse $latestMobile.data.manual_real_device_evidence_template.claim_controls.preflight_ready_is_pass)) {
         $mobileArtifactMismatches.Add("manual_real_device_evidence_template.claim_controls.preflight_ready_is_pass is not false")
     }
+    if ([string]$latestMobile.data.manual_real_device_evidence_template.may_be_recorded_as -ne "preflight/config evidence only") {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.may_be_recorded_as is not preflight/config evidence only")
+    }
+    if ([string]$latestMobile.data.manual_real_device_evidence_template.must_not_be_recorded_as -ne "real-device pass evidence") {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.must_not_be_recorded_as is not real-device pass evidence")
+    }
+    if (-not (Test-JsonTrue $latestMobile.data.manual_real_device_evidence_template.artifact_collection_rules.review_required_before_pass_claim)) {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.artifact_collection_rules.review_required_before_pass_claim is not true")
+    }
     foreach ($fieldName in @(
         "camera_qr_path_evidence",
         "actual_device_https_wss_evidence",
@@ -786,6 +950,20 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
     )) {
         if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.$fieldName -ne "uncollected") {
             $mobileArtifactMismatches.Add("manual_real_device_evidence_template.fields.$fieldName is not uncollected")
+        }
+    }
+    foreach ($checklistName in $mobileChecklistNames) {
+        $checklistEntry = $latestMobile.data.manual_real_device_evidence_template.real_device_collection_checklist.$checklistName
+        $checklistStatus = [string]$checklistEntry.status
+        $mobileCollectionChecklistStatuses[$checklistName] = if ($checklistStatus -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+        if ($checklistStatus -ne "uncollected") {
+            $mobileArtifactMismatches.Add("manual_real_device_evidence_template.real_device_collection_checklist.$checklistName.status is not uncollected")
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$checklistEntry.overclaim_guard)) {
+            $mobileArtifactMismatches.Add("manual_real_device_evidence_template.real_device_collection_checklist.$checklistName.overclaim_guard is missing")
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$checklistEntry.reviewer_check)) {
+            $mobileArtifactMismatches.Add("manual_real_device_evidence_template.real_device_collection_checklist.$checklistName.reviewer_check is missing")
         }
     }
     if ($mobileArtifactMismatches.Count -gt 0) {
@@ -827,9 +1005,14 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
             real_device_evidence_status = if ([string]$latestMobile.data.manual_real_device_evidence_template.real_device_evidence_status -eq "uncollected_fail_closed") { "uncollected_fail_closed" } else { "invalid_redacted" }
             real_device_evidence_collected = $false
             no_phone_preflight_claim = if ([string]$latestMobile.data.manual_real_device_evidence_template.no_phone_preflight_claim -eq "not_real_device_pass") { "not_real_device_pass" } else { "invalid_redacted" }
+            may_be_recorded_as = if ([string]$latestMobile.data.manual_real_device_evidence_template.may_be_recorded_as -eq "preflight/config evidence only") { "preflight/config evidence only" } else { "invalid_redacted" }
+            must_not_be_recorded_as = if ([string]$latestMobile.data.manual_real_device_evidence_template.must_not_be_recorded_as -eq "real-device pass evidence") { "real-device pass evidence" } else { "invalid_redacted" }
             claim_controls = [ordered]@{
                 real_device_pass_claim_allowed = $false
                 preflight_ready_is_pass = $false
+            }
+            artifact_collection_rules = [ordered]@{
+                review_required_before_pass_claim = Get-StrictJsonBoolValue $latestMobile.data.manual_real_device_evidence_template.artifact_collection_rules.review_required_before_pass_claim
             }
             fields = [ordered]@{
                 camera_qr_path_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.camera_qr_path_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
@@ -846,6 +1029,7 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
                 grant_revoke_expiry_artifact_review = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.grant_revoke_expiry_artifact_review -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
                 artifact_redaction_review = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.artifact_redaction_review -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
             }
+            collection_checklist_statuses = $mobileCollectionChecklistStatuses
         }
         issues_count = Get-ArrayCount $latestMobile.data.issues
         warnings_count = Get-ArrayCount $latestMobile.data.warnings
@@ -867,6 +1051,278 @@ else {
         found = $false
         evidence_root = Get-DisplayPath $mobileEvidenceRootPath
         result = "not_collected_by_this_packet"
+    }
+}
+
+$androidRealDeviceTemplateCheckNames = @(
+    "apk_installed",
+    "camera_qr_pairing",
+    "https_api_reachability",
+    "certificate_trust_path",
+    "approval_wss",
+    "remote_screen_wss",
+    "remote_input_wss",
+    "click_input_approval",
+    "text_input_approval",
+    "key_pagedown_approval",
+    "mobile_end_control_readonly",
+    "desktop_revoke_readonly",
+    "grant_expiry_readonly",
+    "background_or_lockscreen_privacy",
+    "artifact_redaction_review"
+)
+$latestAndroidRealDeviceTemplate = Find-LatestJsonArtifact $androidRealDeviceEvidenceRootPath "android-real-device-evidence.redacted.template.json"
+$androidRealDeviceTemplateLatestSummary = if ($latestAndroidRealDeviceTemplate.found -and $null -ne $latestAndroidRealDeviceTemplate.data) {
+    $androidTemplateMismatches = New-Object System.Collections.Generic.List[string]
+    $androidTemplateCheckStatuses = [ordered]@{}
+
+    if ([string]$latestAndroidRealDeviceTemplate.data.artifact_type -ne "android-real-device-remote-control-evidence") {
+        $androidTemplateMismatches.Add("artifact_type is not android-real-device-remote-control-evidence")
+    }
+    if ([string]$latestAndroidRealDeviceTemplate.data.template_status -ne "manual_real_device_evidence_required") {
+        $androidTemplateMismatches.Add("template_status is not manual_real_device_evidence_required")
+    }
+    if ([string]$latestAndroidRealDeviceTemplate.data.real_device_result -ne "uncollected") {
+        $androidTemplateMismatches.Add("real_device_result is not uncollected")
+    }
+    if (-not (Test-JsonFalse $latestAndroidRealDeviceTemplate.data.claim_controls.real_device_pass_claim_allowed)) {
+        $androidTemplateMismatches.Add("claim_controls.real_device_pass_claim_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestAndroidRealDeviceTemplate.data.claim_controls.binding_ref_used_for_shareable_artifacts)) {
+        $androidTemplateMismatches.Add("claim_controls.binding_ref_used_for_shareable_artifacts is not false")
+    }
+    if (-not (Test-JsonFalse $latestAndroidRealDeviceTemplate.data.claim_controls.raw_device_grant_ids_local_only)) {
+        $androidTemplateMismatches.Add("claim_controls.raw_device_grant_ids_local_only is not false")
+    }
+    if ([string]$latestAndroidRealDeviceTemplate.data.shareable_identity_policy.public_remote_input_correlation -notmatch "binding_ref") {
+        $androidTemplateMismatches.Add("shareable_identity_policy.public_remote_input_correlation does not require binding_ref")
+    }
+    foreach ($checkName in $androidRealDeviceTemplateCheckNames) {
+        $check = $latestAndroidRealDeviceTemplate.data.checks.$checkName
+        $checkStatus = [string]$check.status
+        $androidTemplateCheckStatuses[$checkName] = if ($checkStatus -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+        if ($checkStatus -ne "uncollected") {
+            $androidTemplateMismatches.Add("checks.$checkName.status is not uncollected")
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$check.required_evidence)) {
+            $androidTemplateMismatches.Add("checks.$checkName.required_evidence is missing")
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$check.overclaim_guard)) {
+            $androidTemplateMismatches.Add("checks.$checkName.overclaim_guard is missing")
+        }
+    }
+    foreach ($redactionFlag in @("tokens_absent", "pairing_codes_absent", "raw_hosts_absent", "raw_device_ids_absent", "raw_grant_ids_absent", "private_paths_absent", "binding_ref_or_redacted_active_grant_label_used")) {
+        if (-not (Test-JsonFalse $latestAndroidRealDeviceTemplate.data.redaction.$redactionFlag)) {
+            $androidTemplateMismatches.Add("redaction.$redactionFlag is not false in the fail-closed template")
+        }
+    }
+    if (-not (Test-ArrayContainsText $latestAndroidRealDeviceTemplate.data.must_not_claim "real-device Android remote-control pass")) {
+        $androidTemplateMismatches.Add("must_not_claim is missing real-device Android remote-control pass")
+    }
+    if ($androidTemplateMismatches.Count -gt 0) {
+        $contractFailures.Add("latest Android real-device evidence template artifact failed fail-closed contract validation")
+    }
+
+    [ordered]@{
+        found = $true
+        path = $latestAndroidRealDeviceTemplate.path
+        last_write_utc = $latestAndroidRealDeviceTemplate.last_write_utc
+        source_contract_status = if ($androidTemplateMismatches.Count -eq 0) { "valid_fail_closed_template" } else { "source_contract_mismatch" }
+        mismatch_reasons = @($androidTemplateMismatches)
+        template_status = if ([string]$latestAndroidRealDeviceTemplate.data.template_status -eq "manual_real_device_evidence_required") { "manual_real_device_evidence_required" } else { "invalid_redacted" }
+        real_device_result = if ([string]$latestAndroidRealDeviceTemplate.data.real_device_result -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+        review_status = if ([string]$latestAndroidRealDeviceTemplate.data.review.status -eq "unreviewed") { "unreviewed" } else { "invalid_redacted" }
+        pass_claim_allowed = $false
+        redaction_reviewed = $false
+        evidence_artifacts_reviewed = $false
+        check_statuses = $androidTemplateCheckStatuses
+        shareable_identity_policy = [ordered]@{
+            public_remote_input_correlation = Redact-TextValue ([string]$latestAndroidRealDeviceTemplate.data.shareable_identity_policy.public_remote_input_correlation)
+            raw_device_id_storage = Redact-TextValue ([string]$latestAndroidRealDeviceTemplate.data.shareable_identity_policy.raw_device_id_storage)
+            raw_grant_id_storage = Redact-TextValue ([string]$latestAndroidRealDeviceTemplate.data.shareable_identity_policy.raw_grant_id_storage)
+        }
+        must_not_claim = @($latestAndroidRealDeviceTemplate.data.must_not_claim | ForEach-Object { Redact-TextValue ([string]$_) })
+    }
+}
+elseif ($latestAndroidRealDeviceTemplate.found) {
+    $contractFailures.Add("latest Android real-device evidence template artifact could not be parsed")
+    [ordered]@{
+        found = $true
+        path = $latestAndroidRealDeviceTemplate.path
+        last_write_utc = $latestAndroidRealDeviceTemplate.last_write_utc
+        source_contract_status = "source_contract_mismatch"
+        parse_error = $latestAndroidRealDeviceTemplate.error
+        template_status = "source_contract_mismatch"
+        pass_claim_allowed = $false
+    }
+}
+else {
+    [ordered]@{
+        found = $false
+        evidence_root = Get-DisplayPath $androidRealDeviceEvidenceRootPath
+        source_contract_status = "not_collected_by_this_packet"
+        template_status = "not_collected_by_this_packet"
+        real_device_result = "uncollected"
+        pass_claim_allowed = $false
+    }
+}
+
+$latestAndroidReleaseGate = Find-LatestJsonArtifact $androidReleaseGateEvidenceRootPath "android-release-gate.redacted.json"
+$androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $null -ne $latestAndroidReleaseGate.data) {
+    $androidGateMismatches = New-Object System.Collections.Generic.List[string]
+    $androidStatus = [string]$latestAndroidReleaseGate.data.status
+    $allowedAndroidStatuses = @("preflight_ready_not_release", "blocked", "passed")
+    $androidReleaseReady = Test-JsonTrue $latestAndroidReleaseGate.data.release_ready
+    $androidPreflightOnly = Test-JsonTrue $latestAndroidReleaseGate.data.preflight_only
+    $installClaimAllowed = Test-JsonTrue $latestAndroidReleaseGate.data.claim_controls.installable_android_app_claim_allowed
+    $remoteClaimAllowed = Test-JsonTrue $latestAndroidReleaseGate.data.claim_controls.real_device_remote_control_claim_allowed
+    $expoPreviewIsNotRelease = Test-JsonTrue $latestAndroidReleaseGate.data.claim_controls.expo_preview_is_not_release
+    $requiresApkEvidence = Test-JsonTrue $latestAndroidReleaseGate.data.claim_controls.requires_reviewed_apk_install_evidence
+    $requiresWssEvidence = Test-JsonTrue $latestAndroidReleaseGate.data.claim_controls.requires_reviewed_https_wss_remote_control_evidence
+    $artifactLabel = Redact-DisplayLabel ([string]$latestAndroidReleaseGate.data.android_artifact.label)
+    $artifactProvided = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.provided
+    $installableApk = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.installable_apk
+    $apkZipHeaderValid = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_zip_header_valid
+    $artifactBytes = Get-StrictJsonNonNegativeIntegerOrZero $latestAndroidReleaseGate.data.android_artifact.bytes
+    $artifactGateEvaluated = Test-JsonTrue $latestAndroidReleaseGate.data.artifact_gate.evaluated
+    $artifactGatePassed = Test-JsonTrue $latestAndroidReleaseGate.data.artifact_gate.passed
+    $realDeviceGateEvaluated = Test-JsonTrue $latestAndroidReleaseGate.data.real_device_gate.evaluated
+    $realDeviceGatePassed = Test-JsonTrue $latestAndroidReleaseGate.data.real_device_gate.passed
+    $sourceConfigPassed = Test-JsonTrue $latestAndroidReleaseGate.data.source_config.passed
+
+    if ($androidStatus -notin $allowedAndroidStatuses) {
+        $androidGateMismatches.Add("status is not an allowed Android release gate status")
+    }
+    if ($androidStatus -eq "preflight_ready_not_release" -and -not $androidPreflightOnly) {
+        $androidGateMismatches.Add("preflight_ready_not_release Android gate must set preflight_only=true")
+    }
+    if ($androidStatus -eq "passed" -and $androidPreflightOnly) {
+        $androidGateMismatches.Add("passed Android gate must set preflight_only=false")
+    }
+    if ($androidPreflightOnly) {
+        if ($artifactGateEvaluated) {
+            $androidGateMismatches.Add("preflight Android gate must not evaluate artifact_gate")
+        }
+        if ($artifactGatePassed) {
+            $androidGateMismatches.Add("preflight Android gate must not set artifact_gate.passed=true")
+        }
+        if ($realDeviceGateEvaluated) {
+            $androidGateMismatches.Add("preflight Android gate must not evaluate real_device_gate")
+        }
+        if ($realDeviceGatePassed) {
+            $androidGateMismatches.Add("preflight Android gate must not set real_device_gate.passed=true")
+        }
+    }
+    if (-not $sourceConfigPassed) {
+        $androidGateMismatches.Add("source_config.passed is not true")
+    }
+    if (-not $expoPreviewIsNotRelease) {
+        $androidGateMismatches.Add("claim_controls.expo_preview_is_not_release is not true")
+    }
+    if (-not $requiresApkEvidence) {
+        $androidGateMismatches.Add("claim_controls.requires_reviewed_apk_install_evidence is not true")
+    }
+    if (-not $requiresWssEvidence) {
+        $androidGateMismatches.Add("claim_controls.requires_reviewed_https_wss_remote_control_evidence is not true")
+    }
+    if ($androidStatus -eq "passed") {
+        if (-not $androidReleaseReady) {
+            $androidGateMismatches.Add("passed Android gate must set release_ready=true")
+        }
+        if (-not $installClaimAllowed) {
+            $androidGateMismatches.Add("passed Android gate must allow installable Android app claims")
+        }
+        if (-not $remoteClaimAllowed) {
+            $androidGateMismatches.Add("passed Android gate must allow real-device remote-control claims")
+        }
+        if (-not ($artifactProvided -and $installableApk -and $apkZipHeaderValid -and $artifactBytes -gt 0 -and $artifactGatePassed -and $realDeviceGatePassed)) {
+            $androidGateMismatches.Add("passed Android gate must include installable APK and real-device evidence gates")
+        }
+    }
+    else {
+        if ($androidReleaseReady) {
+            $androidGateMismatches.Add("non-passed Android gate must not set release_ready=true")
+        }
+        if ($installClaimAllowed) {
+            $androidGateMismatches.Add("non-passed Android gate must not allow installable Android app claims")
+        }
+        if ($remoteClaimAllowed) {
+            $androidGateMismatches.Add("non-passed Android gate must not allow real-device remote-control claims")
+        }
+        if (-not (Test-ArrayContainsText $latestAndroidReleaseGate.data.must_not_claim "installable Android app release pass")) {
+            $androidGateMismatches.Add("non-passed Android gate must include installable Android app release pass in must_not_claim")
+        }
+        if (-not (Test-ArrayContainsText $latestAndroidReleaseGate.data.must_not_claim "real-device Android remote-control pass")) {
+            $androidGateMismatches.Add("non-passed Android gate must include real-device Android remote-control pass in must_not_claim")
+        }
+    }
+
+    if ($androidGateMismatches.Count -gt 0) {
+        $contractFailures.Add("latest Android release gate artifact failed redacted contract validation")
+    }
+
+    $androidGateSourceContractValid = $androidGateMismatches.Count -eq 0
+
+    [ordered]@{
+        found = $true
+        path = $latestAndroidReleaseGate.path
+        last_write_utc = $latestAndroidReleaseGate.last_write_utc
+        source_contract_status = if ($androidGateSourceContractValid) { "valid_redacted_summary" } else { "source_contract_mismatch" }
+        mismatch_reasons = @($androidGateMismatches)
+        status = if ($androidStatus -in $allowedAndroidStatuses -and $androidGateSourceContractValid) { $androidStatus } elseif ($androidStatus -in $allowedAndroidStatuses) { "source_contract_mismatch" } else { "invalid_redacted" }
+        release_ready = if ($androidGateSourceContractValid) { $androidReleaseReady } else { $false }
+        preflight_only = if ($androidGateSourceContractValid) { $androidPreflightOnly } else { $false }
+        source_config_passed = if ($androidGateSourceContractValid) { $sourceConfigPassed } else { $false }
+        android_artifact = [ordered]@{
+            provided = if ($androidGateSourceContractValid) { $artifactProvided } else { $false }
+            label = $artifactLabel
+            bytes = if ($androidGateSourceContractValid) { $artifactBytes } else { 0 }
+            installable_apk = if ($androidGateSourceContractValid) { $installableApk } else { $false }
+            apk_zip_header_valid = if ($androidGateSourceContractValid) { $apkZipHeaderValid } else { $false }
+        }
+        artifact_gate_evaluated = if ($androidGateSourceContractValid) { $artifactGateEvaluated } else { $false }
+        artifact_gate_passed = if ($androidGateSourceContractValid) { $artifactGatePassed } else { $false }
+        real_device_gate_evaluated = if ($androidGateSourceContractValid) { $realDeviceGateEvaluated } else { $false }
+        real_device_gate_passed = if ($androidGateSourceContractValid) { $realDeviceGatePassed } else { $false }
+        real_device_evidence_label = Redact-DisplayLabel ([string]$latestAndroidReleaseGate.data.real_device_gate.evidence_label)
+        claim_controls = [ordered]@{
+            installable_android_app_claim_allowed = if ($androidGateSourceContractValid) { $installClaimAllowed } else { $false }
+            real_device_remote_control_claim_allowed = if ($androidGateSourceContractValid) { $remoteClaimAllowed } else { $false }
+            expo_preview_is_not_release = if ($androidGateSourceContractValid) { $expoPreviewIsNotRelease } else { $false }
+            requires_reviewed_apk_install_evidence = if ($androidGateSourceContractValid) { $requiresApkEvidence } else { $false }
+            requires_reviewed_https_wss_remote_control_evidence = if ($androidGateSourceContractValid) { $requiresWssEvidence } else { $false }
+        }
+        warnings_count = Get-ArrayCount $latestAndroidReleaseGate.data.warnings
+        must_not_claim = @($latestAndroidReleaseGate.data.must_not_claim | ForEach-Object { Redact-TextValue ([string]$_) })
+    }
+}
+elseif ($latestAndroidReleaseGate.found) {
+    $contractFailures.Add("latest Android release gate artifact could not be parsed")
+    [ordered]@{
+        found = $true
+        path = $latestAndroidReleaseGate.path
+        last_write_utc = $latestAndroidReleaseGate.last_write_utc
+        source_contract_status = "source_contract_mismatch"
+        parse_error = $latestAndroidReleaseGate.error
+        status = "source_contract_mismatch"
+        release_ready = $false
+        claim_controls = [ordered]@{
+            installable_android_app_claim_allowed = $false
+            real_device_remote_control_claim_allowed = $false
+        }
+    }
+}
+else {
+    [ordered]@{
+        found = $false
+        evidence_root = Get-DisplayPath $androidReleaseGateEvidenceRootPath
+        source_contract_status = "not_collected_by_this_packet"
+        status = "not_collected_by_this_packet"
+        release_ready = $false
+        claim_controls = [ordered]@{
+            installable_android_app_claim_allowed = $false
+            real_device_remote_control_claim_allowed = $false
+        }
     }
 }
 
@@ -912,6 +1368,7 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
     $localModelTemplateMarker = [string]$latestLocalModelTemplate.data.marker
     $localModelTemplateStatus = [string]$latestLocalModelTemplate.data.summary.template_status
     $evidenceTemplateStatus = [string]$latestLocalModelTemplate.data.evidence_template.template_status
+    $localModelMissingFieldCount = Get-ArrayCount $latestLocalModelTemplate.data.summary.missing_required_fields
     if ($localModelTemplateMarker -ne "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS") {
         $localModelTemplateMismatches.Add("marker is missing or not NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS")
     }
@@ -923,6 +1380,15 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
     }
     if ($localModelTemplateStatus -notin @("manual_review_ready", "blocked_reason_recorded", "blocked_missing_required_fields")) {
         $localModelTemplateMismatches.Add("summary.template_status is not an allowed non-signoff status")
+    }
+    if (-not (Test-JsonNonNegativeInteger $latestLocalModelTemplate.data.summary.missing_required_fields_count)) {
+        $localModelTemplateMismatches.Add("summary.missing_required_fields_count is not a non-negative JSON integer")
+    }
+    elseif ([int64]$latestLocalModelTemplate.data.summary.missing_required_fields_count -ne [int64]$localModelMissingFieldCount) {
+        $localModelTemplateMismatches.Add("summary.missing_required_fields_count does not match missing_required_fields")
+    }
+    if ($localModelTemplateStatus -eq "manual_review_ready" -and $localModelMissingFieldCount -ne 0) {
+        $localModelTemplateMismatches.Add("manual_review_ready local-model template still has missing required fields")
     }
     if ($evidenceTemplateStatus -ne "manual_clean_machine_local_model_evidence_required") {
         $localModelTemplateMismatches.Add("evidence_template.template_status is not manual_clean_machine_local_model_evidence_required")
@@ -984,8 +1450,24 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
     if ([string]$latestLocalModelTemplate.data.evidence_template.runtime.status -ne "unverified_by_this_helper") {
         $localModelTemplateMismatches.Add("evidence_template.runtime.status is not unverified_by_this_helper")
     }
+    if ($localModelTemplateStatus -eq "manual_review_ready") {
+        if (-not (Test-MeaningfulEvidenceValue ([string]$latestLocalModelTemplate.data.evidence_template.runtime.name))) {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template is missing runtime.name")
+        }
+        if (-not (Test-MeaningfulEvidenceValue ([string]$latestLocalModelTemplate.data.evidence_template.runtime.version))) {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template is missing runtime.version")
+        }
+    }
     if ([string]$latestLocalModelTemplate.data.evidence_template.model.status -ne "unverified_by_this_helper") {
         $localModelTemplateMismatches.Add("evidence_template.model.status is not unverified_by_this_helper")
+    }
+    if ($localModelTemplateStatus -eq "manual_review_ready") {
+        if (-not (Test-MeaningfulEvidenceValue ([string]$latestLocalModelTemplate.data.evidence_template.model.name))) {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template is missing model.name")
+        }
+        if (-not (Test-MeaningfulEvidenceValue ([string]$latestLocalModelTemplate.data.evidence_template.model.version))) {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template is missing model.version")
+        }
     }
     $artifactBuildProfile = $latestLocalModelTemplate.data.evidence_template.artifact_build_profile
     if ($null -eq $artifactBuildProfile) {
@@ -995,14 +1477,26 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
         if (-not (Test-LocalModelArtifactBuildProfileStatus ([string]$artifactBuildProfile.status))) {
             $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.status is not an allowed fail-closed status")
         }
+        if ($localModelTemplateStatus -eq "manual_review_ready" -and [string]$artifactBuildProfile.status -ne "recorded_unverified_by_this_helper") {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template artifact/build/profile status is not recorded")
+        }
         if ([string]$artifactBuildProfile.artifact.status -ne "unverified_by_this_helper") {
             $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.artifact.status is not unverified_by_this_helper")
+        }
+        if ($localModelTemplateStatus -eq "manual_review_ready" -and -not (Test-MeaningfulEvidenceValue ([string]$artifactBuildProfile.artifact.label))) {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template is missing artifact label")
         }
         if ([string]$artifactBuildProfile.build.status -ne "unverified_by_this_helper") {
             $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.build.status is not unverified_by_this_helper")
         }
+        if ($localModelTemplateStatus -eq "manual_review_ready" -and -not (Test-MeaningfulEvidenceValue ([string]$artifactBuildProfile.build.identifier))) {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template is missing build identifier")
+        }
         if ([string]$artifactBuildProfile.profile.status -ne "unverified_by_this_helper") {
             $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.profile.status is not unverified_by_this_helper")
+        }
+        if ($localModelTemplateStatus -eq "manual_review_ready" -and -not (Test-MeaningfulEvidenceValue ([string]$artifactBuildProfile.profile.label))) {
+            $localModelTemplateMismatches.Add("manual_review_ready local-model template is missing profile label")
         }
     }
     $cleanMachineRun = $latestLocalModelTemplate.data.evidence_template.clean_machine_run
@@ -1024,6 +1518,14 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
                 }
                 if (-not (Test-JsonFalse $step.clean_machine_pass)) {
                     $localModelTemplateMismatches.Add("evidence_template.clean_machine_run.$stepName.clean_machine_pass is not false")
+                }
+                if ($localModelTemplateStatus -eq "manual_review_ready") {
+                    if ([string]$step.status -ne "manual_outcome_recorded_unverified_by_this_helper") {
+                        $localModelTemplateMismatches.Add("manual_review_ready local-model template $stepName status is not a recorded manual outcome")
+                    }
+                    if (-not (Test-MeaningfulEvidenceValue ([string]$step.outcome))) {
+                        $localModelTemplateMismatches.Add("manual_review_ready local-model template $stepName outcome is missing")
+                    }
                 }
             }
         }
@@ -1183,11 +1685,104 @@ $diagnosticsReviewLatestSummary = if ($latestDiagnosticsReview.found -and $null 
     if (-not (Test-JsonFalse $latestDiagnosticsReview.data.summary.template_is_human_signoff)) {
         $diagnosticsReviewMismatches.Add("summary.template_is_human_signoff is not false")
     }
-    if (($null -ne $latestDiagnosticsReview.data.summary.external_sharing_allowed) -and -not (Test-JsonFalse $latestDiagnosticsReview.data.summary.external_sharing_allowed)) {
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.summary.external_sharing_allowed)) {
         $diagnosticsReviewMismatches.Add("summary.external_sharing_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.summary.claim_allowed)) {
+        $diagnosticsReviewMismatches.Add("summary.claim_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.summary.actual_package_content_review_completed)) {
+        $diagnosticsReviewMismatches.Add("summary.actual_package_content_review_completed is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.summary.automated_template_only)) {
+        $diagnosticsReviewMismatches.Add("summary.automated_template_only is not true")
+    }
+    if ($latestDiagnosticsReview.data.summary.review_fields_complete -isnot [bool]) {
+        $diagnosticsReviewMismatches.Add("summary.review_fields_complete is not a JSON boolean")
+    }
+    elseif ([bool]$latestDiagnosticsReview.data.summary.review_fields_complete) {
+        $diagnosticsReviewMismatches.Add("summary.review_fields_complete is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.summary.external_sharing_blocked)) {
+        $diagnosticsReviewMismatches.Add("summary.external_sharing_blocked is not true")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.summary.separate_human_content_review_required)) {
+        $diagnosticsReviewMismatches.Add("summary.separate_human_content_review_required is not true")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.review_scope.automated_redaction_template)) {
+        $diagnosticsReviewMismatches.Add("review_scope.automated_redaction_template is not true")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_scope.actual_package_content_review_completed)) {
+        $diagnosticsReviewMismatches.Add("review_scope.actual_package_content_review_completed is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_scope.automated_template_is_actual_package_content_review)) {
+        $diagnosticsReviewMismatches.Add("review_scope.automated_template_is_actual_package_content_review is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.review_scope.actual_content_review_required_before_external_sharing)) {
+        $diagnosticsReviewMismatches.Add("review_scope.actual_content_review_required_before_external_sharing is not true")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_scope.review_fields_complete)) {
+        $diagnosticsReviewMismatches.Add("review_scope.review_fields_complete is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.review_scope.external_sharing_blocked)) {
+        $diagnosticsReviewMismatches.Add("review_scope.external_sharing_blocked is not true")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.review_scope.separate_human_content_review_required)) {
+        $diagnosticsReviewMismatches.Add("review_scope.separate_human_content_review_required is not true")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.claim_controls.public_safe)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.public_safe is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.claim_controls.external_sharing_allowed)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.external_sharing_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.claim_controls.claim_allowed)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.claim_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.claim_controls.helper_can_approve_public_safety)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.helper_can_approve_public_safety is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.claim_controls.helper_can_authorize_external_sharing)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.helper_can_authorize_external_sharing is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.claim_controls.actual_content_review_required)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.actual_content_review_required is not true")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.claim_controls.actual_content_review_completed)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.actual_content_review_completed is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.claim_controls.external_sharing_blocked)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.external_sharing_blocked is not true")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.claim_controls.separate_human_content_review_required)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.separate_human_content_review_required is not true")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.claim_controls.public_safe_approval_created)) {
+        $diagnosticsReviewMismatches.Add("claim_controls.public_safe_approval_created is not false")
     }
     if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_template.public_safe)) {
         $diagnosticsReviewMismatches.Add("review_template.public_safe is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_template.external_sharing_allowed)) {
+        $diagnosticsReviewMismatches.Add("review_template.external_sharing_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_template.claim_allowed)) {
+        $diagnosticsReviewMismatches.Add("review_template.claim_allowed is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.review_template.required_before_external_sharing)) {
+        $diagnosticsReviewMismatches.Add("review_template.required_before_external_sharing is not true")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_template.review_fields_complete)) {
+        $diagnosticsReviewMismatches.Add("review_template.review_fields_complete is not false")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.review_template.external_sharing_blocked)) {
+        $diagnosticsReviewMismatches.Add("review_template.external_sharing_blocked is not true")
+    }
+    if (-not (Test-JsonTrue $latestDiagnosticsReview.data.review_template.separate_human_content_review_required)) {
+        $diagnosticsReviewMismatches.Add("review_template.separate_human_content_review_required is not true")
+    }
+    if (-not (Test-JsonFalse $latestDiagnosticsReview.data.review_template.actual_package_content_review_completed)) {
+        $diagnosticsReviewMismatches.Add("review_template.actual_package_content_review_completed is not false")
     }
     if ($diagnosticsReviewMismatches.Count -gt 0) {
         $contractFailures.Add("latest diagnostics external-review helper artifact failed fail-closed validation")
@@ -1206,8 +1801,13 @@ $diagnosticsReviewLatestSummary = if ($latestDiagnosticsReview.found -and $null 
         review_status = $safeReviewStatus
         public_safe = $false
         external_sharing_allowed = $false
+        claim_allowed = $false
         human_review_signoff = $false
         template_is_human_signoff = $false
+        review_fields_complete = $false
+        actual_package_content_review_completed = $false
+        external_sharing_blocked = $true
+        separate_human_content_review_required = $true
         checklist_count = Get-ArrayCount $latestDiagnosticsReview.data.review_template.checklist
     }
 }
@@ -1227,6 +1827,11 @@ else {
         review_status = "not_collected_by_this_packet"
         public_safe = $false
         external_sharing_allowed = $false
+        claim_allowed = $false
+        review_fields_complete = $false
+        actual_package_content_review_completed = $false
+        external_sharing_blocked = $true
+        separate_human_content_review_required = $true
     }
 }
 
@@ -1237,6 +1842,8 @@ $resultQualityReviewNeedles = @(
     'signoff = $false',
     'claim_allowed = $false',
     'completed_result_evidence = $false',
+    'result_quality_claim_blocked = $true',
+    'separate_human_signoff_required = $true',
     'packet_is_rc_signoff = $false',
     'packet_is_release_signoff = $false',
     "not completed-result evidence",
@@ -1272,6 +1879,12 @@ $resultQualityReviewLatestSummary = if ($latestResultQualityReview.found -and $n
     if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.claim_allowed)) {
         $resultQualityMismatches.Add("summary.claim_allowed is not false")
     }
+    if (-not (Test-JsonTrue $latestResultQualityReview.data.summary.result_quality_claim_blocked)) {
+        $resultQualityMismatches.Add("summary.result_quality_claim_blocked is not true")
+    }
+    if (-not (Test-JsonTrue $latestResultQualityReview.data.summary.separate_human_signoff_required)) {
+        $resultQualityMismatches.Add("summary.separate_human_signoff_required is not true")
+    }
     if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.completed_result_evidence)) {
         $resultQualityMismatches.Add("summary.completed_result_evidence is not false")
     }
@@ -1286,6 +1899,12 @@ $resultQualityReviewLatestSummary = if ($latestResultQualityReview.found -and $n
     }
     if (-not (Test-JsonFalse $latestResultQualityReview.data.claim_controls.claim_allowed)) {
         $resultQualityMismatches.Add("claim_controls.claim_allowed is not false")
+    }
+    if (-not (Test-JsonTrue $latestResultQualityReview.data.claim_controls.result_quality_claim_blocked)) {
+        $resultQualityMismatches.Add("claim_controls.result_quality_claim_blocked is not true")
+    }
+    if (-not (Test-JsonTrue $latestResultQualityReview.data.claim_controls.separate_human_signoff_required)) {
+        $resultQualityMismatches.Add("claim_controls.separate_human_signoff_required is not true")
     }
     if (-not (Test-JsonFalse $latestResultQualityReview.data.claim_controls.result_quality_signoff)) {
         $resultQualityMismatches.Add("claim_controls.result_quality_signoff is not false")
@@ -1314,6 +1933,19 @@ $resultQualityReviewLatestSummary = if ($latestResultQualityReview.found -and $n
     if (-not (Test-JsonNonNegativeInteger $latestResultQualityReview.data.summary.issue_count)) {
         $resultQualityMismatches.Add("summary.issue_count is not a non-negative JSON integer")
     }
+    $expectedReviewFieldsComplete = [bool](
+        $resultQualityStatus -eq "manual_review_fields_recorded_not_signoff" -and
+        (Test-JsonNonNegativeInteger $latestResultQualityReview.data.summary.missing_field_count) -and
+        (Test-JsonNonNegativeInteger $latestResultQualityReview.data.summary.issue_count) -and
+        [int64]$latestResultQualityReview.data.summary.missing_field_count -eq 0 -and
+        [int64]$latestResultQualityReview.data.summary.issue_count -eq 0
+    )
+    if ($latestResultQualityReview.data.summary.review_fields_complete -isnot [bool]) {
+        $resultQualityMismatches.Add("summary.review_fields_complete is not a JSON boolean")
+    }
+    elseif ([bool]$latestResultQualityReview.data.summary.review_fields_complete -ne $expectedReviewFieldsComplete) {
+        $resultQualityMismatches.Add("summary.review_fields_complete does not match missing/issue/status state")
+    }
     if ($resultQualityMismatches.Count -gt 0) {
         $contractFailures.Add("latest result-quality review helper artifact failed fail-closed validation")
     }
@@ -1325,11 +1957,14 @@ $resultQualityReviewLatestSummary = if ($latestResultQualityReview.found -and $n
         source_contract_status = if ($resultQualityMismatches.Count -eq 0) { "valid_not_signoff_template" } else { "source_contract_mismatch" }
         mismatch_reasons = @($resultQualityMismatches)
         review_status = if ($resultQualityStatus -in $allowedResultQualityStatuses) { $resultQualityStatus } else { "invalid_redacted" }
+        review_fields_complete = [bool]($latestResultQualityReview.data.summary.review_fields_complete -is [bool] -and [bool]$latestResultQualityReview.data.summary.review_fields_complete -and $resultQualityMismatches.Count -eq 0)
         missing_field_count = Get-StrictJsonNonNegativeIntegerOrZero $latestResultQualityReview.data.summary.missing_field_count
         issue_count = Get-StrictJsonNonNegativeIntegerOrZero $latestResultQualityReview.data.summary.issue_count
         blocked_reason_count = Get-ArrayCount $latestResultQualityReview.data.reviewer.blocked_reason_redacted
         observed_artifact_count = Get-ArrayCount $latestResultQualityReview.data.task_result_artifact.observed_artifacts_redacted
         result_quality_signoff = $false
+        result_quality_claim_blocked = $true
+        separate_human_signoff_required = $true
         signoff = $false
         claim_allowed = $false
         completed_result_evidence = $false
@@ -1363,6 +1998,289 @@ else {
         completed_result_evidence = $false
         release_candidate_signoff = $false
         release_signoff = $false
+    }
+}
+
+$rcHandoffNeedles = @(
+    "rc-handoff-template.redacted.json",
+    "NOT_RELEASE_CANDIDATE_SIGNOFF",
+    'release_candidate_signoff = $false',
+    'claim_allowed = $false',
+    'template_is_rc_pass = $false',
+    'template_is_release_signoff = $false',
+    'gate_commands_run_by_this_helper = $false',
+    'must_not_tag_publish_or_announce = $true',
+    "Do not tag, publish, announce, ship, or call the candidate passed from this template"
+)
+$rcHandoffContract = Get-SourceContract "scripts/collect_rc_handoff_template.ps1" $rcHandoffNeedles
+if (-not $rcHandoffContract.required_markers_present) {
+    $contractFailures.Add("RC handoff template source contract is missing required non-signoff markers")
+}
+
+$latestRcHandoff = Find-LatestJsonArtifact $rcHandoffEvidenceRootPath "rc-handoff-template.redacted.json"
+$rcHandoffLatestSummary = if ($latestRcHandoff.found -and $null -ne $latestRcHandoff.data) {
+    $rcHandoffMismatches = New-Object System.Collections.Generic.List[string]
+    $rcMarker = [string]$latestRcHandoff.data.marker
+    $rcStatus = [string]$latestRcHandoff.data.summary.status
+    $rcMissingRequiredFieldsCount = Get-ArrayCount $latestRcHandoff.data.summary.missing_required_fields
+    $allowedRcStatuses = @(
+        "manual_rc_handoff_required",
+        "manual_rc_handoff_recorded_unverified_by_this_helper"
+    )
+    $rcRequiredFields = @(
+        "candidate.commit_or_build_id",
+        "candidate.platform",
+        "artifact_labels",
+        "gate_results.commands_and_exits",
+        "strict_state_source",
+        "manual_p1_checks",
+        "waivers",
+        "residual_risks"
+    )
+    $rcArtifactLabelCount = Get-ArrayCount $latestRcHandoff.data.artifacts.labels
+    $rcGateEntryCount = Get-ArrayCount $latestRcHandoff.data.gate_results.entries
+    $rcManualP1CheckCount = Get-ArrayCount $latestRcHandoff.data.manual_p1_checks.entries
+    $rcWaiverCount = Get-ArrayCount $latestRcHandoff.data.waivers.entries
+    $rcResidualRiskCount = Get-ArrayCount $latestRcHandoff.data.residual_risks.entries
+    $rcCandidateCommitOrBuildRecorded = (Test-MeaningfulEvidenceValue ([string]$latestRcHandoff.data.candidate.commit)) -or (Test-MeaningfulEvidenceValue ([string]$latestRcHandoff.data.candidate.build_id))
+    $rcPlatformRecorded = Test-MeaningfulEvidenceValue ([string]$latestRcHandoff.data.candidate.platform)
+    $rcStrictStateRecorded = Test-MeaningfulEvidenceValue ([string]$latestRcHandoff.data.strict_state_source.source)
+
+    if (-not (Test-JsonIntegerOne $latestRcHandoff.data.schema_version)) {
+        $rcHandoffMismatches.Add("schema_version is not 1")
+    }
+    if ([string]$latestRcHandoff.data.generated_by -ne "scripts/collect_rc_handoff_template.ps1") {
+        $rcHandoffMismatches.Add("generated_by is not scripts/collect_rc_handoff_template.ps1")
+    }
+    if ($rcMarker -ne "NOT_RELEASE_CANDIDATE_SIGNOFF") {
+        $rcHandoffMismatches.Add("marker is missing or not NOT_RELEASE_CANDIDATE_SIGNOFF")
+    }
+    if ($rcStatus -notin $allowedRcStatuses) {
+        $rcHandoffMismatches.Add("summary.status is not a recognized non-signoff RC handoff status")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.summary.release_candidate_signoff)) {
+        $rcHandoffMismatches.Add("summary.release_candidate_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.summary.claim_allowed)) {
+        $rcHandoffMismatches.Add("summary.claim_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.summary.template_is_rc_pass)) {
+        $rcHandoffMismatches.Add("summary.template_is_rc_pass is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.summary.template_is_release_signoff)) {
+        $rcHandoffMismatches.Add("summary.template_is_release_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.summary.gate_commands_run_by_this_helper)) {
+        $rcHandoffMismatches.Add("summary.gate_commands_run_by_this_helper is not false")
+    }
+    if (-not (Test-JsonNonNegativeInteger $latestRcHandoff.data.summary.missing_required_fields_count)) {
+        $rcHandoffMismatches.Add("summary.missing_required_fields_count is not a non-negative JSON integer")
+    }
+    elseif ([int64]$latestRcHandoff.data.summary.missing_required_fields_count -ne [int64]$rcMissingRequiredFieldsCount) {
+        $rcHandoffMismatches.Add("summary.missing_required_fields_count does not match missing_required_fields")
+    }
+    if ($rcStatus -eq "manual_rc_handoff_recorded_unverified_by_this_helper" -and $rcMissingRequiredFieldsCount -ne 0) {
+        $rcHandoffMismatches.Add("recorded RC handoff status still has missing required fields")
+    }
+    if ($rcStatus -eq "manual_rc_handoff_required" -and $rcMissingRequiredFieldsCount -eq 0) {
+        $rcHandoffMismatches.Add("required RC handoff status has no missing required fields")
+    }
+    foreach ($requiredField in $rcRequiredFields) {
+        if (-not (Test-ArrayContainsText $latestRcHandoff.data.required_fields $requiredField)) {
+            $rcHandoffMismatches.Add("required_fields is missing $requiredField")
+        }
+    }
+    if ($rcStatus -eq "manual_rc_handoff_recorded_unverified_by_this_helper") {
+        if (-not $rcCandidateCommitOrBuildRecorded) {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing candidate commit or build id")
+        }
+        if ([string]$latestRcHandoff.data.candidate.commit_or_build_id_status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("candidate.commit_or_build_id_status is not recorded")
+        }
+        if (-not $rcPlatformRecorded) {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing candidate platform")
+        }
+        if ([string]$latestRcHandoff.data.candidate.platform_status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("candidate.platform_status is not recorded")
+        }
+        if ($rcArtifactLabelCount -eq 0 -or [string]$latestRcHandoff.data.artifacts.status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing recorded artifact labels")
+        }
+        if ($rcGateEntryCount -eq 0 -or [string]$latestRcHandoff.data.gate_results.status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing recorded gate command/exit entries")
+        }
+        if (-not (Test-JsonTrue $latestRcHandoff.data.gate_results.commands_and_exits_count_match)) {
+            $rcHandoffMismatches.Add("recorded RC handoff gate command/exit counts do not match")
+        }
+        if (-not $rcStrictStateRecorded -or [string]$latestRcHandoff.data.strict_state_source.status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing strict-state source")
+        }
+        if ($rcManualP1CheckCount -eq 0 -or [string]$latestRcHandoff.data.manual_p1_checks.status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing manual P1 checks")
+        }
+        if ($rcWaiverCount -eq 0 -or [string]$latestRcHandoff.data.waivers.status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing waiver record")
+        }
+        if ($rcResidualRiskCount -eq 0 -or [string]$latestRcHandoff.data.residual_risks.status -ne "recorded_unverified_by_this_helper") {
+            $rcHandoffMismatches.Add("recorded RC handoff is missing residual risk record")
+        }
+        foreach ($entry in @($latestRcHandoff.data.artifacts.labels)) {
+            if ($null -eq $entry -or -not (Test-MeaningfulEvidenceValue ([string]$entry.value))) {
+                $rcHandoffMismatches.Add("recorded RC handoff contains an empty artifact label")
+                break
+            }
+        }
+        foreach ($entry in @($latestRcHandoff.data.gate_results.entries)) {
+            if ($null -eq $entry -or -not (Test-MeaningfulEvidenceValue ([string]$entry.command)) -or -not (Test-RcGateExitValue ([string]$entry.exit_status)) -or -not (Test-JsonTrue $entry.exact_command_and_exit_recorded)) {
+                $rcHandoffMismatches.Add("recorded RC handoff contains an incomplete gate command/exit entry")
+                break
+            }
+        }
+        foreach ($entry in @($latestRcHandoff.data.manual_p1_checks.entries)) {
+            if ($null -eq $entry -or -not (Test-MeaningfulEvidenceValue ([string]$entry.value))) {
+                $rcHandoffMismatches.Add("recorded RC handoff contains an empty manual P1 check")
+                break
+            }
+        }
+        foreach ($entry in @($latestRcHandoff.data.waivers.entries)) {
+            if ($null -eq $entry -or -not (Test-MeaningfulEvidenceValue ([string]$entry.value))) {
+                $rcHandoffMismatches.Add("recorded RC handoff contains an empty waiver record")
+                break
+            }
+        }
+        foreach ($entry in @($latestRcHandoff.data.residual_risks.entries)) {
+            if ($null -eq $entry -or -not (Test-MeaningfulEvidenceValue ([string]$entry.value))) {
+                $rcHandoffMismatches.Add("recorded RC handoff contains an empty residual risk")
+                break
+            }
+        }
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.signoff_controls.release_candidate_signoff)) {
+        $rcHandoffMismatches.Add("signoff_controls.release_candidate_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.signoff_controls.claim_allowed)) {
+        $rcHandoffMismatches.Add("signoff_controls.claim_allowed is not false")
+    }
+    if (-not (Test-JsonTrue $latestRcHandoff.data.signoff_controls.pass_defaults_remain_false)) {
+        $rcHandoffMismatches.Add("signoff_controls.pass_defaults_remain_false is not true")
+    }
+    if (-not (Test-JsonTrue $latestRcHandoff.data.signoff_controls.must_not_tag_publish_or_announce)) {
+        $rcHandoffMismatches.Add("signoff_controls.must_not_tag_publish_or_announce is not true")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.readonly_scope.starts_product_processes)) {
+        $rcHandoffMismatches.Add("readonly_scope.starts_product_processes is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.readonly_scope.runs_release_commands)) {
+        $rcHandoffMismatches.Add("readonly_scope.runs_release_commands is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.readonly_scope.performs_network_requests)) {
+        $rcHandoffMismatches.Add("readonly_scope.performs_network_requests is not false")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.readonly_scope.installs_dependencies)) {
+        $rcHandoffMismatches.Add("readonly_scope.installs_dependencies is not false")
+    }
+    if (-not (Test-JsonTrue $latestRcHandoff.data.readonly_scope.writes_only_rc_handoff_template_artifacts)) {
+        $rcHandoffMismatches.Add("readonly_scope.writes_only_rc_handoff_template_artifacts is not true")
+    }
+    if (-not (Test-JsonTrue $latestRcHandoff.data.gate_results.exact_commands_and_exits_required)) {
+        $rcHandoffMismatches.Add("gate_results.exact_commands_and_exits_required is not true")
+    }
+    if (-not (Test-JsonFalse $latestRcHandoff.data.gate_results.commands_run_by_this_helper)) {
+        $rcHandoffMismatches.Add("gate_results.commands_run_by_this_helper is not false")
+    }
+    foreach ($entry in @($latestRcHandoff.data.gate_results.entries)) {
+        if (-not (Test-JsonFalse $entry.pass_verified_by_this_helper)) {
+            $rcHandoffMismatches.Add("gate_results.entries.pass_verified_by_this_helper is not false")
+            break
+        }
+    }
+    if (-not (Test-ArrayContainsText $latestRcHandoff.data.must_not_be_recorded_as "release-candidate pass")) {
+        $rcHandoffMismatches.Add("must_not_be_recorded_as is missing release-candidate pass")
+    }
+    if (-not (Test-ArrayContainsText $latestRcHandoff.data.must_not_be_recorded_as "release sign-off")) {
+        $rcHandoffMismatches.Add("must_not_be_recorded_as is missing release sign-off")
+    }
+    if (-not (Test-ArrayContainsText $latestRcHandoff.data.must_not_be_recorded_as "permission to tag, publish, announce, or ship")) {
+        $rcHandoffMismatches.Add("must_not_be_recorded_as is missing permission-to-ship warning")
+    }
+
+    if ($rcHandoffMismatches.Count -gt 0) {
+        $contractFailures.Add("latest RC handoff helper artifact failed fail-closed validation")
+    }
+
+    [ordered]@{
+        found = $true
+        path = $latestRcHandoff.path
+        last_write_utc = $latestRcHandoff.last_write_utc
+        marker = if ($rcMarker -eq "NOT_RELEASE_CANDIDATE_SIGNOFF") { $rcMarker } else { "invalid_redacted" }
+        source_contract_status = if ($rcHandoffMismatches.Count -eq 0) { "valid_not_signoff_template" } else { "source_contract_mismatch" }
+        mismatch_reasons = @($rcHandoffMismatches)
+        handoff_status = if ($rcStatus -in $allowedRcStatuses) { $rcStatus } else { "invalid_redacted" }
+        release_candidate_signoff = $false
+        claim_allowed = $false
+        template_is_rc_pass = $false
+        template_is_release_signoff = $false
+        gate_commands_run_by_this_helper = $false
+        must_not_tag_publish_or_announce = $true
+        missing_required_fields_count = Get-StrictJsonNonNegativeIntegerOrZero $latestRcHandoff.data.summary.missing_required_fields_count
+        missing_required_fields = @($latestRcHandoff.data.summary.missing_required_fields)
+        required_fields_recorded = [bool]($rcStatus -eq "manual_rc_handoff_recorded_unverified_by_this_helper" -and $rcMissingRequiredFieldsCount -eq 0 -and $rcHandoffMismatches.Count -eq 0)
+        artifact_label_count = $rcArtifactLabelCount
+        gate_result_count = $rcGateEntryCount
+        manual_p1_check_count = $rcManualP1CheckCount
+        waiver_count = $rcWaiverCount
+        residual_risk_count = $rcResidualRiskCount
+        candidate = [ordered]@{
+            commit = Redact-TextValue ([string]$latestRcHandoff.data.candidate.commit)
+            build_id = Redact-TextValue ([string]$latestRcHandoff.data.candidate.build_id)
+            platform = Redact-TextValue ([string]$latestRcHandoff.data.candidate.platform)
+            commit_or_build_id_status = Redact-TextValue ([string]$latestRcHandoff.data.candidate.commit_or_build_id_status)
+            platform_status = Redact-TextValue ([string]$latestRcHandoff.data.candidate.platform_status)
+        }
+    }
+}
+elseif ($latestRcHandoff.found) {
+    $contractFailures.Add("latest RC handoff helper artifact could not be parsed")
+    [ordered]@{
+        found = $true
+        path = $latestRcHandoff.path
+        last_write_utc = $latestRcHandoff.last_write_utc
+        parse_error = $latestRcHandoff.error
+        source_contract_status = "parse_error"
+        release_candidate_signoff = $false
+        claim_allowed = $false
+        template_is_rc_pass = $false
+        template_is_release_signoff = $false
+        gate_commands_run_by_this_helper = $false
+        must_not_tag_publish_or_announce = $true
+        required_fields_recorded = $false
+        artifact_label_count = 0
+        gate_result_count = 0
+        manual_p1_check_count = 0
+        waiver_count = 0
+        residual_risk_count = 0
+    }
+}
+else {
+    [ordered]@{
+        found = $false
+        evidence_root = Get-DisplayPath $rcHandoffEvidenceRootPath
+        source_contract_status = "not_collected_by_this_packet"
+        handoff_status = "not_collected_by_this_packet"
+        release_candidate_signoff = $false
+        claim_allowed = $false
+        template_is_rc_pass = $false
+        template_is_release_signoff = $false
+        gate_commands_run_by_this_helper = $false
+        must_not_tag_publish_or_announce = $true
+        missing_required_fields_count = 0
+        missing_required_fields = @()
+        required_fields_recorded = $false
+        artifact_label_count = 0
+        gate_result_count = 0
+        manual_p1_check_count = 0
+        waiver_count = 0
+        residual_risk_count = 0
     }
 }
 
@@ -1434,6 +2352,15 @@ $releaseReadinessBlockers = @(
         must_not_claim = "real-device mobile LAN/WSS pass"
     }
     [ordered]@{
+        id = "android_installable_remote_control"
+        status = if ($androidReleaseGateLatestSummary.release_ready) { "recorded_by_android_release_gate" } else { "missing_apk_or_real_device_gate" }
+        claim_allowed = [bool]$androidReleaseGateLatestSummary.claim_controls.installable_android_app_claim_allowed -and [bool]$androidReleaseGateLatestSummary.claim_controls.real_device_remote_control_claim_allowed
+        support_evidence = "Android real-device fail-closed template, Android release gate preflight, EAS profile config, and mobile client smokes only"
+        required_evidence = "installable QA APK path/hash plus reviewed Android/emulator HTTPS/WSS remote-control evidence JSON backed by QR, trust, screen, input, revoke, expiry, and redaction artifacts"
+        beginner_next_step = "Run npm run evidence:android-real-device-template, run npm run android:release-gate -- -PreflightOnly, build the preview APK, then rerun the strict gate with -ArtifactPath and -RealDeviceEvidencePath."
+        must_not_claim = "installable Android app or real-device Android remote-control pass"
+    }
+    [ordered]@{
         id = "natural_language_result_quality"
         status = "missing_result_quality_signoff"
         claim_allowed = $false
@@ -1486,8 +2413,8 @@ $packet = [ordered]@{
         mobile_hosts = "uses existing redacted labels only"
     }
     summary = [ordered]@{
-        automated_evidence_items = 8
-        indexed_evidence_buckets = 8
+        automated_evidence_items = 12
+        indexed_evidence_buckets = 12
         evidence_count_is_not_acceptance_count = $true
         source_contract_failures = $contractFailures.Count
         packet_is_pass = $false
@@ -1521,6 +2448,52 @@ $packet = [ordered]@{
                 "not an actual WSS connection",
                 "not Android/emulator certificate trust evidence",
                 "not real-device pass evidence"
+            )
+        }
+        android_release_gate = [ordered]@{
+            status = if ($androidReleaseGateContract.required_markers_present) { "entry_available" } else { "source_contract_missing" }
+            source_contract = $androidReleaseGateContract
+            latest_redacted_summary = $androidReleaseGateLatestSummary
+            expected_preflight_status = "preflight_ready_not_release"
+            expected_strict_status = "passed"
+            expected_packet_creates_apk_or_real_device_pass = $false
+            automated_scope = "source/config preflight plus strict gate result when APK and real-device evidence are supplied"
+            not_signoff = @(
+                "preflight is not an APK build",
+                "preflight is not an install on Android",
+                "preflight is not phone/emulator WSS evidence",
+                "strict gate remains blocked without installable APK and reviewed real-device evidence"
+            )
+        }
+        android_real_device_evidence_template = [ordered]@{
+            status = if ($androidRealDeviceTemplateContract.required_markers_present) { "fail_closed_template_contract_present" } else { "source_contract_missing" }
+            source_contract = $androidRealDeviceTemplateContract
+            latest_redacted_template = $androidRealDeviceTemplateLatestSummary
+            automated_scope = "template/source contract and latest fail-closed redacted template if present"
+            expected_template_status = "manual_real_device_evidence_required"
+            expected_real_device_result = "uncollected"
+            expected_pass_claim_allowed = $false
+            not_signoff = @(
+                "template is not a phone/emulator run",
+                "template is not camera QR evidence",
+                "template is not HTTPS/WSS or certificate-trust evidence",
+                "template is not remote screen/input/revoke/expiry evidence",
+                "template is not a real-device pass until reviewed artifacts fill every required check"
+            )
+        }
+        mobile_remote_input_active_grant_contract = [ordered]@{
+            status = if (($mobileRemoteInputContracts | Where-Object { -not $_.required_markers_present }).Count -eq 0) { "fail_closed_source_contract_present" } else { "source_contract_missing" }
+            source_contracts = $mobileRemoteInputContracts
+            automated_scope = "static source contract markers in mobile UI/client/smoke sources"
+            verify_command = "npm --prefix mobile run smoke:remote-input-grant"
+            latest_execution_status = "not_run_by_this_packet"
+            not_signoff = @(
+                "not evidence that the smoke command was executed by this packet",
+                "not a real phone/emulator run",
+                "not proof of a live desktop-to-mobile remote input session",
+                "not backend TestClient, desktop smoke, packaged, or clean-machine evidence by itself",
+                "not actual WSS network evidence",
+                "not release-candidate sign-off"
             )
         }
         portable_first_screen_smoke = [ordered]@{
@@ -1575,6 +2548,10 @@ $packet = [ordered]@{
             expected_external_review_status = "manual_review_required"
             expected_required_before_external_sharing = $true
             expected_public_safe = $false
+            expected_claim_allowed = $false
+            expected_actual_package_content_review_completed = $false
+            expected_external_sharing_blocked = $true
+            expected_separate_human_content_review_required = $true
             verify_command = "python -m pytest backend/tests/test_system_diagnostics.py -q"
             not_signoff = @(
                 "not external public-safety approval",
@@ -1600,6 +2577,25 @@ $packet = [ordered]@{
                 "not release sign-off"
             )
         }
+        rc_handoff_template = [ordered]@{
+            status = if ($rcHandoffContract.required_markers_present) { "manual_rc_handoff_contract_present" } else { "source_contract_missing" }
+            source_contract = $rcHandoffContract
+            latest_redacted_handoff_template = $rcHandoffLatestSummary
+            expected_marker = "NOT_RELEASE_CANDIDATE_SIGNOFF"
+            expected_release_candidate_signoff = $false
+            expected_claim_allowed = $false
+            expected_gate_commands_run_by_this_helper = $false
+            verify_command = "python -m pytest backend/tests/test_start_app_script.py -q"
+            not_signoff = @(
+                "not release-candidate pass",
+                "not release-candidate sign-off",
+                "not release sign-off",
+                "not proof that release gates were run",
+                "not permission to tag, publish, announce, or ship",
+                "not waiver approval",
+                "not manual P1 review approval"
+            )
+        }
         settings_local_model_smoke = [ordered]@{
             status = if ($settingsContract.required_markers_present -and $settingsArtifactsPresent -eq $settingsArtifactNames.Count) { "source_contract_and_artifacts_present" } elseif ($settingsContract.required_markers_present) { "source_contract_present_artifacts_incomplete" } else { "source_contract_missing" }
             source_contract = $settingsContract
@@ -1622,6 +2618,7 @@ $packet = [ordered]@{
         "It does not create clean-machine local-model task-smoke pass evidence.",
         "It does not turn the local-model template or Settings dev smoke into clean-machine pass evidence.",
         "It does not create real phone/emulator camera/QR/WSS/certificate-trust evidence.",
+        "It does not create installable Android APK pass or real-device Android remote-control pass; Android template/gate entries are indexed redacted evidence only.",
         "It does not create natural-language result-quality sign-off; result_quality_signoff remains false pending separate human sign-off.",
         "It does not make diagnostics packages public-safe; public_safe remains false pending manual external review.",
         "It is not release-candidate sign-off without the release gate command results, candidate id, artifact paths, and manual P1 sign-off."
@@ -1662,6 +2659,7 @@ $packet = [ordered]@{
     next_manual_evidence_needed = @(
         "Clean-machine or packaged-profile local model install/start/pull/task-smoke evidence when local/offline model readiness is claimed.",
         "Real phone/emulator camera or QR pairing path, actual WSS connection, and explicit device certificate trust evidence when mobile LAN/WSS readiness is claimed.",
+        "Installable Android QA APK path/hash plus filled reviewed Android real-device evidence JSON and strict Android release gate evidence before claiming Android app or Android remote-control readiness.",
         "Actual natural-language result-quality human sign-off after reviewing the user-visible result, source/artifact labels, and next-step actionability.",
         "Manual diagnostics package review before any external sharing.",
         "Release-candidate artifact verification and manual P1 sign-off before RC approval."
@@ -1685,9 +2683,12 @@ foreach ($item in $packet.not_clean_machine_or_signoff) {
 }
 $markdownLines.Add("")
 $rcHandoff = $packet.rc_handoff_requirements
+$latestRcHandoffTemplate = $packet.evidence.rc_handoff_template.latest_redacted_handoff_template
 $markdownLines.Add("## RC Handoff Requirements")
 $markdownLines.Add("- Status: $($rcHandoff.status); release_candidate_signoff=$($rcHandoff.release_candidate_signoff); packet_is_rc_signoff=$($rcHandoff.packet_is_rc_signoff).")
 $markdownLines.Add("- Beginner instruction: $($rcHandoff.beginner_instruction)")
+$markdownLines.Add("- Latest RC handoff template: found=$($latestRcHandoffTemplate.found), status=$($latestRcHandoffTemplate.handoff_status), source_contract=$($latestRcHandoffTemplate.source_contract_status), missing_required_fields=$($latestRcHandoffTemplate.missing_required_fields_count), required_fields_recorded=$($latestRcHandoffTemplate.required_fields_recorded), release_candidate_signoff=$($latestRcHandoffTemplate.release_candidate_signoff), claim_allowed=$($latestRcHandoffTemplate.claim_allowed).")
+$markdownLines.Add("- Latest RC handoff counts: artifacts=$($latestRcHandoffTemplate.artifact_label_count), gate_entries=$($latestRcHandoffTemplate.gate_result_count), manual_p1_checks=$($latestRcHandoffTemplate.manual_p1_check_count), waivers=$($latestRcHandoffTemplate.waiver_count), residual_risks=$($latestRcHandoffTemplate.residual_risk_count); commands_run_by_helper=$($latestRcHandoffTemplate.gate_commands_run_by_this_helper).")
 $markdownLines.Add("- Required before RC sign-off:")
 foreach ($item in $rcHandoff.required_before_rc_signoff) {
     $markdownLines.Add("  - $item")
@@ -1705,14 +2706,22 @@ $markdownLines.Add("")
 $markdownLines.Add("## Evidence")
 $markdownLines.Add("")
 $markdownLines.Add("- Mobile LAN/WSS preflight: $($packet.evidence.mobile_lan_wss_preflight.status); latest summary result=$($packet.evidence.mobile_lan_wss_preflight.latest_redacted_summary.result)")
+$androidTemplate = $packet.evidence.android_real_device_evidence_template.latest_redacted_template
+$markdownLines.Add("- Android real-device evidence template: $($packet.evidence.android_real_device_evidence_template.status); found=$($androidTemplate.found); template_status=$($androidTemplate.template_status); real_device_result=$($androidTemplate.real_device_result); pass_claim_allowed=$($androidTemplate.pass_claim_allowed); not_signoff=fail-closed template only, not QR/HTTPS/WSS/certificate/screen/input/revoke/expiry pass evidence.")
+$androidGate = $packet.evidence.android_release_gate.latest_redacted_summary
+$markdownLines.Add("- Android release gate: $($packet.evidence.android_release_gate.status); latest status=$($androidGate.status); release_ready=$($androidGate.release_ready); preflight_only=$($androidGate.preflight_only); install_claim_allowed=$($androidGate.claim_controls.installable_android_app_claim_allowed); remote_claim_allowed=$($androidGate.claim_controls.real_device_remote_control_claim_allowed); artifact_label=$($androidGate.android_artifact.label); not_signoff=indexed redacted Android gate evidence only, not an APK/install/WSS pass created by this packet.")
+$markdownLines.Add("- Mobile remote-input active-grant contract: $($packet.evidence.mobile_remote_input_active_grant_contract.status); scope=$($packet.evidence.mobile_remote_input_active_grant_contract.automated_scope); latest_execution=$($packet.evidence.mobile_remote_input_active_grant_contract.latest_execution_status); verify=$($packet.evidence.mobile_remote_input_active_grant_contract.verify_command); not_signoff=source/client contract only, not live device/WSS.")
 $portableCompletionEvidence = $packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.natural_language_completion_evidence
 $markdownLines.Add("- Portable first-screen smoke: found=$($packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.found), read_only_pass=$($packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.first_screen_read_only_pass), natural_language=$($packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.natural_language_submission_evidence), completion_evidence.level=$($portableCompletionEvidence.level), result_verified=$($portableCompletionEvidence.result_verified), completed_result_evidence=$($portableCompletionEvidence.completed_result_evidence).")
 $markdownLines.Add("- Ollama/local-model contracts: $($packet.evidence.ollama_local_model_contracts.contract_count) backend contract tests counted; latest execution not run by this packet.")
 $localModelLatest = $packet.evidence.local_model_clean_machine_template.latest_redacted_clean_machine_template
 $markdownLines.Add("- Local model clean-machine template: found=$($localModelLatest.found), template_status=$($localModelLatest.template_status), artifact_status=$($localModelLatest.artifact_build_profile.status), runtime=$($localModelLatest.runtime.name) $($localModelLatest.runtime.version) [$($localModelLatest.runtime.status)], model=$($localModelLatest.model.name) $($localModelLatest.model.version) [$($localModelLatest.model.status)], install=$($localModelLatest.clean_machine_run.install.status), start=$($localModelLatest.clean_machine_run.start.status), pull=$($localModelLatest.clean_machine_run.pull.status), task_smoke=$($localModelLatest.clean_machine_run.task_smoke.status), clean_machine_signoff=$($localModelLatest.clean_machine_signoff), task_smoke_pass=$($localModelLatest.local_model_task_smoke_pass).")
 $markdownLines.Add("- Diagnostics external review: expected status=$($packet.evidence.diagnostics_external_review.expected_external_review_status), public_safe=$($packet.evidence.diagnostics_external_review.expected_public_safe).")
-$markdownLines.Add("- Diagnostics external review packet: found=$($packet.evidence.diagnostics_external_review.latest_redacted_review_packet.found), review_status=$($packet.evidence.diagnostics_external_review.latest_redacted_review_packet.review_status), public_safe=$($packet.evidence.diagnostics_external_review.latest_redacted_review_packet.public_safe).")
+$diagnosticsReviewPacket = $packet.evidence.diagnostics_external_review.latest_redacted_review_packet
+$markdownLines.Add("- Diagnostics external review packet: found=$($diagnosticsReviewPacket.found), review_status=$($diagnosticsReviewPacket.review_status), public_safe=$($diagnosticsReviewPacket.public_safe), claim_allowed=$($diagnosticsReviewPacket.claim_allowed), review_fields_complete=$($diagnosticsReviewPacket.review_fields_complete), actual_package_content_review_completed=$($diagnosticsReviewPacket.actual_package_content_review_completed), external_sharing_blocked=$($diagnosticsReviewPacket.external_sharing_blocked), separate_human_content_review_required=$($diagnosticsReviewPacket.separate_human_content_review_required).")
 $markdownLines.Add("- Result-quality review packet: found=$($packet.evidence.result_quality_review.latest_redacted_review_packet.found), review_status=$($packet.evidence.result_quality_review.latest_redacted_review_packet.review_status), result_quality_signoff=$($packet.evidence.result_quality_review.latest_redacted_review_packet.result_quality_signoff), completed_result_evidence=$($packet.evidence.result_quality_review.latest_redacted_review_packet.completed_result_evidence).")
+$rcHandoffTemplate = $packet.evidence.rc_handoff_template.latest_redacted_handoff_template
+$markdownLines.Add("- RC handoff template: found=$($rcHandoffTemplate.found), handoff_status=$($rcHandoffTemplate.handoff_status), release_candidate_signoff=$($rcHandoffTemplate.release_candidate_signoff), claim_allowed=$($rcHandoffTemplate.claim_allowed), gate_commands_run_by_this_helper=$($rcHandoffTemplate.gate_commands_run_by_this_helper), missing_required_fields=$($rcHandoffTemplate.missing_required_fields_count).")
 $markdownLines.Add("- Settings local-model smoke: $settingsArtifactsPresent/$($settingsArtifactNames.Count) expected screenshot artifacts present.")
 $markdownLines.Add("")
 $markdownLines.Add("## Next Manual Evidence")

@@ -1,10 +1,18 @@
-﻿# Real-Device Mobile Matrix
+# Real-Device Mobile Matrix
 
 Status date: 2026-06-09
 
 This matrix defines the manual Android or emulator evidence required before a release/demo may claim real mobile pairing, LAN TLS, remote screen, or remote input. Existing local smoke tests and PairScreen source/config assertions support this matrix but do not satisfy it.
 
-Current automated support evidence for the 2026-06-09 development workspace includes `backend/tests/test_mobile_pairing.py` at `88 passed` and `backend/tests/test_remote_desktop.py` at `28 passed`. Those results support mobile authorization, redaction, LAN TLS metadata, and remote WS backend contracts, but they do not satisfy any real phone/emulator HTTPS/WSS scenario below.
+Current automated support evidence for the 2026-06-09 development workspace includes the combined `python -m pytest backend/tests/test_mobile_pairing.py backend/tests/test_remote_desktop.py -q` run at `132 passed`, plus passing mobile/desktop targeted smokes/typechecks in the latest integration. Scheduler/preflight targeted checks are support-only development notes unless their exact command and run log are attached; do not cite an unbound `9 passed` count from this matrix. Those results support mobile authorization, redaction, LAN TLS metadata, remote WS backend contracts, remote-input text/key event contracts, and active-grant remote-input approval guards, but they do not satisfy any real phone/emulator HTTPS/WSS scenario below.
+
+How this connects to the Android gate:
+
+- `npm run evidence:mobile-lan-wss` and `npm run android:release-gate -- -PreflightOnly` are setup checks only; they are not camera QR, APK install, HTTPS/WSS, certificate trust, or remote-input pass evidence.
+- `npm run evidence:android-real-device-template` is only a fail-closed starting point for the reviewed JSON; leave pass/claim-control fields false until the artifacts in this matrix exist.
+- The generated `android-real-device-evidence.redacted.template.json` is not the strict-gate input until a reviewer fills a separate reviewed JSON with `real_device_result=passed`, `review.status=reviewed_passed`, redacted `device`, `transport`, `certificate`, and `evidence_artifacts_redacted` fields, and every required check below is backed by phone/emulator artifacts.
+- Strict `npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>"` may be recorded as Android gate evidence only after the reviewed JSON is backed by this matrix's phone/emulator artifacts.
+- New operators should use the generated `real-device-evidence-checklist.redacted.md` as the checklist, keep raw LAN/device values in local-only notes, and attach only redacted screenshots, clips, logs, and the reviewed Android evidence JSON to the QA packet.
 
 ## Evidence Header
 
@@ -32,8 +40,13 @@ The preflight can say the LAN/TLS prerequisites are ready, but it still runs wit
 | `artifact_collection_rules` | Follow the Markdown checklist: share only redacted artifacts, never token-bearing URLs, and keep raw LAN IPs/hosts/device names in local-only notes outside tracked source. |
 | `operator_collection_order` | Keep every step unchecked until real Android/emulator artifacts exist; the preflight output alone does not complete any step. |
 | `device_identity_redacted` | Record a redacted device/emulator label, not a personal device name. |
+| `device.kind`, `device.profile_label_redacted` | Fill `android_phone` or `android_emulator` plus a redacted profile label before strict Android gate review. |
+| `app.artifact_label_redacted`, `app.artifact_sha256` | Match the installable APK under test; the SHA-256 must match the APK passed to the strict gate. |
 | `https_origin_redacted`, `approval_wss_origin_redacted`, `remote_screen_wss_origin_redacted`, `remote_input_wss_origin_redacted` | Use redacted origins from the preflight or from reviewed artifacts; do not paste token-bearing URLs. |
+| `transport.https_origin_redacted`, `transport.approval_wss_origin_redacted`, `transport.remote_screen_wss_origin_redacted`, `transport.remote_input_wss_origin_redacted` | Fill the strict-gate transport fields with redacted `https://[redacted-host]` and `wss://[redacted-host]/...` labels only after device-originated evidence exists. |
 | `certificate_trust_path` | Fill only after explicit Android/emulator trust evidence exists. |
+| `certificate.trust_path_label_redacted`, `certificate.fingerprint_label_redacted` | Record the Android/emulator trust path, CA, or fingerprint label without raw hostnames, private paths, cert secrets, or key material. |
+| `review.status`, `review.reviewer_label`, `review.reviewed_at_utc`, `evidence_artifacts_redacted` | Fill only after a human reviews the actual screenshots, clips, logs, and notes; these are required before the strict gate can treat the reviewed JSON as passed. |
 | `camera_qr_path_evidence`, `actual_device_https_wss_evidence` | Leave as `uncollected` unless real camera/QR and device HTTPS/WSS evidence is attached. |
 | `approval_wss_evidence`, `remote_screen_wss_evidence`, `remote_input_wss_evidence` | Fill separately. Approval WSS evidence does not prove remote screen or input, and remote screen evidence does not prove input. |
 | `certificate_trust_evidence` | Leave as `uncollected` until the exact Android/emulator profile's certificate trust path is documented. |
@@ -59,7 +72,7 @@ Use this path after the preflight has produced `evidence-summary.redacted.json` 
 4. Pair with the camera QR path when scan-to-pair is claimed. If the operator pastes a payload or enters a code manually, label that artifact as fallback evidence only.
 5. Create a benign approval and prove `/ws/mobile/approvals` connected over WSS from the device. Capture both approve and reject outcomes.
 6. Open remote screen and prove `/ws/remote/screen` connected over WSS, frames render, and the default state is read-only.
-7. If remote input is in scope, grant input from desktop, prove `/ws/remote/input` connected over WSS with remaining time, and record a benign input approval/dry-run.
+7. If remote input is in scope, grant input from desktop, prove `/ws/remote/input` connected over WSS with remaining time, and record a benign input approval/dry-run whose public `binding_ref` or redacted active-grant label matches the current mobile session. Keep raw `deviceId`/`grantId` correlation in local-only reproduction notes.
 8. Revoke remote input from mobile, revoke from desktop or the device list, and observe expiry with a short grant. Evidence must show the UI returns to read-only/no-input and stale input cannot reconnect.
 9. Review screenshots, videos, backend logs, mobile logs, and proxy traces for mobile tokens, grant tokens, pairing codes, raw host/IPs, device names, private paths, nested model-action args, selectors, support-only notes, and task secrets before sharing.
 
@@ -78,9 +91,9 @@ Do not paste token-bearing URLs, Authorization headers, raw QR payloads, raw LAN
 | RD-001 | Android pair over HTTPS/WSS | Start backend on LAN with TLS, generate pairing info, pair from a real Android device or emulator. If camera scanning is claimed, use a real camera/emulator scan; otherwise label the pasted payload fallback clearly. | Screenshot/video of pair flow, HTTPS/WSS origin, certificate trust path, and paired state. | Real-device HTTPS/WSS pairing is not evidenced by repo. Source/smoke evidence is limited to PairScreen's `expo-camera` QR scanner path, paste parser, native camera permission config, and desktop QR generation. |
 | RD-002 | Same-LAN and firewall path | Verify the device reaches the backend over the LAN host/IP, not loopback or USB-only forwarding. | Network note showing same subnet/router path and successful HTTPS health or pairing reachability. | Not evidenced by repo. |
 | RD-003 | Non-TLS LAN blocked path | Attempt `http://<lan-ip>:<port>` from mobile. | UI blocks pairing before token exchange, or logs show zero token-bearing requests; record as blocked-path only. | Covered by mobile smoke, still needs real-device confirmation if demo mentions LAN hardening. |
-| RD-004 | Approval WebSocket over WSS | With paired device, create an approval on desktop and receive it on mobile. Approve and reject one benign request. | Mobile screen/video plus backend/audit log note; no token in URL artifacts and no nested model-action args, local paths, selectors, tokens, values, or support-only notes in phone-facing approval artifacts. | Backend and local smoke covered; latest `backend/tests/test_mobile_pairing.py` records `88 passed` across mobile approval redaction, token scope, device binding, companion task, and LAN TLS metadata paths. No real-device WSS evidence or phone artifact review. |
-| RD-005 | Remote screen read-only over WSS | Open remote screen, verify frames render and the default mode is read-only. | Screenshot/video of visible remote frame, connection state, transport notice, and read-only state. | Backend TestClient and mobile source exist; latest `backend/tests/test_remote_desktop.py` records `28 passed`; no real-device evidence. |
-| RD-006 | Remote input grant happy path | From desktop, grant remote input; mobile claims the grant and sends one click that still requires desktop-side approval. | Mobile shows authorized input, remaining time, and end-control; desktop shows approval/dry-run record for the input. | Backend/client smokes covered; no real-device evidence. |
+| RD-004 | Approval WebSocket over WSS | With paired device, create an approval on desktop and receive it on mobile. Approve and reject one benign request. | Mobile screen/video plus backend/audit log note; no token in URL artifacts and no nested model-action args, local paths, selectors, tokens, values, or support-only notes in phone-facing approval artifacts. | Backend and local smoke covered; latest backend mobile+remote targeted combined run records `132 passed` across mobile approval redaction, token scope, device binding, companion task, LAN TLS metadata, and remote WS paths. No real-device WSS evidence or phone artifact review. |
+| RD-005 | Remote screen read-only over WSS | Open remote screen, verify frames render and the default mode is read-only. | Screenshot/video of visible remote frame, connection state, transport notice, and read-only state. | Backend TestClient, mobile source, and latest targeted smokes covered; no real-device evidence. |
+| RD-006 | Remote input grant happy path | From desktop, grant remote input; mobile claims the grant and sends benign click, text, and key/PageDown input that still requires desktop-side approval. The approval must be for the active mobile grant, not a stale or different device/grant. Shareable artifacts should use the phone-facing HMAC `binding_ref` or a redacted active-grant label; raw `deviceId`/`grantId` stay in local-only reproduction notes. | Mobile shows authorized input, remaining time, text/key controls, zoom/pan state, and end-control; desktop shows approval/dry-run record for each input; evidence notes confirm the public approval `binding_ref` matched the current mobile grant, with raw id correlation kept local-only if needed. | Backend/client smokes cover active-grant mismatch blocking and matching-grant acceptance; backend WebSocket tests cover text/key event approval contracts; no real-device evidence. |
 | RD-007 | Grant revoke from mobile | Tap end-control on mobile during active grant. | Mobile returns to read-only/disabled input; `/ws/remote/input` closes or stops accepting events. | Backend/client smokes covered; no real-device evidence. |
 | RD-008 | Grant revoke from desktop | Revoke the active grant or revoke the device from desktop while mobile is connected. | Mobile shows revoked/offline/disconnected state and cannot send input. | Backend TestClient covered; no real-device evidence. |
 | RD-009 | Grant expiry | Use a shortened grant or wait for TTL expiration. | Mobile remaining-time display reaches expired/disabled and input cannot reconnect. | Backend/client smokes covered; no real-device evidence. |
@@ -105,7 +118,14 @@ Use a candidate-specific folder outside tracked source, for example `.tmp/qa-evi
 - `run-notes.md`: evidence header plus scenario outcomes.
 - `real-device-evidence-checklist.redacted.md`: generated checklist from the preflight, kept as preflight/config evidence until filled by reviewed phone/emulator artifacts.
 - `evidence-summary.redacted.json`: generated preflight JSON with `manual_real_device_evidence_template`.
+- `android-real-device-evidence.redacted.json`: reviewed strict-gate input using `artifact_type=android-real-device-remote-control-evidence`; it should contain only redacted labels plus passed/blocked fields, not raw tokens, raw host/IPs, raw device ids, or raw grant ids.
+- `android-real-device-evidence.redacted.template.json`: optional fail-closed output from `npm run evidence:android-real-device-template`; keep it as a starting template only, not pass evidence.
+- `android-release-gate.redacted.json`: output from `.\scripts\verify_android_release_gate.ps1 -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>"`.
 - `screens/`: redacted screenshots or short clips.
 - `logs/`: redacted backend/mobile/proxy snippets.
 - `commands.txt`: automated commands and exit codes.
 - `cert.txt`: certificate fingerprint, source, and Android/emulator trust path.
+
+The strict Android evidence JSON must include `claim_controls.real_device_pass_claim_allowed=true` only after the APK was installed on the target device/profile, camera QR or documented emulator scan completed, approval/remote screen/remote input WSS paths connected from that device, certificate trust was explicit on that device, click/text/key/PageDown approvals were observed, mobile end-control/desktop revoke/grant expiry all returned to read-only, and all artifacts were reviewed for tokens, pairing codes, raw hosts, raw device ids, raw grant ids, and private paths.
+
+Use `npm run evidence:android-real-device-template` to create a fail-closed starting point for `android-real-device-evidence.redacted.json`; do not change `real_device_result` or claim-control flags to passed/true until the reviewed artifacts exist.

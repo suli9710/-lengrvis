@@ -145,9 +145,15 @@ def test_diagnostics_external_review_packet_is_template_not_actual_content_revie
     assert packet["summary"]["public_safe"] is False
     assert packet["summary"]["external_sharing_allowed"] is False
     assert packet["summary"]["claim_allowed"] is False
+    assert packet["summary"]["review_fields_complete"] is False
+    assert packet["summary"]["external_sharing_blocked"] is True
+    assert packet["summary"]["separate_human_content_review_required"] is True
     assert packet["summary"]["actual_package_content_review_completed"] is False
     assert packet["summary"]["automated_template_only"] is True
     assert packet["review_scope"]["automated_redaction_template"] is True
+    assert packet["review_scope"]["review_fields_complete"] is False
+    assert packet["review_scope"]["external_sharing_blocked"] is True
+    assert packet["review_scope"]["separate_human_content_review_required"] is True
     assert packet["review_scope"]["actual_package_content_review_completed"] is False
     assert packet["review_scope"]["automated_template_is_actual_package_content_review"] is False
     assert packet["claim_controls"]["public_safe"] is False
@@ -155,6 +161,8 @@ def test_diagnostics_external_review_packet_is_template_not_actual_content_revie
     assert packet["claim_controls"]["claim_allowed"] is False
     assert packet["claim_controls"]["helper_can_approve_public_safety"] is False
     assert packet["claim_controls"]["helper_can_authorize_external_sharing"] is False
+    assert packet["claim_controls"]["external_sharing_blocked"] is True
+    assert packet["claim_controls"]["separate_human_content_review_required"] is True
     assert packet["claim_controls"]["public_safe_approval_created"] is False
 
     input_package = packet["input_diagnostics_package"]
@@ -166,6 +174,9 @@ def test_diagnostics_external_review_packet_is_template_not_actual_content_revie
     )
     assert packet["review_template"]["reviewer_identity_redacted"] == "uncollected"
     assert packet["review_template"]["reviewed_at_utc"] == "uncollected"
+    assert packet["review_template"]["review_fields_complete"] is False
+    assert packet["review_template"]["external_sharing_blocked"] is True
+    assert packet["review_template"]["separate_human_content_review_required"] is True
     assert "actual exported diagnostics package content review is uncollected" in packet[
         "review_template"
     ]["blocked_reason_redacted"]
@@ -191,6 +202,9 @@ def test_diagnostics_external_review_packet_is_template_not_actual_content_revie
     assert "External sharing allowed: false" in markdown
     assert "Claim allowed: false" in markdown
     assert "Actual package content review completed: false" in markdown
+    assert "Review fields complete: false" in markdown
+    assert "External sharing blocked: true" in markdown
+    assert "Separate human content review required: true" in markdown
     assert "This template is automated redaction/checklist scaffolding" in markdown
     assert "reviewed_logs" in markdown
     assert "reviewed_model_traces" in markdown
@@ -221,8 +235,12 @@ def test_diagnostics_external_review_packet_missing_package_keeps_claims_blocked
     assert packet["summary"]["public_safe"] is False
     assert packet["summary"]["external_sharing_allowed"] is False
     assert packet["summary"]["claim_allowed"] is False
+    assert packet["summary"]["external_sharing_blocked"] is True
+    assert packet["summary"]["separate_human_content_review_required"] is True
     assert packet["claim_controls"]["external_sharing_allowed"] is False
     assert packet["claim_controls"]["claim_allowed"] is False
+    assert packet["claim_controls"]["external_sharing_blocked"] is True
+    assert packet["claim_controls"]["separate_human_content_review_required"] is True
     assert packet["claim_controls"]["public_safe_approval_created"] is False
     assert packet["review_scope"]["actual_package_content_review_completed"] is False
 
@@ -241,6 +259,55 @@ def test_diagnostics_external_review_packet_missing_package_keeps_claims_blocked
     assert "claim_allowed=false" in markdown
 
 
+def test_diagnostics_external_review_packet_rejects_string_boolean_source_contract(
+    project_root: Path, tmp_path: Path
+) -> None:
+    diagnostics_package = tmp_path / "exports" / "lengrvis-diagnostics-string-bools.json"
+    _write_diagnostics_support_package(diagnostics_package)
+    package = json.loads(diagnostics_package.read_text(encoding="utf-8"))
+    redaction = package["diagnostics"]["support_package_redaction"]
+    redaction["public_safe"] = "false"
+    redaction["external_review"]["public_safe"] = "false"
+    redaction["external_review"]["required_before_external_sharing"] = "true"
+    diagnostics_package.write_text(
+        json.dumps(package, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    evidence_root = tmp_path / "string-bool-review-evidence"
+
+    result = _run_review_packet(
+        project_root,
+        evidence_root,
+        diagnostics_package_path=diagnostics_package,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    packet, markdown = _load_packet(evidence_root)
+    assert packet["summary"]["status"] == "blocked_contract_mismatch"
+    assert packet["summary"]["public_safe"] is False
+    assert packet["summary"]["external_sharing_allowed"] is False
+    assert packet["summary"]["claim_allowed"] is False
+    assert packet["summary"]["external_sharing_blocked"] is True
+    assert packet["summary"]["separate_human_content_review_required"] is True
+    assert packet["review_scope"]["actual_package_content_review_completed"] is False
+    assert packet["source_redaction_contract"]["package_public_safe_observation"] == (
+        "not_false_ignored"
+    )
+    assert packet["source_redaction_contract"]["external_review_public_safe_observation"] == (
+        "not_false_ignored"
+    )
+    assert packet["source_redaction_contract"][
+        "required_before_external_sharing_observation"
+    ] == "not_required_in_input_but_required_by_template"
+    issues = "\n".join(packet["issues_redacted"])
+    assert "support package public-safe flag was not false in input" in issues
+    assert "external review public-safe flag was not false in input" in issues
+    assert "external review is not marked required before external sharing" in issues
+    assert "External sharing allowed: false" in markdown
+    assert "Claim allowed: false" in markdown
+
+
 def test_release_gate_documents_diagnostics_review_claim_controls(project_root: Path) -> None:
     release_gate = (project_root / "docs" / "qa" / "release-gate.md").read_text(
         encoding="utf-8"
@@ -251,6 +318,9 @@ def test_release_gate_documents_diagnostics_review_claim_controls(project_root: 
     assert "`review_scope.automated_redaction_template=true`" in release_gate
     assert "`review_scope.actual_package_content_review_completed=false`" in release_gate
     assert "`claim_controls.public_safe_approval_created=false`" in release_gate
+    assert "`summary.review_fields_complete=false`" in release_gate
+    assert "`summary.external_sharing_blocked=true`" in release_gate
+    assert "`summary.separate_human_content_review_required=true`" in release_gate
     assert "actual exported package path label" in release_gate
     assert "logs/path labels/task traces/model traces/device identifiers" in release_gate
     assert "reviewer/timestamp" in release_gate

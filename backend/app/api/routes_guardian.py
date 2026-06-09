@@ -337,11 +337,13 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
                 return
             if await _close_if_mobile_claims_inactive(websocket, claims):
                 return
-            if event.get("type") == "approval_created":
+            if event.get("type") in {"approval_created", "approval_decided"}:
                 approval = event.get("approval")
                 if isinstance(approval, dict):
                     seen.add(str(approval.get("id") or ""))
-                await websocket.send_json({"type": "approval_notification", "approval": approval})
+                payload_type = "approval_notification" if event.get("type") == "approval_created" else "approval_decided"
+                safe_approval = mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+                await websocket.send_json({"type": payload_type, "approval": safe_approval})
             else:
                 await websocket.send_json(event)
     except WebSocketDisconnect:

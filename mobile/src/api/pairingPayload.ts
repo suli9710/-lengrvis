@@ -37,7 +37,7 @@ export class PairingPayloadParseError extends Error {
 }
 
 export function parsePairingPayload(value: string): PairingPayload {
-  const raw = value.trim();
+  const raw = normalizePairingPayloadText(value);
   if (!raw) {
     throw new PairingPayloadParseError("empty", "Pairing payload is empty.");
   }
@@ -75,7 +75,11 @@ export function classifyPairingPayloadSecurity(payload: Pick<PairingPayload, "ba
 function isExpiredPairingPayload(expiresAt: string | undefined, nowMs: number): boolean {
   if (!expiresAt) return false;
   const expiryMs = Date.parse(expiresAt);
-  return Number.isFinite(expiryMs) && expiryMs <= nowMs;
+  return !Number.isFinite(expiryMs) || expiryMs <= nowMs;
+}
+
+function normalizePairingPayloadText(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
 }
 
 function parseJsonPayload(raw: string): PairingPayload | null {

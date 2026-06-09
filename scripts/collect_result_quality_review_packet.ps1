@@ -242,6 +242,7 @@ elseif ($hasBlockingReason) {
 else {
     "manual_review_fields_recorded_not_signoff"
 }
+$reviewFieldsComplete = [bool]($missingFields.Count -eq 0 -and $issues.Count -eq 0 -and -not $hasBlockingReason)
 
 $packet = [ordered]@{
     schema_version = 1
@@ -270,6 +271,9 @@ $packet = [ordered]@{
     summary = [ordered]@{
         status = $summaryStatus
         blocked = ($summaryStatus -ne "manual_review_fields_recorded_not_signoff")
+        review_fields_complete = $reviewFieldsComplete
+        result_quality_claim_blocked = $true
+        separate_human_signoff_required = $true
         missing_field_count = $missingFields.Count
         issue_count = $issues.Count
         result_quality_signoff = $false
@@ -282,6 +286,8 @@ $packet = [ordered]@{
     }
     claim_controls = [ordered]@{
         claim_allowed = $false
+        result_quality_claim_blocked = $true
+        separate_human_signoff_required = $true
         result_quality_signoff = $false
         completed_result_evidence = $false
         not_completed_result_evidence = $true
@@ -336,6 +342,9 @@ $markdownLines.Add("- Generated: $($packet.generated_at_utc)")
 $markdownLines.Add("- JSON: $($packet.outputs.redacted_json)")
 $markdownLines.Add("- Markdown: $($packet.outputs.redacted_markdown)")
 $markdownLines.Add("- Status: $($packet.summary.status)")
+$markdownLines.Add("- Review fields complete: $($packet.summary.review_fields_complete)")
+$markdownLines.Add("- Result-quality claim blocked: true")
+$markdownLines.Add("- Separate human sign-off required: true")
 $markdownLines.Add("- Signoff: false")
 $markdownLines.Add("- Claim allowed: false")
 $markdownLines.Add("- Scope: read-only helper; no product process starts, no network requests, no uploads, no dependency install.")
@@ -344,6 +353,7 @@ $markdownLines.Add("## Red Line")
 $markdownLines.Add("- NOT_RESULT_QUALITY_SIGNOFF")
 $markdownLines.Add("- This packet is not completed-result evidence, not result-quality sign-off, not RC sign-off, and not release sign-off.")
 $markdownLines.Add("- result_quality_signoff=false and claim_allowed=false remain fixed even when all manual fields are recorded.")
+$markdownLines.Add("- review_fields_complete only means the helper received every required checklist field; result_quality_claim_blocked=true and separate_human_signoff_required=true remain fixed.")
 $markdownLines.Add("")
 $markdownLines.Add("## Missing Or Blocked")
 if ($packet.missing_required_fields.Count -eq 0 -and $packet.issues_redacted.Count -eq 0 -and -not $hasBlockingReason) {

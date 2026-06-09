@@ -6,6 +6,10 @@
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
+    "preflight:android-release": "powershell -ExecutionPolicy Bypass -File ../scripts/verify_android_release_gate.ps1 -PreflightOnly",
+    "build:android:preview": "npm run preflight:android-release && eas build --platform android --profile preview --non-interactive",
+    "build:android:production": "npm run preflight:android-release && eas build --platform android --profile production --non-interactive",
+    "gate:android-release": "powershell -ExecutionPolicy Bypass -File ../scripts/verify_android_release_gate.ps1",
     "typecheck": "tsc --noEmit",
     "smoke:token": "node scripts/mobile-token-smoke.cjs",
     "smoke:task-companion": "node scripts/mobile-task-companion-smoke.cjs",

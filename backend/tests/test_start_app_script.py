@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -26,6 +27,10 @@ def _portable_first_screen_smoke_text(project_root: Path) -> str:
 
 def _mobile_lan_wss_preflight_text(project_root: Path) -> str:
     return (project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1").read_text(encoding="utf-8")
+
+
+def _android_release_gate_text(project_root: Path) -> str:
+    return (project_root / "scripts" / "verify_android_release_gate.ps1").read_text(encoding="utf-8")
 
 
 def _release_evidence_packet_text(project_root: Path) -> str:
@@ -123,6 +128,11 @@ def _mobile_lan_wss_preflight_summary() -> dict:
                 "real_device_pass_claim_allowed": False,
                 "preflight_ready_is_pass": False,
             },
+            "may_be_recorded_as": "preflight/config evidence only",
+            "must_not_be_recorded_as": "real-device pass evidence",
+            "artifact_collection_rules": {
+                "review_required_before_pass_claim": True,
+            },
             "fields": {
                 "camera_qr_path_evidence": "uncollected",
                 "actual_device_https_wss_evidence": "uncollected",
@@ -138,9 +148,231 @@ def _mobile_lan_wss_preflight_summary() -> dict:
                 "grant_revoke_expiry_artifact_review": "uncollected",
                 "artifact_redaction_review": "uncollected",
             },
+            "real_device_collection_checklist": {
+                name: {
+                    "status": "uncollected",
+                    "overclaim_guard": "preflight/config evidence only",
+                    "reviewer_check": "review redacted artifacts before pass claim",
+                }
+                for name in (
+                    "camera_qr",
+                    "actual_https_wss",
+                    "approval_wss",
+                    "remote_screen_wss",
+                    "remote_input_wss",
+                    "certificate_trust",
+                    "remote_input_grant_revoke_expiry",
+                    "screenshot_log_review",
+                )
+            },
         },
         "issues": [],
         "warnings": [],
+    }
+
+
+def _android_release_gate_summary(
+    *,
+    status: str = "preflight_ready_not_release",
+    release_ready: bool = False,
+    preflight_only: bool = True,
+    installable_claim_allowed: bool = False,
+    remote_claim_allowed: bool = False,
+    artifact_provided: bool = False,
+    artifact_label: str = "",
+    artifact_bytes: int = 0,
+    installable_apk: bool = False,
+    apk_zip_header_valid: bool = False,
+    artifact_gate_evaluated: bool = False,
+    artifact_gate_passed: bool = False,
+    real_device_gate_evaluated: bool = False,
+    real_device_gate_passed: bool = False,
+    real_device_evidence_label: str = "",
+    source_config_passed: bool = True,
+    must_not_claim: list[str] | None = None,
+) -> dict:
+    if must_not_claim is None:
+        must_not_claim = [
+            "installable Android app release pass",
+            "real-device Android remote-control pass",
+            "LAN HTTPS/WSS mobile pass",
+            "release-candidate mobile signoff",
+        ]
+
+    return {
+        "artifact_type": "android-release-gate-summary",
+        "generated_at_utc": "2026-06-09T00:00:00.0000000Z",
+        "status": status,
+        "release_ready": release_ready,
+        "preflight_only": preflight_only,
+        "source_config": {
+            "passed": source_config_passed,
+            "issues": [],
+        },
+        "android_artifact": {
+            "provided": artifact_provided,
+            "label": artifact_label,
+            "sha256": "0" * 64 if artifact_provided else "",
+            "bytes": artifact_bytes,
+            "installable_apk": installable_apk,
+            "apk_zip_header_valid": apk_zip_header_valid,
+        },
+        "artifact_gate": {
+            "evaluated": artifact_gate_evaluated,
+            "passed": artifact_gate_passed,
+            "issues": [],
+        },
+        "real_device_gate": {
+            "evaluated": real_device_gate_evaluated,
+            "passed": real_device_gate_passed,
+            "evidence_label": real_device_evidence_label,
+            "issues": [],
+        },
+        "warnings": [],
+        "claim_controls": {
+            "installable_android_app_claim_allowed": installable_claim_allowed,
+            "real_device_remote_control_claim_allowed": remote_claim_allowed,
+            "expo_preview_is_not_release": True,
+            "requires_reviewed_apk_install_evidence": True,
+            "requires_reviewed_https_wss_remote_control_evidence": True,
+        },
+        "must_not_claim": must_not_claim,
+        "next_steps": [
+            "Build the EAS preview APK and pass it with -ArtifactPath.",
+            "Collect reviewed HTTPS/WSS remote-control evidence.",
+        ],
+    }
+
+
+def _write_android_release_gate_summary(root: Path, summary: dict) -> None:
+    run_root = root / "run-20260609-000000-000"
+    run_root.mkdir(parents=True)
+    (run_root / "android-release-gate.redacted.json").write_text(
+        json.dumps(summary),
+        encoding="utf-8",
+    )
+
+
+def _run_release_evidence_packet_with_android_gate(
+    project_root: Path,
+    tmp_path: Path,
+    evidence_root: Path,
+    android_root: Path,
+) -> subprocess.CompletedProcess[str]:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    return subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-AndroidReleaseGateEvidenceRoot",
+            str(android_root),
+            "-AndroidRealDeviceEvidenceRoot",
+            str(tmp_path / "empty-android-real-device-template"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-RcHandoffEvidenceRoot",
+            str(tmp_path / "empty-rc-handoff-template"),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+
+
+def _android_real_device_evidence(artifact_sha256: str) -> dict:
+    return {
+        "artifact_type": "android-real-device-remote-control-evidence",
+        "review_status": "reviewed_passed",
+        "real_device_result": "passed",
+        "review": {
+            "status": "reviewed_passed",
+            "reviewer_label": "qa-reviewer-redacted",
+            "reviewed_at_utc": "2026-06-09T00:00:00Z",
+            "redaction_reviewed": True,
+            "evidence_artifacts_reviewed": True,
+        },
+        "device": {
+            "kind": "android_emulator",
+            "profile_label_redacted": "pixel-qa-profile",
+        },
+        "transport": {
+            "https_origin_redacted": "https://[redacted-host]:9443",
+            "approval_wss_origin_redacted": "wss://[redacted-host]:9443/ws/mobile/approvals",
+            "remote_screen_wss_origin_redacted": "wss://[redacted-host]:9443/ws/remote/screen",
+            "remote_input_wss_origin_redacted": "wss://[redacted-host]:9443/ws/remote/input",
+        },
+        "certificate": {
+            "trust_path_label_redacted": "android-user-ca-redacted",
+        },
+        "evidence_artifacts_redacted": [
+            "android-remote-control-review.redacted.png",
+        ],
+        "app": {
+            "artifact_sha256": artifact_sha256,
+            "artifact_label_redacted": "mavris-preview.apk",
+        },
+        "claim_controls": {
+            "apk_installed": True,
+            "camera_qr_pairing_verified": True,
+            "https_api_reachability_verified": True,
+            "https_wss_verified": True,
+            "certificate_trust_verified": True,
+            "approval_wss_verified": True,
+            "remote_screen_verified": True,
+            "remote_input_verified": True,
+            "revoke_expiry_verified": True,
+            "artifact_redaction_reviewed": True,
+            "real_device_pass_claim_allowed": True,
+        },
+        "checks": {
+            "apk_installed": "passed",
+            "camera_qr_pairing": "passed",
+            "https_api_reachability": "passed",
+            "certificate_trust_path": "passed",
+            "approval_wss": "passed",
+            "remote_screen_wss": "passed",
+            "remote_input_wss": "passed",
+            "click_input_approval": "passed",
+            "text_input_approval": "passed",
+            "key_pagedown_approval": "passed",
+            "mobile_end_control_readonly": "passed",
+            "desktop_revoke_readonly": "passed",
+            "grant_expiry_readonly": "passed",
+            "background_or_lockscreen_privacy": "passed",
+            "artifact_redaction_review": "passed",
+        },
+        "redaction": {
+            "tokens_absent": True,
+            "pairing_codes_absent": True,
+            "raw_hosts_absent": True,
+            "raw_device_ids_absent": True,
+            "raw_grant_ids_absent": True,
+            "private_paths_absent": True,
+        },
     }
 
 
@@ -758,14 +990,71 @@ def test_release_gate_recommends_mobile_lan_wss_preflight_without_overclaim(proj
     assert "mobile real-device redacted template" in release_gate
 
 
+def test_mobile_remote_release_docs_keep_counts_command_bound(project_root: Path) -> None:
+    docs = {
+        "README.md": _readme_text(project_root),
+        "docs/LENGRVIS_PARITY.md": _parity_text(project_root),
+        "docs/qa/release-gate.md": _release_gate_text(project_root),
+        "docs/qa/e2e-acceptance-matrix.md": _e2e_acceptance_matrix_text(project_root),
+        "docs/qa/real-device-mobile-matrix.md": _real_device_mobile_matrix_text(project_root),
+        "docs/qa/agentic-product-evals.md": _agentic_product_evals_text(project_root),
+        "PRODUCTIZATION_ISSUES.md": _productization_issues_text(project_root),
+        "docs/qa/backend-test-runtime.md": (
+            project_root / "docs" / "qa" / "backend-test-runtime.md"
+        ).read_text(encoding="utf-8"),
+        "docs/qa/remote-session-lan-tls-gate.md": (
+            project_root / "docs" / "qa" / "remote-session-lan-tls-gate.md"
+        ).read_text(encoding="utf-8"),
+    }
+
+    stale_scheduler_count_phrases = (
+        "scheduler/preflight targeted run `9 passed`",
+        "scheduler/preflight targeted checks at `9 passed`",
+        "scheduler/preflight `9 passed`",
+    )
+    unbound_count_warnings = (
+        "do not cite an unbound `9 passed`",
+        "不要把未绑定命令的 `9 passed`",
+        "scheduler/preflight counts need an exact command/log before citation",
+        "scheduler/preflight 计数只有在附 exact command/log 时才可引用",
+        "Scheduler/preflight checks must carry their exact command/log before any count is cited",
+        "Scheduler/preflight counts require exact command/log evidence before they are cited",
+    )
+
+    for doc_path, text in docs.items():
+        assert "120 passed" not in text, doc_path
+        assert "52 passed" not in text, doc_path
+        assert "123 passed" not in text, doc_path
+        assert "131 passed" not in text, doc_path
+        assert "132 passed" in text, doc_path
+        for phrase in stale_scheduler_count_phrases:
+            assert phrase not in text, doc_path
+        if "`9 passed`" in text:
+            assert any(warning in text for warning in unbound_count_warnings), doc_path
+
+    local_model_docs = {
+        "README.md": docs["README.md"],
+        "PRODUCTIZATION_ISSUES.md": docs["PRODUCTIZATION_ISSUES.md"],
+        "docs/LENGRVIS_PARITY.md": docs["docs/LENGRVIS_PARITY.md"],
+        "docs/qa/release-gate.md": docs["docs/qa/release-gate.md"],
+        "docs/qa/e2e-acceptance-matrix.md": docs["docs/qa/e2e-acceptance-matrix.md"],
+        "docs/qa/agentic-product-evals.md": docs["docs/qa/agentic-product-evals.md"],
+    }
+    for doc_path, text in local_model_docs.items():
+        assert "53 passed" in text, doc_path
+
+
 def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root: Path) -> None:
     package = _package_json(project_root)
     scripts = package["scripts"]
     expected_aliases = {
         "evidence:release",
+        "evidence:release-packet",
         "evidence:rc-handoff",
+        "evidence:rc-handoff-template",
         "evidence:result-quality-review",
         "evidence:mobile-lan-wss",
+        "evidence:android-real-device-template",
         "evidence:local-model-template",
         "evidence:diagnostics-review",
     }
@@ -803,6 +1092,8 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "contract summary only",
         "cannot replace",
         "does not replace",
+        "fail-closed",
+        "release_readiness_blockers",
         "public_safe=false",
         "not public-safe",
         "not release sign-off",
@@ -811,6 +1102,7 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "涓嶆槸 real-device pass",
         "涓嶆槸 `public_safe=true`",
         "涓嶆槸 public-safe/signoff",
+        "不允许宣称",
     ]
 
     for doc_path in docs_to_check:
@@ -855,8 +1147,34 @@ def test_release_evidence_packet_script_is_read_only_and_redacted(project_root: 
     assert "ResultQualityReviewEvidenceRoot" in text
     assert "result-quality-review.redacted.json" in text
     assert "NOT_RESULT_QUALITY_SIGNOFF" in text
+    assert "result_quality_claim_blocked = $true" in text
+    assert "separate_human_signoff_required = $true" in text
+    assert "summary.review_fields_complete does not match missing/issue/status state" in text
+    assert "summary.external_sharing_blocked is not true" in text
+    assert "summary.separate_human_content_review_required is not true" in text
+    assert "claim_controls.external_sharing_blocked is not true" in text
+    assert "claim_controls.separate_human_content_review_required is not true" in text
     assert "latest result-quality review helper artifact failed fail-closed validation" in text
+    assert "RcHandoffEvidenceRoot" in text
+    assert "rc-handoff-template.redacted.json" in text
+    assert "rc_handoff_template" in text
+    assert "latest_redacted_handoff_template" in text
+    assert "NOT_RELEASE_CANDIDATE_SIGNOFF" in text
+    assert "summary.release_candidate_signoff is not false" in text
+    assert "summary.gate_commands_run_by_this_helper is not false" in text
+    assert "signoff_controls.must_not_tag_publish_or_announce is not true" in text
+    assert "latest RC handoff helper artifact failed fail-closed validation" in text
     assert "settings_local_model_smoke" in text
+    assert "mobile_remote_input_active_grant_contract" in text
+    assert "assertRemoteInputApprovalMatchesSession" in text
+    assert "remoteInputApprovalMatchesActiveGrant" in text
+    assert "client-side remote-input binding failures must not reach the smoke server" in text
+    assert "static source contract markers in mobile UI/client/smoke sources" in text
+    assert 'latest_execution_status = "not_run_by_this_packet"' in text
+    assert "not evidence that the smoke command was executed by this packet" in text
+    assert "not proof of a live desktop-to-mobile remote input session" in text
+    assert "not backend TestClient, desktop smoke, packaged, or clean-machine evidence by itself" in text
+    assert "not_signoff=source/client contract only, not live device/WSS" in text
     assert "contract_count" in text
     assert "expected_public_safe = $false" in text
     assert "clean_machine_signoff = $false" in text
@@ -915,6 +1233,186 @@ def test_release_evidence_packet_script_is_read_only_and_redacted(project_root: 
     assert "Set-Content -LiteralPath $markdownPath" in text
 
 
+def test_android_release_gate_preflight_is_not_release_pass(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    evidence_root = tmp_path / "android-release-gate"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "verify_android_release_gate.ps1"),
+            "-Root",
+            str(project_root),
+            "-PreflightOnly",
+            "-OutputRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "preflight_ready_not_release" in output
+    assert "not an installable APK pass or real-device remote-control pass" in output
+    packet = json.loads(
+        next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    assert packet["status"] == "preflight_ready_not_release"
+    assert packet["release_ready"] is False
+    assert packet["preflight_only"] is True
+    assert packet["source_config"]["passed"] is True
+    assert packet["android_artifact"]["provided"] is False
+    assert packet["android_artifact"]["installable_apk"] is False
+    assert packet["artifact_gate"]["evaluated"] is False
+    assert packet["artifact_gate"]["passed"] is False
+    assert packet["real_device_gate"]["evaluated"] is False
+    assert packet["real_device_gate"]["passed"] is False
+    assert packet["claim_controls"]["installable_android_app_claim_allowed"] is False
+    assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
+    assert "installable Android app release pass" in packet["must_not_claim"]
+
+
+def test_android_release_gate_redacts_missing_private_paths(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    evidence_root = tmp_path / "android-release-gate"
+    private_dir = tmp_path / "private-token-secret"
+    missing_apk = private_dir / "missing.apk"
+    missing_evidence = private_dir / "missing-evidence.json"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "verify_android_release_gate.ps1"),
+            "-Root",
+            str(project_root),
+            "-ArtifactPath",
+            str(missing_apk),
+            "-RealDeviceEvidencePath",
+            str(missing_evidence),
+            "-OutputRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    packet_text = next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("android-release-gate.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    combined = "\n".join((output, packet_text, markdown_text))
+    assert str(tmp_path) not in combined
+    assert "private-token-secret" not in combined
+    assert "missing.apk" in combined
+    assert "missing-evidence.json" in combined
+
+    packet = json.loads(packet_text)
+    assert packet["status"] == "blocked"
+    assert packet["release_ready"] is False
+    assert packet["claim_controls"]["installable_android_app_claim_allowed"] is False
+    assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
+    issue_messages = "\n".join(
+        issue["message"]
+        for section in ("artifact_gate", "real_device_gate")
+        for issue in packet[section]["issues"]
+    )
+    assert "missing.apk" in issue_messages
+    assert "missing-evidence.json" in issue_messages
+
+
+def test_android_release_gate_rejects_fake_apk_even_with_reviewed_evidence(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    fake_apk = tmp_path / "mavris-preview.apk"
+    fake_apk.write_bytes(b"not-a-zip-apk" * 100_000)
+    evidence_json = tmp_path / "android-real-device-evidence.redacted.json"
+    evidence_json.write_text(
+        json.dumps(_android_real_device_evidence(hashlib.sha256(fake_apk.read_bytes()).hexdigest())),
+        encoding="utf-8",
+    )
+    evidence_root = tmp_path / "android-release-gate"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "verify_android_release_gate.ps1"),
+            "-Root",
+            str(project_root),
+            "-ArtifactPath",
+            str(fake_apk),
+            "-RealDeviceEvidencePath",
+            str(evidence_json),
+            "-OutputRoot",
+            str(evidence_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    packet = json.loads(
+        next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    assert packet["status"] == "blocked"
+    assert packet["release_ready"] is False
+    assert packet["android_artifact"]["provided"] is True
+    assert packet["android_artifact"]["installable_apk"] is False
+    assert packet["android_artifact"]["apk_zip_header_valid"] is False
+    assert packet["artifact_gate"]["passed"] is False
+    assert packet["real_device_gate"]["passed"] is True
+    assert packet["claim_controls"]["installable_android_app_claim_allowed"] is False
+    assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
+    assert any(
+        issue["code"] == "artifact_not_apk_zip"
+        for issue in packet["artifact_gate"]["issues"]
+    )
+
+
 def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
@@ -953,12 +1451,16 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
             str(evidence_root),
             "-MobilePreflightEvidenceRoot",
             str(mobile_root),
+            "-AndroidReleaseGateEvidenceRoot",
+            str(tmp_path / "empty-android-release-gate"),
             "-LocalModelCleanMachineEvidenceRoot",
             str(tmp_path / "empty-local-model-clean-machine-evidence"),
             "-DiagnosticsReviewEvidenceRoot",
             str(tmp_path / "empty-diagnostics-review-evidence"),
             "-ResultQualityReviewEvidenceRoot",
             str(tmp_path / "empty-result-quality-review-evidence"),
+            "-RcHandoffEvidenceRoot",
+            str(tmp_path / "empty-rc-handoff-template"),
             "-QaEvidenceRoot",
             str(qa_root),
         ],
@@ -999,8 +1501,8 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert packet["summary"]["clean_machine_signoff"] is False
     assert packet["summary"]["packet_is_pass"] is False
     assert packet["summary"]["evidence_count_is_not_acceptance_count"] is True
-    assert packet["summary"]["automated_evidence_items"] == 8
-    assert packet["summary"]["indexed_evidence_buckets"] == 8
+    assert packet["summary"]["automated_evidence_items"] == 12
+    assert packet["summary"]["indexed_evidence_buckets"] == 12
     assert packet["summary"]["agent_task_completion_signoff"] is False
     assert packet["summary"]["result_quality_signoff"] is False
     assert packet["summary"]["portable_natural_language_scope"] == "submission_plus_read_only_routing_evidence_only"
@@ -1015,10 +1517,10 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert packet["summary"]["diagnostics_public_safe"] is False
     assert packet["summary"]["release_ready"] is False
     assert packet["summary"]["claimable_release_signoff"] is False
-    assert packet["summary"]["release_readiness_blocker_count"] == 5
+    assert packet["summary"]["release_readiness_blocker_count"] == 6
     assert packet["summary"]["packet_status"] == "redacted_partial_evidence_summary"
     assert "Packet role: evidence index only; packet_is_pass=false" in markdown_text
-    assert "Release readiness: release_ready=False; claimable_release_signoff=False; blocker_count=5" in markdown_text
+    assert "Release readiness: release_ready=False; claimable_release_signoff=False; blocker_count=6" in markdown_text
     rc_handoff = packet["rc_handoff_requirements"]
     assert rc_handoff["status"] == "manual_rc_handoff_required"
     assert rc_handoff["release_candidate_signoff"] is False
@@ -1033,10 +1535,23 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert "manual_rc_handoff_required" in markdown_text
     assert "release_candidate_signoff=False" in markdown_text
     assert "packet_is_rc_signoff=False" in markdown_text
+    rc_template = packet["evidence"]["rc_handoff_template"]
+    assert rc_template["status"] == "manual_rc_handoff_contract_present"
+    assert rc_template["latest_redacted_handoff_template"]["found"] is False
+    assert rc_template["latest_redacted_handoff_template"]["handoff_status"] == (
+        "not_collected_by_this_packet"
+    )
+    assert rc_template["latest_redacted_handoff_template"]["release_candidate_signoff"] is False
+    assert rc_template["latest_redacted_handoff_template"]["claim_allowed"] is False
+    assert rc_template["expected_marker"] == "NOT_RELEASE_CANDIDATE_SIGNOFF"
+    assert rc_template["expected_gate_commands_run_by_this_helper"] is False
+    assert "not permission to tag, publish, announce, or ship" in rc_template["not_signoff"]
+    assert "RC handoff template: found=False" in markdown_text
     blockers = {item["id"]: item for item in packet["release_readiness_blockers"]}
     assert set(blockers) == {
         "clean_machine_local_model",
         "mobile_real_device_lan_wss",
+        "android_installable_remote_control",
         "natural_language_result_quality",
         "diagnostics_external_public_safety",
         "release_candidate_handoff",
@@ -1047,10 +1562,26 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
         assert blocker["beginner_next_step"]
         assert blocker["must_not_claim"]
     assert blockers["mobile_real_device_lan_wss"]["status"] == "missing_real_device_artifacts"
+    assert blockers["android_installable_remote_control"]["status"] == "missing_apk_or_real_device_gate"
+    assert blockers["android_installable_remote_control"]["claim_allowed"] is False
+    assert blockers["android_installable_remote_control"]["must_not_claim"] == (
+        "installable Android app or real-device Android remote-control pass"
+    )
     assert blockers["natural_language_result_quality"]["status"] == "missing_result_quality_signoff"
     assert blockers["release_candidate_handoff"]["must_not_claim"] == "release-candidate pass"
     assert "## Release Readiness Blockers" in markdown_text
     assert "mobile_real_device_lan_wss: status=missing_real_device_artifacts" in markdown_text
+    active_grant_contract = packet["evidence"]["mobile_remote_input_active_grant_contract"]
+    assert active_grant_contract["status"] == "fail_closed_source_contract_present"
+    assert active_grant_contract["automated_scope"] == "static source contract markers in mobile UI/client/smoke sources"
+    assert active_grant_contract["verify_command"] == "npm --prefix mobile run smoke:remote-input-grant"
+    assert active_grant_contract["latest_execution_status"] == "not_run_by_this_packet"
+    assert "not evidence that the smoke command was executed by this packet" in active_grant_contract["not_signoff"]
+    assert "not proof of a live desktop-to-mobile remote input session" in active_grant_contract["not_signoff"]
+    assert "not backend TestClient, desktop smoke, packaged, or clean-machine evidence by itself" in active_grant_contract["not_signoff"]
+    assert "Mobile remote-input active-grant contract: fail_closed_source_contract_present" in markdown_text
+    assert "latest_execution=not_run_by_this_packet" in markdown_text
+    assert "not_signoff=source/client contract only, not live device/WSS" in markdown_text
     assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["result"] == "ready_for_manual_real_device_collection_only"
     assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["real_device_evidence_status"] == "uncollected_fail_closed"
     assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["real_device_evidence_collected"] is False
@@ -1064,11 +1595,39 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     mobile_template = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["manual_real_device_evidence_template"]
     assert mobile_template["real_device_result"] == "uncollected"
     assert mobile_template["real_device_evidence_collected"] is False
+    assert mobile_template["may_be_recorded_as"] == "preflight/config evidence only"
+    assert mobile_template["must_not_be_recorded_as"] == "real-device pass evidence"
     assert mobile_template["claim_controls"]["real_device_pass_claim_allowed"] is False
+    assert mobile_template["artifact_collection_rules"]["review_required_before_pass_claim"] is True
     assert mobile_template["fields"]["camera_qr_path_evidence"] == "uncollected"
     assert mobile_template["fields"]["actual_device_https_wss_evidence"] == "uncollected"
     assert mobile_template["fields"]["remote_input_grant_revoke_evidence"] == "uncollected"
     assert mobile_template["fields"]["remote_input_grant_expiry_evidence"] == "uncollected"
+    assert mobile_template["collection_checklist_statuses"] == {
+        "camera_qr": "uncollected",
+        "actual_https_wss": "uncollected",
+        "approval_wss": "uncollected",
+        "remote_screen_wss": "uncollected",
+        "remote_input_wss": "uncollected",
+        "certificate_trust": "uncollected",
+        "remote_input_grant_revoke_expiry": "uncollected",
+        "screenshot_log_review": "uncollected",
+    }
+    android_gate = packet["evidence"]["android_release_gate"]
+    android_latest = android_gate["latest_redacted_summary"]
+    assert android_gate["status"] == "entry_available"
+    assert android_gate["expected_preflight_status"] == "preflight_ready_not_release"
+    assert android_gate["expected_strict_status"] == "passed"
+    assert android_gate["expected_packet_creates_apk_or_real_device_pass"] is False
+    assert android_latest["found"] is False
+    assert android_latest["status"] == "not_collected_by_this_packet"
+    assert android_latest["release_ready"] is False
+    assert android_latest["claim_controls"]["installable_android_app_claim_allowed"] is False
+    assert android_latest["claim_controls"]["real_device_remote_control_claim_allowed"] is False
+    assert "preflight is not an APK build" in android_gate["not_signoff"]
+    assert "strict gate remains blocked without installable APK and reviewed real-device evidence" in android_gate["not_signoff"]
+    assert "Android release gate: entry_available; latest status=not_collected_by_this_packet" in markdown_text
+    assert "not an APK/install/WSS pass created by this packet" in markdown_text
     assert packet["evidence"]["ollama_local_model_contracts"]["contract_count"] == expected_ollama_contracts
     assert packet["evidence"]["ollama_local_model_contracts"]["latest_execution_status"] == "not_run_by_this_packet"
     local_model_template = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
@@ -1089,8 +1648,465 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["result_quality_signoff"] is False
     assert packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["completed_result_evidence"] is False
     assert packet["evidence"]["settings_local_model_smoke"]["present_artifact_count"] == 4
+    assert (
+        "It does not create installable Android APK pass or real-device Android remote-control pass"
+        in "\n".join(packet["not_clean_machine_or_signoff"])
+    )
     assert "not release-candidate sign-off" in "\n".join(packet["not_clean_machine_or_signoff"]).lower()
     assert "It is not release-candidate sign-off" in markdown_text
+
+
+def test_release_evidence_packet_consumes_android_preflight_without_release_claims(
+    project_root: Path, tmp_path: Path
+) -> None:
+    android_root = tmp_path / "android-release-gate"
+    _write_android_release_gate_summary(android_root, _android_release_gate_summary())
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = _run_release_evidence_packet_with_android_gate(
+        project_root,
+        tmp_path,
+        evidence_root,
+        android_root,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert str(tmp_path) not in output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    packet = json.loads(packet_text)
+    latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
+    blocker = {
+        item["id"]: item
+        for item in packet["release_readiness_blockers"]
+    }["android_installable_remote_control"]
+
+    assert latest["found"] is True
+    assert latest["source_contract_status"] == "valid_redacted_summary"
+    assert latest["status"] == "preflight_ready_not_release"
+    assert latest["release_ready"] is False
+    assert latest["preflight_only"] is True
+    assert latest["android_artifact"]["provided"] is False
+    assert latest["android_artifact"]["installable_apk"] is False
+    assert latest["artifact_gate_evaluated"] is False
+    assert latest["artifact_gate_passed"] is False
+    assert latest["real_device_gate_evaluated"] is False
+    assert latest["real_device_gate_passed"] is False
+    assert latest["claim_controls"]["installable_android_app_claim_allowed"] is False
+    assert latest["claim_controls"]["real_device_remote_control_claim_allowed"] is False
+    assert "installable Android app release pass" in latest["must_not_claim"]
+    assert "real-device Android remote-control pass" in latest["must_not_claim"]
+    assert blocker["status"] == "missing_apk_or_real_device_gate"
+    assert blocker["claim_allowed"] is False
+    assert packet["summary"]["release_ready"] is False
+    assert packet["summary"]["claimable_release_signoff"] is False
+    assert "Android release gate: entry_available; latest status=preflight_ready_not_release" in markdown_text
+    assert "preflight_only=True" in markdown_text
+    assert "not an APK/install/WSS pass created by this packet" in markdown_text
+
+
+def test_release_evidence_packet_indexes_strict_android_gate_without_release_signoff(
+    project_root: Path, tmp_path: Path
+) -> None:
+    android_root = tmp_path / "android-release-gate"
+    _write_android_release_gate_summary(
+        android_root,
+        _android_release_gate_summary(
+            status="passed",
+            release_ready=True,
+            preflight_only=False,
+            installable_claim_allowed=True,
+            remote_claim_allowed=True,
+            artifact_provided=True,
+            artifact_label="Lengrvis-preview.apk",
+            artifact_bytes=2_000_000,
+            installable_apk=True,
+            apk_zip_header_valid=True,
+            artifact_gate_evaluated=True,
+            artifact_gate_passed=True,
+            real_device_gate_evaluated=True,
+            real_device_gate_passed=True,
+            real_device_evidence_label="android-real-device-evidence.redacted.json",
+            must_not_claim=[],
+        ),
+    )
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = _run_release_evidence_packet_with_android_gate(
+        project_root,
+        tmp_path,
+        evidence_root,
+        android_root,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
+    blocker = {
+        item["id"]: item
+        for item in packet["release_readiness_blockers"]
+    }["android_installable_remote_control"]
+
+    assert latest["source_contract_status"] == "valid_redacted_summary"
+    assert latest["status"] == "passed"
+    assert latest["release_ready"] is True
+    assert latest["preflight_only"] is False
+    assert latest["android_artifact"]["label"] == "Lengrvis-preview.apk"
+    assert latest["android_artifact"]["installable_apk"] is True
+    assert latest["android_artifact"]["apk_zip_header_valid"] is True
+    assert latest["artifact_gate_passed"] is True
+    assert latest["real_device_gate_passed"] is True
+    assert latest["claim_controls"]["installable_android_app_claim_allowed"] is True
+    assert latest["claim_controls"]["real_device_remote_control_claim_allowed"] is True
+    assert blocker["status"] == "recorded_by_android_release_gate"
+    assert blocker["claim_allowed"] is True
+    assert packet["summary"]["packet_is_pass"] is False
+    assert packet["summary"]["release_ready"] is False
+    assert packet["summary"]["release_candidate_signoff"] is False
+    assert packet["summary"]["claimable_release_signoff"] is False
+    assert (
+        "It does not create installable Android APK pass or real-device Android remote-control pass"
+        in "\n".join(packet["not_clean_machine_or_signoff"])
+    )
+
+
+def test_release_evidence_packet_fail_closes_android_gate_overclaim_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    android_root = tmp_path / "android-release-gate"
+    _write_android_release_gate_summary(
+        android_root,
+        _android_release_gate_summary(
+            status="preflight_ready_not_release",
+            release_ready=True,
+            preflight_only=True,
+            installable_claim_allowed=True,
+            remote_claim_allowed=True,
+            artifact_provided=True,
+            artifact_label="C:/Users/alice/private-token.apk",
+            artifact_bytes=2_000_000,
+            installable_apk=True,
+            apk_zip_header_valid=True,
+            artifact_gate_evaluated=True,
+            artifact_gate_passed=True,
+            real_device_gate_evaluated=True,
+            real_device_gate_passed=True,
+            real_device_evidence_label="C:/Users/alice/private-evidence.json",
+            must_not_claim=[],
+        ),
+    )
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = _run_release_evidence_packet_with_android_gate(
+        project_root,
+        tmp_path,
+        evidence_root,
+        android_root,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert str(tmp_path) not in output
+    assert "private-token.apk" not in output
+    assert "private-evidence.json" not in output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
+    blocker = {
+        item["id"]: item
+        for item in packet["release_readiness_blockers"]
+    }["android_installable_remote_control"]
+    mismatch_reasons = "\n".join(latest["mismatch_reasons"])
+
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert latest["source_contract_status"] == "source_contract_mismatch"
+    assert latest["status"] == "source_contract_mismatch"
+    assert latest["release_ready"] is False
+    assert latest["preflight_only"] is False
+    assert latest["android_artifact"]["provided"] is False
+    assert latest["android_artifact"]["bytes"] == 0
+    assert latest["android_artifact"]["installable_apk"] is False
+    assert latest["android_artifact"]["apk_zip_header_valid"] is False
+    assert latest["artifact_gate_passed"] is False
+    assert latest["real_device_gate_passed"] is False
+    assert latest["claim_controls"]["installable_android_app_claim_allowed"] is False
+    assert latest["claim_controls"]["real_device_remote_control_claim_allowed"] is False
+    assert blocker["status"] == "missing_apk_or_real_device_gate"
+    assert blocker["claim_allowed"] is False
+    assert "non-passed Android gate must not set release_ready=true" in mismatch_reasons
+    assert "non-passed Android gate must not allow installable Android app claims" in mismatch_reasons
+    assert "non-passed Android gate must not allow real-device remote-control claims" in mismatch_reasons
+    assert "non-passed Android gate must include installable Android app release pass in must_not_claim" in mismatch_reasons
+    assert "non-passed Android gate must include real-device Android remote-control pass in must_not_claim" in mismatch_reasons
+    assert "preflight Android gate must not evaluate artifact_gate" in mismatch_reasons
+    assert "preflight Android gate must not set artifact_gate.passed=true" in mismatch_reasons
+    assert "preflight Android gate must not evaluate real_device_gate" in mismatch_reasons
+    assert "preflight Android gate must not set real_device_gate.passed=true" in mismatch_reasons
+
+
+def test_release_evidence_packet_consumes_rc_handoff_template_without_signoff(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    rc_root = tmp_path / "rc-handoff-template"
+    rc_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_rc_handoff_template.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(rc_root),
+            "-CandidateCommit",
+            "abc123def456",
+            "-BuildId",
+            "build-2026.06.09",
+            "-Platform",
+            "windows-x64",
+            "-ArtifactLabel",
+            "Lengrvis-win-portable.zip",
+            "-GateCommand",
+            "npm run qa:gate;;npm run release:check",
+            "-GateExit",
+            "exit 0;;exit 0",
+            "-StrictStateSource",
+            "strict-state-machine",
+            "-ManualP1Check",
+            "manual P1 reviewed by release owner",
+            "-Waiver",
+            "none",
+            "-ResidualRisk",
+            "residual risk reviewed by release owner",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    assert rc_result.returncode == 0, rc_result.stdout + rc_result.stderr
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-AndroidReleaseGateEvidenceRoot",
+            str(tmp_path / "empty-android-release-gate"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-RcHandoffEvidenceRoot",
+            str(rc_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 0, release_output
+    assert str(tmp_path) not in release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
+        encoding="utf-8-sig"
+    )
+    packet = json.loads(packet_text)
+    latest = packet["evidence"]["rc_handoff_template"]["latest_redacted_handoff_template"]
+    assert latest["found"] is True
+    assert latest["marker"] == "NOT_RELEASE_CANDIDATE_SIGNOFF"
+    assert latest["source_contract_status"] == "valid_not_signoff_template"
+    assert latest["mismatch_reasons"] == []
+    assert latest["handoff_status"] == "manual_rc_handoff_recorded_unverified_by_this_helper"
+    assert latest["required_fields_recorded"] is True
+    assert latest["missing_required_fields_count"] == 0
+    assert latest["artifact_label_count"] == 1
+    assert latest["gate_result_count"] == 2
+    assert latest["manual_p1_check_count"] == 1
+    assert latest["waiver_count"] == 1
+    assert latest["residual_risk_count"] == 1
+    assert latest["release_candidate_signoff"] is False
+    assert latest["claim_allowed"] is False
+    assert latest["gate_commands_run_by_this_helper"] is False
+    assert packet["summary"]["release_candidate_signoff"] is False
+    assert packet["summary"]["claimable_release_signoff"] is False
+    assert "Latest RC handoff template: found=True" in markdown_text
+    assert "required_fields_recorded=True" in markdown_text
+    assert "RC handoff template: found=True" in markdown_text
+
+
+def test_release_evidence_packet_fail_closes_malformed_rc_handoff_artifact(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    rc_root = tmp_path / "rc-handoff-template"
+    run_root = rc_root / "run-malformed"
+    run_root.mkdir(parents=True)
+    (run_root / "rc-handoff-template.redacted.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_by": "scripts/collect_rc_handoff_template.ps1",
+                "marker": "sk-proj-RCSECRET1234",
+                "summary": {
+                    "status": "release_candidate_passed",
+                    "release_candidate_signoff": True,
+                    "claim_allowed": True,
+                    "template_is_rc_pass": True,
+                    "template_is_release_signoff": True,
+                    "gate_commands_run_by_this_helper": True,
+                    "missing_required_fields_count": "0",
+                    "missing_required_fields": [],
+                },
+                "signoff_controls": {
+                    "release_candidate_signoff": True,
+                    "claim_allowed": True,
+                    "pass_defaults_remain_false": False,
+                    "must_not_tag_publish_or_announce": False,
+                },
+                "readonly_scope": {
+                    "starts_product_processes": True,
+                    "runs_release_commands": True,
+                    "performs_network_requests": True,
+                    "installs_dependencies": True,
+                    "writes_only_rc_handoff_template_artifacts": False,
+                },
+                "candidate": {
+                    "commit": r"C:\Users\Suli\Contoso\candidate?token=rc-secret",
+                    "build_id": "build-token=rc-secret",
+                    "platform": "windows-x64",
+                    "commit_or_build_id_status": "recorded_unverified_by_this_helper",
+                },
+                "artifacts": {"labels": []},
+                "gate_results": {
+                    "exact_commands_and_exits_required": False,
+                    "commands_run_by_this_helper": True,
+                    "entries": [{"pass_verified_by_this_helper": True}],
+                },
+                "manual_p1_checks": {"entries": []},
+                "waivers": {"entries": []},
+                "residual_risks": {"entries": []},
+                "must_not_be_recorded_as": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-RcHandoffEvidenceRoot",
+            str(rc_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    assert "latest RC handoff helper artifact failed fail-closed validation" in release_output
+    assert str(tmp_path) not in release_output
+    assert "sk-proj-RCSECRET1234" not in release_output
+    assert "rc-secret" not in release_output
+    assert "Contoso" not in release_output
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+        encoding="utf-8-sig"
+    )
+    assert "sk-proj-RCSECRET1234" not in packet_text
+    assert "rc-secret" not in packet_text
+    assert "Contoso" not in packet_text
+    packet = json.loads(packet_text)
+    latest = packet["evidence"]["rc_handoff_template"]["latest_redacted_handoff_template"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["release_candidate_signoff"] is False
+    assert latest["source_contract_status"] == "source_contract_mismatch"
+    assert latest["marker"] == "invalid_redacted"
+    assert latest["handoff_status"] == "invalid_redacted"
+    assert latest["release_candidate_signoff"] is False
+    assert latest["claim_allowed"] is False
+    assert latest["required_fields_recorded"] is False
+    mismatch_reasons = "\n".join(latest["mismatch_reasons"])
+    assert "marker is missing or not NOT_RELEASE_CANDIDATE_SIGNOFF" in mismatch_reasons
+    assert "summary.status is not a recognized non-signoff RC handoff status" in mismatch_reasons
+    assert "summary.release_candidate_signoff is not false" in mismatch_reasons
+    assert "summary.claim_allowed is not false" in mismatch_reasons
+    assert "summary.gate_commands_run_by_this_helper is not false" in mismatch_reasons
+    assert "signoff_controls.must_not_tag_publish_or_announce is not true" in mismatch_reasons
+    assert "readonly_scope.runs_release_commands is not false" in mismatch_reasons
+    assert "gate_results.commands_run_by_this_helper is not false" in mismatch_reasons
+    assert "gate_results.entries.pass_verified_by_this_helper is not false" in mismatch_reasons
 
 
 def test_release_evidence_packet_fail_closes_unredacted_mobile_preflight_artifact(
@@ -1151,6 +2167,12 @@ def test_release_evidence_packet_fail_closes_unredacted_mobile_preflight_artifac
             str(evidence_root),
             "-MobilePreflightEvidenceRoot",
             str(mobile_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
             "-QaEvidenceRoot",
             str(qa_root),
         ],
@@ -1242,6 +2264,12 @@ def test_release_evidence_packet_fail_closes_unparseable_mobile_preflight_artifa
             str(evidence_root),
             "-MobilePreflightEvidenceRoot",
             str(mobile_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
             "-QaEvidenceRoot",
             str(qa_root),
         ],
@@ -1328,6 +2356,12 @@ def test_release_evidence_packet_fail_closes_ready_mobile_preflight_missing_reda
             str(evidence_root),
             "-MobilePreflightEvidenceRoot",
             str(mobile_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
             "-QaEvidenceRoot",
             str(qa_root),
         ],
@@ -1436,6 +2470,80 @@ def test_release_evidence_packet_fail_closes_ready_mobile_preflight_missing_qr_r
     assert "ready mobile preflight is missing qr_payload_shape.websocket_remote_screen_url_redacted" in mismatch_reasons
 
 
+def test_release_evidence_packet_fail_closes_mobile_preflight_with_collected_real_device_checklist(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    mobile_root = tmp_path / "mobile-lan-wss-preflight"
+    mobile_run = mobile_root / "run-collected-checklist"
+    mobile_run.mkdir(parents=True)
+    mobile_summary = _mobile_lan_wss_preflight_summary()
+    mobile_summary["manual_real_device_evidence_template"]["real_device_collection_checklist"]["remote_input_wss"][
+        "status"
+    ] = "collected"
+    (mobile_run / "evidence-summary.redacted.json").write_text(
+        json.dumps(mobile_summary),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(mobile_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "latest mobile LAN/WSS preflight artifact failed redacted contract validation" in output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+
+    latest = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert latest["source_contract_status"] == "source_contract_mismatch"
+    assert latest["result"] == "source_contract_mismatch"
+    assert latest["manual_real_device_evidence_template"]["collection_checklist_statuses"]["remote_input_wss"] == "invalid_redacted"
+    mismatch_reasons = "\n".join(latest["mismatch_reasons"])
+    assert (
+        "manual_real_device_evidence_template.real_device_collection_checklist.remote_input_wss.status is not uncollected"
+        in mismatch_reasons
+    )
+
+
 def test_release_evidence_packet_redacts_sensitive_evidence_root_labels(
     project_root: Path, tmp_path: Path
 ) -> None:
@@ -1463,6 +2571,12 @@ def test_release_evidence_packet_redacts_sensitive_evidence_root_labels(
             str(evidence_root),
             "-MobilePreflightEvidenceRoot",
             str(mobile_root),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(tmp_path / "empty-local-model-template"),
             "-QaEvidenceRoot",
             str(qa_root),
         ],
@@ -1578,6 +2692,10 @@ def test_release_evidence_packet_consumes_local_model_clean_machine_template(
             str(tmp_path / "empty-mobile-preflight"),
             "-DiagnosticsReviewEvidenceRoot",
             str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-RcHandoffEvidenceRoot",
+            str(tmp_path / "empty-rc-handoff-template"),
             "-LocalModelCleanMachineEvidenceRoot",
             str(local_model_root),
             "-QaEvidenceRoot",
@@ -2404,6 +3522,10 @@ def test_release_evidence_packet_fail_closes_malformed_local_model_template_arti
             str(tmp_path / "empty-mobile-preflight"),
             "-DiagnosticsReviewEvidenceRoot",
             str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-RcHandoffEvidenceRoot",
+            str(tmp_path / "empty-rc-handoff-template"),
             "-LocalModelCleanMachineEvidenceRoot",
             str(local_model_root),
             "-QaEvidenceRoot",
@@ -2459,6 +3581,180 @@ def test_release_evidence_packet_fail_closes_malformed_local_model_template_arti
     assert "redaction.urls_redacted is not true" in mismatch_reasons
     assert "evidence_template.runtime.status is not unverified_by_this_helper" in mismatch_reasons
     assert "must_not_be_recorded_as is missing true local model install pass" in mismatch_reasons
+
+
+def test_release_evidence_packet_fail_closes_manual_review_ready_local_model_template_missing_evidence(
+    project_root: Path, tmp_path: Path
+) -> None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell is not available")
+
+    local_model_root = tmp_path / "local-model-clean-machine-evidence"
+    malformed_root = local_model_root / "run-manual-ready-missing-evidence"
+    malformed_root.mkdir(parents=True)
+    (malformed_root / "local-model-clean-machine-evidence.redacted.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_by": "scripts/collect_local_model_clean_machine_evidence_template.ps1",
+                "marker": "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS",
+                "summary": {
+                    "template_status": "manual_review_ready",
+                    "clean_machine_signoff": False,
+                    "local_model_install_pass": False,
+                    "local_model_start_pass": False,
+                    "local_model_pull_pass": False,
+                    "local_model_task_smoke_pass": False,
+                    "real_install_start_pull_pass": False,
+                    "template_is_clean_machine_pass": False,
+                    "dev_smoke_is_clean_machine_pass": False,
+                    "release_candidate_signoff": False,
+                    "missing_required_fields_count": 0,
+                    "missing_required_fields": [],
+                },
+                "readonly_scope": {
+                    "starts_product_processes": False,
+                    "performs_network_requests": False,
+                    "installs_runtime": False,
+                    "starts_runtime": False,
+                    "pulls_models": False,
+                    "runs_model_inference": False,
+                },
+                "redaction": {
+                    "raw_logs_included": False,
+                    "secrets_or_tokens_read": False,
+                    "urls_redacted": True,
+                },
+                "evidence_template": {
+                    "template_status": "manual_clean_machine_local_model_evidence_required",
+                    "runtime": {
+                        "name": "",
+                        "version": "",
+                        "status": "unverified_by_this_helper",
+                    },
+                    "model": {
+                        "name": "",
+                        "version": "",
+                        "status": "unverified_by_this_helper",
+                    },
+                    "artifact_build_profile": {
+                        "status": "recorded_unverified_by_this_helper",
+                        "artifact": {
+                            "label": "",
+                            "status": "unverified_by_this_helper",
+                        },
+                        "build": {
+                            "identifier": "",
+                            "status": "unverified_by_this_helper",
+                        },
+                        "profile": {
+                            "label": "",
+                            "status": "unverified_by_this_helper",
+                        },
+                    },
+                    "clean_machine_run": {
+                        step: {
+                            "step": step,
+                            "outcome": "uncollected",
+                            "status": "blocked_missing_outcome_or_blocked_reason",
+                            "blocked_reason_redacted": [],
+                            "pass_verified_by_this_helper": False,
+                            "clean_machine_pass": False,
+                        }
+                        for step in ("install", "start", "pull", "task_smoke")
+                    },
+                    "must_not_be_recorded_as": [
+                        "true local model install pass",
+                        "true local model start pass",
+                        "true local model pull pass",
+                        "true local model task-smoke pass",
+                        "clean-machine local-model readiness",
+                        "template/dev smoke clean-machine pass",
+                        "release-candidate sign-off",
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    qa_root = tmp_path / "qa-evidence"
+    _write_settings_local_model_smoke_artifacts(qa_root)
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    release_result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "collect_release_evidence_packet.ps1"),
+            "-Root",
+            str(project_root),
+            "-EvidenceRoot",
+            str(evidence_root),
+            "-MobilePreflightEvidenceRoot",
+            str(tmp_path / "empty-mobile-preflight"),
+            "-DiagnosticsReviewEvidenceRoot",
+            str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-RcHandoffEvidenceRoot",
+            str(tmp_path / "empty-rc-handoff-template"),
+            "-LocalModelCleanMachineEvidenceRoot",
+            str(local_model_root),
+            "-QaEvidenceRoot",
+            str(qa_root),
+        ],
+        cwd=project_root,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        text=True,
+        timeout=30,
+    )
+    release_output = release_result.stdout + release_result.stderr
+
+    assert release_result.returncode == 1, release_output
+    assert "latest local-model clean-machine helper artifact failed fail-closed validation" in release_output
+    assert str(tmp_path) not in release_output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    local_summary = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert packet["summary"]["source_contract_failures"] == 1
+    assert local_summary["source_contract_status"] == "source_contract_mismatch"
+    assert local_summary["marker"] == "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS"
+    assert local_summary["template_status"] == "manual_review_ready"
+    assert local_summary["clean_machine_signoff"] is False
+    assert local_summary["local_model_install_pass"] is False
+    assert local_summary["local_model_start_pass"] is False
+    assert local_summary["local_model_pull_pass"] is False
+    assert local_summary["local_model_task_smoke_pass"] is False
+    assert local_summary["real_install_start_pull_pass"] is False
+    assert local_summary["template_is_clean_machine_pass"] is False
+    assert local_summary["dev_smoke_is_clean_machine_pass"] is False
+    assert local_summary["release_candidate_signoff"] is False
+    assert local_summary["missing_required_fields_count"] == 0
+    mismatch_reasons = "\n".join(local_summary["mismatch_reasons"])
+    assert "manual_review_ready local-model template is missing runtime.name" in mismatch_reasons
+    assert "manual_review_ready local-model template is missing runtime.version" in mismatch_reasons
+    assert "manual_review_ready local-model template is missing model.name" in mismatch_reasons
+    assert "manual_review_ready local-model template is missing model.version" in mismatch_reasons
+    assert "manual_review_ready local-model template is missing artifact label" in mismatch_reasons
+    assert "manual_review_ready local-model template is missing build identifier" in mismatch_reasons
+    assert "manual_review_ready local-model template is missing profile label" in mismatch_reasons
+    for step in ("install", "start", "pull", "task_smoke"):
+        assert (
+            f"manual_review_ready local-model template {step} status is not a recorded manual outcome"
+            in mismatch_reasons
+        )
+        assert f"manual_review_ready local-model template {step} outcome is missing" in mismatch_reasons
 
 
 def test_release_evidence_packet_rejects_string_boolean_local_model_template_artifact(
@@ -2537,6 +3833,10 @@ def test_release_evidence_packet_rejects_string_boolean_local_model_template_art
             str(tmp_path / "empty-mobile-preflight"),
             "-DiagnosticsReviewEvidenceRoot",
             str(tmp_path / "empty-diagnostics-review"),
+            "-ResultQualityReviewEvidenceRoot",
+            str(tmp_path / "empty-result-quality-review"),
+            "-RcHandoffEvidenceRoot",
+            str(tmp_path / "empty-rc-handoff-template"),
             "-LocalModelCleanMachineEvidenceRoot",
             str(local_model_root),
             "-QaEvidenceRoot",
@@ -2670,8 +3970,13 @@ def test_release_evidence_packet_consumes_diagnostics_external_review_template(
     assert review_summary["review_status"] == "manual_external_review_template_ready"
     assert review_summary["public_safe"] is False
     assert review_summary["external_sharing_allowed"] is False
+    assert review_summary["claim_allowed"] is False
     assert review_summary["human_review_signoff"] is False
     assert review_summary["template_is_human_signoff"] is False
+    assert review_summary["review_fields_complete"] is False
+    assert review_summary["actual_package_content_review_completed"] is False
+    assert review_summary["external_sharing_blocked"] is True
+    assert review_summary["separate_human_content_review_required"] is True
     assert review_summary["checklist_count"] >= 6
     assert packet["summary"]["source_contract_failures"] == 0
     assert packet["summary"]["diagnostics_public_safe"] is False
@@ -2698,10 +4003,45 @@ def test_release_evidence_packet_accepts_blocked_diagnostics_review_template(
                     "human_review_signoff": False,
                     "external_public_safe_signoff": False,
                     "template_is_human_signoff": False,
+                    "external_sharing_allowed": False,
+                    "claim_allowed": False,
+                    "review_fields_complete": False,
+                    "external_sharing_blocked": True,
+                    "separate_human_content_review_required": True,
+                    "actual_package_content_review_completed": False,
+                    "automated_template_only": True,
                     "input_issue_count": 1,
+                },
+                "review_scope": {
+                    "automated_redaction_template": True,
+                    "review_fields_complete": False,
+                    "external_sharing_blocked": True,
+                    "separate_human_content_review_required": True,
+                    "actual_package_content_review_completed": False,
+                    "automated_template_is_actual_package_content_review": False,
+                    "actual_content_review_required_before_external_sharing": True,
+                },
+                "claim_controls": {
+                    "public_safe": False,
+                    "external_sharing_allowed": False,
+                    "claim_allowed": False,
+                    "helper_can_approve_public_safety": False,
+                    "helper_can_authorize_external_sharing": False,
+                    "actual_content_review_required": True,
+                    "actual_content_review_completed": False,
+                    "external_sharing_blocked": True,
+                    "separate_human_content_review_required": True,
+                    "public_safe_approval_created": False,
                 },
                 "review_template": {
                     "public_safe": False,
+                    "external_sharing_allowed": False,
+                    "claim_allowed": False,
+                    "required_before_external_sharing": True,
+                    "review_fields_complete": False,
+                    "external_sharing_blocked": True,
+                    "separate_human_content_review_required": True,
+                    "actual_package_content_review_completed": False,
                     "checklist": [{"id": "scope_and_audience", "status": "pending"}],
                 },
             }
@@ -2767,8 +4107,13 @@ def test_release_evidence_packet_accepts_blocked_diagnostics_review_template(
     assert review_summary["review_status"] == "blocked_missing_diagnostics_package"
     assert review_summary["public_safe"] is False
     assert review_summary["external_sharing_allowed"] is False
+    assert review_summary["claim_allowed"] is False
     assert review_summary["human_review_signoff"] is False
     assert review_summary["template_is_human_signoff"] is False
+    assert review_summary["review_fields_complete"] is False
+    assert review_summary["actual_package_content_review_completed"] is False
+    assert review_summary["external_sharing_blocked"] is True
+    assert review_summary["separate_human_content_review_required"] is True
 
 
 def test_release_evidence_packet_consumes_result_quality_review_template(
@@ -2868,11 +4213,14 @@ def test_release_evidence_packet_consumes_result_quality_review_template(
     assert review_summary["source_contract_status"] == "valid_not_signoff_template"
     assert review_summary["mismatch_reasons"] == []
     assert review_summary["review_status"] == "manual_review_fields_recorded_not_signoff"
+    assert review_summary["review_fields_complete"] is True
     assert review_summary["missing_field_count"] == 0
     assert review_summary["issue_count"] == 0
     assert review_summary["blocked_reason_count"] == 1
     assert review_summary["observed_artifact_count"] == 1
     assert review_summary["result_quality_signoff"] is False
+    assert review_summary["result_quality_claim_blocked"] is True
+    assert review_summary["separate_human_signoff_required"] is True
     assert review_summary["signoff"] is False
     assert review_summary["claim_allowed"] is False
     assert review_summary["completed_result_evidence"] is False
@@ -2904,6 +4252,9 @@ def test_release_evidence_packet_fail_closes_malformed_result_quality_review_art
                     "signoff": True,
                     "result_quality_signoff": True,
                     "claim_allowed": True,
+                    "review_fields_complete": True,
+                    "result_quality_claim_blocked": False,
+                    "separate_human_signoff_required": False,
                     "completed_result_evidence": True,
                     "release_candidate_signoff": True,
                     "release_signoff": True,
@@ -2913,6 +4264,8 @@ def test_release_evidence_packet_fail_closes_malformed_result_quality_review_art
                 },
                 "claim_controls": {
                     "claim_allowed": True,
+                    "result_quality_claim_blocked": False,
+                    "separate_human_signoff_required": False,
                     "result_quality_signoff": True,
                     "completed_result_evidence": True,
                     "packet_is_rc_signoff": True,
@@ -2998,6 +4351,8 @@ def test_release_evidence_packet_fail_closes_malformed_result_quality_review_art
     assert "summary.signoff is not false" in mismatch_reasons
     assert "summary.result_quality_signoff is not false" in mismatch_reasons
     assert "summary.claim_allowed is not false" in mismatch_reasons
+    assert "summary.result_quality_claim_blocked is not true" in mismatch_reasons
+    assert "summary.separate_human_signoff_required is not true" in mismatch_reasons
     assert "summary.completed_result_evidence is not false" in mismatch_reasons
     assert "summary.release_candidate_signoff is not false" in mismatch_reasons
     assert "summary.release_signoff is not false" in mismatch_reasons
@@ -3005,6 +4360,8 @@ def test_release_evidence_packet_fail_closes_malformed_result_quality_review_art
     assert "summary.missing_field_count is not a non-negative JSON integer" in mismatch_reasons
     assert "summary.issue_count is not a non-negative JSON integer" in mismatch_reasons
     assert "claim_controls.claim_allowed is not false" in mismatch_reasons
+    assert "claim_controls.result_quality_claim_blocked is not true" in mismatch_reasons
+    assert "claim_controls.separate_human_signoff_required is not true" in mismatch_reasons
     assert "claim_controls.result_quality_signoff is not false" in mismatch_reasons
     assert "claim_controls.completed_result_evidence is not false" in mismatch_reasons
     assert "claim_controls.packet_is_rc_signoff is not false" in mismatch_reasons
@@ -3036,9 +4393,43 @@ def test_release_evidence_packet_fail_closes_malformed_diagnostics_review_artifa
                     "external_public_safe_signoff": True,
                     "template_is_human_signoff": True,
                     "external_sharing_allowed": True,
+                    "claim_allowed": True,
+                    "review_fields_complete": True,
+                    "external_sharing_blocked": False,
+                    "separate_human_content_review_required": False,
+                    "actual_package_content_review_completed": True,
+                    "automated_template_only": False,
+                },
+                "review_scope": {
+                    "automated_redaction_template": False,
+                    "review_fields_complete": True,
+                    "external_sharing_blocked": False,
+                    "separate_human_content_review_required": False,
+                    "actual_package_content_review_completed": True,
+                    "automated_template_is_actual_package_content_review": True,
+                    "actual_content_review_required_before_external_sharing": False,
+                },
+                "claim_controls": {
+                    "public_safe": True,
+                    "external_sharing_allowed": True,
+                    "claim_allowed": True,
+                    "helper_can_approve_public_safety": True,
+                    "helper_can_authorize_external_sharing": True,
+                    "actual_content_review_required": False,
+                    "actual_content_review_completed": True,
+                    "external_sharing_blocked": False,
+                    "separate_human_content_review_required": False,
+                    "public_safe_approval_created": True,
                 },
                 "review_template": {
                     "public_safe": True,
+                    "external_sharing_allowed": True,
+                    "claim_allowed": True,
+                    "required_before_external_sharing": False,
+                    "review_fields_complete": True,
+                    "external_sharing_blocked": False,
+                    "separate_human_content_review_required": False,
+                    "actual_package_content_review_completed": True,
                     "checklist": [],
                 },
             }
@@ -3123,7 +4514,37 @@ def test_release_evidence_packet_fail_closes_malformed_diagnostics_review_artifa
     assert "summary.external_public_safe_signoff is not false" in mismatch_reasons
     assert "summary.template_is_human_signoff is not false" in mismatch_reasons
     assert "summary.external_sharing_allowed is not false" in mismatch_reasons
+    assert "summary.claim_allowed is not false" in mismatch_reasons
+    assert "summary.actual_package_content_review_completed is not false" in mismatch_reasons
+    assert "summary.automated_template_only is not true" in mismatch_reasons
+    assert "summary.review_fields_complete is not false" in mismatch_reasons
+    assert "summary.external_sharing_blocked is not true" in mismatch_reasons
+    assert "summary.separate_human_content_review_required is not true" in mismatch_reasons
+    assert "review_scope.automated_redaction_template is not true" in mismatch_reasons
+    assert "review_scope.actual_package_content_review_completed is not false" in mismatch_reasons
+    assert "review_scope.automated_template_is_actual_package_content_review is not false" in mismatch_reasons
+    assert "review_scope.actual_content_review_required_before_external_sharing is not true" in mismatch_reasons
+    assert "review_scope.review_fields_complete is not false" in mismatch_reasons
+    assert "review_scope.external_sharing_blocked is not true" in mismatch_reasons
+    assert "review_scope.separate_human_content_review_required is not true" in mismatch_reasons
+    assert "claim_controls.public_safe is not false" in mismatch_reasons
+    assert "claim_controls.external_sharing_allowed is not false" in mismatch_reasons
+    assert "claim_controls.claim_allowed is not false" in mismatch_reasons
+    assert "claim_controls.helper_can_approve_public_safety is not false" in mismatch_reasons
+    assert "claim_controls.helper_can_authorize_external_sharing is not false" in mismatch_reasons
+    assert "claim_controls.actual_content_review_required is not true" in mismatch_reasons
+    assert "claim_controls.actual_content_review_completed is not false" in mismatch_reasons
+    assert "claim_controls.external_sharing_blocked is not true" in mismatch_reasons
+    assert "claim_controls.separate_human_content_review_required is not true" in mismatch_reasons
+    assert "claim_controls.public_safe_approval_created is not false" in mismatch_reasons
     assert "review_template.public_safe is not false" in mismatch_reasons
+    assert "review_template.external_sharing_allowed is not false" in mismatch_reasons
+    assert "review_template.claim_allowed is not false" in mismatch_reasons
+    assert "review_template.required_before_external_sharing is not true" in mismatch_reasons
+    assert "review_template.review_fields_complete is not false" in mismatch_reasons
+    assert "review_template.external_sharing_blocked is not true" in mismatch_reasons
+    assert "review_template.separate_human_content_review_required is not true" in mismatch_reasons
+    assert "review_template.actual_package_content_review_completed is not false" in mismatch_reasons
 
 
 def test_release_evidence_packet_rejects_string_boolean_diagnostics_review_artifact(
@@ -3148,9 +4569,43 @@ def test_release_evidence_packet_rejects_string_boolean_diagnostics_review_artif
                     "external_public_safe_signoff": "false",
                     "template_is_human_signoff": "false",
                     "external_sharing_allowed": "false",
+                    "claim_allowed": "false",
+                    "review_fields_complete": "false",
+                    "external_sharing_blocked": "true",
+                    "separate_human_content_review_required": "true",
+                    "actual_package_content_review_completed": "false",
+                    "automated_template_only": "true",
+                },
+                "review_scope": {
+                    "automated_redaction_template": "true",
+                    "review_fields_complete": "false",
+                    "external_sharing_blocked": "true",
+                    "separate_human_content_review_required": "true",
+                    "actual_package_content_review_completed": "false",
+                    "automated_template_is_actual_package_content_review": "false",
+                    "actual_content_review_required_before_external_sharing": "true",
+                },
+                "claim_controls": {
+                    "public_safe": "false",
+                    "external_sharing_allowed": "false",
+                    "claim_allowed": "false",
+                    "helper_can_approve_public_safety": "false",
+                    "helper_can_authorize_external_sharing": "false",
+                    "actual_content_review_required": "true",
+                    "actual_content_review_completed": "false",
+                    "external_sharing_blocked": "true",
+                    "separate_human_content_review_required": "true",
+                    "public_safe_approval_created": "false",
                 },
                 "review_template": {
                     "public_safe": "false",
+                    "external_sharing_allowed": "false",
+                    "claim_allowed": "false",
+                    "required_before_external_sharing": "true",
+                    "review_fields_complete": "false",
+                    "external_sharing_blocked": "true",
+                    "separate_human_content_review_required": "true",
+                    "actual_package_content_review_completed": "false",
                     "checklist": [],
                 },
             }
@@ -3219,7 +4674,18 @@ def test_release_evidence_packet_rejects_string_boolean_diagnostics_review_artif
     assert "summary.external_public_safe_signoff is not false" in mismatch_reasons
     assert "summary.template_is_human_signoff is not false" in mismatch_reasons
     assert "summary.external_sharing_allowed is not false" in mismatch_reasons
+    assert "summary.claim_allowed is not false" in mismatch_reasons
+    assert "summary.actual_package_content_review_completed is not false" in mismatch_reasons
+    assert "summary.automated_template_only is not true" in mismatch_reasons
+    assert "summary.review_fields_complete is not a JSON boolean" in mismatch_reasons
+    assert "summary.external_sharing_blocked is not true" in mismatch_reasons
+    assert "summary.separate_human_content_review_required is not true" in mismatch_reasons
+    assert "review_scope.automated_redaction_template is not true" in mismatch_reasons
+    assert "claim_controls.external_sharing_blocked is not true" in mismatch_reasons
+    assert "claim_controls.separate_human_content_review_required is not true" in mismatch_reasons
     assert "review_template.public_safe is not false" in mismatch_reasons
+    assert "review_template.external_sharing_blocked is not true" in mismatch_reasons
+    assert "review_template.separate_human_content_review_required is not true" in mismatch_reasons
 
 
 def _write_diagnostics_support_package(path: Path, *, generated_at: str) -> None:
