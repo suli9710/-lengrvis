@@ -1,4 +1,10 @@
-import { describeBaseUrlSecurity, normalizeBaseUrl, type BaseUrlSecurity } from "./client";
+import {
+  describeBaseUrlSecurity,
+  normalizeBaseUrl,
+  normalizePairingSecurityMetadata,
+  type BaseUrlSecurity,
+  type PairingSecurityMetadata,
+} from "./client";
 
 export type PairingPayloadSource = "json" | "url" | "text";
 
@@ -6,6 +12,7 @@ export interface PairingPayload {
   baseUrl: string;
   code: string;
   expiresAt?: string;
+  security?: PairingSecurityMetadata;
   source: PairingPayloadSource;
 }
 
@@ -47,14 +54,14 @@ export function parsePairingPayload(value: string): PairingPayload {
   throw new PairingPayloadParseError("missing_code", "Pairing payload must include a 6-character code and a computer address.");
 }
 
-export function classifyPairingPayloadSecurity(payload: Pick<PairingPayload, "baseUrl" | "expiresAt">, nowMs = Date.now()): PairingPayloadSecurityState {
+export function classifyPairingPayloadSecurity(payload: Pick<PairingPayload, "baseUrl" | "expiresAt" | "security">, nowMs = Date.now()): PairingPayloadSecurityState {
   try {
-    const security = describeBaseUrlSecurity(payload.baseUrl);
-    if (security.isInsecureLan) {
-      return { status: "requires_https_wss", canPair: false, security };
-    }
+    const security = describeBaseUrlSecurity(payload.baseUrl, payload.security);
     if (security.isLoopback) {
       return { status: "loopback", canPair: false, security };
+    }
+    if (security.isInsecureLan || payloadMetadataRequiresSecureTransport(security)) {
+      return { status: "requires_https_wss", canPair: false, security };
     }
     if (isExpiredPairingPayload(payload.expiresAt, nowMs)) {
       return { status: "expired", canPair: false, security };
@@ -105,7 +112,13 @@ function parseUrlPayload(raw: string): PairingPayload | null {
     }) ??
     (parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.origin : "");
 
-  return normalizePayloadParts({ baseUrl, code, expiresAt: firstParam(params, "expires_at", "expiresAt"), source: "url" });
+  return normalizePayloadParts({
+    baseUrl,
+    code,
+    expiresAt: firstParam(params, "expires_at", "expiresAt"),
+    security: securityMetadataFromParams(params),
+    source: "url",
+  });
 }
 
 function parsePlainTextPayload(raw: string): PairingPayload | null {
@@ -134,13 +147,14 @@ function payloadFromRecord(record: Record<string, unknown> | undefined, source: 
       port: firstText(server, "port"),
     });
   const expiresAt = firstText(record, "expires_at", "expiresAt") ?? firstText(pairing, "expires_at", "expiresAt");
-  return normalizePayloadParts({ baseUrl, code, expiresAt, source });
+  return normalizePayloadParts({ baseUrl, code, expiresAt, security: normalizePairingSecurityMetadata(record), source });
 }
 
 function normalizePayloadParts(parts: {
   baseUrl?: string;
   code?: string;
   expiresAt?: string;
+  security?: PairingSecurityMetadata;
   source: PairingPayloadSource;
 }): PairingPayload | null {
   if (!parts.baseUrl && !parts.code) return null;
@@ -151,15 +165,56 @@ function normalizePayloadParts(parts: {
     throw new PairingPayloadParseError("missing_code", "Pairing payload is missing the pairing code.");
   }
   try {
-    return {
+    const payload: PairingPayload = {
       baseUrl: normalizeBaseUrl(parts.baseUrl),
       code: parts.code,
       ...(parts.expiresAt ? { expiresAt: parts.expiresAt } : {}),
       source: parts.source,
     };
+    if (parts.security) {
+      Object.defineProperty(payload, "security", {
+        value: parts.security,
+        enumerable: false,
+      });
+    }
+    return payload;
   } catch {
     throw new PairingPayloadParseError("invalid_address", "Pairing payload contains an invalid computer address.");
   }
+}
+
+function payloadMetadataRequiresSecureTransport(security: BaseUrlSecurity): boolean {
+  if (security.isLoopback) return false;
+  const transport = security.backendSecurity?.transport;
+  const httpScheme = transport?.httpScheme?.trim().toLowerCase().replace(/:$/, "");
+  const webSocketScheme = transport?.webSocketScheme?.trim().toLowerCase().replace(/:$/, "");
+  return security.backendTlsEnabled === false || httpScheme === "http" || webSocketScheme === "ws";
+}
+
+function securityMetadataFromParams(params: URLSearchParams): PairingSecurityMetadata | undefined {
+  const transport = definedRecord({
+    http_scheme: firstParam(params, "http_scheme", "httpScheme", "scheme", "protocol"),
+    websocket_scheme: firstParam(params, "websocket_scheme", "webSocketScheme", "ws_scheme", "wsScheme"),
+    tls_enabled: firstParam(params, "tls_enabled", "tlsEnabled", "https_enabled", "httpsEnabled"),
+    advertised_base_url: firstParam(params, "advertised_base_url", "advertisedBaseUrl"),
+    server_url: firstParam(params, "server_url", "serverUrl"),
+  });
+  const tls = definedRecord({
+    enabled: firstParam(params, "tls_enabled", "tlsEnabled", "https_enabled", "httpsEnabled"),
+    trust_status: firstParam(params, "trust_status", "trustStatus"),
+    requires_trust: firstParam(params, "requires_trust", "requiresTrust", "trust_required", "trustRequired"),
+    fingerprint_sha256: firstParam(params, "fingerprint_sha256", "fingerprintSha256", "sha256_fingerprint", "sha256Fingerprint", "fingerprint"),
+  });
+  if (!transport && !tls) return undefined;
+  return normalizePairingSecurityMetadata({
+    ...(transport ? { transport } : {}),
+    ...(tls ? { tls } : {}),
+  });
+}
+
+function definedRecord(record: Record<string, string | undefined>): Record<string, string> | undefined {
+  const entries = Object.entries(record).filter((entry): entry is [string, string] => Boolean(entry[1]));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function firstLabeledAddress(value: string): string | undefined {

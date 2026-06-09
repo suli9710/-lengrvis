@@ -35,6 +35,12 @@ interface LibrarySectionMeta {
   mode: "grid" | "list";
 }
 
+interface LibraryEmptyGuide {
+  title: string;
+  detail: string;
+  steps: string[];
+}
+
 const SECTIONS: LibrarySectionMeta[] = [
   {
     id: "apps",
@@ -180,6 +186,8 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
   const backendBaseUrl = window.lengrvis?.backendBaseUrl;
   const selectedIconUrl = selectedItem ? fileIcons[selectedItem.path] || selectedItem.iconUrl || "" : "";
   const indexSummary = libraryIndexSummary(library?.indexStatus);
+  const scopeLabel = library?.scopeSummary?.displayLabel ?? (library?.roots.length ? `${library.roots.length} 个授权范围` : "未选择授权目录");
+  const emptyGuide = libraryEmptyGuide(library, query, sectionMeta);
 
   useEffect(() => {
     if (!window.lengrvis?.shell.getFileIcon) return;
@@ -245,14 +253,14 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
         <div className="library-summary">
           <span>{items.length} 项</span>
           <span>{formatBytes(library?.stats.size ?? 0)}</span>
-          <span>{library?.roots[0] ?? "未配置授权目录"}</span>
+          <span>{scopeLabel}</span>
           {indexSummary ? <span className="library-summary__index" title={indexSummary}>{indexSummary}</span> : null}
           {library?.truncated ? <span>仅显示前 {items.length} 项</span> : null}
         </div>
 
         {error ? <div className="library-empty">{error}</div> : null}
         {!error && !isLoading && items.length === 0 ? (
-          <div className="library-empty">当前授权目录没有找到对应内容</div>
+          <LibraryEmptyState guide={emptyGuide} />
         ) : null}
 
         {sectionMeta.mode === "grid" ? (
@@ -263,7 +271,7 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
                 key={item.id}
                 type="button"
                 onClick={() => setSelectedItem(item)}
-                title={item.path}
+                title={item.name}
               >
                 <img src={absolutePreviewUrl(backendBaseUrl, item.previewUrl)} alt={item.name} loading="lazy" />
               </button>
@@ -277,12 +285,12 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
                 key={item.id}
                 type="button"
                 onClick={() => setSelectedItem(item)}
-                title={item.path}
+                title={item.name}
               >
                 <FileIcon item={item} iconUrl={fileIcons[item.path] || item.iconUrl} />
                 <span>
                   <strong>{item.name}</strong>
-                  <small>{item.parent}</small>
+                  <small>{item.parentLabel || "授权范围内"}</small>
                 </span>
                 <em>{item.groupLabel || item.extension}</em>
                 <em>{formatBytes(item.size)}</em>
@@ -342,7 +350,11 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
                 ) : null}
                 <div>
                   <dt>位置</dt>
-                  <dd>{selectedItem.path}</dd>
+                  <dd>{selectedItem.parentLabel ? `${selectedItem.parentLabel} · ${selectedItem.pathLabel || selectedItem.name}` : selectedItem.pathLabel || selectedItem.name}</dd>
+                </div>
+                <div>
+                  <dt>路径安全</dt>
+                  <dd>完整路径仅用于本机读取、总结或提问；普通列表和证据截图默认只显示授权范围标签。</dd>
                 </div>
               </dl>
             </div>
@@ -353,6 +365,55 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
       </aside>
     </section>
   );
+}
+
+function LibraryEmptyState({ guide }: { guide: LibraryEmptyGuide }) {
+  return (
+    <div className="library-empty library-empty--guide">
+      <strong>{guide.title}</strong>
+      <p>{guide.detail}</p>
+      <ul>
+        {guide.steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function libraryEmptyGuide(
+  library: LocalLibraryResponse | null,
+  query: string,
+  section: LibrarySectionMeta
+): LibraryEmptyGuide {
+  const hasScope = Boolean(library?.scopeSummary?.hasAuthorizedRoots ?? library?.roots.length);
+  if (!hasScope) {
+    return {
+      title: "先选择一个授权范围",
+      detail: "Lengrvis 不会自动浏览整台电脑；这里只读取你已经授权的文件夹。",
+      steps: ["到文件工具选择桌面、下载或一个文件夹", "回到这里刷新", "全文索引为空时也可以先按文件名浏览"]
+    };
+  }
+  const trimmedQuery = query.trim();
+  if (trimmedQuery) {
+    return {
+      title: "这个关键词没有命中",
+      detail: `已在 ${library?.scopeSummary?.displayLabel ?? "授权范围"} 内查找 ${section.label}，没有展示完整本机路径。`,
+      steps: ["换一个文件名、扩展名或更短关键词", "确认文档位于已授权范围", "需要搜正文时先重建全文索引"]
+    };
+  }
+  if (library?.truncated) {
+    return {
+      title: "当前范围太大，先显示为空",
+      detail: "扫描有时间和数量上限，避免新手第一次打开时卡住或扫到过宽范围。",
+      steps: ["输入更具体的关键词", "改选更小的授权文件夹", "刷新后再查看前几项结果"]
+    };
+  }
+  return {
+    title: "授权范围里暂时没有对应内容",
+    detail: `这里正在看 ${section.label} 类型文件；完整路径不会出现在普通列表状态里。`,
+    steps: ["换到文档、报告、课件或图库分类", "把目标文件放入已授权文件夹", "刷新当前列表"]
+  };
 }
 
 function isDocumentItem(item: LocalLibraryItem): boolean {
@@ -388,8 +449,8 @@ function libraryIndexSummary(status?: IndexStatus): string {
     return updated ? `索引 ${count} 个，更新 ${updated}` : `索引 ${count} 个`;
   }
   if (status.status === "degraded") {
-    const detail = status.latestFailure?.message || status.retryHint || "最近处理失败";
-    return `索引需重试：${detail}`;
+    const countLabel = count === "0" ? "" : `${count} 个文件，`;
+    return `索引需重试：${countLabel}文件名浏览仍可用`;
   }
   if (status.status === "empty") {
     return "全文索引为空，文件名浏览仍可用";

@@ -170,6 +170,7 @@ interface OutcomeCard {
   id: string;
   title: string;
   eyebrow: string;
+  statusLabel: string;
   detail: string;
   action: string;
   tone: "ready" | "warning" | "blocked";
@@ -189,7 +190,7 @@ interface TaskPilotSummary {
   title: string;
   detail: string;
   status: string;
-  tone: "idle" | "active" | "blocked" | "done" | "failed";
+  tone: "idle" | "active" | "blocked" | "done" | "failed" | "warning";
   action: "open" | "approve" | "compose";
   actionLabel: string;
   task: TaskEvent | null;
@@ -798,7 +799,7 @@ export function OfficeScene({
 
         <div className="inspector-card task-workspace-card" data-testid="task-workspace-card">
           <div className="inspector-card__head">
-            <strong>Task Workspace</strong>
+            <strong>任务工作区</strong>
             <span>权限与接管</span>
           </div>
           <div className="task-workspace-grid" aria-label="任务工作空间">
@@ -820,7 +821,10 @@ export function OfficeScene({
           <div className="home-outcome-list" aria-label="任务成果区">
             {outcomeCards.map((card) => (
               <article key={card.id} className={`home-outcome-card home-outcome-card--${card.tone}`} data-testid={`home-outcome-${card.id}`}>
-                <span>{card.eyebrow}</span>
+                <span className="home-outcome-card__meta">
+                  <span>{card.eyebrow}</span>
+                  <small>{card.statusLabel}</small>
+                </span>
                 <strong>{card.title}</strong>
                 <p>{card.detail}</p>
                 <em>{card.action}</em>
@@ -852,7 +856,7 @@ export function OfficeScene({
                   type="button"
                   className="task-row"
                   onClick={() => onTaskPilotAction?.(task, task.state === "blocked" ? "approve" : "open")}
-                  aria-label={`${task.title}，${friendlyTaskState(task.state)}，${task.state === "blocked" ? "去确认" : "查看进度"}`}
+                  aria-label={`${noviceTaskTitle(task.title, "最近任务")}，${friendlyTaskState(task.state, task)}，${task.state === "blocked" ? "去确认" : "查看进度"}`}
                 >
                   <span className={"task-row__dot task-row__dot--" + task.state}>
                     {task.state === "completed" ? (
@@ -866,8 +870,8 @@ export function OfficeScene({
                     )}
                   </span>
                   <div className="task-row__body">
-                    <strong>{task.title}</strong>
-                    <em>{friendlyTaskState(task.state)} · {task.state === "blocked" ? "点此确认" : "点此查看"}</em>
+                    <strong>{noviceTaskTitle(task.title, "最近任务")}</strong>
+                    <em>{friendlyTaskState(task.state, task)} · {task.state === "blocked" ? "点此确认" : "点此查看"}</em>
                   </div>
                   <time className="task-row__time">
                     {new Date(task.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -1347,10 +1351,11 @@ function buildTaskWorkspaceItems(
     },
     {
       label: "当前动作",
-      value: latestTask ? friendlyTaskState(latestTask.state) : selectedSkill ? "待启动" : "空闲",
-      detail: latestTask?.title || selectedSkill?.wizard.nextStep || "等待第一个目标或任务模板",
+      value: latestTask ? friendlyTaskState(latestTask.state, latestTask) : selectedSkill ? "待启动" : "空闲",
+      detail: latestTask ? noviceTaskTitle(latestTask.title, "最近任务") : selectedSkill?.wizard.nextStep || "等待第一个目标或任务模板",
       tone: latestTask?.state === "failed" ? "blocked" : latestTask || selectedSkill ? "ready" : "warning"
     },
+    taskResultWorkspaceItem(latestTask, selectedSkill),
     {
       label: "审批点",
       value: hasApproval ? `${pendingApprovalCount || 1} 项待确认` : "暂无待审批",
@@ -1374,6 +1379,96 @@ function buildTaskWorkspaceItems(
       tone: hasRollback || selectedSkill ? "ready" : latestTask ? "warning" : "warning"
     }
   ];
+}
+
+function taskResultWorkspaceItem(task: TaskEvent | undefined, selectedSkill: OfficeQuickSkill | null): TaskWorkspaceItem {
+  if (!task) {
+    return {
+      label: "结果状态",
+      value: selectedSkill ? "等待启动" : "暂无任务",
+      detail: selectedSkill ? "启动后会显示进度、结果核验或需要处理的状态" : "开始任务后这里会标明结果是否已核验",
+      tone: "warning"
+    };
+  }
+
+  if (isVerifiedCompletedResult(task)) {
+    return {
+      label: "结果状态",
+      value: "完成结果已核验",
+      detail: "可在时间线查看摘要、记录和后续操作",
+      tone: "ready"
+    };
+  }
+
+  if (isSafeFailureEvidence(task)) {
+    return {
+      label: "结果状态",
+      value: "安全停止，需处理",
+      detail: "没有完成结果；先查看原因，再重试或调整范围",
+      tone: "blocked"
+    };
+  }
+
+  if (task.state === "failed") {
+    return {
+      label: "结果状态",
+      value: "未完成，需处理",
+      detail: "这次没有完成结果；先查看原因，再决定是否重试",
+      tone: "blocked"
+    };
+  }
+
+  if (task.state === "blocked") {
+    return {
+      label: "结果状态",
+      value: "等待你确认",
+      detail: "任务已停下，确认前不会继续执行",
+      tone: "blocked"
+    };
+  }
+
+  if (task.state === "running" || task.state === "queued" || task.completionEvidence?.status === "visible_progress") {
+    return {
+      label: "结果状态",
+      value: "有进度，待核验",
+      detail: "看得到进展，但还不能当作最终结果",
+      tone: "warning"
+    };
+  }
+
+  if (task.state === "paused") {
+    return {
+      label: "结果状态",
+      value: "已暂停，待接回",
+      detail: "进度已保留，恢复前不会继续操作",
+      tone: "warning"
+    };
+  }
+
+  if (task.completionEvidence?.status === "task_evidence_only") {
+    return {
+      label: "结果状态",
+      value: "仅有任务记录",
+      detail: "只说明任务被提交或创建，不能当作完成结果",
+      tone: "warning"
+    };
+  }
+
+  if (task.completionEvidence?.level === "completed_result") {
+    return {
+      label: "结果状态",
+      value: "结果待核验",
+      detail: "有结果记录，但还没有通过核验",
+      tone: "warning"
+    };
+  }
+
+  return {
+    label: "结果状态",
+    value: task.state === "completed" ? "状态已结束，待核验" : "等待处理",
+    detail: task.state === "completed" ? "状态结束不等于完成结果，建议先核对记录" : "结果出现前会继续显示进度",
+    tone: "warning"
+  };
 }
 
 function inferWorkspaceTool(task?: TaskEvent): string {
@@ -1406,11 +1501,19 @@ function buildOutcomeCards(tasks: TaskEvent[]): OutcomeCard[] {
     taskOutcomeCard({
       id: "document",
       task: documentTask,
-      eyebrow: "文档 QA",
-      title: documentTask ? "文档回答已进入留痕" : "等待文档结果",
-      readyDetail: "可打开文档区继续追问；引用来源随任务记录查看。",
+      eyebrow: "文档问答",
+      verifiedTitle: "文档完成结果已核验",
+      progressTitle: "文档任务已有记录",
+      emptyTitle: "等待文档结果",
+      verifiedDetail: "可以继续追问；引用来源随任务记录查看。",
       emptyDetail: "选择“总结本地文档”或“文档问答”后，这里显示摘要和引用入口。",
-      readyAction: "下一步：继续追问或查看时间线引用",
+      progressDetail: "看到文档任务记录，但还不能确认摘要或回答已经完成。",
+      runningDetail: "文档任务正在处理，结果出现前先保留输入和范围。",
+      blockedDetail: "文档任务停在确认点，批准前不会继续读取或处理更多内容。",
+      failedDetail: "这次没有拿到可核验的文档结果，可查看原因后重新选择文档或问题。",
+      pausedDetail: "任务已暂停，恢复前不会继续处理文档。",
+      verifiedAction: "下一步：继续追问或查看时间线引用",
+      progressAction: "下一步：打开时间线核对记录",
       emptyAction: "运行文档模板后可引用结果",
       tone: "ready"
     }),
@@ -1418,10 +1521,18 @@ function buildOutcomeCards(tasks: TaskEvent[]): OutcomeCard[] {
       id: "large-files",
       task: largeFileTask,
       eyebrow: "查找大文件",
-      title: largeFileTask ? "大文件任务已有记录" : "等待扫描结果",
-      readyDetail: "排行和清理建议保留在任务记录里；不会自动删除文件。",
+      verifiedTitle: "大文件完成结果已核验",
+      progressTitle: "大文件扫描待核验",
+      emptyTitle: "等待扫描结果",
+      verifiedDetail: "排行和清理建议保留在任务记录里；不会自动删除文件。",
       emptyDetail: "运行“查找大文件”后，这里显示可复核的排行和下一步。",
-      readyAction: "下一步：打开时间线复核候选项",
+      progressDetail: "看到扫描记录，但还不能确认排行或清理建议已经形成最终结果。",
+      runningDetail: "扫描正在进行，结果出现前不会删除或移动文件。",
+      blockedDetail: "任务正在等你确认范围或高风险步骤。",
+      failedDetail: "这次没有形成可核验的扫描结果，可重新选择范围后再试。",
+      pausedDetail: "扫描已暂停，可从进度入口恢复或重新开始。",
+      verifiedAction: "下一步：打开时间线复核候选项",
+      progressAction: "下一步：查看记录或重新扫描",
       emptyAction: "先选择范围，再生成只读结果",
       tone: "warning"
     }),
@@ -1429,10 +1540,18 @@ function buildOutcomeCards(tasks: TaskEvent[]): OutcomeCard[] {
       id: "computer",
       task: computerTask,
       eyebrow: "系统检查",
-      title: computerTask ? "系统检查有最近记录" : "等待只读快照",
-      readyDetail: "只读状态可作为诊断线索；不会改系统设置。",
+      verifiedTitle: "系统检查完成结果已核验",
+      progressTitle: "系统检查已有记录",
+      emptyTitle: "等待只读快照",
+      verifiedDetail: "只读状态可作为诊断线索；不会改系统设置。",
       emptyDetail: "运行“检查电脑状态”后，这里显示健康检查和修复入口。",
-      readyAction: "下一步：查看电脑状态页",
+      progressDetail: "看到系统检查记录，但还不能确认健康结论已经生成。",
+      runningDetail: "只读检查正在进行，不会改系统设置。",
+      blockedDetail: "检查停在确认点，处理前会继续等待你确认。",
+      failedDetail: "这次没有拿到可核验的检查结果，可查看原因后重试只读检查。",
+      pausedDetail: "检查已暂停，恢复前不会继续读取状态。",
+      verifiedAction: "下一步：查看电脑状态页",
+      progressAction: "下一步：查看时间线或重新检查",
       emptyAction: "可一键启动只读检查",
       tone: "ready"
     })
@@ -1444,6 +1563,7 @@ function cleanupOutcomeCard(task?: TaskEvent): OutcomeCard {
     return {
       id: "cleanup",
       eyebrow: "清理计划",
+      statusLabel: "等待启动",
       title: "等待清理预览",
       detail: "整理下载目录或大文件任务生成结果后，这里显示候选项和审批入口。",
       action: "生成后可复核、审批或查看回滚预案",
@@ -1452,13 +1572,59 @@ function cleanupOutcomeCard(task?: TaskEvent): OutcomeCard {
   }
 
   const executableCount = task.cleanupPlan.items.filter((item) => item.disposition === "permanent_delete" || item.disposition === "trash").length;
+  const candidateSummary = `${task.cleanupPlan.items.length} 个候选项`;
+  if (task.state === "failed" || isSafeFailureEvidence(task)) {
+    return {
+      id: "cleanup",
+      eyebrow: "清理计划",
+      statusLabel: taskOutcomeStatusLabel(task),
+      title: "清理预览未完成",
+      detail: "这次没有形成可核验的清理预览；不会删除或移动文件。",
+      action: "下一步：查看原因，重新选择范围后再试",
+      tone: "blocked"
+    };
+  }
+  if (task.state === "running" || task.state === "queued") {
+    return {
+      id: "cleanup",
+      eyebrow: "清理计划",
+      statusLabel: taskOutcomeStatusLabel(task),
+      title: "正在生成清理预览",
+      detail: "候选项还在整理中；真正清理前仍会停下让你确认。",
+      action: "下一步：等待预览或打开进度",
+      tone: "warning"
+    };
+  }
+  if (task.state === "blocked") {
+    return {
+      id: "cleanup",
+      eyebrow: "清理计划",
+      statusLabel: taskOutcomeStatusLabel(task),
+      title: `${candidateSummary}待确认`,
+      detail: `${formatOutcomeBytes(task.cleanupPlan.reclaimableBytes)} 可复核，${executableCount} 项必须审批后才会执行。`,
+      action: "下一步：打开审批并逐项确认",
+      tone: "blocked"
+    };
+  }
+  if (isVerifiedCompletedResult(task)) {
+    return {
+      id: "cleanup",
+      eyebrow: "清理计划",
+      statusLabel: "完成结果已核验",
+      title: `${candidateSummary}已核验`,
+      detail: `${formatOutcomeBytes(task.cleanupPlan.reclaimableBytes)} 可复核，${executableCount} 项需要审批后才会执行。`,
+      action: "下一步：打开时间线复核或审批",
+      tone: "ready"
+    };
+  }
   return {
     id: "cleanup",
     eyebrow: "清理计划",
-    title: `${task.cleanupPlan.items.length} 个候选项`,
-    detail: `${formatOutcomeBytes(task.cleanupPlan.reclaimableBytes)} 可释放，${executableCount} 项需要审批后才会执行。`,
-    action: "下一步：打开审批或时间线回滚预案",
-    tone: task.state === "blocked" ? "blocked" : "ready"
+    statusLabel: taskOutcomeStatusLabel(task),
+    title: `${candidateSummary}待核验`,
+    detail: `${formatOutcomeBytes(task.cleanupPlan.reclaimableBytes)} 可复核，但还不能当作已核验的最终清理结果。`,
+    action: "下一步：打开时间线核对记录",
+    tone: "warning"
   };
 }
 
@@ -1466,31 +1632,160 @@ function taskOutcomeCard({
   id,
   task,
   eyebrow,
-  title,
-  readyDetail,
+  verifiedTitle,
+  progressTitle,
+  emptyTitle,
+  verifiedDetail,
   emptyDetail,
-  readyAction,
+  progressDetail,
+  runningDetail,
+  blockedDetail,
+  failedDetail,
+  pausedDetail,
+  verifiedAction,
+  progressAction,
   emptyAction,
   tone
 }: {
   id: string;
   task?: TaskEvent;
   eyebrow: string;
-  title: string;
-  readyDetail: string;
+  verifiedTitle: string;
+  progressTitle: string;
+  emptyTitle: string;
+  verifiedDetail: string;
   emptyDetail: string;
-  readyAction: string;
+  progressDetail: string;
+  runningDetail: string;
+  blockedDetail: string;
+  failedDetail: string;
+  pausedDetail: string;
+  verifiedAction: string;
+  progressAction: string;
   emptyAction: string;
   tone: OutcomeCard["tone"];
 }): OutcomeCard {
+  if (!task) {
+    return {
+      id,
+      eyebrow,
+      statusLabel: "等待启动",
+      title: emptyTitle,
+      detail: emptyDetail,
+      action: emptyAction,
+      tone: "warning"
+    };
+  }
+
+  if (task.state === "blocked") {
+    return {
+      id,
+      eyebrow,
+      statusLabel: taskOutcomeStatusLabel(task),
+      title: "等待你确认",
+      detail: blockedDetail,
+      action: "下一步：去确认或查看为什么停下",
+      tone: "blocked"
+    };
+  }
+
+  if (task.state === "failed" || isSafeFailureEvidence(task)) {
+    return {
+      id,
+      eyebrow,
+      statusLabel: taskOutcomeStatusLabel(task),
+      title: "任务未完成",
+      detail: failedDetail,
+      action: "下一步：查看原因后重试",
+      tone: "blocked"
+    };
+  }
+
+  if (task.state === "paused") {
+    return {
+      id,
+      eyebrow,
+      statusLabel: taskOutcomeStatusLabel(task),
+      title: "任务已暂停",
+      detail: pausedDetail,
+      action: "下一步：查看进度或恢复任务",
+      tone: "warning"
+    };
+  }
+
+  if (task.state === "running" || task.state === "queued") {
+    return {
+      id,
+      eyebrow,
+      statusLabel: taskOutcomeStatusLabel(task),
+      title: task.state === "queued" ? "任务等待执行" : "任务正在处理",
+      detail: runningDetail,
+      action: "下一步：打开进度查看当前状态",
+      tone: "warning"
+    };
+  }
+
+  if (isVerifiedCompletedResult(task)) {
+    return {
+      id,
+      eyebrow,
+      statusLabel: "完成结果已核验",
+      title: verifiedTitle,
+      detail: verifiedDetail,
+      action: verifiedAction,
+      tone
+    };
+  }
+
   return {
     id,
     eyebrow,
-    title,
-    detail: task ? readyDetail : emptyDetail,
-    action: task ? readyAction : emptyAction,
-    tone: task ? tone : "warning"
+    statusLabel: taskOutcomeStatusLabel(task),
+    title: progressTitle,
+    detail: unverifiedOutcomeDetail(task, progressDetail),
+    action: progressAction,
+    tone: "warning"
   };
+}
+
+function isVerifiedCompletedResult(task: TaskEvent): boolean {
+  const evidence = task.completionEvidence;
+  return Boolean(task.state === "completed" && evidence?.level === "completed_result" && evidence.resultVerified === true);
+}
+
+function isSafeFailureEvidence(task: TaskEvent): boolean {
+  return task.completionEvidence?.level === "safe_failure" || task.completionEvidence?.status === "safe_failure";
+}
+
+function taskOutcomeStatusLabel(task: TaskEvent): string {
+  if (isVerifiedCompletedResult(task)) return "完成结果已核验";
+  if (task.state === "blocked") return "等待你确认";
+  if (isSafeFailureEvidence(task)) return "安全停止，需处理";
+  if (task.state === "failed") return "未完成，需处理";
+  if (task.state === "paused") return "已暂停，可接回";
+  if (task.state === "running") return "正在处理";
+  if (task.state === "queued") return "等待执行";
+  if (task.completionEvidence?.status === "visible_progress") return "有进度，待核验";
+  if (task.completionEvidence?.status === "task_evidence_only") return "仅有任务记录";
+  if (task.completionEvidence) return "结果待核验";
+  if (task.state === "completed") return "状态已结束，未核验";
+  return "等待处理";
+}
+
+function unverifiedOutcomeDetail(task: TaskEvent, progressDetail: string): string {
+  if (!task.completionEvidence) {
+    return "任务状态已结束，但还没有通过结果核验。建议先核对时间线记录。";
+  }
+  if (task.completionEvidence.status === "task_evidence_only") {
+    return "这里只看到任务被提交或创建，不能当作完成结果。";
+  }
+  if (task.completionEvidence.status === "visible_progress") {
+    return progressDetail;
+  }
+  if (task.completionEvidence.level === "completed_result") {
+    return "有结果记录，但还没有通过核验。";
+  }
+  return "任务已有记录，但还不能确认最终结果。";
 }
 
 function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilotSummary {
@@ -1540,9 +1835,8 @@ function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilot
     };
   }
 
-  const status = friendlyTaskState(latestTask.state);
-  const baseTitle = latestTask.title || "最近任务";
-  const baseDetail = latestTask.description || "Lengrvis 会把任务过程留在时间线里。";
+  const status = friendlyTaskState(latestTask.state, latestTask);
+  const baseTitle = noviceTaskTitle(latestTask.title, "最近任务");
 
   if (latestTask.state === "blocked") {
     return {
@@ -1560,7 +1854,7 @@ function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilot
   if (latestTask.state === "failed") {
     return {
       title: baseTitle,
-      detail: baseDetail,
+      detail: "任务没有完成。打开记录可以看到失败原因；重新发送前可补充范围或目标。",
       status,
       tone: "failed",
       action: "open",
@@ -1570,16 +1864,34 @@ function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilot
     };
   }
 
-  if (latestTask.state === "completed") {
+  if (isSafeFailureEvidence(latestTask)) {
     return {
       title: baseTitle,
-      detail: baseDetail,
-      status,
-      tone: "done",
+      detail: "任务已安全停止，没有形成完成结果。打开记录可以查看原因，再决定是否重试。",
+      status: "安全停止，需处理",
+      tone: "failed",
       action: "open",
-      actionLabel: "查看留痕",
+      actionLabel: "查看原因",
       task: latestTask,
-      steps: taskPilotSteps("completed")
+      steps: taskPilotSteps("failed")
+    };
+  }
+
+  if (latestTask.state === "completed") {
+    const verified = isVerifiedCompletedResult(latestTask);
+    return {
+      title: baseTitle,
+      detail: verified
+        ? "完成结果已通过核验；可在时间线查看摘要、状态和后续操作。"
+        : latestTask.completionEvidence
+          ? "任务状态已结束，但还没有可核验的最终结果。建议先核对时间线记录。"
+          : "任务状态已结束，但还没有通过结果核验。建议先核对时间线记录。",
+      status,
+      tone: verified ? "done" : "warning",
+      action: "open",
+      actionLabel: verified ? "查看结果" : "核对结果",
+      task: latestTask,
+      steps: taskPilotSteps(verified ? "completed" : "completed_unverified")
     };
   }
 
@@ -1598,7 +1910,9 @@ function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilot
 
   return {
     title: baseTitle,
-    detail: baseDetail,
+    detail: latestTask.state === "queued"
+      ? "任务已经进入队列，开始执行前不会重复创建。"
+      : "任务正在处理中；结果出现前会继续显示进度和需要你确认的步骤。",
     status,
     tone: "active",
     action: "open",
@@ -1608,7 +1922,7 @@ function buildTaskPilotSummary(tasks: TaskEvent[], hasDraft: boolean): TaskPilot
   };
 }
 
-function taskPilotSteps(stage: TaskEvent["state"] | "idle"): TaskPilotStep[] {
+function taskPilotSteps(stage: TaskEvent["state"] | "idle" | "completed_unverified"): TaskPilotStep[] {
   const states: Record<TaskPilotStep["id"], TaskPilotStepState> = {
     understand: "idle",
     route: "idle",
@@ -1632,6 +1946,11 @@ function taskPilotSteps(stage: TaskEvent["state"] | "idle"): TaskPilotStep[] {
     states.route = "done";
     states.execute = "done";
     states.record = "done";
+  } else if (stage === "completed_unverified") {
+    states.understand = "done";
+    states.route = "done";
+    states.execute = "done";
+    states.record = "blocked";
   } else if (stage === "failed") {
     states.understand = "done";
     states.route = "done";
@@ -1664,7 +1983,7 @@ function taskPilotSteps(stage: TaskEvent["state"] | "idle"): TaskPilotStep[] {
     {
       id: "record",
       label: "结果留痕",
-      detail: states.record === "done" ? "可追溯" : "完成后记录",
+      detail: states.record === "done" ? "可追溯" : states.record === "blocked" ? "记录待核验" : "完成后记录",
       state: states.record,
       icon: CheckCircle2
     }
@@ -1744,11 +2063,28 @@ function formatOutcomeBytes(bytes?: number): string {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
 }
 
-function friendlyTaskState(state: TaskEvent["state"]): string {
-  if (state === "completed") return "已完成";
+function friendlyTaskState(state: TaskEvent["state"], task?: TaskEvent): string {
+  if (task && isSafeFailureEvidence(task)) return "安全停止";
+  if (state === "completed") return task && isVerifiedCompletedResult(task) ? "已完成" : "已结束，待核验";
   if (state === "running") return "进行中";
   if (state === "blocked") return "待审批";
   if (state === "paused") return "已暂停";
   if (state === "failed") return "未完成";
   return "等待中";
+}
+
+function noviceTaskTitle(value: string, fallback: string): string {
+  const text = value.trim();
+  if (!text || containsRawTaskInternals(text)) return fallback;
+  return text.length > 64 ? `${text.slice(0, 62)}...` : text;
+}
+
+function containsRawTaskInternals(value: string): boolean {
+  return (
+    /[A-Za-z]:\\/.test(value) ||
+    /\\\\[^\s]+/.test(value) ||
+    /\/(?:Users|home|tmp|var|etc)\//.test(value) ||
+    /\b(?:token|api[_-]?key|authorization|tool[_-]?args)\b/i.test(value) ||
+    /\b[A-Za-z0-9_-]{48,}\b/.test(value)
+  );
 }

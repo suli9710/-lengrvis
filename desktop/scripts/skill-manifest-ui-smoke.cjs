@@ -76,12 +76,18 @@ function assertSourceBoundaries() {
   for (const label of ["读文件", "写文件", "操作 UI", "访问网络", "发送消息", "删除数据", "Preview", "Rollback/Handoff"]) {
     assertIncludes(skillsView, `label: "${label}"`, "Product Manifest card label");
   }
-  assertIncludes(skillsView, "Manifest 声明权限与文本推断信号", "Product Manifest mixed-source aria label");
+  assertIncludes(skillsView, "Manifest 声明权限、文本提示与安全检查", "Product Manifest mixed-source aria label");
+  assertIncludes(skillsView, "已授权只看 Manifest 声明", "Product Manifest beginner source note");
+  assertIncludes(skillsView, "文本提示和安全检查只是提醒，不会自动授权", "Product Manifest inferred source warning");
   assertIncludes(skillsView, "权限以 Manifest 声明为准，文本提示只作提醒", "Product Manifest source boundary copy");
   assertIncludes(skillsView, "source: \"Manifest 声明\"", "Product Manifest declared source copy");
   assertIncludes(skillsView, "source: \"文本提示\"", "Product Manifest inferred source copy");
   assertIncludes(skillsView, "\"安全检查\"", "Product Manifest guardrail source copy");
   assertIncludes(skillsView, "source: \"未声明\"", "Product Manifest absent source copy");
+  assertIncludes(skillsView, "function permissionSourceClass", "Product Manifest source class helper");
+  assertIncludes(skillsView, "skill-permission--${permissionSourceClass(permission.source)}", "Product Manifest source class rendering");
+  assertIncludes(skillsView, "不是已授权；描述里提到读取文件", "Product Manifest inferred file-read warning");
+  assertIncludes(skillsView, "不是已授权；执行方式或描述提示可能访问网络", "Product Manifest inferred network warning");
   assertIncludes(skillsView, "function skillSignalText", "Product Manifest signal text helper");
   assertIncludes(skillsView, "function skillPermissions", "Product Manifest declared permission helper");
   assertDoesNotMatch(
@@ -137,7 +143,9 @@ async function assertRenderedManifestBoundary() {
     const skillsPanel = page.locator(".panel--skills");
     await skillsPanel.waitFor({ timeout: 30_000 });
     await page.getByText("product-manifest-showcase").waitFor({ timeout: 30_000 });
-    await page.locator('[aria-label="Manifest 声明权限与文本推断信号"]').first().waitFor({ timeout: 30_000 });
+    await page.locator('[aria-label="Manifest 声明权限、文本提示与安全检查"]').first().waitFor({ timeout: 30_000 });
+    await page.getByText(/已授权只看 Manifest 声明/).first().waitFor({ timeout: 30_000 });
+    await page.getByText(/文本提示和安全检查只是提醒，不会自动授权/).first().waitFor({ timeout: 30_000 });
     await page.getByText(/权限以 Manifest 声明为准，文本提示只作提醒/).first().waitFor({ timeout: 30_000 });
 
     const panelText = await skillsPanel.innerText();
@@ -146,6 +154,7 @@ async function assertRenderedManifestBoundary() {
     }
     assert.match(panelText, /读文件/, "rendered Product Manifest cards should include file-read capability");
     assert.match(panelText, /操作 UI/, "rendered Product Manifest cards should include UI capability");
+    assert.match(panelText, /不是已授权；描述里提到读取文件/, "rendered text-signal card should say it is not authorized");
     assert.match(panelText, /Preview/, "rendered Product Manifest cards should include preview boundary");
     assert.match(panelText, /Rollback\/Handoff/, "rendered Product Manifest cards should include rollback boundary");
     assert.ok(counters.skillsRequests >= 1, "SkillsView should load /api/skills from the mocked backend");

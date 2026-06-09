@@ -966,8 +966,10 @@ export interface FileSearchResponse {
 export interface LocalLibraryItem {
   id: string;
   path: string;
+  pathLabel?: string;
   name: string;
   parent: string;
+  parentLabel?: string;
   kind: "image" | "document" | "app" | string;
   extension: string;
   mimeType: string;
@@ -986,9 +988,19 @@ export interface LocalLibraryStats {
   byExtension: Record<string, number>;
 }
 
+export interface LocalLibraryScopeSummary {
+  rootCount: number;
+  rootLabels: string[];
+  hasAuthorizedRoots: boolean;
+  displayLabel: string;
+  rawPathsAvailableForLocalActions: boolean;
+  shareableSummaryHasRawPaths: boolean;
+}
+
 export interface LocalLibraryResponse {
   section: string;
   roots: string[];
+  scopeSummary?: LocalLibraryScopeSummary;
   items: LocalLibraryItem[];
   count: number;
   total: number;

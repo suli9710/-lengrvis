@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
@@ -18,14 +18,14 @@ import { ArrowLeft, Monitor, MousePointer2, Pause, Play, RefreshCcw, ShieldCheck
 
 import {
   claimRemoteInputGrantToken,
-  formatTlsFingerprint,
+  describeSessionBaseUrlSecurity,
   remoteInputWebSocketConnectionInfo,
   remoteScreenWebSocketConnectionInfo,
   revokeRemoteInputGrant,
+  type BaseUrlSecurity,
   type PairingSession,
   type RemoteInputGrant,
   type RemoteScreenEvent,
-  type WebSocketConnectionInfo,
 } from "../api/client";
 import { shortDate } from "../format";
 import { isRemoteInputGrantUsable, mapViewerPointToRemote, remoteInputGrantRemainingText } from "../remoteInputGrant";
@@ -33,6 +33,8 @@ import { isRemoteInputGrantUsable, mapViewerPointToRemote, remoteInputGrantRemai
 type ConnectionState = "offline" | "connecting" | "online" | "paused";
 type InputConnectionState = "disabled" | "ready" | "connecting" | "online" | "offline";
 const FRAME_ACK_FALLBACK_MS = 900;
+const REMOTE_VIEWER_PADDING_HORIZONTAL = 12;
+const REMOTE_VIEWER_PADDING_VERTICAL = 18;
 
 interface ScreenFrame {
   sequence: number;
@@ -71,7 +73,8 @@ export function RemoteScreen({
   const [nowMs, setNowMs] = useState(Date.now());
   const [isRevokingInput, setIsRevokingInput] = useState(false);
   const [locallyRevokedGrantId, setLocallyRevokedGrantId] = useState("");
-  const [viewerSize, setViewerSize] = useState({ width: 0, height: 0 });
+  const [viewerContainerSize, setViewerContainerSize] = useState({ width: 0, height: 0 });
+  const [viewerSurfaceSize, setViewerSurfaceSize] = useState({ width: 0, height: 0 });
   const socketRef = useRef<WebSocket | null>(null);
   const inputSocketRef = useRef<WebSocket | null>(null);
   const inputConnectionGenerationRef = useRef(0);
@@ -86,9 +89,15 @@ export function RemoteScreen({
   const effectiveGrant = grant?.id === locallyRevokedGrantId ? null : grant;
   const grantUsable = isRemoteInputGrantUsable(effectiveGrant, nowMs);
   const grantRemainingText = remoteInputGrantRemainingText(effectiveGrant, nowMs);
-  const remoteModeText = grantUsable ? (inputConnection === "online" ? "已授权输入" : "可输入，待连接") : "只读观看";
-  const screenConnectionInfo = remoteScreenWebSocketConnectionInfo(session);
-  const transportNotice = remoteTransportNotice(screenConnectionInfo);
+  const remoteModeText = remoteInputModeText(grantUsable, inputConnection);
+  const grantStatusMeta = remoteInputGrantStatusMeta({
+    grant: effectiveGrant,
+    grantRemainingText,
+    grantUsable,
+    locallyRevoked: grant?.id === locallyRevokedGrantId,
+  });
+  const transportSecurity = useMemo(() => describeSessionBaseUrlSecurity(session), [session]);
+  const transportNotice = remoteTransportNotice(transportSecurity);
   const transportWarning = transportNotice.warning ?? "";
 
   useEffect(() => {
@@ -196,7 +205,15 @@ export function RemoteScreen({
     setConnection("connecting");
     setError("");
 
-    const connectionInfo = remoteScreenWebSocketConnectionInfo(session);
+    let connectionInfo: ReturnType<typeof remoteScreenWebSocketConnectionInfo>;
+    try {
+      connectionInfo = remoteScreenWebSocketConnectionInfo(session);
+    } catch (currentError) {
+      setConnection("offline");
+      setError(readableStreamConnectionError(currentError));
+      return;
+    }
+
     const socket = new WebSocket(connectionInfo.url, connectionInfo.protocols);
     socketRef.current = socket;
 
@@ -286,7 +303,7 @@ export function RemoteScreen({
             return;
           }
           if (payload.type === "error" || payload.type === "denied") {
-            setInputError(payload.message || "电脑端拒绝了这次远程输入。");
+            setInputError(readableInputFailureReason(payload.message, payload.type));
           }
         } catch {
           setInputError("电脑端返回了无法读取的远程输入结果。");
@@ -317,13 +334,22 @@ export function RemoteScreen({
   }, [closeInputSocket, effectiveGrant, resetInputConnection]);
 
   useEffect(() => {
+    if (pausedByUserRef.current) {
+      setConnection("paused");
+      resetInputConnection();
+      closeInputSocket();
+      return () => {
+        closeSocket();
+        closeInputSocket();
+      };
+    }
     connect();
     if (grantUsable) void connectInput();
     return () => {
       closeSocket();
       closeInputSocket();
     };
-  }, [closeInputSocket, closeSocket, connect, connectInput, grantUsable]);
+  }, [closeInputSocket, closeSocket, connect, connectInput, grantUsable, resetInputConnection]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
@@ -358,7 +384,14 @@ export function RemoteScreen({
   };
 
   const handleViewerLayout = (event: LayoutChangeEvent) => {
-    setViewerSize({
+    setViewerContainerSize({
+      width: Math.max(0, event.nativeEvent.layout.width - REMOTE_VIEWER_PADDING_HORIZONTAL * 2),
+      height: Math.max(0, event.nativeEvent.layout.height - REMOTE_VIEWER_PADDING_VERTICAL * 2),
+    });
+  };
+
+  const handleViewerSurfaceLayout = (event: LayoutChangeEvent) => {
+    setViewerSurfaceSize({
       width: event.nativeEvent.layout.width,
       height: event.nativeEvent.layout.height,
     });
@@ -366,12 +399,22 @@ export function RemoteScreen({
 
   const handleRemotePress = (event: GestureResponderEvent) => {
     const socket = inputSocketRef.current;
-    if (!frame || !viewerSize.width || !viewerSize.height || !socket || socket.readyState !== 1) {
-      if (grantUsable && inputConnection !== "online") void connectInput();
+    if (!frame || !viewerSurfaceSize.width || !viewerSurfaceSize.height) {
+      setInputError("等待屏幕画面后才能发送远程点击。");
       return;
     }
-    const point = mapViewerPointToRemote(event.nativeEvent.locationX, event.nativeEvent.locationY, viewerSize, frame);
-    if (!point) return;
+    if (!socket || socket.readyState !== 1) {
+      if (grantUsable && inputConnection !== "online") {
+        setInputError("正在连接远程输入，请稍后再点一次。");
+        void connectInput();
+      }
+      return;
+    }
+    const point = mapViewerPointToRemote(event.nativeEvent.locationX, event.nativeEvent.locationY, viewerSurfaceSize, frame);
+    if (!point) {
+      setInputError("点击位置不在屏幕画面内。");
+      return;
+    }
     socket.send(JSON.stringify({ type: "click", x: point.x, y: point.y }));
     setInputError("点击已发送，等待电脑端审批。");
   };
@@ -389,8 +432,7 @@ export function RemoteScreen({
       setInputConnection("disabled");
       setInputError("已结束远程输入授权。");
     } catch (currentError) {
-      const message = currentError instanceof Error && currentError.message ? currentError.message : "结束接管失败，请稍后重试。";
-      Alert.alert("结束接管失败", message);
+      Alert.alert("结束接管失败", readableInputFailureReason(currentError));
     } finally {
       setIsRevokingInput(false);
     }
@@ -399,7 +441,24 @@ export function RemoteScreen({
   const online = connection === "online";
   const showLoading = connection === "connecting" && !frame;
   const aspectRatio = frame && frame.width > 0 && frame.height > 0 ? frame.width / frame.height : 16 / 9;
+  const viewerSurfaceDimensions = fitRemoteViewerSurface(viewerContainerSize, aspectRatio);
+  const viewerSurfaceStyle = viewerSurfaceDimensions
+    ? { width: viewerSurfaceDimensions.width, height: viewerSurfaceDimensions.height }
+    : { width: "100%" as const, aspectRatio };
+  const streamMetaText = streamStatusMetaText(streamMeta, connection);
+  const viewerFrameText = frame ? `${frame.originalWidth} x ${frame.originalHeight}` : "等待画面";
+  const viewerStateText = viewerConnectionText(connection);
+  const remoteClickDisabled = !grantUsable || !frame || transportNotice.tone === "danger";
+  const viewerInputText = transportNotice.tone === "danger" ? "连接已阻止" : viewerInputBadgeText(grantUsable, inputConnection);
+  const viewerAccessibilityLabel = !frame
+    ? "等待屏幕画面"
+    : transportNotice.tone === "danger"
+      ? "连接已阻止"
+      : grantUsable
+        ? "发送远程点击审批"
+        : "只读屏幕查看";
   const canRetry = connection === "offline" || !!error;
+  const inputFeedbackWarning = inputFeedbackIsWarning(inputError);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -414,24 +473,25 @@ export function RemoteScreen({
           <ArrowLeft size={20} color="#f7faf8" />
         </Pressable>
         <View style={styles.headerText}>
-          <Text style={styles.kicker}>仅查看</Text>
-          <Text style={styles.headerTitle}>电脑屏幕</Text>
+          <Text style={styles.kicker}>{remoteModeText}</Text>
+          <Text style={styles.headerTitle}>远程屏幕</Text>
         </View>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={online || connection === "connecting" ? "暂停屏幕查看" : "继续屏幕查看"}
           accessibilityState={{ busy: connection === "connecting", selected: online }}
           onPress={handleToggleStream}
-          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+          style={({ pressed }) => [styles.streamToggleButton, pressed && styles.pressed]}
         >
           {online || connection === "connecting" ? <Pause size={20} color="#f7faf8" /> : <Play size={20} color="#f7faf8" />}
+          <Text style={styles.streamToggleText}>{online || connection === "connecting" ? "暂停" : "恢复"}</Text>
         </Pressable>
       </View>
 
       <View style={styles.statusRow}>
         {online ? <Wifi size={16} color="#75d39a" /> : <WifiOff size={16} color="#ffcf72" />}
         <Text style={styles.statusText}>{statusText(connection)}</Text>
-        {streamMeta.fps ? <Text style={styles.statusMeta}>低带宽模式</Text> : null}
+        {streamMetaText ? <Text style={styles.statusMeta}>{streamMetaText}</Text> : null}
       </View>
 
       <View
@@ -461,7 +521,7 @@ export function RemoteScreen({
       <View style={styles.grantStatusRow}>
         <View style={styles.grantStatusTextWrap}>
           <Text style={styles.grantStatusLabel}>{remoteModeText}</Text>
-          <Text style={styles.grantStatusMeta}>剩余 {grantRemainingText}</Text>
+          <Text style={styles.grantStatusMeta}>{grantStatusMeta}</Text>
         </View>
         {grantUsable ? (
           <Pressable
@@ -478,34 +538,51 @@ export function RemoteScreen({
         ) : null}
       </View>
 
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="发送远程点击审批"
-        disabled={!grantUsable}
-        onLayout={handleViewerLayout}
-        onPress={handleRemotePress}
-        style={styles.viewer}
-      >
-        {frame ? (
-          <Image
-            resizeMode="contain"
-            source={{ uri: frame.image }}
-            style={[styles.screenImage, { aspectRatio }]}
-            onLoadEnd={() => acknowledgeFrame(frame.sequence)}
-          />
-        ) : (
-          <View style={styles.emptyFrame}>
-            {showLoading ? <ActivityIndicator color="#75d39a" /> : <Monitor size={42} color="#93a2ad" />}
-            <Text style={styles.emptyTitle}>{showLoading ? "正在连接电脑" : "等待屏幕画面"}</Text>
-            <Text style={styles.emptyText}>屏幕共享可用时，你可以在这里查看电脑画面。</Text>
+      <View onLayout={handleViewerLayout} style={styles.viewer}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={viewerAccessibilityLabel}
+          accessibilityState={{ disabled: remoteClickDisabled }}
+          disabled={remoteClickDisabled}
+          onLayout={handleViewerSurfaceLayout}
+          onPress={handleRemotePress}
+          style={({ pressed }) => [
+            styles.viewerSurface,
+            viewerSurfaceStyle,
+            transportNotice.tone === "danger" && styles.viewerSurfaceBlocked,
+            pressed && styles.viewerSurfacePressed,
+          ]}
+        >
+          {frame ? (
+            <Image
+              resizeMode="contain"
+              source={{ uri: frame.image }}
+              style={styles.screenImage}
+              onLoadEnd={() => acknowledgeFrame(frame.sequence)}
+            />
+          ) : (
+            <View style={styles.emptyFrame}>
+              {showLoading ? <ActivityIndicator color="#75d39a" /> : <Monitor size={42} color="#93a2ad" />}
+              <Text style={styles.emptyTitle}>{showLoading ? "正在连接电脑" : "等待屏幕画面"}</Text>
+              <Text style={styles.emptyText}>屏幕共享可用时，你可以在这里查看电脑画面。</Text>
+            </View>
+          )}
+          <View pointerEvents="none" style={styles.screenOverlayTop}>
+            <Text style={styles.screenBadge}>{viewerFrameText}</Text>
+            <Text style={[styles.screenBadge, online ? styles.screenBadgeSecure : styles.screenBadgeWarning]}>{viewerStateText}</Text>
           </View>
-        )}
-      </Pressable>
+          <View pointerEvents="none" style={styles.screenOverlayBottom}>
+            <Text style={[styles.inputModeBadge, grantUsable ? styles.inputModeBadgeActive : styles.inputModeBadgeReadonly]}>
+              {viewerInputText}
+            </Text>
+          </View>
+        </Pressable>
+      </View>
 
       <View style={styles.footer}>
         {transportWarning ? <Text style={styles.transportWarningText}>{transportWarning}</Text> : null}
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        {inputError ? <Text style={styles.inputHintText}>{inputError}</Text> : null}
+        {inputError ? <Text style={[styles.inputHintText, inputFeedbackWarning && styles.inputWarningText]}>{inputError}</Text> : null}
         {canRetry ? (
           <Pressable onPress={connect} style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}>
             <RefreshCcw size={16} color="#17222b" />
@@ -514,7 +591,7 @@ export function RemoteScreen({
         ) : null}
         <Text style={styles.footerText}>
           {frame
-            ? `最后更新于 ${shortDate(frame.timestamp)}。仅查看。`
+            ? `最后更新于 ${shortDate(frame.timestamp)}。${grantUsable ? "点击仍需电脑端审批。" : "仅查看。"}`
             : "当前仅查看，不能从此页面控制电脑。"}
         </Text>
       </View>
@@ -529,6 +606,55 @@ function statusText(connection: ConnectionState): string {
   return "离线";
 }
 
+function streamStatusMetaText(meta: { fps: number; quality: number }, connection: ConnectionState): string {
+  if (connection !== "online" || !meta.fps) return "";
+  if (meta.fps <= 1 || meta.quality <= 42) return `低带宽 ${meta.fps} FPS`;
+  return `${meta.fps} FPS`;
+}
+
+function viewerConnectionText(connection: ConnectionState): string {
+  if (connection === "online") return "实时画面";
+  if (connection === "connecting") return "正在连接";
+  if (connection === "paused") return "已暂停";
+  return "离线";
+}
+
+function viewerInputBadgeText(grantUsable: boolean, connection: InputConnectionState): string {
+  if (!grantUsable) return "只读屏幕查看";
+  if (connection === "online") return "已授权输入";
+  if (connection === "connecting") return "输入连接中";
+  if (connection === "offline") return "输入连接失败";
+  return "已授权，待连接";
+}
+
+function fitRemoteViewerSurface(
+  container: { width: number; height: number },
+  aspectRatio: number,
+): { width: number; height: number } | null {
+  if (!Number.isFinite(container.width) || !Number.isFinite(container.height)) return null;
+  if (container.width <= 0 || container.height <= 0 || !Number.isFinite(aspectRatio) || aspectRatio <= 0) return null;
+  const containerRatio = container.width / container.height;
+  if (containerRatio > aspectRatio) {
+    const height = container.height;
+    return { width: height * aspectRatio, height };
+  }
+  const width = container.width;
+  return { width, height: width / aspectRatio };
+}
+
+function readableStreamConnectionError(error: unknown): string {
+  const message = error instanceof Error ? error.message.trim().toLowerCase() : "";
+  if (
+    message.includes("非本机 http") ||
+    message.includes("http") ||
+    message.includes("明文") ||
+    message.includes("insecure")
+  ) {
+    return "当前网络连接不够安全，手机不会继续查看屏幕。请在电脑端开启安全连接后重新配对。";
+  }
+  return "暂时无法显示屏幕。请确认 Lengrvis 已打开，然后点重试。";
+}
+
 function readableStreamError(message: string): string {
   const normalized = message.trim().toLowerCase();
   if (!normalized) return "暂时无法显示屏幕。请点重试重新连接。";
@@ -540,51 +666,96 @@ function readableStreamError(message: string): string {
 }
 
 function inputStatusText(connection: InputConnectionState): string {
-  if (connection === "online") return "远程点击已授权，每次点击仍需电脑端审批";
-  if (connection === "connecting") return "正在连接远程点击";
-  if (connection === "ready") return "电脑端已授权远程点击";
-  if (connection === "offline") return "远程点击授权不可用";
-  return "仅查看，电脑端尚未授权远程点击";
+  if (connection === "online") return "已授权输入：每次点击仍需电脑端审批";
+  if (connection === "connecting") return "正在启用已授权输入";
+  if (connection === "ready") return "电脑端已授权输入，点击连接后可使用";
+  if (connection === "offline") return "已授权输入连接失败，请重试或在电脑端重新授权";
+  return "只读观看：电脑端尚未授权输入";
 }
 
 function inputErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "无法领取远程点击授权。请在电脑端重新授权。";
+  return readableInputFailureReason(error);
 }
 
-function remoteTransportNotice(connectionInfo: WebSocketConnectionInfo): TransportNotice {
-  const { security } = connectionInfo;
-  const webSocketScheme = connectionInfo.url.startsWith("wss:") ? "wss" : "ws";
-  const httpScheme = security.isHttps ? "HTTPS" : "HTTP";
-  const tokenNote = "token 通过 WebSocket protocol 发送，不写入 URL";
+function remoteInputModeText(grantUsable: boolean, connection: InputConnectionState): string {
+  if (!grantUsable) return "只读观看";
+  if (connection === "online") return "已授权输入";
+  if (connection === "connecting") return "正在启用输入";
+  return "已授权输入，待连接";
+}
+
+function remoteInputGrantStatusMeta({
+  grant,
+  grantRemainingText,
+  grantUsable,
+  locallyRevoked,
+}: {
+  grant: RemoteInputGrant | null;
+  grantRemainingText: string;
+  grantUsable: boolean;
+  locallyRevoked: boolean;
+}): string {
+  if (grantUsable) return `授权剩余 ${grantRemainingText}`;
+  if (locallyRevoked || grant?.revoked_at || grant?.status === "revoked") return "输入授权已结束";
+  if (grantRemainingText === "已过期") return "输入授权已过期，请在电脑端重新授权";
+  return "电脑端尚未授权输入";
+}
+
+function readableInputFailureReason(errorOrMessage: unknown, eventType?: string): string {
+  if (eventType === "denied") return "电脑端已结束或拒绝这次远程输入。";
+  const message = typeof errorOrMessage === "string"
+    ? errorOrMessage
+    : errorOrMessage instanceof Error
+      ? errorOrMessage.message
+      : "";
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) return "远程输入暂时不可用。请在电脑端重新授权后重试。";
+  if (normalized.includes("非本机 http") || normalized.includes("明文") || normalized.includes("insecure lan")) {
+    return "当前网络连接不够安全，无法发送远程输入。请在电脑端开启安全连接后重新配对。";
+  }
+  if (normalized.includes("expired") || normalized.includes("410")) return "输入授权已过期。请在电脑端重新授权。";
+  if (normalized.includes("revoked") || normalized.includes("denied")) return "电脑端已结束或拒绝这次远程输入。";
+  if (normalized.includes("unauthorized") || normalized.includes("forbidden") || normalized.includes("token") || normalized.includes("scope")) {
+    return "这台手机没有远程输入权限。请在电脑端重新授权。";
+  }
+  if (normalized.includes("fetch") || normalized.includes("network") || normalized.includes("failed") || normalized.includes("timeout")) {
+    return "远程输入连接失败。请确认电脑端在线后重试。";
+  }
+  return "远程输入暂时不可用。请在电脑端重新授权后重试。";
+}
+
+function inputFeedbackIsWarning(message: string): boolean {
+  return /失败|过期|拒绝|没有|不可用|不够安全|等待屏幕|不在屏幕/.test(message);
+}
+
+function remoteTransportNotice(security: BaseUrlSecurity): TransportNotice {
+  if (security.isInsecureLan || (!security.isLoopback && (!security.backendTlsEnabled || security.webSocketProtocol !== "wss:"))) {
+    return {
+      tone: "danger",
+      title: "连接已阻止",
+      detail: "当前网络连接不够安全，手机不会继续查看屏幕或发送远程输入。",
+      warning: "请在电脑端开启安全连接后重新配对。",
+    };
+  }
   if (security.requiresTlsTrust) {
-    const fingerprint = formatTlsFingerprint(security.serverTls?.fingerprintSha256);
     return {
       tone: "warning",
-      title: "HTTPS / wss 需要证书信任",
-      detail: fingerprint ? `连接 ${security.host}，证书 SHA-256 ${fingerprint}。` : `连接 ${security.host}，后端未提供证书指纹。`,
-      warning: `${security.serverTls?.warning ?? "HTTPS 证书需要核对或手动信任。"} ${tokenNote}。`,
+      title: "需要确认这台电脑",
+      detail: "首次安全连接需要你在电脑端确认。确认前请保持只读观看，不要处理不认识的请求。",
+      warning: "如果这不是你正在使用的电脑，请返回并重新配对。",
     };
   }
   if (security.isHttps) {
     return {
       tone: "secure",
-      title: "HTTPS / wss 加密通道",
-      detail: `屏幕使用 ${webSocketScheme}://${security.host}，${tokenNote}。`,
-    };
-  }
-  if (security.isInsecureLan) {
-    return {
-      tone: "danger",
-      title: "LAN HTTP 已阻断",
-      detail: `${httpScheme}/ws 不能承载手机 token、屏幕或远程输入连接。`,
-      warning: "请在电脑端启用 HTTPS/WSS 或使用受信任证书后重新配对。",
+      title: "安全连接已开启",
+      detail: "屏幕查看和远程输入会通过安全连接发送。",
     };
   }
   return {
     tone: "warning",
-    title: "本机 HTTP / ws 通道",
-    detail: `${httpScheme}/ws 连接 ${security.host}，${tokenNote}。`,
+    title: "仅限本机调试连接",
+    detail: "当前连接只适合本机测试；实际使用请在电脑端生成安全配对信息。",
   };
 }
 
@@ -610,6 +781,24 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "#3b4d5b",
+  },
+  streamToggleButton: {
+    minWidth: 78,
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: "#23313d",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: "#3b4d5b",
+  },
+  streamToggleText: {
+    color: "#f7faf8",
+    fontSize: 12,
+    fontWeight: "900",
   },
   headerText: {
     flex: 1,
@@ -767,26 +956,34 @@ const styles = StyleSheet.create({
   },
   viewer: {
     flex: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 18,
+    paddingHorizontal: REMOTE_VIEWER_PADDING_HORIZONTAL,
+    paddingVertical: REMOTE_VIEWER_PADDING_VERTICAL,
     alignItems: "center",
     justifyContent: "center",
   },
-  screenImage: {
-    width: "100%",
-    maxHeight: "100%",
-    backgroundColor: "#0c1217",
+  viewerSurface: {
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#3b4d5b",
+    backgroundColor: "#0c1217",
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  viewerSurfacePressed: {
+    opacity: 0.86,
+  },
+  viewerSurfaceBlocked: {
+    borderColor: "#70404a",
+  },
+  screenImage: {
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#0c1217",
   },
   emptyFrame: {
     width: "100%",
-    aspectRatio: 16 / 9,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#3b4d5b",
-    backgroundColor: "#0c1217",
+    height: "100%",
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
@@ -802,6 +999,68 @@ const styles = StyleSheet.create({
     color: "#93a2ad",
     lineHeight: 20,
     textAlign: "center",
+  },
+  screenOverlayTop: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    right: 8,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  screenBadge: {
+    maxWidth: "48%",
+    borderRadius: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#3b4d5b",
+    backgroundColor: "rgba(12, 18, 23, 0.78)",
+    color: "#f7faf8",
+    fontSize: 11,
+    fontWeight: "900",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  screenBadgeSecure: {
+    borderColor: "#366f5d",
+    color: "#c7f5d7",
+  },
+  screenBadgeWarning: {
+    borderColor: "#5f553d",
+    color: "#ffe0a0",
+  },
+  screenOverlayBottom: {
+    position: "absolute",
+    left: 8,
+    right: 8,
+    bottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  inputModeBadge: {
+    maxWidth: "100%",
+    borderRadius: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#3b4d5b",
+    backgroundColor: "rgba(35, 49, 61, 0.88)",
+    color: "#c8d2ce",
+    fontSize: 11,
+    fontWeight: "900",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  inputModeBadgeActive: {
+    borderColor: "#366f5d",
+    backgroundColor: "rgba(28, 48, 44, 0.9)",
+    color: "#c7f5d7",
+  },
+  inputModeBadgeReadonly: {
+    borderColor: "#3b4d5b",
+    backgroundColor: "rgba(35, 49, 61, 0.88)",
+    color: "#c8d2ce",
   },
   footer: {
     paddingHorizontal: 20,
@@ -819,6 +1078,9 @@ const styles = StyleSheet.create({
   inputHintText: {
     color: "#75d39a",
     lineHeight: 20,
+  },
+  inputWarningText: {
+    color: "#ffcf72",
   },
   transportWarningText: {
     color: "#ffcf72",

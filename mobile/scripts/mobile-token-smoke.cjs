@@ -5,7 +5,9 @@ const path = require("node:path");
 const {
   acceptWebSocketUpgrade,
   assertAcceptedWebSocket,
+  assertInsecureLanError,
   assertJsonRequest,
+  assertWebSocketTokenTransport,
   connectWebSocket,
   jsonResponse,
   loadMobileClient,
@@ -67,6 +69,32 @@ function assertPairScreenQrSourceAssertions() {
   );
   assertSourceIncludes(source, "scanLockedRef", "Scanner must synchronously lock repeated native scan callbacks");
   assertSourceIncludes(source, "cameraUnavailableFailureNotice()", "Camera open or mount failures must keep a paste fallback");
+  assertSourceIncludes(source, "const activeDetectedPayload = detectedPayload;", "PairScreen must keep parsed QR payload metadata active across manual-entry toggles");
+  assertSourceIncludes(
+    source,
+    "const isDetectedPayloadBlocked = Boolean(detectedPayloadSecurity && !detectedPayloadSecurity.canPair);",
+    "PairScreen must not let manual entry bypass unsafe parsed QR metadata",
+  );
+  assertSourceIncludes(
+    source,
+    "baseUrlSecurityHint(baseUrl, activeDetectedPayload?.security)",
+    "Manual-entry security hint must still honor parsed QR transport metadata",
+  );
+  assertSourceIncludes(
+    source,
+    "describeBaseUrlSecurity(nextBaseUrl, nextPayload?.security)",
+    "Pair submit must fail closed using parsed QR transport metadata before sending a pairing request",
+  );
+  assertSourceMatches(
+    source,
+    /onChangeText=\{\(value\) => \{[\s\S]*setBaseUrl\(value\);[\s\S]*setDetectedPayload\(null\);[\s\S]*setPairingPayload\(""\);[\s\S]*setFailure\(null\);[\s\S]*\}\}/,
+    "Only editing the manual computer address should clear parsed QR metadata",
+  );
+  assert.doesNotMatch(
+    source,
+    /Boolean\(!showManualEntry && detectedPayloadSecurity && !detectedPayloadSecurity\.canPair\)/,
+    "Manual-entry toggle must not disable unsafe parsed QR blocking",
+  );
 
   assertSourceMatches(
     source,
@@ -212,6 +240,8 @@ async function main() {
 
   const server = await startHttpWsSmokeServer({
     handleRequest: ({ res, url, request }) => {
+      assert.equal(url.search, "", "mobile pair confirm requests must not inherit pasted base URL query strings");
+      assert.doesNotMatch(request.url, /[?&](?:token|access_token|auth|authorization)=/i, "mobile pair confirm requests must not carry query auth");
       if (request.method !== "POST" || url.pathname !== "/api/pair/confirm") return false;
       assertJsonRequest(request, {
         method: "POST",
@@ -241,6 +271,7 @@ async function main() {
     handleUpgrade: ({ req, socket, url, upgrade }) => {
       const expectedProtocol = `lengrvis.mobile.token.${expectedPairToken}`;
       const knownPath = url.pathname === "/ws/mobile/approvals" || url.pathname === "/ws/remote/screen";
+      if (knownPath) assert.equal(url.search, "", "mobile WebSocket upgrades must not carry query auth");
       if (knownPath && upgrade.protocols.includes(expectedProtocol)) {
         upgrade.accepted = true;
         acceptWebSocketUpgrade(req, socket, expectedProtocol);
@@ -370,12 +401,35 @@ async function main() {
 
     assert.equal(client.normalizeBaseUrl("127.0.0.1:8000/"), "http://127.0.0.1:8000");
     assert.equal(client.normalizeBaseUrl("https://Example.test:8443/"), "https://example.test:8443");
+    assert.equal(client.normalizeBaseUrl("https://mobile-token:secret@example.test:8443/copied/path?token=secret#pair"), "https://example.test:8443");
+    assert.equal(client.normalizeBaseUrl("127.0.0.1:8000/copied/path?access_token=secret#pair"), "http://127.0.0.1:8000");
     assert.throws(() => client.normalizeBaseUrl("ftp://example.test"), /http:\/\/.*https:\/\//);
 
     const httpsSecurity = client.describeBaseUrlSecurity("https://example.test:8443/");
     assert.equal(httpsSecurity.kind, "https");
     assert.equal(httpsSecurity.isHttps, true);
     assert.equal(httpsSecurity.isInsecureLan, false);
+
+    const tlsDisabledSecurity = client.describeBaseUrlSecurity("https://example.test:8443", {
+      transport: { http_scheme: "https", websocket_scheme: "ws", tls_enabled: false },
+    });
+    assert.equal(tlsDisabledSecurity.kind, "insecureLan");
+    assert.equal(tlsDisabledSecurity.isInsecureLan, true);
+    assert.equal(tlsDisabledSecurity.backendTlsEnabled, false);
+    assert.equal(tlsDisabledSecurity.webSocketProtocol, "ws:");
+    assert.match(tlsDisabledSecurity.warning, /未启用 TLS|HTTPS/);
+    const tlsDisabledSession = {
+      ...makeSession(client, "https://example.test:8443", "secure-token"),
+      baseUrlSecurity: tlsDisabledSecurity,
+    };
+    assert.throws(
+      () => client.remoteScreenWebSocketConnectionInfo(tlsDisabledSession),
+      assertInsecureLanError,
+    );
+    assert.throws(
+      () => client.remoteInputWebSocketConnectionInfo(tlsDisabledSession, "input-token"),
+      assertInsecureLanError,
+    );
 
     const loopbackSecurity = client.describeBaseUrlSecurity("http://127.0.0.1:8000");
     assert.equal(loopbackSecurity.kind, "loopbackHttp");
@@ -397,30 +451,30 @@ async function main() {
     const httpsSession = makeSession(client, "https://example.test:8443", "secure-token");
     const httpsApprovalInfo = client.approvalWebSocketConnectionInfo(httpsSession);
     assert.equal(httpsApprovalInfo.url, "wss://example.test:8443/ws/mobile/approvals");
-    assert.equal(JSON.stringify(httpsApprovalInfo.protocols), JSON.stringify(["lengrvis.mobile.token.secure-token"]));
+    assertWebSocketTokenTransport(httpsApprovalInfo, "secure-token", { pathname: "/ws/mobile/approvals", label: "secure approval WebSocket" });
     assert.equal(httpsApprovalInfo.warning, undefined);
 
     const lanSession = makeSession(client, "http://192.168.1.20:8000", "lan-token");
     assert.throws(
       () => client.remoteScreenWebSocketConnectionInfo(lanSession),
-      (error) => error.name === "InsecureLanBaseUrlError" && error.security.kind === "insecureLan",
+      assertInsecureLanError,
     );
     assert.throws(
       () => client.remoteInputWebSocketConnectionInfo(lanSession, "input-token"),
-      (error) => error.name === "InsecureLanBaseUrlError" && error.security.kind === "insecureLan",
+      assertInsecureLanError,
     );
     await assert.rejects(
       () => client.listPendingApprovals({ ...lanSession, baseUrlSecurity: httpsSession.baseUrlSecurity }),
-      (error) => error.name === "InsecureLanBaseUrlError" && error.security.kind === "insecureLan",
+      assertInsecureLanError,
     );
 
     await assert.rejects(
       () => client.pairWithBackend("http://192.168.1.20:8000", "abc123", "Phone"),
-      (error) => error.name === "InsecureLanBaseUrlError" && error.security.kind === "insecureLan",
+      assertInsecureLanError,
     );
     await assert.rejects(
       () => client.pairWithBackend("http://192.168.1.20:8000", "abc123", "Phone", { allowInsecureLan: true }),
-      (error) => error.name === "InsecureLanBaseUrlError" && error.security.kind === "insecureLan",
+      assertInsecureLanError,
     );
 
     const insecureStorage = makeStorage();
@@ -439,12 +493,20 @@ async function main() {
     assert.equal(insecureStorage.secureMap.has("lengrvis.mobile.session.token"), false);
     await assert.rejects(
       () => insecureAuth.saveSession(lanSession),
-      (error) => error.name === "InsecureLanBaseUrlError" && error.security.kind === "insecureLan",
+      assertInsecureLanError,
     );
     assert.equal(server.requests.length, 0, "blocked insecure LAN pair attempts must not reach the smoke server");
 
+    expectedPairToken = "query-stripped-token";
+    const queryStrippedPaired = await client.pairWithBackend(`${server.origin}/copied/path?token=secret-token#pair`, "abc123", "Phone");
+    assert.equal(server.requests.length, 1, "query-bearing pasted addresses must still call only the pair-confirm endpoint");
+    assert.equal(queryStrippedPaired.baseUrl, server.origin);
+    assert.equal(queryStrippedPaired.token, "query-stripped-token");
+    assert.doesNotMatch(queryStrippedPaired.baseUrl, /secret-token|[?&]token=/);
+
+    expectedPairToken = "paired-token";
     const paired = await client.pairWithBackend(`${server.origin}/`, "abc123", "Phone");
-    assert.equal(server.requests.length, 1, "pairing must reach the local HTTP smoke service");
+    assert.equal(server.requests.length, 2, "pairing must reach the local HTTP smoke service");
     assert.equal(paired.baseUrl, server.origin);
     assert.equal(paired.token, expectedPairToken);
     assert.equal(paired.deviceId, "device-1");
@@ -456,14 +518,12 @@ async function main() {
 
     const approvalInfo = client.approvalWebSocketConnectionInfo(paired);
     assert.equal(approvalInfo.url, `${server.origin.replace("http:", "ws:")}/ws/mobile/approvals`);
-    assert.equal(JSON.stringify(approvalInfo.protocols), JSON.stringify([`lengrvis.mobile.token.${expectedPairToken}`]));
-    assert.doesNotMatch(approvalInfo.url, /paired-token|token=/);
+    assertWebSocketTokenTransport(approvalInfo, expectedPairToken, { pathname: "/ws/mobile/approvals", label: "approval WebSocket" });
     assertAcceptedWebSocket(await connectWebSocket(approvalInfo.url, approvalInfo.protocols), approvalInfo.protocols[0]);
 
     const screenInfo = client.remoteScreenWebSocketConnectionInfo(paired);
     assert.equal(screenInfo.url, `${server.origin.replace("http:", "ws:")}/ws/remote/screen`);
-    assert.equal(JSON.stringify(screenInfo.protocols), JSON.stringify([`lengrvis.mobile.token.${expectedPairToken}`]));
-    assert.doesNotMatch(screenInfo.url, /paired-token|token=/);
+    assertWebSocketTokenTransport(screenInfo, expectedPairToken, { pathname: "/ws/remote/screen", label: "remote screen WebSocket" });
     assertAcceptedWebSocket(await connectWebSocket(screenInfo.url, screenInfo.protocols), screenInfo.protocols[0]);
 
     const rejectedScreen = await connectWebSocket(screenInfo.url, ["lengrvis.mobile.token.wrong"]);

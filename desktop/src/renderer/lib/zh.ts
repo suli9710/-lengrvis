@@ -330,7 +330,24 @@ export function zhUserFacingError(text?: string): string {
     return "这一步等得有点久。请稍后重试，或先缩小要整理的文件夹范围。";
   }
 
+  if (containsUserVisibleSensitiveDetail(compact)) {
+    return "这一步没有完成。为保护本机信息，详细错误已隐藏；请在电脑端日志或诊断包里核对。";
+  }
+
   return raw;
+}
+
+function containsUserVisibleSensitiveDetail(value: string): boolean {
+  return (
+    /(^\s*[{[]|["']?(?:args|tool_args|arguments|headers|authorization|protocol|host|hostname|base_url|url|path)["']?\s*:)/i.test(value) ||
+    /\bBearer\s+[A-Za-z0-9._~+/=-]+/i.test(value) ||
+    /\b(?:token|access_token|auth|authorization|api[_-]?key|secret|password|session[_-]?token)\b\s*[:=]\s*["']?[^"',;\s})\]]+/i.test(value) ||
+    /\b(?:https?|wss?|file):\/\/[^\s,;)\]}>]+/i.test(value) ||
+    /\b(?:localhost|(?:\d{1,3}\.){3}\d{1,3})(?::\d{2,5})?\b/i.test(value) ||
+    /\b[A-Za-z]:[\\/][^\s,;)\]}>]+/i.test(value) ||
+    /\\\\[^\\/\s]+\\[^\s,;)\]}>]+/i.test(value) ||
+    /(^|[\s(["'])\/(?:Users|home|var|tmp|etc|mnt|Volumes|private|opt|usr|workspace|root|srv|Desktop|Downloads)\b/i.test(value)
+  );
 }
 
 function naturalSupervisorReply(text: string): string {
@@ -553,7 +570,7 @@ export function zhRealtimeConnectionStatus(status: {
     return `${status.message || "实时连接遇到错误，正在尝试恢复"}${retry}${detail}。`;
   }
   if (status.state === "bad_message") {
-    return "收到一条无法解析的实时消息，已保留原始内容并继续等待下一条。";
+    return "收到一条无法解析的实时消息，已隐藏原始内容并继续等待下一条。";
   }
   if (status.state === "closed") {
     return `实时连接已断开${detail}。可以刷新连接，任务状态仍会通过轮询补齐。`;
@@ -574,12 +591,29 @@ export function zhRealtimeShortStatus(status: { state: string }): string {
 
 export function zhRealtimeBadMessageSummary(count: number, samples: string[]): string {
   const sampleText = samples.length
-    ? ` 最近原文预览：${samples.map((sample) => `“${previewRealtimeSample(sample)}”`).join("；")}`
+    ? ` 最近安全摘要：${samples.map((sample) => `“${previewRealtimeSample(sample)}”`).join("；")}`
     : "";
-  return `实时链路收到 ${count} 条无法解析的消息，已自动降噪并继续监听。${sampleText}`;
+  return `实时链路收到 ${count} 条无法解析的消息，已隐藏原始内容并继续监听。${sampleText}`;
 }
 
 function previewRealtimeSample(sample: string): string {
-  const compact = sample.replace(/\s+/g, " ").trim();
+  const compact = redactRealtimePreview(sample.replace(/\s+/g, " ").trim());
   return compact.length > 220 ? `${compact.slice(0, 220)}...` : compact;
+}
+
+function redactRealtimePreview(value: string): string {
+  if (!value) return "";
+  if (
+    /(^\s*[{[]|["']?(?:args|tool_args|arguments|headers|authorization|protocol|host|hostname|base_url|url|path)["']?\s*:)/i.test(value) ||
+    /\bBearer\s+[A-Za-z0-9._~+/=-]+/i.test(value) ||
+    /\b(?:token|access_token|auth|authorization|api[_-]?key|secret|password|session[_-]?token)\b\s*[:=]\s*["']?[^"',;\s})\]]+/i.test(value) ||
+    /\b(?:https?|wss?|file):\/\/[^\s,;)\]}>]+/i.test(value) ||
+    /\b(?:localhost|(?:\d{1,3}\.){3}\d{1,3})(?::\d{2,5})?\b/i.test(value) ||
+    /\b[A-Za-z]:[\\/][^\s,;)\]}>]+/i.test(value) ||
+    /\\\\[^\\/\s]+\\[^\s,;)\]}>]+/i.test(value) ||
+    /(^|[\s(["'])\/(?:Users|home|var|tmp|etc|mnt|Volumes|private|opt|usr|workspace|root|srv|Desktop|Downloads)\b/i.test(value)
+  ) {
+    return "原始内容已隐藏，避免显示本机路径、连接地址或凭据。";
+  }
+  return value;
 }

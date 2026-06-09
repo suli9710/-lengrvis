@@ -314,6 +314,7 @@ class OSExecutionEngine(ExecutionEngine):
                 )
                 if reflection_state is not None:
                     return reflection_state
+            self._mark_blocked_pending_steps(plan)
             phase = RunPhase.DENIED if stop_outcome == "denied" else RunPhase.FAILED
             return await self._finish_turn(
                 current,
@@ -563,12 +564,7 @@ class OSExecutionEngine(ExecutionEngine):
         turn: int,
     ) -> EngineTurnResult:
         orchestrator = self._orchestrator()
-        pending = self._pending_step_ids(plan)
-        if pending:
-            by_id, _dependents = orchestrator._build_step_graph(plan)
-            if not orchestrator._ready_steps(pending, by_id):
-                orchestrator._mark_blocked_steps(pending, by_id)
-                pending = self._pending_step_ids(plan)
+        pending = self._mark_blocked_pending_steps(plan)
 
         if task.status in {TaskStatus.CANCELLED, TaskStatus.DENIED, TaskStatus.FAILED}:
             phase = self._phase_for_task_plan(task, plan)
@@ -720,6 +716,15 @@ class OSExecutionEngine(ExecutionEngine):
         outputs["current_plan"] = stored.current_plan
         record("task.finished_or_waiting", self._orchestrator().name, {"status": task.status}, task_id=task.id)
         return EngineTurnResult(state=stored, finished=finished, message=message, outputs=outputs)
+
+    def _mark_blocked_pending_steps(self, plan: Plan) -> set[str]:
+        orchestrator = self._orchestrator()
+        pending = self._pending_step_ids(plan)
+        if pending:
+            by_id, _dependents = orchestrator._build_step_graph(plan)
+            orchestrator._mark_blocked_steps(pending, by_id)
+            pending = self._pending_step_ids(plan)
+        return pending
 
     def _sync_task_status(self, task: Task, phase: RunPhase, message: str) -> None:
         orchestrator = self._orchestrator()

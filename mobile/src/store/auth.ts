@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 
 import {
+  AuthExpiredError,
   InsecureLanBaseUrlError,
   assertSafePairingSession,
   describeBaseUrlSecurity,
@@ -33,6 +34,7 @@ export async function loadSession(): Promise<PairingSession | null> {
       baseUrl: baseUrlSecurity.normalizedBaseUrl,
       baseUrlSecurity,
       deviceId: parsed.deviceId,
+      ...(parsed.expiresAt ? { expiresAt: parsed.expiresAt } : {}),
       ...(parsed.server ? { server: parsed.server } : {}),
       ...(baseUrlSecurity.backendSecurity ? { security: baseUrlSecurity.backendSecurity } : {}),
       token: "",
@@ -41,11 +43,19 @@ export async function loadSession(): Promise<PairingSession | null> {
     let token = await SecureStore.getItemAsync(TOKEN_KEY);
     if (!token && parsed.token) {
       token = parsed.token;
-      await saveSession({ ...session, token });
-    } else if (token) {
-      await saveSession({ ...session, token });
     }
-    return token ? { ...session, token } : null;
+    if (!token) return null;
+    try {
+      const safeSession = assertSafePairingSession({ ...session, token });
+      await saveSession(safeSession);
+      return safeSession;
+    } catch (error) {
+      if (error instanceof AuthExpiredError || error instanceof InsecureLanBaseUrlError) {
+        await clearSession();
+        return null;
+      }
+      throw error;
+    }
   } catch {
     return null;
   }
@@ -65,6 +75,7 @@ export async function saveSession(session: PairingSession): Promise<void> {
     baseUrl: baseUrlSecurity.normalizedBaseUrl,
     baseUrlSecurity,
     deviceId: safeSession.deviceId,
+    ...(safeSession.expiresAt ? { expiresAt: safeSession.expiresAt } : {}),
     ...(safeSession.server ? { server: safeSession.server } : {}),
     ...(baseUrlSecurity.backendSecurity ? { security: baseUrlSecurity.backendSecurity } : {}),
   };

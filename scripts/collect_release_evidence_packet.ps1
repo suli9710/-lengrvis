@@ -5,6 +5,7 @@ param(
     [string]$MobilePreflightEvidenceRoot = "",
     [string]$QaEvidenceRoot = "",
     [string]$DiagnosticsReviewEvidenceRoot = "",
+    [string]$ResultQualityReviewEvidenceRoot = "",
     [string]$LocalModelCleanMachineEvidenceRoot = "",
     [string]$PortableFirstScreenEvidenceRoot = ""
 )
@@ -74,6 +75,41 @@ function Redact-DisplayLabel([string]$Label) {
     $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:token|api[_-]?key|secret|password|code)=[A-Za-z0-9._-]+", '${1}[redacted-sensitive]=[redacted]')
     $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:token|api[_-]?key|secret|password|code)(?!\=)(?:[._\-][A-Za-z0-9._-]+)?", '${1}[redacted-sensitive]')
     return $text
+}
+
+function Redact-TextValue([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+
+    $text = $Value.Trim()
+
+    try {
+        if ([System.IO.Path]::IsPathRooted($text)) {
+            return Get-DisplayPath $text
+        }
+    }
+    catch {
+    }
+
+    try {
+        $uri = [Uri]$text
+        if ($uri.IsAbsoluteUri -and $uri.Scheme -in @("http", "https", "ws", "wss")) {
+            $port = if ($uri.IsDefaultPort) { "" } else { ":$($uri.Port)" }
+            $path = if ([string]::IsNullOrWhiteSpace($uri.AbsolutePath) -or $uri.AbsolutePath -eq "/") { "" } else { "/[redacted-path]" }
+            return "$($uri.Scheme)://[redacted-host]$port$path"
+        }
+    }
+    catch {
+    }
+
+    $text = [regex]::Replace($text, "(?i)(authorization:\s*bearer\s+)[^\s,;]+", '${1}[redacted]')
+    $text = [regex]::Replace($text, "(?i)(bearer\s+)[A-Za-z0-9._~-]+", '${1}[redacted]')
+    $text = [regex]::Replace($text, "(?i)(token|api[_-]?key|client_secret|secret|password|code)=([^&\s,;]+)", '${1}=[redacted]')
+    $text = [regex]::Replace($text, "sk-[A-Za-z0-9._-]{8,}", "sk-[redacted]")
+    $text = [regex]::Replace($text, "[A-Za-z]:\\[^\s,;]+", "[redacted-path]")
+    $text = [regex]::Replace($text, "(?<!\w)/(?:Users|home)/[^\s,;]+", "[redacted-path]")
+    return (Redact-DisplayLabel $text)
 }
 
 function Read-WorkspaceText([string]$RelativePath) {
@@ -151,6 +187,17 @@ function Test-JsonIntegerOne($Value) {
     return (($Value -is [int]) -or ($Value -is [long])) -and ([int64]$Value -eq 1)
 }
 
+function Test-JsonNonNegativeInteger($Value) {
+    return (($Value -is [int]) -or ($Value -is [long])) -and ([int64]$Value -ge 0)
+}
+
+function Get-StrictJsonNonNegativeIntegerOrZero($Value) {
+    if (Test-JsonNonNegativeInteger $Value) {
+        return [int64]$Value
+    }
+    return 0
+}
+
 function Test-MobileRedactedHostLabel([string]$Value) {
     return $Value -in @("[redacted-host]", "[loopback]", "[bind-address]")
 }
@@ -166,7 +213,15 @@ function Test-MobileRedactedWebSocketUrl([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) {
         return $true
     }
-    return $Value -match "^wss?://\[(?:redacted-host|loopback|bind-address)\](?::\d{1,5})?/ws/(?:mobile/approvals|remote/input)$"
+    return $Value -match "^wss?://\[(?:redacted-host|loopback|bind-address)\](?::\d{1,5})?/ws/(?:mobile/approvals|remote/screen|remote/input)$"
+}
+
+function Test-MobileRedactedWebSocketPath([string]$Value, [string]$ExpectedPath) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $true
+    }
+    $escapedPath = [regex]::Escape($ExpectedPath)
+    return $Value -match "^wss?://\[(?:redacted-host|loopback|bind-address)\](?::\d{1,5})?$escapedPath$"
 }
 
 function Get-SafeMobileHostLabel([string]$Value) {
@@ -197,6 +252,53 @@ function Test-ArrayContainsText($Value, [string]$Needle) {
         }
     }
     return $false
+}
+
+function Test-LocalModelArtifactBuildProfileStatus([string]$Value) {
+    return $Value -in @("recorded_unverified_by_this_helper", "missing_required_fields")
+}
+
+function Get-SafeLocalModelArtifactBuildProfileStatus([string]$Value) {
+    if (Test-LocalModelArtifactBuildProfileStatus $Value) {
+        return $Value
+    }
+    return "invalid_redacted"
+}
+
+function Test-LocalModelStepStatus([string]$Value) {
+    return $Value -in @(
+        "manual_outcome_recorded_unverified_by_this_helper",
+        "blocked_reason_recorded",
+        "blocked_by_overall_reason_recorded",
+        "blocked_missing_outcome_or_blocked_reason"
+    )
+}
+
+function Get-SafeLocalModelStepStatus([string]$Value) {
+    if (Test-LocalModelStepStatus $Value) {
+        return $Value
+    }
+    return "invalid_redacted"
+}
+
+function New-SafeLocalModelStepSummary($Step) {
+    if ($null -eq $Step) {
+        return [ordered]@{
+            outcome = "invalid_redacted"
+            status = "invalid_redacted"
+            blocked_reason_count = 0
+            pass_verified_by_this_helper = $false
+            clean_machine_pass = $false
+        }
+    }
+
+    return [ordered]@{
+        outcome = Redact-TextValue ([string]$Step.outcome)
+        status = Get-SafeLocalModelStepStatus ([string]$Step.status)
+        blocked_reason_count = Get-ArrayCount $Step.blocked_reason_redacted
+        pass_verified_by_this_helper = $false
+        clean_machine_pass = $false
+    }
 }
 
 function Get-SourceContract([string]$RelativePath, [string[]]$Needles) {
@@ -332,6 +434,7 @@ $evidenceRootPath = Resolve-InputPath $EvidenceRoot ".tmp\release-evidence-packe
 $mobileEvidenceRootPath = Resolve-InputPath $MobilePreflightEvidenceRoot ".tmp\mobile-lan-wss-preflight"
 $qaEvidenceRootPath = Resolve-InputPath $QaEvidenceRoot ".tmp\qa-evidence"
 $diagnosticsReviewEvidenceRootPath = Resolve-InputPath $DiagnosticsReviewEvidenceRoot ".tmp\diagnostics-external-review"
+$resultQualityReviewEvidenceRootPath = Resolve-InputPath $ResultQualityReviewEvidenceRoot ".tmp\result-quality-review"
 $localModelCleanMachineEvidenceRootPath = Resolve-InputPath $LocalModelCleanMachineEvidenceRoot ".tmp\local-model-clean-machine-evidence"
 $portableFirstScreenEvidenceRootPath = Resolve-InputPath $PortableFirstScreenEvidenceRoot ".tmp\portable-first-screen-smoke"
 $runStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
@@ -345,6 +448,15 @@ $contractFailures = New-Object System.Collections.Generic.List[string]
 $mobileNeedles = @(
     "evidence-summary.redacted.json",
     "redacted_evidence_summary_path",
+    "real_device_evidence_status",
+    "uncollected_fail_closed",
+    "real_device_evidence_collected",
+    "no_phone_preflight_claim",
+    "not_real_device_pass",
+    "ready_for_manual_real_device_collection_only",
+    "approval_wss_evidence",
+    "remote_screen_wss_evidence",
+    "remote_input_wss_evidence",
     "Token-bearing mobile LAN flows require HTTPS and WSS",
     "This preflight does not use a phone, emulator, camera, QR scanner, or real WSS connection",
     "must not be recorded as real-device pass evidence"
@@ -551,10 +663,17 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
     $mobileHostRedacted = [string]$latestMobile.data.backend.host_redacted
     $mobilePublicBaseUrlRedacted = [string]$latestMobile.data.backend.public_base_url_redacted
     $mobileApprovalsUrlRedacted = [string]$latestMobile.data.backend.websocket_approvals_url_redacted
+    $mobileRemoteScreenUrlRedacted = [string]$latestMobile.data.backend.websocket_remote_screen_url_redacted
     $mobileRemoteInputUrlRedacted = [string]$latestMobile.data.backend.websocket_remote_input_url_redacted
+    $mobileQrApprovalsUrlRedacted = [string]$latestMobile.data.qr_payload_shape.websocket_approvals_url_redacted
+    $mobileQrRemoteScreenUrlRedacted = [string]$latestMobile.data.qr_payload_shape.websocket_remote_screen_url_redacted
+    $mobileQrRemoteInputUrlRedacted = [string]$latestMobile.data.qr_payload_shape.websocket_remote_input_url_redacted
+    $mobileRealDeviceEvidenceStatus = [string]$latestMobile.data.real_device_evidence_status
+    $mobileNoPhoneClaim = [string]$latestMobile.data.no_phone_preflight_claim
     $mobileTransportSecurityStatus = [string]$latestMobile.data.qr_payload_shape.transport_security_status
-    $mobileReadyStatus = $mobileResult -eq "ready_for_manual_real_device_evidence"
-    if ($mobileResult -notin @("ready_for_manual_real_device_evidence", "blocked")) {
+    $allowedMobileResults = @("ready_for_manual_real_device_collection_only", "blocked")
+    $mobileReadyStatus = $mobileResult -eq "ready_for_manual_real_device_collection_only"
+    if ($mobileResult -notin $allowedMobileResults) {
         $mobileArtifactMismatches.Add("result is not an allowed mobile preflight status")
     }
     if (-not [DateTimeOffset]::TryParse($mobileGeneratedAt, [ref]$mobileGeneratedAtParsed)) {
@@ -569,13 +688,19 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
     if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobilePublicBaseUrlRedacted)) {
         $mobileArtifactMismatches.Add("ready mobile preflight is missing backend.public_base_url_redacted")
     }
-    if (-not (Test-MobileRedactedWebSocketUrl $mobileApprovalsUrlRedacted)) {
+    if (-not (Test-MobileRedactedWebSocketPath $mobileApprovalsUrlRedacted "/ws/mobile/approvals")) {
         $mobileArtifactMismatches.Add("backend.websocket_approvals_url_redacted is not a safe redacted websocket URL")
     }
     if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileApprovalsUrlRedacted)) {
         $mobileArtifactMismatches.Add("ready mobile preflight is missing backend.websocket_approvals_url_redacted")
     }
-    if (-not (Test-MobileRedactedWebSocketUrl $mobileRemoteInputUrlRedacted)) {
+    if (-not (Test-MobileRedactedWebSocketPath $mobileRemoteScreenUrlRedacted "/ws/remote/screen")) {
+        $mobileArtifactMismatches.Add("backend.websocket_remote_screen_url_redacted is not a safe redacted websocket URL")
+    }
+    if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileRemoteScreenUrlRedacted)) {
+        $mobileArtifactMismatches.Add("ready mobile preflight is missing backend.websocket_remote_screen_url_redacted")
+    }
+    if (-not (Test-MobileRedactedWebSocketPath $mobileRemoteInputUrlRedacted "/ws/remote/input")) {
         $mobileArtifactMismatches.Add("backend.websocket_remote_input_url_redacted is not a safe redacted websocket URL")
     }
     if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileRemoteInputUrlRedacted)) {
@@ -596,6 +721,73 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
     if (-not (Test-JsonBool $latestMobile.data.qr_payload_shape.transport_security_tls_ready)) {
         $mobileArtifactMismatches.Add("qr_payload_shape.transport_security_tls_ready is not a JSON boolean")
     }
+    if (-not (Test-MobileRedactedWebSocketPath $mobileQrApprovalsUrlRedacted "/ws/mobile/approvals")) {
+        $mobileArtifactMismatches.Add("qr_payload_shape.websocket_approvals_url_redacted is not a safe redacted websocket URL")
+    }
+    if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileQrApprovalsUrlRedacted)) {
+        $mobileArtifactMismatches.Add("ready mobile preflight is missing qr_payload_shape.websocket_approvals_url_redacted")
+    }
+    if (-not (Test-MobileRedactedWebSocketPath $mobileQrRemoteScreenUrlRedacted "/ws/remote/screen")) {
+        $mobileArtifactMismatches.Add("qr_payload_shape.websocket_remote_screen_url_redacted is not a safe redacted websocket URL")
+    }
+    if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileQrRemoteScreenUrlRedacted)) {
+        $mobileArtifactMismatches.Add("ready mobile preflight is missing qr_payload_shape.websocket_remote_screen_url_redacted")
+    }
+    if (-not (Test-MobileRedactedWebSocketPath $mobileQrRemoteInputUrlRedacted "/ws/remote/input")) {
+        $mobileArtifactMismatches.Add("qr_payload_shape.websocket_remote_input_url_redacted is not a safe redacted websocket URL")
+    }
+    if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileQrRemoteInputUrlRedacted)) {
+        $mobileArtifactMismatches.Add("ready mobile preflight is missing qr_payload_shape.websocket_remote_input_url_redacted")
+    }
+    if ($mobileRealDeviceEvidenceStatus -ne "uncollected_fail_closed") {
+        $mobileArtifactMismatches.Add("real_device_evidence_status is not uncollected_fail_closed")
+    }
+    if (-not (Test-JsonFalse $latestMobile.data.real_device_evidence_collected)) {
+        $mobileArtifactMismatches.Add("real_device_evidence_collected is not false")
+    }
+    if ($mobileNoPhoneClaim -ne "not_real_device_pass") {
+        $mobileArtifactMismatches.Add("no_phone_preflight_claim is not not_real_device_pass")
+    }
+    if ([string]$latestMobile.data.manual_real_device_evidence_template.template_status -ne "manual_real_device_evidence_required") {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.template_status is not manual_real_device_evidence_required")
+    }
+    if ([string]$latestMobile.data.manual_real_device_evidence_template.real_device_result -ne "uncollected") {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.real_device_result is not uncollected")
+    }
+    if ([string]$latestMobile.data.manual_real_device_evidence_template.real_device_evidence_status -ne "uncollected_fail_closed") {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.real_device_evidence_status is not uncollected_fail_closed")
+    }
+    if (-not (Test-JsonFalse $latestMobile.data.manual_real_device_evidence_template.real_device_evidence_collected)) {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.real_device_evidence_collected is not false")
+    }
+    if ([string]$latestMobile.data.manual_real_device_evidence_template.no_phone_preflight_claim -ne "not_real_device_pass") {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.no_phone_preflight_claim is not not_real_device_pass")
+    }
+    if (-not (Test-JsonFalse $latestMobile.data.manual_real_device_evidence_template.claim_controls.real_device_pass_claim_allowed)) {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.claim_controls.real_device_pass_claim_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestMobile.data.manual_real_device_evidence_template.claim_controls.preflight_ready_is_pass)) {
+        $mobileArtifactMismatches.Add("manual_real_device_evidence_template.claim_controls.preflight_ready_is_pass is not false")
+    }
+    foreach ($fieldName in @(
+        "camera_qr_path_evidence",
+        "actual_device_https_wss_evidence",
+        "approval_wss_evidence",
+        "approval_artifact_review",
+        "remote_screen_wss_evidence",
+        "remote_screen_artifact_review",
+        "remote_input_wss_evidence",
+        "remote_input_artifact_review",
+        "certificate_trust_evidence",
+        "remote_input_grant_revoke_evidence",
+        "remote_input_grant_expiry_evidence",
+        "grant_revoke_expiry_artifact_review",
+        "artifact_redaction_review"
+    )) {
+        if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.$fieldName -ne "uncollected") {
+            $mobileArtifactMismatches.Add("manual_real_device_evidence_template.fields.$fieldName is not uncollected")
+        }
+    }
     if ($mobileArtifactMismatches.Count -gt 0) {
         $contractFailures.Add("latest mobile LAN/WSS preflight artifact failed redacted contract validation")
     }
@@ -605,12 +797,16 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
         last_write_utc = $latestMobile.last_write_utc
         source_contract_status = if ($mobileArtifactMismatches.Count -eq 0) { "valid_redacted_summary" } else { "source_contract_mismatch" }
         mismatch_reasons = @($mobileArtifactMismatches)
-        result = if ($mobileArtifactMismatches.Count -eq 0 -and $mobileResult -in @("ready_for_manual_real_device_evidence", "blocked")) { $mobileResult } elseif ($mobileResult -in @("ready_for_manual_real_device_evidence", "blocked")) { "source_contract_mismatch" } else { "invalid_redacted" }
+        result = if ($mobileArtifactMismatches.Count -eq 0 -and $mobileResult -in $allowedMobileResults) { $mobileResult } elseif ($mobileResult -in $allowedMobileResults) { "source_contract_mismatch" } else { "invalid_redacted" }
         generated_at_utc = if ($mobileArtifactMismatches -notcontains "generated_at_utc is not a timestamp") { $mobileGeneratedAt } else { "invalid_redacted" }
+        real_device_evidence_status = if ($mobileRealDeviceEvidenceStatus -eq "uncollected_fail_closed") { $mobileRealDeviceEvidenceStatus } else { "invalid_redacted" }
+        real_device_evidence_collected = $false
+        no_phone_preflight_claim = if ($mobileNoPhoneClaim -eq "not_real_device_pass") { $mobileNoPhoneClaim } else { "invalid_redacted" }
         backend = [ordered]@{
             host_redacted = Get-SafeMobileHostLabel $mobileHostRedacted
             public_base_url_redacted = if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobilePublicBaseUrlRedacted)) { "invalid_redacted" } else { Get-SafeMobileHttpOrigin $mobilePublicBaseUrlRedacted }
             websocket_approvals_url_redacted = if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileApprovalsUrlRedacted)) { "invalid_redacted" } else { Get-SafeMobileWebSocketUrl $mobileApprovalsUrlRedacted }
+            websocket_remote_screen_url_redacted = if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileRemoteScreenUrlRedacted)) { "invalid_redacted" } else { Get-SafeMobileWebSocketUrl $mobileRemoteScreenUrlRedacted }
             websocket_remote_input_url_redacted = if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileRemoteInputUrlRedacted)) { "invalid_redacted" } else { Get-SafeMobileWebSocketUrl $mobileRemoteInputUrlRedacted }
         }
         lan_tls = [ordered]@{
@@ -621,6 +817,35 @@ $mobileLatestSummary = if ($latestMobile.found -and $null -ne $latestMobile.data
         qr_payload_shape = [ordered]@{
             transport_security_status = if ($mobileArtifactMismatches.Count -eq 0 -and $mobileTransportSecurityStatus -in @("https_ready_preflight", "https_wss_preflight_blocked")) { $mobileTransportSecurityStatus } elseif ($mobileTransportSecurityStatus -in @("https_ready_preflight", "https_wss_preflight_blocked")) { "source_contract_mismatch" } else { "invalid_redacted" }
             transport_security_tls_ready = Get-StrictJsonBoolValue $latestMobile.data.qr_payload_shape.transport_security_tls_ready
+            websocket_approvals_url_redacted = if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileQrApprovalsUrlRedacted)) { "invalid_redacted" } else { Get-SafeMobileWebSocketUrl $mobileQrApprovalsUrlRedacted }
+            websocket_remote_screen_url_redacted = if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileQrRemoteScreenUrlRedacted)) { "invalid_redacted" } else { Get-SafeMobileWebSocketUrl $mobileQrRemoteScreenUrlRedacted }
+            websocket_remote_input_url_redacted = if ($mobileReadyStatus -and [string]::IsNullOrWhiteSpace($mobileQrRemoteInputUrlRedacted)) { "invalid_redacted" } else { Get-SafeMobileWebSocketUrl $mobileQrRemoteInputUrlRedacted }
+        }
+        manual_real_device_evidence_template = [ordered]@{
+            template_status = if ([string]$latestMobile.data.manual_real_device_evidence_template.template_status -eq "manual_real_device_evidence_required") { "manual_real_device_evidence_required" } else { "invalid_redacted" }
+            real_device_result = if ([string]$latestMobile.data.manual_real_device_evidence_template.real_device_result -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+            real_device_evidence_status = if ([string]$latestMobile.data.manual_real_device_evidence_template.real_device_evidence_status -eq "uncollected_fail_closed") { "uncollected_fail_closed" } else { "invalid_redacted" }
+            real_device_evidence_collected = $false
+            no_phone_preflight_claim = if ([string]$latestMobile.data.manual_real_device_evidence_template.no_phone_preflight_claim -eq "not_real_device_pass") { "not_real_device_pass" } else { "invalid_redacted" }
+            claim_controls = [ordered]@{
+                real_device_pass_claim_allowed = $false
+                preflight_ready_is_pass = $false
+            }
+            fields = [ordered]@{
+                camera_qr_path_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.camera_qr_path_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                actual_device_https_wss_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.actual_device_https_wss_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                approval_wss_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.approval_wss_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                approval_artifact_review = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.approval_artifact_review -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                remote_screen_wss_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.remote_screen_wss_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                remote_screen_artifact_review = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.remote_screen_artifact_review -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                remote_input_wss_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.remote_input_wss_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                remote_input_artifact_review = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.remote_input_artifact_review -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                certificate_trust_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.certificate_trust_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                remote_input_grant_revoke_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.remote_input_grant_revoke_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                remote_input_grant_expiry_evidence = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.remote_input_grant_expiry_evidence -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                grant_revoke_expiry_artifact_review = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.grant_revoke_expiry_artifact_review -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+                artifact_redaction_review = if ([string]$latestMobile.data.manual_real_device_evidence_template.fields.artifact_redaction_review -eq "uncollected") { "uncollected" } else { "invalid_redacted" }
+            }
         }
         issues_count = Get-ArrayCount $latestMobile.data.issues
         warnings_count = Get-ArrayCount $latestMobile.data.warnings
@@ -665,10 +890,17 @@ $localModelTemplateNeedles = @(
     'local_model_install_pass = $false',
     'local_model_start_pass = $false',
     'local_model_pull_pass = $false',
+    'local_model_task_smoke_pass = $false',
     'real_install_start_pull_pass = $false',
+    'template_is_clean_machine_pass = $false',
+    'dev_smoke_is_clean_machine_pass = $false',
     "manual_clean_machine_local_model_evidence_required",
+    "artifact_build_profile",
+    "clean_machine_run",
+    "task_smoke",
     "true local model install pass",
-    "true local model pull pass"
+    "true local model pull pass",
+    "template/dev smoke clean-machine pass"
 )
 $localModelTemplateContract = Get-SourceContract "scripts/collect_local_model_clean_machine_evidence_template.ps1" $localModelTemplateNeedles
 if (-not $localModelTemplateContract.required_markers_present) {
@@ -707,8 +939,17 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
     if (-not (Test-JsonFalse $latestLocalModelTemplate.data.summary.local_model_pull_pass)) {
         $localModelTemplateMismatches.Add("summary.local_model_pull_pass is not false")
     }
+    if (-not (Test-JsonFalse $latestLocalModelTemplate.data.summary.local_model_task_smoke_pass)) {
+        $localModelTemplateMismatches.Add("summary.local_model_task_smoke_pass is not false")
+    }
     if (-not (Test-JsonFalse $latestLocalModelTemplate.data.summary.real_install_start_pull_pass)) {
         $localModelTemplateMismatches.Add("summary.real_install_start_pull_pass is not false")
+    }
+    if (-not (Test-JsonFalse $latestLocalModelTemplate.data.summary.template_is_clean_machine_pass)) {
+        $localModelTemplateMismatches.Add("summary.template_is_clean_machine_pass is not false")
+    }
+    if (-not (Test-JsonFalse $latestLocalModelTemplate.data.summary.dev_smoke_is_clean_machine_pass)) {
+        $localModelTemplateMismatches.Add("summary.dev_smoke_is_clean_machine_pass is not false")
     }
     if (-not (Test-JsonFalse $latestLocalModelTemplate.data.summary.release_candidate_signoff)) {
         $localModelTemplateMismatches.Add("summary.release_candidate_signoff is not false")
@@ -746,6 +987,47 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
     if ([string]$latestLocalModelTemplate.data.evidence_template.model.status -ne "unverified_by_this_helper") {
         $localModelTemplateMismatches.Add("evidence_template.model.status is not unverified_by_this_helper")
     }
+    $artifactBuildProfile = $latestLocalModelTemplate.data.evidence_template.artifact_build_profile
+    if ($null -eq $artifactBuildProfile) {
+        $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile is missing")
+    }
+    else {
+        if (-not (Test-LocalModelArtifactBuildProfileStatus ([string]$artifactBuildProfile.status))) {
+            $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.status is not an allowed fail-closed status")
+        }
+        if ([string]$artifactBuildProfile.artifact.status -ne "unverified_by_this_helper") {
+            $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.artifact.status is not unverified_by_this_helper")
+        }
+        if ([string]$artifactBuildProfile.build.status -ne "unverified_by_this_helper") {
+            $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.build.status is not unverified_by_this_helper")
+        }
+        if ([string]$artifactBuildProfile.profile.status -ne "unverified_by_this_helper") {
+            $localModelTemplateMismatches.Add("evidence_template.artifact_build_profile.profile.status is not unverified_by_this_helper")
+        }
+    }
+    $cleanMachineRun = $latestLocalModelTemplate.data.evidence_template.clean_machine_run
+    if ($null -eq $cleanMachineRun) {
+        $localModelTemplateMismatches.Add("evidence_template.clean_machine_run is missing")
+    }
+    else {
+        foreach ($stepName in @("install", "start", "pull", "task_smoke")) {
+            $step = $cleanMachineRun.$stepName
+            if ($null -eq $step) {
+                $localModelTemplateMismatches.Add("evidence_template.clean_machine_run.$stepName is missing")
+            }
+            else {
+                if (-not (Test-LocalModelStepStatus ([string]$step.status))) {
+                    $localModelTemplateMismatches.Add("evidence_template.clean_machine_run.$stepName.status is not an allowed fail-closed status")
+                }
+                if (-not (Test-JsonFalse $step.pass_verified_by_this_helper)) {
+                    $localModelTemplateMismatches.Add("evidence_template.clean_machine_run.$stepName.pass_verified_by_this_helper is not false")
+                }
+                if (-not (Test-JsonFalse $step.clean_machine_pass)) {
+                    $localModelTemplateMismatches.Add("evidence_template.clean_machine_run.$stepName.clean_machine_pass is not false")
+                }
+            }
+        }
+    }
     if (-not (Test-ArrayContainsText $latestLocalModelTemplate.data.evidence_template.must_not_be_recorded_as "true local model install pass")) {
         $localModelTemplateMismatches.Add("must_not_be_recorded_as is missing true local model install pass")
     }
@@ -755,8 +1037,14 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
     if (-not (Test-ArrayContainsText $latestLocalModelTemplate.data.evidence_template.must_not_be_recorded_as "true local model pull pass")) {
         $localModelTemplateMismatches.Add("must_not_be_recorded_as is missing true local model pull pass")
     }
+    if (-not (Test-ArrayContainsText $latestLocalModelTemplate.data.evidence_template.must_not_be_recorded_as "true local model task-smoke pass")) {
+        $localModelTemplateMismatches.Add("must_not_be_recorded_as is missing true local model task-smoke pass")
+    }
     if (-not (Test-ArrayContainsText $latestLocalModelTemplate.data.evidence_template.must_not_be_recorded_as "clean-machine local-model readiness")) {
         $localModelTemplateMismatches.Add("must_not_be_recorded_as is missing clean-machine local-model readiness")
+    }
+    if (-not (Test-ArrayContainsText $latestLocalModelTemplate.data.evidence_template.must_not_be_recorded_as "template/dev smoke clean-machine pass")) {
+        $localModelTemplateMismatches.Add("must_not_be_recorded_as is missing template/dev smoke clean-machine pass")
     }
     if (-not (Test-ArrayContainsText $latestLocalModelTemplate.data.evidence_template.must_not_be_recorded_as "release-candidate sign-off")) {
         $localModelTemplateMismatches.Add("must_not_be_recorded_as is missing release-candidate sign-off")
@@ -766,6 +1054,28 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
     }
     $safeLocalModelMarker = if ($localModelTemplateMarker -eq "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS") { $localModelTemplateMarker } else { "invalid_redacted" }
     $safeLocalModelStatus = if ($localModelTemplateStatus -in @("manual_review_ready", "blocked_reason_recorded", "blocked_missing_required_fields")) { $localModelTemplateStatus } else { "invalid_redacted" }
+    $safeArtifactBuildProfile = [ordered]@{
+        status = Get-SafeLocalModelArtifactBuildProfileStatus ([string]$latestLocalModelTemplate.data.evidence_template.artifact_build_profile.status)
+        artifact_under_test = Redact-TextValue ([string]$latestLocalModelTemplate.data.evidence_template.artifact_build_profile.artifact.label)
+        build_identifier = Redact-TextValue ([string]$latestLocalModelTemplate.data.evidence_template.artifact_build_profile.build.identifier)
+        profile_under_test = Redact-TextValue ([string]$latestLocalModelTemplate.data.evidence_template.artifact_build_profile.profile.label)
+    }
+    $safeLocalModelRuntime = [ordered]@{
+        name = Redact-TextValue ([string]$latestLocalModelTemplate.data.evidence_template.runtime.name)
+        version = Redact-TextValue ([string]$latestLocalModelTemplate.data.evidence_template.runtime.version)
+        status = if ([string]$latestLocalModelTemplate.data.evidence_template.runtime.status -eq "unverified_by_this_helper") { "unverified_by_this_helper" } else { "invalid_redacted" }
+    }
+    $safeLocalModelModel = [ordered]@{
+        name = Redact-TextValue ([string]$latestLocalModelTemplate.data.evidence_template.model.name)
+        version = Redact-TextValue ([string]$latestLocalModelTemplate.data.evidence_template.model.version)
+        status = if ([string]$latestLocalModelTemplate.data.evidence_template.model.status -eq "unverified_by_this_helper") { "unverified_by_this_helper" } else { "invalid_redacted" }
+    }
+    $safeCleanMachineRun = [ordered]@{
+        install = New-SafeLocalModelStepSummary $latestLocalModelTemplate.data.evidence_template.clean_machine_run.install
+        start = New-SafeLocalModelStepSummary $latestLocalModelTemplate.data.evidence_template.clean_machine_run.start
+        pull = New-SafeLocalModelStepSummary $latestLocalModelTemplate.data.evidence_template.clean_machine_run.pull
+        task_smoke = New-SafeLocalModelStepSummary $latestLocalModelTemplate.data.evidence_template.clean_machine_run.task_smoke
+    }
     [ordered]@{
         found = $true
         path = $latestLocalModelTemplate.path
@@ -778,8 +1088,15 @@ $localModelTemplateLatestSummary = if ($latestLocalModelTemplate.found -and $nul
         local_model_install_pass = $false
         local_model_start_pass = $false
         local_model_pull_pass = $false
+        local_model_task_smoke_pass = $false
         real_install_start_pull_pass = $false
+        template_is_clean_machine_pass = $false
+        dev_smoke_is_clean_machine_pass = $false
         release_candidate_signoff = $false
+        artifact_build_profile = $safeArtifactBuildProfile
+        runtime = $safeLocalModelRuntime
+        model = $safeLocalModelModel
+        clean_machine_run = $safeCleanMachineRun
         missing_required_fields_count = Get-ArrayCount $latestLocalModelTemplate.data.summary.missing_required_fields
         blocked_reason_count = Get-ArrayCount $latestLocalModelTemplate.data.evidence_template.blocked_reason_redacted
         observed_artifact_count = Get-ArrayCount $latestLocalModelTemplate.data.evidence_template.observed_artifacts_redacted
@@ -796,7 +1113,10 @@ elseif ($latestLocalModelTemplate.found) {
         local_model_install_pass = $false
         local_model_start_pass = $false
         local_model_pull_pass = $false
+        local_model_task_smoke_pass = $false
         real_install_start_pull_pass = $false
+        template_is_clean_machine_pass = $false
+        dev_smoke_is_clean_machine_pass = $false
         release_candidate_signoff = $false
     }
 }
@@ -809,7 +1129,10 @@ else {
         local_model_install_pass = $false
         local_model_start_pass = $false
         local_model_pull_pass = $false
+        local_model_task_smoke_pass = $false
         real_install_start_pull_pass = $false
+        template_is_clean_machine_pass = $false
+        dev_smoke_is_clean_machine_pass = $false
         release_candidate_signoff = $false
     }
 }
@@ -833,11 +1156,17 @@ $diagnosticsReviewLatestSummary = if ($latestDiagnosticsReview.found -and $null 
     if ([string]::IsNullOrWhiteSpace($reviewStatus)) {
         $reviewStatus = [string]$latestDiagnosticsReview.data.summary.status
     }
+    $allowedDiagnosticsReviewStatuses = @(
+        "manual_external_review_template_ready",
+        "blocked_missing_diagnostics_package",
+        "blocked_unreadable_diagnostics_package",
+        "blocked_contract_mismatch"
+    )
     if ($diagnosticsReviewMarker -ne "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF") {
         $diagnosticsReviewMismatches.Add("marker is missing or not NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF")
     }
-    if ($reviewStatus -ne "manual_external_review_template_ready") {
-        $diagnosticsReviewMismatches.Add("review status is not manual_external_review_template_ready")
+    if ($reviewStatus -notin $allowedDiagnosticsReviewStatuses) {
+        $diagnosticsReviewMismatches.Add("review status is not a recognized fail-closed diagnostics review status")
     }
     if (-not (Test-JsonFalse $latestDiagnosticsReview.data.summary.public_safe)) {
         $diagnosticsReviewMismatches.Add("summary.public_safe is not false")
@@ -864,13 +1193,15 @@ $diagnosticsReviewLatestSummary = if ($latestDiagnosticsReview.found -and $null 
         $contractFailures.Add("latest diagnostics external-review helper artifact failed fail-closed validation")
     }
     $safeDiagnosticsReviewMarker = if ($diagnosticsReviewMarker -eq "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF") { $diagnosticsReviewMarker } else { "invalid_redacted" }
-    $safeReviewStatus = if ($reviewStatus -eq "manual_external_review_template_ready") { $reviewStatus } else { "invalid_redacted" }
+    $safeReviewStatus = if ($reviewStatus -in $allowedDiagnosticsReviewStatuses) { $reviewStatus } else { "invalid_redacted" }
     [ordered]@{
         found = $true
         path = $latestDiagnosticsReview.path
         last_write_utc = $latestDiagnosticsReview.last_write_utc
         marker = $safeDiagnosticsReviewMarker
-        source_contract_status = if ($diagnosticsReviewMismatches.Count -eq 0) { "valid_not_signoff_template" } else { "source_contract_mismatch" }
+        source_contract_status = if ($diagnosticsReviewMismatches.Count -eq 0) {
+            if ($reviewStatus -eq "manual_external_review_template_ready") { "valid_not_signoff_template" } else { "valid_fail_closed_template" }
+        } else { "source_contract_mismatch" }
         mismatch_reasons = @($diagnosticsReviewMismatches)
         review_status = $safeReviewStatus
         public_safe = $false
@@ -896,6 +1227,142 @@ else {
         review_status = "not_collected_by_this_packet"
         public_safe = $false
         external_sharing_allowed = $false
+    }
+}
+
+$resultQualityReviewNeedles = @(
+    "result-quality-review.redacted.json",
+    "NOT_RESULT_QUALITY_SIGNOFF",
+    'result_quality_signoff = $false',
+    'signoff = $false',
+    'claim_allowed = $false',
+    'completed_result_evidence = $false',
+    'packet_is_rc_signoff = $false',
+    'packet_is_release_signoff = $false',
+    "not completed-result evidence",
+    "not release sign-off"
+)
+$resultQualityReviewContract = Get-SourceContract "scripts/collect_result_quality_review_packet.ps1" $resultQualityReviewNeedles
+if (-not $resultQualityReviewContract.required_markers_present) {
+    $contractFailures.Add("result-quality review helper source contract is missing required non-signoff markers")
+}
+$latestResultQualityReview = Find-LatestJsonArtifact $resultQualityReviewEvidenceRootPath "result-quality-review.redacted.json"
+$resultQualityReviewLatestSummary = if ($latestResultQualityReview.found -and $null -ne $latestResultQualityReview.data) {
+    $resultQualityMismatches = New-Object System.Collections.Generic.List[string]
+    $resultQualityMarker = [string]$latestResultQualityReview.data.marker
+    $resultQualityStatus = [string]$latestResultQualityReview.data.summary.status
+    $allowedResultQualityStatuses = @(
+        "blocked_missing_fields",
+        "blocked_invalid_fields",
+        "blocked_reason_recorded",
+        "manual_review_fields_recorded_not_signoff"
+    )
+    if ($resultQualityMarker -ne "NOT_RESULT_QUALITY_SIGNOFF") {
+        $resultQualityMismatches.Add("marker is missing or not NOT_RESULT_QUALITY_SIGNOFF")
+    }
+    if ($resultQualityStatus -notin $allowedResultQualityStatuses) {
+        $resultQualityMismatches.Add("summary.status is not an allowed result-quality review status")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.signoff)) {
+        $resultQualityMismatches.Add("summary.signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.result_quality_signoff)) {
+        $resultQualityMismatches.Add("summary.result_quality_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.claim_allowed)) {
+        $resultQualityMismatches.Add("summary.claim_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.completed_result_evidence)) {
+        $resultQualityMismatches.Add("summary.completed_result_evidence is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.release_candidate_signoff)) {
+        $resultQualityMismatches.Add("summary.release_candidate_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.release_signoff)) {
+        $resultQualityMismatches.Add("summary.release_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.summary.template_is_signoff)) {
+        $resultQualityMismatches.Add("summary.template_is_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.claim_controls.claim_allowed)) {
+        $resultQualityMismatches.Add("claim_controls.claim_allowed is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.claim_controls.result_quality_signoff)) {
+        $resultQualityMismatches.Add("claim_controls.result_quality_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.claim_controls.completed_result_evidence)) {
+        $resultQualityMismatches.Add("claim_controls.completed_result_evidence is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.claim_controls.packet_is_rc_signoff)) {
+        $resultQualityMismatches.Add("claim_controls.packet_is_rc_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.claim_controls.packet_is_release_signoff)) {
+        $resultQualityMismatches.Add("claim_controls.packet_is_release_signoff is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.readonly_scope.starts_product_processes)) {
+        $resultQualityMismatches.Add("readonly_scope.starts_product_processes is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.readonly_scope.performs_network_requests)) {
+        $resultQualityMismatches.Add("readonly_scope.performs_network_requests is not false")
+    }
+    if (-not (Test-JsonFalse $latestResultQualityReview.data.readonly_scope.uploads_external_services)) {
+        $resultQualityMismatches.Add("readonly_scope.uploads_external_services is not false")
+    }
+    if (-not (Test-JsonNonNegativeInteger $latestResultQualityReview.data.summary.missing_field_count)) {
+        $resultQualityMismatches.Add("summary.missing_field_count is not a non-negative JSON integer")
+    }
+    if (-not (Test-JsonNonNegativeInteger $latestResultQualityReview.data.summary.issue_count)) {
+        $resultQualityMismatches.Add("summary.issue_count is not a non-negative JSON integer")
+    }
+    if ($resultQualityMismatches.Count -gt 0) {
+        $contractFailures.Add("latest result-quality review helper artifact failed fail-closed validation")
+    }
+    [ordered]@{
+        found = $true
+        path = $latestResultQualityReview.path
+        last_write_utc = $latestResultQualityReview.last_write_utc
+        marker = if ($resultQualityMarker -eq "NOT_RESULT_QUALITY_SIGNOFF") { $resultQualityMarker } else { "invalid_redacted" }
+        source_contract_status = if ($resultQualityMismatches.Count -eq 0) { "valid_not_signoff_template" } else { "source_contract_mismatch" }
+        mismatch_reasons = @($resultQualityMismatches)
+        review_status = if ($resultQualityStatus -in $allowedResultQualityStatuses) { $resultQualityStatus } else { "invalid_redacted" }
+        missing_field_count = Get-StrictJsonNonNegativeIntegerOrZero $latestResultQualityReview.data.summary.missing_field_count
+        issue_count = Get-StrictJsonNonNegativeIntegerOrZero $latestResultQualityReview.data.summary.issue_count
+        blocked_reason_count = Get-ArrayCount $latestResultQualityReview.data.reviewer.blocked_reason_redacted
+        observed_artifact_count = Get-ArrayCount $latestResultQualityReview.data.task_result_artifact.observed_artifacts_redacted
+        result_quality_signoff = $false
+        signoff = $false
+        claim_allowed = $false
+        completed_result_evidence = $false
+        release_candidate_signoff = $false
+        release_signoff = $false
+    }
+}
+elseif ($latestResultQualityReview.found) {
+    $contractFailures.Add("latest result-quality review helper artifact could not be parsed")
+    [ordered]@{
+        found = $true
+        path = $latestResultQualityReview.path
+        last_write_utc = $latestResultQualityReview.last_write_utc
+        parse_error = $latestResultQualityReview.error
+        result_quality_signoff = $false
+        signoff = $false
+        claim_allowed = $false
+        completed_result_evidence = $false
+        release_candidate_signoff = $false
+        release_signoff = $false
+    }
+}
+else {
+    [ordered]@{
+        found = $false
+        evidence_root = Get-DisplayPath $resultQualityReviewEvidenceRootPath
+        review_status = "not_collected_by_this_packet"
+        result_quality_signoff = $false
+        signoff = $false
+        claim_allowed = $false
+        completed_result_evidence = $false
+        release_candidate_signoff = $false
+        release_signoff = $false
     }
 }
 
@@ -947,6 +1414,54 @@ $settingsArtifacts = @(
 )
 $settingsArtifactsPresent = @($settingsArtifacts | Where-Object { $_.exists }).Count
 
+$releaseReadinessBlockers = @(
+    [ordered]@{
+        id = "clean_machine_local_model"
+        status = "missing_manual_evidence"
+        claim_allowed = $false
+        support_evidence = "local-model template, Settings smoke, and Ollama contract counts only"
+        required_evidence = "candidate artifact/build/profile plus clean-machine install/start/pull/task-smoke outcome, runtime/model/version, or exact blocked reason"
+        beginner_next_step = "Run npm run evidence:local-model-template with the candidate artifact/build/profile and reviewed install/start/pull/task-smoke notes."
+        must_not_claim = "clean-machine local/offline model readiness"
+    }
+    [ordered]@{
+        id = "mobile_real_device_lan_wss"
+        status = "missing_real_device_artifacts"
+        claim_allowed = $false
+        support_evidence = "mobile LAN/WSS preflight, backend authorization tests, and mobile client smokes only"
+        required_evidence = "real phone/emulator camera QR, actual HTTPS/WSS approval/remote screen/remote input session, certificate trust path, revoke/expiry screenshots or notes"
+        beginner_next_step = "Run npm run evidence:mobile-lan-wss first, then attach reviewed phone/emulator artifacts to the generated checklist."
+        must_not_claim = "real-device mobile LAN/WSS pass"
+    }
+    [ordered]@{
+        id = "natural_language_result_quality"
+        status = "missing_result_quality_signoff"
+        claim_allowed = $false
+        support_evidence = "portable command-dock submission plus explain completion_evidence/result_quality fields only"
+        required_evidence = "reviewed user-visible result, source/artifact check, next-step/actionability check, and explicit result-quality sign-off"
+        beginner_next_step = "Use the portable smoke result as routing evidence, then manually review the visible task result before claiming quality."
+        must_not_claim = "natural-language result-quality sign-off"
+    }
+    [ordered]@{
+        id = "diagnostics_external_public_safety"
+        status = "manual_content_review_required"
+        claim_allowed = $false
+        support_evidence = "diagnostics export contract tests and external-review packet template only"
+        required_evidence = "human review of the actual exported diagnostics package contents before any external sharing"
+        beginner_next_step = "Export a disposable diagnostics package, review the actual contents, and keep public_safe=false unless a separate policy changes."
+        must_not_claim = "public-safe diagnostics approval"
+    }
+    [ordered]@{
+        id = "release_candidate_handoff"
+        status = "manual_rc_handoff_required"
+        claim_allowed = $false
+        support_evidence = "redacted evidence index only"
+        required_evidence = "candidate commit/build id, platform/artifact labels, exact gate commands and exits, manual P1 checks, waivers, residual risks"
+        beginner_next_step = "Fill rc_handoff_requirements in a separate release handoff before tagging, publishing, or announcing an RC."
+        must_not_claim = "release-candidate pass"
+    }
+)
+
 $packet = [ordered]@{
     schema_version = 1
     generated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
@@ -971,8 +1486,8 @@ $packet = [ordered]@{
         mobile_hosts = "uses existing redacted labels only"
     }
     summary = [ordered]@{
-        automated_evidence_items = 7
-        indexed_evidence_buckets = 7
+        automated_evidence_items = 8
+        indexed_evidence_buckets = 8
         evidence_count_is_not_acceptance_count = $true
         source_contract_failures = $contractFailures.Count
         packet_is_pass = $false
@@ -980,11 +1495,17 @@ $packet = [ordered]@{
         local_model_install_pass = $false
         local_model_start_pass = $false
         local_model_pull_pass = $false
+        local_model_task_smoke_pass = $false
+        template_is_clean_machine_pass = $false
+        dev_smoke_is_clean_machine_pass = $false
         real_device_signoff = $false
         release_candidate_signoff = $false
         agent_task_completion_signoff = $false
         result_quality_signoff = $false
         diagnostics_public_safe = $false
+        release_ready = $false
+        claimable_release_signoff = $false
+        release_readiness_blocker_count = $releaseReadinessBlockers.Count
         portable_natural_language_scope = "submission_plus_read_only_routing_evidence_only"
         packet_status = if ($contractFailures.Count -eq 0) { "redacted_partial_evidence_summary" } else { "source_contract_failure" }
     }
@@ -1035,12 +1556,15 @@ $packet = [ordered]@{
             expected_marker = "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS"
             expected_clean_machine_signoff = $false
             expected_install_start_pull_pass = $false
+            expected_task_smoke_pass = $false
             verify_command = "python -m pytest backend/tests/test_start_app_script.py -q"
             not_signoff = @(
                 "not true local model install pass",
                 "not true local model start pass",
                 "not true local model pull pass",
+                "not true local model task-smoke pass",
                 "not clean-machine local-model readiness",
+                "template/dev smoke must not be recorded as clean-machine pass",
                 "not release-candidate sign-off"
             )
         }
@@ -1057,6 +1581,23 @@ $packet = [ordered]@{
                 "not permission to share diagnostics outside trusted support",
                 "not clean-machine diagnostics sign-off",
                 "not a human content review sign-off"
+            )
+        }
+        result_quality_review = [ordered]@{
+            status = if ($resultQualityReviewContract.required_markers_present) { "manual_review_required_contract_present" } else { "source_contract_missing" }
+            source_contract = $resultQualityReviewContract
+            latest_redacted_review_packet = $resultQualityReviewLatestSummary
+            expected_marker = "NOT_RESULT_QUALITY_SIGNOFF"
+            expected_result_quality_signoff = $false
+            expected_claim_allowed = $false
+            expected_completed_result_evidence = $false
+            verify_command = "python -m pytest backend/tests/test_result_quality_review_packet.py -q"
+            not_signoff = @(
+                "not completed-result evidence",
+                "not natural-language result-quality sign-off",
+                "not Task Workspace sign-off",
+                "not release-candidate sign-off",
+                "not release sign-off"
             )
         }
         settings_local_model_smoke = [ordered]@{
@@ -1078,13 +1619,50 @@ $packet = [ordered]@{
     not_clean_machine_or_signoff = @(
         "This packet summarizes automatically checkable source contracts and existing redacted artifacts only.",
         "It does not create clean-machine install/start/pull local-model evidence.",
+        "It does not create clean-machine local-model task-smoke pass evidence.",
+        "It does not turn the local-model template or Settings dev smoke into clean-machine pass evidence.",
         "It does not create real phone/emulator camera/QR/WSS/certificate-trust evidence.",
+        "It does not create natural-language result-quality sign-off; result_quality_signoff remains false pending separate human sign-off.",
         "It does not make diagnostics packages public-safe; public_safe remains false pending manual external review.",
         "It is not release-candidate sign-off without the release gate command results, candidate id, artifact paths, and manual P1 sign-off."
     )
+    rc_handoff_requirements = [ordered]@{
+        status = "manual_rc_handoff_required"
+        release_candidate_signoff = $false
+        packet_is_rc_signoff = $false
+        required_before_rc_signoff = @(
+            "candidate commit or build id",
+            "platform and packaged artifact paths or redacted artifact labels",
+            "exact release gate commands and full exit status",
+            "strict-state-machine source used for the release gate",
+            "manual P1 checks with owner and timestamp",
+            "waivers with owner, reason, expiry condition, and follow-up task",
+            "residual risks"
+        )
+        missing_by_default = @(
+            "candidate commit or build id",
+            "platform and packaged artifact paths or redacted artifact labels",
+            "exact release gate commands and full exit status",
+            "strict-state-machine source used for the release gate",
+            "manual P1 checks",
+            "waivers",
+            "residual risks"
+        )
+        must_not_be_recorded_as = @(
+            "release-candidate pass",
+            "release sign-off",
+            "clean-machine pass",
+            "real-device pass",
+            "public-safe diagnostics approval",
+            "completed task-result sign-off"
+        )
+        beginner_instruction = "Use this packet as a redacted checklist only; do not tag, publish, or announce an RC until a separate handoff fills every required field."
+    }
+    release_readiness_blockers = $releaseReadinessBlockers
     next_manual_evidence_needed = @(
-        "Clean-machine or packaged-profile local model install/start/pull evidence when local/offline model readiness is claimed.",
+        "Clean-machine or packaged-profile local model install/start/pull/task-smoke evidence when local/offline model readiness is claimed.",
         "Real phone/emulator camera or QR pairing path, actual WSS connection, and explicit device certificate trust evidence when mobile LAN/WSS readiness is claimed.",
+        "Actual natural-language result-quality human sign-off after reviewing the user-visible result, source/artifact labels, and next-step actionability.",
         "Manual diagnostics package review before any external sharing.",
         "Release-candidate artifact verification and manual P1 sign-off before RC approval."
     )
@@ -1098,11 +1676,30 @@ $markdownLines.Add("- JSON: $($packet.outputs.redacted_json)")
 $markdownLines.Add("- Markdown: $($packet.outputs.redacted_markdown)")
 $markdownLines.Add("- Status: $($packet.summary.packet_status)")
 $markdownLines.Add("- Packet role: evidence index only; packet_is_pass=false; evidence bucket count is not an acceptance count.")
+$markdownLines.Add("- Release readiness: release_ready=$($packet.summary.release_ready); claimable_release_signoff=$($packet.summary.claimable_release_signoff); blocker_count=$($packet.summary.release_readiness_blocker_count).")
 $markdownLines.Add("- Scope: no product process starts, no network requests, no backend/desktop/mobile product changes.")
 $markdownLines.Add("")
 $markdownLines.Add("## Not Sign-Off")
 foreach ($item in $packet.not_clean_machine_or_signoff) {
     $markdownLines.Add("- $item")
+}
+$markdownLines.Add("")
+$rcHandoff = $packet.rc_handoff_requirements
+$markdownLines.Add("## RC Handoff Requirements")
+$markdownLines.Add("- Status: $($rcHandoff.status); release_candidate_signoff=$($rcHandoff.release_candidate_signoff); packet_is_rc_signoff=$($rcHandoff.packet_is_rc_signoff).")
+$markdownLines.Add("- Beginner instruction: $($rcHandoff.beginner_instruction)")
+$markdownLines.Add("- Required before RC sign-off:")
+foreach ($item in $rcHandoff.required_before_rc_signoff) {
+    $markdownLines.Add("  - $item")
+}
+$markdownLines.Add("- Must not be recorded as:")
+foreach ($item in $rcHandoff.must_not_be_recorded_as) {
+    $markdownLines.Add("  - $item")
+}
+$markdownLines.Add("")
+$markdownLines.Add("## Release Readiness Blockers")
+foreach ($blocker in $packet.release_readiness_blockers) {
+    $markdownLines.Add("- $($blocker.id): status=$($blocker.status); claim_allowed=$($blocker.claim_allowed); required=$($blocker.required_evidence); next=$($blocker.beginner_next_step); must_not_claim=$($blocker.must_not_claim).")
 }
 $markdownLines.Add("")
 $markdownLines.Add("## Evidence")
@@ -1111,9 +1708,11 @@ $markdownLines.Add("- Mobile LAN/WSS preflight: $($packet.evidence.mobile_lan_ws
 $portableCompletionEvidence = $packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.natural_language_completion_evidence
 $markdownLines.Add("- Portable first-screen smoke: found=$($packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.found), read_only_pass=$($packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.first_screen_read_only_pass), natural_language=$($packet.evidence.portable_first_screen_smoke.latest_redacted_status_log.natural_language_submission_evidence), completion_evidence.level=$($portableCompletionEvidence.level), result_verified=$($portableCompletionEvidence.result_verified), completed_result_evidence=$($portableCompletionEvidence.completed_result_evidence).")
 $markdownLines.Add("- Ollama/local-model contracts: $($packet.evidence.ollama_local_model_contracts.contract_count) backend contract tests counted; latest execution not run by this packet.")
-$markdownLines.Add("- Local model clean-machine template: found=$($packet.evidence.local_model_clean_machine_template.latest_redacted_clean_machine_template.found), template_status=$($packet.evidence.local_model_clean_machine_template.latest_redacted_clean_machine_template.template_status), clean_machine_signoff=$($packet.evidence.local_model_clean_machine_template.latest_redacted_clean_machine_template.clean_machine_signoff).")
+$localModelLatest = $packet.evidence.local_model_clean_machine_template.latest_redacted_clean_machine_template
+$markdownLines.Add("- Local model clean-machine template: found=$($localModelLatest.found), template_status=$($localModelLatest.template_status), artifact_status=$($localModelLatest.artifact_build_profile.status), runtime=$($localModelLatest.runtime.name) $($localModelLatest.runtime.version) [$($localModelLatest.runtime.status)], model=$($localModelLatest.model.name) $($localModelLatest.model.version) [$($localModelLatest.model.status)], install=$($localModelLatest.clean_machine_run.install.status), start=$($localModelLatest.clean_machine_run.start.status), pull=$($localModelLatest.clean_machine_run.pull.status), task_smoke=$($localModelLatest.clean_machine_run.task_smoke.status), clean_machine_signoff=$($localModelLatest.clean_machine_signoff), task_smoke_pass=$($localModelLatest.local_model_task_smoke_pass).")
 $markdownLines.Add("- Diagnostics external review: expected status=$($packet.evidence.diagnostics_external_review.expected_external_review_status), public_safe=$($packet.evidence.diagnostics_external_review.expected_public_safe).")
 $markdownLines.Add("- Diagnostics external review packet: found=$($packet.evidence.diagnostics_external_review.latest_redacted_review_packet.found), review_status=$($packet.evidence.diagnostics_external_review.latest_redacted_review_packet.review_status), public_safe=$($packet.evidence.diagnostics_external_review.latest_redacted_review_packet.public_safe).")
+$markdownLines.Add("- Result-quality review packet: found=$($packet.evidence.result_quality_review.latest_redacted_review_packet.found), review_status=$($packet.evidence.result_quality_review.latest_redacted_review_packet.review_status), result_quality_signoff=$($packet.evidence.result_quality_review.latest_redacted_review_packet.result_quality_signoff), completed_result_evidence=$($packet.evidence.result_quality_review.latest_redacted_review_packet.completed_result_evidence).")
 $markdownLines.Add("- Settings local-model smoke: $settingsArtifactsPresent/$($settingsArtifactNames.Count) expected screenshot artifacts present.")
 $markdownLines.Add("")
 $markdownLines.Add("## Next Manual Evidence")

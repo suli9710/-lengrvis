@@ -17,10 +17,11 @@ from starlette.websockets import WebSocketDisconnect
 from app.api import routes_remote
 from app.llm.registry import get_effective_settings
 from app.core import db
-from app.core.schemas import Approval, ChatResponse, Plan, PlanStep, Task
+from app.core.schemas import Approval, ChatResponse, Plan, PlanStep, SafetyReview, Task, ToolCall, ToolResult
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
 from app.main import app
+from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
     REMOTE_INPUT_SCOPE,
@@ -283,6 +284,87 @@ def test_mobile_companion_lists_task_summaries_without_plan_args(monkeypatch, tm
     assert "secret_path" not in json.dumps(payload)
 
 
+def test_mobile_companion_task_payload_uses_strict_completion_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    unverified = Task(
+        user_goal="已经结束但还没核验证据",
+        status=TaskPhase.COMPLETED,
+        final_summary="Task finished.",
+        metadata=_mobile_task_metadata(token),
+    )
+    verified = Task(
+        user_goal="已核验的只读结果",
+        status=TaskPhase.COMPLETED,
+        final_summary="Local status was checked.",
+        metadata=_mobile_task_metadata(token),
+    )
+    db.upsert_model("tasks", unverified)
+    db.upsert_model("tasks", verified)
+    db.upsert_model(
+        "tool_calls",
+        ToolCall(
+            id="tool_mobile_verified",
+            task_id=verified.id,
+            step_id="step_1",
+            tool_name="system.diagnostics",
+            args={"path": "C:/Users/Suli/private", "token": "secret-token-1234567890"},
+            risk_level=RiskLevel.R0_READ_ONLY,
+            status="succeeded",
+        ),
+    )
+    db.upsert_model(
+        "tool_results",
+        ToolResult(
+            id="result_mobile_verified",
+            tool_call_id="tool_mobile_verified",
+            ok=True,
+            output={"path": "C:/Users/Suli/private/result.txt", "token": "secret-token-1234567890"},
+            observation="Read private result with secret-token-1234567890",
+        ),
+    )
+    for review in [
+        SafetyReview(
+            task_id=verified.id,
+            step_id="step_1",
+            target_type="tool_result",
+            verdict=SafetyVerdict.ALLOW,
+            risk_level=RiskLevel.R0_READ_ONLY,
+            reasons=["Reviewed without sharing raw output."],
+        ),
+        SafetyReview(
+            task_id=verified.id,
+            target_type="final",
+            verdict=SafetyVerdict.ALLOW,
+            risk_level=RiskLevel.R0_READ_ONLY,
+            reasons=["Final result reviewed."],
+        ),
+    ]:
+        db.upsert_model("safety_reviews", review)
+
+    response = client.get("/api/mobile/tasks", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    tasks = {item["id"]: item for item in response.json()["tasks"]}
+    assert tasks[unverified.id]["completion_evidence"]["level"] == "visible_progress"
+    assert tasks[unverified.id]["completion_evidence"]["result_verified"] is False
+    assert tasks[unverified.id]["result_verified"] is False
+    assert tasks[unverified.id]["credibility"] == "partial"
+    assert tasks[verified.id]["completion_evidence"] == {
+        "level": "completed_result",
+        "result_verified": True,
+        "signoff": False,
+        "missing_count": 0,
+    }
+    assert tasks[verified.id]["result_verified"] is True
+    assert tasks[verified.id]["credibility"] == "verified"
+    payload_text = json.dumps(response.json(), ensure_ascii=False)
+    for fragment in ("tool_mobile_verified", "result_mobile_verified", "secret-token-1234567890", "C:/Users/Suli/private"):
+        assert fragment not in payload_text
+
+
 def test_mobile_companion_redacts_privacy_task_text(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -314,10 +396,11 @@ def test_mobile_companion_redacts_sensitive_non_privacy_task_text(monkeypatch, t
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
+    bare_filename = "private-payroll-2026.xlsx"
     task = Task(
-        user_goal="检查 C:/Users/example/private-contract.txt 并使用 token=secret-token-raw-list-1234567890",
+        user_goal=f"检查 C:/Users/example/private-contract.txt 和 {bare_filename}: 并使用 token=secret-token-raw-list-1234567890",
         mode="hybrid",
-        final_summary="完成，password=abc1234567890，联系 owner@example.com。",
+        final_summary=f"完成 {bare_filename}:，password=abc1234567890，联系 owner@example.com。",
         status=TaskPhase.EXECUTION,
         execution_stage=ExecutionStage.STEP_RUNNING,
         metadata=_mobile_task_metadata(token),
@@ -340,6 +423,7 @@ def test_mobile_companion_redacts_sensitive_non_privacy_task_text(monkeypatch, t
     assert payload["content_redacted"] is True
     assert "[本地路径]" in payload["title"]
     assert "private-contract" not in payload_text
+    assert bare_filename not in payload_text
     assert "secret-token-raw-list-1234567890" not in payload_text
     assert "abc1234567890" not in payload_text
     assert "owner@example.com" not in payload_text

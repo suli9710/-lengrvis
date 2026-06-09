@@ -222,15 +222,20 @@ def _raise_if_remote_input_grant_inactive(payload: dict[str, Any], scopes: set[s
             continue
         if str(grant.get("status") or "").lower() != "active":
             raise HTTPException(status_code=401, detail="Remote input grant is not active")
-        try:
-            expires_at = datetime.fromisoformat(str(grant.get("expires_at") or ""))
-        except ValueError:
-            raise HTTPException(status_code=401, detail="Remote input grant is invalid") from None
+        expires_at = _remote_input_grant_expires_at(grant)
         if expires_at < now:
             raise HTTPException(status_code=401, detail="Remote input grant expired")
         return
 
     raise HTTPException(status_code=401, detail="Remote input grant is not active")
+
+
+def _remote_input_grant_expires_at(grant: dict[str, Any]) -> datetime:
+    try:
+        expires_at = datetime.fromisoformat(str(grant.get("expires_at") or ""))
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Remote input grant is invalid") from None
+    return expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
 
 
 def _is_remote_input_grant_claim(claims: dict[str, Any]) -> bool:

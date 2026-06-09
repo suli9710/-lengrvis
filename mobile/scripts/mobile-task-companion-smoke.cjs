@@ -1,9 +1,13 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 
 const {
+  assertInsecureLanError,
   assertJsonRequest,
   jsonResponse,
   loadMobileClient,
+  loadTsModule,
+  mobilePath,
   startHttpWsSmokeServer,
 } = require("./behavior-smoke-helpers.cjs");
 
@@ -29,6 +33,13 @@ function makeTask(id, status, overrides = {}) {
       : status === "completed" || status === "cancelled" || status === "failed"
         ? []
         : ["pause", "cancel", "follow_up"];
+  const completionEvidence =
+    overrides.completion_evidence ??
+    (status === "completed"
+      ? { level: "visible_progress", result_verified: false, signoff: false, missing_count: 2 }
+      : status === "failed"
+        ? { level: "safe_failure", result_verified: false, signoff: false, missing_count: 1 }
+        : { level: actions.length ? "visible_progress" : "task_created", result_verified: false, signoff: false, missing_count: 1 });
   return {
     id,
     title: "安全任务标题",
@@ -45,6 +56,10 @@ function makeTask(id, status, overrides = {}) {
     is_terminal: actions.length === 0,
     content_redacted: true,
     privacy_redacted: false,
+    completion_evidence: completionEvidence,
+    result_verified: completionEvidence.result_verified,
+    evidence_verified: completionEvidence.result_verified,
+    credibility: completionEvidence.result_verified ? "verified" : completionEvidence.level === "safe_failure" ? "failed" : "partial",
     created_at: "2026-06-01T00:00:00.000Z",
     updated_at: "2026-06-01T00:01:00.000Z",
     ...overrides,
@@ -60,8 +75,128 @@ function decodeTaskCommandPath(pathname) {
   };
 }
 
+function loadTaskDisplayModules() {
+  const safeDisplay = loadTsModule(mobilePath("src/safeDisplay.ts"));
+  const taskDisplay = loadTsModule(mobilePath("src/taskCompanionDisplay.ts"), {
+    require: (specifier) => {
+      if (specifier === "./safeDisplay") return safeDisplay;
+      return require(specifier);
+    },
+  });
+  return { safeDisplay, taskDisplay };
+}
+
+function assertNoRawMobileLeak(value, label = "mobile display text") {
+  assert.doesNotMatch(value, /secret-token|session-token|Bearer\s+(?!\[已隐藏\])[A-Za-z0-9._~+/=-]+/i, `${label} must not expose tokens or passwords`);
+  assert.doesNotMatch(value, /\b(?:token|password|secret|authorization)\b\s*[:=]\s*(?!\[已隐藏\])\S/i, `${label} must not expose secret assignments`);
+  assert.doesNotMatch(value, /\b(?:https?|wss?|file):\/\/|(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b|localhost(?::\d+)?/i, `${label} must not expose hosts or protocols`);
+  assert.doesNotMatch(value, /[A-Za-z]:[\\/][^\s]+|\\\\[^\\/\s]+\\[^\s]+|\/(?:Users|home|var|tmp|etc|mnt|Volumes)\b/i, `${label} must not expose raw local paths`);
+  assert.doesNotMatch(value, /\b(?:args|tool_args|arguments)\s*[:=]\s*(?!\[已隐藏\])\S/i, `${label} must not expose tool args`);
+}
+
+function assertTaskDisplaySafety(taskDisplay) {
+  const dangerousTask = makeTask("task-dangerous", "execution", {
+    title: "检查 C:\\Users\\Suli\\Desktop\\private-contract password=hunter2",
+    summary: "已读取 http://192.168.1.20:8000/files secret-token args={\"path\":\"C:\\Users\\Suli\\Desktop\"}",
+    status_detail: "{\"args\":{\"path\":\"C:\\Users\\Suli\\Desktop\\private-contract\",\"token\":\"secret-token\"}}",
+    available_actions: ["cancel", "follow_up"],
+    can_pause: false,
+    content_redacted: false,
+  });
+  const safeText = [
+    taskDisplay.taskDisplayTitle(dangerousTask),
+    taskDisplay.taskDisplaySummary(dangerousTask),
+    taskDisplay.taskStatusDetailText(dangerousTask),
+    taskDisplay.taskCredibilityText(dangerousTask),
+    taskDisplay.taskNextStepText(dangerousTask),
+  ].join("\n");
+  assertNoRawMobileLeak(safeText, "task companion display");
+  assert.equal(taskDisplay.taskActionAllowed(dangerousTask, "pause"), false, "task actions must honor available_actions over status guesses");
+  assert.equal(taskDisplay.taskActionAllowed(dangerousTask, "follow_up"), true);
+  assert.equal(taskDisplay.taskCredibilityText(makeTask("done-unverified", "completed", { content_redacted: false })), "已有进度；手机未收到已核验结果。");
+  assert.equal(
+    taskDisplay.taskStatusBadgeText(makeTask("done-unverified-badge", "completed", { content_redacted: false })),
+    "结果待核验",
+  );
+  assert.equal(
+    taskDisplay.taskStatusBadgeIsDone(makeTask("done-unverified-style", "completed", { content_redacted: false })),
+    false,
+  );
+  assert.equal(
+    taskDisplay.taskCredibilityText(
+      makeTask("done-overclaimed", "completed", { content_redacted: false, result_verified: true, credibility: "verified" }),
+    ),
+    "已有进度；手机未收到已核验结果。",
+  );
+  assert.equal(
+    taskDisplay.taskCredibilityText(
+      makeTask("done-verified", "completed", {
+        content_redacted: false,
+        completion_evidence: { level: "completed_result", result_verified: true, signoff: false, missing_count: 0 },
+        result_verified: true,
+        evidence_verified: true,
+        credibility: "verified",
+      }),
+    ),
+    "已带可核对的完成结果。",
+  );
+  assert.equal(
+    taskDisplay.taskStatusBadgeText(
+      makeTask("done-verified-badge", "completed", {
+        content_redacted: false,
+        completion_evidence: { level: "completed_result", result_verified: true, signoff: false, missing_count: 0 },
+      }),
+    ),
+    "已完成",
+  );
+  assert.equal(
+    taskDisplay.taskStatusBadgeIsDone(
+      makeTask("done-verified-style", "completed", {
+        content_redacted: false,
+        completion_evidence: { level: "completed_result", result_verified: true, signoff: false, missing_count: 0 },
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    taskDisplay.taskNextStepText(
+      makeTask("done-verified-next", "completed", {
+        content_redacted: false,
+        completion_evidence: { level: "completed_result", result_verified: true, signoff: false, missing_count: 0 },
+      }),
+    ),
+    "回电脑端核对结果和来源，再决定是否签收。",
+  );
+}
+
+function assertSafeDisplayHelpers(safeDisplay) {
+  const redacted = safeDisplay.safeDisplayText(
+    "Bearer secret-token host=192.168.1.20 protocol=http path=C:\\Users\\Suli\\Desktop\\private-contract args={\"token\":\"secret-token\"}",
+  );
+  assertNoRawMobileLeak(redacted, "safeDisplayText");
+  assert.match(redacted, /已隐藏/);
+
+  const preview = safeDisplay.safePreviewText("变更: C:\\Users\\Suli\\Desktop\\private-contract password=hunter2");
+  assertNoRawMobileLeak(preview, "safePreviewText");
+  assert.match(preview, /已隐藏/);
+}
+
+function assertTaskCompanionSourceSafety() {
+  const source = fs.readFileSync(mobilePath("src/screens/ApprovalsScreen.tsx"), "utf8");
+  assert.doesNotMatch(source, /D:\/Downloads|任务 Companion|return error\.message/);
+  assert.match(source, /taskCredibilityText/);
+  assert.match(source, /taskStatusBadgeText/);
+  assert.match(source, /taskStatusBadgeIsDone/);
+  assert.match(source, /safePreviewText/);
+}
+
 async function main() {
   const client = loadMobileClient();
+  const { safeDisplay, taskDisplay } = loadTaskDisplayModules();
+  assertSafeDisplayHelpers(safeDisplay);
+  assertTaskDisplaySafety(taskDisplay);
+  assertTaskCompanionSourceSafety();
+
   const server = await startHttpWsSmokeServer({
     handleRequest: ({ res, url, request }) => {
       if (request.method === "GET" && url.pathname === "/api/mobile/tasks") {
@@ -101,7 +236,7 @@ async function main() {
               available_actions: ["cancel", "follow_up"],
               can_pause: false,
             }),
-            message: "已从手机 Companion 添加补充指令，电脑端会作为相关任务继续处理。",
+            message: "已从手机任务助手添加补充指令，电脑端会作为相关任务继续处理。",
             source_task_id: command.taskId,
           });
           return true;
@@ -119,6 +254,19 @@ async function main() {
   });
 
   try {
+    const lanSession = makeSession(client, "http://192.168.1.20:8000");
+    await assert.rejects(() => client.listMobileTasks(lanSession), assertInsecureLanError);
+    await assert.rejects(() => client.submitMobileTaskCommand(lanSession, ACTIVE_TASK_ID, "pause"), assertInsecureLanError);
+    await assert.rejects(
+      () => client.submitMobileTaskFollowUp(lanSession, PAUSED_TASK_ID, { instruction: "blocked" }),
+      assertInsecureLanError,
+    );
+    await assert.rejects(
+      () => client.createMobileTask(lanSession, { template_id: "check_computer_status", mode: "hybrid" }),
+      assertInsecureLanError,
+    );
+    assert.equal(server.requests.length, 0, "blocked insecure LAN task companion calls must not reach the smoke server");
+
     const session = makeSession(client, server.origin);
     const tasks = await client.listMobileTasks(session);
     assert.equal(tasks.length, 3);

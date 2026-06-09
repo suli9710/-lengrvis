@@ -192,7 +192,7 @@ function assertSystemInfoSourceDoesNotOverclaimExternalSharing() {
   const source = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "components", "SystemInfoPanel.tsx"), "utf8");
   assert.doesNotMatch(
     source,
-    /可外发|外发复核已通过/,
+    /可外发|外发复核已通过|复核字段/,
     "SystemInfoPanel source must not present diagnostics review fields as external-sharing approval"
   );
 }
@@ -271,10 +271,20 @@ async function assertDiagnosticExportEntry(page, counters) {
   const exportText = await exportCard.innerText();
   assert.match(exportText, /遇到问题时导出诊断包/, "system info panel should expose diagnostics export entry");
   assert.match(exportText, /脱敏路径/, "diagnostics export copy should explain that paths are redacted where possible");
+  assert.match(exportText, /只有点击.+导出诊断包.+才会生成文件/, "diagnostics export copy should say export requires a manual click");
+  assert.match(exportText, /不会自动导出或发送/, "diagnostics export copy should say the app will not auto-export or auto-send");
   assert.match(exportText, /本机范围摘要/, "diagnostics export copy should frame the package as local-scope diagnostics");
   assert.match(exportText, /版本、服务状态、网络接口/, "diagnostics export copy should describe support bundle contents");
   assert.match(exportText, /不包含你的文档正文、文件内容或密钥/, "diagnostics export copy should make privacy boundary visible");
   assert.match(exportText, /普通页面字段仍可能显示本机路径/, "diagnostics export copy should warn that regular UI fields may still show local paths");
+  assert.doesNotMatch(
+    exportText,
+    /public-safe|public_safe|复核字段/,
+    "diagnostics export card must not show raw safety metadata or field-oriented copy in user-visible text"
+  );
+  assert.match(exportText, /不可公开分享/, "diagnostics export card should show the Chinese unsafe-to-share boundary");
+  assert.match(exportText, /外发前需人工复核/, "diagnostics export card should show the Chinese manual-review boundary");
+  assert.match(exportText, /导出需手动点击/, "diagnostics export card should show that export requires an explicit manual click");
   assertNoOverpromisingPathCopy(exportText, "diagnostics export copy must not imply the full path is safe to publish");
   const review = page.getByTestId("diagnostic-export-review");
   const reviewText = await review.innerText();
@@ -297,10 +307,15 @@ async function assertDiagnosticExportEntry(page, counters) {
     /external_review_external_sharing_allowed_false/,
     "diagnostics export should honor external_sharing_allowed=false"
   );
-  assert.match(reviewText, /public_safe=false/, "diagnostics export should expose that the support package is not public-safe");
+  assert.doesNotMatch(
+    reviewText,
+    /public-safe|public_safe|复核字段/,
+    "diagnostics export review must explain safety in beginner-facing copy, not raw metadata or field-oriented wording"
+  );
   assert.match(reviewText, /不可公开分享/, "diagnostics export should use beginner-facing unsafe-to-share copy");
   assert.match(reviewText, /外发前需人工复核/, "diagnostics export should require manual review before external sharing");
-  assert.match(reviewText, /字段不一致\/不完整，按禁止外发处理/, "diagnostics export should explain fail-closed handling for inconsistent fields");
+  assert.match(reviewText, /导出需手动点击/, "diagnostics export should make the explicit manual-click boundary visible");
+  assert.match(reviewText, /安全状态不完整，按禁止外发处理/, "diagnostics export should explain fail-closed handling for inconsistent safety signals");
   assert.doesNotMatch(reviewText, /可外发/, "diagnostics export must not display external-share-safe copy when fields disagree");
   assert.doesNotMatch(reviewText, /外发复核已通过/, "diagnostics export must not present review metadata as sharing approval");
   assert.match(reviewText, /6 项复核清单/, "diagnostics export should surface the external review checklist count");
@@ -317,17 +332,22 @@ async function assertDiagnosticExportEntry(page, counters) {
   await status.waitFor({ timeout: 10_000 });
   const statusText = await status.innerText();
   assert.match(statusText, /诊断包已生成/, "export action should report the generated diagnostics package");
+  assert.match(statusText, /手动点击触发/, "success status should say the export was triggered by the user");
+  assert.match(statusText, /不会自动发送诊断包/, "success status should say the app does not automatically send diagnostics");
   assert.match(statusText, /不要把完整路径当作可公开信息/, "success status should not imply that full local paths are public-safe");
   assert.match(statusText, /普通页面仍可能显示本机路径/, "success status should preserve the local-path caveat");
-  assert.match(statusText, /外发前仍需人工复核/, "success status should keep the manual external-review boundary visible");
-  assert.match(statusText, /当前不是 public-safe 报告/, "success status should explicitly avoid public-safe claims");
+  assert.match(statusText, /外发前需人工复核/, "success status should keep the manual external-review boundary visible");
+  assert.match(statusText, /当前不可公开分享/, "success status should explicitly avoid public-safe claims in beginner-facing copy");
+  assert.doesNotMatch(statusText, /public-safe|public_safe/, "success status must not expose raw public-safety contract terms");
   assertNoOverpromisingPathCopy(statusText, "success status must not overpromise local path safety");
 
   const pathText = await page.getByTestId("diagnostic-export-path").innerText();
   assert.match(pathText, /本机保存位置/, "success state should label the local save location");
-  assert.match(pathText, /仅用于在这台电脑上打开/, "local path should be framed as a same-machine convenience");
-  assert.match(pathText, /不建议公开完整路径/, "local path copy should warn against publicly sharing the full path");
+  assert.match(pathText, /只显示文件名或压缩路径/, "local path should be minimized by default");
+  assert.match(pathText, /打开所在位置/, "local path copy should point users to the reveal button instead of exposing the full path");
+  assert.match(pathText, /不要公开完整路径/, "local path copy should warn against publicly sharing the full path");
   assert.match(pathText, /lengrvis-diagnostics-smoke\.json/);
+  assert.doesNotMatch(pathText, /C:\\Users\\Smoke/, "diagnostics path display must not expose the full local account path by default");
   assertNoOverpromisingPathCopy(pathText, "local path copy must not imply the full path is safe to publish");
 }
 
@@ -420,6 +440,7 @@ function assertNoPositiveUpdaterCopy(text, message) {
 function assertNoOverpromisingPathCopy(text, message) {
   const copyWithoutSafetyStatements = text
     .replace(/不建议公开完整路径/g, "")
+    .replace(/不要公开完整路径/g, "")
     .replace(/不要把完整路径当作可公开信息/g, "");
   assert.doesNotMatch(copyWithoutSafetyStatements, overpromisingPathCopyPattern, message);
 }

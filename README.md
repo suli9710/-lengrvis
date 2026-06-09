@@ -193,8 +193,8 @@ npm --prefix desktop run dev
 .\scripts\run_tests.ps1
 ```
 
-主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket smoke。
-同时会运行 mobile remote-input grant smoke，避免发布门禁漏掉远程输入授权边界。
+主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket smoke、mobile task companion smoke 和 mobile remote-input grant smoke。
+这些 mobile smoke 都是本地行为桩/客户端契约证据，避免发布门禁漏掉移动任务监督和远程输入授权边界；它们不等同于真机 LAN/WSS 或证书信任路径验收。
 
 最近一次记录的核心门禁验证结果：
 
@@ -203,6 +203,7 @@ backend: 1337 passed, 1 skipped
 desktop typecheck passed
 mobile typecheck passed
 mobile token smoke passed
+mobile task companion smoke passed
 mobile remote-input grant smoke passed
 desktop smoke passed
 ```
@@ -214,11 +215,13 @@ python -m pytest backend\tests\test_system_diagnostics.py -q
 python -m pytest backend\tests\test_remote_desktop.py -q
 python -m pytest backend\tests\test_mobile_pairing.py -q
 npm --prefix desktop run smoke:system-diagnostics-ui
+npm --prefix desktop run smoke:settings-local-model
 npm --prefix desktop run smoke:first-launch
 npm run smoke:portable-first-screen
+git diff --check
 ```
 
-本轮目标结果包括 core backend combo `183 passed`、remote WS `26 passed`、mobile_pairing `87 passed`、Ollama backend tests `52 passed`，以及修复后的 first-launch smoke 通过。`mobile_pairing` 全量结果覆盖移动审批脱敏、token scope、设备绑定、LAN TLS metadata 和 companion task 边界；Ollama 结果覆盖后端 status/setup-plan/install/start/pull/install-local-model 契约，但不代表真实机器已经完成本地模型安装、启动或拉取。上述证据还覆盖诊断 payload/export 脱敏、远程屏幕/输入 WebSocket 泛化错误、Vite 预览中的版本与本机刷新 UI、first-screen read-only 模板，以及 packaged portable 的只读诊断/命令 dock 证据；它们不等同于完整 crash/update pipeline、在线自动更新、真机 LAN/WSS 验收、clean-machine RC sign-off、completed task-result sign-off 或外发诊断包人工安全复核。诊断包 helper、pytest 和 UI smoke 只能证明契约字段、脱敏种子和 handoff 模板；外发人工复核仍不是 public-safe/sign-off。
+本轮目标结果包括 desktop/mobile typecheck、desktop first-launch/settings-local-model/system-diagnostics smokes、mobile token/task-companion/remote-input smokes、core backend combo `183 passed`、remote WS `28 passed`、mobile_pairing `88 passed`、Ollama backend tests `52 passed`，以及修复后的 first-launch smoke 通过。`git diff --check` exit 0，只有 LF-to-CRLF working-copy conversion warnings。`mobile_pairing` 全量结果覆盖移动审批脱敏、token scope、设备绑定、LAN TLS metadata 和 companion task 边界；Ollama 结果覆盖后端 status/setup-plan/install/start/pull/install-local-model 契约，但不代表真实机器已经完成本地模型安装、启动或拉取。上述证据还覆盖诊断 payload/export 脱敏、远程屏幕/输入 WebSocket 泛化错误、Vite 预览中的版本与本机刷新 UI、first-screen read-only 模板，以及 packaged portable 的只读诊断/命令 dock 证据；它们不等同于完整 crash/update pipeline、在线自动更新、真机 LAN/WSS 验收、clean-machine RC sign-off、completed task-result sign-off、自然语言结果质量/Task Workspace 签收或外发诊断包人工安全复核。诊断包 helper、pytest、typecheck、UI smoke 和 `git diff --check` 只能证明契约字段、脱敏种子、handoff 模板或格式卫生；外发人工复核仍不是 public-safe/sign-off。
 
 跳过项是当前 Windows shell 没有创建符号链接权限。
 
@@ -242,13 +245,15 @@ npm run release:check
 证据 helper 新手入口（用于整理证据，不是签收）：
 
 ```powershell
-npm run evidence:release
-npm run evidence:mobile-lan-wss
-npm run evidence:local-model-template -- -EvidenceMode clean-machine -Runtime "<runtime>" -RuntimeVersion "<version>" -Model "<model>" -ModelVersion "<version>" -BlockedReason "<redacted blocked reason>"
-npm run evidence:diagnostics-review
+npm run evidence:release # template only; not a pass
+npm run evidence:rc-handoff -- -CandidateCommit "<commit SHA>" -BuildId "<build id>" -ArtifactLabel "<redacted artifact label>" -GateCommand "<exact command>" -GateExit "<exit code/status>" -StrictStateSource "<strict state source>" -ManualP1Check "<check/status/artifact label>" -Waiver "<none or owner/reason/expiry/follow-up>" -ResidualRisk "<risk/owner/follow-up>" # template only; not a pass
+npm run evidence:result-quality-review -- -TaskArtifactLabel "<task/run/status-log label>" -ResultArtifactLabel "<user-visible result/artifact label>" -UserVisibleResultReview "<review notes>" -SourceArtifactCheck "<source/artifact check>" -NextStepActionabilityCheck "<next-step/actionability check>" -Reviewer "<reviewer label>" -ReviewedAtUtc "<UTC timestamp>" -BlockedReason "none" # template only; not a pass
+npm run evidence:mobile-lan-wss # prerequisite template only; not real-device pass
+npm run evidence:local-model-template -- -EvidenceMode clean-machine -Runtime "<runtime>" -RuntimeVersion "<version>" -Model "<model>" -ModelVersion "<version>" -BlockedReason "<redacted blocked reason>" # template only; not a pass
+npm run evidence:diagnostics-review # template only; not public-safe/signoff
 ```
 
-这组顶层 npm 命令只是包装现有 helper：`evidence:release` 生成 release evidence packet 索引，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态。输出只能作为 evidence/template/preflight 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、RC signoff、发布签收或 completed task-result signoff。
+这组顶层 npm 命令只是包装现有 helper：`evidence:release` 生成 release evidence packet 索引，`evidence:rc-handoff` 只整理候选 commit/build、artifact label、gate command/exit、strict state source、manual P1、waiver 和 residual risk 的 handoff 模板字段，`evidence:result-quality-review` 只整理自然语言结果质量 review checklist，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态。输出只能作为 evidence/template/preflight 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、result-quality signoff、RC signoff、发布签收或 completed task-result signoff。
 
 发布候选若需要收集打包 GUI 首屏和只读任务入口证据，再跑 `npm run smoke:portable-first-screen`。最新开发工作区证据目录为 `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259`：只读入口观察到 packaged renderer `/api/system/diagnostics`；自然语言 dock 观察到 `/api/runs` 与后端 read-only/system diagnostics task evidence。该证据只覆盖 packaged command-dock 提交和只读任务证据，不能替代 clean-machine、真实设备、人工 RC sign-off 或 completed task-result sign-off。诊断包外发前的人工内容复核也只是实际包内容检查，不是 `public_safe` 批准、clean-machine/RC sign-off 或发布签收；相关 helper/自动测试只能作为模板或契约证据。移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
 
@@ -375,10 +380,11 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 
 - 真正的本地推理（Ollama / LM Studio / llama.cpp-compatible server）需用户自行安装并启动；隐私模式探测不到本地后端时会明确失败。
 - 桌面端当前只展示本机版本、后端版本、本地发布说明和“刷新本机状态”；完整在线自动更新、自动下载/安装更新、crash/update pipeline 和 clean-machine RC sign-off 尚未完成。
+- 打包 portable smoke 已证明自然语言命令 dock 的 `/api/runs` submission 与后端只读系统诊断任务证据；这还不是用户可读结果质量、Task Workspace 成果物、completed task-result 或 RC sign-off。
 - 任务录屏/截图默认 opt-in，公开 timeline/replay 只提供脱敏摘要；真实 Electron replay UX、手机端任务证据 UX、真实设备录屏/截图证据和外发诊断包安全复核仍需候选版本验证。诊断包外发人工复核仍不是 public-safe/sign-off，不能替代 clean-machine、RC 或发布签收。
 - 硬件加速配置已接入桌面端 Settings：可设置 `onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference`，并通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 做可用性检查。
 - Windows GUI automation is implemented through UIAutomation COM, screenshots, window focus, semantic element lookup, and mouse/keyboard fallback input. Mutating GUI actions still require dry-run + user approval, and policy blocks credential, payment, one-time-code, and token text entry.
-- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的输入。远程 WS 错误对客户端应保持泛化；本轮 `backend\tests\test_remote_desktop.py` 目标重跑为 `26 passed`，覆盖 auth/scope、query-token rejection、revoke/expiry/disable close behavior、invalid control、screen capture failure、unsupported input、policy/tool rejection 与 remote input unexpected exception redaction，真实手机/WSS 弱网、锁屏、后台、错误态截图和证书信任路径仍需补证据。
+- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的输入。远程 WS 错误对客户端应保持泛化；本轮 `backend\tests\test_remote_desktop.py` 目标重跑为 `28 passed`，覆盖 auth/scope、query-token rejection、remote view/input 交叉 scope rejection、revoke/expiry/disable close behavior、invalid control、screen capture failure、unsupported input、policy/tool rejection 与 remote input unexpected exception redaction，真实手机/WSS 弱网、锁屏、后台、错误态截图和证书信任路径仍需补证据。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
 
 ## Phase 5 AI OS Loop

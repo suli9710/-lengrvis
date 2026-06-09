@@ -179,11 +179,22 @@ function SkillRow({ skill }: { skill: InstalledSkill }) {
         <span>{skillManifestSummary(skill)}</span>
       </div>
 
-      <div className="skill-permissions" aria-label="Manifest 声明权限与文本推断信号">
+      <div className="skill-permissions-note" aria-label="权限来源说明">
+        <span>已授权只看 Manifest 声明。</span>
+        <span>文本提示和安全检查只是提醒，不会自动授权。</span>
+      </div>
+
+      <div className="skill-permissions" aria-label="Manifest 声明权限、文本提示与安全检查">
         {skillPermissionCards(skill).map((permission) => (
-          <span key={permission.label} className={`skill-permission skill-permission--${permission.tone}`}>
-            <strong>{permission.label}</strong>
-            <em>{permission.source}：{permission.detail}</em>
+          <span
+            key={permission.label}
+            className={`skill-permission skill-permission--${permission.tone} skill-permission--${permissionSourceClass(permission.source)}`}
+          >
+            <span className="skill-permission__head">
+              <strong>{permission.label}</strong>
+              <b>{permission.source}</b>
+            </span>
+            <em>{permission.detail}</em>
           </span>
         ))}
       </div>
@@ -253,7 +264,7 @@ function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
       declared: declaredReadsFiles,
       signal: signalReadsFiles,
       declaredDetail: "可读取授权目录或文档内容",
-      signalDetail: "描述里提到读取文件，执行前需确认",
+      signalDetail: "不是已授权；描述里提到读取文件，执行前需确认",
       emptyDetail: "没有看到读取权限或文本提示",
       declaredTone: "review",
       signalTone: "review"
@@ -263,7 +274,7 @@ function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
       declared: declaredWritesFiles,
       signal: signalWritesFiles,
       declaredDetail: "可创建、更新或导出文件",
-      signalDetail: "描述里提到写入文件，执行前需确认",
+      signalDetail: "不是已授权；描述里提到写入文件，执行前需确认",
       emptyDetail: "没有看到写入权限或文本提示",
       declaredTone: destructive ? "danger" : "review",
       signalTone: destructive ? "danger" : "review"
@@ -273,7 +284,7 @@ function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
       declared: declaredControlsUi,
       signal: signalControlsUi,
       declaredDetail: "可操作窗口、浏览器或本地应用",
-      signalDetail: "描述里提到 UI 自动化，执行前需确认",
+      signalDetail: "不是已授权；描述里提到 UI 自动化，执行前需确认",
       emptyDetail: "没有看到 UI 控制权限或文本提示",
       declaredTone: hasRisk(skill, "R3") ? "danger" : "review",
       signalTone: hasRisk(skill, "R3") ? "danger" : "review"
@@ -283,7 +294,7 @@ function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
       declared: declaredNetwork,
       signal: signalNetwork,
       declaredDetail: "可访问本地服务或外部网络",
-      signalDetail: "执行方式或描述提示可能访问网络",
+      signalDetail: "不是已授权；执行方式或描述提示可能访问网络",
       emptyDetail: "没有看到网络权限或文本提示",
       declaredTone: "review",
       signalTone: "review"
@@ -293,7 +304,7 @@ function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
       declared: declaredMessages,
       signal: signalMessages,
       declaredDetail: "可发送通知、邮件或聊天消息",
-      signalDetail: "描述里提到发送消息，执行前需确认",
+      signalDetail: "不是已授权；描述里提到发送消息，执行前需确认",
       emptyDetail: "没有看到发送消息权限或文本提示",
       declaredTone: "danger",
       signalTone: "danger"
@@ -303,7 +314,7 @@ function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
       declared: declaredDelete,
       signal: signalDelete,
       declaredDetail: "可删除、卸载或清空数据",
-      signalDetail: "描述里提到删除动作，执行前需确认",
+      signalDetail: "不是已授权；描述里提到删除动作，执行前需确认",
       emptyDetail: "没有看到删除权限或文本提示",
       declaredTone: "danger",
       signalTone: "danger"
@@ -311,13 +322,13 @@ function skillPermissionCards(skill: InstalledSkill): SkillManifestCard[] {
     {
       label: "Preview",
       source: supportsPreview ? "Manifest 声明" : hasDryRunIssue || risky ? "安全检查" : "未声明",
-      detail: hasDryRunIssue ? "缺少 dry-run preview，需修复" : supportsPreview ? "支持 dry-run preview，执行前可展示计划" : risky ? "高风险执行前需要 preview/审批" : "低风险默认无需 preview",
+      detail: hasDryRunIssue ? "安全检查提醒：缺少 dry-run preview，需修复" : supportsPreview ? "支持 dry-run preview，执行前可展示计划" : risky ? "安全检查提醒：高风险执行前需要 preview/审批" : "低风险默认无需 preview",
       tone: hasDryRunIssue ? "danger" : supportsPreview || risky ? "review" : "safe"
     },
     {
       label: "Rollback/Handoff",
       source: handoff ? "安全检查" : hasRollbackHint ? "Manifest 声明" : rollbackSignal ? "文本提示" : risky ? "安全检查" : "未声明",
-      detail: handoff ? "R4 必须转人工或拒绝" : hasRollbackHint ? "提供回滚或人工交接说明" : rollbackSignal ? "描述里提到回滚或交接，需确认 manifest 边界" : risky ? "需在 demo 中说明回滚或兜底" : "无高风险回滚要求",
+      detail: handoff ? "安全检查提醒：R4 必须转人工或拒绝" : hasRollbackHint ? "提供回滚或人工交接说明" : rollbackSignal ? "不是已授权；描述里提到回滚或交接，需确认 Manifest 边界" : risky ? "安全检查提醒：需在 demo 中说明回滚或兜底" : "无高风险回滚要求",
       tone: handoff ? "danger" : hasRollbackHint || rollbackSignal || risky ? "review" : "safe"
     }
   ];
@@ -356,6 +367,13 @@ function skillManifestSummary(skill: InstalledSkill): string {
   const risk = skill.risk || "未知风险";
   const execution = executionTypes.length ? executionTypes.join(" / ") : "未声明执行方式";
   return `${skill.tools.length} 个工具 · ${execution} · ${risk} · 权限以 Manifest 声明为准，文本提示只作提醒`;
+}
+
+function permissionSourceClass(source: ManifestCardSource): "declared" | "signal" | "check" | "absent" {
+  if (source === "Manifest 声明") return "declared";
+  if (source === "文本提示") return "signal";
+  if (source === "安全检查") return "check";
+  return "absent";
 }
 
 function skillSignalText(skill: InstalledSkill): string {

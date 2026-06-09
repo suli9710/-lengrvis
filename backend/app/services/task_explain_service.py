@@ -4,7 +4,7 @@ from typing import Any
 
 from app.core import db
 from app.core.schemas import Task, now_iso
-from app.policy.redaction import redact_public_text
+from app.policy.redaction import contains_sensitive_key, redact_public_text
 from app.services import task_recording_service
 
 
@@ -36,8 +36,17 @@ PUBLIC_REDACTED_KEYS = {
     "prompt",
     "raw",
     "reason",
+    "request",
+    "response",
+    "structured_payload",
     "system_prompt",
     "text",
+    "tool_call",
+    "tool_calls",
+    "tool_result",
+    "tool_results",
+    "url",
+    "uri",
     "value",
 }
 
@@ -51,8 +60,10 @@ TERMINAL_AUDIT_TYPES = {
 COMPLETED_STATUSES = {"completed", "complete", "success", "succeeded", "done"}
 SAFE_FAILURE_STATUSES = {"failed", "failure", "cancelled", "canceled", "denied", "blocked"}
 ALLOW_REVIEW_VERDICTS = {"allow", "allowed", "approved", "pass", "passed"}
-BLOCKING_REVIEW_VERDICTS = {"deny", "denied", "blocked"}
+BLOCKING_REVIEW_VERDICTS = {"deny", "denied", "blocked", "needs_user_approval"}
 RESULT_REVIEW_TARGETS = {"final", "tool_result"}
+TOOL_RESULT_REVIEW_TARGET = "tool_result"
+FINAL_REVIEW_TARGET = "final"
 NON_RESULT_SUMMARY_MARKERS = {
     "submitted",
     "submission",
@@ -61,6 +72,29 @@ NON_RESULT_SUMMARY_MARKERS = {
     "waiting",
     "pending",
     "in progress",
+}
+RESULT_QUALITY_LABELS = {
+    "verified_result": "Verified result",
+    "visible_progress": "Progress awaiting verification",
+    "safe_failure": "Safe failure",
+    "task_evidence_only": "Task evidence only",
+}
+RESULT_QUALITY_SUMMARIES = {
+    "verified_result": "A result is recorded and verified by result reviews. Manual sign-off is still separate.",
+    "visible_progress": "The task shows progress, but the result still needs verification.",
+    "safe_failure": "The run failed or was blocked safely. Review the public evidence before retrying.",
+    "task_evidence_only": "Only task-level evidence is available. No verified result has been recorded yet.",
+}
+PUBLIC_MISSING_CHECK_LABELS = {
+    "completed task status": "completed task status",
+    "completed result evidence": "verified result evidence",
+    "successful result artifact": "successful result record",
+    "all tool results succeeded": "all recorded actions succeeded",
+    "final result summary": "final result summary",
+    "post tool result verification": "action result review",
+    "final result verification": "final result review",
+    "unblocked result review": "blocking review cleared",
+    "task record": "task record",
 }
 
 
@@ -84,6 +118,9 @@ def build_task_explain(task_id: str) -> dict[str, Any]:
     steps = _step_explanations(plan_payload, messages, reviews)
     final_result = _final_result(task, reviews, audits)
     completion_evidence = build_task_completion_evidence(task, messages=messages, reviews=reviews, audits=audits)
+    next_step = _completion_next_step(task, completion_evidence)
+    result_quality = build_task_result_quality(task, completion_evidence, next_step=next_step)
+    final_result["next_step"] = next_step
 
     missing_sections = _missing_sections(
         user_goal=user_goal,
@@ -153,6 +190,8 @@ def build_task_explain(task_id: str) -> dict[str, Any]:
         "steps": steps,
         "subagent_suggestions": subagent_suggestions,
         "completion_evidence": completion_evidence,
+        "result_quality": result_quality,
+        "next_step": next_step,
         "final_result": final_result,
         "chain": chain,
     }
@@ -172,12 +211,25 @@ def build_task_completion_evidence(
     reviews = reviews if reviews is not None else _chronological(db.fetch_many(SOURCE_SAFETY_REVIEWS, "task_id = ?", (task_id,), limit=5000))
     audits = audits if audits is not None else _chronological(db.fetch_many(SOURCE_AUDIT_EVENTS, "task_id = ?", (task_id,), limit=5000))
     tool_calls = db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=5000)
+    tool_call_by_id = {str(item.get("id") or ""): item for item in tool_calls if item.get("id")}
     tool_call_ids = [str(item.get("id") or "") for item in tool_calls if item.get("id")]
     tool_results = db.fetch_many_in("tool_results", "tool_call_id", tool_call_ids, limit=5000) if tool_call_ids else []
     successful_results = [item for item in tool_results if bool(item.get("ok"))]
     failed_results = [item for item in tool_results if not bool(item.get("ok"))]
     result_reviews = [review for review in reviews if str(review.get("target_type") or "") in RESULT_REVIEW_TARGETS]
-    final_reviews = [review for review in result_reviews if str(review.get("target_type") or "") == "final"]
+    final_reviews = [review for review in result_reviews if str(review.get("target_type") or "") == FINAL_REVIEW_TARGET]
+    allowing_final_reviews = [review for review in final_reviews if _review_verdict(review) in ALLOW_REVIEW_VERDICTS]
+    allowing_tool_result_reviews = [
+        review
+        for review in result_reviews
+        if str(review.get("target_type") or "") == TOOL_RESULT_REVIEW_TARGET
+        and _review_verdict(review) in ALLOW_REVIEW_VERDICTS
+    ]
+    reviewed_tool_result_steps = {
+        str(review.get("step_id") or "")
+        for review in allowing_tool_result_reviews
+        if str(review.get("step_id") or "").strip()
+    }
     blocking_reviews = [review for review in result_reviews if _review_verdict(review) in BLOCKING_REVIEW_VERDICTS]
     terminal_audits = [event for event in audits if event.get("event_type") in TERMINAL_AUDIT_TYPES]
     progress_messages = [
@@ -191,11 +243,27 @@ def build_task_completion_evidence(
     status = _enum_value(task.status).replace("-", "_").casefold()
     has_final_summary = bool(str(task.final_summary or "").strip())
     has_result_summary = _has_result_summary(task.final_summary)
-    has_successful_result_evidence = bool(successful_results) and has_result_summary
+    successful_result_count = len(successful_results)
+    successful_result_steps = [
+        str((tool_call_by_id.get(str(item.get("tool_call_id") or "")) or {}).get("step_id") or "")
+        for item in successful_results
+    ]
+    successful_result_steps_are_bindable = (
+        successful_result_count > 0
+        and all(step_id.strip() for step_id in successful_result_steps)
+        and len(set(successful_result_steps)) == successful_result_count
+    )
+    has_reviewed_successful_results = (
+        successful_result_count > 0
+        and successful_result_steps_are_bindable
+        and all(step_id in reviewed_tool_result_steps for step_id in successful_result_steps)
+        and not failed_results
+    )
+    has_verified_result_evidence = has_result_summary and has_reviewed_successful_results and bool(allowing_final_reviews)
     safe_failure = status in SAFE_FAILURE_STATUSES or bool(blocking_reviews) or any(
         str(event.get("event_type") or "") == "task.background_failed" for event in terminal_audits
     )
-    result_verified = status in COMPLETED_STATUSES and has_successful_result_evidence and not safe_failure
+    result_verified = status in COMPLETED_STATUSES and has_verified_result_evidence and not safe_failure
     if result_verified:
         level = "completed_result"
     elif safe_failure:
@@ -214,6 +282,10 @@ def build_task_completion_evidence(
         result_artifacts.append(_completion_evidence_item("failed_tool_result", "Failed tool result", len(failed_results)))
     if has_final_summary:
         result_artifacts.append(_completion_evidence_item("final_summary", "Final task summary", 1))
+    if allowing_tool_result_reviews:
+        result_artifacts.append(
+            _completion_evidence_item("post_tool_review", "Post-tool verification review", len(allowing_tool_result_reviews))
+        )
     if final_reviews:
         result_artifacts.append(_completion_evidence_item("final_review", "Final safety review", len(final_reviews)))
     if safe_failure:
@@ -231,8 +303,18 @@ def build_task_completion_evidence(
     missing: list[str] = []
     if status not in COMPLETED_STATUSES:
         missing.append("completed task status")
-    if not has_successful_result_evidence:
+    if not has_verified_result_evidence:
         missing.append("completed result evidence")
+    if successful_result_count == 0:
+        missing.append("successful result artifact")
+    if failed_results:
+        missing.append("all tool results succeeded")
+    if not has_result_summary:
+        missing.append("final result summary")
+    if successful_result_count > 0 and not has_reviewed_successful_results:
+        missing.append("post-tool result verification")
+    if not allowing_final_reviews:
+        missing.append("final result verification")
     if blocking_reviews:
         missing.append("unblocked result review")
 
@@ -245,8 +327,97 @@ def build_task_completion_evidence(
     }
 
 
+def build_task_result_quality(
+    task: Task | None,
+    completion_evidence: dict[str, Any],
+    *,
+    next_step: str | None = None,
+) -> dict[str, Any]:
+    """Beginner-safe public result quality contract derived from completion evidence."""
+
+    state = _result_quality_state(completion_evidence)
+    result_verified = state == "verified_result"
+    missing_checks = [] if result_verified else _public_missing_checks(completion_evidence)
+    public_next_step = _public_text(next_step) if next_step else ""
+    if not public_next_step:
+        public_next_step = _result_quality_next_step(task, state, missing_checks)
+    return {
+        "state": state,
+        "label": RESULT_QUALITY_LABELS[state],
+        "summary": RESULT_QUALITY_SUMMARIES[state],
+        "result_verified": result_verified,
+        "can_treat_as_done": result_verified,
+        "needs_review": not result_verified,
+        "missing_checks": missing_checks,
+        "next_step": public_next_step,
+        "signoff": False,
+        "redacted": True,
+        "privacy_note": (
+            "Private action details, file names, raw outputs, prompts, hosts, "
+            "and secret-bearing URLs are hidden."
+        ),
+    }
+
+
 def _review_verdict(review: dict[str, Any]) -> str:
     return _enum_value(review.get("verdict") or "").replace("-", "_").casefold()
+
+
+def _completion_next_step(task: Task, completion_evidence: dict[str, Any]) -> str:
+    state = _result_quality_state(completion_evidence)
+    missing_checks = _public_missing_checks(completion_evidence)
+    return _result_quality_next_step(task, state, missing_checks)
+
+
+def _result_quality_state(completion_evidence: dict[str, Any]) -> str:
+    level = str(completion_evidence.get("level") or "").replace("-", "_").casefold()
+    if (
+        level == "completed_result"
+        and completion_evidence.get("result_verified") is True
+        and completion_evidence.get("signoff") is False
+    ):
+        return "verified_result"
+    if level == "safe_failure":
+        return "safe_failure"
+    if level in {"visible_progress", "completed_result"}:
+        return "visible_progress"
+    return "task_evidence_only"
+
+
+def _public_missing_checks(completion_evidence: dict[str, Any]) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for item in completion_evidence.get("missing") or []:
+        key = _missing_check_key(item)
+        label = PUBLIC_MISSING_CHECK_LABELS.get(key, "additional result review")
+        label = _public_text(label)
+        if label and label not in seen:
+            labels.append(label)
+            seen.add(label)
+    return labels
+
+
+def _missing_check_key(value: Any) -> str:
+    return " ".join(str(value or "").replace("-", " ").replace("_", " ").casefold().split())
+
+
+def _result_quality_next_step(task: Task | None, state: str, missing_checks: list[str]) -> str:
+    status = _enum_value(task.status).replace("-", "_").casefold() if task else ""
+    if state == "verified_result":
+        return "Review the verified result evidence before any separate manual sign-off."
+    if state == "safe_failure":
+        return "Review the failed or blocked evidence, fix the cause, then retry only if the goal is still safe."
+    if state == "visible_progress":
+        if missing_checks:
+            return f"Collect these public checks before treating the result as done: {', '.join(missing_checks[:3])}."
+        return "Open the task explanation and review the progress before treating the result as done."
+    if status in COMPLETED_STATUSES:
+        return "Collect verified result evidence before treating this completed task as done."
+    if status in {"created", "planning", "plan_review", "consultation", "final_review"}:
+        return "Let the task continue until reviewed execution and result evidence are recorded."
+    if status in {"execution", "paused"}:
+        return "Resume or monitor the task until a reviewed result is recorded."
+    return "Check the task explanation before trusting this result."
 
 
 def _has_result_summary(summary: Any) -> bool:
@@ -411,7 +582,7 @@ def _plan_steps(plan_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "step_id": step_id,
                 "order": int(raw.get("order") or index),
                 "agent_name": str(raw.get("agent_name") or ""),
-                "tool_name": str(raw.get("tool_name") or ""),
+                "tool_name": _public_tool_label(str(raw.get("tool_name") or "")),
                 "description": _public_text(raw.get("description") or ""),
                 "status": _enum_value(raw.get("status") or ""),
                 "risk_level": _enum_value(raw.get("risk_level") or ""),
@@ -479,7 +650,7 @@ def _review_item(review: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(review.get("id") or ""),
         "step_id": review.get("step_id"),
-        "target_type": str(review.get("target_type") or ""),
+        "target_type": _public_review_target(str(review.get("target_type") or "")),
         "verdict": _enum_value(review.get("verdict") or ""),
         "risk_level": _enum_value(review.get("risk_level") or ""),
         "reasons": ["Review reason redacted."] * len(reasons),
@@ -508,10 +679,11 @@ def _subagent_suggestions(messages: list[dict[str, Any]]) -> list[dict[str, Any]
         action = payload.get("subagent_action") if isinstance(payload.get("subagent_action"), dict) else {}
         if action:
             item["action"] = {
-                "kind": str(action.get("kind") or ""),
-                "tool_name": str(action.get("tool_name") or ""),
+                "kind": _public_action_kind(str(action.get("kind") or "")),
+                "tool_name": _public_tool_label(str(action.get("tool_name") or "")),
                 "rationale": _public_text(action.get("rationale") or ""),
                 "follow_up_question": _public_text(action.get("follow_up_question") or ""),
+                "raw_details_redacted": True,
             }
         result.append(item)
     return result
@@ -634,25 +806,27 @@ def _message_evidence(message: dict[str, Any]) -> dict[str, Any]:
 def _review_evidence(review: dict[str, Any]) -> dict[str, Any]:
     reason_count = len(review.get("reasons") or [])
     suffix = f"; {reason_count} reason(s) redacted" if reason_count else ""
+    target = _public_review_target(str(review.get("target_type") or ""))
     return {
         "source": SOURCE_SAFETY_REVIEWS,
         "id": str(review.get("id") or ""),
         "created_at": str(review.get("created_at") or ""),
         "actor": "SafetyReviewAgent",
         "step_id": review.get("step_id"),
-        "summary": _public_text(f"{review.get('target_type')}: {review.get('verdict')}{suffix}".strip()),
+        "summary": _public_text(f"{target}: {review.get('verdict')}{suffix}".strip()),
     }
 
 
 def _audit_evidence(event: dict[str, Any]) -> dict[str, Any]:
     payload = _sanitize(event.get("payload") if isinstance(event.get("payload"), dict) else {})
-    summary = _public_text(payload.get("reply") or payload.get("goal") or payload.get("status") or payload.get("error") or payload)
+    summary_source = payload.get("reply") or payload.get("goal") or payload.get("status") or payload.get("error")
+    summary = _public_text(summary_source) if summary_source else _public_audit_summary(str(event.get("event_type") or ""))
     return {
         "source": SOURCE_AUDIT_EVENTS,
         "id": str(event.get("id") or ""),
         "created_at": str(event.get("created_at") or ""),
         "actor": str(event.get("actor") or ""),
-        "event_type": str(event.get("event_type") or ""),
+        "event_type": _public_audit_event_type(str(event.get("event_type") or "")),
         "summary": summary,
     }
 
@@ -686,7 +860,7 @@ def _message_public_content(message: dict[str, Any]) -> str:
 
 def _sanitize(value: Any, key: str = "") -> Any:
     normalized_key = key.replace("-", "_").casefold()
-    if normalized_key in SENSITIVE_KEYS:
+    if normalized_key in SENSITIVE_KEYS or contains_sensitive_key(key):
         return "***"
     if normalized_key in PUBLIC_REDACTED_KEYS:
         return _redacted_public_field(value)
@@ -697,6 +871,83 @@ def _sanitize(value: Any, key: str = "") -> Any:
     if isinstance(value, str):
         return _public_text(value)
     return value
+
+
+def _public_tool_label(tool_name: str) -> str:
+    normalized = str(tool_name or "").strip().casefold()
+    if not normalized:
+        return ""
+    if normalized.startswith("file."):
+        return "File capability"
+    if normalized.startswith("system."):
+        return "System capability"
+    if normalized.startswith("browser."):
+        return "Browser capability"
+    if normalized.startswith("app.") or normalized.startswith("ui."):
+        return "App capability"
+    if normalized.startswith("document.") or normalized.startswith("excel."):
+        return "Document capability"
+    if normalized.startswith("search."):
+        return "Search capability"
+    if normalized.startswith("remote."):
+        return "Remote session capability"
+    return "Tool capability"
+
+
+def _public_action_kind(kind: str) -> str:
+    normalized = str(kind or "").strip().replace("-", "_").casefold()
+    if "proposal" in normalized or "propose" in normalized:
+        return "tool proposal"
+    if "revision" in normalized:
+        return "revision"
+    if "critique" in normalized:
+        return "critique"
+    if "final" in normalized:
+        return "final update"
+    return "agent update"
+
+
+def _public_review_target(target_type: str) -> str:
+    normalized = str(target_type or "").strip().replace("-", "_").casefold()
+    if normalized == "tool_result":
+        return "result"
+    if normalized == "tool_call":
+        return "action"
+    if normalized == "final":
+        return "final result"
+    if normalized == "plan":
+        return "plan"
+    if normalized == "goal":
+        return "goal"
+    if normalized.startswith("agent_message"):
+        return "agent message"
+    return "review"
+
+
+def _public_audit_event_type(event_type: str) -> str:
+    normalized = str(event_type or "").strip().replace("-", "_").casefold()
+    if normalized.startswith("task."):
+        return "task_lifecycle"
+    if normalized.startswith("supervisor."):
+        return "supervisor_decision"
+    if normalized.startswith("context."):
+        return "context_boundary"
+    if normalized.startswith("model_boundary"):
+        return "model_boundary"
+    return "audit_event"
+
+
+def _public_audit_summary(event_type: str) -> str:
+    public_type = _public_audit_event_type(event_type)
+    if public_type == "task_lifecycle":
+        return "Task lifecycle event recorded."
+    if public_type == "supervisor_decision":
+        return "Supervisor routing decision recorded."
+    if public_type == "context_boundary":
+        return "Context boundary event recorded."
+    if public_type == "model_boundary":
+        return "Model boundary event recorded."
+    return "Audit event recorded."
 
 
 def _redacted_public_field(value: Any) -> Any:

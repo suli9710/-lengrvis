@@ -55,9 +55,76 @@ const backendSettings = {
 const completedComputerTemplateTask = {
   id: "task-computer-template-smoke",
   user_goal: "检查电脑状态",
-  final_summary: "只读电脑健康快照已生成，未修改系统设置。",
+  final_summary: "系统诊断只读电脑健康快照已生成，未修改系统设置。",
   status: "completed",
+  completion_evidence: {
+    level: "completed_result",
+    result_verified: true,
+    result_artifacts: [
+      { kind: "final_summary", label: "只读检查摘要", redacted: true, count: 1 }
+    ],
+    missing: [],
+    signoff: false
+  },
+  result_verified: true,
   created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+  updated_at: new Date().toISOString()
+};
+
+const unverifiedCompletedComputerTemplateTask = {
+  id: "task-computer-template-unverified-smoke",
+  user_goal: "检查电脑状态",
+  final_summary: "系统诊断只读检查有进度记录，但结果还未核验。",
+  status: "completed",
+  completion_evidence: {
+    level: "visible_progress",
+    result_verified: false,
+    result_artifacts: [
+      { kind: "tool_result", label: "只读检查进度", redacted: true, count: 1 }
+    ],
+    missing: ["结果核验"],
+    signoff: false
+  },
+  result_verified: false,
+  created_at: new Date(Date.now() - 4 * 60 * 1000).toISOString(),
+  updated_at: new Date().toISOString()
+};
+
+const safeFailureComputerTemplateTask = {
+  id: "task-computer-template-safe-failure-smoke",
+  user_goal: "检查电脑状态",
+  final_summary: "系统诊断安全停止，未生成完成结果，未修改系统设置。",
+  status: "completed",
+  completion_evidence: {
+    level: "safe_failure",
+    result_verified: false,
+    result_artifacts: [
+      { kind: "safe_stop", label: "安全停止记录", redacted: true, count: 1 }
+    ],
+    missing: ["完成结果"],
+    signoff: false
+  },
+  result_verified: false,
+  created_at: new Date(Date.now() - 3 * 60 * 1000).toISOString(),
+  updated_at: new Date().toISOString()
+};
+
+const taskEvidenceOnlyComputerTemplateTask = {
+  id: "task-computer-template-record-only-smoke",
+  user_goal: "检查电脑状态",
+  final_summary: "系统诊断任务已创建，但还没有完成结果记录。",
+  status: "completed",
+  completion_evidence: {
+    level: "task_created",
+    result_verified: false,
+    result_artifacts: [
+      { kind: "task_record", label: "任务记录", redacted: true, count: 1 }
+    ],
+    missing: ["完成结果", "结果核验"],
+    signoff: false
+  },
+  result_verified: false,
+  created_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
   updated_at: new Date().toISOString()
 };
 
@@ -72,6 +139,7 @@ async function main() {
   try {
     await waitForPreview(previewUrl);
     await assertFirstLaunchEntryWorks(previewUrl);
+    await assertTaskResultQualityStatesStayActionable(previewUrl);
     await assertNaturalLanguageComputerCheckStartsReadOnlyRun(previewUrl);
     await assertPromptQuickSkillUsesSelectedDraft(previewUrl);
     await assertBackendUnavailableState(previewUrl);
@@ -84,6 +152,7 @@ async function main() {
 
 function runSourceAssertions() {
   const appSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "App.tsx"), "utf8");
+  const zhSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "zh.ts"), "utf8");
   const officeSceneSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "features", "office", "OfficeScene.tsx"), "utf8");
 
   assert.match(
@@ -100,6 +169,41 @@ function runSourceAssertions() {
     appSource,
     /if \(!result\.ok\) \{\s*setSettings\(previousSettings\);\s*setMode\(previousMode\);/,
     "non-ok settings-save responses should restore the previous renderer settings and mode"
+  );
+  assert.match(
+    appSource,
+    /const sample = safeRealtimeBadMessageSample\(\);/,
+    "malformed realtime messages must use a fixed safe summary instead of sampling raw payload text"
+  );
+  assert.match(
+    appSource,
+    /function safeRealtimeBadMessageSample\(\): string \{\s*return "原始内容已隐藏，避免显示本机路径、文件名、连接地址、提示词或凭据。";\s*\}/,
+    "realtime bad-message handling must fail closed without exposing raw filenames or hidden prompt text"
+  );
+  assert.doesNotMatch(
+    appSource,
+    /containsRealtimeSensitiveDetail|safeRealtimeBadMessageSample\(status\.rawMessage\)|status\.rawMessage\.replace/,
+    "malformed realtime handling must not inspect and echo arbitrary raw payload snippets"
+  );
+  assert.doesNotMatch(
+    zhSource,
+    /已保留原始内容/,
+    "novice realtime notices must not say raw malformed realtime content is retained"
+  );
+  assert.doesNotMatch(
+    zhSource,
+    /最近原文预览/,
+    "novice realtime notices must not label malformed payload snippets as raw previews"
+  );
+  assert.match(
+    zhSource,
+    /最近安全摘要/,
+    "novice realtime notices should describe malformed payload snippets as safe summaries"
+  );
+  assert.doesNotMatch(
+    officeSceneSource,
+    /证据/,
+    "office result-quality UI should use novice-facing result and record language instead of internal evidence jargon"
   );
 }
 
@@ -148,6 +252,11 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
 
     const quickEntries = page.locator("button.office-quick-card");
     assert.ok(await quickEntries.count() >= 1, "first screen should expose at least one task entry button");
+    const firstEntryText = await quickEntries.first().innerText();
+    assert.match(firstEntryText, /检查电脑状态/, "first visible task template should be the safest no-input entry");
+    assert.match(firstEntryText, /无需输入|一句话可选/, "first task entry should explain how to start immediately");
+    assert.match(firstEntryText, /只读快照|只读取/, "first task entry should make the read-only preflight visible");
+    assert.match(firstEntryText, /30 秒/, "first task entry should show a short first-run estimate");
 
     const checkComputerEntry = page.locator("button.office-quick-card", { hasText: /检查电脑状态/ }).first();
     await checkComputerEntry.waitFor({ timeout: 15_000 });
@@ -159,6 +268,7 @@ async function assertFirstLaunchEntryWorks(previewUrl) {
     assert.match(entryText, /无改动/, "computer check entry should explain that it does not modify the system");
 
     await assertComputerTemplateHomeEvidence(page, { hasRecentResult: true });
+    await assertHomeTrustBoundary(page);
 
     await checkComputerEntry.click();
     await page.getByText(/正在进行只读电脑检查|只读检查启动中/).first().waitFor({ timeout: 1_500 }).catch(() => undefined);
@@ -188,6 +298,11 @@ async function assertPromptQuickSkillUsesSelectedDraft(previewUrl) {
 
     await page.getByTestId("office-template-clean-downloads").click();
     const selectedPrompt = await commandInput.inputValue();
+    const wizardText = await page.getByTestId("office-template-wizard").innerText();
+    assert.match(wizardText, /任务向导/, "selected template should expose a compact task wizard");
+    assert.match(wizardText, /删除前会停下审批/, "cleanup template should name the approval stop before destructive action");
+    const commandStatus = await page.locator("#office-command-status").innerText();
+    assert.match(commandStatus, /下一步点“发送”开始/, "selected prompt template should make the next executable action clear");
     assert.match(
       selectedPrompt,
       /\u626b\u63cf\u6211\u7684\u4e0b\u8f7d\u76ee\u5f55/,
@@ -332,7 +447,8 @@ async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
   await outcomeCard.waitFor({ timeout: 15_000 });
   const outcomeText = await outcomeCard.innerText();
   if (hasRecentResult) {
-    assert.match(outcomeText, /系统检查有最近记录/, "computer template should render a visible outcome when a recent result exists");
+    assert.match(outcomeText, /系统检查完成结果已核验/, "computer template should render a verified outcome only when strict evidence exists");
+    assert.match(outcomeText, /完成结果已核验/, "computer outcome should show the verified result label");
     assert.match(outcomeText, /下一步：查看电脑状态页/, "computer outcome should expose a next-step action");
     assert.match(outcomeText, /只读状态|不会改系统设置/, "computer outcome should preserve the local task boundary");
 
@@ -343,6 +459,110 @@ async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
     assert.match(outcomeText, /等待只读快照/, "computer template should have a clear fallback while no result exists");
     assert.match(outcomeText, /可一键启动只读检查/, "computer fallback should tell the user the next safe action");
   }
+}
+
+async function assertTaskResultQualityStatesStayActionable(previewUrl) {
+  await assertComputerResultQualityState(previewUrl, {
+    task: unverifiedCompletedComputerTemplateTask,
+    outcomeMatches: [
+      /系统检查已有记录/,
+      /有进度，待核验/,
+      /还不能确认健康结论|查看时间线|重新检查/
+    ],
+    workspaceMatches: [
+      /结果状态/,
+      /有进度，待核验/,
+      /不能当作最终结果/
+    ],
+    pilotMatches: [
+      /已结束，待核验|核对结果|记录待核验/
+    ],
+    label: "visible-progress unverified task"
+  });
+
+  await assertComputerResultQualityState(previewUrl, {
+    task: safeFailureComputerTemplateTask,
+    outcomeMatches: [
+      /任务未完成/,
+      /安全停止，需处理/,
+      /查看原因后重试/
+    ],
+    workspaceMatches: [
+      /结果状态/,
+      /安全停止，需处理/,
+      /没有完成结果/
+    ],
+    pilotMatches: [
+      /安全停止，需处理|查看原因|没有形成完成结果/
+    ],
+    label: "safe-failure task"
+  });
+
+  await assertComputerResultQualityState(previewUrl, {
+    task: taskEvidenceOnlyComputerTemplateTask,
+    outcomeMatches: [
+      /系统检查已有记录/,
+      /仅有任务记录/,
+      /不能当作完成结果/
+    ],
+    workspaceMatches: [
+      /结果状态/,
+      /仅有任务记录/,
+      /只说明任务被提交或创建/
+    ],
+    pilotMatches: [
+      /已结束，待核验|核对结果|记录待核验/
+    ],
+    label: "task-record-only task"
+  });
+}
+
+async function assertComputerResultQualityState(previewUrl, { task, outcomeMatches, workspaceMatches, pilotMatches, label }) {
+  const counters = {};
+  const { context, page, profileDir } = await openDisposablePage();
+  try {
+    await installHealthyBackendMocks(page, counters, { tasks: [task] });
+    await gotoFirstLaunch(page, previewUrl);
+
+    const outcomeCard = page.getByTestId("home-outcome-computer");
+    await outcomeCard.waitFor({ timeout: 15_000 });
+    const outcomeText = await outcomeCard.innerText();
+    for (const pattern of outcomeMatches) {
+      assert.match(outcomeText, pattern, `${label} outcome should expose beginner-safe result quality`);
+    }
+    assert.doesNotMatch(outcomeText, /系统检查完成结果已核验|完成结果已核验/, `${label} outcome must not claim a verified completed result`);
+
+    const workspaceText = await page.getByTestId("task-workspace-card").innerText();
+    for (const pattern of workspaceMatches) {
+      assert.match(workspaceText, pattern, `${label} workspace should explain the result-quality state`);
+    }
+
+    const pilotText = await page.locator(".task-pilot-card").first().innerText();
+    for (const pattern of pilotMatches) {
+      assert.match(pilotText, pattern, `${label} Task Pilot should stay honest and actionable`);
+    }
+    assert.doesNotMatch(pilotText, /完成结果已通过核验|查看结果/, `${label} Task Pilot should not show verified-result language without strict evidence`);
+
+    const combinedText = `${outcomeText}\n${workspaceText}\n${pilotText}`;
+    assert.doesNotMatch(combinedText, /tool_result|completion_evidence|result_verified|safe_failure|task_evidence_only|completed result/i, `${label} UI must not expose internal result contract names`);
+    assert.doesNotMatch(combinedText, /[A-Za-z]:\\|https?:\/\/\S*(?:token|api[_-]?key|authorization|access[_-]?token|sig|signature)=/i, `${label} UI must not expose local paths or tokenized URLs`);
+    assert.doesNotMatch(combinedText, /证据/, `${label} UI should use novice-facing result and record language`);
+  } finally {
+    await context.close();
+    removeTempDir(profileDir);
+  }
+}
+
+async function assertHomeTrustBoundary(page) {
+  const trustCard = page.locator(".home-trust-card").first();
+  await trustCard.waitFor({ timeout: 15_000 });
+  const trustText = await trustCard.innerText();
+  assert.match(trustText, /隐私与权限/, "first screen should expose the trust boundary section");
+  assert.match(trustText, /文件内容上传/, "trust boundary should name file-content upload policy");
+  assert.match(trustText, /已关闭|需确认/, "trust boundary should show upload state in plain language");
+  assert.match(trustText, /危险操作/, "trust boundary should name destructive-operation review");
+  assert.match(trustText, /先审查/, "trust boundary should show review before dangerous operations");
+  assert.match(trustText, /暂停等待确认/, "trust boundary should explain that destructive actions stop for approval");
 }
 
 async function expectText(locator, pattern, message, timeoutMs = 10_000) {

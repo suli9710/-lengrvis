@@ -62,30 +62,45 @@ import {
 import { taskStarterManifestById } from "./features/office/taskStarterManifest";
 import { ShellFrame } from "./features/shell";
 import { LengrvisApiClient, type RealtimeConnectionStatus } from "./lib/apiClient";
-import { zhBackendText, zhRealtimeBadMessageSummary, zhRealtimeConnectionStatus } from "./lib/zh";
+import { zhBackendText, zhRealtimeBadMessageSummary, zhRealtimeConnectionStatus, zhUserFacingError } from "./lib/zh";
 import { useLengrvisStore, type AssistantMode, type ConnectionState, type ViewKey } from "./store";
 
 const quickSkills: OfficeQuickSkill[] = [
   {
+    id: "check-computer",
+    icon: Laptop,
+    title: "检查电脑状态",
+    summary: "无需输入，先做只读快照",
+    kind: "action",
+    action: "system-check",
+    trust: { local: "本机读取", cloud: "不上云", approval: "只读", rollback: "无改动", estimate: "30 秒" },
+    wizard: {
+      input: "一句话可选：帮我检查这台电脑",
+      preflight: "只读取后端、系统和本地模型状态",
+      output: "健康状态、缺失依赖、下一步修复入口",
+      nextStep: "打开电脑状态页并刷新只读快照"
+    }
+  },
+  {
     id: "clean-downloads",
     icon: FolderOpen,
     title: "整理下载目录",
-    summary: "先盘点和分组，删除前确认",
+    summary: "一句话扫描，先出清理计划",
     kind: "prompt",
     prompt: "扫描我的下载目录，按安装包、文档、图片、压缩包和临时文件分组，给出整理建议；不要直接删除任何文件。",
-    trust: { local: "本机文件", cloud: "不传正文", approval: "删除需审批", rollback: "回收站可恢复", estimate: "3-6 分钟" },
+    trust: { local: "本机文件", cloud: "默认不传正文", approval: "删除需审批", rollback: "回收站可恢复", estimate: "3-6 分钟" },
     wizard: {
-      input: "下载目录或指定文件夹",
-      preflight: "确认授权范围和清理风险",
-      output: "分组清单、可释放空间、审批预览",
-      nextStep: "点发送后先生成清理计划，不会直接删除文件"
+      input: "一句话或下载目录",
+      preflight: "确认授权目录，只读盘点风险",
+      output: "分组清单、空间估算、审批预览",
+      nextStep: "点发送后只生成清理计划，删除前会停下审批"
     }
   },
   {
     id: "summarize-document",
     icon: BookOpenText,
     title: "总结本地文档",
-    summary: "选择文件后生成摘要和引用",
+    summary: "先选文件，摘要带引用",
     kind: "view",
     view: "files",
     trust: { local: "本机读取", cloud: "按模式", approval: "只读", rollback: "无改动", estimate: "1-3 分钟" },
@@ -100,30 +115,15 @@ const quickSkills: OfficeQuickSkill[] = [
     id: "find-large-files",
     icon: FileSearch,
     title: "查找大文件",
-    summary: "列出占用空间和清理建议",
+    summary: "先列排行，不移动文件",
     kind: "prompt",
     prompt: "找出这台电脑上最大的文件，并按安全清理、需要确认、建议保留三类给出建议；不要直接删除任何文件。",
-    trust: { local: "本机索引", cloud: "不传路径", approval: "清理需审批", rollback: "先审再处理", estimate: "2-5 分钟" },
+    trust: { local: "本机索引", cloud: "默认不传路径", approval: "清理需审批", rollback: "先审再处理", estimate: "2-5 分钟" },
     wizard: {
       input: "文件范围和大小阈值",
-      preflight: "先扫描授权目录，不触碰未授权路径",
+      preflight: "只扫描授权目录，不触碰未授权路径",
       output: "大文件排行、保留建议、清理候选",
       nextStep: "点发送后先选文件夹，再生成只读结果"
-    }
-  },
-  {
-    id: "check-computer",
-    icon: Laptop,
-    title: "检查电脑状态",
-    summary: "只读查看后端、系统和本地 AI",
-    kind: "action",
-    action: "system-check",
-    trust: { local: "本机状态", cloud: "不上云", approval: "只读", rollback: "无改动", estimate: "30 秒" },
-    wizard: {
-      input: "无需输入",
-      preflight: "只读读取后端、系统和本地模型状态",
-      output: "健康状态、缺失依赖、下一步修复入口",
-      nextStep: "正在打开电脑状态页并刷新快照"
     }
   },
   {
@@ -1403,7 +1403,7 @@ function buildHomeReadinessItems({
     {
       id: "connection",
       label: "Lengrvis 连接",
-      detail: realtimeDetail || (connectionState === "online" ? "服务已连接，可以直接开始任务" : connectionState === "checking" ? "正在确认后端服务" : "服务离线，先恢复连接"),
+      detail: realtimeDetail || (connectionState === "online" ? "服务已连接，输入一句话即可开始" : connectionState === "checking" ? "正在确认本机服务" : "服务离线，输入会保留，恢复后可重试"),
       state: realtimeNeedsAction ? "action" : connectionState === "online" ? "ready" : connectionState === "checking" ? "warning" : "action",
       actionLabel: connectionState === "online" ? "刷新连接" : "检查连接"
     },
@@ -1422,7 +1422,7 @@ function buildHomeReadinessItems({
     {
       id: "scope",
       label: "文件范围",
-      detail: primaryScope ? compactPath(primaryScope) : "先选择桌面、下载或指定文件夹",
+      detail: primaryScope ? `${compactPath(primaryScope)} · 只看授权范围` : "先选择桌面、下载或指定文件夹",
       state: primaryScope ? "ready" : "action",
       actionLabel: primaryScope ? "查看" : "选择",
       targetView: "files"
@@ -1430,7 +1430,7 @@ function buildHomeReadinessItems({
     {
       id: "document",
       label: "文档操作",
-      detail: "读取、总结、提问都从这里进入",
+      detail: "选择文件后再读取正文和生成引用",
       state: "action",
       actionLabel: "打开",
       targetView: "files"
@@ -1469,30 +1469,30 @@ function buildHomeTrustItems({
           ? "健康未读取时不会静默退云端"
         : localPreparing
           ? "不会静默退回云端"
-          : allowCloudContext
-            ? "可使用云端辅助"
-            : "云端上下文关闭",
+        : allowCloudContext
+            ? "可使用云端辅助，受权限约束"
+            : "云端上下文关闭，优先本机范围",
       state: localReady || !allowCloudContext ? "ready" : "warning"
     },
     {
       id: "files",
       label: "文件范围",
       value: primaryScope ? compactPath(primaryScope) : "未授权",
-      detail: primaryScope ? "文件工具只看这个范围" : "先选择桌面、下载或文件夹",
+      detail: primaryScope ? "文件工具只看授权目录" : "先选择桌面、下载或文件夹",
       state: primaryScope ? "ready" : "warning"
     },
     {
       id: "upload",
       label: "文件内容上传",
-      value: allowFileContentUpload ? "需要确认" : "已关闭",
-      detail: allowFileContentUpload ? "读取内容前仍会遵守权限" : "默认不上传文件正文",
+      value: allowFileContentUpload ? "需确认" : "已关闭",
+      detail: allowFileContentUpload ? "上传正文前仍会遵守权限" : "默认不上传文件正文",
       state: allowFileContentUpload ? "warning" : "ready"
     },
     {
       id: "approval",
       label: "危险操作",
-      value: "先审批",
-      detail: "删除、移动、写入前会停下来",
+      value: "先审查",
+      detail: "删除、移动、写入前暂停等待确认",
       state: "ready"
     }
   ];
@@ -1543,9 +1543,9 @@ function upsertRealtimeBadMessageNotice(
   status: RealtimeConnectionStatus & { state: "bad_message"; rawMessage: string }
 ): ChatMessage[] {
   notice.count += 1;
-  const sample = status.rawMessage.trim();
-  if (sample && !notice.samples.includes(sample)) {
-    notice.samples = [sample, ...notice.samples].slice(0, 3);
+  const sample = safeRealtimeBadMessageSample();
+  if (!notice.samples.includes(sample)) {
+    notice.samples = [sample];
   }
   const nextMessage: ChatMessage = {
     id: notice.messageId,
@@ -1556,6 +1556,10 @@ function upsertRealtimeBadMessageNotice(
     status: "streaming"
   };
   return [...current.filter((message) => message.id !== notice.messageId), nextMessage];
+}
+
+function safeRealtimeBadMessageSample(): string {
+  return "原始内容已隐藏，避免显示本机路径、文件名、连接地址、提示词或凭据。";
 }
 
 function isActiveTask(task: TaskEvent): boolean {
@@ -1762,7 +1766,8 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 }
 
 function readableError(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+  const message = error instanceof Error ? error.message : fallback;
+  return zhUserFacingError(message) || fallback;
 }
 
 function appendUniqueMessage(current: ChatMessage[], message: ChatMessage): ChatMessage[] {

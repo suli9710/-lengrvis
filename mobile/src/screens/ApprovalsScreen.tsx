@@ -51,7 +51,19 @@ import {
 } from "../api/client";
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
 import { notifyApproval, requestNotificationPermission } from "../notifications";
+import { safeDisplayText, safePreviewText } from "../safeDisplay";
 import { clearSession } from "../store/auth";
+import {
+  isMobileTaskActive,
+  taskActionAllowed,
+  taskCredibilityText,
+  taskDisplaySummary,
+  taskDisplayTitle,
+  taskNextStepText,
+  taskStatusBadgeIsDone,
+  taskStatusBadgeText,
+  taskStatusDetailText,
+} from "../taskCompanionDisplay";
 import { taskStarterTemplates } from "../taskStarterTemplates";
 
 type ApprovalConnection = "offline" | "connecting" | "online";
@@ -67,7 +79,7 @@ const MOBILE_TASK_TEMPLATES: Array<{
   {
     id: "organize_downloads",
     label: "整理下载目录",
-    placeholder: "可选：指定目录或规则，例如只扫描 D:/Downloads。",
+    placeholder: "可选：说明要整理哪个目录或规则。",
     icon: <FolderOpen size={14} color="#23313d" />,
   },
   {
@@ -138,7 +150,7 @@ export function ApprovalsScreen({
     [approvals],
   );
   const headerTitle = pendingCount === 0 ? "暂无待处理" : `${pendingCount} 项待审批`;
-  const activeTaskCount = useMemo(() => tasks.filter((task) => isActiveTask(task.status)).length, [tasks]);
+  const activeTaskCount = useMemo(() => tasks.filter(isMobileTaskActive).length, [tasks]);
   const visibleTasks = useMemo(() => tasks.slice(0, 3), [tasks]);
   const selectedTemplate = useMemo(
     () => MOBILE_TASK_TEMPLATES.find((template) => template.id === selectedTemplateId) ?? MOBILE_TASK_TEMPLATES[0],
@@ -462,7 +474,7 @@ export function ApprovalsScreen({
       <View style={styles.companionPanel}>
         <View style={styles.companionHeader}>
           <View>
-            <Text style={styles.companionKicker}>任务 Companion</Text>
+            <Text style={styles.companionKicker}>任务助手</Text>
             <Text style={styles.companionTitle}>{activeTaskCount ? `${activeTaskCount} 项电脑任务在进行` : "电脑端当前空闲"}</Text>
           </View>
           <Text style={styles.companionBadge}>{visibleTasks.length ? `${visibleTasks.length} 项` : "待命"}</Text>
@@ -539,7 +551,7 @@ export function ApprovalsScreen({
             ))}
           </View>
         ) : (
-          <Text style={styles.companionEmpty}>在电脑端启动任务后，这里会显示进度、暂停和取消入口。</Text>
+          <Text style={styles.companionEmpty}>在电脑端启动任务后，这里会显示安全摘要、可信度和下一步。</Text>
         )}
       </View>
       <Pressable
@@ -573,6 +585,7 @@ export function ApprovalsScreen({
 function ApprovalCard({ approval, onPress }: { approval: BackendApproval; onPress: () => void }) {
   const pending = approval.status === "pending";
   const preview = readablePreview(approval.diff_preview);
+  const message = safeDisplayText(approval.message, "打开后查看这项审批。");
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
       <View style={styles.cardHeader}>
@@ -585,7 +598,7 @@ function ApprovalCard({ approval, onPress }: { approval: BackendApproval; onPres
           <ChevronRight size={18} color="#65717c" />
         </View>
       </View>
-      <Text style={styles.message}>{approval.message}</Text>
+      <Text style={styles.message}>{message}</Text>
       <Text numberOfLines={3} style={styles.preview}>{preview}</Text>
     </Pressable>
   );
@@ -608,27 +621,48 @@ function TaskCompanionCard({
   onFollowUp: (task: MobileTask, instruction: string) => Promise<void>;
   onFollowUpTextChange: (text: string) => void;
 }) {
-  const terminal = isTerminalTask(task.status);
+  const badgeDone = taskStatusBadgeIsDone(task);
   const actionBusy = actionId.startsWith(`${task.id}:`);
-  const followUpDisabled = followUpBusy || !followUpValue.trim();
+  const title = taskDisplayTitle(task);
+  const summary = taskDisplaySummary(task);
+  const statusDetail = taskStatusDetailText(task);
+  const credibility = taskCredibilityText(task);
+  const nextStep = taskNextStepText(task);
+  const followUpAllowed = taskActionAllowed(task, "follow_up");
+  const followUpDisabled = followUpBusy || !followUpValue.trim() || !followUpAllowed;
+  const showResume = task.status === "paused" || taskActionAllowed(task, "resume");
   return (
     <View style={styles.taskCard}>
       <View style={styles.taskCardHeader}>
         <View style={styles.taskCardTitleWrap}>
-          <Text numberOfLines={2} style={styles.taskCardTitle}>{task.title}</Text>
+          <Text numberOfLines={2} style={styles.taskCardTitle}>{title}</Text>
           <Text style={styles.taskCardMeta}>{taskModeText(task.mode)} · {shortDate(task.updated_at)}</Text>
         </View>
-        <Text style={[styles.badge, terminal ? styles.badgeDone : styles.badgePending]}>{taskStatusText(task.status)}</Text>
+        <Text style={[styles.badge, badgeDone ? styles.badgeDone : styles.badgePending]}>{taskStatusBadgeText(task)}</Text>
       </View>
-      {task.summary ? <Text numberOfLines={2} style={styles.taskSummary}>{task.summary}</Text> : null}
+      <Text numberOfLines={3} style={styles.taskSummary}>{summary}</Text>
+      <Text style={styles.taskStatusDetail}>{statusDetail}</Text>
+      <View style={styles.taskSignalBlock}>
+        <Text style={styles.taskSignalLabel}>可信度</Text>
+        <Text style={styles.taskSignalText}>{credibility}</Text>
+        <Text style={styles.taskSignalLabel}>安全下一步</Text>
+        <Text style={styles.taskSignalText}>{nextStep}</Text>
+      </View>
       <View style={styles.followUpRow}>
         <TextInput
           accessibilityLabel="补充任务指令"
+          editable={followUpAllowed && !followUpBusy}
           multiline
           onChangeText={onFollowUpTextChange}
-          placeholder={task.mode === "privacy" ? "补充隐私任务指令，内容只发给电脑端。" : "补充指令，创建相关电脑任务。"}
+          placeholder={
+            followUpAllowed
+              ? task.mode === "privacy"
+                ? "补充隐私任务指令，内容只发给电脑端。"
+                : "补充下一步，不要输入密码或 token。"
+              : "此任务当前不能补充指令。"
+          }
           placeholderTextColor="#7b8791"
-          style={styles.followUpInput}
+          style={[styles.followUpInput, !followUpAllowed && styles.disabledInput]}
           value={followUpValue}
         />
         <Pressable
@@ -642,23 +676,23 @@ function TaskCompanionCard({
         </Pressable>
       </View>
       <View style={styles.taskActions}>
-        {task.status === "paused" ? (
+        {showResume ? (
           <TaskActionButton
-            disabled={actionBusy}
+            disabled={actionBusy || !taskActionAllowed(task, "resume")}
             icon={<Play size={14} color="#1f7a4d" />}
             label="继续"
             onPress={() => void onAction(task, "resume")}
           />
         ) : (
           <TaskActionButton
-            disabled={actionBusy || !canPauseTask(task.status)}
+            disabled={actionBusy || !taskActionAllowed(task, "pause")}
             icon={<Pause size={14} color="#6c5a1b" />}
             label="暂停"
             onPress={() => void onAction(task, "pause")}
           />
         )}
         <TaskActionButton
-          disabled={actionBusy || terminal}
+          disabled={actionBusy || !taskActionAllowed(task, "cancel")}
           icon={<XCircle size={14} color="#8c2f39" />}
           label="取消"
           onPress={() => void onAction(task, "cancel")}
@@ -731,10 +765,7 @@ function taskRequestErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.includes("Failed to fetch")) {
     return "无法连接到电脑。请确认 Lengrvis 已打开，然后重试。";
   }
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  return "无法发起电脑任务。请稍后重试。";
+  return "电脑端没有接受这次任务请求。请查看电脑端状态后重试。";
 }
 
 function disconnectErrorMessage(error: unknown): string {
@@ -764,36 +795,7 @@ function approvalCardTitle(approval: BackendApproval): string {
 }
 
 function readablePreview(value: unknown): string {
-  const preview = formatPreview(value);
-  if (preview === "暂无预览内容") return "打开后查看详情。";
-  if (preview.trim().startsWith("{") || preview.trim().startsWith("[")) return "打开后查看详情。";
-  return preview;
-}
-
-function isTerminalTask(status: string): boolean {
-  return ["completed", "failed", "cancelled", "denied"].includes(status);
-}
-
-function isActiveTask(status: string): boolean {
-  return !isTerminalTask(status) && status !== "paused";
-}
-
-function canPauseTask(status: string): boolean {
-  return status === "execution";
-}
-
-function taskStatusText(status: string): string {
-  if (status === "created") return "已创建";
-  if (status === "planning" || status === "plan_review") return "规划中";
-  if (status === "consultation") return "协作中";
-  if (status === "waiting_approval") return "待审批";
-  if (status === "execution") return "执行中";
-  if (status === "final_review") return "复核中";
-  if (status === "paused") return "已暂停";
-  if (status === "completed") return "已完成";
-  if (status === "cancelled" || status === "denied") return "已取消";
-  if (status === "failed") return "失败";
-  return status || "未知";
+  return safePreviewText(formatPreview(value));
 }
 
 function taskModeText(mode: string): string {
@@ -1056,6 +1058,25 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
+  taskStatusDetail: {
+    color: "#65717c",
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  taskSignalBlock: {
+    gap: 3,
+  },
+  taskSignalLabel: {
+    color: "#65717c",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  taskSignalText: {
+    color: "#27343f",
+    fontSize: 12,
+    lineHeight: 18,
+  },
   followUpRow: {
     flexDirection: "row",
     alignItems: "stretch",
@@ -1075,6 +1096,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 7,
     textAlignVertical: "top",
+  },
+  disabledInput: {
+    backgroundColor: "#eef2f3",
+    color: "#65717c",
   },
   followUpButton: {
     width: 38,

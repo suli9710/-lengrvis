@@ -29,6 +29,8 @@ $issues = New-Object System.Collections.Generic.List[string]
 $warnings = New-Object System.Collections.Generic.List[string]
 $HttpsWssRequirement = "Token-bearing mobile LAN flows require HTTPS and WSS. Non-loopback HTTP/ws is blocked-path evidence only."
 $NonEvidenceWarning = "This preflight does not use a phone, emulator, camera, QR scanner, or real WSS connection; it must not be recorded as real-device pass evidence."
+$ManualEvidenceChecklistWarning = "Manual real-device evidence remains uncollected until redacted phone/emulator artifacts prove camera QR, actual HTTPS/WSS, certificate trust, grant revoke/expiry, and screenshot/log review."
+$FailClosedRealDeviceStatus = "uncollected_fail_closed"
 
 function Get-EnvText([string]$Name) {
     $value = [Environment]::GetEnvironmentVariable($Name)
@@ -121,6 +123,22 @@ function Get-RedactedHostLabel([string]$HostName) {
     return "[redacted-host]"
 }
 
+function Redact-DisplayLabel([string]$Label) {
+    if (-not (Test-Configured $Label)) {
+        return ""
+    }
+    $text = [string]$Label
+    $text = [regex]::Replace($text, "sk-(?:proj-)?[A-Za-z0-9._-]{4,}", "sk-[redacted]")
+    $text = [regex]::Replace($text, "(?i)\b(?:contoso|acme|customer)[A-Za-z0-9]*", "[redacted-org]")
+    $text = [regex]::Replace($text, "(?i)([?&](?:token|api[_-]?key|client_secret|secret|password|code)=)[^&\s]+", '${1}[redacted]')
+    $text = [regex]::Replace($text, "(?i)\bhttps?://[^/\s\\]+", "https://[redacted-host]")
+    $text = [regex]::Replace($text, "(?i)\bwss?://[^/\s\\]+", "wss://[redacted-host]")
+    $text = [regex]::Replace($text, "\b(?:\d{1,3}\.){3}\d{1,3}\b", "[redacted-host]")
+    $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:token|api[_-]?key|client_secret|secret|password|code)=[A-Za-z0-9._-]+", '${1}[redacted-sensitive]=[redacted]')
+    $text = [regex]::Replace($text, "(?i)(^|[._\-\s])(?:token|api[_-]?key|client_secret|secret|password|code)(?!\=)(?:[._\-][A-Za-z0-9._-]+)?", '${1}[redacted-sensitive]')
+    return $text
+}
+
 function Format-RedactedOrigin([string]$Scheme, [string]$HostName, [int]$Port) {
     return "${Scheme}://$(Get-RedactedHostLabel $HostName):$Port"
 }
@@ -135,9 +153,39 @@ function Format-RedactedWebSocketUrl([string]$HttpOrigin, [string]$Path) {
 function Get-DisplayPath([string]$FullPath) {
     $rootPrefix = $resolvedRoot.TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
     if ($FullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        return $FullPath.Substring($rootPrefix.Length)
+        return Redact-DisplayLabel $FullPath.Substring($rootPrefix.Length)
     }
-    return Split-Path -Leaf $FullPath
+    return Redact-DisplayLabel (Split-Path -Leaf $FullPath)
+}
+
+function Add-MarkdownChecklistBlock([System.Collections.Generic.List[string]]$Lines, [string]$Title, [object]$Entry) {
+    $Lines.Add("### $Title")
+    $Lines.Add("")
+    $Lines.Add("- Status: " + [string]$Entry["status"])
+    if ($Entry.Contains("required_when")) {
+        $Lines.Add("- Required when: " + [string]$Entry["required_when"])
+    }
+    if ($Entry.Contains("why_it_matters")) {
+        $Lines.Add("- Why this matters: " + [string]$Entry["why_it_matters"])
+    }
+    if ($Entry.Contains("beginner_steps")) {
+        $Lines.Add("- Do this on the phone/emulator:")
+        foreach ($item in @($Entry["beginner_steps"])) {
+            $Lines.Add("  - [ ] " + [string]$item)
+        }
+    }
+    $Lines.Add("- Attach after real device/emulator run:")
+    foreach ($item in @($Entry["must_attach"])) {
+        $Lines.Add("  - [ ] " + [string]$item)
+    }
+    if ($Entry.Contains("pass_evidence_must_show")) {
+        $Lines.Add("- Pass evidence must show: " + [string]$Entry["pass_evidence_must_show"])
+    }
+    if ($Entry.Contains("reviewer_check")) {
+        $Lines.Add("- Reviewer check: " + [string]$Entry["reviewer_check"])
+    }
+    $Lines.Add("- Overclaim guard: " + [string]$Entry["overclaim_guard"])
+    $Lines.Add("")
 }
 
 function Resolve-Origin([string]$Value) {
@@ -353,6 +401,7 @@ function Test-MobilePairingQrShape([object]$QrContent) {
         required_payload_fields_present = ($missingPayloadFields.Count -eq 0)
         required_server_fields_present = ($missingServerFields.Count -eq 0)
         websocket_approvals_url_redacted = Format-RedactedWebSocketUrl ([string]$QrContent.payload.base_url) "/ws/mobile/approvals"
+        websocket_remote_screen_url_redacted = Format-RedactedWebSocketUrl ([string]$QrContent.payload.base_url) "/ws/remote/screen"
         websocket_remote_input_url_redacted = Format-RedactedWebSocketUrl ([string]$QrContent.payload.base_url) "/ws/remote/input"
         pairing_code_redacted = $true
         base_url_redacted = (Resolve-Origin ([string]$QrContent.payload.base_url)).RedactedOrigin
@@ -476,15 +525,43 @@ $runStamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
 $runRoot = Join-Path $EvidenceRoot "run-$runStamp"
 New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
 $summaryPath = Join-Path $runRoot "evidence-summary.redacted.json"
+$checklistPath = Join-Path $runRoot "real-device-evidence-checklist.redacted.md"
 $displaySummaryPath = Get-DisplayPath $summaryPath
+$displayChecklistPath = Get-DisplayPath $checklistPath
 
 $manualRealDeviceEvidenceTemplate = [ordered]@{
     template_status = "manual_real_device_evidence_required"
     real_device_result = "uncollected"
+    real_device_evidence_status = $FailClosedRealDeviceStatus
+    real_device_evidence_collected = $false
+    no_phone_preflight_claim = "not_real_device_pass"
     preflight_blocked = ($issues.Count -gt 0)
     may_be_recorded_as = "preflight/config evidence only"
     must_not_be_recorded_as = "real-device pass evidence"
     blocked_reason_redacted = @($issues)
+    claim_controls = [ordered]@{
+        real_device_pass_claim_allowed = $false
+        pass_claim_unlock_condition = "Attach reviewed real Android/emulator evidence for the scoped scenarios outside this preflight."
+        preflight_ready_is_pass = $false
+    }
+    artifact_collection_rules = [ordered]@{
+        shareable_packet = "Use redacted artifacts only; host/IP labels should stay [redacted-host] unless the packet is explicitly local-only."
+        local_only_raw_values = "Keep raw LAN IPs, hostnames, device names, pairing codes, mobile tokens, grant tokens, and Authorization headers outside tracked source and outside shareable artifacts."
+        token_bearing_urls = "Never paste token-bearing URLs; record only redacted origins and whether HTTPS/WSS connected."
+        review_required_before_pass_claim = $true
+    }
+    operator_collection_order = @(
+        "Run this preflight and keep both redacted outputs with the candidate run notes.",
+        "On the phone/emulator, confirm the device is on the same LAN path as the backend and can reach the advertised HTTPS origin.",
+        "Trust the certificate on the exact Android/emulator profile before pairing, then record the trust path and certificate fingerprint or CA.",
+        "Use the real camera QR scanner when scan-to-pair is claimed; pasted payloads must be labeled as fallback-only evidence.",
+        "Collect approval WSS, remote screen WSS, and remote input WSS evidence separately so a partial pass cannot be mistaken for full mobile LAN/WSS.",
+        "Exercise remote input revoke and expiry from the device-visible UI before marking remote input evidence collected.",
+        "Collect real phone/emulator artifacts for the scoped scenarios only after HTTPS/WSS and device certificate trust are configured.",
+        "Fill every applicable uncollected field with reviewed, redacted evidence labels; leave out-of-scope fields as uncollected with a separate waiver.",
+        "Ask a reviewer to confirm redactions before any screenshot, video, log, or trace is shared or used for a release/demo claim.",
+        "Keep claim_controls.real_device_pass_claim_allowed=false until the reviewed real-device packet exists outside this preflight."
+    )
     required_redactions = @(
         "mobile token",
         "grant token",
@@ -504,23 +581,178 @@ $manualRealDeviceEvidenceTemplate = [ordered]@{
         same_lan_path_redacted = ""
         https_origin_redacted = if ($originResult -and $originResult.Ok) { $originResult.RedactedOrigin } else { "" }
         approval_wss_origin_redacted = if ($originResult -and $originResult.Ok) { Format-RedactedWebSocketUrl $originResult.Origin "/ws/mobile/approvals" } else { "" }
+        remote_screen_wss_origin_redacted = if ($originResult -and $originResult.Ok) { Format-RedactedWebSocketUrl $originResult.Origin "/ws/remote/screen" } else { "" }
         remote_input_wss_origin_redacted = if ($originResult -and $originResult.Ok) { Format-RedactedWebSocketUrl $originResult.Origin "/ws/remote/input" } else { "" }
         certificate_trust_path = ""
         certificate_fingerprint_sha256_or_ca = if (Test-Configured $tlsValidation.CertificateFingerprintSha256) { $tlsValidation.CertificateFingerprintSha256 } else { "" }
         camera_qr_path_evidence = "uncollected"
         actual_device_https_wss_evidence = "uncollected"
+        approval_wss_evidence = "uncollected"
         approval_artifact_review = "uncollected"
+        remote_screen_wss_evidence = "uncollected"
         remote_screen_artifact_review = "uncollected"
+        remote_input_wss_evidence = "uncollected"
         remote_input_artifact_review = "uncollected"
+        certificate_trust_evidence = "uncollected"
+        remote_input_grant_revoke_evidence = "uncollected"
+        remote_input_grant_expiry_evidence = "uncollected"
+        grant_revoke_expiry_artifact_review = "uncollected"
         artifact_redaction_review = "uncollected"
+    }
+    real_device_collection_checklist = [ordered]@{
+        camera_qr = [ordered]@{
+            status = "uncollected"
+            required_when = "scan-to-pair or camera QR pairing is claimed"
+            why_it_matters = "A generated QR or parser smoke only proves software shape; the release claim needs a device camera/emulator scan path."
+            beginner_steps = @(
+                "Open the mobile app pairing screen on the target Android device or emulator.",
+                "Point the real camera or emulator virtual camera at the desktop QR; do not switch to paste/manual entry for this evidence.",
+                "After the scan, wait for paired state before saving screenshots or notes."
+            )
+            must_attach = @(
+                "Redacted phone/emulator screenshot or video of the camera scanner reading the desktop QR",
+                "Paired-state screenshot or reviewed log note after scan, with pairing code and tokens redacted"
+            )
+            pass_evidence_must_show = "The scan came from the camera QR path and the app reached paired state without exposing the pairing code or token."
+            reviewer_check = "Confirm no raw QR payload, pairing code, token, host/IP, or private device name appears in shareable artifacts."
+            overclaim_guard = "QR generation, payload parser smoke, pasted payload, or this preflight alone is not camera QR evidence."
+        }
+        actual_https_wss = [ordered]@{
+            status = "uncollected"
+            why_it_matters = "HTTPS-ready metadata is only a prerequisite; the device must actually connect over HTTPS/WSS."
+            beginner_steps = @(
+                "Pair from the phone/emulator using the advertised HTTPS origin.",
+                "Trigger one approval, open remote screen, and enable remote input only if it is in scope.",
+                "Record each WSS path separately so a screen-only run is not mistaken for approval or input evidence."
+            )
+            must_attach = @(
+                "Device-originated HTTPS API reachability or pairing confirmation over the advertised origin",
+                "Approval WebSocket connected over WSS from the device",
+                "Remote screen WebSocket connected over WSS from the device",
+                "Remote input WebSocket connected over WSS from the device when input is in scope"
+            )
+            pass_evidence_must_show = "The target device, not a desktop TestClient or parser, opened token-bearing HTTPS/WSS paths."
+            reviewer_check = "Confirm all token-bearing URLs are redacted and every WebSocket path uses wss://, not ws://."
+            overclaim_guard = "HTTPS-ready metadata or a redacted WSS URL shape is prerequisite/config evidence only."
+        }
+        approval_wss = [ordered]@{
+            status = "uncollected"
+            required_when = "mobile approval evidence is claimed"
+            why_it_matters = "Approval notifications are safety-critical and must be proven on the actual mobile approval WebSocket."
+            beginner_steps = @(
+                "Keep the paired mobile app open on the approvals screen.",
+                "Create one benign desktop approval and wait for it to appear on the device.",
+                "Approve one benign request and reject one benign request while recording redacted mobile and backend evidence."
+            )
+            must_attach = @(
+                "Mobile screenshot/video showing the approval received from /ws/mobile/approvals over WSS",
+                "Approve and reject outcomes tied to the same redacted candidate run",
+                "Backend or audit log note confirming no token appears in the WebSocket URL"
+            )
+            pass_evidence_must_show = "Approval events arrived on the device through wss:// and decisions round-tripped without raw task secrets."
+            reviewer_check = "Inspect mobile approval artifacts for nested model-action args, local paths, selectors, tokens, values, and support-only notes."
+            overclaim_guard = "Backend approval tests, local smoke, or a redacted approval URL shape are not actual approval WSS evidence."
+        }
+        remote_screen_wss = [ordered]@{
+            status = "uncollected"
+            required_when = "remote screen or read-only mobile desktop viewing is claimed"
+            why_it_matters = "Remote screen needs proof that visible frames render over WSS on the target device and stay read-only by default."
+            beginner_steps = @(
+                "Open the mobile Remote screen from the paired device.",
+                "Wait for a visible desktop frame and connection state.",
+                "Capture the transport notice and read-only/default input state in the same run."
+            )
+            must_attach = @(
+                "Mobile screenshot/video showing /ws/remote/screen connected over WSS",
+                "Visible remote frame, connection state, and transport notice from the phone/emulator",
+                "Read-only state before any remote input grant is claimed"
+            )
+            pass_evidence_must_show = "The device displays a live remote frame over wss:// and input is not active without a grant."
+            reviewer_check = "Confirm screenshots/logs do not expose private desktop content beyond the approved test fixture."
+            overclaim_guard = "Source-level UI or backend WebSocket tests are not real-device remote screen WSS evidence."
+        }
+        remote_input_wss = [ordered]@{
+            status = "uncollected"
+            required_when = "remote input is claimed"
+            why_it_matters = "Remote input is high risk; the device must prove grant-scoped WSS input, desktop approval, and safe stop behavior."
+            beginner_steps = @(
+                "Create a remote input grant from desktop for the paired device.",
+                "Claim the grant on the phone/emulator and confirm remaining time is visible.",
+                "Send one benign click/key event and verify the desktop approval or dry-run record before continuing."
+            )
+            must_attach = @(
+                "Mobile screenshot/video showing /ws/remote/input connected over WSS with remaining grant time",
+                "Desktop approval or dry-run record for the benign input event",
+                "Evidence that input is disabled before grant and after revoke/expiry"
+            )
+            pass_evidence_must_show = "Only the grant-scoped remote input token can use wss:// remote input, and the UI clearly returns to read-only when the grant ends."
+            reviewer_check = "Confirm grant tokens, selectors, coordinates, local paths, and task-sensitive values are redacted."
+            overclaim_guard = "A remote input grant smoke or backend TestClient close test is not real-device remote input WSS evidence."
+        }
+        certificate_trust = [ordered]@{
+            status = "uncollected"
+            configured_fingerprint_sha256_or_ca = if (Test-Configured $tlsValidation.CertificateFingerprintSha256) { $tlsValidation.CertificateFingerprintSha256 } else { "" }
+            why_it_matters = "The backend certificate may parse and match the host while Android/emulator still does not trust it."
+            beginner_steps = @(
+                "Record whether the device uses a public CA, installed local CA, user-installed certificate, emulator network security config, or test profile trust.",
+                "Before trusting, record the expected failure or blocked state if the scenario includes trust failure.",
+                "After trusting, repeat pairing and WSS checks on the same device profile."
+            )
+            must_attach = @(
+                "Certificate source plus SHA-256 fingerprint or CA identity",
+                "Explicit Android/emulator trust path used by the test device",
+                "Trust-failure or trust-success screenshot/log note with tokens and hosts redacted as required"
+            )
+            pass_evidence_must_show = "The exact Android/emulator profile used for the run trusts the certificate path used by the advertised HTTPS/WSS origin."
+            reviewer_check = "Confirm the certificate fingerprint or CA label matches the candidate run and raw hostnames/IPs stay local-only."
+            overclaim_guard = "Cert/key parse and host coverage checks do not prove Android/emulator trust."
+        }
+        remote_input_grant_revoke_expiry = [ordered]@{
+            status = "uncollected"
+            why_it_matters = "Remote input must stop reliably when the user, desktop, token, or time limit ends the grant."
+            beginner_steps = @(
+                "While remote input is active, tap the mobile end-control and verify input becomes disabled/read-only.",
+                "Create a second grant, revoke it from desktop or revoke the mobile device, and watch the phone/emulator disconnect.",
+                "Use a short grant or controlled test build to observe expiry and failed reconnect with the expired grant."
+            )
+            must_attach = @(
+                "Mobile end-control revoke returns the UI to read-only and closes/stops input",
+                "Desktop/device revoke closes/stops input and prevents further events",
+                "Grant expiry disables input and cannot reconnect with the expired grant",
+                "Token expiry or device revoke closes approval/screen/input WebSockets where in scope"
+            )
+            pass_evidence_must_show = "After revoke or expiry, the phone/emulator cannot send further remote input and any WebSocket closes or rejects safely."
+            reviewer_check = "Confirm the run captures both mobile-visible UI state and backend/device event evidence."
+            overclaim_guard = "Backend/client smoke coverage does not replace visible real-device revoke/expiry evidence."
+        }
+        screenshot_log_review = [ordered]@{
+            status = "uncollected"
+            why_it_matters = "The evidence packet is only shareable after someone checks that screenshots, videos, logs, and traces are redacted."
+            beginner_steps = @(
+                "Open each screenshot, video, app log, backend log, and proxy trace that will be attached.",
+                "Search for tokens, pairing codes, raw hostnames/IPs, private paths, selectors, support-only notes, and task secrets.",
+                "Write a short reviewer note naming the artifact labels that were checked."
+            )
+            must_attach = @(
+                "Reviewed approval, remote screen, remote input, backend, mobile, and proxy artifacts used for the claim",
+                "A note that shareable screenshots/logs contain no mobile token, grant token, pairing code, private path, nested model-action args, selector, support-only note, device name, or task secret"
+            )
+            pass_evidence_must_show = "Every artifact used for the mobile real-device claim was reviewed and redacted before sharing."
+            reviewer_check = "A reviewer other than the collector should confirm the redaction note for release/demo evidence."
+            overclaim_guard = "Do not call artifacts shareable or passed until this review is filled."
+        }
     }
 }
 
 $summary = [ordered]@{
-    result = if ($issues.Count -eq 0) { "ready_for_manual_real_device_evidence" } else { "blocked" }
+    result = if ($issues.Count -eq 0) { "ready_for_manual_real_device_collection_only" } else { "blocked" }
     generated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
     redacted_evidence_summary_path = $displaySummaryPath
+    real_device_evidence_status = $FailClosedRealDeviceStatus
+    real_device_evidence_collected = $false
+    no_phone_preflight_claim = "not_real_device_pass"
     non_evidence_warning = $NonEvidenceWarning
+    manual_evidence_checklist_warning = $ManualEvidenceChecklistWarning
     https_wss_requirement = $HttpsWssRequirement
     backend = [ordered]@{
         host_source = $backendHostSetting.Source
@@ -530,6 +762,7 @@ $summary = [ordered]@{
         public_base_url_source = $originSource
         public_base_url_redacted = if ($originResult -and $originResult.Ok) { $originResult.RedactedOrigin } else { "" }
         websocket_approvals_url_redacted = if ($originResult -and $originResult.Ok) { Format-RedactedWebSocketUrl $originResult.Origin "/ws/mobile/approvals" } else { "" }
+        websocket_remote_screen_url_redacted = if ($originResult -and $originResult.Ok) { Format-RedactedWebSocketUrl $originResult.Origin "/ws/remote/screen" } else { "" }
         websocket_remote_input_url_redacted = if ($originResult -and $originResult.Ok) { Format-RedactedWebSocketUrl $originResult.Origin "/ws/remote/input" } else { "" }
     }
     lan_tls = [ordered]@{
@@ -541,8 +774,8 @@ $summary = [ordered]@{
         key_configured = (Test-Configured $keySetting.Value)
         cert_present = $certPresent
         key_present = $keyPresent
-        cert_file_label = if (Test-Configured $certPath) { Split-Path -Leaf $certPath } else { "" }
-        key_file_label = if (Test-Configured $keyPath) { Split-Path -Leaf $keyPath } else { "" }
+        cert_file_label = if (Test-Configured $certPath) { Redact-DisplayLabel (Split-Path -Leaf $certPath) } else { "" }
+        key_file_label = if (Test-Configured $keyPath) { Redact-DisplayLabel (Split-Path -Leaf $keyPath) } else { "" }
         tls_material_validation_attempted = $tlsValidation.Attempted
         tls_material_valid = $tlsValidation.Ok
         tls_host_valid = $tlsValidation.HostOk
@@ -551,11 +784,17 @@ $summary = [ordered]@{
     qr_payload_shape = $qrShape
     issues = @($issues)
     warnings = @($warnings)
+    redacted_evidence_checklist_path = $displayChecklistPath
     next_manual_evidence_needed = @(
         "Real Android device or documented emulator identity",
         "Real camera/QR scan path if scan-to-pair is claimed",
         "Actual HTTPS/WSS connection from that device",
+        "Actual HTTPS pairing/API reachability from that device",
+        "Actual approval WebSocket over WSS from that device",
+        "Actual remote screen WebSocket over WSS from that device",
+        "Actual remote input WebSocket over WSS from that device when input is in scope",
         "Certificate source, fingerprint or CA identity, and explicit Android/emulator trust path",
+        "Remote input revoke and expiry evidence that returns the device to read-only/no-input state",
         "Approval/remote screen/remote input screenshots or logs with tokens, pairing codes, hostnames, private paths, and device names redacted unless explicitly local-only"
     )
     manual_real_device_evidence_template = $manualRealDeviceEvidenceTemplate
@@ -563,10 +802,103 @@ $summary = [ordered]@{
 
 $summary | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $summaryPath -Encoding utf8
 
+$markdownLines = New-Object System.Collections.Generic.List[string]
+$markdownLines.Add("# Mobile LAN/WSS Real-Device Evidence Checklist")
+$markdownLines.Add("")
+$markdownLines.Add("Generated UTC: " + [string]$summary.generated_at_utc)
+$markdownLines.Add("Preflight result: " + [string]$summary.result)
+$markdownLines.Add("Preflight JSON: " + $displaySummaryPath)
+$markdownLines.Add("")
+$markdownLines.Add("This checklist is preflight/config evidence only. It is not real-device pass evidence, not RC sign-off, and not a substitute for reviewed phone/emulator artifacts.")
+$markdownLines.Add("")
+$markdownLines.Add("## Claim Controls")
+$markdownLines.Add("")
+$markdownLines.Add("- template_status: " + [string]$manualRealDeviceEvidenceTemplate["template_status"])
+$markdownLines.Add("- real_device_result: " + [string]$manualRealDeviceEvidenceTemplate["real_device_result"])
+$markdownLines.Add("- real_device_evidence_status: " + [string]$manualRealDeviceEvidenceTemplate["real_device_evidence_status"])
+$markdownLines.Add("- real_device_evidence_collected=false")
+$markdownLines.Add("- no_phone_preflight_claim: " + [string]$manualRealDeviceEvidenceTemplate["no_phone_preflight_claim"])
+$markdownLines.Add("- may_be_recorded_as: " + [string]$manualRealDeviceEvidenceTemplate["may_be_recorded_as"])
+$markdownLines.Add("- must_not_be_recorded_as: " + [string]$manualRealDeviceEvidenceTemplate["must_not_be_recorded_as"])
+$markdownLines.Add("- real_device_pass_claim_allowed=false")
+$markdownLines.Add("- preflight_ready_is_pass=false")
+$markdownLines.Add("")
+$markdownLines.Add("## Beginner Collection Path")
+$markdownLines.Add("")
+$markdownLines.Add("Do not mark any item complete while using only this computer. A phone or emulator must perform the action named in each step.")
+$markdownLines.Add("")
+$markdownLines.Add("1. Keep this preflight output as prerequisite/config evidence.")
+$markdownLines.Add("2. Put the target Android device or emulator on the same LAN path as the backend.")
+$markdownLines.Add("3. Trust the certificate on that exact device profile and record the trust path.")
+$markdownLines.Add("4. Scan the QR with the device camera when scan-to-pair is claimed; label pasted/manual pairing as fallback only.")
+$markdownLines.Add("5. Collect approval WSS, remote screen WSS, and remote input WSS evidence as separate artifacts.")
+$markdownLines.Add("6. Prove revoke and expiry stop remote input before any remote input pass claim.")
+$markdownLines.Add("7. Review and redact every screenshot, video, log, and trace before sharing.")
+$markdownLines.Add("")
+$markdownLines.Add("## Redaction Rules")
+$markdownLines.Add("")
+$markdownLines.Add("- Shareable packet: " + [string]$manualRealDeviceEvidenceTemplate["artifact_collection_rules"]["shareable_packet"])
+$markdownLines.Add("- Local-only raw values: " + [string]$manualRealDeviceEvidenceTemplate["artifact_collection_rules"]["local_only_raw_values"])
+$markdownLines.Add("- Token-bearing URLs: " + [string]$manualRealDeviceEvidenceTemplate["artifact_collection_rules"]["token_bearing_urls"])
+$markdownLines.Add("- Required redactions:")
+foreach ($redaction in @($manualRealDeviceEvidenceTemplate["required_redactions"])) {
+    $markdownLines.Add("  - [ ] " + [string]$redaction)
+}
+$markdownLines.Add("")
+$markdownLines.Add("## Operator Order")
+$markdownLines.Add("")
+foreach ($step in @($manualRealDeviceEvidenceTemplate["operator_collection_order"])) {
+    $markdownLines.Add("- [ ] " + [string]$step)
+}
+$markdownLines.Add("")
+$markdownLines.Add("## Fill Only After Reviewed Real-Device Evidence Exists")
+$markdownLines.Add("")
+$fields = $manualRealDeviceEvidenceTemplate["fields"]
+$markdownLines.Add("- candidate: " + [string]$fields["candidate"])
+$markdownLines.Add("- device_identity_redacted: " + [string]$fields["device_identity_redacted"])
+$markdownLines.Add("- same_lan_path_redacted: " + [string]$fields["same_lan_path_redacted"])
+$markdownLines.Add("- https_origin_redacted: " + [string]$fields["https_origin_redacted"])
+$markdownLines.Add("- approval_wss_origin_redacted: " + [string]$fields["approval_wss_origin_redacted"])
+$markdownLines.Add("- remote_screen_wss_origin_redacted: " + [string]$fields["remote_screen_wss_origin_redacted"])
+$markdownLines.Add("- remote_input_wss_origin_redacted: " + [string]$fields["remote_input_wss_origin_redacted"])
+$markdownLines.Add("- certificate_trust_path: " + [string]$fields["certificate_trust_path"])
+$markdownLines.Add("- camera_qr_path_evidence: " + [string]$fields["camera_qr_path_evidence"])
+$markdownLines.Add("- actual_device_https_wss_evidence: " + [string]$fields["actual_device_https_wss_evidence"])
+$markdownLines.Add("- approval_wss_evidence: " + [string]$fields["approval_wss_evidence"])
+$markdownLines.Add("- remote_screen_wss_evidence: " + [string]$fields["remote_screen_wss_evidence"])
+$markdownLines.Add("- remote_input_wss_evidence: " + [string]$fields["remote_input_wss_evidence"])
+$markdownLines.Add("- certificate_trust_evidence: " + [string]$fields["certificate_trust_evidence"])
+$markdownLines.Add("- remote_input_grant_revoke_evidence: " + [string]$fields["remote_input_grant_revoke_evidence"])
+$markdownLines.Add("- remote_input_grant_expiry_evidence: " + [string]$fields["remote_input_grant_expiry_evidence"])
+$markdownLines.Add("- grant_revoke_expiry_artifact_review: " + [string]$fields["grant_revoke_expiry_artifact_review"])
+$markdownLines.Add("- artifact_redaction_review: " + [string]$fields["artifact_redaction_review"])
+$markdownLines.Add("")
+$checklist = $manualRealDeviceEvidenceTemplate["real_device_collection_checklist"]
+Add-MarkdownChecklistBlock $markdownLines "Camera QR" $checklist["camera_qr"]
+Add-MarkdownChecklistBlock $markdownLines "Actual HTTPS/WSS" $checklist["actual_https_wss"]
+Add-MarkdownChecklistBlock $markdownLines "Approval WSS" $checklist["approval_wss"]
+Add-MarkdownChecklistBlock $markdownLines "Remote Screen WSS" $checklist["remote_screen_wss"]
+Add-MarkdownChecklistBlock $markdownLines "Remote Input WSS" $checklist["remote_input_wss"]
+Add-MarkdownChecklistBlock $markdownLines "Certificate Trust" $checklist["certificate_trust"]
+Add-MarkdownChecklistBlock $markdownLines "Remote Input Grant Revoke/Expiry" $checklist["remote_input_grant_revoke_expiry"]
+Add-MarkdownChecklistBlock $markdownLines "Screenshot/Log Review" $checklist["screenshot_log_review"]
+if ($issues.Count -gt 0) {
+    $markdownLines.Add("## Blocked Reasons Redacted")
+    $markdownLines.Add("")
+    foreach ($issue in @($issues)) {
+        $markdownLines.Add("- " + [string]$issue)
+    }
+    $markdownLines.Add("")
+}
+$markdownLines | Set-Content -LiteralPath $checklistPath -Encoding utf8
+
 Write-Host "Mobile LAN/WSS prerequisite preflight"
 Write-Host $HttpsWssRequirement
 Write-Host $NonEvidenceWarning
+Write-Host $ManualEvidenceChecklistWarning
+Write-Host "Fail-closed real-device status: $FailClosedRealDeviceStatus; no phone/emulator evidence has been collected by this script."
 Write-Host "Redacted evidence summary path: $displaySummaryPath"
+Write-Host "Redacted real-device checklist path: $displayChecklistPath"
 
 if ($warnings.Count -gt 0) {
     Write-Host ""
@@ -586,11 +918,13 @@ if ($issues.Count -gt 0) {
     Write-Host "Beginner next steps:" -ForegroundColor Yellow
     Write-Host " - Advertise an https:// LAN origin with LENGRVIS_LAN_PUBLIC_BASE_URL, not 0.0.0.0 or localhost." -ForegroundColor Yellow
     Write-Host " - Set LENGRVIS_LAN_TLS_ENABLED=true plus LENGRVIS_LAN_TLS_CERT_FILE and LENGRVIS_LAN_TLS_KEY_FILE." -ForegroundColor Yellow
-    Write-Host " - Restart the backend after changing TLS env/config, rerun this preflight, then collect real phone/emulator WSS evidence separately." -ForegroundColor Yellow
+    Write-Host " - Keep manual_real_device_evidence_template.real_device_result=uncollected while blocked." -ForegroundColor Yellow
+    Write-Host " - Restart the backend after changing TLS env/config, rerun this preflight, then attach separate redacted phone/emulator evidence for camera QR, HTTPS/WSS, certificate trust, grant revoke/expiry, and screenshot/log review." -ForegroundColor Yellow
     exit 1
 }
 
 Write-Host ""
 Write-Host "[ready] LAN/WSS prerequisites are ready for manual Android/emulator evidence collection." -ForegroundColor Green
 Write-Host "This is still not a real-device pass; record it only as prereq/config evidence." -ForegroundColor Yellow
+Write-Host "Next manual checklist: camera QR, actual device HTTPS/WSS, certificate trust, grant revoke/expiry, and screenshot/log review." -ForegroundColor Yellow
 exit 0

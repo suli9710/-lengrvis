@@ -263,6 +263,21 @@ function parseWebSocketProtocols(value) {
     .filter(Boolean);
 }
 
+function assertWebSocketTokenTransport(connectionInfo, token, { pathname, protocolPrefix = "lengrvis.mobile.token.", label = "WebSocket" } = {}) {
+  const parsed = new URL(connectionInfo.url);
+  if (pathname) assert.equal(parsed.pathname, pathname, `${label} URL pathname`);
+  assert.equal(parsed.search, "", `${label} URL must not carry auth data in the query string`);
+  assert.equal(connectionInfo.url.includes(token), false, `${label} URL must not contain the auth token`);
+  assert.doesNotMatch(connectionInfo.url, /[?&](?:token|access_token|auth|authorization)=/i, `${label} URL must not use query auth`);
+  assert.deepEqual(connectionInfo.protocols, [`${protocolPrefix}${token}`], `${label} token must be carried in Sec-WebSocket-Protocol`);
+}
+
+function assertInsecureLanError(error) {
+  assert.equal(error?.name, "InsecureLanBaseUrlError");
+  assert.equal(error?.security?.kind, "insecureLan");
+  return true;
+}
+
 function readRequestBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -284,7 +299,9 @@ function parseJsonBody(bodyText) {
 module.exports = {
   acceptWebSocketUpgrade,
   assertAcceptedWebSocket,
+  assertInsecureLanError,
   assertJsonRequest,
+  assertWebSocketTokenTransport,
   connectWebSocket,
   jsonResponse,
   loadMobileClient,

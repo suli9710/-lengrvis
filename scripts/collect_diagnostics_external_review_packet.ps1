@@ -271,6 +271,108 @@ else {
     "manual_external_review_template_ready"
 }
 
+$actualExportedPackagePathLabel = if ([string]::IsNullOrWhiteSpace($selectedPackageLabel)) {
+    "uncollected"
+}
+else {
+    $selectedPackageLabel
+}
+$actualExportedPackagePathStatus = if ($inputExists) {
+    "path_label_recorded_only"
+}
+else {
+    "missing"
+}
+$externalSharingBlockedReasons = New-Object System.Collections.Generic.List[string]
+foreach ($issue in $issues) {
+    $externalSharingBlockedReasons.Add($issue) | Out-Null
+}
+if (-not $inputExists) {
+    $externalSharingBlockedReasons.Add("actual exported diagnostics package path label is missing") | Out-Null
+}
+if ($inputParseStatus -eq "parse_error") {
+    $externalSharingBlockedReasons.Add("actual exported diagnostics package could not be parsed") | Out-Null
+}
+$externalSharingBlockedReasons.Add("actual exported diagnostics package content review is uncollected") | Out-Null
+$externalSharingBlockedReasons.Add("reviewer identity and review timestamp are uncollected") | Out-Null
+
+$reviewChecklist = @(
+    [ordered]@{
+        id = "actual_exported_package_path_label"
+        status = $actualExportedPackagePathStatus
+        reviewed = $false
+        required = $true
+        actual_exported_package_path_label = $actualExportedPackagePathLabel
+        prompt = "Record the actual exported diagnostics package path label and confirm the human reviewer opened that exact package."
+    },
+    [ordered]@{
+        id = "reviewed_logs"
+        status = "pending"
+        reviewed = $false
+        required = $true
+        prompt = "Review logs and log labels inside the actual exported package for raw errors, hostnames, usernames, tokens, local paths, or support-only values."
+    },
+    [ordered]@{
+        id = "reviewed_path_labels"
+        status = "pending"
+        reviewed = $false
+        required = $true
+        prompt = "Review path labels and filesystem summaries in the actual exported package; full user, organization, database, cache, and log paths must not be externally shared."
+    },
+    [ordered]@{
+        id = "reviewed_task_traces"
+        status = "pending"
+        reviewed = $false
+        required = $true
+        prompt = "Review task traces, prompts, approvals, tool calls, tool results, replay metadata, screenshots, recordings, and task evidence labels."
+    },
+    [ordered]@{
+        id = "reviewed_model_traces"
+        status = "pending"
+        reviewed = $false
+        required = $true
+        prompt = "Review local/cloud model traces, hidden prompts, provider metadata, model messages, costs, and runtime diagnostics for support-only or private content."
+    },
+    [ordered]@{
+        id = "reviewed_device_identifiers"
+        status = "pending"
+        reviewed = $false
+        required = $true
+        prompt = "Review device identifiers, pairing ids, grant ids, hostnames, LAN addresses, certificate labels, browser/device names, and mobile transport metadata."
+    },
+    [ordered]@{
+        id = "reviewer_timestamp"
+        status = "uncollected"
+        reviewed = $false
+        required = $true
+        reviewer_identity_redacted = "uncollected"
+        reviewed_at_utc = "uncollected"
+        prompt = "Record the reviewer identity label and UTC timestamp in a separate human review artifact."
+    },
+    [ordered]@{
+        id = "blocked_reason"
+        status = "blocked"
+        reviewed = $false
+        required = $true
+        blocked_reason_redacted = @($externalSharingBlockedReasons)
+        prompt = "Keep external sharing blocked and record the reason until actual package content review is complete."
+    },
+    [ordered]@{
+        id = "scope_and_audience"
+        status = "pending"
+        reviewed = $false
+        required = $true
+        prompt = "Confirm the package is local-only trusted-support material, not public material."
+    },
+    [ordered]@{
+        id = "external_sharing_decision"
+        status = "pending"
+        reviewed = $false
+        required = $true
+        prompt = "Record a separate human decision before any external sharing; this helper cannot grant approval."
+    }
+)
+
 $packet = [ordered]@{
     schema_version = 1
     generated_at_utc = [DateTimeOffset]::UtcNow.ToString("o")
@@ -299,20 +401,43 @@ $packet = [ordered]@{
         secrets_or_tokens_read_intentionally = $false
         external_service_data_read = $false
     }
+    review_scope = [ordered]@{
+        automated_redaction_template = $true
+        automated_redaction_template_scope = "collects labels, contract observations, and manual checklist fields only"
+        actual_package_content_review_completed = $false
+        automated_template_is_actual_package_content_review = $false
+        actual_content_review_required_before_external_sharing = $true
+        actual_exported_package_path_label = $actualExportedPackagePathLabel
+    }
     summary = [ordered]@{
         status = $summaryStatus
         public_safe = $false
+        external_sharing_allowed = $false
+        claim_allowed = $false
         required_before_external_sharing = $true
         human_review_signoff = $false
         external_public_safe_signoff = $false
         template_is_human_signoff = $false
+        actual_package_content_review_completed = $false
+        automated_template_only = $true
         input_issue_count = $issues.Count
+    }
+    claim_controls = [ordered]@{
+        public_safe = $false
+        external_sharing_allowed = $false
+        claim_allowed = $false
+        helper_can_approve_public_safety = $false
+        helper_can_authorize_external_sharing = $false
+        actual_content_review_required = $true
+        actual_content_review_completed = $false
+        public_safe_approval_created = $false
     }
     input_diagnostics_package = [ordered]@{
         selection_mode = $selectionMode
         diagnostics_root = Get-DisplayPath $diagnosticsRootPath
         package_found = $inputExists
         package_label = $selectedPackageLabel
+        actual_exported_package_path_label = $actualExportedPackagePathLabel
         bytes = $selectedPackageBytes
         last_write_utc = $selectedPackageModified
         parse_status = $inputParseStatus
@@ -333,49 +458,17 @@ $packet = [ordered]@{
         marker = "NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF"
         template_status = "manual_external_diagnostics_review_required"
         public_safe = $false
+        external_sharing_allowed = $false
+        claim_allowed = $false
         required_before_external_sharing = $true
+        actual_package_content_review_completed = $false
+        actual_exported_package_path_label = $actualExportedPackagePathLabel
         human_decision = "pending"
         reviewer_identity_redacted = "uncollected"
         reviewed_at_utc = "uncollected"
+        blocked_reason_redacted = @($externalSharingBlockedReasons)
         reviewer_notes_redacted = @()
-        checklist = @(
-            [ordered]@{
-                id = "scope_and_audience"
-                status = "pending"
-                required = $true
-                prompt = "Confirm the package is local-only trusted-support material, not public material."
-            },
-            [ordered]@{
-                id = "raw_logs_and_artifacts"
-                status = "pending"
-                required = $true
-                prompt = "Confirm no raw logs, screenshots, recordings, or unreviewed attachments are included."
-            },
-            [ordered]@{
-                id = "local_paths"
-                status = "pending"
-                required = $true
-                prompt = "Confirm paths are labels only and do not expose user or organization folders."
-            },
-            [ordered]@{
-                id = "secrets_and_identifiers"
-                status = "pending"
-                required = $true
-                prompt = "Confirm tokens, credentials, device identifiers, grant ids, and pairing codes are redacted."
-            },
-            [ordered]@{
-                id = "task_content"
-                status = "pending"
-                required = $true
-                prompt = "Confirm task prompts, goals, messages, approvals, and tool payloads are redacted."
-            },
-            [ordered]@{
-                id = "external_sharing_decision"
-                status = "pending"
-                required = $true
-                prompt = "Record a separate human decision before any external sharing."
-            }
-        )
+        checklist = $reviewChecklist
         must_not_be_recorded_as = @(
             "external public-safe signoff",
             "permission to publish diagnostics",
@@ -387,7 +480,7 @@ $packet = [ordered]@{
     issues_redacted = @($issues)
     next_manual_evidence_needed = @(
         "Open the selected diagnostics package locally and inspect any support-only attachments separately.",
-        "Record reviewer identity, timestamp, decision, and redacted notes in a separate human signoff artifact.",
+        "Record reviewer identity, timestamp, decision, and redacted notes in a separate human content-review artifact.",
         "Keep this helper output separate from the actual human review decision.",
         "Do not externally share diagnostics while public_safe remains false."
     )
@@ -402,14 +495,29 @@ $markdownLines.Add("- JSON: $($packet.outputs.redacted_json)")
 $markdownLines.Add("- Markdown: $($packet.outputs.redacted_markdown)")
 $markdownLines.Add("- Status: $($packet.summary.status)")
 $markdownLines.Add("- Package: $($packet.input_diagnostics_package.package_label)")
+$markdownLines.Add("- Actual exported package path label: $($packet.input_diagnostics_package.actual_exported_package_path_label)")
 $markdownLines.Add("- Scope: local diagnostics package review template only; no product process starts, no network requests, no uploads, no dependency install.")
+$markdownLines.Add("- Automated redaction/template only: true")
+$markdownLines.Add("- Actual package content review completed: false")
 $markdownLines.Add("- Public safe: false")
+$markdownLines.Add("- External sharing allowed: false")
+$markdownLines.Add("- Claim allowed: false")
 $markdownLines.Add("- Required before external sharing: true")
 $markdownLines.Add("")
 $markdownLines.Add("## Red Line")
 $markdownLines.Add("- NOT_EXTERNAL_PUBLIC_SAFE_SIGNOFF")
+$markdownLines.Add("- This template is automated redaction/checklist scaffolding, not actual exported package content review.")
 $markdownLines.Add("- This template is not human reviewer approval and must not be treated as permission to publish or externally share diagnostics.")
-$markdownLines.Add("- public_safe remains false until a separate manual external review signoff is recorded.")
+$markdownLines.Add("- public_safe remains false; a separate manual content-review artifact still is not public-safe approval.")
+$markdownLines.Add("- external_sharing_allowed=false and claim_allowed=false remain false even when this helper exits 0.")
+$markdownLines.Add("")
+$markdownLines.Add("## Reviewer And Blocker Fields")
+$markdownLines.Add("- Reviewer: $($packet.review_template.reviewer_identity_redacted)")
+$markdownLines.Add("- Reviewed at UTC: $($packet.review_template.reviewed_at_utc)")
+$markdownLines.Add("- Blocked reasons redacted:")
+foreach ($reason in $packet.review_template.blocked_reason_redacted) {
+    $markdownLines.Add("  - $reason")
+}
 $markdownLines.Add("")
 $markdownLines.Add("## Checklist")
 foreach ($item in $packet.review_template.checklist) {
