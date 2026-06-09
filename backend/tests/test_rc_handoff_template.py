@@ -73,6 +73,7 @@ def test_rc_handoff_template_missing_fields_fail_closed(
     missing = set(summary["missing_required_fields"])
     assert missing == {
         "candidate.commit_or_build_id",
+        "candidate.platform",
         "artifact_labels",
         "gate_results.commands_and_exits",
         "strict_state_source",
@@ -103,17 +104,27 @@ def test_rc_handoff_template_records_redacted_material_without_claiming_pass(
         "-ArtifactLabel",
         r"C:\Users\Suli\Desktop\secret-build\Lengrvis-portable.zip?token=supersecret",
         "-GateCommand",
-        "npm run qa:gate -- --lan=https://10.0.0.42:9443/run?token=supersecret",
+        (
+            "npm run qa:gate -- --lan=https://10.0.0.42:9443/run?token=supersecret "
+            "Cookie: session=rc-cookie-secret pairing code 123456"
+        ),
         "-GateExit",
         "exit 0",
         "-StrictStateSource",
         str(project_root / "backend" / "app" / "orchestration" / "state_machine.py"),
         "-ManualP1Check",
-        "mobile LAN/WSS artifact reviewed; Authorization: Bearer abcsecret",
+        (
+            "mobile LAN/WSS artifact reviewed; Authorization: Bearer abcsecret; "
+            "Set-Cookie=session=rc-set-cookie-secret; one-time code: 654321"
+        ),
         "-Waiver",
         "none; owner=contoso-release; reason=no waiver requested; expiry=not applicable",
         "-ResidualRisk",
-        "clean-machine signoff still separate; follow-up https://contoso.example/private?api_key=secret",
+        (
+            "clean-machine signoff still separate; follow-up "
+            "https://contoso.example/private?api_key=secret; otp 778899; "
+            "pairingCode=pair-secret-0000"
+        ),
     )
 
     assert result.returncode == 0, result.stderr
@@ -138,12 +149,129 @@ def test_rc_handoff_template_records_redacted_material_without_claiming_pass(
         "10.0.0.42",
         "contoso",
         "api_key=secret",
+        "rc-cookie-secret",
+        "rc-set-cookie-secret",
+        "123456",
+        "654321",
+        "778899",
+        "pair-secret-0000",
     ]
     for fragment in forbidden_fragments:
         assert fragment not in serialized
 
     assert "release-candidate pass" in packet["must_not_be_recorded_as"]
     assert "claim_allowed=false" in markdown
+
+
+def test_rc_handoff_template_rejects_placeholders_and_thin_values(
+    project_root: Path, tmp_path: Path
+) -> None:
+    evidence_root = tmp_path / "rc-handoff"
+    result = _run_rc_handoff_template(
+        project_root,
+        evidence_root,
+        "-CandidateCommit",
+        "<commit SHA>",
+        "-BuildId",
+        "<build id>",
+        "-Platform",
+        "<platform>",
+        "-ArtifactLabel",
+        "<redacted artifact label>",
+        "-GateCommand",
+        "<exact command>",
+        "-GateExit",
+        "<exit code/status>",
+        "-StrictStateSource",
+        "<state source label>",
+        "-ManualP1Check",
+        "todo",
+        "-Waiver",
+        "waiver requested",
+        "-ResidualRisk",
+        "todo",
+    )
+
+    assert result.returncode == 0, result.stderr
+    packet, markdown = _latest_packet(evidence_root)
+    summary = packet["summary"]
+    assert summary["status"] == "manual_rc_handoff_required"
+    assert summary["release_candidate_signoff"] is False
+    assert summary["claim_allowed"] is False
+    assert packet["signoff_controls"]["must_not_tag_publish_or_announce"] is True
+    assert set(summary["missing_required_fields"]) == {
+        "candidate.commit_or_build_id",
+        "candidate.platform",
+        "artifact_labels",
+        "gate_results.commands_and_exits",
+        "strict_state_source",
+        "manual_p1_checks",
+        "waivers",
+        "residual_risks",
+    }
+    assert packet["candidate"]["commit_or_build_id_status"] == "missing_required_field"
+    assert packet["candidate"]["platform_status"] == "missing_required_field"
+    assert packet["artifacts"]["status"] == "missing_required_field"
+    assert packet["gate_results"]["status"] == "manual_rc_handoff_required"
+    assert packet["manual_p1_checks"]["status"] == "missing_required_field"
+    assert "candidate.platform" in markdown
+    assert "release_candidate_signoff=false" in markdown
+
+
+@pytest.mark.parametrize(
+    ("gate_commands", "gate_exits", "missing_entry"),
+    [
+        (["npm run qa:gate", "npm run release:check"], ["exit 0"], {"exit_status": "uncollected"}),
+        (["npm run qa:gate"], ["exit 0", "exit 1"], {"command": "uncollected"}),
+    ],
+)
+def test_rc_handoff_template_requires_one_exit_per_gate_command(
+    project_root: Path,
+    tmp_path: Path,
+    gate_commands: list[str],
+    gate_exits: list[str],
+    missing_entry: dict[str, str],
+) -> None:
+    evidence_root = tmp_path / "rc-handoff"
+    args = [
+        "-CandidateCommit",
+        "abc123def456",
+        "-Platform",
+        "windows-x64",
+        "-ArtifactLabel",
+        "Lengrvis-portable.zip",
+        "-GateCommand",
+        ";;".join(gate_commands),
+        "-GateExit",
+        ";;".join(gate_exits),
+        "-StrictStateSource",
+        "strict-state-machine",
+        "-ManualP1Check",
+        "P1 reviewed by release owner",
+        "-Waiver",
+        "none",
+        "-ResidualRisk",
+        "risk accepted by release owner",
+    ]
+    result = _run_rc_handoff_template(project_root, evidence_root, *args)
+
+    assert result.returncode == 0, result.stderr
+    packet, markdown = _latest_packet(evidence_root)
+    assert packet["summary"]["status"] == "manual_rc_handoff_required"
+    assert packet["summary"]["release_candidate_signoff"] is False
+    assert packet["summary"]["claim_allowed"] is False
+    assert "gate_results.commands_and_exits_count_match" in packet["summary"][
+        "missing_required_fields"
+    ]
+    assert packet["gate_results"]["commands_and_exits_count_match"] is False
+    assert packet["gate_results"]["commands_run_by_this_helper"] is False
+    assert len(packet["gate_results"]["entries"]) == 2
+    assert any(
+        all(entry.get(key) == value for key, value in missing_entry.items())
+        for entry in packet["gate_results"]["entries"]
+    )
+    assert "same order" in markdown
+    assert "release_candidate_signoff=false" in markdown
 
 
 def test_rc_handoff_template_entrypoint_is_documented(project_root: Path) -> None:
@@ -157,6 +285,10 @@ def test_rc_handoff_template_entrypoint_is_documented(project_root: Path) -> Non
 
     assert (
         package_json["scripts"]["evidence:rc-handoff"]
+        == "powershell -ExecutionPolicy Bypass -File ./scripts/collect_rc_handoff_template.ps1"
+    )
+    assert (
+        package_json["scripts"]["evidence:rc-handoff-template"]
         == "powershell -ExecutionPolicy Bypass -File ./scripts/collect_rc_handoff_template.ps1"
     )
     assert "NOT_RELEASE_CANDIDATE_SIGNOFF" in script_text

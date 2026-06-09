@@ -18,7 +18,7 @@ from app.core.audit import record
 from app.core.schemas import Approval, ApprovalStatus, Task, now_iso
 from app.llm.registry import get_effective_settings
 from app.orchestration.execution_stage import ExecutionStage
-from app.policy.approval_binding import redacted_preview
+from app.policy.approval_binding import redacted_preview, remote_input_binding_ref
 from app.policy.redaction import contains_sensitive_key, redact_public_text, redact_value
 from app.security.mobile_jwt import (
     REMOTE_INPUT_SCOPE,
@@ -177,7 +177,7 @@ def _redeem_pairing_record(code: str, device_name: str) -> dict[str, Any] | None
 
 def list_pending_approvals(claims: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     approvals = db.fetch_many("approvals", "status = ?", ("pending",))
-    return [_safe_approval_payload(row) for row in approvals if _mobile_claims_allow_approval_for_read(row, claims)]
+    return [_safe_approval_payload(row, claims) for row in approvals if _mobile_claims_allow_approval_for_read(row, claims)]
 
 
 def get_approval_detail(approval_id: str, claims: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -190,7 +190,7 @@ def get_approval_detail(approval_id: str, claims: dict[str, Any] | None = None) 
     task_data = db.fetch_one("tasks", approval.task_id)
     task = Task.model_validate(task_data) if task_data else None
     plan = _latest_plan(task.id if task else approval.task_id)
-    approval_payload = _safe_approval_payload(approval.model_dump(mode="json"))
+    approval_payload = _safe_approval_payload(approval.model_dump(mode="json"), claims)
     return {
         "approval": approval_payload,
         "task": _safe_mobile_task(task) if task else None,
@@ -211,6 +211,20 @@ def list_mobile_devices(claims: dict[str, Any] | None = None) -> list[dict[str, 
             continue
         devices.append(device)
     return devices
+
+
+def list_active_remote_input_grants_for_claims(claims: dict[str, Any]) -> list[dict[str, Any]]:
+    device_id = _text(claims.get("device_id"))
+    if not device_id:
+        return []
+    device = db.fetch_one("mobile_devices", device_id)
+    if not device or str(device.get("status") or "active").lower() != "active":
+        return []
+    return [
+        _safe_remote_input_grant(grant)
+        for grant in _normalized_remote_input_grants(device)
+        if grant["status"] == "active"
+    ]
 
 
 def create_remote_input_grant(device_id: str, *, expires_in_seconds: int = REMOTE_INPUT_GRANT_TTL_SECONDS) -> dict[str, Any]:
@@ -515,7 +529,10 @@ def _decide_approval(approval_id: str, status: ApprovalStatus, *, claims: dict[s
     existing = db.fetch_one("approvals", approval_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Approval not found")
-    _raise_if_mobile_claims_disallowed(existing, claims)
+    if status == ApprovalStatus.REJECTED:
+        _raise_if_mobile_claims_disallowed_for_reject(existing, claims)
+    else:
+        _raise_if_mobile_claims_disallowed(existing, claims)
     existing_approval = Approval.model_validate(existing)
     if existing_approval.consumed_at:
         raise HTTPException(status_code=409, detail="Approval has already been consumed.")
@@ -577,6 +594,12 @@ def _raise_if_mobile_claims_disallowed_for_read(approval: dict[str, Any], claims
         raise HTTPException(status_code=403, detail=reason)
 
 
+def _raise_if_mobile_claims_disallowed_for_reject(approval: dict[str, Any], claims: dict[str, Any] | None) -> None:
+    reason = _mobile_approval_reject_denial_reason(approval, claims)
+    if reason:
+        raise HTTPException(status_code=403, detail=reason)
+
+
 def _mobile_claims_allow_approval(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
     return not _mobile_approval_denial_reason(approval, claims)
 
@@ -590,6 +613,15 @@ def _mobile_approval_read_denial_reason(approval: dict[str, Any], claims: dict[s
     if not reason:
         return ""
     if _paired_mobile_claims_can_read_remote_input_approval(approval, claims):
+        return ""
+    return reason
+
+
+def _mobile_approval_reject_denial_reason(approval: dict[str, Any], claims: dict[str, Any] | None) -> str:
+    reason = _mobile_approval_denial_reason(approval, claims)
+    if not reason:
+        return ""
+    if _paired_mobile_claims_can_reject_remote_input_approval(approval, claims):
         return ""
     return reason
 
@@ -614,6 +646,8 @@ def _mobile_approval_denial_reason(approval: dict[str, Any], claims: dict[str, A
 
     approval_source = _approval_source(approval)
     claim_source = _text(claims.get("source"))
+    if claim_source == "remote_input_grant" and not _is_remote_input_approval(approval):
+        return "Remote input grant token is not allowed for ordinary approvals."
     if approval_source and claim_source and approval_source != claim_source:
         return "Mobile token source is not allowed for this approval."
 
@@ -655,6 +689,12 @@ def _paired_mobile_claims_can_read_remote_input_approval(approval: dict[str, Any
     approval_source = _approval_source(approval)
     claim_source = _text(claims.get("source"))
     return not approval_source or not claim_source or approval_source == claim_source
+
+
+def _paired_mobile_claims_can_reject_remote_input_approval(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
+    if _text((claims or {}).get("source")) == "remote_input_grant":
+        return False
+    return _paired_mobile_claims_can_read_remote_input_approval(approval, claims)
 
 
 def _is_remote_input_approval(approval: dict[str, Any]) -> bool:
@@ -810,6 +850,7 @@ def _safe_remote_input_grant(grant: dict[str, Any]) -> dict[str, Any]:
         "created_at": grant.get("created_at") or "",
         "expires_at": grant.get("expires_at") or "",
         "revoked_at": grant.get("revoked_at") or "",
+        "binding_ref": remote_input_binding_ref(grant.get("id")),
     }
 
 
@@ -825,8 +866,9 @@ def _latest_plan(task_id: str) -> dict[str, Any] | None:
     return plans[0] if plans else None
 
 
-def _safe_approval_payload(approval: dict[str, Any]) -> dict[str, Any]:
+def _safe_approval_payload(approval: dict[str, Any], claims: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = dict(approval)
+    is_remote_input = _is_remote_input_approval(payload)
     payload["message"] = _safe_mobile_text(payload.get("message") or "")
     payload["diff_preview"] = redacted_preview(payload.get("diff_preview") or {})
     payload["model_action"] = _safe_mobile_model_action(payload.get("model_action") or {})
@@ -840,7 +882,30 @@ def _safe_approval_payload(approval: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in payload:
             payload[key] = _safe_mobile_public_value(payload.get(key), key=key)
+    if is_remote_input:
+        payload["remote_input_binding"] = _remote_input_public_binding_state(approval, claims)
+        for key in ("source_device_id", "source_grant_id", "allowed_device_ids"):
+            payload.pop(key, None)
     return payload
+
+
+def _remote_input_public_binding_state(approval: dict[str, Any], claims: dict[str, Any] | None = None) -> dict[str, Any]:
+    required_scopes = _approval_required_mobile_scopes(approval)
+    allowed_devices = _approval_allowed_device_ids(approval)
+    approval_grant_id = _approval_source_grant_id(approval)
+    device_id = _text((claims or {}).get("device_id"))
+    claim_grant_id = _text((claims or {}).get("grant_id"))
+    state = {
+        "device_bound": bool(allowed_devices),
+        "grant_bound": bool(approval_grant_id),
+        "requires_remote_input_scope": REMOTE_INPUT_SCOPE in required_scopes,
+        "binding_ref": remote_input_binding_ref(approval_grant_id),
+    }
+    if device_id:
+        state["matches_current_device"] = bool(allowed_devices and device_id in allowed_devices)
+    if claim_grant_id:
+        state["matches_current_grant"] = claim_grant_id == approval_grant_id
+    return state
 
 
 def _safe_mobile_model_action(model_action: Any) -> dict[str, Any]:
@@ -874,6 +939,10 @@ def _safe_mobile_public_value(value: Any, *, key: str = "") -> Any:
     normalized_key = key.replace("-", "_").casefold()
     if normalized_key == "model_action":
         return _safe_mobile_model_action(value)
+    if normalized_key == "risk_level" and isinstance(value, str):
+        normalized_risk = _safe_mobile_risk_level(value)
+        if normalized_risk:
+            return normalized_risk
     if contains_sensitive_key(key):
         value = redact_value({key: value}).get(key)
     if isinstance(value, dict):
@@ -888,6 +957,20 @@ def _safe_mobile_public_value(value: Any, *, key: str = "") -> Any:
         redacted = redact_value(value)
         return redact_public_text(str(redacted or ""))
     return value
+
+
+def _safe_mobile_risk_level(value: str) -> str:
+    normalized = value.strip()
+    allowed = {
+        "R0_READ_ONLY",
+        "R1_OPEN_ONLY",
+        "R2_REVERSIBLE_MODIFY",
+        "R3_DESTRUCTIVE_OR_SYSTEM",
+        "R4_FORBIDDEN_OR_HANDOFF",
+    }
+    if normalized.upper() not in allowed:
+        return ""
+    return normalized.lower().replace("_", " ")
 
 
 def _safe_mobile_task(task: Task) -> dict[str, Any]:
@@ -935,9 +1018,9 @@ def _safe_mobile_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     return safe
 
 
-def safe_approval_payload(approval: Approval | dict[str, Any]) -> dict[str, Any]:
+def safe_approval_payload(approval: Approval | dict[str, Any], claims: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = approval.model_dump(mode="json") if isinstance(approval, Approval) else dict(approval)
-    return _safe_approval_payload(payload)
+    return _safe_approval_payload(payload, claims)
 
 
 def _unique_code() -> str:

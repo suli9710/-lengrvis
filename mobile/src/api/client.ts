@@ -5,7 +5,7 @@ export interface PairResult {
   expires_in: number;
   expires_at?: string;
   expiresAt?: string;
-  server: {
+  server?: {
     host: string;
     port: number;
     protocol?: string;
@@ -51,6 +51,16 @@ export interface BackendApproval {
   source_grant_id?: string;
   allowed_device_ids?: string[];
   required_mobile_scopes?: string[];
+  remote_input_binding?: RemoteInputBinding;
+}
+
+export interface RemoteInputBinding {
+  device_bound?: boolean;
+  grant_bound?: boolean;
+  requires_remote_input_scope?: boolean;
+  binding_ref?: string;
+  matches_current_device?: boolean;
+  matches_current_grant?: boolean;
 }
 
 export interface BackendTask {
@@ -143,7 +153,7 @@ export interface ApprovalDetail {
 }
 
 export type ApprovalEvent =
-  | { type: "connected"; device_id?: string; pending: BackendApproval[] }
+  | { type: "connected"; device_id?: string; pending: BackendApproval[]; remote_input_grants?: RemoteInputGrant[]; tasks?: MobileTask[] }
   | { type: "heartbeat" }
   | { type: "approval_notification"; approval: BackendApproval }
   | { type: "approval_created"; approval: BackendApproval }
@@ -194,6 +204,7 @@ export interface RemoteInputGrant {
   created_at: string;
   expires_at: string;
   revoked_at?: string;
+  binding_ref?: string;
 }
 
 export interface RemoteInputGrantToken {
@@ -277,6 +288,19 @@ export interface WebSocketConnectionInfo {
   warning?: string;
 }
 
+export type BackendErrorCode =
+  | "auth_expired"
+  | "forbidden"
+  | "gone"
+  | "invalid_json"
+  | "invalid_pairing_response"
+  | "network"
+  | "not_found"
+  | "rate_limited"
+  | "server_error"
+  | "validation"
+  | "unknown";
+
 const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token.";
 const REMOTE_INPUT_SCOPE = "remote:input";
 const SESSION_TOKEN_EXPIRY_SKEW_MS = 1000;
@@ -288,6 +312,7 @@ export const BACKEND_TLS_DISABLED_WARNING = "后端当前未启用 TLS。请输�
 
 export class AuthExpiredError extends Error {
   readonly status = 401;
+  readonly code = "auth_expired";
 
   constructor(message = "这台手机已断开连接。请在 Lengrvis 中重新连接。") {
     super(message);
@@ -297,6 +322,7 @@ export class AuthExpiredError extends Error {
 
 export class ForbiddenError extends Error {
   readonly status = 403;
+  readonly code = "forbidden";
 
   constructor(message = "这台手机没有权限执行该操作。") {
     super(message);
@@ -307,12 +333,14 @@ export class ForbiddenError extends Error {
 export class BackendHttpError extends Error {
   readonly status: number;
   readonly detail: string;
+  readonly code: BackendErrorCode;
 
-  constructor(status: number, detail: string) {
+  constructor(status: number, detail: string, code: BackendErrorCode = backendErrorCodeForStatus(status)) {
     super(detail || "Lengrvis 未能完成该请求，请重试。");
     this.name = "BackendHttpError";
     this.status = status;
     this.detail = detail;
+    this.code = code;
   }
 }
 
@@ -342,18 +370,17 @@ export async function pairWithBackend(
     },
     body: JSON.stringify({ code, device_name: deviceName }),
   });
-  const payload = await parseJson<PairResult>(response);
+  const { payload, expiresAt } = validatePairResult(await parseJson<unknown>(response));
   const pairingSecurity = normalizePairingSecurityMetadata(payload, baseUrlSecurity);
   const mergedBaseUrlSecurity = mergeBaseUrlSecurityMetadata(baseUrlSecurity, pairingSecurity);
   if (mergedBaseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(mergedBaseUrlSecurity)) {
     throw new InsecureLanBaseUrlError(mergedBaseUrlSecurity);
   }
-  const expiresAt = pairingSessionExpiresAt(payload);
   return {
     baseUrl: normalizedBaseUrl,
     token: payload.token,
     deviceId: payload.device_id,
-    ...(expiresAt ? { expiresAt } : {}),
+    expiresAt,
     baseUrlSecurity: mergedBaseUrlSecurity,
     server: normalizePairingServerInfo(payload.server),
     security: pairingSecurity,
@@ -383,19 +410,24 @@ export async function submitApprovalDecision(
   options: { approval?: BackendApproval; approvalType?: string; remoteInputGrant?: RemoteInputGrant | null } = {},
 ): Promise<BackendApproval> {
   const safeSession = assertSafePairingSession(session);
-  const remoteInputGrantToken = await remoteInputGrantTokenForApproval(safeSession, approvalId, options);
-  if (remoteInputGrantToken) {
-    const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/decision`, {
-      method: "POST",
-      headers: jsonAuthHeaders(remoteInputGrantToken.token),
-      body: JSON.stringify({ decision }),
-    });
-    try {
-      return await parseRemoteInputGrantJson<BackendApproval>(response, "use");
-    } catch (error) {
-      forgetRemoteInputGrantToken(remoteInputGrantToken.grant_id || remoteInputGrantToken.grant?.id || "");
-      throw error;
+  if (decision === "approved") {
+    const remoteInputGrantToken = await remoteInputGrantTokenForApproval(safeSession, approvalId, options);
+    if (remoteInputGrantToken) {
+      const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/decision`, {
+        method: "POST",
+        headers: jsonAuthHeaders(remoteInputGrantToken.token),
+        body: JSON.stringify({ decision }),
+      });
+      try {
+        return await parseRemoteInputGrantJson<BackendApproval>(response, "use");
+      } catch (error) {
+        forgetRemoteInputGrantToken(remoteInputGrantToken.grant_id || remoteInputGrantToken.grant?.id || "");
+        forgetRemoteInputGrantToken(remoteInputGrantToken.grant?.binding_ref || "");
+        throw error;
+      }
     }
+  } else if (options.approval && isRemoteInputApproval(options.approval)) {
+    assertRemoteInputApprovalRejectAllowedForSession(safeSession, options.approval);
   }
   const action = decision === "approved" ? "approve" : "reject";
   const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/${action}`, {
@@ -487,7 +519,12 @@ export async function revokeRemoteInputGrant(session: PairingSession, grantId: s
   const payload = await parseJson<RemoteInputGrant>(response);
   forgetRemoteInputGrantToken(grantId);
   forgetRemoteInputGrantToken(payload.id);
+  forgetRemoteInputGrantToken(payload.binding_ref || "");
   return payload;
+}
+
+export function clearRemoteInputGrantTokens(): void {
+  remoteInputGrantTokens.clear();
 }
 
 async function remoteInputGrantTokenForApproval(
@@ -497,11 +534,21 @@ async function remoteInputGrantTokenForApproval(
 ): Promise<RemoteInputGrantToken | null> {
   const explicitGrantId = options.remoteInputGrant?.id ?? "";
   if (explicitGrantId) {
-    return usableRemoteInputGrantToken(explicitGrantId) ?? claimRemoteInputGrantToken(session, explicitGrantId);
+    if (options.approval && !isRemoteInputApproval(options.approval)) {
+      return null;
+    }
+    if (!options.approval) {
+      throw new ForbiddenError("Remote input approval requires the matching approval details.");
+    }
+    if (!isRemoteInputGrantUsable(options.remoteInputGrant)) {
+      throw new ForbiddenError("Remote input approval requires an active remote input grant.");
+    }
+    assertRemoteInputApprovalMatchesSession(session, options.approval, explicitGrantId, options.remoteInputGrant);
+    return usableRemoteInputGrantTokenForSession(explicitGrantId, session) ?? claimRemoteInputGrantToken(session, explicitGrantId);
   }
 
   let approval = options.approval;
-  if (!approval && remoteInputGrantTokens.size > 0) {
+  if (!approval) {
     try {
       approval = (await getApprovalDetail(session, approvalId)).approval;
     } catch (error) {
@@ -513,11 +560,18 @@ async function remoteInputGrantTokenForApproval(
   if (!approval && !explicitRemoteInput) return null;
   if (approval && !isRemoteInputApproval(approval) && !explicitRemoteInput) return null;
 
-  const grantId = approval ? remoteInputApprovalGrantId(approval) : "";
+  const grantToken = approval ? usableRemoteInputGrantTokenForApproval(approval, session) : null;
+  const grantId = grantToken?.grant_id || grantToken?.grant?.id || (approval ? remoteInputApprovalGrantId(approval) : "");
+  const grant = grantToken?.grant ?? null;
+  if (approval && isRemoteInputApproval(approval) && approval.remote_input_binding?.binding_ref && !grantToken) {
+    throw new ForbiddenError("Remote input approval requires an active remote input grant.");
+  }
+  if (approval && isRemoteInputApproval(approval)) {
+    assertRemoteInputApprovalMatchesSession(session, approval, grantId, grant);
+  }
   if (!grantId) {
     throw new ForbiddenError("Remote input approval requires an active remote input grant.");
   }
-  const grantToken = usableRemoteInputGrantToken(grantId);
   if (!grantToken) {
     throw new ForbiddenError("Remote input approval requires an active remote input grant.");
   }
@@ -529,9 +583,12 @@ function rememberRemoteInputGrantToken(payload: RemoteInputGrantToken): void {
   if (!grantId) return;
   if (!isRemoteInputGrantTokenUsable(payload)) {
     remoteInputGrantTokens.delete(grantId);
+    forgetRemoteInputGrantToken(payload.grant?.binding_ref || "");
     return;
   }
   remoteInputGrantTokens.set(grantId, payload);
+  const bindingRef = payload.grant?.binding_ref || "";
+  if (bindingRef) remoteInputGrantTokens.set(bindingRef, payload);
 }
 
 function forgetRemoteInputGrantToken(grantId: string): void {
@@ -543,6 +600,28 @@ function usableRemoteInputGrantToken(grantId: string): RemoteInputGrantToken | n
   if (!cached) return null;
   if (!isRemoteInputGrantTokenUsable(cached)) {
     remoteInputGrantTokens.delete(grantId);
+    return null;
+  }
+  return cached;
+}
+
+function usableRemoteInputGrantTokenForApproval(approval: BackendApproval, session: PairingSession): RemoteInputGrantToken | null {
+  const grantId = remoteInputApprovalGrantId(approval);
+  if (grantId) return usableRemoteInputGrantTokenForSession(grantId, session);
+  const bindingRef = approval.remote_input_binding?.binding_ref || "";
+  if (!bindingRef) return null;
+  const cached = usableRemoteInputGrantTokenForSession(bindingRef, session);
+  if (cached && cached.grant?.binding_ref === bindingRef) return cached;
+  return null;
+}
+
+function usableRemoteInputGrantTokenForSession(grantId: string, session: PairingSession): RemoteInputGrantToken | null {
+  const cached = usableRemoteInputGrantToken(grantId);
+  if (!cached) return null;
+  if (cached.device_id && cached.device_id !== session.deviceId) {
+    forgetRemoteInputGrantToken(grantId);
+    forgetRemoteInputGrantToken(cached.grant_id || cached.grant?.id || "");
+    forgetRemoteInputGrantToken(cached.grant?.binding_ref || "");
     return null;
   }
   return cached;
@@ -584,11 +663,15 @@ function isRemoteInputGrantTokenUsable(payload: RemoteInputGrantToken, nowMs = D
 
 function isRemoteInputGrantUsable(grant: RemoteInputGrant | null | undefined, nowMs = Date.now()): grant is RemoteInputGrant {
   if (!grant) return false;
-  if (grant.scope !== REMOTE_INPUT_SCOPE) return false;
-  if (grant.status !== "active") return false;
-  if (grant.revoked_at) return false;
+  if (normalizedRemoteInputGrantText(grant.scope) !== REMOTE_INPUT_SCOPE) return false;
+  if (normalizedRemoteInputGrantText(grant.status) !== "active") return false;
+  if (normalizedRemoteInputGrantText(grant.revoked_at)) return false;
   const expiresAt = Date.parse(grant.expires_at || "");
   return Number.isFinite(expiresAt) && expiresAt > nowMs;
+}
+
+function normalizedRemoteInputGrantText(value: string | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
 }
 
 function isRemoteInputApproval(approval: BackendApproval): boolean {
@@ -601,6 +684,69 @@ function isRemoteInputApproval(approval: BackendApproval): boolean {
 
 function remoteInputApprovalGrantId(approval: BackendApproval): string {
   return approval.source_grant_id ?? "";
+}
+
+function assertRemoteInputApprovalMatchesSession(
+  session: PairingSession,
+  approval: BackendApproval,
+  grantId: string,
+  grant?: RemoteInputGrant | null,
+): void {
+  const binding = approval.remote_input_binding;
+  const sourceDeviceId = approval.source_device_id ?? "";
+  const sourceGrantId = approval.source_grant_id ?? "";
+  if (!sourceDeviceId && binding?.device_bound !== true) {
+    throw new ForbiddenError("Remote input approval does not match this mobile device.");
+  }
+  if (sourceDeviceId && sourceDeviceId !== session.deviceId) {
+    throw new ForbiddenError("Remote input approval does not match this mobile device.");
+  }
+  const allowedDevices = approval.allowed_device_ids ?? [];
+  if (allowedDevices.length > 0 && !allowedDevices.includes(session.deviceId)) {
+    throw new ForbiddenError("Remote input approval is not allowed for this mobile device.");
+  }
+  if (binding?.matches_current_device === false) {
+    throw new ForbiddenError("Remote input approval does not match this mobile device.");
+  }
+  if (!sourceGrantId && binding?.grant_bound !== true) {
+    throw new ForbiddenError("Remote input approval does not match the active mobile grant.");
+  }
+  if (sourceGrantId && sourceGrantId !== grantId) {
+    throw new ForbiddenError("Remote input approval does not match the active mobile grant.");
+  }
+  if (!sourceGrantId) {
+    if (binding?.binding_ref) {
+      if (!grant?.binding_ref || grant.binding_ref !== binding.binding_ref) {
+        throw new ForbiddenError("Remote input approval does not match the active mobile grant.");
+      }
+    } else if (binding?.matches_current_grant !== true) {
+      throw new ForbiddenError("Remote input approval does not match the active mobile grant.");
+    }
+  }
+  if (binding?.matches_current_grant === false) {
+    throw new ForbiddenError("Remote input approval does not match the active mobile grant.");
+  }
+  if (binding && binding.requires_remote_input_scope !== true) {
+    throw new ForbiddenError("Remote input approval requires an active remote input grant.");
+  }
+}
+
+function assertRemoteInputApprovalRejectAllowedForSession(session: PairingSession, approval: BackendApproval): void {
+  const binding = approval.remote_input_binding;
+  const sourceDeviceId = approval.source_device_id ?? "";
+  if (sourceDeviceId && sourceDeviceId !== session.deviceId) {
+    throw new ForbiddenError("Remote input approval does not match this mobile device.");
+  }
+  const allowedDevices = approval.allowed_device_ids ?? [];
+  if (allowedDevices.length > 0 && !allowedDevices.includes(session.deviceId)) {
+    throw new ForbiddenError("Remote input approval is not allowed for this mobile device.");
+  }
+  if (binding?.matches_current_device === false) {
+    throw new ForbiddenError("Remote input approval does not match this mobile device.");
+  }
+  if (!sourceDeviceId && allowedDevices.length === 0 && binding?.device_bound !== true) {
+    throw new ForbiddenError("Remote input approval does not match this mobile device.");
+  }
 }
 
 export function approvalWebSocketConnectionInfo(session: PairingSession): WebSocketConnectionInfo {
@@ -1106,10 +1252,37 @@ function sessionHasUnsafeRemoteTransport(security: BaseUrlSecurity): boolean {
   return !security.isLoopback && (!security.backendTlsEnabled || security.webSocketProtocol !== "wss:");
 }
 
+function validatePairResult(payload: unknown): { payload: PairResult; expiresAt: string } {
+  const record = asRecord(payload);
+  if (!record) {
+    throw invalidPairingResponse("Pairing response must be a JSON object.");
+  }
+
+  const token = typeof record.token === "string" ? record.token : "";
+  const tokenType = typeof record.token_type === "string" ? record.token_type : "";
+  const deviceId = typeof record.device_id === "string" ? record.device_id : "";
+  if (!token || tokenType !== "Bearer" || !deviceId) {
+    throw invalidPairingResponse("Pairing response is missing a bearer token or device id.");
+  }
+  if (!isWebSocketSubprotocolToken(token)) {
+    throw invalidPairingResponse("Pairing response token cannot be used as a WebSocket subprotocol.");
+  }
+
+  const expiresAt = pairingSessionExpiresAt(payload as Pick<PairResult, "expires_in" | "expires_at" | "expiresAt">);
+  if (!expiresAt) {
+    throw invalidPairingResponse("Pairing response is missing a usable token expiry.");
+  }
+  if (isExpiredTimestamp(expiresAt, Date.now() + SESSION_TOKEN_EXPIRY_SKEW_MS)) {
+    throw new AuthExpiredError("Pairing token is already expired. Generate a new pairing code.");
+  }
+  return { payload: payload as PairResult, expiresAt };
+}
+
 function assertUsablePairingToken(session: PairingSession): void {
   if (!session.token?.trim()) {
     throw new AuthExpiredError("Mobile session token is missing. Pair this phone again.");
   }
+  assertWebSocketSubprotocolToken(session.token);
   if (isExpiredTimestamp(session.expiresAt, Date.now() + SESSION_TOKEN_EXPIRY_SKEW_MS)) {
     throw new AuthExpiredError("Mobile session token has expired. Pair this phone again.");
   }
@@ -1122,9 +1295,13 @@ function isExpiredTimestamp(value: string | undefined, nowMs = Date.now()): bool
 }
 
 function assertWebSocketSubprotocolToken(token: string): void {
-  if (!token || token.trim() !== token || !WEB_SOCKET_SUBPROTOCOL_TOKEN_PATTERN.test(token)) {
+  if (!isWebSocketSubprotocolToken(token)) {
     throw new ForbiddenError("WebSocket tokens must be sent as valid Sec-WebSocket-Protocol tokens.");
   }
+}
+
+function isWebSocketSubprotocolToken(token: string): boolean {
+  return Boolean(token && token.trim() === token && WEB_SOCKET_SUBPROTOCOL_TOKEN_PATTERN.test(token));
 }
 
 function webSocketProtocolList(protocol: string): string[] {
@@ -1161,9 +1338,35 @@ function remoteInputGrantResponseError(status: number, detail: string, context: 
     return new AuthExpiredError(detail || undefined);
   }
   if (status === 403) {
+    if (normalized.includes("remote input grant")) {
+      return new BackendHttpError(410, terminalRemoteInputGrantDetail(detail));
+    }
     return new ForbiddenError(detail || undefined);
   }
   return new BackendHttpError(status, detail);
+}
+
+function terminalRemoteInputGrantDetail(detail: string): string {
+  const normalized = detail.trim().toLowerCase();
+  if (!normalized) return "Remote input grant is not active.";
+  if (normalized.includes("not active") || normalized.includes("expired") || normalized.includes("revoked")) return detail;
+  return "Remote input grant is not active.";
+}
+
+function backendErrorCodeForStatus(status: number): BackendErrorCode {
+  if (status === 400 || status === 422) return "validation";
+  if (status === 401) return "auth_expired";
+  if (status === 403) return "forbidden";
+  if (status === 404) return "not_found";
+  if (status === 410) return "gone";
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "server_error";
+  if (status <= 0) return "network";
+  return "unknown";
+}
+
+function invalidPairingResponse(detail: string): BackendHttpError {
+  return new BackendHttpError(400, detail, "invalid_pairing_response");
 }
 
 async function parseJson<T>(response: Response): Promise<T> {

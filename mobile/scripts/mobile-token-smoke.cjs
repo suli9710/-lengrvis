@@ -85,10 +85,36 @@ function assertPairScreenQrSourceAssertions() {
     "describeBaseUrlSecurity(nextBaseUrl, nextPayload?.security)",
     "Pair submit must fail closed using parsed QR transport metadata before sending a pairing request",
   );
+  assertSourceIncludes(source, "const pairRequestLockedRef = useRef(false);", "Pair submit must use a synchronous lock in addition to React busy state");
   assertSourceMatches(
     source,
-    /onChangeText=\{\(value\) => \{[\s\S]*setBaseUrl\(value\);[\s\S]*setDetectedPayload\(null\);[\s\S]*setPairingPayload\(""\);[\s\S]*setFailure\(null\);[\s\S]*\}\}/,
-    "Only editing the manual computer address should clear parsed QR metadata",
+    /if \(isBusy \|\| pairRequestLockedRef\.current\) return;[\s\S]*pairRequestLockedRef\.current = true;[\s\S]*finally \{[\s\S]*pairRequestLockedRef\.current = false;[\s\S]*setIsBusy\(false\);[\s\S]*\n    \}/,
+    "Pair submit must release the synchronous busy lock on every validation or network path",
+  );
+  assertSourceIncludes(
+    source,
+    "const nextPayloadSecurity = nextPayload ? classifyPairingPayloadSecurity(nextPayload) : null;",
+    "Pair submit must re-check parsed QR metadata inside the handler",
+  );
+  assertSourceIncludes(
+    source,
+    "blockedPairingPayloadFailureNotice(nextPayloadSecurity.status)",
+    "Pair submit must surface beginner-readable failures when QR metadata blocks pairing",
+  );
+  assertSourceMatches(
+    source,
+    /const handleManualBaseUrlChange = \(value: string\) => \{[\s\S]*const protectedInput = protectBaseUrlInput\(value\);[\s\S]*setBaseUrl\(protectedInput\.value\);[\s\S]*setDetectedPayload\(null\);[\s\S]*setPairingPayload\(""\);[\s\S]*setFailure\(protectedInput\.notice\);[\s\S]*\};/,
+    "Manual computer address edits must clear parsed QR metadata after sanitizing the address",
+  );
+  assertSourceIncludes(
+    source,
+    "onChangeText={handleManualBaseUrlChange}",
+    "Manual computer address input must use the shared sanitizer handler",
+  );
+  assertSourceIncludes(
+    source,
+    'return value.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, MAX_PAIRING_CODE_LENGTH);',
+    "Manual pairing code input must be normalized and capped to the 6-character backend contract",
   );
   assert.doesNotMatch(
     source,
@@ -98,8 +124,13 @@ function assertPairScreenQrSourceAssertions() {
 
   assertSourceMatches(
     source,
-    /const handleBarcodeScanned = \(result: BarcodeScanningResult\) => \{[\s\S]*const payload = parsePairingPayload\(result\.data\);[\s\S]*setPairingPayload\(result\.data\);[\s\S]*applyPayload\(payload\);[\s\S]*setFailure\(pairingFailureNotice\(currentError, undefined, "scan"\)\);[\s\S]*\n  \};/,
-    "Barcode scan handler must parse the scanned QR payload data and apply that exact payload",
+    /const handleBarcodeScanned = \(result: BarcodeScanningResult\) => \{[\s\S]*const protectedInput = protectPairingPayloadInput\(result\.data\);[\s\S]*const payload = parsePairingPayload\(protectedInput\.value\);[\s\S]*setPairingPayload\(protectedInput\.value\);[\s\S]*applyPayload\(payload\);[\s\S]*closeScanner\(pairingFailureNotice\(currentError, undefined, "scan"\)\);[\s\S]*\n  \};/,
+    "Barcode scan handler must sanitize scanned QR payload data, apply parsed payloads, and close through the scanner recovery path",
+  );
+  assertSourceMatches(
+    source,
+    /const handleBarcodeScanned = \(result: BarcodeScanningResult\) => \{[\s\S]*\} catch \(currentError\) \{[\s\S]*setPairingPayload\(""\);[\s\S]*setDetectedPayload\(null\);[\s\S]*closeScanner\(pairingFailureNotice\(currentError, undefined, "scan"\)\);[\s\S]*\n    \}[\s\S]*\n  \};/,
+    "Failed scans must clear stale scanned payload before surfacing recovery copy",
   );
   assertSourceIncludes(
     source,
@@ -144,8 +175,89 @@ function assertPairScreenQrSourceAssertions() {
   assertSourceIncludes(source, 'testID="pair-failure-notice"', "Failure notice must have a stable test id");
   assertSourceIncludes(source, 'accessibilityLabel="打开相机扫码"', "Scan entry must have an accessible label");
   assertSourceIncludes(source, 'accessibilityRole="alert"', "Pairing failures must be announced as alerts");
+  assertSourceIncludes(source, 'accessibilityValue={{ text: payloadAccessibilityValue }}', "QR payload input must expose length to Android accessibility services");
+  assertSourceIncludes(source, 'accessibilityValue={{ text: baseUrlAccessibilityValue }}', "Manual address input must expose length to Android accessibility services");
+  assertSourceIncludes(source, 'accessibilityValue={{ text: pairCodeAccessibilityValue }}', "Manual pairing code input must expose normalized length to Android accessibility services");
+  assert.ok((source.match(/importantForAutofill="no"/g) ?? []).length >= 3, "Pairing inputs must opt out of Android autofill");
+  assert.ok((source.match(/autoComplete="off"/g) ?? []).length >= 3, "Pairing inputs must disable autocomplete suggestions");
+  assertSourceIncludes(
+    source,
+    'accessibilityRole={manualBaseUrlNotice.tone === "danger" ? "alert" : undefined}',
+    "Dangerous manual address security hints must be announced on Android",
+  );
+  assertSourceIncludes(source, "protectPairingPayloadInput(result.data)", "Scanned QR payloads must share length and control-character protection with pasted payloads");
+  assertSourceIncludes(
+    source,
+    'const withoutUnsafeCharacters = value.replace(/[\\u0000-\\u001f\\u007f]+/g, " ");',
+    "Pairing payload input must replace C0/DEL controls with spaces before parsing or echoing",
+  );
+  assertSourceIncludes(
+    source,
+    "notice: withoutUnsafeCharacters.length > MAX_BASE_URL_LENGTH ? pairingInputTooLongNotice(\"baseUrl\") : baseUrlInputCleanedNotice(),",
+    "Manual address cleanup must only show the length warning when the sanitized address exceeds the limit",
+  );
   assert.doesNotMatch(source, /等待 HTTPS\/WSS 配对信息|需要启用 HTTPS\/WSS|手机 token|后端未启动|无法信任电脑证书/);
   assert.doesNotMatch(source, /不会打开相机|没有相机扫码组件|真机相机扫码仍未内置/);
+}
+
+function assertAppShellSourceAssertions() {
+  const source = fs.readFileSync(mobilePath("App.tsx"), "utf8");
+  assertSourceIncludes(source, 'type SessionLoadState = "loading" | "ready" | "failed";', "App must model stored-session loading explicitly");
+  assertSourceIncludes(source, 'testID="app-session-load-screen"', "App loading/recovery screen must have a stable test id");
+  assertSourceIncludes(source, "正在安全读取或清理这台手机保存的配对状态", "App must describe stored-session loading and cleanup as safe local recovery");
+  assertSourceIncludes(source, "手机没有读到可用的本地会话", "App must explain failed stored-session recovery without raw storage errors");
+  assert.doesNotMatch(source, /AsyncStorage|SecureStore|Error:/, "App session recovery UX must not expose storage internals or raw errors");
+  assertSourceMatches(
+    source,
+    /const resetShellState = \(\) => \{[\s\S]*setSelectedApproval\(null\);[\s\S]*setRemoteInputGrant\(\(current\) => reduceRemoteInputGrant\(current, \{ type: "cleared" \}\)\);[\s\S]*setActiveScreen\("approvals"\);[\s\S]*\};/,
+    "App shell reset must clear selected approvals, remote input grants, and return to approvals",
+  );
+  assertSourceMatches(
+    source,
+    /const clearLocalSessionOrShowRecovery = \(\) => \{[\s\S]*resetShellState\(\);[\s\S]*setSession\(null\);[\s\S]*setSessionLoadState\("loading"\);[\s\S]*void clearSession\(\)[\s\S]*\.then\(\(\) => \{[\s\S]*setSessionLoadState\("ready"\);[\s\S]*\}\)[\s\S]*\.catch\(\(\) => \{[\s\S]*setSessionLoadState\("failed"\);[\s\S]*\}\);[\s\S]*\};/,
+    "Stored session cleanup must drop in-memory approval/session/grant state before async storage clearing and fail closed into recovery",
+  );
+  assertSourceMatches(
+    source,
+    /const handleSessionExpired = \(\) => \{[\s\S]*clearLocalSessionOrShowRecovery\(\);[\s\S]*\};/,
+    "Expired sessions must clear stored credentials through the recovery-safe cleanup path",
+  );
+  assertSourceIncludes(source, "const handlePaired = (nextSession: PairingSession) => {", "Pairing completion must reset shell state through one handler");
+  assertSourceMatches(
+    source,
+    /const handlePaired = \(nextSession: PairingSession\) => \{[\s\S]*resetShellState\(\);[\s\S]*setSessionLoadState\("ready"\);[\s\S]*setSession\(nextSession\);[\s\S]*\};/,
+    "Pairing completion must not preserve old approval detail or remote input grants",
+  );
+  assertSourceMatches(
+    source,
+    /const handleStartFreshPairing = \(\) => \{[\s\S]*clearLocalSessionOrShowRecovery\(\);[\s\S]*\};/,
+    "Fresh pairing from recovery must clear stored credentials through the recovery-safe cleanup path",
+  );
+  assert.doesNotMatch(
+    source,
+    /clearSession\(\)\.catch\(\(\) => undefined\)/,
+    "App must not claim local session cleanup succeeded when storage clearing fails",
+  );
+  assertSourceMatches(
+    source,
+    /<ApprovalsScreen[\s\S]*onUnpair=\{clearLocalSessionOrShowRecovery\}[\s\S]*session=\{session\}/,
+    "ApprovalsScreen unpair/auth-expiry must go through App's recovery-safe cleanup path",
+  );
+  const approvalsSource = fs.readFileSync(mobilePath("src/screens/ApprovalsScreen.tsx"), "utf8");
+  assert.doesNotMatch(
+    approvalsSource,
+    /from "\.\.\/store\/auth"|clearSession\(\)|finally\(onUnpair\)/,
+    "ApprovalsScreen must not bypass App session recovery when clearing local credentials",
+  );
+  assertSourceIncludes(source, "onSessionExpired={handleSessionExpired}", "Remote screen must be able to clear an expired mobile session");
+  assertSourceIncludes(source, 'accessibilityRole={isLoading ? "progressbar" : "alert"}', "Stored-session recovery must expose loading and failed states to Android accessibility");
+  assertSourceIncludes(source, 'accessibilityHint="清理本地会话并回到配对页面"', "Fresh pairing recovery action must explain that it clears local session state");
+  assertSourceIncludes(source, "resetShellState();", "Unpair must clear selected approval and remote input grant shell state through the shared recovery path");
+  assertSourceMatches(
+    source,
+    /let isActive = true;[\s\S]*getApprovalDetail\(session, approvalId\)[\s\S]*if \(!isActive\) return;[\s\S]*setSelectedApproval\(detail\.approval\);[\s\S]*setActiveScreen\("approvals"\);[\s\S]*return \(\) => \{[\s\S]*isActive = false;[\s\S]*subscription\.remove\(\);[\s\S]*\};/,
+    "Notification-opened approval detail loads must not rehydrate stale selections after unpair and must leave remote screen to show the detail",
+  );
 }
 
 function assertSmokeDoesNotClaimRealDeviceEvidence() {
@@ -167,16 +279,41 @@ function assertExpoCameraNativeConfig() {
   const androidPermissions = expo.android?.permissions ?? [];
   assert.ok(Array.isArray(androidPermissions), "app.json expo.android.permissions must be an array");
   assert.ok(androidPermissions.includes("CAMERA"), "app.json must declare Android CAMERA permission for QR pairing");
+  assert.equal(
+    expo.android?.usesCleartextTraffic,
+    false,
+    "Android builds must not permit app-wide cleartext traffic; mobile LAN HTTP is blocked by the app contract",
+  );
 
   const iosCameraUsage = expo.ios?.infoPlist?.NSCameraUsageDescription;
   assert.equal(
     iosCameraUsage,
-    "Allow Lengrvis Approval to use the camera to scan pairing QR codes from your desktop.",
+    "允许 Lengrvis 手机端使用相机扫描电脑端配对二维码。",
     "app.json must explain iOS camera usage for QR pairing",
   );
 
-  const plugins = expo.plugins ?? [];
+const plugins = expo.plugins ?? [];
   assert.ok(Array.isArray(plugins), "app.json expo.plugins must be an array");
+  assert.ok(
+    plugins.includes("./plugins/withAndroidRemoteControlHardening"),
+    "app.json must include Android remote-control hardening plugin for LAN TLS trust and FLAG_SECURE",
+  );
+  const hardeningPluginSource = fs.readFileSync(mobilePath("plugins", "withAndroidRemoteControlHardening.js"), "utf8");
+  for (const requiredFragment of [
+    "network_security_config",
+    'certificates src="system"',
+    'certificates src="user"',
+    'cleartextTrafficPermitted="false"',
+    "android:networkSecurityConfig",
+    "android:usesCleartextTraffic",
+    "WindowManager.LayoutParams.FLAG_SECURE",
+  ]) {
+    assert.ok(
+      hardeningPluginSource.includes(requiredFragment),
+      `Android hardening plugin must include ${requiredFragment}`,
+    );
+  }
+
   const cameraPlugin = plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === "expo-camera");
   assert.ok(cameraPlugin, "app.json must configure the expo-camera config plugin");
   const cameraPluginConfig = cameraPlugin[1] ?? {};
@@ -205,15 +342,21 @@ function makeSession(client, baseUrl, token = "session-token") {
 function makeStorage() {
   const asyncMap = new Map();
   const secureMap = new Map();
+  const failures = {
+    removeItem: null,
+    deleteItemAsync: null,
+  };
   return {
     asyncMap,
     secureMap,
+    failures,
     asyncStorage: {
       getItem: async (key) => asyncMap.get(key) ?? null,
       setItem: async (key, value) => {
         asyncMap.set(key, String(value));
       },
       removeItem: async (key) => {
+        if (failures.removeItem) throw failures.removeItem;
         asyncMap.delete(key);
       },
     },
@@ -223,10 +366,18 @@ function makeStorage() {
         secureMap.set(key, String(value));
       },
       deleteItemAsync: async (key) => {
+        if (failures.deleteItemAsync) throw failures.deleteItemAsync;
         secureMap.delete(key);
       },
     },
   };
+}
+
+function assertSessionRecoveryError(error) {
+  assert.equal(error?.name, "SessionRecoveryError");
+  assert.match(String(error?.message ?? ""), /本地会话/);
+  assert.doesNotMatch(String(error?.message ?? ""), /AsyncStorage|SecureStore|token|secret|raw/i);
+  return true;
 }
 
 async function main() {
@@ -234,6 +385,8 @@ async function main() {
   const pairingPayload = loadPairingPayload(client);
   const desktopPairingPayload = loadDesktopPairingPayload();
   let expectedPairToken = "paired-token";
+  let pairResponseOverrides = {};
+  assertAppShellSourceAssertions();
   assertPairScreenQrSourceAssertions();
   assertSmokeDoesNotClaimRealDeviceEvidence();
   assertExpoCameraNativeConfig();
@@ -250,7 +403,7 @@ async function main() {
       });
       assert.match(String(request.headers.accept), /application\/json/);
       assert.match(String(request.headers["content-type"]), /application\/json/);
-      jsonResponse(res, 200, {
+      const pairResponse = {
         token: expectedPairToken,
         token_type: "Bearer",
         device_id: "device-1",
@@ -265,7 +418,10 @@ async function main() {
           transport: { http_scheme: "http", websocket_scheme: "ws", tls_enabled: false, advertised_base_url: url.origin },
           tls: { enabled: false, trust_status: "not_enabled" },
         },
-      });
+        ...pairResponseOverrides,
+      };
+      pairResponseOverrides = {};
+      jsonResponse(res, 200, pairResponse);
       return true;
     },
     handleUpgrade: ({ req, socket, url, upgrade }) => {
@@ -342,8 +498,37 @@ async function main() {
         source: "url",
       },
     );
+    const queryBearingQrPayload = pairingPayload.parsePairingPayload(
+      `lengrvis://pair?base_url=${encodeURIComponent("https://mobile-token:secret@example.test:8443/copied/path?token=secret-token#pair")}&code=ABC-123&tls_enabled=true&websocket_scheme=wss`,
+    );
+    assert.deepEqual(plain(queryBearingQrPayload), {
+      baseUrl: "https://example.test:8443",
+      code: "abc123",
+      source: "url",
+    });
+    assert.doesNotMatch(queryBearingQrPayload.baseUrl, /mobile-token|secret-token|[?&]token=/);
+
+    const metadataBlockedQrPayload = pairingPayload.parsePairingPayload(
+      JSON.stringify({
+        base_url: "https://mobile-token:secret@example.test:8443/copied/path?access_token=secret-token#pair",
+        code: "ABC123",
+        transport_security: { http_scheme: "https", websocket_scheme: "ws", tls_enabled: false },
+      }),
+    );
+    assert.equal(metadataBlockedQrPayload.baseUrl, "https://example.test:8443");
+    assert.doesNotMatch(metadataBlockedQrPayload.baseUrl, /mobile-token|secret-token|access_token/);
+    assert.equal(metadataBlockedQrPayload.security.transport.webSocketScheme, "ws");
+    const metadataBlockedQrPayloadState = pairingPayload.classifyPairingPayloadSecurity(metadataBlockedQrPayload);
+    assert.equal(metadataBlockedQrPayloadState.status, "requires_https_wss");
+    assert.equal(metadataBlockedQrPayloadState.canPair, false);
+
     assert.deepEqual(plain(pairingPayload.parsePairingPayload("电脑地址：http://192.168.1.20:8000 配对码：A1B2C3")), {
       baseUrl: "http://192.168.1.20:8000",
+      code: "a1b2c3",
+      source: "text",
+    });
+    assert.deepEqual(plain(pairingPayload.parsePairingPayload("\u0000电脑地址：https://example.test:8443/copied/path?token=secret-token\r\n配对码：A1B2C3\u007f")), {
+      baseUrl: "https://example.test:8443",
       code: "a1b2c3",
       source: "text",
     });
@@ -364,6 +549,13 @@ async function main() {
     assert.equal(expiredPayloadState.status, "expired");
     assert.equal(expiredPayloadState.canPair, false);
     assert.equal(expiredPayloadState.security.kind, "https");
+
+    const invalidExpiryPayloadState = pairingPayload.classifyPairingPayloadSecurity({
+      baseUrl: "https://lengrvis.local:8443",
+      expiresAt: "not-a-date",
+    });
+    assert.equal(invalidExpiryPayloadState.status, "expired");
+    assert.equal(invalidExpiryPayloadState.canPair, false);
 
     const freshPayloadState = pairingPayload.classifyPairingPayloadSecurity(
       {
@@ -453,6 +645,19 @@ async function main() {
     assert.equal(httpsApprovalInfo.url, "wss://example.test:8443/ws/mobile/approvals");
     assertWebSocketTokenTransport(httpsApprovalInfo, "secure-token", { pathname: "/ws/mobile/approvals", label: "secure approval WebSocket" });
     assert.equal(httpsApprovalInfo.warning, undefined);
+    assert.deepEqual(client.mobileTokenWebSocketProtocols("token.with-allowed_chars~"), ["lengrvis.mobile.token.token.with-allowed_chars~"]);
+    assert.throws(
+      () => client.mobileTokenWebSocketProtocols("bad token"),
+      (error) => error.name === "ForbiddenError" && /WebSocket/.test(error.message),
+    );
+    assert.throws(
+      () => client.assertSafePairingSession({ ...httpsSession, token: "bad token" }),
+      (error) => error.name === "ForbiddenError" && /WebSocket/.test(error.message),
+    );
+    assert.throws(
+      () => client.assertSafePairingSession({ ...httpsSession, expiresAt: new Date(Date.now() - 1000).toISOString() }),
+      (error) => error.name === "AuthExpiredError",
+    );
 
     const lanSession = makeSession(client, "http://192.168.1.20:8000", "lan-token");
     assert.throws(
@@ -496,6 +701,59 @@ async function main() {
       assertInsecureLanError,
     );
     assert.equal(server.requests.length, 0, "blocked insecure LAN pair attempts must not reach the smoke server");
+
+    const unclearedInsecureStorage = makeStorage();
+    const unclearedInsecureAuth = loadAuth(client, unclearedInsecureStorage);
+    unclearedInsecureStorage.asyncMap.set(
+      "lengrvis.mobile.session",
+      JSON.stringify({
+        baseUrl: "http://192.168.1.20:8000",
+        baseUrlSecurity: lanSession.baseUrlSecurity,
+        deviceId: lanSession.deviceId,
+      }),
+    );
+    unclearedInsecureStorage.secureMap.set("lengrvis.mobile.session.token", "old-lan-token");
+    unclearedInsecureStorage.failures.removeItem = new Error("AsyncStorage raw secret cleanup failure");
+    await assert.rejects(
+      () => unclearedInsecureAuth.loadSession(),
+      assertSessionRecoveryError,
+      "stored insecure LAN sessions must fail closed into App recovery if local cleanup fails",
+    );
+    assert.equal(unclearedInsecureStorage.asyncMap.has("lengrvis.mobile.session"), true);
+    assert.equal(unclearedInsecureStorage.secureMap.has("lengrvis.mobile.session.token"), false);
+
+    const expiredStorage = makeStorage();
+    const expiredAuth = loadAuth(client, expiredStorage);
+    expiredStorage.asyncMap.set(
+      "lengrvis.mobile.session",
+      JSON.stringify({
+        baseUrl: httpsSession.baseUrl,
+        baseUrlSecurity: httpsSession.baseUrlSecurity,
+        deviceId: httpsSession.deviceId,
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      }),
+    );
+    expiredStorage.secureMap.set("lengrvis.mobile.session.token", "expired-token");
+    assert.equal(await expiredAuth.loadSession(), null);
+    assert.equal(expiredStorage.asyncMap.has("lengrvis.mobile.session"), false);
+    assert.equal(expiredStorage.secureMap.has("lengrvis.mobile.session.token"), false);
+
+    const orphanStorage = makeStorage();
+    const orphanAuth = loadAuth(client, orphanStorage);
+    orphanStorage.secureMap.set("lengrvis.mobile.session.token", "orphan-token");
+    assert.equal(await orphanAuth.loadSession(), null);
+    assert.equal(orphanStorage.secureMap.has("lengrvis.mobile.session.token"), false);
+
+    const unclearedOrphanStorage = makeStorage();
+    const unclearedOrphanAuth = loadAuth(client, unclearedOrphanStorage);
+    unclearedOrphanStorage.secureMap.set("lengrvis.mobile.session.token", "orphan-token");
+    unclearedOrphanStorage.failures.deleteItemAsync = new Error("SecureStore raw token delete failure");
+    await assert.rejects(
+      () => unclearedOrphanAuth.loadSession(),
+      assertSessionRecoveryError,
+      "orphan mobile tokens must fail closed into App recovery if secure storage cleanup fails",
+    );
+    assert.equal(unclearedOrphanStorage.secureMap.has("lengrvis.mobile.session.token"), true);
 
     expectedPairToken = "query-stripped-token";
     const queryStrippedPaired = await client.pairWithBackend(`${server.origin}/copied/path?token=secret-token#pair`, "abc123", "Phone");
@@ -572,6 +830,23 @@ async function main() {
     assert.equal(storedMetadata.baseUrl, server.origin);
     assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.token"), "stored-token");
     assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /stored-token/);
+
+    const beforeExpiredPairRequests = server.requests.length;
+    expectedPairToken = "expired-pair-token";
+    pairResponseOverrides = { expires_in: 0 };
+    await assert.rejects(
+      () => client.pairWithBackend(`${server.origin}/`, "abc123", "Phone"),
+      (error) => error.name === "AuthExpiredError",
+    );
+    assert.equal(server.requests.length, beforeExpiredPairRequests + 1);
+
+    expectedPairToken = "invalid-pair-token";
+    pairResponseOverrides = { token: "bad token" };
+    await assert.rejects(
+      () => client.pairWithBackend(`${server.origin}/`, "abc123", "Phone"),
+      (error) => error.name === "BackendHttpError" && error.code === "invalid_pairing_response",
+    );
+    assert.equal(server.requests.length, beforeExpiredPairRequests + 2);
   } finally {
     await server.close();
   }

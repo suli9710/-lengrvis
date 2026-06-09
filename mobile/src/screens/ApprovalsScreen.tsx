@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   AppState,
   type AppStateStatus,
   FlatList,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   SafeAreaView,
   StatusBar,
@@ -32,13 +35,13 @@ import type { ReactNode } from "react";
 
 import {
   AuthExpiredError,
-  approvalWebSocketUrl,
+  BackendHttpError,
+  approvalWebSocketConnectionInfo,
   createMobileTask,
   disconnectMobileDevice,
   ForbiddenError,
   listMobileTasks,
   listPendingApprovals,
-  mobileAuthWebSocketProtocols,
   submitMobileTaskCommand,
   submitMobileTaskFollowUp,
   type ApprovalEvent,
@@ -49,10 +52,11 @@ import {
   type PairingSession,
   type RemoteInputGrant,
 } from "../api/client";
+import { approvalListSafety } from "../approvalSafetyDisplay";
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
 import { notifyApproval, requestNotificationPermission } from "../notifications";
+import { isRemoteInputGrantUsable, remoteInputGrantDisplayStatus } from "../remoteInputGrant";
 import { safeDisplayText, safePreviewText } from "../safeDisplay";
-import { clearSession } from "../store/auth";
 import {
   isMobileTaskActive,
   taskActionAllowed,
@@ -120,6 +124,7 @@ export function ApprovalsScreen({
   onRemoteInputGrant,
   onRemoteInputGrantRevoked,
   onUnpair,
+  remoteInputGrant,
 }: {
   session: PairingSession;
   onSelectApproval: (approval: BackendApproval) => void;
@@ -127,10 +132,14 @@ export function ApprovalsScreen({
   onRemoteInputGrant: (grant: RemoteInputGrant) => void;
   onRemoteInputGrantRevoked: (grant: RemoteInputGrant) => void;
   onUnpair: () => void;
+  remoteInputGrant: RemoteInputGrant | null;
 }) {
   const [approvals, setApprovals] = useState<BackendApproval[]>([]);
   const [connection, setConnection] = useState<ApprovalConnection>("offline");
   const [error, setError] = useState("");
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState("");
   const [tasks, setTasks] = useState<MobileTask[]>([]);
   const [taskActionId, setTaskActionId] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState<MobileTaskTemplateId>("organize_downloads");
@@ -152,6 +161,8 @@ export function ApprovalsScreen({
   const headerTitle = pendingCount === 0 ? "暂无待处理" : `${pendingCount} 项待审批`;
   const activeTaskCount = useMemo(() => tasks.filter(isMobileTaskActive).length, [tasks]);
   const visibleTasks = useMemo(() => tasks.slice(0, 3), [tasks]);
+  const isInitialLoading = !hasLoadedOnce && approvals.length === 0 && tasks.length === 0;
+  const lastUpdatedText = lastUpdatedAt ? `上次同步 ${shortDate(lastUpdatedAt)}` : "等待首次同步";
   const selectedTemplate = useMemo(
     () => MOBILE_TASK_TEMPLATES.find((template) => template.id === selectedTemplateId) ?? MOBILE_TASK_TEMPLATES[0],
     [selectedTemplateId],
@@ -160,6 +171,7 @@ export function ApprovalsScreen({
     () => taskStarterTemplates.find((template) => template.id === selectedTemplateId),
     [selectedTemplateId],
   );
+  const remoteEntryStatus = remoteInputGrantDisplayStatus(remoteInputGrant);
 
   const selectTaskTemplate = (templateId: MobileTaskTemplateId) => {
     setSelectedTemplateId(templateId);
@@ -183,7 +195,7 @@ export function ApprovalsScreen({
     }
     socketRef.current?.close();
     socketRef.current = null;
-    void clearSession().finally(onUnpair);
+    onUnpair();
   }, [onUnpair]);
 
   const mergePendingApprovals = useCallback((pending: BackendApproval[]) => {
@@ -201,15 +213,18 @@ export function ApprovalsScreen({
     });
   }, []);
 
-  const refreshApprovals = useCallback(async () => {
-    const pending = await listPendingApprovals(session);
-    mergePendingApprovals(pending);
-  }, [mergePendingApprovals, session]);
-
   const refreshTasks = useCallback(async () => {
     const nextTasks = await listMobileTasks(session);
     setTasks(nextTasks);
+    setLastUpdatedAt(new Date().toISOString());
   }, [session]);
+
+  const refreshAll = useCallback(async () => {
+    const [pending, nextTasks] = await Promise.all([listPendingApprovals(session), listMobileTasks(session)]);
+    mergePendingApprovals(pending);
+    setTasks(nextTasks);
+    setLastUpdatedAt(new Date().toISOString());
+  }, [mergePendingApprovals, session]);
 
   const scheduleReconnect = useCallback(() => {
     if (reconnectTimerRef.current) return;
@@ -235,15 +250,33 @@ export function ApprovalsScreen({
     }
     setConnection("connecting");
     setError("");
-    void Promise.all([refreshApprovals(), refreshTasks()]).catch((currentError: unknown) => {
+    void refreshAll()
+      .catch((currentError: unknown) => {
+        if (currentError instanceof AuthExpiredError) {
+          handleAuthExpired();
+          return;
+        }
+        setError(errorMessage(currentError));
+      })
+      .finally(() => setHasLoadedOnce(true));
+
+    let connectionInfo: ReturnType<typeof approvalWebSocketConnectionInfo>;
+    try {
+      connectionInfo = approvalWebSocketConnectionInfo(session);
+    } catch (currentError) {
       if (currentError instanceof AuthExpiredError) {
         handleAuthExpired();
-        return;
+        return () => {
+          closedByEffect = true;
+        };
       }
+      setConnection("offline");
       setError(errorMessage(currentError));
-    });
-
-    const socket = new WebSocket(approvalWebSocketUrl(session), mobileAuthWebSocketProtocols(session));
+      return () => {
+        closedByEffect = true;
+      };
+    }
+    const socket = new WebSocket(connectionInfo.url, connectionInfo.protocols);
     socketRef.current = socket;
 
     socket.onopen = () => {
@@ -257,6 +290,8 @@ export function ApprovalsScreen({
         const payload = JSON.parse(String(event.data)) as ApprovalEvent;
         if (payload.type === "connected") {
           mergePendingApprovals(payload.pending);
+          const snapshotGrant = (payload.remote_input_grants ?? []).find((grant) => isRemoteInputGrantUsable(grant));
+          if (snapshotGrant) onRemoteInputGrant(snapshotGrant);
           return;
         }
         if (payload.type === "approval_notification" || payload.type === "approval_created") {
@@ -304,22 +339,24 @@ export function ApprovalsScreen({
       if (socketRef.current === socket) socketRef.current = null;
       socket.close();
     };
-  }, [handleAuthExpired, mergePendingApprovals, onRemoteInputGrant, onRemoteInputGrantRevoked, refreshApprovals, refreshTasks, scheduleReconnect, session, streamReconnectKey, upsertApproval]);
+  }, [handleAuthExpired, mergePendingApprovals, onRemoteInputGrant, onRemoteInputGrantRevoked, refreshAll, scheduleReconnect, session, streamReconnectKey, upsertApproval]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state: AppStateStatus) => {
       if (state !== "active") return;
-      void Promise.all([refreshApprovals(), refreshTasks()]).catch((currentError: unknown) => {
-        if (currentError instanceof AuthExpiredError) {
-          handleAuthExpired();
-          return;
-        }
-        setError(errorMessage(currentError));
-      });
+      void refreshAll()
+        .catch((currentError: unknown) => {
+          if (currentError instanceof AuthExpiredError) {
+            handleAuthExpired();
+            return;
+          }
+          setError(errorMessage(currentError));
+        })
+        .finally(() => setHasLoadedOnce(true));
       setStreamReconnectKey((current) => current + 1);
     });
     return () => subscription.remove();
-  }, [handleAuthExpired, refreshApprovals, refreshTasks]);
+  }, [handleAuthExpired, refreshAll]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -351,7 +388,6 @@ export function ApprovalsScreen({
     }
     socketRef.current?.close();
     socketRef.current = null;
-    await clearSession();
     onUnpair();
     if (disconnectError) {
       Alert.alert("断开连接", disconnectErrorMessage(disconnectError));
@@ -366,8 +402,22 @@ export function ApprovalsScreen({
   };
 
   const handleRefresh = () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    setError("");
     setStreamReconnectKey((current) => current + 1);
-    void refreshTasks().catch((currentError: unknown) => setError(errorMessage(currentError)));
+    void refreshAll()
+      .catch((currentError: unknown) => {
+        if (currentError instanceof AuthExpiredError) {
+          handleAuthExpired();
+          return;
+        }
+        setError(errorMessage(currentError));
+      })
+      .finally(() => {
+        setHasLoadedOnce(true);
+        setIsRefreshing(false);
+      });
   };
 
   const submitMobileTemplateTask = async () => {
@@ -448,157 +498,259 @@ export function ApprovalsScreen({
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#f6f4ee" />
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.kicker}>{connection === "online" ? "已连接电脑" : "正在连接"}</Text>
-          <Text style={styles.headerTitle}>{headerTitle}</Text>
-        </View>
-        <View style={styles.headerActions}>
-          <IconButton accessibilityLabel="查看电脑屏幕" icon={<Monitor size={18} color="#23313d" />} onPress={onOpenRemote} />
-          <IconButton accessibilityLabel="刷新请求" icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
-          <IconButton accessibilityLabel="断开手机连接" icon={<Unlink size={18} color="#8c2f39" />} onPress={handleUnpair} />
-        </View>
-      </View>
-
-      <View style={styles.statusRow}>
-        <ShieldCheck size={16} color={connection === "online" ? "#1f7a4d" : "#a46a00"} />
-        <Text style={styles.statusText}>{connectionStatusText(connection)}</Text>
-      </View>
-      {notificationsOff ? (
-        <View style={styles.noticeRow}>
-          <BellOff size={16} color="#7a5700" />
-          <Text style={styles.noticeText}>手机通知已关闭。请保持此页面打开，或点击刷新查看请求。</Text>
-        </View>
-      ) : null}
-      {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
-      <View style={styles.companionPanel}>
-        <View style={styles.companionHeader}>
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.keyboardAvoider}>
+        <View style={styles.header}>
           <View>
-            <Text style={styles.companionKicker}>任务助手</Text>
-            <Text style={styles.companionTitle}>{activeTaskCount ? `${activeTaskCount} 项电脑任务在进行` : "电脑端当前空闲"}</Text>
+            <Text style={styles.kicker}>{connection === "online" ? "已连接电脑" : "正在连接"}</Text>
+            <Text style={styles.headerTitle}>{headerTitle}</Text>
           </View>
-          <Text style={styles.companionBadge}>{visibleTasks.length ? `${visibleTasks.length} 项` : "待命"}</Text>
+          <View style={styles.headerActions}>
+            <IconButton accessibilityLabel="查看电脑屏幕" icon={<Monitor size={18} color="#23313d" />} onPress={onOpenRemote} />
+            <IconButton accessibilityLabel="刷新请求" icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
+            <IconButton accessibilityLabel="断开手机连接" icon={<Unlink size={18} color="#8c2f39" />} onPress={handleUnpair} />
+          </View>
         </View>
-        <View style={styles.launchBox}>
-          <View style={styles.templateGrid}>
-            {MOBILE_TASK_TEMPLATES.map((template) => {
-              const selected = template.id === selectedTemplateId;
-              return (
-                <Pressable
-                  key={template.id}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected }}
-                  onPress={() => selectTaskTemplate(template.id)}
-                  style={({ pressed }) => [styles.templateButton, selected && styles.templateButtonSelected, pressed && styles.pressed]}
-                >
-                  {template.icon}
-                  <Text style={[styles.templateButtonText, selected && styles.templateButtonTextSelected]}>{template.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <TextInput
-            accessibilityLabel="任务补充说明"
-            multiline
-            onChangeText={setTaskDraft}
-            placeholder={selectedTemplateManifest?.inputHint ?? selectedTemplate.placeholder}
-            placeholderTextColor="#7b8791"
-            style={styles.launchInput}
-            value={taskDraft}
-          />
-          <View style={styles.launchFooter}>
-            <View style={styles.modePicker}>
-              {MOBILE_TASK_MODES.map((mode) => {
-                const selected = mode.value === taskMode;
-                return (
+
+        <FlatList
+          contentContainerStyle={approvals.length ? styles.list : styles.emptyList}
+          data={approvals}
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          keyboardShouldPersistTaps="handled"
+          keyExtractor={(approval) => approval.id}
+          ListHeaderComponent={(
+          <View style={styles.listHeader}>
+            <View style={styles.statusRow}>
+              <ShieldCheck size={16} color={connection === "online" ? "#1f7a4d" : "#a46a00"} />
+              <Text style={styles.statusText}>{connectionStatusText(connection)}</Text>
+            </View>
+            {notificationsOff ? (
+              <View style={styles.noticeRow}>
+                <BellOff size={16} color="#7a5700" />
+                <Text style={styles.noticeText}>手机通知已关闭。请保持此页面打开，或点击刷新查看请求。</Text>
+              </View>
+            ) : null}
+            {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
+            <View style={styles.companionPanel}>
+              <View style={styles.companionHeader}>
+                <View>
+                  <Text style={styles.companionKicker}>任务助手</Text>
+                  <Text style={styles.companionTitle}>{activeTaskCount ? `${activeTaskCount} 项电脑任务在进行` : "电脑端当前空闲"}</Text>
+                </View>
+                <Text style={styles.companionBadge}>{visibleTasks.length ? `${visibleTasks.length} 项` : "待命"}</Text>
+              </View>
+              <View style={styles.launchBox}>
+                <View style={styles.templateGrid}>
+                  {MOBILE_TASK_TEMPLATES.map((template) => {
+                    const selected = template.id === selectedTemplateId;
+                    return (
+                      <Pressable
+                        key={template.id}
+                        accessibilityLabel={`任务模板：${template.label}`}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        hitSlop={4}
+                        onPress={() => selectTaskTemplate(template.id)}
+                        style={({ pressed }) => [styles.templateButton, selected && styles.templateButtonSelected, pressed && styles.pressed]}
+                      >
+                        {template.icon}
+                        <Text style={[styles.templateButtonText, selected && styles.templateButtonTextSelected]}>{template.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                <TextInput
+                  accessibilityLabel="任务补充说明"
+                  multiline
+                  onChangeText={setTaskDraft}
+                  placeholder={selectedTemplateManifest?.inputHint ?? selectedTemplate.placeholder}
+                  placeholderTextColor="#7b8791"
+                  style={styles.launchInput}
+                  value={taskDraft}
+                />
+                <View style={styles.launchFooter}>
+                  <View style={styles.modePicker}>
+                    {MOBILE_TASK_MODES.map((mode) => {
+                      const selected = mode.value === taskMode;
+                      return (
+                        <Pressable
+                          key={mode.value}
+                          accessibilityLabel={`任务模式：${mode.label}`}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected }}
+                          hitSlop={4}
+                          onPress={() => setTaskMode(mode.value)}
+                          style={({ pressed }) => [styles.modeButton, selected && styles.modeButtonSelected, pressed && styles.pressed]}
+                        >
+                          <Text style={[styles.modeButtonText, selected && styles.modeButtonTextSelected]}>{mode.label}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                   <Pressable
-                    key={mode.value}
+                    accessibilityLabel={isStartingTask ? "正在发起任务" : "发起任务"}
                     accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                    onPress={() => setTaskMode(mode.value)}
-                    style={({ pressed }) => [styles.modeButton, selected && styles.modeButtonSelected, pressed && styles.pressed]}
+                    accessibilityState={{ busy: isStartingTask, disabled: isStartingTask }}
+                    disabled={isStartingTask}
+                    hitSlop={4}
+                    onPress={() => void submitMobileTemplateTask()}
+                    style={({ pressed }) => [styles.launchButton, isStartingTask && styles.disabledAction, pressed && styles.pressed]}
                   >
-                    <Text style={[styles.modeButtonText, selected && styles.modeButtonTextSelected]}>{mode.label}</Text>
+                    <Send size={15} color="#ffffff" />
+                    <Text style={styles.launchButtonText}>{isStartingTask ? "发起中" : "发起任务"}</Text>
                   </Pressable>
-                );
-              })}
+                </View>
+              </View>
+              {visibleTasks.length ? (
+                <View style={styles.taskList}>
+                  {visibleTasks.map((task) => (
+                    <TaskCompanionCard
+                      key={task.id}
+                      actionId={taskActionId}
+                      followUpBusy={followUpTaskId === task.id}
+                      followUpValue={followUpDrafts[task.id] ?? ""}
+                      onAction={submitTaskAction}
+                      onFollowUp={submitTaskFollowUp}
+                      onFollowUpTextChange={(text) => setFollowUpDrafts((current) => ({ ...current, [task.id]: text }))}
+                      task={task}
+                    />
+                  ))}
+                </View>
+              ) : (
+                <Text style={styles.companionEmpty}>在电脑端启动任务后，这里会显示安全摘要、可信度和下一步。</Text>
+              )}
             </View>
             <Pressable
               accessibilityRole="button"
-              accessibilityState={{ busy: isStartingTask, disabled: isStartingTask }}
-              disabled={isStartingTask}
-              onPress={() => void submitMobileTemplateTask()}
-              style={({ pressed }) => [styles.launchButton, isStartingTask && styles.disabledAction, pressed && styles.pressed]}
+              accessibilityLabel={`查看电脑屏幕，${remoteEntryStatus.label}，${remoteEntryStatus.detail}`}
+              accessibilityHint={remoteEntryStatus.isActive ? "打开远程屏幕；输入仍需电脑端审批。" : "打开远程屏幕，只读查看电脑画面。"}
+              hitSlop={4}
+              onPress={onOpenRemote}
+              style={({ pressed }) => [styles.remoteEntry, pressed && styles.pressed]}
             >
-              <Send size={15} color="#ffffff" />
-              <Text style={styles.launchButtonText}>{isStartingTask ? "发起中" : "发起任务"}</Text>
+              <Monitor size={16} color="#23313d" />
+              <View style={styles.remoteEntryCopy}>
+                <Text style={styles.remoteEntryText}>查看电脑屏幕</Text>
+                <Text numberOfLines={2} style={[styles.remoteEntryMeta, remoteEntryStatus.isActive && styles.remoteEntryMetaActive]}>
+                  {remoteEntryStatus.detail}
+                </Text>
+              </View>
+              <ChevronRight size={17} color="#65717c" />
             </Pressable>
+            <Text style={styles.listSyncText}>{lastUpdatedText}</Text>
           </View>
-        </View>
-        {visibleTasks.length ? (
-          <View style={styles.taskList}>
-            {visibleTasks.map((task) => (
-              <TaskCompanionCard
-                key={task.id}
-                actionId={taskActionId}
-                followUpBusy={followUpTaskId === task.id}
-                followUpValue={followUpDrafts[task.id] ?? ""}
-                onAction={submitTaskAction}
-                onFollowUp={submitTaskFollowUp}
-                onFollowUpTextChange={(text) => setFollowUpDrafts((current) => ({ ...current, [task.id]: text }))}
-                task={task}
-              />
-            ))}
-          </View>
-        ) : (
-          <Text style={styles.companionEmpty}>在电脑端启动任务后，这里会显示安全摘要、可信度和下一步。</Text>
-        )}
-      </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="查看电脑屏幕"
-        onPress={onOpenRemote}
-        style={({ pressed }) => [styles.remoteEntry, pressed && styles.pressed]}
-      >
-        <Monitor size={16} color="#23313d" />
-        <Text style={styles.remoteEntryText}>查看电脑屏幕</Text>
-        <ChevronRight size={17} color="#65717c" />
-      </Pressable>
-
-      <FlatList
-        contentContainerStyle={approvals.length ? styles.list : styles.emptyList}
-        data={approvals}
-        keyExtractor={(approval) => approval.id}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <ShieldCheck size={34} color="#5f6b76" />
-            <Text style={styles.emptyTitle}>暂无待处理</Text>
-            <Text style={styles.emptyText}>电脑端的新审批请求会显示在这里。</Text>
-          </View>
-        }
-        renderItem={({ item }) => <ApprovalCard approval={item} onPress={() => onSelectApproval(item)} />}
-      />
+          )}
+          ListEmptyComponent={
+            <EmptyApprovalsState hasError={Boolean(error)} isLoading={isInitialLoading} onRefresh={handleRefresh} />
+          }
+          onRefresh={handleRefresh}
+          renderItem={({ item }) => <ApprovalCard approval={item} remoteInputGrant={remoteInputGrant} session={session} onPress={() => onSelectApproval(item)} />}
+          refreshing={isRefreshing}
+          style={styles.listViewport}
+        />
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
-function ApprovalCard({ approval, onPress }: { approval: BackendApproval; onPress: () => void }) {
+function EmptyApprovalsState({
+  hasError,
+  isLoading,
+  onRefresh,
+}: {
+  hasError: boolean;
+  isLoading: boolean;
+  onRefresh: () => void;
+}) {
+  if (isLoading) {
+    return (
+      <View accessible accessibilityLabel="正在加载审批和任务" style={styles.emptyState}>
+        <ActivityIndicator color="#0e5f76" />
+        <Text style={styles.emptyTitle}>正在同步</Text>
+        <Text style={styles.emptyText}>手机正在向电脑端加载审批和任务状态。</Text>
+      </View>
+    );
+  }
+  if (hasError) {
+    return (
+      <View accessibilityRole="alert" style={styles.emptyState}>
+        <XCircle size={34} color="#8c2f39" />
+        <Text style={styles.emptyTitle}>暂时连不上电脑</Text>
+        <Text style={styles.emptyText}>请确认电脑端 Lengrvis 已打开，然后重新同步。</Text>
+        <Pressable
+          accessibilityLabel="重新同步审批和任务"
+          accessibilityRole="button"
+          hitSlop={4}
+          onPress={onRefresh}
+          style={({ pressed }) => [styles.emptyRetryButton, pressed && styles.pressed]}
+        >
+          <RefreshCcw size={15} color="#23313d" />
+          <Text style={styles.emptyRetryText}>重新同步</Text>
+        </Pressable>
+      </View>
+    );
+  }
+  return (
+    <View style={styles.emptyState}>
+      <ShieldCheck size={34} color="#5f6b76" />
+      <Text style={styles.emptyTitle}>暂无待处理</Text>
+      <Text style={styles.emptyText}>电脑端的新审批请求会显示在这里。</Text>
+    </View>
+  );
+}
+
+function ApprovalCard({
+  approval,
+  remoteInputGrant,
+  session,
+  onPress,
+}: {
+  approval: BackendApproval;
+  remoteInputGrant: RemoteInputGrant | null;
+  session: PairingSession;
+  onPress: () => void;
+}) {
   const pending = approval.status === "pending";
   const preview = readablePreview(approval.diff_preview);
   const message = safeDisplayText(approval.message, "打开后查看这项审批。");
+  const activeRemoteInputGrant = isRemoteInputGrantUsable(remoteInputGrant) ? remoteInputGrant : null;
+  const safety = approvalListSafety(
+    approval,
+    activeRemoteInputGrant ? { deviceId: session.deviceId, grantId: activeRemoteInputGrant.id, bindingRef: activeRemoteInputGrant.binding_ref } : null,
+  );
+  const safetyStyle = safety.tone === "danger" ? styles.safetyDanger : safety.tone === "warning" ? styles.safetyWarning : styles.safetySafe;
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
+    <Pressable
+      accessibilityHint={safety.approveBlockedReason ? "打开详情后仍只能拒绝或回电脑端处理。" : "打开查看审批详情和安全核对。"}
+      accessibilityLabel={`${approvalCardTitle(approval)}，${approvalStatusText(approval)}，${safety.label}`}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
+    >
       <View style={styles.cardHeader}>
         <View style={styles.cardTitleWrap}>
           <Text style={styles.cardTitle}>{approvalCardTitle(approval)}</Text>
           <Text style={styles.cardMeta}>{shortDate(approval.created_at)}</Text>
         </View>
         <View style={styles.cardStatus}>
-          <Text style={[styles.badge, pending ? styles.badgePending : styles.badgeDone]}>{approvalStatusText(approval)}</Text>
+          <Text
+            style={[
+              styles.badge,
+              pending ? styles.badgePending : styles.badgeDone,
+              pending && safety.tone === "danger" && styles.badgeDanger,
+              pending && safety.tone === "warning" && styles.badgeWarning,
+              pending && safety.tone === "safe" && styles.badgeSafe,
+            ]}
+          >
+            {pending ? safety.label : approvalStatusText(approval)}
+          </Text>
           <ChevronRight size={18} color="#65717c" />
         </View>
       </View>
       <Text style={styles.message}>{message}</Text>
+      <View style={[styles.safetyCallout, safetyStyle]}>
+        <Text style={styles.safetyLabel}>{safety.label}</Text>
+        <Text numberOfLines={2} style={styles.safetyDetail}>{safety.detail}</Text>
+      </View>
       <Text numberOfLines={3} style={styles.preview}>{preview}</Text>
     </Pressable>
   );
@@ -666,9 +818,11 @@ function TaskCompanionCard({
           value={followUpValue}
         />
         <Pressable
+          accessibilityLabel="发送补充任务指令"
           accessibilityRole="button"
           accessibilityState={{ busy: followUpBusy, disabled: followUpDisabled }}
           disabled={followUpDisabled}
+          hitSlop={4}
           onPress={() => void onFollowUp(task, followUpValue)}
           style={({ pressed }) => [styles.followUpButton, followUpDisabled && styles.disabledAction, pressed && styles.pressed]}
         >
@@ -715,9 +869,11 @@ function TaskActionButton({
 }) {
   return (
     <Pressable
+      accessibilityLabel={label}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
+      hitSlop={4}
       onPress={onPress}
       style={({ pressed }) => [styles.taskAction, disabled && styles.disabledAction, pressed && styles.pressed]}
     >
@@ -740,6 +896,7 @@ function IconButton({
     <Pressable
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
+      hitSlop={4}
       onPress={onPress}
       style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
     >
@@ -754,6 +911,12 @@ function errorMessage(error: unknown): string {
   }
   if (error instanceof ForbiddenError) {
     return "这台手机没有权限查看这些审批。请在电脑端重新配对后再试。";
+  }
+  if (error instanceof BackendHttpError && error.status === 404) {
+    return "电脑端没有找到这些请求。请刷新后再试。";
+  }
+  if (error instanceof BackendHttpError && error.status >= 500) {
+    return "电脑端暂时无法处理请求。请稍后刷新重试。";
   }
   return "无法更新请求。请点刷新重试。";
 }
@@ -809,6 +972,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f6f4ee",
   },
+  keyboardAvoider: {
+    flex: 1,
+  },
   header: {
     paddingHorizontal: 20,
     paddingTop: 18,
@@ -834,8 +1000,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   iconButton: {
-    width: 42,
-    height: 42,
+    width: 48,
+    height: 48,
     borderRadius: 8,
     backgroundColor: "#ffffff",
     alignItems: "center",
@@ -935,7 +1101,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   templateButton: {
-    minHeight: 34,
+    minHeight: 48,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#d7dedf",
@@ -984,7 +1150,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   modeButton: {
-    minHeight: 30,
+    minHeight: 48,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: "#d7dedf",
@@ -1006,7 +1172,7 @@ const styles = StyleSheet.create({
     color: "#234a92",
   },
   launchButton: {
-    minHeight: 36,
+    minHeight: 48,
     borderRadius: 8,
     backgroundColor: "#1f7a4d",
     flexDirection: "row",
@@ -1102,8 +1268,8 @@ const styles = StyleSheet.create({
     color: "#65717c",
   },
   followUpButton: {
-    width: 38,
-    minHeight: 38,
+    width: 48,
+    minHeight: 48,
     borderRadius: 8,
     backgroundColor: "#1f7a4d",
     alignItems: "center",
@@ -1114,7 +1280,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   taskAction: {
-    minHeight: 34,
+    minHeight: 48,
     minWidth: 86,
     borderRadius: 8,
     borderWidth: 1,
@@ -1137,7 +1303,7 @@ const styles = StyleSheet.create({
   remoteEntry: {
     marginHorizontal: 20,
     marginTop: 10,
-    minHeight: 42,
+    minHeight: 48,
     borderRadius: 8,
     backgroundColor: "#eef5f2",
     borderWidth: 1,
@@ -1148,20 +1314,48 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   remoteEntryText: {
-    flex: 1,
     color: "#23313d",
     fontWeight: "800",
   },
+  remoteEntryCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  remoteEntryMeta: {
+    color: "#65717c",
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  remoteEntryMetaActive: {
+    color: "#1f6244",
+  },
+  listHeader: {
+    paddingBottom: 4,
+  },
   list: {
-    padding: 20,
+    paddingTop: 0,
+    paddingBottom: Platform.select({ android: 96, default: 28 }),
     gap: 14,
   },
   emptyList: {
     flexGrow: 1,
-    padding: 20,
+    paddingTop: 0,
+    paddingBottom: Platform.select({ android: 96, default: 28 }),
+  },
+  listViewport: {
+    flex: 1,
   },
   listFooter: {
     marginTop: 14,
+  },
+  listSyncText: {
+    marginHorizontal: 20,
+    marginTop: 12,
+    color: "#65717c",
+    fontSize: 12,
+    fontWeight: "700",
+    marginBottom: 10,
   },
   emptyState: {
     alignItems: "center",
@@ -1178,7 +1372,25 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 22,
   },
+  emptyRetryButton: {
+    minHeight: 48,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#ffffff",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingHorizontal: 12,
+  },
+  emptyRetryText: {
+    color: "#23313d",
+    fontSize: 12,
+    fontWeight: "900",
+  },
   card: {
+    marginHorizontal: 20,
     borderRadius: 8,
     backgroundColor: "#ffffff",
     borderWidth: 1,
@@ -1206,11 +1418,15 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   cardStatus: {
+    flexShrink: 1,
+    maxWidth: "48%",
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
   },
   badge: {
+    flexShrink: 1,
+    maxWidth: "100%",
     borderRadius: 8,
     overflow: "hidden",
     paddingHorizontal: 10,
@@ -1226,10 +1442,51 @@ const styles = StyleSheet.create({
     backgroundColor: "#e7ece8",
     color: "#1f6244",
   },
+  badgeDanger: {
+    backgroundColor: "#f9d8dc",
+    color: "#8c2f39",
+  },
+  badgeWarning: {
+    backgroundColor: "#fff2c6",
+    color: "#7a5700",
+  },
+  badgeSafe: {
+    backgroundColor: "#dff3e8",
+    color: "#1f6244",
+  },
   message: {
     color: "#27343f",
     lineHeight: 22,
     fontSize: 15,
+  },
+  safetyCallout: {
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 3,
+  },
+  safetySafe: {
+    borderColor: "#bdd8c9",
+    backgroundColor: "#eef8f2",
+  },
+  safetyWarning: {
+    borderColor: "#e4cf8b",
+    backgroundColor: "#fff9e8",
+  },
+  safetyDanger: {
+    borderColor: "#e1b8be",
+    backgroundColor: "#fff5f6",
+  },
+  safetyLabel: {
+    color: "#23313d",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  safetyDetail: {
+    color: "#46535f",
+    fontSize: 12,
+    lineHeight: 17,
   },
   preview: {
     color: "#46535f",

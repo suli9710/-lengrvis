@@ -61,6 +61,9 @@ _REMOTE_INPUT_DENIED_ERROR_CODE = "remote_input.denied"
 _REMOTE_INPUT_REJECTED_ERROR_CODE = "remote_input.rejected"
 _REMOTE_INPUT_UNEXPECTED_ERROR_CODE = "remote_input.failed"
 _REMOTE_REVIEW_REASON_AUDIT_LIMIT = 3
+_REMOTE_WEBSOCKET_RETRY_CLOSE_CODE = 1012
+_REMOTE_WEBSOCKET_AUTH_CLOSE_CODE = 4401
+_REMOTE_WEBSOCKET_GRANT_CLOSE_CODE = 4403
 _REMOTE_ERROR_SELECTOR_PATTERN = re.compile(
     r"(?i)\b(selector|locator)\s*[:=]\s*['\"]?([^\s,'\"<>]+)"
 )
@@ -78,6 +81,24 @@ _REMOTE_ERROR_TOKEN_HINT_PATTERN = re.compile(
     r"|\bBearer\s+[^\s,'\"<>]{4,}\b"
     r"|\bsk-[A-Za-z0-9_\-]{8,}\b"
 )
+_REMOTE_INPUT_PREVIEW_MESSAGE = "Remote desktop input preview. User approval is required before execution."
+_REMOTE_INPUT_SAFE_KEY_PATTERN = re.compile(r"^[a-z0-9_.+\- ]{1,24}$", re.IGNORECASE)
+_REMOTE_INPUT_SAFE_KEYS = {
+    "backspace",
+    "delete",
+    "down",
+    "end",
+    "enter",
+    "escape",
+    "home",
+    "left",
+    "pagedown",
+    "pageup",
+    "right",
+    "space",
+    "tab",
+    "up",
+}
 
 
 @ws_router.websocket("/ws/remote/screen")
@@ -109,8 +130,7 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                     )
                 )
 
-            if not _remote_session_still_active(claims):
-                await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
+            if await _close_remote_websocket_if_inactive(websocket, claims):
                 break
 
             try:
@@ -162,7 +182,7 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
             except WebSocketDisconnect:
                 break
             if not device_active:
-                await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
+                await _close_remote_websocket_if_inactive(websocket, claims)
                 break
 
             remaining_delay = frame_interval_seconds(fps) - (asyncio.get_running_loop().time() - sent_at)
@@ -186,14 +206,12 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
             try:
                 event = await asyncio.wait_for(websocket.receive_json(), timeout=_INPUT_ACTIVE_POLL_SECONDS)
             except asyncio.TimeoutError:
-                if not _remote_session_still_active(claims):
-                    await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
+                if await _close_remote_websocket_if_inactive(websocket, claims):
                     break
                 continue
             except WebSocketDisconnect:
                 break
-            if not _remote_session_still_active(claims):
-                await websocket.close(code=1008, reason="Remote desktop session is no longer active.")
+            if await _close_remote_websocket_if_inactive(websocket, claims):
                 break
             try:
                 result = handle_remote_input_event(event, claims=claims)
@@ -281,8 +299,16 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
 
     registry = register_all_tools(settings=settings)
     tool = registry.get(tool_name)
+    if not bool(getattr(tool, "supports_dry_run", False)):
+        raise HTTPException(status_code=409, detail="Remote input dry-run preview is unavailable.")
     preview = tool.execute({**args, "dry_run": True}, {"settings": settings, "allowed_directories": settings.allowed_directories})
-    safe_preview = binding_preview(preview)
+    safe_preview = _remote_input_binding_preview(tool_name, preview)
+    if not _remote_input_safe_preview_verified(safe_preview):
+        raise HTTPException(status_code=409, detail="Remote input dry-run preview is unavailable.")
+    resource_kinds = _remote_input_resource_kinds(tool)
+    tool_effects = _remote_input_tool_effects(tool)
+    tool_trust_tier = _remote_input_trust_tier(tool)
+    dry_run_summary = _remote_input_dry_run_summary(safe_preview)
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
@@ -296,6 +322,20 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
         settings_fingerprint=settings_fingerprint(settings, allowed_directories=settings.allowed_directories),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version=getattr(tool, "tool_version", "1"),
+        tool_trust_tier=tool_trust_tier,
+        tool_effects=tool_effects,
+        resource_kinds=resource_kinds,
+        dry_run_summary=dry_run_summary,
+        engineering_boundary=_remote_input_approval_boundary_facts(
+            tool,
+            review,
+            safe_preview,
+            event_type=str(event.get("type") or ""),
+            resource_kinds=resource_kinds,
+            tool_effects=tool_effects,
+            tool_trust_tier=tool_trust_tier,
+            dry_run_summary=dry_run_summary,
+        ),
         source="remote_input",
         source_device_id=str((claims or {}).get("device_id") or ""),
         source_grant_id=str((claims or {}).get("grant_id") or ""),
@@ -329,13 +369,13 @@ async def _authorize_remote_websocket(websocket: WebSocket, token: str) -> dict[
         await websocket.close(code=1008, reason="Remote mobile WebSockets require WSS unless the client is on this computer.")
         return None
     if not get_effective_settings().remote_desktop_enabled:
-        await websocket.close(code=1008, reason="Remote desktop is disabled.")
+        await websocket.close(code=_REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, reason="Remote desktop is disabled.")
         return None
     try:
         required_scope = REMOTE_INPUT_SCOPE if websocket.url.path.endswith("/input") else REMOTE_VIEW_SCOPE
         return decode_mobile_token(mobile_token_from_websocket(websocket, token), allowed_scopes={required_scope})
-    except HTTPException:
-        await websocket.close(code=1008, reason="Unauthorized.")
+    except HTTPException as exc:
+        await websocket.close(code=_remote_websocket_close_code(exc), reason=_remote_websocket_close_reason(exc))
         return None
 
 
@@ -413,7 +453,214 @@ def _event_to_tool_call(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 def _audit_args(args: dict[str, Any]) -> dict[str, Any]:
     if "text" in args:
         return {**args, "text": "***", "characters": len(str(args.get("text") or ""))}
+    if "key" in args:
+        key = _safe_remote_input_key_label(args.get("key"))
+        return {**args, "key": key or "***"}
     return dict(args)
+
+
+def _remote_input_binding_preview(tool_name: str, preview: dict[str, Any]) -> dict[str, Any]:
+    public_preview = {
+        "ok": bool(preview.get("ok")),
+        "dry_run": preview.get("dry_run") is True,
+        "message": _REMOTE_INPUT_PREVIEW_MESSAGE,
+        "diff_preview": _remote_input_safe_diff_preview(tool_name, preview.get("diff_preview")),
+    }
+    return binding_preview(public_preview)
+
+
+def _remote_input_safe_preview_verified(safe_preview: dict[str, Any]) -> bool:
+    return safe_preview.get("ok") is True and safe_preview.get("dry_run") is True
+
+
+def _remote_input_safe_diff_preview(tool_name: str, value: Any) -> list[dict[str, Any]]:
+    items = value if isinstance(value, list) else []
+    safe_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        action = _remote_input_action(str(item.get("action") or ""), tool_name=tool_name)
+        safe_item: dict[str, Any] = {"action": action}
+        if action == "click":
+            safe_item["x"] = _safe_int(item.get("x"))
+            safe_item["y"] = _safe_int(item.get("y"))
+        elif action == "type_text":
+            safe_item["characters"] = _safe_nonnegative_int(item.get("characters"))
+        elif action == "key_press":
+            key = _safe_remote_input_key_label(item.get("key"))
+            if key:
+                safe_item["key"] = key
+        safe_items.append(safe_item)
+        if len(safe_items) >= 5:
+            break
+    if safe_items:
+        return safe_items
+    return [{"action": _remote_input_action("", tool_name=tool_name)}]
+
+
+def _remote_input_resource_kinds(tool: Any) -> list[str]:
+    return _unique_strings(_metadata_strings(getattr(tool, "resource_kinds", [])), ["remote_screen", "desktop_ui"])
+
+
+def _remote_input_tool_effects(tool: Any) -> list[str]:
+    effects = _metadata_strings(getattr(tool, "effects", []))
+    if effects:
+        return _unique_strings(effects)
+    tool_name = str(getattr(tool, "name", "") or "")
+    if tool_name == "remote.click":
+        return ["click", "write"]
+    if tool_name == "remote.type_text":
+        return ["type", "write"]
+    if tool_name == "remote.key_press":
+        return ["key", "write"]
+    return ["write"]
+
+
+def _remote_input_trust_tier(tool: Any) -> str:
+    return str(getattr(tool, "trust_tier", "") or "unknown").strip() or "unknown"
+
+
+def _remote_input_dry_run_summary(safe_preview: dict[str, Any]) -> str:
+    detail = _remote_input_first_preview_item(safe_preview)
+    action = str(detail.get("action") or "")
+    if action == "click":
+        return f"Remote desktop dry-run: click screen position ({_safe_int(detail.get('x'))}, {_safe_int(detail.get('y'))})."
+    if action == "type_text":
+        return f"Remote desktop dry-run: type {_safe_nonnegative_int(detail.get('characters'))} character(s) into the focused control."
+    if action == "key_press":
+        key = _safe_remote_input_key_label(detail.get("key"))
+        if key:
+            return f"Remote desktop dry-run: press {key}."
+        return "Remote desktop dry-run: press a keyboard key."
+    return "Remote desktop dry-run: review the requested input action."
+
+
+def _remote_input_approval_boundary_facts(
+    tool: Any,
+    review: Any,
+    safe_preview: dict[str, Any],
+    *,
+    event_type: str,
+    resource_kinds: list[str],
+    tool_effects: list[str],
+    tool_trust_tier: str,
+    dry_run_summary: str,
+) -> dict[str, Any]:
+    return {
+        "source": "remote_input",
+        "remote_input": {
+            "event_type": _remote_input_public_event_type(event_type),
+            "requires_active_grant": True,
+            "required_mobile_scopes": [REMOTE_INPUT_SCOPE],
+            "device_binding": "active grant",
+            "grant_binding": "active grant",
+        },
+        "tool": {
+            "name": str(getattr(tool, "name", "") or ""),
+            "risk_level": _remote_input_risk_label(getattr(tool, "risk_level", "")),
+            "trust_tier": tool_trust_tier,
+            "effects": list(tool_effects),
+            "resource_kinds": list(resource_kinds),
+            "read_only": bool(tool.is_read_only()) if hasattr(tool, "is_read_only") else False,
+            "destructive": bool(getattr(tool, "destructive", False)),
+            "supports_dry_run": bool(getattr(tool, "supports_dry_run", False)),
+            "tool_version": str(getattr(tool, "tool_version", "1") or "1"),
+        },
+        "policy": {
+            "verdict": str(getattr(getattr(review, "verdict", ""), "value", getattr(review, "verdict", ""))),
+            "risk_level": _remote_input_risk_label(getattr(review, "risk_level", "")),
+            "target_type": str(getattr(review, "target_type", "") or ""),
+            "reason_count": len(getattr(review, "reasons", None) or []),
+            "required_change_count": len(getattr(review, "required_changes", None) or []),
+        },
+        "binding": {
+            "args_bound": True,
+            "preview_bound": True,
+            "settings_bound": True,
+            "permission_policy_bound": True,
+        },
+        "dry_run": {
+            "verified": safe_preview.get("dry_run") is True,
+            "summary": dry_run_summary,
+            "action": str(_remote_input_first_preview_item(safe_preview).get("action") or ""),
+            "preview_keys": sorted(str(key) for key in safe_preview.keys() if not str(key).startswith("_"))[:20],
+        },
+    }
+
+
+def _remote_input_first_preview_item(safe_preview: dict[str, Any]) -> dict[str, Any]:
+    items = safe_preview.get("diff_preview")
+    if isinstance(items, list) and items and isinstance(items[0], dict):
+        return dict(items[0])
+    return {}
+
+
+def _remote_input_action(action: str, *, tool_name: str) -> str:
+    normalized = str(action or "").strip().lower()
+    if normalized in {"click", "type_text", "key_press"}:
+        return normalized
+    return {
+        "remote.click": "click",
+        "remote.type_text": "type_text",
+        "remote.key_press": "key_press",
+    }.get(tool_name, "input")
+
+
+def _remote_input_public_event_type(event_type: str) -> str:
+    normalized = str(event_type or "").strip().lower()
+    if normalized in {"click", "type", "key"}:
+        return normalized
+    return "input"
+
+
+def _remote_input_risk_label(value: Any) -> str:
+    text = str(getattr(value, "value", value) or "").strip()
+    return text.replace("_", " ").lower()
+
+
+def _safe_remote_input_key_label(value: Any) -> str:
+    key = str(value or "").strip().lower()
+    if not key:
+        return ""
+    if key in _REMOTE_INPUT_SAFE_KEYS:
+        return key
+    if len(key) == 1 and key.isprintable() and not key.isspace():
+        return key
+    if _REMOTE_INPUT_SAFE_KEY_PATTERN.fullmatch(key) and not _REMOTE_ERROR_TOKEN_HINT_PATTERN.search(key):
+        return key
+    return ""
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    return max(0, _safe_int(value))
+
+
+def _unique_strings(*groups: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+def _metadata_strings(value: Any) -> list[Any]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return []
 
 
 def _remote_client_error(*, code: str, message: str, status_code: int | None = None) -> dict[str, Any]:
@@ -496,6 +743,7 @@ def _redacted_remote_exception(exc: BaseException) -> str:
 
 def _redact_remote_diagnostic_text(text: str) -> str:
     text = redact_public_text(text)
+    text = _REMOTE_ERROR_TOKEN_HINT_PATTERN.sub("[REDACTED_SECRET]", text)
     text = _REMOTE_ERROR_STACK_PATTERN.sub("[REDACTED_STACK]", text)
     text = _REMOTE_ERROR_HOST_PATTERN.sub(r"\1=[REDACTED]", text)
     return _REMOTE_ERROR_SELECTOR_PATTERN.sub(r"\1=[REDACTED]", text)
@@ -534,4 +782,36 @@ def _claims_still_active(claims: dict[str, Any]) -> bool:
 
 
 def _remote_session_still_active(claims: dict[str, Any]) -> bool:
-    return get_effective_settings().remote_desktop_enabled and _claims_still_active(claims)
+    return _remote_session_close_state(claims)[0]
+
+
+async def _close_remote_websocket_if_inactive(websocket: WebSocket, claims: dict[str, Any]) -> bool:
+    active, code, reason = _remote_session_close_state(claims)
+    if active:
+        return False
+    await websocket.close(code=code, reason=reason)
+    return True
+
+
+def _remote_session_close_state(claims: dict[str, Any]) -> tuple[bool, int, str]:
+    if not get_effective_settings().remote_desktop_enabled:
+        return False, _REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, "Remote desktop is disabled."
+    try:
+        validate_mobile_claims_active(claims)
+    except HTTPException as exc:
+        return False, _remote_websocket_close_code(exc), _remote_websocket_close_reason(exc)
+    return True, 1000, ""
+
+
+def _remote_websocket_close_code(exc: HTTPException) -> int:
+    detail = _remote_websocket_close_reason(exc).lower()
+    if "remote input grant" in detail:
+        return _REMOTE_WEBSOCKET_GRANT_CLOSE_CODE
+    if exc.status_code == 403:
+        return _REMOTE_WEBSOCKET_GRANT_CLOSE_CODE
+    return _REMOTE_WEBSOCKET_AUTH_CLOSE_CODE
+
+
+def _remote_websocket_close_reason(exc: HTTPException) -> str:
+    detail = str(exc.detail or "").strip()
+    return detail or "Unauthorized."

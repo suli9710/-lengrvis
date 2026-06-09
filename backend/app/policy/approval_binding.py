@@ -65,6 +65,17 @@ def short_digest(value: str, *, length: int = 12) -> str:
     return value.split(":", 1)[-1][:length]
 
 
+def remote_input_binding_ref(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    digest = short_digest(
+        hmac_digest({"remote_input_grant_id": text}, prefix="remote-input-binding"),
+        length=16,
+    )
+    return f"[remote-input-binding:{digest}]"
+
+
 def redacted_preview(preview: dict[str, Any]) -> dict[str, Any]:
     redacted = redact_value(_public_preview(preview))
     return redacted if isinstance(redacted, dict) else {"preview": redacted}

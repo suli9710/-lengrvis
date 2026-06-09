@@ -98,7 +98,7 @@ function taskStatusLabel(status: string): string {
   if (status === "completed") return "已完成";
   if (status === "cancelled" || status === "denied") return "已取消";
   if (status === "failed") return "失败";
-  return status || "未知";
+  return safeCompactText(status, "未知");
 }
 
 function statusFallback(status: string): string {

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
+from app.core import db
 from app.core.audit import record
 from app.llm.registry import get_effective_settings
+from app.policy.approval_binding import args_binding_hmac
 from app.policy.risk import RiskLevel
+from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
 from app.services.remote_desktop_service import capture_screen
 from app.tools.schemas import ToolDefinition
 
@@ -49,7 +53,7 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # n
     y = int(args.get("y") or 0)
     if args.get("dry_run", True):
         return _preview("click", {"x": x, "y": y})
-    if not _has_approval(args):
+    if not _has_approval(args, "remote.click"):
         return _approval_error("click")
     _click_at(x, y)
     record("remote.click", _REMOTE_ACTOR, {"x": x, "y": y})
@@ -62,7 +66,7 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]: 
     text = str(args.get("text") or "")
     if args.get("dry_run", True):
         return _preview("type_text", {"characters": len(text)})
-    if not _has_approval(args):
+    if not _has_approval(args, "remote.type_text"):
         return _approval_error("type_text")
     _type_text(text)
     record("remote.type_text", _REMOTE_ACTOR, {"characters": len(text)})
@@ -77,7 +81,7 @@ def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]: 
         return {"ok": False, "error": "Key is required."}
     if args.get("dry_run", True):
         return _preview("key_press", {"key": key})
-    if not _has_approval(args):
+    if not _has_approval(args, "remote.key_press"):
         return _approval_error("key_press")
     _press_key(key)
     record("remote.key_press", _REMOTE_ACTOR, {"key": key})
@@ -98,8 +102,18 @@ def _remote_enabled(context: dict[str, Any]) -> bool:
     return bool(getattr(settings, "remote_desktop_enabled", False))
 
 
-def _has_approval(args: dict[str, Any]) -> bool:
-    return bool(args.get("approved") and args.get("approval_id"))
+def _has_approval(args: dict[str, Any], tool_name: str) -> bool:
+    if args.get("approved") is not True:
+        return False
+    approval_id = str(args.get("approval_id") or "").strip()
+    if not approval_id:
+        return False
+    approval = db.fetch_one("approvals", approval_id)
+    if not approval:
+        return False
+    if str(approval.get("status") or "") != "approved" or not bool(str(approval.get("consumed_at") or "").strip()):
+        return False
+    return _approval_matches_remote_input(approval, tool_name, args) and _approval_remote_input_grant_active(approval)
 
 
 def _approval_error(action: str) -> dict[str, Any]:
@@ -107,6 +121,78 @@ def _approval_error(action: str) -> dict[str, Any]:
         "ok": False,
         "error": f"Remote desktop {action} requires an approved approval_id after dry-run preview.",
     }
+
+
+def _approval_matches_remote_input(approval: dict[str, Any], tool_name: str, args: dict[str, Any]) -> bool:
+    if str(approval.get("approval_type") or "") != "remote_input" and str(approval.get("source") or "") != "remote_input":
+        return False
+    if str(approval.get("tool_name") or "") != tool_name:
+        return False
+    task_id = str(approval.get("task_id") or "")
+    step_id = str(approval.get("step_id") or "")
+    expected_hmac = str(approval.get("args_binding_hmac") or "")
+    if not task_id or not step_id or not expected_hmac:
+        return False
+    return expected_hmac == args_binding_hmac(tool_name, _approval_bound_args(tool_name, args), task_id=task_id, step_id=step_id)
+
+
+def _approval_bound_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if tool_name == "remote.click":
+        return {"x": int(args.get("x") or 0), "y": int(args.get("y") or 0)}
+    if tool_name == "remote.type_text":
+        return {"text": str(args.get("text") or "")}
+    if tool_name == "remote.key_press":
+        return {"key": str(args.get("key") or "")}
+    return {}
+
+
+def _approval_remote_input_grant_active(approval: dict[str, Any]) -> bool:
+    device_id = str(approval.get("source_device_id") or "").strip()
+    grant_id = str(approval.get("source_grant_id") or "").strip()
+    if not device_id or not grant_id:
+        return False
+    if REMOTE_INPUT_SCOPE not in _text_list(approval.get("required_mobile_scopes")):
+        return False
+    device = db.fetch_one("mobile_devices", device_id)
+    if not isinstance(device, dict) or str(device.get("status") or "active").strip().lower() != "active":
+        return False
+    grants = device.get("remote_input_grants") or []
+    if not isinstance(grants, list):
+        return False
+    now = datetime.now(timezone.utc)
+    for grant in grants:
+        if isinstance(grant, dict) and _remote_input_grant_active(grant, grant_id, now):
+            return True
+    return False
+
+
+def _remote_input_grant_active(grant: dict[str, Any], expected_grant_id: str, now: datetime) -> bool:
+    if str(grant.get("id") or "").strip() != expected_grant_id:
+        return False
+    if str(grant.get("scope") or REMOTE_INPUT_SCOPE).strip().lower() != REMOTE_INPUT_SCOPE:
+        return False
+    if str(grant.get("status") or "").strip().lower() != "active":
+        return False
+    if str(grant.get("revoked_at") or "").strip():
+        return False
+    expires_at = _parse_remote_input_grant_expiry(grant.get("expires_at"))
+    return expires_at is not None and expires_at > now
+
+
+def _parse_remote_input_grant_expiry(value: Any) -> datetime | None:
+    try:
+        expires_at = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    return expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+
+
+def _text_list(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {item.strip() for item in value.replace(",", " ").split() if item.strip()}
+    if isinstance(value, (list, tuple, set)):
+        return {str(item or "").strip() for item in value if str(item or "").strip()}
+    return set()
 
 
 def _click_at(x: int, y: int) -> None:
@@ -228,12 +314,44 @@ def _normalize_key(key: str) -> str:
 
 def register(registry) -> None:
     defs = [
-        ("remote.view_screen", view_screen, RiskLevel.R1_OPEN_ONLY, False),
-        ("remote.click", click, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, True),
-        ("remote.type_text", type_text, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, True),
-        ("remote.key_press", key_press, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, True),
+        (
+            "remote.view_screen",
+            view_screen,
+            RiskLevel.R1_OPEN_ONLY,
+            False,
+            ["read"],
+            ["remote_screen"],
+            True,
+        ),
+        (
+            "remote.click",
+            click,
+            RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            True,
+            ["click", "write"],
+            ["remote_screen", "desktop_ui"],
+            False,
+        ),
+        (
+            "remote.type_text",
+            type_text,
+            RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            True,
+            ["type", "write"],
+            ["remote_screen", "desktop_ui"],
+            False,
+        ),
+        (
+            "remote.key_press",
+            key_press,
+            RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+            True,
+            ["key", "write"],
+            ["remote_screen", "desktop_ui"],
+            False,
+        ),
     ]
-    for name, fn, risk, supports_dry_run in defs:
+    for name, fn, risk, supports_dry_run, effects, resource_kinds, read_only in defs:
         registry.register(
             ToolDefinition(
                 name=name,
@@ -245,5 +363,11 @@ def register(registry) -> None:
                 supports_dry_run=supports_dry_run,
                 requires_authorized_path=False,
                 execute=fn,
+                read_only=read_only,
+                concurrency_safe=read_only,
+                destructive=False,
+                effects=effects,
+                resource_kinds=resource_kinds,
+                trust_tier="system",
             )
         )
