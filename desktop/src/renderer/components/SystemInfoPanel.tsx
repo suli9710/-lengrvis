@@ -44,6 +44,7 @@ type DiagnosticExportState = {
   status: "idle" | "success" | "error";
   message: string;
   path?: string;
+  displayPath?: string;
   bytes?: number;
 };
 
@@ -127,7 +128,7 @@ export function SystemInfoPanel({
     supportRedaction?.currentResponse?.externalReviewRequired !== false;
   const supportChecklistCount = supportReview?.checklistCount ?? 0;
   const supportBlockingReasons = supportRedaction?.blockingReasons ?? [];
-  const supportFieldStateLabel = supportSafetySignalsConsistent ? "复核字段一致" : "字段不一致/不完整，按禁止外发处理";
+  const supportFieldStateLabel = supportSafetySignalsConsistent ? "安全状态已读取，外发前仍需人工确认" : "安全状态不完整，按禁止外发处理";
 
   const refreshLocalStatus = async () => {
     if (isLocalStatusRefreshing) return;
@@ -153,13 +154,11 @@ export function SystemInfoPanel({
       if (!result?.ok || !result.path) {
         throw new Error(result?.error || "诊断包导出失败，请刷新后再试。");
       }
-      const safetyNote = supportPackagePublicSafe
-        ? "当前复核字段显示已确认；仍只应按信任支持材料处理，公开发布前需要另行审批。"
-        : "外发前仍需人工复核，当前不是 public-safe 报告。";
       setDiagnosticExport({
         status: "success",
-        message: `诊断包已生成：${result.filename || compactPath(result.path)}。下方显示的是本机保存位置，方便你打开文件；普通页面仍可能显示本机路径；不要把完整路径当作可公开信息；${safetyNote}`,
+        message: `诊断包已生成：${result.filename || compactPath(result.path)}。这次导出由你手动点击触发，应用不会自动发送诊断包；下方显示的是本机保存位置，方便你打开文件；普通页面仍可能显示本机路径；不要把完整路径当作可公开信息；外发前需人工复核，当前不可公开分享。`,
         path: result.path,
+        displayPath: result.filename || compactPath(result.path),
         bytes: result.bytes
       });
     } catch (error) {
@@ -181,6 +180,7 @@ export function SystemInfoPanel({
         status: "error",
         message: error instanceof Error ? error.message : "无法打开诊断包位置。",
         path: diagnosticExport.path,
+        displayPath: diagnosticExport.displayPath,
         bytes: diagnosticExport.bytes
       });
     }
@@ -245,7 +245,7 @@ export function SystemInfoPanel({
               <Archive size={18} aria-hidden="true" />
               <div>
                 <strong>遇到问题时导出诊断包</strong>
-                <span>支持包会尽量使用脱敏路径和本机范围摘要，包含版本、服务状态、网络接口、进程摘要和最近失败统计；不包含你的文档正文、文件内容或密钥。本页的日志位置等普通页面字段仍可能显示本机路径；导出的包用于信任的支持排查，不是可公开发布的报告。</span>
+                <span>只有点击“导出诊断包”才会生成文件，应用不会自动导出或发送。支持包会尽量使用脱敏路径和本机范围摘要，包含版本、服务状态、网络接口、进程摘要和最近失败统计；不包含你的文档正文、文件内容或密钥。本页的日志位置等普通页面字段仍可能显示本机路径；这不是可公开发布的报告，导出后请先人工复核，再发给信任的支持人员，当前不可公开分享。</span>
               </div>
             </div>
             <div
@@ -257,9 +257,9 @@ export function SystemInfoPanel({
               data-review-required={supportReviewRequired ? "true" : "false"}
               data-blocking-reasons={supportBlockingReasons.join(",")}
             >
-              <span>{supportPackagePublicSafe ? "复核字段已确认 · 不代表公开发布许可" : "不可公开分享"}</span>
-              <span>{`public_safe=${supportRawPublicSafe ? "true" : "false"}`}</span>
-              <span>{supportReviewRequired ? "外发前需人工复核" : "仍需确认接收方范围"}</span>
+              <span>当前不可公开分享</span>
+              <span>外发前需人工复核</span>
+              <span>导出需手动点击</span>
               <span>{supportFieldStateLabel}</span>
               <span>{supportChecklistCount ? `${supportChecklistCount} 项复核清单` : "等待复核清单"}</span>
             </div>
@@ -296,8 +296,8 @@ export function SystemInfoPanel({
             ) : null}
             {diagnosticExport.status === "success" && diagnosticExport.path ? (
               <div className="diagnostic-export__path" data-testid="diagnostic-export-path">
-                <span>本机保存位置：仅用于在这台电脑上打开，不建议公开完整路径。</span>
-                <code>{diagnosticExport.path}</code>
+                <span>本机保存位置：只显示文件名或压缩路径；用“打开所在位置”在这台电脑上查看，不要公开完整路径。</span>
+                <code>{diagnosticExport.displayPath || compactPath(diagnosticExport.path)}</code>
               </div>
             ) : null}
           </div>

@@ -1268,7 +1268,7 @@ function LocalModelInstaller({
   const [status, setStatus] = useState<InstallModelStatus>("idle");
   const [socketStatus, setSocketStatus] = useState<InstallModelSocketStatus>("idle");
   const [progress, setProgress] = useState<InstallModelProgress>({
-    stage: "选择模型后即可安装到本地推理环境。",
+    stage: "选择模型后即可准备到这台电脑。",
     percent: 0
   });
   const [selectedSetupPlan, setSelectedSetupPlan] = useState<LocalModelSetupPlan | null>(setupPlan);
@@ -1279,7 +1279,7 @@ function LocalModelInstaller({
   const effectiveSetupPlan = selectedSetupPlan ?? setupPlan;
   const effectiveReadiness = effectiveSetupPlan?.readiness ?? readiness;
   const canInstall = effectiveSetupPlan?.canInstall ?? readiness?.canInstall ?? true;
-  const lastError = status === "error" ? progress.error || progress.stage : "";
+  const lastError = status === "error" ? localModelUserMessage(progress.error || progress.stage, "安装失败，请重新检查或重试。") : "";
 
   useEffect(() => {
     const recommendedModel = effectiveReadiness?.recommendedModel;
@@ -1353,9 +1353,9 @@ function LocalModelInstaller({
       if (!response.ok) {
         setStatus("error");
         setProgress({
-          stage: response.error?.message ?? "安装请求失败，请确认 Lengrvis 正在运行。",
+          stage: localModelUserMessage(response.error?.message, "安装请求失败，请确认 Lengrvis 正在运行。"),
           percent: 0,
-          error: response.error?.message ?? "安装请求失败"
+          error: localModelUserMessage(response.error?.message, "安装请求失败")
         });
         return;
       }
@@ -1369,9 +1369,9 @@ function LocalModelInstaller({
       if (response.data?.ok === false || response.data?.error) {
         setStatus("error");
         setProgress({
-          stage: response.data.error ?? response.data.message ?? "安装任务启动失败。",
+          stage: localModelUserMessage(response.data.error ?? response.data.message, "安装任务启动失败。"),
           percent: responseProgress ? responsePercent : 0,
-          error: response.data.error ?? response.data.message ?? "安装任务启动失败"
+          error: localModelUserMessage(response.data.error ?? response.data.message, "安装任务启动失败")
         });
         return;
       }
@@ -1388,7 +1388,7 @@ function LocalModelInstaller({
         current.percent > 0
           ? current
           : {
-              stage: response.data?.message ?? "安装任务已启动，正在等待进度...",
+              stage: localModelUserMessage(response.data?.message, "安装任务已启动，正在等待进度..."),
               percent: 1
             }
       );
@@ -1533,7 +1533,7 @@ function LocalModelInstaller({
       />
       <div className="local-model-installer__head">
         <div className="local-model-installer__copy">
-          <strong>本地 AI 手动设置</strong>
+          <strong>本地 AI 备选设置</strong>
           <span>
             {localModelInstallerHint(effectiveSetupPlan, model)}
           </span>
@@ -1565,13 +1565,13 @@ function LocalModelInstaller({
           onClick={() => void installModel()}
         >
           {isInstalling ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <Download size={16} aria-hidden="true" />}
-          {isInstalling ? "正在安装" : "手动安装所选模型"}
+          {isInstalling ? "正在安装" : "安装所选模型"}
         </button>
       </div>
 
       <InstallModelProgressBar progress={progress} />
       {progress.error ? (
-        <span className="settings-status settings-status--error" role="alert">{progress.error}</span>
+        <span className="settings-status settings-status--error" role="alert">{localModelUserMessage(progress.error, "安装失败，请重新检查或重试。")}</span>
       ) : null}
     </div>
   );
@@ -1627,6 +1627,7 @@ function PrivacyReadinessPanel({
   const tone = error || blocked ? "danger" : ready ? "success" : checking ? "info" : "warning";
   const primaryAction = privacyReadinessPrimaryAction(mode, setupPlan, ready, blocked, checking);
   const PrimaryIcon = privacyReadinessPrimaryIcon(primaryAction?.kind, checking);
+  const repairNote = privacyReadinessRepairNote(mode, health, setupPlan, ready, checking);
 
   return (
     <section className={`privacy-readiness privacy-readiness--${tone}`} aria-label="隐私模式开箱检查">
@@ -1683,10 +1684,11 @@ function PrivacyReadinessPanel({
       {setupPlan ? (
         <LocalModelEvidenceSummary setupPlan={setupPlan} />
       ) : null}
+      {repairNote ? <p className="privacy-readiness__note">{repairNote}</p> : null}
       <p className="privacy-readiness__note">
         {mode === "efficiency"
           ? "开启隐私模式只会关闭云端辅助并检查本地 AI；下一步再按提示准备本地模型，不会静默回退云端。"
-          : "主按钮会按顺序完成 Ollama 安装、启动和模型下载/随包启用；失败会停在本地修复步骤，不会静默回退云端。"}
+          : "主按钮会按顺序安装本地 AI 应用、启动本地服务，并下载或启用推荐模型；失败会停在本地修复步骤，不会静默回退云端。"}
       </p>
     </section>
   );
@@ -1734,7 +1736,7 @@ function buildPrivacyReadinessSteps(
     {
       key: "runtime",
       label: "准备本地 AI",
-      detail: backend ? `${backend.kind}${backend.model ? ` · ${backend.model}` : ""}` : "可一键安装 Ollama 和推荐模型，也可使用 LM Studio / llama.cpp。",
+      detail: backend ? `已连接本机模型${backend.model ? `：${modelDisplayName(backend.model)}` : ""}` : "可一键安装本地 AI 应用和推荐模型，也可以连接已有的本机模型服务。",
       state: hasLocalModel ? "done" : hardwareReady ? "current" : "blocked"
     }
   ];
@@ -1767,10 +1769,10 @@ function privacyReadinessSummary(
   setupPlan: LocalModelSetupPlan | null,
   checking: boolean
 ): string {
-  if (checking) return "正在确认本地模型、运行时和电脑条件。";
+  if (checking) return "正在确认本地模型、本地 AI 应用和电脑条件。";
   if (mode === "efficiency") return "对标开箱即用体验：一键切换后，Lengrvis 会关闭云端辅助并检查本地 AI。";
   if (health?.available || setupPlan?.ready) return "本地 AI 已可用，隐私任务会优先留在这台电脑上完成。";
-  if (setupPlan?.nextAction === "install_runtime") return "这台电脑条件已通过，下一步安装本地 AI 运行时。";
+  if (setupPlan?.nextAction === "install_runtime") return "这台电脑条件已通过，下一步安装本地 AI 应用。";
   if (setupPlan?.nextAction === "start_runtime") return "本地 AI 已安装，下一步启动本地服务。";
   if (setupPlan?.nextAction === "use_bundled_model") return `${setupPlan.model || "推荐模型"} 已随安装包提供，下一步启用随包模型，无需下载。`;
   if (setupPlan?.nextAction === "download_model") return `本地服务已运行，下一步下载 ${setupPlan.model || "推荐模型"}。`;
@@ -1792,13 +1794,13 @@ function privacyReadinessPrimaryAction(
     return { label: "电脑条件暂不满足", disabled: true, kind: "blocked" };
   }
   if (setupPlan?.nextAction === "install_runtime") {
-    return { label: `一键安装 Ollama + 准备 ${setupPlan.model || "推荐模型"}`, disabled: false, kind: "download" };
+    return { label: `一键安装本地 AI 应用并准备 ${setupPlan.model || "推荐模型"}`, disabled: false, kind: "download" };
   }
   if (setupPlan?.nextAction === "start_runtime" && setupPlan.bundledModelAvailable) {
-    return { label: "一键启动 Ollama + 启用随包模型", disabled: false, kind: "bundled" };
+    return { label: "一键启动本地 AI 服务并启用随包模型", disabled: false, kind: "bundled" };
   }
   if (setupPlan?.nextAction === "start_runtime") {
-    return { label: "一键启动 Ollama + 检查模型", disabled: false, kind: "start" };
+    return { label: "一键启动本地 AI 服务并检查模型", disabled: false, kind: "start" };
   }
   if (setupPlan?.nextAction === "use_bundled_model") {
     return { label: "一键启用随包模型", disabled: false, kind: "bundled" };
@@ -1824,6 +1826,33 @@ function privacyReadinessPrimaryIcon(
   return Download;
 }
 
+function privacyReadinessRepairNote(
+  mode: AppSettings["mode"],
+  health: LocalLLMHealth | null,
+  setupPlan: LocalModelSetupPlan | null,
+  ready: boolean,
+  checking: boolean
+): string {
+  if (checking || mode === "efficiency" || ready) return "";
+  const model = setupPlan?.model || health?.readiness?.recommendedModel || health?.selectedBackend?.model || "推荐模型";
+  const action = setupPlan?.repairAction?.code || setupPlan?.nextAction || "";
+  const normalizedAction = action === "free_resources_for_local_ai" ? "hardware_blocked" : action;
+
+  if (normalizedAction === "hardware_blocked" || setupPlan?.canInstall === false || health?.readiness?.canInstall === false) {
+    return `阻塞原因：这台电脑暂不满足 ${model} 的推荐条件。释放内存或磁盘后点“重新检查”；隐私任务会等待本地 AI 就绪，不会静默回云端。`;
+  }
+  if (normalizedAction === "start_runtime") {
+    return `下一步说明：本地 AI 应用已准备，但本地服务还没有响应。点击主按钮只会启动本机服务并检查 ${model}，不会上传文件。`;
+  }
+  if (normalizedAction === "use_bundled_model" || normalizedAction === "restart_runtime_with_bundled_models") {
+    return `下一步说明：只有检测到随包资源后才会启用 ${model}；点击主按钮只读取本机资源，不把缺失模型当作已就绪。`;
+  }
+  if (normalizedAction === "download_model") {
+    return `下一步说明：本地 AI 服务已运行，但 ${model} 还没在模型列表中。点击主按钮会下载到这台电脑；完成前隐私任务会等待。`;
+  }
+  return `下一步说明：当前未检测到可用的本地 AI 应用或随包模型。点击主按钮会在这台电脑上准备 ${model}，不会上传文件，也不会把缺失的离线模型当作已可用。`;
+}
+
 function PrivacyBundleStatus({ setupPlan }: { setupPlan: LocalModelSetupPlan }) {
   const manifest = setupPlan.bundleManifest;
   const model = manifest.model || setupPlan.model || "推荐模型";
@@ -1832,15 +1861,15 @@ function PrivacyBundleStatus({ setupPlan }: { setupPlan: LocalModelSetupPlan }) 
   const modelOk = setupPlan.bundledModelAvailable;
   const manifestOk = manifest.present && manifest.valid !== false;
   const manifestText = !manifest.present
-    ? "manifest 未找到"
+    ? "资源清单未找到"
     : manifest.valid === false
-      ? `manifest 未通过：${manifest.error || "需要重新校验"}`
-      : `manifest 已校验${manifest.modelsFiles ? ` · ${manifest.modelsFiles} 个模型文件` : ""}`;
+      ? "资源清单需要重新校验"
+      : `资源清单已校验${manifest.modelsFiles ? ` · ${manifest.modelsFiles} 个模型文件` : ""}`;
   return (
     <div className="privacy-bundle-status" aria-label="随包本地 AI 资源状态">
       <span className={runtimeOk ? "privacy-bundle-status__item privacy-bundle-status__item--ok" : "privacy-bundle-status__item privacy-bundle-status__item--warn"}>
         {runtimeOk ? <CheckCircle2 size={14} aria-hidden="true" /> : <AlertCircle size={14} aria-hidden="true" />}
-        运行时 {runtimeOk ? "已随包" : "未随包"}
+        本地 AI 应用 {runtimeOk ? "已随包" : "待安装"}
       </span>
       <span className={modelsOk ? "privacy-bundle-status__item privacy-bundle-status__item--ok" : "privacy-bundle-status__item privacy-bundle-status__item--warn"}>
         {modelsOk ? <CheckCircle2 size={14} aria-hidden="true" /> : <AlertCircle size={14} aria-hidden="true" />}
@@ -1862,21 +1891,40 @@ function LocalModelEvidenceSummary({ setupPlan }: { setupPlan: LocalModelSetupPl
   const evidenceCount = setupPlan.evidence.length;
   const failedCount = setupPlan.evidence.filter((item) => !item.ok).length;
   const verification = setupPlan.verification;
-  const repair = setupPlan.repairAction;
-  const redaction = verification?.pathsRedacted === false ? "路径脱敏待确认" : "路径已脱敏";
-  const status = verification?.ready || setupPlan.ready ? "本地 AI 已验证可用" : `下一步：${repair?.label || zhLocalModelAction(setupPlan.nextAction)}`;
+  const redaction = verification?.pathsRedacted === true ? "本机路径已隐藏" : "本机路径待隐藏";
+  const status = verification?.ready === true
+    ? "本地 AI 已验证可用"
+    : setupPlan.ready
+      ? "本地 AI 可用，等待验证摘要"
+      : `下一步：${zhLocalModelRepairAction(setupPlan)}`;
   return (
-    <div className="local-model-evidence-summary" aria-label="本地 AI 证据摘要">
+    <div className="local-model-evidence-summary" aria-label="本地 AI 检查摘要">
       <span>{redaction}</span>
       <span>{status}</span>
-      <span>{evidenceCount ? `${evidenceCount} 条证据，${failedCount} 条待处理` : "等待后端证据"}</span>
+      <span>{evidenceCount ? `${evidenceCount} 个检查项，${failedCount} 个待处理` : "等待本地检查结果"}</span>
     </div>
   );
 }
 
+function zhLocalModelRepairAction(setupPlan: LocalModelSetupPlan): string {
+  const repairCode = setupPlan.repairAction?.code || setupPlan.nextAction;
+  const action = repairCode === "free_resources_for_local_ai" ? "hardware_blocked" : repairCode;
+
+  if (action === "hardware_blocked") return "释放内存或磁盘后重新检查；隐私模式不会静默回云端";
+  if (action === "continue_setup") return "继续检查本地 AI 应用和模型";
+  if (action === "install_runtime") return "安装本地 AI 应用";
+  if (action === "start_runtime") return "启动本地 AI 服务";
+  if (action === "restart_runtime_with_bundled_models") return "重启本地服务并读取随包模型";
+  if (action === "use_bundled_model") return "启用随包模型";
+  if (action === "download_model") return `下载 ${setupPlan.model || "推荐模型"} 到本机`;
+  if (action === "none" || action === "ready") return "本地 AI 已就绪";
+  if (action === "prepare_local_ai") return "继续准备本地 AI";
+  return zhLocalModelAction(setupPlan.nextAction);
+}
+
 function zhLocalModelAction(action: string): string {
   if (action === "hardware_blocked") return "释放内存或磁盘后重试";
-  if (action === "install_runtime") return "安装本地 AI 运行时";
+  if (action === "install_runtime") return "安装本地 AI 应用";
   if (action === "start_runtime") return "启动本地 AI 服务";
   if (action === "use_bundled_model") return "启用随包模型";
   if (action === "download_model") return "下载推荐模型";
@@ -1887,7 +1935,7 @@ function zhLocalModelAction(action: string): string {
 
 function zhLocalModelSetupStepLabel(key: string, fallback: string): string {
   if (key === "hardware") return "检查电脑条件";
-  if (key === "runtime") return "准备本地 AI 运行时";
+  if (key === "runtime") return "安装本地 AI 应用";
   if (key === "server") return "启动本地 AI 服务";
   if (key === "model") {
     const normalized = fallback.toLowerCase();
@@ -1907,17 +1955,17 @@ function zhLocalModelSetupDetail(
   if (key === "hardware") {
     if (state === "done") return `这台电脑已满足 ${model || "推荐模型"} 的本地运行条件。`;
     if (state === "blocked") return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
-    return fallback || "会检查内存、磁盘空间和 CPU 是否适合本地模型。";
+    return localModelUserMessage(fallback, "会检查内存、磁盘空间和 CPU 是否适合本地模型。");
   }
   if (key === "runtime" && fallback.includes("bundled")) {
-    return state === "done" ? "随包 Ollama 运行时已可用。" : "将使用随包 Ollama 运行时，无需另外安装。";
+    return state === "done" ? "随包本地 AI 应用已可用。" : "将使用随包本地 AI 应用，无需另外安装。";
   }
-  if (key === "runtime") return state === "done" ? "Ollama 已安装。" : "Lengrvis 可以在 Windows 上自动安装 Ollama。";
-  if (key === "server") return state === "done" ? "Ollama 服务正在运行。" : "安装完成后，Lengrvis 会启动本地 AI 服务。";
+  if (key === "runtime") return state === "done" ? "本地 AI 应用已安装。" : "Lengrvis 可以在这台电脑上自动安装本地 AI 应用。";
+  if (key === "server") return state === "done" ? "本地 AI 服务正在运行。" : "安装完成后，Lengrvis 会启动本地 AI 服务。";
   if (key === "model" && fallback.includes("included with Lengrvis")) return `${model || "推荐模型"} 已随安装包提供，服务启动后会直接读取。`;
   if (key === "model" && state === "current" && fallback.includes("bundled")) return `${model || "推荐模型"} 已随安装包提供，启用后无需下载。`;
   if (key === "model") return state === "done" ? `${model || "推荐模型"} 已就绪。` : `下载 ${model || "推荐模型"} 后即可进入隐私任务。`;
-  return fallback;
+  return localModelUserMessage(fallback, "继续准备本地 AI。");
 }
 
 function LocalModelReadinessView({ readiness }: { readiness: LocalModelReadiness }) {
@@ -1925,7 +1973,7 @@ function LocalModelReadinessView({ readiness }: { readiness: LocalModelReadiness
     <div className={readiness.canInstall ? "local-model-readiness local-model-readiness--ready" : "local-model-readiness local-model-readiness--blocked"}>
       <div className="local-model-readiness__summary">
         {readiness.canInstall ? <CheckCircle2 size={16} aria-hidden="true" /> : <AlertCircle size={16} aria-hidden="true" />}
-        <span>{readiness.reason}</span>
+        <span>{localModelUserMessage(readiness.reason, "正在检查这台电脑是否适合运行本地 AI。")}</span>
       </div>
       <div className="local-model-readiness__checks">
         {readiness.checks.map((check) => (
@@ -1935,7 +1983,7 @@ function LocalModelReadinessView({ readiness }: { readiness: LocalModelReadiness
           </span>
         ))}
       </div>
-      {readiness.gpuSummary ? <small>GPU: {readiness.gpuSummary}</small> : null}
+      {readiness.gpuSummary ? <small>图形加速：{localModelUserMessage(readiness.gpuSummary, "未检测到独立加速硬件；可先使用 CPU 路径。")}</small> : null}
     </div>
   );
 }
@@ -1943,22 +1991,22 @@ function LocalModelReadinessView({ readiness }: { readiness: LocalModelReadiness
 function installModelStartStage(setupPlan: LocalModelSetupPlan | null, model: string): string {
   const target = setupPlanActionModel(setupPlan, model);
   if (setupPlan?.nextAction === "hardware_blocked") return "电脑条件暂不满足，本次不会继续安装。";
-  if (setupPlan?.nextAction === "install_runtime") return `正在一键准备 ${target}：安装 Ollama、启动服务、准备模型。`;
-  if (setupPlan?.nextAction === "start_runtime") return `正在启动 Ollama，并检查 ${target} 是否已可用。`;
+  if (setupPlan?.nextAction === "install_runtime") return `正在一键准备 ${target}：安装本地 AI 应用、启动服务、准备模型。`;
+  if (setupPlan?.nextAction === "start_runtime") return `正在启动本地 AI 服务，并检查 ${target} 是否已可用。`;
   if (setupPlan?.nextAction === "use_bundled_model") return `正在启用随包模型 ${target}，无需下载。`;
-  if (setupPlan?.nextAction === "download_model") return `正在下载 ${target} 到本机 Ollama。`;
+  if (setupPlan?.nextAction === "download_model") return `正在下载 ${target} 到这台电脑。`;
   if (setupPlan?.nextAction === "ready") return `${target} 已就绪，正在复查本地 AI 状态。`;
-  return `正在一键准备 ${target}：检查 Ollama、启动服务、下载或启用模型。`;
+  return `正在一键准备 ${target}：检查本地 AI 应用、启动服务、下载或启用模型。`;
 }
 
 function localModelInstallerHint(setupPlan: LocalModelSetupPlan | null, model: string): string {
   const target = setupPlanActionModel(setupPlan, model);
-  if (!setupPlan) return `上方按钮会按顺序检查 Ollama、启动服务，并准备 ${target}。`;
+  if (!setupPlan) return `上方按钮会按顺序检查本地 AI 应用、启动服务，并准备 ${target}。`;
   if (setupPlan.nextAction === "hardware_blocked") return "电脑条件不足时不会继续安装；释放内存或磁盘后可重新检查。";
-  if (setupPlan.nextAction === "install_runtime") return `上方按钮会安装 Ollama、启动服务、准备 ${target}。`;
-  if (setupPlan.nextAction === "start_runtime") return `上方按钮会启动 Ollama，然后继续准备 ${target}。`;
+  if (setupPlan.nextAction === "install_runtime") return `上方按钮会安装本地 AI 应用、启动服务、准备 ${target}。`;
+  if (setupPlan.nextAction === "start_runtime") return `上方按钮会启动本地 AI 服务，然后继续准备 ${target}。`;
   if (setupPlan.nextAction === "use_bundled_model") return `${target} 已随安装包提供，上方按钮会启用它，不走下载。`;
-  if (setupPlan.nextAction === "download_model") return `Ollama 已运行，上方按钮会把 ${target} 下载到本机。`;
+  if (setupPlan.nextAction === "download_model") return `本地 AI 服务已运行，上方按钮会把 ${target} 下载到这台电脑。`;
   if (setupPlan.nextAction === "ready") return `${target} 已就绪；需要换模型时，可在这里手动选择。`;
   return `上方按钮会按当前下一步自动处理 ${target}。`;
 }
@@ -2109,38 +2157,39 @@ function readInstallModelProgress(payload: unknown): InstallModelProgress | null
 
 function installModelStatusLabel(status: string, phase: string, model = "", message = ""): string {
   const target = model || "推荐模型";
-  if (status === "error") return message ? `安装失败：${message}` : "安装失败";
+  const readableMessage = localModelUserMessage(message, "");
+  if (status === "error") return readableMessage ? `安装失败：${readableMessage}` : "安装失败";
   if (phase === "hardware") {
-    if (status === "done" || status === "success") return message || "电脑条件已通过。";
-    return message || "正在检查电脑条件。";
+    if (status === "done" || status === "success") return readableMessage || "电脑条件已通过。";
+    return readableMessage || "正在检查电脑条件。";
   }
   if (phase === "install") {
-    if (status === "done") return "Ollama 运行时已安装。";
-    if (status === "skipped") return "Ollama 已安装，继续下一步。";
-    return message || "正在安装 Ollama 运行时...";
+    if (status === "done") return "本地 AI 应用已安装。";
+    if (status === "skipped") return "本地 AI 应用已安装，继续下一步。";
+    return readableMessage || "正在安装本地 AI 应用...";
   }
   if (phase === "start") {
-    if (status === "done") return "Ollama 本地服务已启动。";
-    if (status === "waiting") return "正在等待 Ollama 本地服务响应...";
-    if (status === "starting") return "正在启动 Ollama 本地服务...";
-    return message || "正在检查 Ollama 本地服务。";
+    if (status === "done") return "本地 AI 服务已启动。";
+    if (status === "waiting") return "正在等待本地 AI 服务响应...";
+    if (status === "starting") return "正在启动本地 AI 服务...";
+    return readableMessage || "正在检查本地 AI 服务。";
   }
   if (phase === "pull") {
     if (status === "skipped" && /bundled|随包/i.test(message)) return `${target} 已随包提供，无需下载。`;
     if (status === "skipped") return `${target} 已在本机，无需重复下载。`;
     if (status === "success" || status === "done") return `${target} 已下载到本机。`;
-    return message ? `正在下载 ${target}：${message}` : `正在下载 ${target}...`;
+    return readableMessage ? `正在下载 ${target}：${readableMessage}` : `正在下载 ${target}...`;
   }
   if (phase === "switch") {
     if (status === "done" || status === "success") return `${target} 已就绪；隐私模式失败时不会静默回退云端。`;
     return `正在确认 ${target} 可用于隐私模式。`;
   }
   if (status === "success" || status === "done") return "本地模型已就绪";
-  if (status === "skipped") return message || "步骤已跳过";
-  if (status === "waiting") return "等待本地运行时启动...";
+  if (status === "skipped") return readableMessage || "步骤已跳过";
+  if (status === "waiting") return "等待本地 AI 服务启动...";
   if (status === "starting") return "正在开始模型安装...";
-  if (status === "installing") return "正在安装本地运行时...";
-  return message || "正在安装本地模型...";
+  if (status === "installing") return "正在安装本地 AI 应用...";
+  return readableMessage || "正在安装本地模型...";
 }
 
 function installModelStatusPercent(status: string, phase: string): number {
@@ -2157,10 +2206,57 @@ function installModelStatusPercent(status: string, phase: string): number {
 
 function normalizeInstallModelProgress(progress: InstallModelProgress): InstallModelProgress {
   return {
-    stage: progress.stage || (progress.error ? "安装失败" : "正在安装本地模型..."),
+    stage: localModelUserMessage(progress.stage, progress.error ? "安装失败" : "正在安装本地模型..."),
     percent: clampPercent(progress.percent),
-    ...(progress.error ? { error: progress.error } : {})
+    ...(progress.error ? { error: localModelUserMessage(progress.error, "安装失败，请重新检查或重试。") } : {})
   };
+}
+
+function localModelUserMessage(message?: string, fallback = "继续准备本地 AI。"): string {
+  const text = `${message ?? ""}`.trim();
+  if (!text) return fallback;
+  if (containsSensitiveLocalModelText(text)) return fallback;
+  const lower = text.toLowerCase();
+  if (lower.includes("privacy mode requires") || lower.includes("reachable local llm")) {
+    return "还没有可用的本地 AI。";
+  }
+  if (lower.includes("not installed") && lower.includes("ollama")) {
+    return "本地 AI 应用还未安装。";
+  }
+  if (lower.includes("not running") && lower.includes("ollama")) {
+    return "本地 AI 服务还未启动。";
+  }
+  if (lower.includes("manifest")) {
+    return sanitizeLocalModelUserText(text)
+      .replace(/manifest/gi, "资源清单")
+      .replace(/bundled/gi, "随包")
+      .replace(/runtime/gi, "本地 AI 应用")
+      .replace(/ollama/gi, "本地 AI 应用");
+  }
+  const localized = sanitizeLocalModelUserText(text)
+    .replace(/Ollama/gi, "本地 AI 应用")
+    .replace(/LM Studio/gi, "本机模型服务")
+    .replace(/llama\.cpp/gi, "本机模型服务")
+    .replace(/OpenAI/gi, "云端服务")
+    .replace(/local LLM/gi, "本地 AI")
+    .replace(/runtime/gi, "本地 AI 应用")
+    .replace(/server/gi, "服务")
+    .replace(/backend/gi, "服务");
+  if (/^[\x00-\x7F]+$/.test(localized) && /[A-Za-z]/.test(localized)) return fallback;
+  return localized;
+}
+
+function sanitizeLocalModelUserText(text: string): string {
+  return text
+    .replace(/[A-Za-z]:\\[^\s，。；;]+/g, "本机路径")
+    .replace(/\\\\[^\s，。；;]+/g, "本机路径")
+    .replace(/https?:\/\/[^\s，。；;]+/gi, "网络地址")
+    .replace(/\b(?:sk|pk|ghp|pat|token|key|secret)[A-Za-z0-9_\-:=.]{6,}\b/gi, "敏感信息")
+    .replace(/\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b/gi, "账号信息");
+}
+
+function containsSensitiveLocalModelText(text: string): boolean {
+  return /[A-Za-z]:\\|\\\\|https?:\/\/|\b(?:token|secret|api[_ -]?key|authorization|bearer)\b/i.test(text);
 }
 
 function localModelOptionValue(model?: string): (typeof LOCAL_MODEL_OPTIONS)[number]["value"] {
@@ -2271,9 +2367,12 @@ function PairingVisualCode({ code, qrContent }: { code?: string; qrContent?: Mob
 function LocalLlmHealthNotice({ health }: { health: LocalLLMHealth | null }) {
   const backend = health?.selectedBackend;
   const detail = backend
-    ? `${backend.kind}${backend.model ? ` · ${backend.model}` : ""}`
-    : health?.error || "正在检查本地 AI。";
-  const probesText = health?.probeOrder.length ? `已检查：${health.probeOrder.join(" -> ")}` : "已检查：Ollama -> LM Studio -> llama.cpp";
+    ? `已连接本机模型${backend.model ? `：${modelDisplayName(backend.model)}` : ""}`
+    : localModelUserMessage(health?.error, "正在检查本地 AI。");
+  const probesText = health?.probeOrder.length ? "已完成本机模型和服务检查。" : "正在确认本机模型和服务。";
+  const unavailableDetail = health
+    ? localLlmUnavailableGuidance(detail)
+    : "正在检查本地 AI；完成后会在下方给出下一步。";
 
   return (
     <div
@@ -2285,11 +2384,19 @@ function LocalLlmHealthNotice({ health }: { health: LocalLLMHealth | null }) {
       <span className="local-llm-status__dot" aria-hidden="true" />
       <span>
         <strong>{health?.available ? "本地 AI 已就绪" : health ? "本地 AI 需要配置" : "正在检查本地 AI"}</strong>
-        <small>{health?.available ? detail : `${detail} 隐私模式会等待本地 AI 可用后再继续。`}</small>
+        <small>{health?.available ? detail : unavailableDetail}</small>
         <small>{probesText}</small>
       </span>
     </div>
   );
+}
+
+function localLlmUnavailableGuidance(detail: string): string {
+  const lead = detail.replace(/[。！？]+$/, "");
+  if (/(还没有可用|还未安装|还未启动|无法检查)/.test(lead)) {
+    return `${lead}；请按下方“隐私模式开箱检查”的主按钮继续准备。完成前不会上传文件，也不会静默回退云端。`;
+  }
+  return `${detail} 隐私模式会等待本地 AI 可用后再继续。`;
 }
 
 function ModelBoundaryProfile({
@@ -2388,7 +2495,7 @@ function modelBoundaryCards(
       mode: "efficiency",
       label: "快速",
       summary: "云端优先，适合长推理、网页和综合规划。",
-      repair: "失败修复：检查 API key、Provider、网络或切换到智能混合。",
+      repair: "失败修复：检查密钥、服务商、网络或切换到智能混合。",
       tone: mode === "efficiency" ? "warning" : "ready",
       facts: [
         { label: "推荐模型", value: cloudModelLabel },
@@ -2413,7 +2520,7 @@ function modelBoundaryCards(
     {
       mode: "privacy",
       label: "隐私",
-      summary: "文件名、摘要、OCR 和 embedding 优先留在这台电脑。",
+      summary: "文件名、摘要、文字识别和向量检索优先留在这台电脑。",
       repair: `${localRepair}；隐私失败不自动回云端。`,
       tone: localReady ? "ready" : "blocked",
       facts: [
@@ -2445,7 +2552,7 @@ function hardwareStatusSummary(
   readiness?: LocalModelReadiness
 ): string {
   if (status?.available) {
-    const provider = status.selectedProvider || status.configuredProvider || status.executionProvider || status.generationRuntime || "本地运行时";
+    const provider = status.selectedProvider || status.configuredProvider || status.executionProvider || status.generationRuntime || "本地 AI";
     return `就绪 · ${provider}`;
   }
   if (status?.error || status?.errors?.length) {
@@ -2470,7 +2577,7 @@ function localSpeedEstimate(status: HardwareAccelerationStatusPayload | null, lo
 
 function localModelRepairAction(setupPlan: LocalModelSetupPlan | null, health: LocalLLMHealth | null): string {
   if (setupPlan?.nextAction === "hardware_blocked") return "失败修复：换高效模式或释放内存/磁盘后重试";
-  if (setupPlan?.nextAction === "install_runtime") return "失败修复：下一步安装 Ollama 运行时";
+  if (setupPlan?.nextAction === "install_runtime") return "失败修复：下一步安装本地 AI 应用";
   if (setupPlan?.nextAction === "start_runtime") return "失败修复：下一步启动本地 AI 服务";
   if (setupPlan?.nextAction === "use_bundled_model") return "失败修复：下一步启用随包模型";
   if (setupPlan?.nextAction === "download_model") return "失败修复：下一步下载推荐模型";
@@ -2546,7 +2653,7 @@ async function requestOllamaSetupDirect<TResponse, TBody = unknown>(
     return {
       ok: false,
       status: 0,
-      error: { message: error instanceof Error ? error.message : "Ollama 请求失败" },
+      error: { message: error instanceof Error ? error.message : "本地 AI 请求失败" },
       receivedAt
     };
   }
@@ -2816,7 +2923,7 @@ function OllamaSetup() {
         : await requestOllamaSetup<OllamaActionResult>({ endpoint: "/api/settings/ollama/pull", method: "POST", body: {} });
       if (resp.ok && resp.data) {
         if (!resp.data.ok) {
-          setError(resp.data.error || "模型拉取失败");
+          setError(localModelUserMessage(resp.data.error, "模型下载失败"));
         }
       }
       await fetchStatus();
@@ -2831,7 +2938,7 @@ function OllamaSetup() {
     return (
       <div className="ollama-setup ollama-setup--checking">
         <Loader2 className="settings-spinner" size={14} />
-        <span>正在检查 Ollama 状态...</span>
+        <span>正在检查本地 AI 应用状态...</span>
       </div>
     );
   }
@@ -2842,10 +2949,10 @@ function OllamaSetup() {
       <div className="ollama-setup">
         <div className="ollama-setup__head">
           <AlertCircle className="ollama-setup__icon ollama-setup__icon--warning" size={14} />
-          <strong>Ollama 未安装</strong>
+          <strong>本地 AI 应用未安装</strong>
         </div>
         <p>
-          隐私模式需要本地 AI 应用。可使用下方按钮自动安装 Ollama。
+          隐私模式需要本地 AI 应用。可使用下方按钮自动安装。
         </p>
         {error ? <p className="ollama-setup__error">{error}</p> : null}
         <button
@@ -2855,7 +2962,7 @@ function OllamaSetup() {
           onClick={() => void handleInstall()}
         >
           {installing ? <Loader2 className="settings-spinner" size={14} /> : <Download size={14} />}
-          {installing ? "正在安装..." : "一键安装 Ollama"}
+          {installing ? "正在安装..." : "一键安装本地 AI 应用"}
         </button>
       </div>
     );
@@ -2867,10 +2974,10 @@ function OllamaSetup() {
       <div className="ollama-setup">
         <div className="ollama-setup__head">
           <AlertCircle className="ollama-setup__icon ollama-setup__icon--warning" size={14} />
-          <strong>Ollama 未运行</strong>
+          <strong>本地 AI 服务未运行</strong>
         </div>
         <p>
-          Ollama 已安装但服务未启动。请从开始菜单搜索并打开 Ollama，等待托盘图标出现后点击刷新。
+          本地 AI 应用已安装但服务未启动。请从开始菜单打开本地 AI 应用，等待托盘图标出现后点击刷新。
         </p>
         <button
           type="button"
@@ -2893,7 +3000,7 @@ function OllamaSetup() {
           <strong>推荐模型未安装</strong>
         </div>
         <p>
-          Ollama 运行中，但推荐模型尚未下载。点击下方按钮拉取模型。
+          本地 AI 服务运行中，但推荐模型尚未下载。点击下方按钮下载模型。
         </p>
         {ollamaStatus.models.length > 0 ? (
           <p className="ollama-setup__meta">
@@ -2908,7 +3015,7 @@ function OllamaSetup() {
           onClick={() => void handlePull()}
         >
           {pulling ? <Loader2 className="settings-spinner" size={14} /> : <Download size={14} />}
-          {pulling ? "正在拉取..." : `拉取 ${ollamaStatus.recommended_model ?? "qwen2.5:3b-instruct"}`}
+          {pulling ? "正在下载..." : `下载 ${ollamaStatus.recommended_model ?? "qwen2.5:3b-instruct"}`}
         </button>
       </div>
     );

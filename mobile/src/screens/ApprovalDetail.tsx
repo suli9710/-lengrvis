@@ -23,7 +23,13 @@ import {
   type PairingSession,
   type RemoteInputGrant,
 } from "../api/client";
+import {
+  approvalApproveBlockedReason,
+  approvalDecisionGuard,
+  type ApprovalDecisionGuardCopy,
+} from "../approvalSafetyDisplay";
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
+import { safeCompactText, safeDisplayText, safePreviewText } from "../safeDisplay";
 
 export function ApprovalDetail({
   session,
@@ -75,6 +81,8 @@ export function ApprovalDetail({
   const currentApproval = detail?.approval ?? approval;
   const pending = currentApproval.status === "pending";
   const steps = useMemo(() => detail?.plan?.steps ?? [], [detail?.plan?.steps]);
+  const decisionGuard = useMemo(() => approvalDecisionGuard(currentApproval), [currentApproval]);
+  const approveBlockedReason = useMemo(() => approvalApproveBlockedReason(currentApproval), [currentApproval]);
 
   const handleDecision = async (decision: "approved" | "denied") => {
     if (submitLockRef.current) return;
@@ -86,6 +94,12 @@ export function ApprovalDetail({
       if (latest.approval.status !== "pending") {
         onUpdated(latest.approval);
         Alert.alert("审批已处理", `此审批当前状态为：${approvalStatusLabel(latest.approval.status)}。`);
+        return;
+      }
+      const latestApproveBlockedReason = decision === "approved" ? approvalApproveBlockedReason(latest.approval) : null;
+      if (latestApproveBlockedReason) {
+        setDetail(latest);
+        Alert.alert("手机端不可批准", latestApproveBlockedReason);
         return;
       }
       const updated = await submitApprovalDecision(session, currentApproval.id, decision, {
@@ -134,13 +148,13 @@ export function ApprovalDetail({
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>任务</Text>
-            <Text style={styles.body}>{detail?.task?.user_goal ?? currentApproval.message}</Text>
+            <Text style={styles.body}>{safeDisplayText(detail?.task?.user_goal ?? currentApproval.message, "任务内容已隐藏，请在电脑端查看。")}</Text>
             <Text style={styles.meta}>创建于 {shortDate(currentApproval.created_at)}</Text>
           </View>
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>请求</Text>
-            <Text style={styles.body}>{currentApproval.message}</Text>
+            <Text style={styles.body}>{safeDisplayText(currentApproval.message, "请求内容已隐藏，请在电脑端查看。")}</Text>
           </View>
 
           <ApprovalBoundarySection approval={currentApproval} />
@@ -152,13 +166,13 @@ export function ApprovalDetail({
                 <View key={step.id || index} style={styles.stepRow}>
                   <Text style={styles.stepIndex}>{index + 1}</Text>
                   <View style={styles.stepBody}>
-                    <Text style={styles.stepTitle}>{step.tool_name || step.agent_name}</Text>
-                    <Text style={styles.stepText}>{step.description}</Text>
+                    <Text style={styles.stepTitle}>{safeCompactText(step.tool_name || step.agent_name, "计划步骤")}</Text>
+                    <Text style={styles.stepText}>{safeDisplayText(step.description, "步骤细节已隐藏，请在电脑端查看。")}</Text>
                     <Text style={styles.meta}>
                       {[
-                        step.status,
-                        step.risk_level ? `risk: ${step.risk_level}` : "",
-                        step.trust_tier ? `trust: ${step.trust_tier}` : "",
+                        safeCompactText(step.status, "状态未知"),
+                        step.risk_level ? `risk: ${safeCompactText(step.risk_level, "已隐藏")}` : "",
+                        step.trust_tier ? `trust: ${safeCompactText(step.trust_tier, "已隐藏")}` : "",
                         step.deferred_tool ? "deferred search" : "",
                       ].filter(Boolean).join(" · ")}
                     </Text>
@@ -172,8 +186,10 @@ export function ApprovalDetail({
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>试运行预览</Text>
-            <Text style={styles.preview}>{formatPreview(detail?.preview ?? currentApproval.diff_preview)}</Text>
+            <Text style={styles.preview}>{safePreviewText(formatPreview(detail?.preview ?? currentApproval.diff_preview))}</Text>
           </View>
+
+          <ApprovalDecisionGuard guard={decisionGuard} />
         </ScrollView>
       )}
 
@@ -191,19 +207,41 @@ export function ApprovalDetail({
             <Text style={styles.denyText}>拒绝</Text>
           </Pressable>
           <Pressable
-            accessibilityLabel="批准审批"
+            accessibilityHint={approveBlockedReason || decisionGuard.nextStep}
+            accessibilityLabel={approveBlockedReason ? "手机端不可批准此审批" : "批准审批"}
             accessibilityRole="button"
-            accessibilityState={{ disabled: isBusy, busy: isBusy }}
-            disabled={isBusy}
+            accessibilityState={{ disabled: isBusy || Boolean(approveBlockedReason), busy: isBusy }}
+            disabled={isBusy || Boolean(approveBlockedReason)}
             onPress={() => void handleDecision("approved")}
-            style={({ pressed }) => [styles.approveButton, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.approveButton,
+              approveBlockedReason && styles.disabledApproveButton,
+              pressed && !approveBlockedReason && styles.pressed,
+            ]}
           >
             {isBusy ? <ActivityIndicator color="#ffffff" /> : <Check size={18} color="#ffffff" />}
-            <Text style={styles.approveText}>批准</Text>
+            <Text style={styles.approveText}>{approveBlockedReason ? "不可批准" : "批准"}</Text>
           </Pressable>
         </View>
       ) : null}
     </SafeAreaView>
+  );
+}
+
+function ApprovalDecisionGuard({ guard }: { guard: ApprovalDecisionGuardCopy }) {
+  return (
+    <View
+      style={[
+        styles.decisionGuard,
+        guard.tone === "danger" && styles.decisionGuardDanger,
+        guard.tone === "warning" && styles.decisionGuardWarning,
+      ]}
+    >
+      <Text style={styles.decisionGuardKicker}>批准前核对</Text>
+      <Text style={styles.decisionGuardTitle}>{guard.title}</Text>
+      <Text style={styles.decisionGuardText}>{guard.detail}</Text>
+      <Text style={styles.decisionGuardNext}>{guard.approveBlockedReason || guard.nextStep}</Text>
+    </View>
   );
 }
 
@@ -212,14 +250,14 @@ function ApprovalBoundarySection({ approval }: { approval: BackendApproval }) {
   const tool = objectValue(boundary.tool);
   const dryRun = objectValue(boundary.dry_run);
   const policy = objectValue(boundary.policy);
-  const action = approval.tool_name || textValue(tool.name) || approval.approval_type;
-  const risk = approval.risk_level || textValue(tool.risk_level) || "未提供";
-  const trustTier = approval.tool_trust_tier || textValue(tool.trust_tier) || "未提供";
-  const policyMode = approval.policy_mode || approval.permission_mode || textValue(boundary.policy_mode) || "default";
+  const action = safeCompactText(approval.tool_name || textValue(tool.name) || approval.approval_type, "审批动作");
+  const risk = safeCompactText(approval.risk_level || textValue(tool.risk_level), "未提供");
+  const trustTier = safeCompactText(approval.tool_trust_tier || textValue(tool.trust_tier), "未提供");
+  const policyMode = safeCompactText(approval.policy_mode || approval.permission_mode || textValue(boundary.policy_mode), "default");
   const effects = approval.tool_effects?.length ? approval.tool_effects : stringList(tool.effects);
   const resources = approval.resource_kinds?.length ? approval.resource_kinds : stringList(tool.resource_kinds);
-  const dryRunSummary = approval.dry_run_summary || textValue(dryRun.summary) || "暂无 dry-run 摘要";
-  const policyReason = textValue(boundary.policy_reason) || textValue(policy.reason) || approval.message;
+  const dryRunSummary = safeDisplayText(approval.dry_run_summary || textValue(dryRun.summary), "暂无安全试运行摘要。");
+  const policyReason = safeDisplayText(textValue(boundary.policy_reason) || textValue(policy.reason) || approval.message, "策略原因已隐藏，请在电脑端查看。");
 
   return (
     <View style={styles.section}>
@@ -254,7 +292,7 @@ function BoundaryFact({ label, value }: { label: string; value: string }) {
 }
 
 function ChipRow({ label, values, emptyText }: { label: string; values: string[]; emptyText: string }) {
-  const visible = values.length ? values : [emptyText];
+  const visible = values.length ? values.map((value) => safeCompactText(value, "已隐藏")) : [emptyText];
   return (
     <View style={styles.chipRowBlock}>
       <Text style={styles.boundaryLabel}>{label}</Text>
@@ -408,6 +446,42 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: undefined }),
   },
+  decisionGuard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#d7dedf",
+    backgroundColor: "#ffffff",
+    padding: 16,
+    gap: 8,
+  },
+  decisionGuardWarning: {
+    borderColor: "#e4cf8b",
+    backgroundColor: "#fff9e8",
+  },
+  decisionGuardDanger: {
+    borderColor: "#e1b8be",
+    backgroundColor: "#fff5f6",
+  },
+  decisionGuardKicker: {
+    color: "#65717c",
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  decisionGuardTitle: {
+    color: "#1f2933",
+    fontSize: 16,
+    fontWeight: "900",
+  },
+  decisionGuardText: {
+    color: "#3a4651",
+    lineHeight: 21,
+  },
+  decisionGuardNext: {
+    color: "#8c2f39",
+    lineHeight: 21,
+    fontWeight: "800",
+  },
   boundaryGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -506,6 +580,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
+  },
+  disabledApproveButton: {
+    backgroundColor: "#8b969e",
+    opacity: 0.72,
   },
   denyText: {
     color: "#8c2f39",

@@ -13,7 +13,11 @@ from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.policy.redaction import redact_public_text, redact_value
 from app.services import task_recording_service
-from app.services.task_explain_service import build_task_completion_evidence, build_task_explain
+from app.services.task_explain_service import (
+    build_task_completion_evidence,
+    build_task_explain,
+    build_task_result_quality,
+)
 from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
 from app.tools import rollback_tools
 
@@ -77,6 +81,20 @@ PUBLIC_PAYLOAD_ERROR_KEYS = {
 PUBLIC_PAYLOAD_STATUS_KEYS = {
     "status",
     "tool_status",
+}
+PUBLIC_PAYLOAD_PROTOCOL_KEYS = {
+    "event_type",
+    "function",
+    "name",
+    "protocol",
+    "schema",
+    "structured_payload",
+    "tool_call",
+    "tool_call_id",
+    "tool_calls",
+    "tool_name",
+    "tool_result",
+    "tool_results",
 }
 PUBLIC_ERROR_SUMMARIES = {
     "blocked": "The tool was blocked by a permission or policy check.",
@@ -199,7 +217,7 @@ def _public_step_recording(item: dict) -> dict:
     frames = [frame for frame in item.get("frames") or [] if isinstance(frame, dict)]
     return {
         "step_id": str(item.get("step_id") or ""),
-        "tool_name": str(item.get("tool_name") or ""),
+        "tool_name": _public_tool_label(str(item.get("tool_name") or "")),
         "agent": str(item.get("agent") or ""),
         "frame_count": len(frames),
         "frames": [_public_recording_frame(frame) for frame in frames],
@@ -324,6 +342,7 @@ def _task_payload(
     payload["boundary_events"] = events
     payload["completion_evidence"] = completion
     payload["evidence_summary"] = _task_evidence_summary(task, events, completion_evidence=completion)
+    payload["result_quality"] = payload["evidence_summary"]["result_quality"]
     return payload
 
 
@@ -590,12 +609,15 @@ def _task_evidence_summary(
         build_task_completion_evidence(task) if task else _empty_completion_evidence()
     )
     status = _task_status_summary(task, completion_evidence)
+    next_step = _task_next_step(task, counts, completion_evidence)
+    result_quality = build_task_result_quality(task, completion_evidence, next_step=next_step)
     return {
         "status": status,
         "evidence": evidence[:4],
-        "next_step": _task_next_step(task, counts, completion_evidence),
+        "next_step": result_quality["next_step"],
         "counts": counts,
         "completion_evidence": completion_evidence,
+        "result_quality": result_quality,
         "privacy_note": EVIDENCE_PRIVACY_NOTE,
     }
 
@@ -642,10 +664,30 @@ def _task_next_step(task: Task | None, counts: dict[str, int], completion_eviden
     if status == "completed":
         if _completion_result_verified(task, completion_evidence):
             return "Open the task explanation to inspect the verified result evidence before manual sign-off."
-        return "Open the task explanation and collect missing result evidence before treating the result as done."
+        missing = _completion_missing_text(completion_evidence)
+        return f"Open the task explanation and collect missing evidence before treating the result as done{missing}."
+    if status == "failed":
+        return "Review the failed evidence trail, fix the cause, then retry only if the goal is still safe."
+    if status == "cancelled":
+        return "Start a new task or revise the goal; this run did not reach a verified result."
+    if status in {"created", "planning", "plan_review", "consultation", "final_review"}:
+        return "Let the task continue until reviewed execution and result evidence are recorded."
+    if status == "execution":
+        return "Keep monitoring until a reviewed result is recorded."
     if counts["events"] == 0:
         return "Let the run continue until the first reviewed step is recorded."
-    return "Keep monitoring; the summary will update as more steps are reviewed."
+    return "Check the task explanation or local diagnostics before trusting this result."
+
+
+def _completion_missing_text(completion_evidence: dict[str, Any]) -> str:
+    missing = [
+        str(item)
+        for item in build_task_result_quality(None, completion_evidence).get("missing_checks") or []
+        if str(item)
+    ]
+    if not missing:
+        return ""
+    return f": {', '.join(missing[:3])}"
 
 
 def _completion_result_verified(task: Task | None, completion_evidence: dict[str, Any]) -> bool:
@@ -663,12 +705,12 @@ def _enum_text(value: Any) -> str:
 
 
 def _tool_progress_detail(tool: str, status: str) -> str:
-    parts = [part for part in [tool, _public_status_label(status)] if part]
+    parts = [part for part in [_public_tool_label(tool), _public_status_label(status)] if part]
     return " ".join(parts) if parts else "Tool progress was recorded."
 
 
 def _review_event_detail(review: dict[str, Any]) -> str:
-    target_type = str(review.get("target_type") or "review")
+    target_type = _public_review_target(str(review.get("target_type") or "review"))
     verdict = str(review.get("verdict") or "recorded")
     risk_level = str(review.get("risk_level") or "")
     suffix = f" at {risk_level}" if risk_level else ""
@@ -681,7 +723,7 @@ def _public_review(review: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(review.get("id") or ""),
         "step_id": review.get("step_id"),
-        "target_type": str(review.get("target_type") or ""),
+        "target_type": _public_review_target(str(review.get("target_type") or "")),
         "verdict": str(review.get("verdict") or ""),
         "risk_level": str(review.get("risk_level") or ""),
         "summary": _review_event_detail(review),
@@ -736,6 +778,10 @@ def _safe_boundary_payload(kind: str, payload: dict | None) -> dict[str, Any]:
         if key in raw_payload:
             if key == "status":
                 safe[key] = _public_status_label(str(raw_payload.get(key) or ""))
+            elif key == "tool_name":
+                safe[key] = _public_tool_label(str(raw_payload.get(key) or ""))
+            elif key == "event_type":
+                safe[key] = _public_event_label(str(raw_payload.get(key) or ""))
             else:
                 safe[key] = _safe_boundary_value(raw_payload.get(key))
     for key, count_key in (
@@ -773,6 +819,10 @@ def _public_value(value: Any, key: str = "") -> Any:
         return _public_error_metadata(value)
     if normalized_key in PUBLIC_PAYLOAD_STATUS_KEYS and isinstance(value, str):
         return _public_status_label(value)
+    if normalized_key == "tool_name" and isinstance(value, str):
+        return _public_tool_label(value)
+    if normalized_key in PUBLIC_PAYLOAD_PROTOCOL_KEYS:
+        return _redacted_public_field(value)
     if normalized_key in PUBLIC_PAYLOAD_TEXT_KEYS:
         return _redacted_public_field(value)
     redacted = redact_value(value)
@@ -816,6 +866,59 @@ def _public_status_label(status: str) -> str:
     if any(token in normalized for token in ("start", "run", "progress")):
         return "running"
     return "updated"
+
+
+def _public_tool_label(tool_name: str) -> str:
+    normalized = str(tool_name or "").strip().casefold()
+    if not normalized:
+        return ""
+    if normalized.startswith("file."):
+        return "File capability"
+    if normalized.startswith("system."):
+        return "System capability"
+    if normalized.startswith("browser."):
+        return "Browser capability"
+    if normalized.startswith("app.") or normalized.startswith("ui."):
+        return "App capability"
+    if normalized.startswith("document.") or normalized.startswith("excel."):
+        return "Document capability"
+    if normalized.startswith("search."):
+        return "Search capability"
+    if normalized.startswith("remote."):
+        return "Remote session capability"
+    return "Tool capability"
+
+
+def _public_review_target(target_type: str) -> str:
+    normalized = str(target_type or "").strip().replace("-", "_").casefold()
+    if normalized == "tool_result":
+        return "result"
+    if normalized == "tool_call":
+        return "action"
+    if normalized == "final":
+        return "final result"
+    if normalized == "plan":
+        return "plan"
+    if normalized == "goal":
+        return "goal"
+    if normalized.startswith("agent_message"):
+        return "agent message"
+    return "review"
+
+
+def _public_event_label(event_type: str) -> str:
+    normalized = str(event_type or "").strip().replace("-", "_").casefold()
+    if normalized.startswith("tool."):
+        return "tool_update"
+    if normalized.startswith("task."):
+        return "task_lifecycle"
+    if normalized.startswith("context."):
+        return "context_boundary"
+    if normalized.startswith("model_boundary"):
+        return "model_boundary"
+    if normalized.startswith("plan."):
+        return "plan_review"
+    return "event"
 
 
 def _public_error_metadata(error: Any, *, ok: bool | None = None) -> dict[str, Any]:
@@ -871,6 +974,7 @@ def replay(task_id: str):
         task = get_task(task_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
+    task_payload = _task_payload(task)
     messages = sorted(_public_agent_messages(task_id), key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
     tool_calls = sorted(
         db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=1000),
@@ -878,7 +982,8 @@ def replay(task_id: str):
     )
     results_by_call = _tool_results_by_call_id([str(call.get("id") or "") for call in tool_calls])
     return {
-        "task": _task_payload(task),
+        "task": task_payload,
+        "result_quality": task_payload["result_quality"],
         "events": messages,
         "tool_calls": [_public_tool_call(call) for call in tool_calls],
         "tool_results": [_public_tool_result(results_by_call[call["id"]]) for call in tool_calls if call.get("id") in results_by_call],
@@ -904,9 +1009,9 @@ def _public_tool_call(call: dict) -> dict:
         "id": call.get("id"),
         "task_id": call.get("task_id"),
         "step_id": call.get("step_id"),
-        "tool_name": call.get("tool_name"),
+        "tool_name": _public_tool_label(str(call.get("tool_name") or "")),
         "risk_level": call.get("risk_level"),
-        "status": call.get("status"),
+        "status": _public_status_label(str(call.get("status") or "")),
         "dry_run": call.get("dry_run"),
         "created_at": call.get("created_at"),
         "args": _redacted_public_field(call.get("args") or {}),
@@ -918,12 +1023,12 @@ def _public_tool_result(result: dict) -> dict:
     error_metadata = _public_error_metadata(result.get("error"), ok=result.get("ok"))
     return {
         "id": result.get("id"),
-        "tool_call_id": result.get("tool_call_id"),
+        "has_tool_call": bool(result.get("tool_call_id")),
         "ok": result.get("ok"),
         "output": _redacted_public_field(result.get("output") or {}),
         "error": error_metadata["summary"] if error_metadata["status"] == "failed" else "",
         "error_metadata": error_metadata,
-        "changed_paths": _public_value(result.get("changed_paths") or []),
+        "changed_paths": _redacted_public_field(result.get("changed_paths") or []),
         "rollback_info": _redacted_public_field(result.get("rollback_info") or {}),
         "observation": _redacted_public_field(result.get("observation")),
         "created_at": result.get("created_at"),
@@ -948,7 +1053,7 @@ def progress(task_id: str):
                     "id": message.get("id"),
                     "created_at": message.get("created_at"),
                     "step_id": message.get("step_id"),
-                    "tool_call_id": message.get("tool_call_id"),
+                    "has_tool_call": bool(message.get("tool_call_id")),
                     "payload": _public_value(payload),
                 }
             )

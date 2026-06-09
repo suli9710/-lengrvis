@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -46,6 +47,61 @@ def test_local_library_only_uses_explicitly_allowed_roots(monkeypatch: pytest.Mo
     assert str(pictures.resolve(strict=False)) not in result["roots"]
     assert str(documents.resolve(strict=False)) not in result["roots"]
     assert result["index_status"]["status"] == "empty"
+    assert result["scope_summary"]["display_label"] == "1 个授权范围"
+    assert result["scope_summary"]["root_labels"] == ["授权范围 1"]
+    assert result["scope_summary"]["has_authorized_roots"] is True
+    assert result["scope_summary"]["raw_paths_available_for_local_actions"] is True
+    assert result["scope_summary"]["shareable_summary_has_raw_paths"] is False
+    assert result["items"][0]["path_label"] == "project-shot.png"
+    assert result["items"][0]["parent_label"] == "授权范围 1"
+    shareable_dump = json.dumps(
+        {
+            "scope_summary": result["scope_summary"],
+            "item_labels": [
+                {
+                    "path_label": item["path_label"],
+                    "parent_label": item["parent_label"],
+                    "group_label": item["group_label"],
+                }
+                for item in result["items"]
+            ],
+        },
+        ensure_ascii=False,
+    )
+    assert str(workspace.resolve(strict=False)) not in shareable_dump
+    assert str(pictures.resolve(strict=False)) not in shareable_dump
+    assert str(documents.resolve(strict=False)) not in shareable_dump
+
+
+def test_local_library_empty_scope_summary_is_beginner_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    documents = tmp_path / "private-user-name" / "Documents"
+    documents.mkdir(parents=True)
+    (documents / "payroll-private.pdf").write_text("private", encoding="utf-8")
+
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "private-user-name"))
+    monkeypatch.delenv("HOME", raising=False)
+    for key in local_library_service.ONEDRIVE_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(local_library_service, "get_effective_settings", lambda: AppSettings(allowed_directories=[]))
+
+    result = local_library_service.list_local_library(section="documents", limit=20)
+    shareable_dump = json.dumps(result["scope_summary"], ensure_ascii=False)
+
+    assert result["items"] == []
+    assert result["roots"] == []
+    assert result["scope_summary"] == {
+        "root_count": 0,
+        "root_labels": [],
+        "has_authorized_roots": False,
+        "display_label": "未选择授权目录",
+        "raw_paths_available_for_local_actions": True,
+        "shareable_summary_has_raw_paths": False,
+    }
+    assert "private-user-name" not in shareable_dump
+    assert "payroll-private.pdf" not in shareable_dump
 
 
 def test_local_library_preview_requires_explicit_authorized_root(

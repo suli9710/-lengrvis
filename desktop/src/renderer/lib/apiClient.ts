@@ -2017,11 +2017,15 @@ function shouldRetryRealtime(status: RealtimeConnectionStatus): boolean {
 }
 
 function realtimeErrorMessage(error: unknown): string {
+  let message = "";
   if (error && typeof error === "object" && "message" in error && typeof (error as { message?: unknown }).message === "string") {
-    return (error as { message: string }).message;
+    message = (error as { message: string }).message;
+  } else if (error instanceof Error) {
+    message = error.message;
+  } else {
+    message = "Realtime connection error";
   }
-  if (error instanceof Error) return error.message;
-  return "Realtime connection error";
+  return zhUserFacingError(message) || "实时连接遇到错误，正在尝试恢复";
 }
 
 function rawRealtimeMessage(value: unknown): string {
@@ -2296,9 +2300,18 @@ function mapIndexStatus(status?: BackendIndexStatus | null): IndexStatus | undef
 }
 
 function mapLocalLibraryResponse(data: BackendLocalLibraryResponse): LocalLibraryResponse {
+  const rootCount = numberOrZero(data.scope_summary?.root_count ?? data.roots?.length ?? 0);
   return {
     section: String(data.section ?? "gallery"),
     roots: data.roots ?? [],
+    scopeSummary: {
+      rootCount,
+      rootLabels: (data.scope_summary?.root_labels ?? []).map(String),
+      hasAuthorizedRoots: Boolean(data.scope_summary?.has_authorized_roots ?? rootCount > 0),
+      displayLabel: String(data.scope_summary?.display_label ?? (rootCount ? `${rootCount} 个授权范围` : "未选择授权目录")),
+      rawPathsAvailableForLocalActions: Boolean(data.scope_summary?.raw_paths_available_for_local_actions ?? true),
+      shareableSummaryHasRawPaths: Boolean(data.scope_summary?.shareable_summary_has_raw_paths ?? false)
+    },
     items: (data.items ?? []).map(mapLocalLibraryItem),
     count: Number(data.count ?? data.items?.length ?? 0),
     total: Number(data.total ?? data.items?.length ?? 0),
@@ -2316,8 +2329,10 @@ function mapLocalLibraryItem(item: BackendLocalLibraryItem): LocalLibraryItem {
   return {
     id: String(item.id ?? item.path),
     path: String(item.path ?? ""),
+    pathLabel: String(item.path_label ?? item.name ?? ""),
     name: String(item.name ?? item.path ?? ""),
     parent: String(item.parent ?? ""),
+    parentLabel: String(item.parent_label ?? ""),
     kind: String(item.kind ?? "document"),
     extension: String(item.extension ?? ""),
     mimeType: String(item.mime_type ?? ""),
@@ -2836,7 +2851,7 @@ function normalizeTaskCompletionEvidenceStatus(
 function taskCompletionEvidenceSummary(status: TaskCompletionEvidence["status"], missing: string[] = []): string {
   switch (status) {
     case "verified_completed_result":
-      return "后端确认这是 completed_result，且 result_verified=true。";
+      return "已看到可复核的最终结果记录，系统确认它不是仅提交或过程进度。";
     case "task_evidence_only":
       return "只记录到提交或任务过程证据，不能当作最终结果。";
     case "visible_progress":
@@ -2873,8 +2888,8 @@ function taskCompletionEvidenceMissing(
 ): string[] {
   if (status === "verified_completed_result") return [];
   const missing = [];
-  if (!hasCompletedResult) missing.push("completed_result");
-  if (!resultVerified) missing.push("result_verified");
+  if (!hasCompletedResult) missing.push("最终结果记录");
+  if (!resultVerified) missing.push("结果复核确认");
   return missing;
 }
 
@@ -4874,8 +4889,10 @@ interface BackendFileSearchResponse {
 interface BackendLocalLibraryItem {
   id: string;
   path: string;
+  path_label?: string;
   name: string;
   parent: string;
+  parent_label?: string;
   kind: string;
   extension: string;
   mime_type?: string;
@@ -4892,6 +4909,14 @@ interface BackendLocalLibraryItem {
 interface BackendLocalLibraryResponse {
   section: string;
   roots?: string[];
+  scope_summary?: {
+    root_count?: number | string;
+    root_labels?: string[];
+    has_authorized_roots?: boolean;
+    display_label?: string;
+    raw_paths_available_for_local_actions?: boolean;
+    shareable_summary_has_raw_paths?: boolean;
+  };
   items?: BackendLocalLibraryItem[];
   count?: number;
   total?: number;

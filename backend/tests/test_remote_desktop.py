@@ -166,6 +166,36 @@ def test_mobile_approval_token_cannot_open_remote_screen():
     assert exc_info.value.code == 1008
 
 
+def test_remote_input_scope_cannot_open_remote_screen():
+    _enable_remote_desktop()
+    client = TestClient(_test_app())
+    token, _grant_id = _remote_input_grant_token("mobile_input_screen_boundary")
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/remote/screen",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ):
+            raise AssertionError("Remote input token should not open remote screen")
+
+    assert exc_info.value.code == 1008
+
+
+def test_remote_view_scope_cannot_open_remote_input():
+    _enable_remote_desktop()
+    client = TestClient(_test_app())
+    token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/remote/input",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ):
+            raise AssertionError("Remote view token should not open remote input")
+
+    assert exc_info.value.code == 1008
+
+
 def test_remote_view_scope_can_open_remote_screen(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (100, 100), "blue"))

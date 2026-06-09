@@ -1,9 +1,12 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 
 const {
   acceptWebSocketUpgrade,
   assertAcceptedWebSocket,
+  assertInsecureLanError,
   assertJsonRequest,
+  assertWebSocketTokenTransport,
   connectWebSocket,
   jsonResponse,
   loadMobileClient,
@@ -17,6 +20,7 @@ const WS_PROTOCOL_PREFIX = "lengrvis.mobile.token.";
 const SESSION_TOKEN = "session-token";
 const DEVICE_ID = "device-1";
 const ACTIVE_GRANT_ID = "grant/slash id";
+const APPROVAL_GRANT_ID = "grant-approval";
 const EXPIRING_GRANT_ID = "grant-expiring";
 const START_TIME = Date.now();
 const EXPIRY_TIME = START_TIME + 5 * 60 * 1000;
@@ -60,6 +64,112 @@ function decodeApprovalPath(pathname, suffix = "") {
   return decodeURIComponent(pathname.slice(prefix.length, pathname.length - suffix.length));
 }
 
+function assertSourceIncludes(source, expected, message) {
+  assert.ok(source.includes(expected), `${message}: expected source to include ${JSON.stringify(expected)}`);
+}
+
+function functionSource(source, name) {
+  const start = source.indexOf(`function ${name}`);
+  assert.notEqual(start, -1, `RemoteScreen must define ${name}`);
+  const nextFunction = source.indexOf("\nfunction ", start + 1);
+  const styles = source.indexOf("\nconst styles", start + 1);
+  const end = [nextFunction, styles].filter((index) => index > start).sort((left, right) => left - right)[0] ?? source.length;
+  return source.slice(start, end);
+}
+
+function assertRemoteScreenBeginnerCopy() {
+  const source = fs.readFileSync(mobilePath("src/screens/RemoteScreen.tsx"), "utf8");
+  const beginnerCopy = [
+    "只读观看",
+    "已授权输入",
+    "授权剩余",
+    "结束接管",
+    "只读屏幕查看",
+    "点击仍需电脑端审批",
+    "安全连接已开启",
+    "需要确认这台电脑",
+    "连接已阻止",
+    "当前网络连接不够安全",
+    "远程输入连接失败",
+    "输入授权已过期",
+    "电脑端已结束或拒绝这次远程输入",
+    "这台手机没有远程输入权限",
+  ];
+  for (const copy of beginnerCopy) {
+    assertSourceIncludes(source, copy, `RemoteScreen beginner copy must explain ${copy}`);
+  }
+
+  const transportCopy = functionSource(source, "remoteTransportNotice");
+  assert.doesNotMatch(
+    transportCopy,
+    /token|WebSocket protocol|URL|SHA-256|fingerprint|formatTlsFingerprint|security\.host|HTTPS \/|LAN HTTP|HTTP\/ws/,
+    "Remote transport notice must not expose protocol, host, token, or certificate internals to beginners",
+  );
+  assert.doesNotMatch(
+    source,
+    /if \(error instanceof Error && error\.message\) return error\.message;|payload\.message \|\|/,
+    "Remote input failure UI must not surface raw backend or token errors",
+  );
+}
+
+function assertApprovalDetailBeginnerSafety() {
+  const approvalSafety = loadTsModule(mobilePath("src/approvalSafetyDisplay.ts"));
+  const blocked = approvalSafety.approvalDecisionGuard({
+    approval_type: "system_change",
+    risk_level: "R4_FORBIDDEN_OR_HANDOFF",
+    tool_effects: ["execute"],
+    resource_kinds: ["system"],
+  });
+  assert.equal(blocked.approveBlockedReason, "这类请求不能在手机上批准；请回电脑端处理或直接拒绝。");
+  assert.equal(blocked.tone, "danger");
+  assert.match(blocked.title, /手机端不会批准/);
+  assert.match(blocked.nextStep, /拒绝|电脑端/);
+  assert.equal(
+    approvalSafety.approvalApproveBlockedReason({
+      engineering_boundary: { tool: { risk_level: "R4_FORBIDDEN_OR_HANDOFF" } },
+    }),
+    "这类请求不能在手机上批准；请回电脑端处理或直接拒绝。",
+  );
+
+  const destructiveWithPreview = approvalSafety.approvalDecisionGuard({
+    approval_type: "file_operation",
+    risk_level: "R3_DESTRUCTIVE_OR_SYSTEM",
+    tool_effects: ["delete"],
+    resource_kinds: ["file"],
+    dry_run_summary: "将把 1 个文件移入回收站。",
+  });
+  assert.equal(destructiveWithPreview.approveBlockedReason, undefined);
+  assert.equal(destructiveWithPreview.tone, "warning");
+  assert.match(destructiveWithPreview.title, /批准前先核对范围/);
+  assert.match(destructiveWithPreview.detail, /批准后电脑端才会继续执行/);
+  assert.match(destructiveWithPreview.nextStep, /不确定就拒绝/);
+
+  const destructiveWithoutPreview = approvalSafety.approvalDecisionGuard({
+    approval_type: "cleanup_execute",
+    risk_level: "R3_DESTRUCTIVE_OR_SYSTEM",
+    tool_effects: ["delete"],
+  });
+  assert.equal(destructiveWithoutPreview.tone, "danger");
+  assert.match(destructiveWithoutPreview.detail, /默认更安全的下一步是拒绝/);
+
+  const source = fs.readFileSync(mobilePath("src/screens/ApprovalDetail.tsx"), "utf8");
+  assertSourceIncludes(source, "批准前核对", "Approval detail must show a beginner decision guard");
+  assertSourceIncludes(source, "不可批准", "Approval detail must label blocked approval as unavailable");
+  assertSourceIncludes(source, "approvalApproveBlockedReason", "Approval detail must use approval block helper");
+  assertSourceIncludes(source, "latestApproveBlockedReason", "Approval detail must re-check blocked approval before submit");
+  assertSourceIncludes(source, "手机端不可批准", "Approval detail must tell the user when submit-time approval is blocked");
+  assert.match(
+    source,
+    /disabled=\{isBusy \|\| Boolean\(approveBlockedReason\)\}/,
+    "Approval detail approve button must be disabled when the helper blocks mobile approval",
+  );
+  assert.match(
+    source,
+    /accessibilityHint=\{approveBlockedReason \|\| decisionGuard\.nextStep\}/,
+    "Approval detail approve button must expose the safer next step as accessibility hint",
+  );
+}
+
 async function main() {
   const client = loadMobileClient();
   const {
@@ -68,11 +178,14 @@ async function main() {
     reduceRemoteInputGrant,
     remoteInputGrantExpiryDelayMs,
   } = loadTsModule(mobilePath("src/remoteInputGrant.ts"));
+  assertRemoteScreenBeginnerCopy();
+  assertApprovalDetailBeginnerSafety();
 
   const state = {
     now: START_TIME,
     grants: new Map([
       [ACTIVE_GRANT_ID, makeGrant(ACTIVE_GRANT_ID)],
+      [APPROVAL_GRANT_ID, makeGrant(APPROVAL_GRANT_ID)],
       [EXPIRING_GRANT_ID, makeGrant(EXPIRING_GRANT_ID)],
     ]),
     approvals: new Map([
@@ -88,6 +201,22 @@ async function main() {
           created_at: new Date(START_TIME).toISOString(),
           source_device_id: DEVICE_ID,
           source_grant_id: ACTIVE_GRANT_ID,
+          allowed_device_ids: [DEVICE_ID],
+          required_mobile_scopes: ["remote:input"],
+        },
+      ],
+      [
+        "approval-explicit-grant",
+        {
+          id: "approval-explicit-grant",
+          task_id: "task-remote-input-explicit",
+          approval_type: "remote_input",
+          message: "Approve explicit remote input click",
+          diff_preview: {},
+          status: "pending",
+          created_at: new Date(START_TIME).toISOString(),
+          source_device_id: DEVICE_ID,
+          source_grant_id: APPROVAL_GRANT_ID,
           allowed_device_ids: [DEVICE_ID],
           required_mobile_scopes: ["remote:input"],
         },
@@ -210,6 +339,7 @@ async function main() {
         rejectWebSocketUpgrade(socket, 404, "Unknown WebSocket path");
         return;
       }
+      assert.equal(url.search, "", "remote input WebSocket upgrade must not carry query auth");
       const tokenProtocol = upgrade.protocols.find((protocol) => protocol.startsWith(WS_PROTOCOL_PREFIX));
       const token = tokenProtocol?.slice(WS_PROTOCOL_PREFIX.length);
       const grantId = token ? state.tokenToGrantId.get(token) : undefined;
@@ -260,6 +390,12 @@ async function main() {
     assert.equal(mapViewerPointToRemote(400, 225, { width: 0, height: 450 }, remoteFrame), null);
 
     const session = makeSession(client, server.origin);
+    const lanSession = makeSession(client, "http://192.168.1.20:8000");
+    assert.throws(() => client.remoteInputWebSocketConnectionInfo(lanSession, "input-token"), assertInsecureLanError);
+    await assert.rejects(() => client.claimRemoteInputGrantToken(lanSession, ACTIVE_GRANT_ID), assertInsecureLanError);
+    await assert.rejects(() => client.revokeRemoteInputGrant(lanSession, ACTIVE_GRANT_ID), assertInsecureLanError);
+    assert.equal(server.requests.length, 0, "blocked insecure LAN remote input calls must not reach the smoke server");
+
     const grantToken = await client.claimRemoteInputGrantToken(session, ACTIVE_GRANT_ID);
     assert.equal(server.requests.length, 1, "claiming a grant token must reach the local HTTP smoke service");
     assert.equal(server.requests[0].path, "/api/mobile/remote-input-grants/grant%2Fslash%20id/token");
@@ -281,19 +417,34 @@ async function main() {
     assert.equal(server.requests[2].headers.authorization, "Bearer grant-token-active");
     assert.deepEqual(server.requests[2].json, { decision: "approved" });
 
+    const explicitApprovalGrant = state.grants.get(APPROVAL_GRANT_ID);
+    const explicitDecision = await client.submitApprovalDecision(session, "approval-explicit-grant", "approved", {
+      approvalType: "remote_input",
+      remoteInputGrant: explicitApprovalGrant,
+    });
+    assert.equal(explicitDecision.id, "approval-explicit-grant");
+    assert.equal(explicitDecision.status, "approved");
+    assert.equal(server.requests.length, 5);
+    assert.equal(server.requests[3].method, "POST");
+    assert.equal(server.requests[3].path, "/api/mobile/remote-input-grants/grant-approval/token");
+    assert.equal(server.requests[3].headers.authorization, `Bearer ${SESSION_TOKEN}`);
+    assert.equal(server.requests[4].method, "POST");
+    assert.equal(server.requests[4].path, "/api/mobile/approvals/approval-explicit-grant/decision");
+    assert.equal(server.requests[4].headers.authorization, "Bearer grant-token-grant-approval");
+    assert.deepEqual(server.requests[4].json, { decision: "approved" });
+
     const inputInfo = client.remoteInputWebSocketConnectionInfo(session, grantToken.token);
     assert.equal(inputInfo.url, `${server.origin.replace("http:", "ws:")}/ws/remote/input`);
-    assert.equal(JSON.stringify(inputInfo.protocols), JSON.stringify([`${WS_PROTOCOL_PREFIX}${grantToken.token}`]));
-    assert.doesNotMatch(inputInfo.url, /grant-token-active|token=/);
+    assertWebSocketTokenTransport(inputInfo, grantToken.token, { pathname: "/ws/remote/input", label: "remote input WebSocket" });
     assertAcceptedWebSocket(await connectWebSocket(inputInfo.url, inputInfo.protocols), inputInfo.protocols[0]);
 
     const wrongTokenHandshake = await connectWebSocket(inputInfo.url, [`${WS_PROTOCOL_PREFIX}wrong`]);
     assert.equal(wrongTokenHandshake.statusCode, 401);
 
     const revokedGrant = await client.revokeRemoteInputGrant(session, ACTIVE_GRANT_ID);
-    assert.equal(server.requests.length, 4);
-    assert.equal(server.requests[3].method, "DELETE");
-    assert.equal(server.requests[3].path, "/api/mobile/remote-input-grants/grant%2Fslash%20id");
+    assert.equal(server.requests.length, 6);
+    assert.equal(server.requests[5].method, "DELETE");
+    assert.equal(server.requests[5].path, "/api/mobile/remote-input-grants/grant%2Fslash%20id");
     assert.equal(revokedGrant.status, "revoked");
     assert.equal(reduceRemoteInputGrant(activeGrant, { type: "revoked", grantId: ACTIVE_GRANT_ID }, START_TIME), null);
 
@@ -309,6 +460,7 @@ async function main() {
     assert.equal(expiringToken.token, "grant-token-expiring");
     assert.equal(expiringToken.expires_in, 1);
     const expiringInfo = client.remoteInputWebSocketConnectionInfo(session, expiringToken.token);
+    assertWebSocketTokenTransport(expiringInfo, expiringToken.token, { pathname: "/ws/remote/input", label: "expiring remote input WebSocket" });
     assertAcceptedWebSocket(await connectWebSocket(expiringInfo.url, expiringInfo.protocols), expiringInfo.protocols[0]);
 
     state.now = EXPIRY_TIME;

@@ -39,6 +39,24 @@ const smokeViewports = [
   }
 ];
 const layoutTolerancePx = 1;
+const forbiddenSettingsPageContractTerms = [
+  { label: "Ollama", pattern: /\bOllama\b/ },
+  { label: "LM Studio", pattern: /LM Studio/ },
+  { label: "llama.cpp", pattern: /llama\.cpp/ },
+  { label: "manifest", pattern: /\bmanifest\b/i },
+  { label: "runtime", pattern: /\bruntime\b/i },
+  { label: "backend", pattern: /\bbackend\b/i },
+  { label: "Privacy mode requires", pattern: /Privacy mode requires/ },
+  { label: "Install Ollama runtime", pattern: /Install Ollama runtime/ },
+  { label: "Hardware readiness", pattern: /Hardware readiness/ },
+  { label: "Start local service", pattern: /Start local service/ },
+  { label: "Download recommended model", pattern: /Download recommended model/ },
+  { label: "API key", pattern: /API key/ },
+  { label: "Provider", pattern: /\bProvider\b/ },
+  { label: "embedding", pattern: /\bembedding\b/i },
+  { label: "public_safe=false", pattern: /public_safe(?:\s*=\s*false|_false)?/ },
+  { label: "template_status", pattern: /template_status/ }
+];
 
 const localModelReadiness = {
   can_install: true,
@@ -224,6 +242,7 @@ async function main() {
       await runViewportScenario(browser, previewUrl, viewport);
     }
     await runEfficiencyModeIntroScenario(browser, previewUrl);
+    await runSensitiveLocalModelErrorScenario(browser, previewUrl);
   } finally {
     if (browser) await browser.close();
     await stopProcess(preview);
@@ -284,6 +303,7 @@ async function runViewportScenario(browser, previewUrl, viewport) {
 
     await assertModelBoundary(page);
     await assertCleanMachinePrivacyPath(page);
+    await assertNoInternalSettingsContractText(page, `${viewport.name} clean-machine settings page`);
     await captureEvidence(page, viewport);
     await assertResponsiveLocalModelLayout(page, viewport);
 
@@ -293,6 +313,7 @@ async function runViewportScenario(browser, previewUrl, viewport) {
       `${viewport.name} readiness smoke must not start model installation without a user click`
     );
     await assertOneClickLocalModelInstallPath(page, counters, viewport);
+    await assertNoInternalSettingsContractText(page, `${viewport.name} post-install settings page`);
   } finally {
     await page.close();
   }
@@ -324,7 +345,7 @@ async function runEfficiencyModeIntroScenario(browser, previewUrl) {
     });
 
     await page.goto(`${previewUrl}/?view=settings`, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    const privacyPanel = page.getByLabel("隐私模式开箱检查").first();
+    const privacyPanel = page.locator(".settings-privacy-anchor .privacy-readiness").first();
     await privacyPanel.waitFor({ timeout: 15_000 });
 
     const privacyText = await privacyPanel.innerText();
@@ -338,13 +359,98 @@ async function runEfficiencyModeIntroScenario(browser, previewUrl) {
     assert.match(privacyText, /不会静默回退云端/, "efficiency mode should keep the no-silent-cloud-fallback boundary visible");
     assert.doesNotMatch(
       privacyText,
-      /主按钮会按顺序完成 Ollama 安装、启动和模型下载\/随包启用/,
+      /主按钮会按顺序安装本地 AI 应用、启动本地服务，并下载或启用推荐模型/,
       "efficiency mode should not describe the privacy switch as an install/download action"
     );
+    await assertNoInternalSettingsContractText(page, "efficiency settings page");
     assert.equal(counters.installRequests, 0, "efficiency mode intro must not start local model installation");
   } finally {
     await context.close();
   }
+}
+
+async function runSensitiveLocalModelErrorScenario(browser, previewUrl) {
+  const context = await browser.newContext({
+    viewport: { width: 900, height: 760 }
+  });
+  const page = await context.newPage();
+  page.on("pageerror", (error) => {
+    throw error;
+  });
+
+  const sensitiveMessage = "安装失败：C:\\Users\\Smoke\\secret-models\\qwen.bin token=local-secret-123456 https://models.example.invalid/qwen";
+
+  try {
+    const counters = {
+      localHealthRequests: 0,
+      setupPlanRequests: 0,
+      installRequests: 0,
+      hardwareRequests: 0
+    };
+    await installApiMocks(page, counters, {
+      localHealth: {
+        ...localLlmHealth,
+        error: sensitiveMessage
+      },
+      setupPlan: {
+        ...cleanMachineSetupPlan,
+        verification: undefined,
+        repair_action: {
+          ...cleanMachineSetupPlan.repair_action,
+          detail: sensitiveMessage
+        }
+      },
+      installLocalModelResponse: {
+        ok: false,
+        error: sensitiveMessage,
+        message: sensitiveMessage
+      }
+    });
+
+    await page.goto(`${previewUrl}/?view=settings`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForSelector("[aria-label='模型边界']", { timeout: 30_000 });
+    await waitForCounter(() => counters.setupPlanRequests >= 1, "sensitive setup plan request");
+    await waitForPrivacyReadinessToSettle(page);
+
+    const beforeClickText = await page.locator("body").innerText();
+    assert.match(beforeClickText, /本机路径待隐藏/, "missing verification must not claim paths are hidden");
+    assert.doesNotMatch(beforeClickText, /本机路径已隐藏/, "missing verification must fail closed on path redaction");
+    assert.doesNotMatch(beforeClickText, /本地 AI 已验证可用/, "missing verification must not claim verified local AI readiness");
+    await assertNoSensitiveLocalModelText(page, "before install");
+
+    const installButton = page.getByRole("button", { name: /一键安装本地 AI 应用并准备 qwen2\.5:3b/ }).first();
+    await installButton.click();
+    await waitForCounter(() => counters.installRequests === 1, "sensitive install request");
+    await page.getByText(/安装任务启动失败|安装失败，请重新检查或重试/).first().waitFor({ timeout: 5_000 });
+
+    const afterClickText = await page.locator("body").innerText();
+    assert.match(afterClickText, /安装任务启动失败|安装失败，请重新检查或重试/, "sensitive install failures should use safe fallback copy");
+    await assertNoSensitiveLocalModelText(page, "after install failure");
+    await assertNoInternalSettingsContractText(page, "sensitive local-model error page");
+  } finally {
+    await context.close();
+  }
+}
+
+async function assertNoSensitiveLocalModelText(page, label) {
+  const patternSource = "secret-models|local-secret-123456|models\\.example\\.invalid";
+  const matches = await page.evaluate((source) => {
+    const pattern = new RegExp(source);
+    return [...document.querySelectorAll("body *")]
+      .filter((element) => {
+        const text = element.textContent || "";
+        if (!pattern.test(text)) return false;
+        return [...element.children].every((child) => !pattern.test(child.textContent || ""));
+      })
+      .map((element) => ({
+        tag: element.tagName.toLowerCase(),
+        className: element.getAttribute("class") || "",
+        testId: element.getAttribute("data-testid") || "",
+        text: (element.textContent || "").replace(/\s+/g, " ").slice(0, 260)
+      }))
+      .slice(0, 5);
+  }, patternSource);
+  assert.deepEqual(matches, [], `${label} must not render sensitive local model text: ${JSON.stringify(matches, null, 2)}`);
 }
 
 function runSourceAssertions() {
@@ -368,12 +474,12 @@ function runSourceAssertions() {
   );
 
   for (const expectedText of [
-    "一键安装 Ollama + 准备",
-    "一键启动 Ollama + 启用随包模型",
-    "一键启动 Ollama + 检查模型",
+    "一键安装本地 AI 应用并准备",
+    "一键启动本地 AI 服务并启用随包模型",
+    "一键启动本地 AI 服务并检查模型",
     "一键下载",
-    "安装 Ollama、启动服务、准备模型",
-    "Ollama 安装、启动和模型下载/随包启用"
+    "安装本地 AI 应用、启动服务、准备模型",
+    "安装本地 AI 应用、启动本地服务，并下载或启用推荐模型"
   ]) {
     assert.ok(settingsSource.includes(expectedText), `settings page should expose clear next step copy: ${expectedText}`);
   }
@@ -383,6 +489,10 @@ function runSourceAssertions() {
     "allowFileContentUpload: false",
     "隐私模式已开启，本地 AI 尚未就绪",
     "开启隐私模式只会关闭云端辅助并检查本地 AI",
+    "当前未检测到可用的本地 AI 应用或随包模型",
+    "请按下方“隐私模式开箱检查”的主按钮继续准备",
+    "完成前不会上传文件",
+    "不会把缺失的离线模型当作已可用",
     "不会静默回退云端",
     "隐私模式失败时不会静默回退云端"
   ]) {
@@ -446,48 +556,60 @@ async function assertModelBoundary(page) {
   assert.match(boundaryText, /CPU 路径可用|未检测到 GPU/, "model boundary should show hardware readiness without pretending GPU acceleration exists");
   assert.match(boundaryText, /速度预估/, "model boundary should expose speed expectations");
   assert.match(boundaryText, /待本地 AI 就绪/, "privacy speed should not claim the clean machine is ready");
-  assert.match(boundaryText, /失败修复：下一步安装 Ollama 运行时/, "privacy card should point to the first repair action");
+  assert.match(boundaryText, /失败修复：下一步安装本地 AI 应用/, "privacy card should point to the first repair action");
   assert.match(boundaryText, /隐私失败不自动回云端/, "privacy boundary should make cloud fallback explicit");
   assert.doesNotMatch(boundaryText, /默认离线模型.*(可用|已就绪)/, "model boundary must not claim a default offline model is already available");
 }
 
 async function assertCleanMachinePrivacyPath(page) {
-  const privacyPanel = page.getByLabel("隐私模式开箱检查").first();
+  const privacyPanel = page.locator(".local-model-installer .privacy-readiness").first();
   await privacyPanel.waitFor({ timeout: 15_000 });
   await waitForPrivacyReadinessToSettle(page);
   const privacyText = await privacyPanel.innerText();
 
   assert.match(privacyText, /隐私模式开箱检查/, "privacy readiness panel should render for a clean machine");
   assert.match(privacyText, /待配置|检查中/, "privacy readiness should be framed as setup, not ready");
-  assert.match(privacyText, /这台电脑条件已通过，下一步安装本地 AI 运行时/, "clean machine should get a concrete next step");
+  assert.match(privacyText, /这台电脑条件已通过，下一步安装本地 AI 应用/, "clean machine should get a concrete next step");
   assert.match(privacyText, /检查电脑条件/, "privacy path should show the hardware step");
-  assert.match(privacyText, /准备本地 AI 运行时/, "privacy path should show the runtime step");
+  assert.match(privacyText, /安装本地 AI 应用/, "privacy path should show the local app step");
   assert.match(privacyText, /启动本地 AI 服务/, "privacy path should show the service step");
   assert.match(privacyText, /下载推荐模型/, "privacy path should show the model step");
-  assert.match(privacyText, /一键安装 Ollama \+ 准备 qwen2\.5:3b/, "clean machine should expose a one-click install path");
-  assert.match(privacyText, /路径已脱敏/, "privacy path should show backend verification redaction status");
-  assert.match(privacyText, /下一步：Install Ollama runtime/, "privacy path should consume backend repair_action summary");
-  assert.match(privacyText, /4 条证据，3 条待处理/, "privacy path should consume backend evidence summary");
+  assert.match(privacyText, /一键安装本地 AI 应用并准备 qwen2\.5:3b/, "clean machine should expose a one-click install path");
+  assert.match(privacyText, /本机路径已隐藏/, "privacy path should show backend verification redaction status");
+  assert.match(privacyText, /下一步：安装本地 AI 应用/, "privacy path should expose localized repair action copy");
+  assert.match(privacyText, /下一步说明：当前未检测到可用的本地 AI 应用或随包模型/, "privacy path should explain why clean-machine local setup is blocked");
+  assert.match(privacyText, /不会把缺失的离线模型当作已可用/, "privacy path must fail closed on missing bundled or offline model evidence");
+  assert.match(privacyText, /4 个检查项，3 个待处理/, "privacy path should consume backend evidence summary");
   assert.match(privacyText, /重新检查/, "privacy path should expose a retry/check action");
   assert.match(privacyText, /不会静默回退云端/, "privacy path should make the no-silent-cloud-fallback boundary visible");
   assert.doesNotMatch(privacyText, /隐私模式已就绪|本地 AI 已就绪|可本地处理/, "clean machine privacy panel must not claim local model readiness");
 
-  const installButton = page.getByRole("button", { name: /一键安装 Ollama \+ 准备 qwen2\.5:3b/ }).first();
+  const localStatusText = await page.locator(".local-llm-status").first().innerText();
+  assert.match(localStatusText, /本地 AI 需要配置/, "local AI status notice should identify the setup state");
+  assert.match(
+    localStatusText,
+    /请按下方“隐私模式开箱检查”的主按钮继续准备/,
+    "local AI status notice should point beginners to the existing next-step button"
+  );
+  assert.match(localStatusText, /完成前不会上传文件/, "local AI status notice should make the privacy boundary visible");
+  assert.match(localStatusText, /不会静默回退云端/, "local AI status notice should keep the no-silent-cloud-fallback boundary visible");
+
+  const installButton = page.getByRole("button", { name: /一键安装本地 AI 应用并准备 qwen2\.5:3b/ }).first();
   assert.equal(await installButton.isEnabled(), true, "one-click local model setup should be actionable on a clean machine");
 
   const installer = page.locator(".local-model-installer").first();
   const installerText = await installer.innerText();
-  assert.match(installerText, /本地 AI 手动设置/, "settings should expose a fallback manual local model section");
-  assert.match(installerText, /上方按钮会安装 Ollama、启动服务、准备 qwen2\.5:3b/, "manual section should explain the same one-click sequence");
+  assert.match(installerText, /本地 AI 备选设置/, "settings should expose a fallback local model section");
+  assert.match(installerText, /上方按钮会安装本地 AI 应用、启动服务、准备 qwen2\.5:3b/, "fallback section should explain the same one-click sequence");
   assert.match(installerText, /内存[\s\S]*16 GB[\s\S]*需要 8 GB/, "readiness should show memory requirements");
   assert.match(installerText, /磁盘[\s\S]*64 GB[\s\S]*需要 12 GB/, "readiness should show disk requirements");
   assert.match(installerText, /CPU[\s\S]*8 核[\s\S]*需要 4 核/, "readiness should show CPU requirements");
-  assert.match(installerText, /GPU: 未检测到 GPU；CPU 路径可用/, "readiness should show hardware/speed context");
-  assert.match(installerText, /手动安装所选模型/, "manual install action should be visible");
+  assert.match(installerText, /图形加速：未检测到 GPU；CPU 路径可用/, "readiness should show hardware/speed context");
+  assert.match(installerText, /安装所选模型/, "fallback install action should be visible");
   assert.match(installerText, /待安装/, "clean machine should not be marked as installed");
-  assert.match(installerText, /选择模型后即可安装到本地推理环境/, "initial progress copy should tell the user what happens next");
+  assert.match(installerText, /选择模型后即可准备到这台电脑/, "initial progress copy should tell the user what happens next");
 
-  const manualButton = page.getByRole("button", { name: /手动安装所选模型/ }).first();
+  const manualButton = page.getByRole("button", { name: /安装所选模型/ }).first();
   assert.equal(await manualButton.isEnabled(), true, "manual local model install should also be actionable");
 
   const fullPageText = await page.locator("body").innerText();
@@ -496,7 +618,7 @@ async function assertCleanMachinePrivacyPath(page) {
 }
 
 async function assertOneClickLocalModelInstallPath(page, counters, viewport) {
-  const installButton = page.getByRole("button", { name: /一键安装 Ollama \+ 准备 qwen2\.5:3b/ }).first();
+  const installButton = page.getByRole("button", { name: /一键安装本地 AI 应用并准备 qwen2\.5:3b/ }).first();
   await installButton.click();
   await waitForCounter(() => counters.installRequests === 1, `${viewport.name} one-click local model install request`);
 
@@ -509,13 +631,24 @@ async function assertOneClickLocalModelInstallPath(page, counters, viewport) {
   assert.doesNotMatch(bodyText, /默认离线模型.*(可用|已就绪)/, "one-click completion must not claim a default bundled model is proven ready");
 }
 
+async function assertNoInternalSettingsContractText(page, label) {
+  const bodyText = await page.locator("body").innerText();
+  for (const forbidden of forbiddenSettingsPageContractTerms) {
+    assert.doesNotMatch(
+      bodyText,
+      forbidden.pattern,
+      `${label} must not expose internal or English contract text: ${forbidden.label}`
+    );
+  }
+}
+
 async function waitForPrivacyReadinessToSettle(page) {
   await page.waitForFunction(() => {
     const panel = document.querySelector(".local-model-installer .privacy-readiness");
     const text = panel?.textContent || "";
     return (
-      /下一步安装本地 AI 运行时/.test(text) ||
-      /一键安装 Ollama/.test(text) ||
+      /下一步安装本地 AI 应用/.test(text) ||
+      /一键安装本地 AI 应用/.test(text) ||
       /条件不足/.test(text) ||
       /需要处理/.test(text)
     );
@@ -868,6 +1001,9 @@ async function captureEvidence(page, viewport) {
 
 async function installApiMocks(page, counters, options = {}) {
   const settings = options.settings || backendSettings;
+  const localHealth = options.localHealth || localLlmHealth;
+  const setupPlan = options.setupPlan || cleanMachineSetupPlan;
+  const installLocalModelResponse = options.installLocalModelResponse || null;
   await page.route("**/*", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -895,17 +1031,18 @@ async function installApiMocks(page, counters, options = {}) {
     if (url.pathname === "/api/pair/devices") return json({ devices: [] });
     if (url.pathname === "/api/settings/local-llm/health") {
       counters.localHealthRequests += 1;
-      return json(localLlmHealth);
+      return json(localHealth);
     }
     if (url.pathname === "/api/settings/local-model/setup-plan") {
       counters.setupPlanRequests += 1;
       return json({
-        ...cleanMachineSetupPlan,
-        model: url.searchParams.get("model") || cleanMachineSetupPlan.model
+        ...setupPlan,
+        model: url.searchParams.get("model") || setupPlan.model || cleanMachineSetupPlan.model
       });
     }
     if (url.pathname === "/api/settings/install-local-model" && method === "POST") {
       counters.installRequests += 1;
+      if (installLocalModelResponse) return json(installLocalModelResponse);
       return json({
         ok: true,
         model: cleanMachineSetupPlan.model,

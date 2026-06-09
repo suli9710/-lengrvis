@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -56,10 +57,20 @@ def _recording_tool(
     *,
     sleep_seconds: float,
     risk: RiskLevel = RiskLevel.R0_READ_ONLY,
+    start_barrier: threading.Barrier | None = None,
+    barrier_labels: set[str] | None = None,
 ):
     def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
         label = str(args["label"])
         events.append({"label": label, "phase": "start", "time": time.perf_counter()})
+        if start_barrier is not None and (barrier_labels is None or label in barrier_labels):
+            try:
+                events.append({"label": label, "phase": "gate_wait", "time": time.perf_counter()})
+                start_barrier.wait()
+                events.append({"label": label, "phase": "gate_release", "time": time.perf_counter()})
+            except threading.BrokenBarrierError:
+                events.append({"label": label, "phase": "gate_timeout", "time": time.perf_counter()})
+                return {"error": "parallel start gate timed out", "label": label}
         time.sleep(sleep_seconds)
         events.append({"label": label, "phase": "end", "time": time.perf_counter()})
         return {"ok": True, "label": label, "changed_paths": [str(args["path"])] if args.get("path") else []}
@@ -72,6 +83,29 @@ def _recording_tool(
         risk_level=risk,
         agent_owner="FileAgent",
         supports_dry_run=risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM},
+        requires_authorized_path=False,
+        execute=execute,
+        effects=["read"],
+        resource_kinds=["test"],
+        fast_path_eligible=True,
+        trust_tier="builtin",
+    )
+
+
+def _failing_tool(name: str, events: list[dict[str, Any]]):
+    def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+        label = str(args["label"])
+        events.append({"label": label, "phase": "start", "time": time.perf_counter()})
+        return {"error": f"{label} failed intentionally"}
+
+    return ToolDefinition(
+        name=name,
+        description=name,
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
         requires_authorized_path=False,
         execute=execute,
         effects=["read"],
@@ -109,9 +143,18 @@ def _task_and_plan(steps: list[PlanStep]):
 
 def test_dependency_scheduler_runs_ready_steps_in_parallel_then_dependents():
     events: list[dict[str, Any]] = []
+    start_barrier = threading.Barrier(2, timeout=3.0)
     orchestrator = OrchestratorAgent()
     orchestrator.subagents["FileAgent"] = PassthroughAgent()
-    orchestrator.registry.register(_recording_tool("test.parallel", events, sleep_seconds=0.25))
+    orchestrator.registry.register(
+        _recording_tool(
+            "test.parallel",
+            events,
+            sleep_seconds=0.02,
+            start_barrier=start_barrier,
+            barrier_labels={"A", "B"},
+        )
+    )
     task, plan = _task_and_plan(
         [
             _step("A", "test.parallel", args={"label": "A"}),
@@ -125,6 +168,7 @@ def test_dependency_scheduler_runs_ready_steps_in_parallel_then_dependents():
 
     starts = {event["label"]: event["time"] for event in events if event["phase"] == "start"}
     ends = {event["label"]: event["time"] for event in events if event["phase"] == "end"}
+    gate_releases = {event["label"] for event in events if event["phase"] == "gate_release"}
 
     assert task.status == TaskPhase.COMPLETED
     assert {step.id: step.status for step in plan.steps} == {
@@ -133,8 +177,7 @@ def test_dependency_scheduler_runs_ready_steps_in_parallel_then_dependents():
         "C": StepStatus.SUCCEEDED,
         "D": StepStatus.SUCCEEDED,
     }
-    assert starts["A"] < ends["B"]
-    assert starts["B"] < ends["A"]
+    assert gate_releases == {"A", "B"}
     assert starts["C"] >= ends["A"]
     assert starts["D"] >= ends["B"]
     assert starts["D"] >= ends["C"]
@@ -210,6 +253,38 @@ def test_write_steps_for_same_directory_are_serialized(tmp_path: Path):
 
     assert task.status == TaskPhase.COMPLETED
     assert starts["B"] >= ends["A"] or starts["A"] >= ends["B"]
+
+
+def test_transitive_blocked_dependency_skips_do_not_become_ready_on_resume():
+    events: list[dict[str, Any]] = []
+    orchestrator = OrchestratorAgent()
+    orchestrator.recovery_handler.max_retries = 0
+    orchestrator.subagents["FileAgent"] = PassthroughAgent()
+    orchestrator.registry.register(_failing_tool("test.fail", events))
+    orchestrator.registry.register(_recording_tool("test.after_failure", events, sleep_seconds=0.01))
+    task, plan = _task_and_plan(
+        [
+            _step("A", "test.fail", args={"label": "A"}),
+            _step("B", "test.after_failure", depends_on=["A"], args={"label": "B"}),
+            _step("C", "test.after_failure", depends_on=["B"], args={"label": "C"}),
+        ]
+    )
+
+    asyncio.run(orchestrator._process_steps(task, plan))
+
+    assert task.status == TaskPhase.FAILED
+    assert {step.id: step.status for step in plan.steps} == {
+        "A": StepStatus.FAILED,
+        "B": StepStatus.SKIPPED,
+        "C": StepStatus.SKIPPED,
+    }
+    assert [event["label"] for event in events] == ["A"]
+    assert plan.steps[1].model_action["scheduler"]["skip_reason"] == "blocked_dependency"
+    assert plan.steps[2].model_action["scheduler"]["blocked_by"] == ["B"]
+
+    by_id = {step.id: step for step in plan.steps}
+    plan.steps[2].status = StepStatus.PENDING
+    assert orchestrator._ready_steps({"C"}, by_id) == []
 
 
 def test_parallel_step_tool_mutation_requests_revision_instead_of_threaded_execution():

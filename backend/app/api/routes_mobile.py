@@ -10,7 +10,7 @@ from app.agents.supervisor_agent import SupervisorDecision
 from app.api import routes_approvals
 from app.core import db
 from app.core.errors import StateTransitionError
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_public_text, redact_value
 from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     decode_mobile_token,
@@ -26,6 +26,7 @@ from app.orchestration.task_phase import TaskPhase
 from app.product_task_templates import get_task_starter_template, task_starter_prompt
 from app.services import mobile_pairing_service
 from app.services.approval_event_service import get_approval_event_bus
+from app.services.task_explain_service import build_task_completion_evidence
 from app.services.task_service import _delegate_task as delegate_task
 from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
 
@@ -411,6 +412,8 @@ def _mobile_task_payload(task: Task) -> dict:
     title, summary, content_redacted = _mobile_task_text(task)
     status = _mobile_task_status(task)
     available_actions = _mobile_task_available_actions(task)
+    completion_evidence = _mobile_task_completion_evidence(task)
+    privacy_redacted = task.mode == "privacy"
     return {
         "id": task.id,
         "title": title,
@@ -426,10 +429,44 @@ def _mobile_task_payload(task: Task) -> dict:
         "can_follow_up": "follow_up" in available_actions,
         "is_terminal": _mobile_task_is_terminal(task),
         "content_redacted": content_redacted,
-        "privacy_redacted": task.mode == "privacy",
+        "privacy_redacted": privacy_redacted,
+        "completion_evidence": completion_evidence,
+        "result_verified": completion_evidence["result_verified"],
+        "evidence_verified": completion_evidence["result_verified"],
+        "credibility": _mobile_task_credibility(completion_evidence, privacy_redacted=privacy_redacted),
         "created_at": task.created_at,
         "updated_at": task.updated_at,
     }
+
+
+def _mobile_task_completion_evidence(task: Task) -> dict:
+    evidence = build_task_completion_evidence(task)
+    level = str(evidence.get("level") or "submission")
+    result_verified = (
+        level == "completed_result"
+        and evidence.get("result_verified") is True
+        and evidence.get("signoff") is False
+    )
+    missing = evidence.get("missing") if isinstance(evidence.get("missing"), list) else []
+    return {
+        "level": level,
+        "result_verified": result_verified,
+        "signoff": False,
+        "missing_count": 0 if result_verified else len(missing),
+    }
+
+
+def _mobile_task_credibility(completion_evidence: dict, *, privacy_redacted: bool) -> str:
+    if privacy_redacted:
+        return "redacted"
+    if completion_evidence.get("result_verified") is True:
+        return "verified"
+    level = str(completion_evidence.get("level") or "")
+    if level == "safe_failure":
+        return "failed"
+    if level in {"visible_progress", "task_created"}:
+        return "partial"
+    return "unverified"
 
 
 def _mobile_task_status(task: Task) -> str:
@@ -454,6 +491,12 @@ def _safe_mobile_task_text(value: object, *, limit: int, fallback: str) -> tuple
         return fallback, False
     redacted = redact_value(raw)
     safe = str(redacted if redacted is not None else "").strip()
+    safe = redact_public_text(safe)
+    safe = (
+        safe.replace("[REDACTED_LOCAL_PATH]", "[本地路径]")
+        .replace("[REDACTED_FILE_NAME]", "[文件名]")
+        .replace("[REDACTED_PROMPT]", "[已隐藏]")
+    )
     safe = MOBILE_LOCAL_PATH_RE.sub("[本地路径]", safe)
     safe, evidence_redacted = _redact_mobile_task_evidence(safe, fallback=fallback)
     safe = " ".join(safe.split())

@@ -158,6 +158,9 @@ class StepSchedulerHandler:
                 self._mark_blocked_steps(pending, by_id)
                 break
 
+        if pending and any(step.status in {StepStatus.FAILED, StepStatus.DENIED} for step in plan.steps):
+            self._mark_blocked_steps(pending, by_id)
+
         if task.status in {TaskStatus.DENIED, TaskStatus.FAILED}:
             orchestrator._persist_plan_update(plan, "Plan stopped after task reached a terminal safety state.")
             record("task.finished_or_waiting", orchestrator.name, {"status": task.status}, task_id=task.id)
@@ -239,10 +242,11 @@ class StepSchedulerHandler:
         return sorted(ready, key=lambda step: (step.order, step.id))
 
     def _dependency_finished(self, step: PlanStep) -> bool:
-        return step.status in {
-            StepStatus.SUCCEEDED,
-            StepStatus.SKIPPED,
-        }
+        if step.status == StepStatus.SUCCEEDED:
+            return True
+        if step.status == StepStatus.SKIPPED:
+            return not self._dependency_blocked_skip(step)
+        return False
 
     def _dependency_observation(self, step: PlanStep, observations: dict[str, ToolResult]) -> ToolResult | None:
         for dependency in reversed(step.depends_on):
@@ -252,24 +256,46 @@ class StepSchedulerHandler:
 
     def _mark_blocked_steps(self, pending: set[str], by_id: dict[str, PlanStep]) -> None:
         orchestrator = self.orchestrator
-        for step_id in list(pending):
-            step = by_id[step_id]
-            blocked = [
-                dependency
-                for dependency in step.depends_on
-                if by_id[dependency].status in {StepStatus.FAILED, StepStatus.DENIED, StepStatus.WAITING_USER_APPROVAL}
-            ]
-            if blocked:
-                set_step_status(step, StepStatus.SKIPPED, actor="StepSchedulerHandler")
-                pending.remove(step_id)
-                orchestrator.bus.publish_text(
-                    step.task_id,
-                    orchestrator.name,
-                    f"Skipped step because dependency did not complete: {', '.join(blocked)}",
-                    message_type=MessageType.OBSERVATION,
-                    step_id=step.id,
-                    structured_payload={"blocked_by": blocked},
-                )
+        while True:
+            marked_any = False
+            for step_id in list(pending):
+                step = by_id[step_id]
+                blocked = [
+                    dependency
+                    for dependency in step.depends_on
+                    if by_id[dependency].status in {StepStatus.FAILED, StepStatus.DENIED, StepStatus.WAITING_USER_APPROVAL}
+                    or self._dependency_blocked_skip(by_id[dependency])
+                ]
+                if blocked:
+                    self._mark_step_blocked_by_dependencies(step, blocked)
+                    pending.remove(step_id)
+                    marked_any = True
+                    orchestrator.bus.publish_text(
+                        step.task_id,
+                        orchestrator.name,
+                        f"Skipped step because dependency did not complete: {', '.join(blocked)}",
+                        message_type=MessageType.OBSERVATION,
+                        step_id=step.id,
+                        structured_payload={"blocked_by": blocked, "skip_reason": "blocked_dependency"},
+                    )
+            if not marked_any:
+                break
+
+    def _mark_step_blocked_by_dependencies(self, step: PlanStep, blocked: list[str]) -> None:
+        model_action = dict(step.model_action or {})
+        scheduler = dict(model_action.get("scheduler") or {})
+        scheduler["skip_reason"] = "blocked_dependency"
+        scheduler["blocked_by"] = list(blocked)
+        model_action["scheduler"] = scheduler
+        step.model_action = model_action
+        set_step_status(step, StepStatus.SKIPPED, actor="StepSchedulerHandler")
+
+    def _dependency_blocked_skip(self, step: PlanStep) -> bool:
+        if step.status != StepStatus.SKIPPED:
+            return False
+        model_action = step.model_action if isinstance(step.model_action, dict) else {}
+        scheduler = model_action.get("scheduler") if isinstance(model_action.get("scheduler"), dict) else {}
+        return scheduler.get("skip_reason") == "blocked_dependency"
 
     def _parallel_batch_allowed(self, task: Task, ready: list[PlanStep]) -> bool:
         if len(ready) <= 1:

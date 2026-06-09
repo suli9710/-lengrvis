@@ -71,9 +71,10 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const normalizedPairCode = normalizePairingCodeInput(pairCode);
-  const securityHint = showManualEntry ? baseUrlSecurityHint(baseUrl) : null;
-  const detectedPayloadSecurity = detectedPayload ? classifyPairingPayloadSecurity(detectedPayload) : null;
-  const isDetectedPayloadBlocked = Boolean(!showManualEntry && detectedPayloadSecurity && !detectedPayloadSecurity.canPair);
+  const activeDetectedPayload = detectedPayload;
+  const securityHint = showManualEntry ? baseUrlSecurityHint(baseUrl, activeDetectedPayload?.security) : null;
+  const detectedPayloadSecurity = activeDetectedPayload ? classifyPairingPayloadSecurity(activeDetectedPayload) : null;
+  const isDetectedPayloadBlocked = Boolean(detectedPayloadSecurity && !detectedPayloadSecurity.canPair);
   const hasSubmitInput = showManualEntry ? Boolean(baseUrl.trim() && normalizedPairCode.length === 6) : Boolean(pairingPayload.trim());
   const canSubmit = !isBusy && hasSubmitInput && !isDetectedPayloadBlocked;
   const primaryButtonLabel = pairingButtonLabel({
@@ -187,12 +188,14 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
 
     let nextBaseUrl = baseUrl;
     let nextPairCode = pairCode;
+    let nextPayload = activeDetectedPayload;
     if (!showManualEntry && pairingPayload.trim()) {
       try {
         const payload = parsePairingPayload(pairingPayload);
         applyPayload(payload);
         nextBaseUrl = payload.baseUrl;
         nextPairCode = payload.code;
+        nextPayload = payload;
       } catch (currentError) {
         setFailure(pairingFailureNotice(currentError));
         return;
@@ -219,7 +222,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
 
     let baseUrlSecurity: BaseUrlSecurity;
     try {
-      baseUrlSecurity = describeBaseUrlSecurity(nextBaseUrl);
+      baseUrlSecurity = describeBaseUrlSecurity(nextBaseUrl, nextPayload?.security);
     } catch (currentError) {
       setFailure(pairingFailureNotice(currentError));
       return;
@@ -336,6 +339,8 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                   inputMode="url"
                   onChangeText={(value) => {
                     setBaseUrl(value);
+                    setDetectedPayload(null);
+                    setPairingPayload("");
                     setFailure(null);
                   }}
                   placeholder="电脑端显示的地址"
@@ -521,10 +526,10 @@ function pairingPayloadNotice(payload: PairingPayload, state: PairingPayloadSecu
   };
 }
 
-function baseUrlSecurityHint(value: string): SecurityNotice | null {
+function baseUrlSecurityHint(value: string, metadata?: PairingPayload["security"]): SecurityNotice | null {
   if (!value.trim()) return null;
   try {
-    const security = describeBaseUrlSecurity(value);
+    const security = describeBaseUrlSecurity(value, metadata);
     if (security.isHttps) {
       return {
         tone: "safe",

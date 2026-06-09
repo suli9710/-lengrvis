@@ -892,6 +892,8 @@ function Get-CompletionEvidenceSummary {
     $level = "unavailable"
     $resultVerified = $false
     $resultVerifiedText = "unavailable"
+    $signoff = $false
+    $signoffText = "missing"
 
     try {
         if ($null -ne $ExplainPayload -and ($ExplainPayload.PSObject.Properties.Name -contains "completion_evidence")) {
@@ -911,6 +913,10 @@ function Get-CompletionEvidenceSummary {
                 $resultVerified = $false
                 $resultVerifiedText = "missing"
             }
+            if ($completionEvidence.signoff -is [bool]) {
+                $signoff = [bool]$completionEvidence.signoff
+                $signoffText = ([string]$signoff).ToLowerInvariant()
+            }
         }
         elseif ($null -ne $ExplainPayload) {
             $level = "missing"
@@ -921,12 +927,101 @@ function Get-CompletionEvidenceSummary {
         $level = "unparseable"
         $resultVerified = $false
         $resultVerifiedText = "unparseable"
+        $signoff = $false
+        $signoffText = "unparseable"
     }
 
     return [pscustomobject]@{
         Level = $level
         ResultVerified = [bool]$resultVerified
-        Text = "completion_evidence.level=$level result_verified=$resultVerifiedText"
+        Signoff = [bool]$signoff
+        Text = "completion_evidence.level=$level result_verified=$resultVerifiedText completion_evidence.signoff=$signoffText"
+    }
+}
+
+function Get-ResultQualitySummary {
+    param([AllowNull()][object]$ExplainPayload)
+
+    $allowedStates = @(
+        "verified_result",
+        "visible_progress",
+        "safe_failure",
+        "task_evidence_only"
+    )
+    $state = "unavailable"
+    $resultVerified = $false
+    $resultVerifiedText = "unavailable"
+    $canTreatAsDoneText = "unavailable"
+    $needsReviewText = "unavailable"
+    $missingChecksText = "unavailable"
+    $signoff = $false
+    $signoffText = "missing"
+
+    try {
+        if ($null -ne $ExplainPayload -and ($ExplainPayload.PSObject.Properties.Name -contains "result_quality")) {
+            $resultQuality = $ExplainPayload.result_quality
+            $candidateState = [string]$resultQuality.state
+            if ($candidateState -in $allowedStates) {
+                $state = $candidateState
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($candidateState)) {
+                $state = "invalid"
+            }
+            if ($resultQuality.result_verified -is [bool]) {
+                $resultVerified = [bool]$resultQuality.result_verified
+                $resultVerifiedText = ([string]$resultVerified).ToLowerInvariant()
+            }
+            else {
+                $resultVerified = $false
+                $resultVerifiedText = "missing"
+            }
+            if ($resultQuality.can_treat_as_done -is [bool]) {
+                $canTreatAsDoneText = ([string]([bool]$resultQuality.can_treat_as_done)).ToLowerInvariant()
+            }
+            else {
+                $canTreatAsDoneText = "missing"
+            }
+            if ($resultQuality.needs_review -is [bool]) {
+                $needsReviewText = ([string]([bool]$resultQuality.needs_review)).ToLowerInvariant()
+            }
+            else {
+                $needsReviewText = "missing"
+            }
+            if ($resultQuality.PSObject.Properties.Name -contains "missing_checks") {
+                $missingChecksText = [string]@($resultQuality.missing_checks).Count
+            }
+            else {
+                $missingChecksText = "missing"
+            }
+            if ($resultQuality.signoff -is [bool]) {
+                $signoff = [bool]$resultQuality.signoff
+                $signoffText = ([string]$signoff).ToLowerInvariant()
+            }
+        }
+        elseif ($null -ne $ExplainPayload) {
+            $state = "missing"
+            $resultVerifiedText = "missing"
+            $canTreatAsDoneText = "missing"
+            $needsReviewText = "missing"
+            $missingChecksText = "missing"
+        }
+    }
+    catch {
+        $state = "unparseable"
+        $resultVerified = $false
+        $resultVerifiedText = "unparseable"
+        $canTreatAsDoneText = "unparseable"
+        $needsReviewText = "unparseable"
+        $missingChecksText = "unparseable"
+        $signoff = $false
+        $signoffText = "unparseable"
+    }
+
+    return [pscustomobject]@{
+        State = $state
+        ResultVerified = [bool]$resultVerified
+        Signoff = [bool]$signoff
+        Text = "result_quality.state=$state result_quality.result_verified=$resultVerifiedText result_quality.can_treat_as_done=$canTreatAsDoneText result_quality.needs_review=$needsReviewText result_quality.missing_checks=$missingChecksText result_quality.signoff=$signoffText quality_signoff=not_collected"
     }
 }
 
@@ -1661,6 +1756,7 @@ function Test-PortableNaturalLanguageTaskEvidence {
             $timelineText = ""
             $taskDetailText = ""
             $completionEvidence = Get-CompletionEvidenceSummary $null
+            $resultQuality = Get-ResultQualitySummary $null
             if ($taskId) {
                 try {
                     $taskDetailText = ConvertTo-SmokeJsonText (Get-SmokeJson -Url "$BackendUrl/api/tasks/$taskId" -DesktopApiToken $DesktopApiToken)
@@ -1677,9 +1773,11 @@ function Test-PortableNaturalLanguageTaskEvidence {
                 try {
                     $taskExplainPayload = Get-SmokeJson -Url "$BackendUrl/api/tasks/$taskId/explain" -DesktopApiToken $DesktopApiToken
                     $completionEvidence = Get-CompletionEvidenceSummary $taskExplainPayload
+                    $resultQuality = Get-ResultQualitySummary $taskExplainPayload
                 }
                 catch {
                     $completionEvidence = Get-CompletionEvidenceSummary $null
+                    $resultQuality = Get-ResultQualitySummary $null
                 }
             }
             $combined = "$taskText $taskDetailText $timelineText"
@@ -1690,9 +1788,16 @@ function Test-PortableNaturalLanguageTaskEvidence {
                     Message = "natural-language task $taskId showed high-risk intent instead of read-only diagnostics ($lastObservation)"
                 }
             }
+            if ($completionEvidence.Signoff -or $resultQuality.Signoff) {
+                return [pscustomobject]@{
+                    Ok = $false
+                    Status = "fail"
+                    Message = "natural-language task $taskId reported signoff=true; portable smoke cannot verify human result-quality sign-off ($lastObservation)"
+                }
+            }
             $taskObservation = $lastObservation
             if ($taskId) {
-                $taskObservation = "$lastObservation, relatedTask=$taskId $($completionEvidence.Text)"
+                $taskObservation = "$lastObservation, relatedTask=$taskId $($completionEvidence.Text) $($resultQuality.Text)"
             }
             $taskStatus = [string]$task.status
             if ($taskStatus -notin @("failed", "cancelled") -and [regex]::IsMatch($combined, $readOnlyPattern) -and [regex]::IsMatch($combined, $diagnosticsEvidencePattern)) {
@@ -1719,6 +1824,7 @@ function Test-PortableNaturalLanguageTaskEvidence {
             $runProgressText = ""
             $runTaskText = ""
             $completionEvidence = Get-CompletionEvidenceSummary $null
+            $resultQuality = Get-ResultQualitySummary $null
             $runTaskId = [string]$run.task_id
             if ($runId) {
                 try {
@@ -1750,9 +1856,11 @@ function Test-PortableNaturalLanguageTaskEvidence {
                 try {
                     $runTaskExplainPayload = Get-SmokeJson -Url "$BackendUrl/api/tasks/$runTaskId/explain" -DesktopApiToken $DesktopApiToken
                     $completionEvidence = Get-CompletionEvidenceSummary $runTaskExplainPayload
+                    $resultQuality = Get-ResultQualitySummary $runTaskExplainPayload
                 }
                 catch {
                     $completionEvidence = Get-CompletionEvidenceSummary $null
+                    $resultQuality = Get-ResultQualitySummary $null
                 }
             }
             $combined = "$runText $runTimelineText $runProgressText $runTaskText"
@@ -1763,9 +1871,16 @@ function Test-PortableNaturalLanguageTaskEvidence {
                     Message = "natural-language run $runId showed high-risk intent instead of read-only diagnostics ($lastObservation)"
                 }
             }
+            if ($completionEvidence.Signoff -or $resultQuality.Signoff) {
+                return [pscustomobject]@{
+                    Ok = $false
+                    Status = "fail"
+                    Message = "natural-language run $runId reported signoff=true; portable smoke cannot verify human result-quality sign-off ($lastObservation)"
+                }
+            }
             $runObservation = $lastObservation
             if ($runTaskId) {
-                $runObservation = "$lastObservation, relatedRunTask=$runTaskId $($completionEvidence.Text)"
+                $runObservation = "$lastObservation, relatedRunTask=$runTaskId $($completionEvidence.Text) $($resultQuality.Text)"
             }
             $runPhase = [string]$run.phase
             if ($runPhase -notin @("failed", "denied", "cancelled", "paused") -and [regex]::IsMatch($combined, $readOnlyPattern) -and [regex]::IsMatch($combined, $diagnosticsEvidencePattern)) {

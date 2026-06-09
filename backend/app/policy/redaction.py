@@ -66,6 +66,18 @@ GENERIC_TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{24,}(?![A-Z
 LOCAL_PATH_PATTERN = re.compile(
     r"(?i)(?:[A-Za-z]:[\\/][^\s,;'\"<>]+|(?:/Users|/home|/tmp|/var|/private)/[^\s,;'\"<>]+|~[\\/][^\s,;'\"<>]+)"
 )
+PUBLIC_FILE_NAME_PATTERN = re.compile(
+    r"(?i)(?<![\w.-])(?:(?:\.(?:env|npmrc|pypirc|netrc)(?:\.[A-Za-z0-9_-]+)*)|(?:[A-Za-z0-9][A-Za-z0-9_.()-]{0,96}\."
+    r"(?:csv|doc|docx|env|ini|json|key|log|md|pdf|pem|png|jpe?g|pptx?|py|sqlite|sqlite3|ts|tsx|txt|xls|xlsx|zip))"
+    r")(?=$|[\s,:'\";\])}>.。；：;，、!?！？?=&/#])"
+)
+PUBLIC_PROMPT_TEXT_PATTERN = re.compile(
+    r"(?i)(?:\b(?:(?:hidden\s+)?(?:system|developer|internal)\s+(?:prompt|instructions?|message)|"
+    r"hidden\s+(?:prompt|instructions?|message)|"
+    r"ignore\s+(?:all\s+)?(?:previous|prior)\s+instructions?|chain[-\s]?of[-\s]?thought)\b|"
+    r"\b(?:system|developer|internal)\s*[:=-])"
+    r"\s*[:=-]?\s*[^.;\n\r]*"
+)
 
 
 def redact_text(text: str, *, redact_generic_tokens: bool = True) -> str:
@@ -78,7 +90,10 @@ def redact_text(text: str, *, redact_generic_tokens: bool = True) -> str:
 
 
 def redact_public_text(text: str, *, redact_generic_tokens: bool = True) -> str:
-    return LOCAL_PATH_PATTERN.sub("[REDACTED_LOCAL_PATH]", redact_text(text, redact_generic_tokens=redact_generic_tokens))
+    redacted = redact_text(text, redact_generic_tokens=redact_generic_tokens)
+    redacted = LOCAL_PATH_PATTERN.sub("[REDACTED_LOCAL_PATH]", redacted)
+    redacted = PUBLIC_FILE_NAME_PATTERN.sub("[REDACTED_FILE_NAME]", redacted)
+    return PUBLIC_PROMPT_TEXT_PATTERN.sub("[REDACTED_PROMPT]", redacted)
 
 
 def redact_value(value: Any) -> Any:

@@ -112,7 +112,7 @@ def list_local_library(section: str = "gallery", query: str = "", limit: int = 2
             continue
         if not _matches_section(path, section_meta.id):
             continue
-        items.append(_library_item(path, section_meta.kind))
+        items.append(_library_item(path, section_meta.kind, library_roots))
         if len(items) >= MAX_CANDIDATE_ITEMS:
             scan_budget.item_limited = True
             break
@@ -122,6 +122,7 @@ def list_local_library(section: str = "gallery", query: str = "", limit: int = 2
     return {
         "section": section_meta.id,
         "roots": library_roots,
+        "scope_summary": _scope_summary(library_roots),
         "items": limited_items,
         "count": len(limited_items),
         "total": len(items),
@@ -270,7 +271,7 @@ def _matches_section(path: Path, section: str) -> bool:
     return True
 
 
-def _library_item(path: Path, kind: str) -> dict:
+def _library_item(path: Path, kind: str, library_roots: list[str]) -> dict:
     try:
         stat = path.stat()
     except OSError:
@@ -279,8 +280,10 @@ def _library_item(path: Path, kind: str) -> dict:
     item = {
         "id": _stable_id(path),
         "path": str(path),
+        "path_label": path.name,
         "name": path.name,
         "parent": str(path.parent),
+        "parent_label": _parent_scope_label(path, library_roots),
         "kind": kind,
         "extension": path.suffix.lower(),
         "mime_type": mime_type,
@@ -295,6 +298,43 @@ def _library_item(path: Path, kind: str) -> dict:
         item["width"] = width
         item["height"] = height
     return item
+
+
+def _scope_summary(library_roots: list[str]) -> dict:
+    root_count = len(library_roots)
+    return {
+        "root_count": root_count,
+        "root_labels": [f"授权范围 {index + 1}" for index in range(root_count)],
+        "has_authorized_roots": root_count > 0,
+        "display_label": f"{root_count} 个授权范围" if root_count else "未选择授权目录",
+        "raw_paths_available_for_local_actions": True,
+        "shareable_summary_has_raw_paths": False,
+    }
+
+
+def _parent_scope_label(path: Path, library_roots: list[str]) -> str:
+    scope_index = _scope_index_for_path(path, library_roots)
+    if scope_index is None:
+        return "授权范围内"
+    return f"授权范围 {scope_index + 1}"
+
+
+def _scope_index_for_path(path: Path, library_roots: list[str]) -> int | None:
+    try:
+        resolved = path.resolve(strict=False)
+    except OSError:
+        return None
+    for index, raw_root in enumerate(library_roots):
+        try:
+            root = Path(raw_root).expanduser().resolve(strict=False)
+        except OSError:
+            continue
+        try:
+            if resolved == root or resolved.is_relative_to(root):
+                return index
+        except ValueError:
+            continue
+    return None
 
 
 def _stable_id(path: Path) -> str:

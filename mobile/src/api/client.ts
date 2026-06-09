@@ -3,6 +3,8 @@ export interface PairResult {
   token_type: "Bearer";
   device_id: string;
   expires_in: number;
+  expires_at?: string;
+  expiresAt?: string;
   server: {
     host: string;
     port: number;
@@ -65,10 +67,33 @@ export interface MobileTask {
   id: string;
   title: string;
   status: string;
+  status_label?: string;
+  status_detail?: string;
   mode: string;
   summary: string;
+  available_actions?: MobileTaskAction[];
+  can_pause?: boolean;
+  can_resume?: boolean;
+  can_cancel?: boolean;
+  can_follow_up?: boolean;
+  is_terminal?: boolean;
+  content_redacted?: boolean;
+  privacy_redacted?: boolean;
+  result_verified?: boolean;
+  evidence_verified?: boolean;
+  completion_evidence?: MobileTaskCompletionEvidence;
+  credibility?: "unverified" | "partial" | "verified" | "redacted" | string;
   created_at: string;
   updated_at: string;
+}
+
+export type MobileTaskAction = "pause" | "resume" | "cancel" | "follow_up";
+
+export interface MobileTaskCompletionEvidence {
+  level?: "submission" | "task_created" | "visible_progress" | "completed_result" | "safe_failure" | string;
+  result_verified?: boolean;
+  signoff?: boolean;
+  missing_count?: number;
 }
 
 export type MobileTaskTemplateId =
@@ -145,6 +170,7 @@ export interface PairingSession {
   baseUrl: string;
   token: string;
   deviceId: string;
+  expiresAt?: string;
   baseUrlSecurity: BaseUrlSecurity;
   server?: PairingServerInfo;
   security?: PairingSecurityMetadata;
@@ -253,6 +279,8 @@ export interface WebSocketConnectionInfo {
 
 const MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token.";
 const REMOTE_INPUT_SCOPE = "remote:input";
+const SESSION_TOKEN_EXPIRY_SKEW_MS = 1000;
+const WEB_SOCKET_SUBPROTOCOL_TOKEN_PATTERN = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
 const remoteInputGrantTokens = new Map<string, RemoteInputGrantToken>();
 export const INSECURE_LAN_HTTP_WARNING = "当前电脑地址使用非本机 HTTP，手机 token、远程输入授权和屏幕连接不能通过局域网明文传输。请在桌面端启用 HTTPS/WSS 或使用受信任证书后重新配对。";
 export const SELF_SIGNED_TLS_WARNING = "此服务器使用自签或未受系统信任的 HTTPS 证书。请在电脑端核对证书指纹；手机系统信任前，本应用不会安装证书。";
@@ -291,7 +319,7 @@ export class BackendHttpError extends Error {
 export class InsecureLanBaseUrlError extends Error {
   readonly security: BaseUrlSecurity;
 
-  constructor(security: BaseUrlSecurity, message = INSECURE_LAN_HTTP_WARNING) {
+  constructor(security: BaseUrlSecurity, message = security.warning || INSECURE_LAN_HTTP_WARNING) {
     super(message);
     this.name = "InsecureLanBaseUrlError";
     this.security = security;
@@ -317,10 +345,15 @@ export async function pairWithBackend(
   const payload = await parseJson<PairResult>(response);
   const pairingSecurity = normalizePairingSecurityMetadata(payload, baseUrlSecurity);
   const mergedBaseUrlSecurity = mergeBaseUrlSecurityMetadata(baseUrlSecurity, pairingSecurity);
+  if (mergedBaseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(mergedBaseUrlSecurity)) {
+    throw new InsecureLanBaseUrlError(mergedBaseUrlSecurity);
+  }
+  const expiresAt = pairingSessionExpiresAt(payload);
   return {
     baseUrl: normalizedBaseUrl,
     token: payload.token,
     deviceId: payload.device_id,
+    ...(expiresAt ? { expiresAt } : {}),
     baseUrlSecurity: mergedBaseUrlSecurity,
     server: normalizePairingServerInfo(payload.server),
     security: pairingSecurity,
@@ -357,7 +390,12 @@ export async function submitApprovalDecision(
       headers: jsonAuthHeaders(remoteInputGrantToken.token),
       body: JSON.stringify({ decision }),
     });
-    return parseJson<BackendApproval>(response);
+    try {
+      return await parseRemoteInputGrantJson<BackendApproval>(response, "use");
+    } catch (error) {
+      forgetRemoteInputGrantToken(remoteInputGrantToken.grant_id || remoteInputGrantToken.grant?.id || "");
+      throw error;
+    }
   }
   const action = decision === "approved" ? "approve" : "reject";
   const response = await fetch(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}/${action}`, {
@@ -431,7 +469,11 @@ export async function claimRemoteInputGrantToken(session: PairingSession, grantI
     method: "POST",
     headers: authHeaders(safeSession.token),
   });
-  const payload = await parseJson<RemoteInputGrantToken>(response);
+  const payload = validateRemoteInputGrantToken(
+    await parseRemoteInputGrantJson<RemoteInputGrantToken>(response, "claim"),
+    safeSession,
+    grantId,
+  );
   rememberRemoteInputGrantToken(payload);
   return payload;
 }
@@ -484,7 +526,12 @@ async function remoteInputGrantTokenForApproval(
 
 function rememberRemoteInputGrantToken(payload: RemoteInputGrantToken): void {
   const grantId = payload.grant_id || payload.grant?.id || "";
-  if (grantId) remoteInputGrantTokens.set(grantId, payload);
+  if (!grantId) return;
+  if (!isRemoteInputGrantTokenUsable(payload)) {
+    remoteInputGrantTokens.delete(grantId);
+    return;
+  }
+  remoteInputGrantTokens.set(grantId, payload);
 }
 
 function forgetRemoteInputGrantToken(grantId: string): void {
@@ -494,12 +541,54 @@ function forgetRemoteInputGrantToken(grantId: string): void {
 function usableRemoteInputGrantToken(grantId: string): RemoteInputGrantToken | null {
   const cached = remoteInputGrantTokens.get(grantId);
   if (!cached) return null;
-  const expiresAt = Date.parse(cached.expires_at || cached.grant?.expires_at || "");
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+  if (!isRemoteInputGrantTokenUsable(cached)) {
     remoteInputGrantTokens.delete(grantId);
     return null;
   }
   return cached;
+}
+
+function validateRemoteInputGrantToken(
+  payload: RemoteInputGrantToken,
+  session: PairingSession,
+  requestedGrantId: string,
+): RemoteInputGrantToken {
+  const grantId = payload.grant_id || payload.grant?.id || "";
+  if (!payload.token || payload.token_type !== "Bearer") {
+    throw new ForbiddenError("Remote input grant token response is missing a bearer token.");
+  }
+  if (grantId !== requestedGrantId) {
+    throw new ForbiddenError("Remote input grant token does not match the requested grant.");
+  }
+  if (payload.device_id && payload.device_id !== session.deviceId) {
+    throw new ForbiddenError("Remote input grant token belongs to a different mobile device.");
+  }
+  if (payload.grant && !isRemoteInputGrantUsable(payload.grant)) {
+    throw new BackendHttpError(410, "Remote input grant is expired or revoked.");
+  }
+  if (!isRemoteInputGrantTokenUsable(payload)) {
+    throw new BackendHttpError(410, "Remote input grant token is expired or revoked.");
+  }
+  assertWebSocketSubprotocolToken(payload.token);
+  return payload;
+}
+
+function isRemoteInputGrantTokenUsable(payload: RemoteInputGrantToken, nowMs = Date.now()): boolean {
+  if (!payload.token || payload.token_type !== "Bearer") return false;
+  if (payload.grant && !isRemoteInputGrantUsable(payload.grant, nowMs)) return false;
+  const expiresAt = Date.parse(payload.expires_at || payload.grant?.expires_at || "");
+  if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) return false;
+  if (Number.isFinite(payload.expires_in) && payload.expires_in <= 0) return false;
+  return true;
+}
+
+function isRemoteInputGrantUsable(grant: RemoteInputGrant | null | undefined, nowMs = Date.now()): grant is RemoteInputGrant {
+  if (!grant) return false;
+  if (grant.scope !== REMOTE_INPUT_SCOPE) return false;
+  if (grant.status !== "active") return false;
+  if (grant.revoked_at) return false;
+  const expiresAt = Date.parse(grant.expires_at || "");
+  return Number.isFinite(expiresAt) && expiresAt > nowMs;
 }
 
 function isRemoteInputApproval(approval: BackendApproval): boolean {
@@ -515,15 +604,18 @@ function remoteInputApprovalGrantId(approval: BackendApproval): string {
 }
 
 export function approvalWebSocketConnectionInfo(session: PairingSession): WebSocketConnectionInfo {
-  return webSocketConnectionInfo(session, "/ws/mobile/approvals", mobileAuthWebSocketProtocols(session));
+  const safeSession = assertSafePairingSession(session);
+  return webSocketConnectionInfo(safeSession, "/ws/mobile/approvals", mobileAuthWebSocketProtocols(safeSession));
 }
 
 export function remoteScreenWebSocketConnectionInfo(session: PairingSession): WebSocketConnectionInfo {
-  return webSocketConnectionInfo(session, "/ws/remote/screen", mobileAuthWebSocketProtocols(session));
+  const safeSession = assertSafePairingSession(session);
+  return webSocketConnectionInfo(safeSession, "/ws/remote/screen", mobileAuthWebSocketProtocols(safeSession));
 }
 
 export function remoteInputWebSocketConnectionInfo(session: PairingSession, token: string): WebSocketConnectionInfo {
-  return webSocketConnectionInfo(session, "/ws/remote/input", mobileTokenWebSocketProtocols(token));
+  const safeSession = assertSafePairingSession(session);
+  return webSocketConnectionInfo(safeSession, "/ws/remote/input", mobileTokenWebSocketProtocols(token));
 }
 
 export function approvalWebSocketUrl(session: PairingSession): string {
@@ -539,15 +631,18 @@ export function remoteInputWebSocketUrl(session: PairingSession): string {
 }
 
 export function mobileAuthWebSocketProtocols(session: PairingSession): string[] {
-  return [`${MOBILE_AUTH_WS_PROTOCOL_PREFIX}${session.token}`];
+  const safeSession = assertSafePairingSession(session);
+  assertWebSocketSubprotocolToken(safeSession.token);
+  return webSocketProtocolList(`${MOBILE_AUTH_WS_PROTOCOL_PREFIX}${safeSession.token}`);
 }
 
 export function mobileTokenWebSocketProtocols(token: string): string[] {
-  return [`${MOBILE_AUTH_WS_PROTOCOL_PREFIX}${token}`];
+  assertWebSocketSubprotocolToken(token);
+  return webSocketProtocolList(`${MOBILE_AUTH_WS_PROTOCOL_PREFIX}${token}`);
 }
 
 export function normalizeBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, "");
+  const trimmed = value.trim();
   if (!trimmed) throw new Error("请输入 Lengrvis 中显示的电脑地址。");
   const hasProtocol = /^[a-z][a-z\d+\-.]*:\/\//i.test(trimmed);
   if (hasProtocol && !/^https?:\/\//i.test(trimmed)) {
@@ -558,7 +653,7 @@ export function normalizeBaseUrl(value: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("电脑地址必须以 http:// 或 https:// 开头。");
   }
-  return parsed.toString().replace(/\/+$/, "");
+  return parsed.origin;
 }
 
 export function isLoopbackBaseUrl(value: string): boolean {
@@ -615,9 +710,10 @@ export function describeSessionBaseUrlSecurity(session: Pick<PairingSession, "ba
 
 export function assertSafePairingSession(session: PairingSession): PairingSession {
   const baseUrlSecurity = describeSessionBaseUrlSecurity(session);
-  if (baseUrlSecurity.isInsecureLan) {
+  if (baseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(baseUrlSecurity)) {
     throw new InsecureLanBaseUrlError(baseUrlSecurity);
   }
+  assertUsablePairingToken(session);
   return {
     ...session,
     baseUrl: baseUrlSecurity.normalizedBaseUrl,
@@ -629,6 +725,9 @@ export function assertSafePairingSession(session: PairingSession): PairingSessio
 function webSocketConnectionInfo(session: PairingSession, pathname: string, protocols: string[] = []): WebSocketConnectionInfo {
   const safeSession = assertSafePairingSession(session);
   const security = safeSession.baseUrlSecurity;
+  if (sessionHasUnsafeRemoteTransport(security)) {
+    throw new InsecureLanBaseUrlError(security);
+  }
   const url = new URL(pathname, security.normalizedBaseUrl);
   url.protocol = security.webSocketProtocol;
   return {
@@ -697,14 +796,30 @@ export function mergeBaseUrlSecurityMetadata(
   if (!pairingMetadata) return security;
   const serverTls = pairingMetadata.tls;
   const backendTlsEnabled = pairingMetadata.backendTlsEnabled ?? serverTls?.enabled ?? pairingMetadata.transport?.tlsEnabled ?? security.backendTlsEnabled;
+  const transportWebSocketProtocol = pairingMetadata.transport?.webSocketScheme === "wss"
+    ? "wss:"
+    : pairingMetadata.transport?.webSocketScheme === "ws"
+      ? "ws:"
+      : security.webSocketProtocol;
+  const remoteTransportUnsafe = !security.isLoopback && (!backendTlsEnabled || transportWebSocketProtocol !== "wss:");
   const requiresTlsTrust = Boolean(serverTls?.requiresTrust);
+  const warning =
+    security.warning ??
+    (requiresTlsTrust
+      ? serverTls?.warning ?? SELF_SIGNED_TLS_WARNING
+      : remoteTransportUnsafe
+        ? BACKEND_TLS_DISABLED_WARNING
+        : undefined);
   return {
     ...security,
+    kind: remoteTransportUnsafe ? "insecureLan" : security.kind,
+    isInsecureLan: security.isInsecureLan || remoteTransportUnsafe,
     backendTlsEnabled,
+    webSocketProtocol: transportWebSocketProtocol,
     requiresTlsTrust,
     serverTls,
     backendSecurity: pairingMetadata,
-    warning: requiresTlsTrust ? serverTls?.warning ?? SELF_SIGNED_TLS_WARNING : security.warning,
+    warning,
   };
 }
 
@@ -976,6 +1091,79 @@ function normalizeFingerprint(value: string | undefined): string {
 
 function isLoopbackHostname(hostname: string): boolean {
   return hostname === "localhost" || hostname === "::1" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+}
+
+function pairingSessionExpiresAt(payload: Pick<PairResult, "expires_in" | "expires_at" | "expiresAt">): string | undefined {
+  const explicit = typeof payload.expires_at === "string" ? payload.expires_at : typeof payload.expiresAt === "string" ? payload.expiresAt : "";
+  const explicitMs = Date.parse(explicit);
+  if (Number.isFinite(explicitMs)) return new Date(explicitMs).toISOString();
+  if (!Number.isFinite(payload.expires_in)) return undefined;
+  if (payload.expires_in <= 0) return new Date(0).toISOString();
+  return new Date(Date.now() + payload.expires_in * 1000).toISOString();
+}
+
+function sessionHasUnsafeRemoteTransport(security: BaseUrlSecurity): boolean {
+  return !security.isLoopback && (!security.backendTlsEnabled || security.webSocketProtocol !== "wss:");
+}
+
+function assertUsablePairingToken(session: PairingSession): void {
+  if (!session.token?.trim()) {
+    throw new AuthExpiredError("Mobile session token is missing. Pair this phone again.");
+  }
+  if (isExpiredTimestamp(session.expiresAt, Date.now() + SESSION_TOKEN_EXPIRY_SKEW_MS)) {
+    throw new AuthExpiredError("Mobile session token has expired. Pair this phone again.");
+  }
+}
+
+function isExpiredTimestamp(value: string | undefined, nowMs = Date.now()): boolean {
+  if (!value) return false;
+  const expiresAt = Date.parse(value);
+  return !Number.isFinite(expiresAt) || expiresAt <= nowMs;
+}
+
+function assertWebSocketSubprotocolToken(token: string): void {
+  if (!token || token.trim() !== token || !WEB_SOCKET_SUBPROTOCOL_TOKEN_PATTERN.test(token)) {
+    throw new ForbiddenError("WebSocket tokens must be sent as valid Sec-WebSocket-Protocol tokens.");
+  }
+}
+
+function webSocketProtocolList(protocol: string): string[] {
+  const protocols = new URL("https://lengrvis.invalid").searchParams.getAll("protocol");
+  protocols.push(protocol);
+  return protocols;
+}
+
+type RemoteInputGrantJsonContext = "claim" | "use";
+
+async function parseRemoteInputGrantJson<T>(response: Response, context: RemoteInputGrantJsonContext): Promise<T> {
+  const data = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    throw remoteInputGrantResponseError(response.status, responseDetailMessage(data), context);
+  }
+  return data as T;
+}
+
+function remoteInputGrantResponseError(status: number, detail: string, context: RemoteInputGrantJsonContext): Error {
+  const normalized = detail.toLowerCase();
+  if (status === 401) {
+    if (normalized.includes("mobile device")) {
+      return new AuthExpiredError(detail || undefined);
+    }
+    if (normalized.includes("remote input grant expired")) {
+      return new BackendHttpError(410, detail || "Remote input grant expired.");
+    }
+    if (normalized.includes("remote input grant")) {
+      return new ForbiddenError(detail || undefined);
+    }
+    if (context === "use" && (normalized.includes("mobile token expired") || normalized.includes("invalid mobile token"))) {
+      return new BackendHttpError(410, detail || "Remote input grant token expired.");
+    }
+    return new AuthExpiredError(detail || undefined);
+  }
+  if (status === 403) {
+    return new ForbiddenError(detail || undefined);
+  }
+  return new BackendHttpError(status, detail);
 }
 
 async function parseJson<T>(response: Response): Promise<T> {

@@ -365,11 +365,32 @@ def _quick_local_ai_status() -> dict[str, Any]:
             "LENGRVIS_LLM_BASE_URL",
         )
     )
+    try:
+        from app.llm.local_provider import hardware_readiness, unavailable_message
+
+        readiness = hardware_readiness()
+        error = unavailable_message()
+    except Exception as exc:  # noqa: BLE001 - diagnostics must remain read-only and fail closed.
+        readiness = {"can_install": False, "recommended_model": "", "reason": ""}
+        error = f"Local AI readiness summary failed: {exc.__class__.__name__}"
+    readiness_payload = readiness if isinstance(readiness, dict) else {}
     return {
         "scope": "local_only",
+        "available": False,
+        "selected_backend_kind": "",
+        "selected_model": "",
+        "models_count": 0,
+        "probe_order": [],
         "probe_mode": "summary_only",
         "configured": configured,
         "full_probe_deferred": True,
+        "error": _safe_diagnostic_text(error),
+        "readiness": {
+            "can_install": bool(readiness_payload.get("can_install")),
+            "recommended_model": _safe_model_label(readiness_payload.get("recommended_model")),
+            "reason": _safe_diagnostic_text(readiness_payload.get("reason")),
+        },
+        "onnx": {"available": False, "configured_model": False, "model_present": False},
         "detail": "Full local model runtime checks run from Settings, not from the general system diagnostics refresh.",
     }
 
