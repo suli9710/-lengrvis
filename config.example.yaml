@@ -74,6 +74,11 @@ privacy:
   # Enable only for trusted development skill packages.
   allow_unsafe_local_skill_execution: false
   strict_state_machine: false
+  # Opt-in local-only metrics panel (task success rate, recovery trigger rate,
+  # ask_user reflection share, LLM anomaly rate). Counts only, nothing leaves
+  # this machine; the desktop panel and /api/metrics/local stay disabled until
+  # this is true (env override: LENGRVIS_LOCAL_METRICS_ENABLED=1).
+  local_metrics_enabled: false
   # Leave blank to persist a generated secret in paths.data_dir/mobile_jwt.secret.
   # LENGRVIS_JWT_SECRET or a non-empty jwt_secret value overrides that local file.
   jwt_secret: ""
@@ -143,6 +148,8 @@ perception:
 
 orchestration:
   recovery_max_retries: 3
+  os_reflection_max_per_run: 2
+  os_reflection_max_per_step: 1
   execution_engines: dual
   default_engine: auto
   agent_loop_max_turns: 30

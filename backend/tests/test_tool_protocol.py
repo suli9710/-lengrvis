@@ -173,3 +173,21 @@ def test_registry_hides_tools_missing_model_visible_contract() -> None:
     assert tool.contract_errors()
     assert registry.list_for_planning() == []
     assert registry.search("incomplete contract") == []
+
+
+def test_fast_path_eligible_tools_declare_explicit_object_schema() -> None:
+    from app.agents.base import _has_explicit_object_schema
+    from app.llm.registry import get_effective_settings
+    from app.tools.registry import register_all_tools
+
+    registry = register_all_tools(settings=get_effective_settings())
+    offenders = [
+        tool.name
+        for tool in registry.list()
+        if getattr(tool, "fast_path_eligible", False)
+        and not _has_explicit_object_schema(getattr(tool, "input_schema", {}) or {})
+    ]
+    assert offenders == [], (
+        "fast_path_eligible tools without an explicit object input_schema fall back to "
+        f"an extra LLM hop: {offenders}"
+    )

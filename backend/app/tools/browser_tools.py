@@ -13,6 +13,7 @@ from app.policy.risk import RiskLevel
 from app.policy.sensitive_values import looks_sensitive_value
 from app.services.browser_activity_runtime import BrowserActivityAdapter, BrowserActivityRuntime
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 SENSITIVE_SELECTOR_TOKENS = {"password", "pwd", "passwd", "credit", "card", "cvv", "cvc", "ssn", "支付", "密码"}
@@ -523,7 +524,8 @@ def register(registry) -> None:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema={},
                 output_schema={},
                 risk_level=risk,

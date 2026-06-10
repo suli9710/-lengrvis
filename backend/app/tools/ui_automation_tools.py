@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import re
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from app.perception.ui_automation import create_ui_automation_target
@@ -237,6 +242,128 @@ def get_children(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     return {"ok": True, "children": [child.to_dict() for child in children], "count": len(children)}
 
 
+def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Operator-style grounding chain: semantic UIA lookup, then vision fallback.
+
+    Read-only: returns screen coordinates for the described element. Acting on
+    them still goes through ui_automation.click_at, which keeps the
+    dry-run + approval contract for coordinate clicks.
+    """
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    selector = _selector_args(args)
+    description = str(args.get("target") or args.get("description") or "").strip()
+
+    if any(selector.values()):
+        element = asyncio.run(target.find_element(selector))
+        if element is not None:
+            payload = element.to_dict()
+            center = _rect_center(payload.get("rect") or {})
+            if center:
+                return {
+                    "ok": True,
+                    "method": "uia",
+                    "x": center[0],
+                    "y": center[1],
+                    "confidence": 1.0,
+                    "element": payload,
+                }
+
+    if not description:
+        return {
+            "ok": False,
+            "error": (
+                "Semantic UIAutomation lookup found no element and no visual 'target' description "
+                "was provided. Supply selector fields (name/control_type/automation_id) or a "
+                "natural-language 'target' for the vision fallback."
+            ),
+        }
+
+    screenshot_payload = asyncio.run(target.screenshot(max_width=1600, max_height=1000, quality=70))
+    if not screenshot_payload.get("ok"):
+        return {
+            "ok": False,
+            "error": f"Vision grounding fallback needs a screenshot, but capture failed: {screenshot_payload.get('error', 'unknown capture error')}",
+        }
+    return _vision_grounding(description, screenshot_payload)
+
+
+def _vision_grounding(description: str, screenshot_payload: dict[str, Any]) -> dict[str, Any]:
+    from app.llm.prompts import render_prompt
+    from app.tools.vision_tools import _run_vision
+
+    image_data = str(screenshot_payload.get("image") or "")
+    encoded = image_data.split(",", 1)[1] if "," in image_data else image_data
+    if not encoded:
+        return {"ok": False, "error": "Screenshot payload contained no image data for vision grounding."}
+
+    prompt = render_prompt("vision_locate_element.md", {"target": description})
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
+        handle.write(base64.b64decode(encoded))
+        temp_path = Path(handle.name)
+    try:
+        answer = _run_vision(prompt, temp_path, task="vision")
+    finally:
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
+
+    parsed = _parse_grounding_answer(answer)
+    if parsed is None:
+        return {
+            "ok": False,
+            "method": "vision",
+            "error": f"Vision grounding returned an unparseable answer: {answer[:300]}",
+        }
+    if not parsed.get("found"):
+        return {
+            "ok": False,
+            "method": "vision",
+            "error": f"Vision grounding could not find '{description}' on the current screen.",
+            "confidence": float(parsed.get("confidence") or 0.0),
+        }
+
+    original_width = int(screenshot_payload.get("original_width") or screenshot_payload.get("width") or 0)
+    original_height = int(screenshot_payload.get("original_height") or screenshot_payload.get("height") or 0)
+    x_ratio = max(0.0, min(1.0, float(parsed.get("x_ratio") or 0.0)))
+    y_ratio = max(0.0, min(1.0, float(parsed.get("y_ratio") or 0.0)))
+    return {
+        "ok": True,
+        "method": "vision",
+        "x": int(round(x_ratio * original_width)),
+        "y": int(round(y_ratio * original_height)),
+        "confidence": max(0.0, min(1.0, float(parsed.get("confidence") or 0.0))),
+        "label": str(parsed.get("label") or ""),
+        "screen_width": original_width,
+        "screen_height": original_height,
+    }
+
+
+def _parse_grounding_answer(answer: str) -> dict[str, Any] | None:
+    text = str(answer or "").strip()
+    if not text or text.startswith("[vision unavailable") or "vision not configured" in text:
+        return None
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _rect_center(rect: dict[str, Any]) -> tuple[int, int] | None:
+    try:
+        x = int(rect["x"])
+        y = int(rect["y"])
+        width = int(rect.get("width") or 0)
+        height = int(rect.get("height") or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (x + width // 2, y + height // 2)
+
+
 def _selector_args(args: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": str(args.get("name") or ""),
@@ -398,6 +525,14 @@ def register(registry) -> None:
             False,
             "Capture the current desktop screenshot.",
             ["observe", "screenshot"],
+        ),
+        (
+            "ui_automation.locate_on_screen",
+            locate_on_screen,
+            RiskLevel.R0_READ_ONLY,
+            False,
+            "Locate a UI element: semantic UIAutomation lookup first, then screenshot + vision model grounding fallback; returns screen coordinates for click_at.",
+            ["observe", "inspect", "screenshot"],
         ),
         (
             "ui_automation.get_property",

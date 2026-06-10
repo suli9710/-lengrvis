@@ -149,7 +149,8 @@ if (-not $SkipVerify) {
     $appDir = Join-Path $resourcesDir "app"
     $appDistDir = Join-Path $appDir "dist"
     $zipPath = Join-Path $distDir "Lengrvis-win-portable.zip"
-    $selfExtracting = Join-Path $distDir "Lengrvis-0.1.0-x64-self-extracting.exe"
+    $desktopPackage = Get-Content -LiteralPath (Join-Path $repoRoot "desktop\package.json") -Raw | ConvertFrom-Json
+    $selfExtracting = Join-Path $distDir "Lengrvis-$($desktopPackage.version)-x64-self-extracting.exe"
 
     if (Test-Path -LiteralPath $verifyWorkspace) {
         Remove-Item -LiteralPath $verifyWorkspace -Recurse -Force
@@ -158,6 +159,22 @@ if (-not $SkipVerify) {
     New-SmokeExecutable (Join-Path $distDir "backend.exe")
     New-SmokeExecutable (Join-Path $portableDir "Lengrvis.exe")
     New-SmokeExecutable (Join-Path $backendDir "backend.exe")
+    $capabilityManifestJson = [ordered]@{
+        schema = "lengrvis-backend-capabilities/v1"
+        generated_at = (Get-Date).ToUniversalTime().ToString("o")
+        python = "smoke"
+        platform = "win32"
+        capabilities = [ordered]@{
+            docling = $false
+            unstructured = $false
+            paddleocr = $false
+            pytesseract = $false
+            playwright = $false
+            pywhispercpp = $false
+        }
+    } | ConvertTo-Json -Depth 4
+    Set-Content -LiteralPath (Join-Path $distDir "backend-capabilities.json") -Value $capabilityManifestJson -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $backendDir "backend-capabilities.json") -Value $capabilityManifestJson -Encoding ASCII
     New-SmokeSelfExtractingExecutable $selfExtracting
     Set-Content -LiteralPath (Join-Path $appDir "package.json") -Value '{"name":"lengrvis-ollama-release-verify"}' -Encoding ASCII
     Copy-Item -LiteralPath $runtimeOut -Destination (Join-Path $resourcesDir "ollama") -Recurse -Force

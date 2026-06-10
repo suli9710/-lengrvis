@@ -44,6 +44,28 @@ FORBIDDEN_TERMS = {
 }
 
 
+# Words that signal a safety-system boundary notice (a denial being explained,
+# an approval being requested, a read-only alternative being offered).
+BOUNDARY_TERMS = (
+    "approval",
+    "approve",
+    "blocked",
+    "deny",
+    "denied",
+    "forbidden",
+    "handoff",
+    "never",
+    "read-only",
+    "restricted",
+    "safe alternative",
+    "supervision",
+)
+
+# A forbidden term is only exempt when a boundary term occurs within this many
+# characters of that occurrence (see PolicyEngine._unprotected_forbidden_hits).
+BOUNDARY_CONTEXT_WINDOW = 120
+
+
 SENSITIVE_FIELD_NAMES = {
     "password",
     "pwd",
@@ -218,9 +240,12 @@ class PolicyEngine:
         self.now_provider = now_provider
 
     def review_goal_text(self, task_id: str, goal: str) -> SafetyReview:
+        # User goals get no boundary-context exemption: a goal that asks for
+        # forbidden material is denied even when it also mentions words like
+        # "approval" or "read-only" (prompt-injection hardening).
         inspected_text = goal.lower()
         hits = self._forbidden_hits(inspected_text)
-        if hits and not self._is_boundary_discussion(inspected_text):
+        if hits:
             return SafetyReview(
                 task_id=task_id,
                 target_type="goal",
@@ -436,8 +461,9 @@ class PolicyEngine:
 
     def review_agent_message(self, message: AgentMessage, stage: str) -> SafetyReview:
         inspected_text = self._inspectable_text(message.content, message.structured_payload, message.metadata)
-        hits = self._forbidden_hits(inspected_text)
-        if hits and not self._is_boundary_discussion(inspected_text):
+        all_hits = self._forbidden_hits(inspected_text)
+        hits = self._unprotected_forbidden_hits(inspected_text) if all_hits else []
+        if hits:
             return SafetyReview(
                 task_id=message.task_id,
                 step_id=message.step_id,
@@ -453,7 +479,7 @@ class PolicyEngine:
 
         reason = (
             "Runtime supervision observed restricted terms only in a deny/read-only/approval boundary context."
-            if hits
+            if all_hits
             else "Runtime supervision found no unsafe agent instruction or disclosure."
         )
         return SafetyReview(
@@ -474,8 +500,8 @@ class PolicyEngine:
         risk_level: RiskLevel,
     ) -> SafetyReview:
         inspected_text = self._inspectable_text(result.output, result.error, result.changed_paths, result.rollback_info)
-        hits = self._forbidden_hits(inspected_text)
-        if risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF or (hits and not self._is_boundary_discussion(inspected_text)):
+        hits = self._unprotected_forbidden_hits(inspected_text)
+        if risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF or hits:
             return SafetyReview(
                 task_id=task_id,
                 step_id=step_id,
@@ -498,8 +524,8 @@ class PolicyEngine:
 
     def final_review(self, plan: Plan, task_status: str, final_summary: str) -> SafetyReview:
         inspected_text = self._inspectable_text(plan.model_dump(), task_status, final_summary)
-        hits = self._forbidden_hits(inspected_text)
-        if hits and not self._is_boundary_discussion(inspected_text):
+        hits = self._unprotected_forbidden_hits(inspected_text)
+        if hits:
             return SafetyReview(
                 task_id=plan.task_id,
                 target_type="final",
@@ -872,22 +898,55 @@ class PolicyEngine:
                 hits.append(term)
         return hits
 
-    def _is_boundary_discussion(self, text: str) -> bool:
-        boundary_terms = {
-            "approval",
-            "approve",
-            "blocked",
-            "deny",
-            "denied",
-            "forbidden",
-            "handoff",
-            "never",
-            "read-only",
-            "restricted",
-            "safe alternative",
-            "supervision",
-        }
-        return any(term in text for term in boundary_terms)
+    def _boundary_spans(self, text: str) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        for term in BOUNDARY_TERMS:
+            pattern = rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])"
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                spans.append((match.start(), match.end()))
+        return spans
+
+    @staticmethod
+    def _is_structural_key_occurrence(text: str, start: int, end: int) -> bool:
+        """True when the match is a quoted dict/JSON key (e.g. ``'order':``).
+
+        Serialized plan/step payloads carry structural field names such as
+        ``order`` that collide with FORBIDDEN_TERMS. A quoted key followed by a
+        colon is metadata, not natural-language instruction or disclosure.
+        """
+        if start == 0 or text[start - 1] not in "'\"":
+            return False
+        rest = text[end:]
+        if not rest or rest[0] != text[start - 1]:
+            return False
+        return rest[1:].lstrip().startswith(":")
+
+    def _unprotected_forbidden_hits(self, text: str) -> list[str]:
+        """Forbidden terms that do not sit inside a boundary-discussion context.
+
+        A forbidden term is only exempt when a boundary word (deny/approval/
+        read-only/...) appears within ``BOUNDARY_CONTEXT_WINDOW`` characters of
+        that specific occurrence. A boundary word elsewhere in the text no
+        longer whitelists the whole message, so adversarial content cannot
+        unlock supervision by simply appending words like "denied".
+        """
+        boundary_spans: list[tuple[int, int]] | None = None
+        hits: list[str] = []
+        for term in FORBIDDEN_TERMS:
+            pattern = rf"(?<![a-z0-9_]){re.escape(term)}(?![a-z0-9_])"
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                if self._is_structural_key_occurrence(text, match.start(), match.end()):
+                    continue
+                if boundary_spans is None:
+                    boundary_spans = self._boundary_spans(text)
+                protected = any(
+                    start - BOUNDARY_CONTEXT_WINDOW <= match.start() and match.end() <= end + BOUNDARY_CONTEXT_WINDOW
+                    for start, end in boundary_spans
+                )
+                if not protected:
+                    hits.append(term)
+                    break
+        return hits
 
     def _review_permission_policy(self, tool_name: str, args: dict[str, Any], context: dict[str, Any] | None = None):
         policy = self.permission_policy
@@ -1001,12 +1060,6 @@ class PolicyEngine:
             ],
             user_confirmation_message="Review the cleanup preview and approve the selected cleanup items?",
         )
-
-
-class _PermissionCheckAllowed:
-    allowed = True
-    matched_rule_id = ""
-    reason = "Permission policy unavailable; falling back to built-in risk checks."
 
 
 class _PermissionCheckDenied:

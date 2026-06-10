@@ -577,7 +577,10 @@ def _stable_item_id(
             "action": action,
             "category": category,
             "size_bytes": size_bytes,
-            "mtime_ns": mtime_ns,
+            # Millisecond precision: NTFS lazy timestamp flushes can change
+            # st_mtime_ns between two stats of an unmodified file, which made
+            # the item id (and approval binding) flaky under IO load.
+            "mtime_ms": mtime_ns // 1_000_000,
             "duplicate_group_id": duplicate_group_id or "",
         },
         sort_keys=True,

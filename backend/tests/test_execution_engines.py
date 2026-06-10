@@ -488,3 +488,28 @@ async def test_os_engine_reflection_limit_pauses_low_information_failure(tmp_pat
     assert result.state.phase == RunPhase.FAILED
     assert step.status == StepStatus.FAILED
     assert calls == [{"label": "primary"}]
+
+
+def test_os_reflection_decider_respects_configured_limits() -> None:
+    from app.orchestration.os_reflection import OSReflectionDecider, OSReflectionInput
+
+    task = Task(user_goal="os engine", mode="efficiency", status=TaskStatus.EXECUTION)
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[])
+
+    def _input(run_count: int) -> OSReflectionInput:
+        return OSReflectionInput(
+            task=task,
+            plan=plan,
+            turn=1,
+            run_reflection_count=run_count,
+            step_reflection_counts={},
+            graph_error="graph build failed",
+        )
+
+    # Default cap of 2 stops reflecting once the run has reflected twice.
+    assert OSReflectionDecider().should_reflect(_input(2)) is False
+    # A higher per-run cap keeps reflecting at the same point.
+    assert OSReflectionDecider(max_per_run=3).should_reflect(_input(2)) is True
+    # A zero cap disables reflection entirely, even on a graph error.
+    assert OSReflectionDecider(max_per_run=0).should_reflect(_input(0)) is False
+

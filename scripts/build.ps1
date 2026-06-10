@@ -9,10 +9,13 @@
     [string]$DistDir = "dist",
     [string]$PortableDir = "dist\Lengrvis-win-portable",
     [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
-    [string]$SelfExtractingExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe",
+    # Empty means: derive dist\Lengrvis-<version>-x64-self-extracting.exe from
+    # desktop\package.json inside build_all.ps1 (single source of truth).
+    [string]$SelfExtractingExe = "",
     [string]$BundledOllamaDir = "",
     [string]$BundledOllamaModelsDir = "",
-    [string]$BundledOllamaManifest = ""
+    [string]$BundledOllamaManifest = "",
+    [string[]]$RequiredBackendCapabilities = @()
 )
 
 if ($VerifyOnly) {
@@ -23,5 +26,5 @@ if ($VerifyOnly) {
     }
 }
 
-& "$PSScriptRoot\build_all.ps1" -SkipTests:$SkipTests -SkipInstaller:$SkipPackageBuild -RequireBundledOllama:$RequireBundledOllama -VerifyOnly:$VerifyOnly -RunExecutableSmoke:$RunExecutableSmoke -SmokeTimeoutSeconds $SmokeTimeoutSeconds -DistDir $DistDir -PortableDir $PortableDir -PortableZip $PortableZip -SelfExtractingExe $SelfExtractingExe -BundledOllamaDir $BundledOllamaDir -BundledOllamaModelsDir $BundledOllamaModelsDir -BundledOllamaManifest $BundledOllamaManifest
+& "$PSScriptRoot\build_all.ps1" -SkipTests:$SkipTests -SkipInstaller:$SkipPackageBuild -RequireBundledOllama:$RequireBundledOllama -VerifyOnly:$VerifyOnly -RunExecutableSmoke:$RunExecutableSmoke -SmokeTimeoutSeconds $SmokeTimeoutSeconds -DistDir $DistDir -PortableDir $PortableDir -PortableZip $PortableZip -SelfExtractingExe $SelfExtractingExe -BundledOllamaDir $BundledOllamaDir -BundledOllamaModelsDir $BundledOllamaModelsDir -BundledOllamaManifest $BundledOllamaManifest -RequiredBackendCapabilities $RequiredBackendCapabilities
 exit $LASTEXITCODE

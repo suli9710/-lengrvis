@@ -1,0 +1,375 @@
+"""真实 LLM 评测轨道 B（real-LLM golden replay harness）。
+
+与 MockProvider 契约轨道（``npm run golden:gate``）互补：本脚本用**当前真实
+配置的 LLM Provider**（云端 OpenAI-compatible 或本地 Ollama / LM Studio /
+llama.cpp）重放 ``test_data/golden_tasks/golden_tasks.json`` 中 LLM 相关的
+任务（entry 为 runs / chat），并按结果质量口径度量而非硬断言：
+
+- intent_accuracy：plan 工具序列与期望完全一致的比例
+- tool_overlap_rate：期望工具被规划命中的比例（宽松口径）
+- param_missing_rate：plan 步骤缺少 registry 必填参数的比例
+- task_success_rate：终态 phase 落在期望集合内的比例
+- risk_match_rate：global risk 与期望一致的比例
+
+报告写入 ``.tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json``。
+
+证据边界：这是机器测得的真实模型行为证据，可作为
+``npm run evidence:result-quality-review`` 真人评审的输入材料，但不能替代
+真人结果质量签收（可读性/返工率仍需人工评分）。
+
+用法（需先配置真实 Provider，禁止 mock）::
+
+    python scripts/run_real_llm_eval.py
+    python scripts/run_real_llm_eval.py --max-tasks 10 --categories system,file
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "backend"))
+
+GOLDEN_DATASET_PATH = REPO_ROOT / "test_data" / "golden_tasks" / "golden_tasks.json"
+DEFAULT_REPORT_DIR = REPO_ROOT / ".tmp" / "qa-evidence" / "real-llm-eval"
+TERMINAL_OR_WAITING = {"completed", "failed", "denied", "cancelled", "awaiting_approval"}
+LLM_ENTRIES = {"runs", "chat"}
+EVIDENCE_BOUNDARY = (
+    "Machine-measured real-LLM behavior evidence. Input material for human "
+    "result-quality review; NOT a human result-quality sign-off, RC sign-off, "
+    "or release approval."
+)
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Replay golden tasks against the real configured LLM provider.")
+    parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
+    parser.add_argument("--max-tasks", type=int, default=0, help="0 = all eligible tasks")
+    parser.add_argument("--categories", default="", help="comma-separated category filter")
+    parser.add_argument("--task-ids", default="", help="comma-separated golden task id filter")
+    parser.add_argument("--timeout-seconds", type=float, default=180.0, help="per-task wall clock budget")
+    return parser.parse_args()
+
+
+def _require_real_provider() -> dict[str, str]:
+    from app.llm.mock_provider import MockProvider
+    from app.llm.registry import get_effective_settings, get_provider_for_mode
+
+    settings = get_effective_settings()
+    if (settings.provider_name or "").lower() == "mock":
+        raise SystemExit("real-llm-eval refuses to run with provider_name=mock; configure a real provider first.")
+    provider = get_provider_for_mode(settings, task="planner")
+    if isinstance(provider, MockProvider):
+        raise SystemExit("real-llm-eval resolved MockProvider; configure LENGRVIS_API_KEY / a local backend first.")
+    return {
+        "provider_name": settings.provider_name,
+        "model": settings.model,
+        "mode": settings.mode,
+        "wire_api": getattr(settings, "wire_api", ""),
+    }
+
+
+def _golden_app():
+    from fastapi import FastAPI
+
+    from app.api.routes_approvals import router as approvals_router
+    from app.api.routes_chat import router as chat_router
+    from app.api.routes_files import router as files_router
+    from app.api.routes_runs import router as runs_router
+
+    app = FastAPI()
+    app.include_router(runs_router, prefix="/api")
+    app.include_router(approvals_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
+    app.include_router(files_router, prefix="/api")
+    return app
+
+
+def _sub(value: Any, workspace: Path, outside: Path) -> Any:
+    if isinstance(value, str):
+        return value.replace("$WS", str(workspace)).replace("$OUTSIDE", str(outside))
+    if isinstance(value, dict):
+        return {key: _sub(item, workspace, outside) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sub(item, workspace, outside) for item in value]
+    return value
+
+
+class _EnvScope:
+    """Set process env vars for one task and restore them afterwards."""
+
+    def __init__(self, values: dict[str, str | None]):
+        self._values = values
+        self._saved: dict[str, str | None] = {}
+
+    def __enter__(self) -> "_EnvScope":
+        for key, value in self._values.items():
+            self._saved[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        for key, original in self._saved.items():
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+
+
+def _plan_record(task_id: str) -> dict[str, Any] | None:
+    from app.core import db
+
+    plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
+    return plans[0] if plans else None
+
+
+def _required_args_missing(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from app.tools.registry import registry
+
+    missing: list[dict[str, Any]] = []
+    for step in steps:
+        tool_name = step.get("tool_name") or ""
+        try:
+            definition = registry.get(tool_name)
+        except Exception:  # noqa: BLE001 - unknown tool is itself a planning miss.
+            missing.append({"tool": tool_name, "missing": ["<unknown tool>"]})
+            continue
+        schema = getattr(definition, "input_schema", None) or {}
+        required = schema.get("required") or []
+        args = step.get("args") or {}
+        absent = [key for key in required if key not in args]
+        if absent:
+            missing.append({"tool": tool_name, "missing": absent})
+    return missing
+
+
+def _evaluate_task(task: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+    from fastapi.testclient import TestClient
+
+    from app.core import db
+
+    expect = task.get("expect") or {}
+    record: dict[str, Any] = {
+        "id": task["id"],
+        "category": task.get("category", ""),
+        "entry": task["entry"],
+        "title": task.get("title", ""),
+        "ran": False,
+        "error": "",
+        "phase": "",
+        "phase_ok": None,
+        "expected_plan_tools": expect.get("plan_tools") or [],
+        "actual_plan_tools": [],
+        "intent_exact_match": None,
+        "expected_tools_planned": None,
+        "param_missing": [],
+        "risk_expected": expect.get("global_risk", ""),
+        "risk_actual": "",
+        "risk_match": None,
+        "duration_seconds": 0.0,
+    }
+
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="real-llm-eval-") as tmp:
+        tmp_path = Path(tmp)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("outside the authorized scope", encoding="utf-8")
+        for rel, content in (task.get("fixtures") or {}).items():
+            target = workspace / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+
+        env: dict[str, str | None] = {
+            "LENGRVIS_DATA_DIR": str(tmp_path / "data"),
+            "LENGRVIS_TASK_RECORDING_ENABLED": "false",
+            "LENGRVIS_ALLOWED_DIRECTORIES": None if task.get("no_scope") else str(workspace),
+        }
+        if task.get("mode"):
+            env["LENGRVIS_MODE"] = str(task["mode"])
+
+        try:
+            with _EnvScope(env):
+                db.init_db()
+                message = _sub(task["message"], workspace, outside)
+                with TestClient(_golden_app()) as client:
+                    if task["entry"] == "runs":
+                        record.update(_run_runs_entry(client, task, message, expect, timeout_seconds))
+                    else:
+                        record.update(_run_chat_entry(client, task, message, expect, timeout_seconds))
+            record["ran"] = True
+        except Exception as exc:  # noqa: BLE001 - single-task failure must not kill the eval.
+            record["error"] = f"{type(exc).__name__}: {exc}"
+    record["duration_seconds"] = round(time.monotonic() - started, 2)
+    return record
+
+
+def _run_runs_entry(
+    client: Any,
+    task: dict[str, Any],
+    message: str,
+    expect: dict[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    created = client.post(
+        "/api/runs",
+        json={"message": message, "mode": task.get("mode", "efficiency"), "engine": task.get("engine", "os")},
+    )
+    if created.status_code != 200:
+        return {"error": f"run submit failed: HTTP {created.status_code}"}
+    run = created.json()
+    final = _wait_for_phase(client, run["run_id"], set(expect.get("phase") or []), timeout_seconds)
+    return _measure(final.get("task_id") or "", final.get("phase") or "", expect)
+
+
+def _run_chat_entry(
+    client: Any,
+    task: dict[str, Any],
+    message: str,
+    expect: dict[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    from app.core import db
+
+    response = client.post("/api/chat", json={"message": message, "mode": task.get("mode", "efficiency")})
+    if response.status_code != 200:
+        return {"error": f"chat submit failed: HTTP {response.status_code}"}
+    payload = response.json()
+    task_id = payload.get("task_id") or ""
+    phase = "completed" if not task_id else ""
+    if task_id:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            stored = db.fetch_one("tasks", task_id)
+            if stored and stored["status"] in {"completed", "failed", "denied", "cancelled"}:
+                phase = stored["status"]
+                break
+            time.sleep(0.1)
+    expected_phases = expect.get("phase") or (["completed"] if expect.get("task_completed") else [])
+    measured = _measure(task_id, phase, {**expect, "phase": expected_phases})
+    measured.setdefault("chat_delegated", payload.get("delegated"))
+    return measured
+
+
+def _measure(task_id: str, phase: str, expect: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {"phase": phase}
+    expected_phases = expect.get("phase") or []
+    result["phase_ok"] = (phase in expected_phases) if expected_phases else None
+
+    plan = _plan_record(task_id) if task_id else None
+    if plan:
+        steps = plan.get("steps") or []
+        actual_tools = [step.get("tool_name") for step in steps]
+        result["actual_plan_tools"] = actual_tools
+        result["risk_actual"] = plan.get("global_risk_level") or ""
+        expected_tools = expect.get("plan_tools") or []
+        if expected_tools:
+            result["intent_exact_match"] = actual_tools == expected_tools
+            result["expected_tools_planned"] = all(tool in actual_tools for tool in expected_tools)
+        if expect.get("global_risk"):
+            result["risk_match"] = result["risk_actual"] == expect["global_risk"]
+        result["param_missing"] = _required_args_missing(steps)
+    return result
+
+
+def _wait_for_phase(client: Any, run_id: str, target_phases: set[str], timeout_seconds: float) -> dict[str, Any]:
+    stop_phases = target_phases | TERMINAL_OR_WAITING
+    payload: dict[str, Any] = {}
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/runs/{run_id}")
+        if response.status_code != 200:
+            break
+        payload = response.json()
+        if payload.get("phase") in stop_phases:
+            return payload
+        time.sleep(0.1)
+    payload.setdefault("phase", "timeout")
+    return payload
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    return round(numerator / denominator, 4) if denominator else None
+
+
+def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    ran = [r for r in records if r["ran"] and not r["error"]]
+    phase_known = [r for r in ran if r["phase_ok"] is not None]
+    intent_known = [r for r in ran if r["intent_exact_match"] is not None]
+    overlap_known = [r for r in ran if r["expected_tools_planned"] is not None]
+    risk_known = [r for r in ran if r["risk_match"] is not None]
+    planned = [r for r in ran if r["actual_plan_tools"]]
+    return {
+        "tasks_total": len(records),
+        "tasks_ran": len(ran),
+        "tasks_errored": len([r for r in records if r["error"]]),
+        "task_success_rate": _rate(sum(1 for r in phase_known if r["phase_ok"]), len(phase_known)),
+        "intent_accuracy": _rate(sum(1 for r in intent_known if r["intent_exact_match"]), len(intent_known)),
+        "tool_overlap_rate": _rate(sum(1 for r in overlap_known if r["expected_tools_planned"]), len(overlap_known)),
+        "risk_match_rate": _rate(sum(1 for r in risk_known if r["risk_match"]), len(risk_known)),
+        "param_missing_rate": _rate(sum(1 for r in planned if r["param_missing"]), len(planned)),
+    }
+
+
+def main() -> int:
+    args = _parse_args()
+    provider_info = _require_real_provider()
+
+    dataset = json.loads(GOLDEN_DATASET_PATH.read_text(encoding="utf-8"))
+    tasks: list[dict[str, Any]] = [t for t in dataset["tasks"] if t.get("entry") in LLM_ENTRIES]
+    if args.categories:
+        wanted = {item.strip() for item in args.categories.split(",") if item.strip()}
+        tasks = [t for t in tasks if t.get("category") in wanted]
+    if args.task_ids:
+        wanted_ids = {item.strip() for item in args.task_ids.split(",") if item.strip()}
+        tasks = [t for t in tasks if t["id"] in wanted_ids]
+    if args.max_tasks > 0:
+        tasks = tasks[: args.max_tasks]
+    if not tasks:
+        raise SystemExit("no eligible golden tasks matched the filters.")
+
+    print(f"real-llm-eval: provider={provider_info['provider_name']} model={provider_info['model']} tasks={len(tasks)}")
+    records: list[dict[str, Any]] = []
+    for index, task in enumerate(tasks, start=1):
+        print(f"[{index}/{len(tasks)}] {task['id']} ...", flush=True)
+        record = _evaluate_task(task, args.timeout_seconds)
+        status = "ERROR" if record["error"] else ("ok" if record["phase_ok"] in {True, None} else "MISS")
+        print(f"    -> {status} phase={record['phase']} tools={record['actual_plan_tools']} {record['error']}", flush=True)
+        records.append(record)
+
+    report = {
+        "kind": "real-llm-eval-report",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "provider": provider_info,
+        "dataset": str(GOLDEN_DATASET_PATH.relative_to(REPO_ROOT)),
+        "evidence_boundary": EVIDENCE_BOUNDARY,
+        "summary": _aggregate(records),
+        "tasks": records,
+    }
+    report_dir = Path(args.report_dir)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / "real-llm-eval-report.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
+    print(f"report: {report_path}")
+
+    summary = report["summary"]
+    if summary["tasks_ran"] == 0:
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -38,4 +38,14 @@ if (!stats.isFile() || stats.size === 0) {
   process.exit(1);
 }
 
+// electron-builder bundles this manifest as an extraResource; the packaging
+// gate uses it to assert which optional capabilities the backend was built with.
+const capabilitiesPath = join(__dirname, "..", "..", "dist", "backend-capabilities.json");
+if (!existsSync(capabilitiesPath)) {
+  console.error(`Missing backend capability manifest: ${capabilitiesPath}`);
+  console.error("Rebuild the backend (scripts/build_backend.ps1 or scripts/build_backend_mac.sh); the build emits this manifest next to the backend binary.");
+  process.exit(1);
+}
+
 console.log(`Backend binary ready for ${platform}: ${binaryPath}`);
+console.log(`Backend capability manifest ready: ${capabilitiesPath}`);

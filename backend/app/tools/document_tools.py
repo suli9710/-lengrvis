@@ -12,6 +12,7 @@ from app.policy.risk import RiskLevel
 from app.services import document_service
 from app.services import document_intelligence_service
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 _EXTRACT_TEXT_LIMIT = 20000
@@ -209,9 +210,7 @@ def ask_with_citations(args: dict[str, Any], context: dict[str, Any]) -> dict[st
 
 
 def compare(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    paths = args.get("paths") if isinstance(args.get("paths"), list) else []
-    left_raw = args.get("left_path") or (paths[0] if len(paths) > 0 else None)
-    right_raw = args.get("right_path") or (paths[1] if len(paths) > 1 else None)
+    left_raw, right_raw = _compare_path_pair(args)
     left_path = resolve_authorized(left_raw, _allowed(context))
     right_path = resolve_authorized(right_raw, _allowed(context))
     return document_intelligence_service.compare_documents(
@@ -244,7 +243,85 @@ def generate_cited_report(args: dict[str, Any], context: dict[str, Any]) -> dict
     )
 
 
+def _compare_path_pair(args: dict[str, Any]) -> tuple[Any, Any]:
+    paths = args.get("paths") if isinstance(args.get("paths"), list) else []
+    left = args.get("left_path") or (paths[0] if len(paths) > 0 else None)
+    right = args.get("right_path") or (paths[1] if len(paths) > 1 else None)
+    return left, right
+
+
+def _validate_compare(args: dict[str, Any], context: dict[str, Any]) -> None:  # noqa: ARG001
+    left, right = _compare_path_pair(args)
+    if not left or not right:
+        raise ValueError(
+            "document.compare needs two document paths: provide both left_path and right_path, "
+            "or a two-element paths list."
+        )
+    if not isinstance(left, str) or not isinstance(right, str):
+        raise ValueError("document.compare paths must be file path strings.")
+
+
+def _validate_question(args: dict[str, Any], context: dict[str, Any]) -> None:  # noqa: ARG001
+    if not str(args.get("question") or "").strip():
+        raise ValueError("This tool needs a non-empty 'question' to answer from the document.")
+
+
 def register(registry) -> None:
+    path_prop = {"type": "string", "description": "Authorized path to the document to read."}
+
+    def _path_schema(extra: dict[str, Any] | None = None, *, required: list[str] | None = None) -> dict[str, Any]:
+        props: dict[str, Any] = {"path": path_prop}
+        if extra:
+            props.update(extra)
+        return {"type": "object", "properties": props, "required": required if required is not None else ["path"]}
+
+    schemas: dict[str, dict[str, Any]] = {
+        "document.extract_text": _path_schema(),
+        "document.summarize": _path_schema(),
+        "document.qa": _path_schema({"question": {"type": "string", "description": "Question to answer from the document."}}),
+        "document.convert_to_markdown": _path_schema(),
+        "document.analyze_csv": _path_schema(),
+        "document.analyze_xlsx": _path_schema(),
+        "document.generate_report": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Source content to turn into a report."},
+                "title": {"type": "string", "description": "Optional report title."},
+            },
+            "required": ["content"],
+        },
+        "document.parse_advanced": _path_schema(),
+        "document.extract_tables": _path_schema(),
+        "document.ask_with_citations": _path_schema(
+            {
+                "question": {"type": "string", "description": "Question to answer with cited evidence."},
+                "top_k": {"type": "integer", "description": "Optional number of evidence blocks to retrieve."},
+            }
+        ),
+        "document.compare": {
+            "type": "object",
+            "properties": {
+                "left_path": {"type": "string", "description": "First document path."},
+                "right_path": {"type": "string", "description": "Second document path."},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Alternative two-element list of document paths."},
+            },
+            "required": [],
+        },
+        "document.redact_preview": _path_schema(
+            {
+                "custom_patterns": {"type": "object", "description": "Optional custom redaction patterns."},
+                "max_chars": {"type": "integer", "description": "Optional preview character cap."},
+            }
+        ),
+        "document.generate_cited_report": _path_schema(
+            {
+                "title": {"type": "string", "description": "Optional report title."},
+                "query": {"type": "string", "description": "Optional focusing query for the report."},
+                "max_blocks": {"type": "integer", "description": "Optional cap on cited blocks."},
+            }
+        ),
+    }
+
     defs = [
         ("document.extract_text", extract_text),
         ("document.summarize", summarize),
@@ -260,18 +337,25 @@ def register(registry) -> None:
         ("document.redact_preview", redact_preview),
         ("document.generate_cited_report", generate_cited_report),
     ]
+    validators = {
+        "document.qa": _validate_question,
+        "document.ask_with_citations": _validate_question,
+        "document.compare": _validate_compare,
+    }
     for name, fn in defs:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
-                input_schema={},
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
+                input_schema=schemas[name],
                 output_schema={},
                 risk_level=RiskLevel.R0_READ_ONLY,
                 agent_owner="DocumentAgent",
                 supports_dry_run=False,
                 requires_authorized_path=name != "document.generate_report",
                 execute=fn,
+                validate_input=validators.get(name),
                 read_only=True,
                 concurrency_safe=True,
                 effects=["read"],

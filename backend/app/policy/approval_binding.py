@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import logging
-import secrets
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +12,6 @@ from app.policy.redaction import redact_value
 
 APPROVAL_HMAC_ENV_KEYS = ("LENGRVIS_APPROVAL_HMAC_SECRET",)
 APPROVAL_HMAC_SECRET_FILE = "approval_hmac.secret"
-logger = logging.getLogger(__name__)
 
 
 def approval_secret() -> str:
@@ -32,23 +29,13 @@ def approval_secret() -> str:
 
 
 def _local_approval_secret() -> str:
+    from app.security.local_secret import load_or_create_local_secret
+
     data_dir = Path(get_base_settings().data_dir)
-    secret_path = data_dir / APPROVAL_HMAC_SECRET_FILE
-    try:
-        if secret_path.exists():
-            value = secret_path.read_text(encoding="utf-8").strip()
-            if value:
-                return value
-        data_dir.mkdir(parents=True, exist_ok=True)
-        value = secrets.token_hex(32)
-        secret_path.write_text(value, encoding="utf-8")
-        try:
-            secret_path.chmod(0o600)
-        except OSError as exc:
-            logger.debug("could not restrict approval HMAC secret permissions at %s: %s", secret_path, exc)
-        return value
-    except OSError as exc:
-        raise RuntimeError("Approval HMAC secret is unavailable.") from exc
+    return load_or_create_local_secret(
+        data_dir / APPROVAL_HMAC_SECRET_FILE,
+        unavailable_message="Approval HMAC secret is unavailable.",
+    )
 
 
 def canonical_json(value: Any) -> str:

@@ -1,1 +1,1 @@
-[Context reactive-compaction] Older prompt messages were omitted after a prompt-too-long response.
+[Context reactive-compaction] Older prompt messages were omitted after a prompt-too-long response. Recent messages and durable session memory are preserved; re-read source files or re-run read-only tools if an earlier detail is required.

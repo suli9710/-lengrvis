@@ -29,6 +29,7 @@ from app.llm.registry import get_effective_settings, get_provider
 from app.policy.privacy import can_use_cloud_model
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 _IMAGE_EXTENSIONS = IMAGE_EXTENSIONS
@@ -967,7 +968,8 @@ def register(registry) -> None:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema={},
                 output_schema={},
                 risk_level=RiskLevel.R0_READ_ONLY,

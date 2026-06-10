@@ -2218,13 +2218,22 @@ function localModelUserMessage(message?: string, fallback = "继续准备本地 
   if (containsSensitiveLocalModelText(text)) return fallback;
   const lower = text.toLowerCase();
   if (lower.includes("privacy mode requires") || lower.includes("reachable local llm")) {
-    return "还没有可用的本地 AI。";
+    return "还没有可用的本地 AI。可以在下方一键安装并启动，或先切换到高效模式继续使用。";
   }
   if (lower.includes("not installed") && lower.includes("ollama")) {
-    return "本地 AI 应用还未安装。";
+    return "本地 AI 应用还未安装。点击「安装」会按这台电脑自动下载，无需手动配置。";
   }
   if (lower.includes("not running") && lower.includes("ollama")) {
-    return "本地 AI 服务还未启动。";
+    return "本地 AI 服务还未启动。点击「启动」即可恢复，启动后会自动检查模型。";
+  }
+  if (
+    (lower.includes("download") || lower.includes("network") || lower.includes("timeout") || lower.includes("connection")) &&
+    !lower.includes("manifest")
+  ) {
+    return "下载没有完成，常见原因是网络不稳定。点击重试会继续下载，不会从头开始。";
+  }
+  if (lower.includes("disk") || lower.includes("space") || lower.includes("no space")) {
+    return "磁盘空间不足。请清理出至少 5 GB 空间后重试安装。";
   }
   if (lower.includes("manifest")) {
     return sanitizeLocalModelUserText(text)

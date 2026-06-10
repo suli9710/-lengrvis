@@ -4,7 +4,6 @@ import os
 import sys
 import base64
 import logging
-import secrets
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -104,22 +103,12 @@ def _resolve_mobile_jwt_secret(raw_secret: Any, data_dir: str | Path) -> str:
 
 
 def _local_mobile_jwt_secret(data_dir: Path) -> str:
-    secret_path = data_dir / MOBILE_JWT_SECRET_FILE
-    try:
-        if secret_path.exists():
-            value = secret_path.read_text(encoding="utf-8").strip()
-            if value:
-                return value
-        data_dir.mkdir(parents=True, exist_ok=True)
-        value = secrets.token_hex(32)
-        secret_path.write_text(value, encoding="utf-8")
-        try:
-            secret_path.chmod(0o600)
-        except OSError as exc:
-            logger.debug("could not restrict mobile JWT secret permissions at %s: %s", secret_path, exc)
-        return value
-    except OSError as exc:
-        raise RuntimeError("Mobile JWT secret is unavailable.") from exc
+    from app.security.local_secret import load_or_create_local_secret
+
+    return load_or_create_local_secret(
+        data_dir / MOBILE_JWT_SECRET_FILE,
+        unavailable_message="Mobile JWT secret is unavailable.",
+    )
 
 
 def _candidate_config_dirs() -> list[Path]:
@@ -262,6 +251,8 @@ class AppSettings:
     allow_mock_fallback: bool = False
     strict_state_machine: bool = False
     recovery_max_retries: int = 3
+    os_reflection_max_per_run: int = 2
+    os_reflection_max_per_step: int = 1
     execution_engines: str = "dual"
     default_engine: str = "auto"
     agent_loop_max_turns: int = 30
@@ -283,6 +274,9 @@ class AppSettings:
     environment_store_screenshots: bool = False
     environment_event_retention_days: int = 7
     environment_rules: list[dict[str, Any]] = field(default_factory=list)
+    # Opt-in, local-only metrics aggregation (task success / recovery / ask_user /
+    # LLM anomaly rates). Never leaves the machine; disabled by default.
+    local_metrics_enabled: bool = False
     jwt_secret: str = ""
 
     @classmethod
@@ -471,17 +465,9 @@ class AppSettings:
             embedding_model=str(value("LENGRVIS_EMBEDDING_MODEL", "embedding_model", "text-embedding-3-small")),
             vision_model=str(value("LENGRVIS_VISION_MODEL", "vision_model", "")),
             onnx_enabled=flag("LENGRVIS_ONNX_ENABLED", "onnx_enabled", True),
-            onnx_model_path=str(
-                value_any(("LENGRVIS_ONNX_MODEL_PATH", "LENGRVIS_ONNX_MODEL_PATH"), "onnx_model_path", "")
-            ),
-            onnx_runtime=str(value_any(("LENGRVIS_ONNX_RUNTIME", "LENGRVIS_ONNX_RUNTIME"), "onnx_runtime", "auto")),
-            onnx_execution_provider=str(
-                value_any(
-                    ("LENGRVIS_ONNX_EXECUTION_PROVIDER", "LENGRVIS_ONNX_EXECUTION_PROVIDER"),
-                    "onnx_execution_provider",
-                    "",
-                )
-            ),
+            onnx_model_path=str(value("LENGRVIS_ONNX_MODEL_PATH", "onnx_model_path", "")),
+            onnx_runtime=str(value("LENGRVIS_ONNX_RUNTIME", "onnx_runtime", "auto")),
+            onnx_execution_provider=str(value("LENGRVIS_ONNX_EXECUTION_PROVIDER", "onnx_execution_provider", "")),
             onnx_provider_preference=str(
                 value("LENGRVIS_ONNX_PROVIDER_PREFERENCE", "onnx_provider_preference", "winml,directml,openvino,cpu")
             ),
@@ -588,10 +574,14 @@ class AppSettings:
             allow_mock_fallback=flag("LENGRVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", False),
             strict_state_machine=flag("LENGRVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
             recovery_max_retries=int_value("LENGRVIS_RECOVERY_MAX_RETRIES", "recovery_max_retries", 3),
-            execution_engines=str(
-                value_any(("LENGRVIS_EXECUTION_ENGINES", "LENGRVIS_EXECUTION_ENGINES"), "execution_engines", "dual")
+            os_reflection_max_per_run=int_value(
+                "LENGRVIS_OS_REFLECTION_MAX_PER_RUN", "os_reflection_max_per_run", 2
             ),
-            default_engine=str(value_any(("LENGRVIS_DEFAULT_ENGINE", "LENGRVIS_DEFAULT_ENGINE"), "default_engine", "auto")),
+            os_reflection_max_per_step=int_value(
+                "LENGRVIS_OS_REFLECTION_MAX_PER_STEP", "os_reflection_max_per_step", 1
+            ),
+            execution_engines=str(value("LENGRVIS_EXECUTION_ENGINES", "execution_engines", "dual")),
+            default_engine=str(value("LENGRVIS_DEFAULT_ENGINE", "default_engine", "auto")),
             agent_loop_max_turns=int_value("LENGRVIS_AGENT_LOOP_MAX_TURNS", "agent_loop_max_turns", 30, minimum=1),
             run_event_retention_days=int_value(
                 "LENGRVIS_RUN_EVENT_RETENTION_DAYS",
@@ -637,6 +627,7 @@ class AppSettings:
                 minimum=0,
             ),
             environment_rules=[dict(item) for item in environment_rules if isinstance(item, dict)],
+            local_metrics_enabled=flag("LENGRVIS_LOCAL_METRICS_ENABLED", "local_metrics_enabled", False),
             jwt_secret=jwt_secret,
         )
 

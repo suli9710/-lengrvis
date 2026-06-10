@@ -29,19 +29,21 @@ def _settings(**overrides) -> AppSettings:
     return settings
 
 
-def _messages(count: int = 8) -> list[dict]:
+def _messages(count: int = 8, chars: int = 80) -> list[dict]:
     return [
         {"id": "system_1", "role": "system", "content": "Keep answers concise."},
         *[
-            {"id": f"msg_{index}", "role": "user" if index % 2 else "assistant", "content": f"message {index} " + ("x" * 80)}
+            {"id": f"msg_{index}", "role": "user" if index % 2 else "assistant", "content": f"message {index} " + ("x" * chars)}
             for index in range(count)
         ],
     ]
 
 
 def test_manual_compact_creates_boundary_summary_and_tail():
+    # Long messages: the boundary now embeds the real summary text, so net
+    # shrinkage only holds when compacted messages outweigh the summary.
     result = manual_compact_messages(
-        _messages(),
+        _messages(chars=900),
         _settings(context_recent_message_limit=2),
         custom_instructions="Preserve open decisions.",
     )
@@ -142,7 +144,7 @@ def test_context_compact_route_returns_api_ready_payload():
     response = client.post(
         "/api/context/compact",
         json={
-            "messages": _messages(),
+            "messages": _messages(chars=900),
             "custom_instructions": "Keep current TODOs.",
             "recent_message_limit": 2,
             "persist_session_context": False,
@@ -213,3 +215,43 @@ def test_context_compact_route_can_persist_task_boundary(monkeypatch, tmp_path):
         message.metadata.get("context_boundary") == MANUAL_COMPACT_BOUNDARY
         for message in bus.get_messages(task_id)
     )
+
+
+def test_compaction_boundary_templates_render_variables():
+    # Regression: these templates once used {{var}} mustache syntax, which the
+    # string.Template-based renderer never substitutes -- the auto-compact
+    # summary was silently replaced by a literal "{{summary_text}}" placeholder.
+    from app.llm.prompts import render_prompt
+
+    compacted = render_prompt(
+        "context_auto_compaction.md",
+        {"summary_text": "approval granted for file.trash on C:/x"},
+    )
+    assert "approval granted for file.trash on C:/x" in compacted
+    assert "{{" not in compacted and "$summary_text" not in compacted
+
+    snipped = render_prompt("context_history_snip.md", {"removed": 7})
+    assert " 7 " in snipped
+    assert "{{" not in snipped and "$removed" not in snipped
+
+
+def test_auto_compact_boundary_message_contains_summary_text():
+    from app.context_management import auto_compact_messages
+
+    settings = _settings(
+        context_auto_compact_enabled=True,
+        model_auto_compact_token_limit=1,
+        context_recent_message_limit=2,
+    )
+    messages = _messages(count=12, chars=900)
+    compacted, changed = auto_compact_messages(messages, settings)
+
+    assert changed
+    boundary = next(
+        message
+        for message in compacted
+        if (message.get("metadata") or {}).get("context_boundary") == "auto_compact"
+    )
+    content = str(boundary.get("content") or "")
+    assert "{{" not in content
+    assert "Earlier conversation summary" in content

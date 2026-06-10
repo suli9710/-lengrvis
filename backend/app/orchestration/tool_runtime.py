@@ -57,6 +57,29 @@ from app.tools.schemas import ToolDefinition
 logger = logging.getLogger(__name__)
 
 
+# Failure strings that give the reflection layer nothing to reason about
+# (see os_reflection._is_low_information_failure). Tool failures passing
+# through the runtime are enriched so automated recovery stays possible
+# instead of degrading to ask_user.
+_LOW_INFORMATION_ERRORS = {"", "planned failure", "tool failed.", "failed", "unknown error"}
+
+
+def _actionable_error_text(raw_error: str, step: PlanStep) -> str:
+    """Ensure a tool-declared error string carries actionable context."""
+    text = str(raw_error or "").strip()
+    if text.casefold() not in _LOW_INFORMATION_ERRORS:
+        return text
+    args_hint = ", ".join(sorted((step.args or {}).keys())) or "none"
+    base = text or "Tool reported a failure without details"
+    return f"{base} (tool={step.tool_name}, args keys: {args_hint}). Verify the arguments or choose another tool."
+
+
+def _exception_error_text(exc: BaseException, step: PlanStep) -> str:
+    """Build a non-empty, typed error string for unexpected tool exceptions."""
+    detail = str(exc).strip() or "no exception message"
+    return f"{type(exc).__name__}: {detail} (tool={step.tool_name})"
+
+
 @dataclass(slots=True)
 class RuntimeExecutionResult:
     kind: str
@@ -350,7 +373,7 @@ class ToolRuntime:
                 tool_call_id=call.id,
                 ok=not bool(output.get("error")),
                 output=output,
-                error=str(output.get("error", "")),
+                error=_actionable_error_text(str(output.get("error", "")), step) if output.get("error") else "",
                 changed_paths=list(output.get("changed_paths", [])),
                 rollback_info=dict(output.get("rollback_info", {})),
                 observation=self._observation(step, tool, output),
@@ -377,6 +400,7 @@ class ToolRuntime:
                 observation=f"{step.tool_name} blocked because resource state changed or was not read.",
             )
         except Exception as exc:  # noqa: BLE001
+            error_text = _exception_error_text(exc, step)
             self._publish_tool_progress(
                 task,
                 step,
@@ -384,9 +408,17 @@ class ToolRuntime:
                 call.id,
                 "failed",
                 detail=f"{step.tool_name} failed.",
-                payload={"error": str(exc)},
+                payload={"error": error_text},
             )
-            result = ToolResult(tool_call_id=call.id, ok=False, error=str(exc), observation=f"{step.tool_name} failed.")
+            result = ToolResult(
+                tool_call_id=call.id,
+                ok=False,
+                error=error_text,
+                observation=(
+                    f"{step.tool_name} raised {type(exc).__name__}; check the supplied args "
+                    f"({', '.join(sorted((step.args or {}).keys())) or 'none'}) or try an alternative tool."
+                ),
+            )
         finally:
             after_frame = await orchestrator._capture_step_frame(task, step, after_phase)
             orchestrator._publish_step_recording(

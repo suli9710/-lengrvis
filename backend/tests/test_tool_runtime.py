@@ -809,3 +809,24 @@ def test_runtime_safety_review_uses_context_for_permission_policy():
     assert "context_time_block" in tool_call_review["reasons"][0]
     assert "Context timestamp window blocks this tool" in tool_call_review["reasons"][0]
     assert calls == []
+
+
+def test_low_information_tool_errors_are_enriched():
+    from app.orchestration.os_reflection import _is_low_information_failure
+    from app.orchestration.tool_runtime import _actionable_error_text, _exception_error_text
+    from app.core.schemas import ToolResult
+
+    _, _, step = _task_plan_step("file.search_by_name", {"query": "report"})
+
+    enriched = _actionable_error_text("failed", step)
+    assert "file.search_by_name" in enriched
+    assert "query" in enriched
+    assert not _is_low_information_failure(ToolResult(tool_call_id="t", ok=False, error=enriched))
+
+    detailed = _actionable_error_text("Path C:/missing.txt does not exist", step)
+    assert detailed == "Path C:/missing.txt does not exist"
+
+    typed = _exception_error_text(TypeError(), step)
+    assert typed.startswith("TypeError:")
+    assert "file.search_by_name" in typed
+    assert not _is_low_information_failure(ToolResult(tool_call_id="t", ok=False, error=typed))

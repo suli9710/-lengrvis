@@ -17,6 +17,7 @@ from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
 from app.services.cleanup_planner_service import CleanupPlannerService
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".ts", ".tsx", ".js", ".css", ".yaml", ".yml"}
@@ -805,7 +806,8 @@ def register(registry) -> None:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema=_input_schema(name),
                 output_schema={},
                 risk_level=risk,

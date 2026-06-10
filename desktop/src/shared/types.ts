@@ -507,6 +507,59 @@ export interface TaskEvent {
   completionEvidence?: TaskCompletionEvidence;
 }
 
+export interface TaskArtifact {
+  path: string;
+  kind: "changed" | "output" | string;
+  toolName: string;
+  stepId: string;
+  createdAt: string;
+  exists: boolean;
+  isDir: boolean;
+  sizeBytes: number;
+}
+
+export interface TaskArtifactsSummary {
+  taskId: string;
+  artifacts: TaskArtifact[];
+  counts: {
+    total: number;
+    existing: number;
+    missing: number;
+    changed: number;
+    generated: number;
+  };
+}
+
+export interface LocalMetricsSummary {
+  windowDays: number;
+  generatedAt: string;
+  tasks: {
+    total: number;
+    terminal: number;
+    succeeded: number;
+    successRate: number | null;
+    byStatus: Record<string, number>;
+  };
+  runs: {
+    total: number;
+    byPhase: Record<string, number>;
+  };
+  recovery: {
+    reflectionsStarted: number;
+    runsWithReflection: number;
+    recoveryTriggerRate: number | null;
+    decidedActions: Record<string, number>;
+    askUserShare: number | null;
+  };
+  llm: {
+    calls: number;
+    anomalies: number;
+    anomalyRate: number | null;
+    estimatedCalls: number;
+    byFinishReason: Record<string, number>;
+  };
+}
+
 export interface TaskStepRecordingFrame {
   phase: string;
   ok: boolean;

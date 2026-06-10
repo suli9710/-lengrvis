@@ -234,7 +234,7 @@
     {
       "id": "gt-run-search-name",
       "category": "file",
-      "title": "按名称搜索保持只读",
+      "title": "按名称搜索保持只读且确定性提取查询命中文件",
       "entry": "runs",
       "message": "帮我找一下文件：季度报告",
       "mode": "efficiency",
@@ -245,7 +245,28 @@
         "plan_tools": ["file.search_by_name"],
         "global_risk": "R0_READ_ONLY",
         "pending_approvals": 0,
+        "tool_output_contains": [
+          {"tool": "file.search_by_name", "text": "季度报告-2026.txt"}
+        ],
         "files_exist": ["notes/季度报告-2026.txt"]
+      }
+    },
+    {
+      "id": "gt-run-open-app-missing-fails-closed",
+      "category": "app",
+      "title": "打开未允许应用失败关闭且零审批无副作用",
+      "entry": "runs",
+      "message": "打开 NotARealApp12345",
+      "mode": "efficiency",
+      "engine": "os",
+      "expect": {
+        "phase": ["completed"],
+        "plan_tools": ["app.launch_installed", "app.list_installed"],
+        "global_risk": "R1_OPEN_ONLY",
+        "pending_approvals": 0,
+        "tool_output_contains": [
+          {"tool": "app.launch_installed", "text": "not allowlisted"}
+        ]
       }
     },
     {

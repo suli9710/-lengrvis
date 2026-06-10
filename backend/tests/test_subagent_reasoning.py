@@ -124,6 +124,57 @@ def test_app_agent_fast_path_uses_declared_schema_without_provider():
     assert action.args == {"app": "notepad", "dry_run": True}
 
 
+def test_document_agent_fast_path_uses_declared_schema_without_provider():
+    class FailingProvider(MockProvider):
+        async def structured_chat(self, messages, output_schema):  # noqa: ARG002
+            raise AssertionError("document fast path should not call provider")
+
+    registry = register_all_tools()
+    agent = DocumentAgent()
+    step = PlanStep(
+        task_id="task-1",
+        order=0,
+        agent_name="DocumentAgent",
+        tool_name="document.summarize",
+        description="Summarize the quarterly report",
+        args={"path": "C:/Reports/q3.pdf"},
+        expected_observation="summary",
+    )
+
+    action = asyncio.run(
+        agent.act(
+            step,
+            AgentContext(task_id="task-1", mode="efficiency", allowed_directories=[], registry=registry),
+            provider=FailingProvider(),
+        )
+    )
+
+    assert action.kind == "propose_tool"
+    assert action.tool_name == "document.summarize"
+    assert action.args == {"path": "C:/Reports/q3.pdf"}
+
+
+def test_document_agent_fast_path_requests_revision_when_path_missing():
+    registry = register_all_tools()
+    agent = DocumentAgent()
+    step = PlanStep(
+        task_id="task-1",
+        order=0,
+        agent_name="DocumentAgent",
+        tool_name="document.summarize",
+        description="Summarize a document",
+        args={},
+        expected_observation="summary",
+    )
+
+    action = asyncio.run(
+        agent.act(step, AgentContext(task_id="task-1", mode="efficiency", allowed_directories=[], registry=registry))
+    )
+
+    assert action.kind == "request_revision"
+    assert "path" in action.rationale
+
+
 def test_act_requests_revision_when_fast_path_detects_missing_required_args():
     registry = register_all_tools()
     agent = SearchAgent()

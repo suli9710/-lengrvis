@@ -39,6 +39,35 @@ def test_yaml_zero_values_are_preserved(monkeypatch, tmp_path: Path):
     assert settings.recovery_max_retries == 0
 
 
+def test_os_reflection_limits_from_yaml_and_env(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    data_dir = tmp_path / "data"
+    config_path.write_text(
+        "\n".join(
+            [
+                "orchestration:",
+                "  os_reflection_max_per_run: 5",
+                "  os_reflection_max_per_step: 3",
+                "paths:",
+                f"  data_dir: {data_dir.as_posix()}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(config_path))
+    monkeypatch.delenv("LENGRVIS_OS_REFLECTION_MAX_PER_RUN", raising=False)
+    monkeypatch.delenv("LENGRVIS_OS_REFLECTION_MAX_PER_STEP", raising=False)
+
+    settings = AppSettings.from_sources()
+    assert settings.os_reflection_max_per_run == 5
+    assert settings.os_reflection_max_per_step == 3
+
+    monkeypatch.setenv("LENGRVIS_OS_REFLECTION_MAX_PER_RUN", "0")
+    overridden = AppSettings.from_sources()
+    assert overridden.os_reflection_max_per_run == 0
+    assert overridden.os_reflection_max_per_step == 3
+
+
 def test_env_values_override_yaml(monkeypatch, tmp_path: Path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("llm:\n  llm_api_max_retries: 0\n", encoding="utf-8")
@@ -60,9 +89,11 @@ def test_default_jwt_secret_is_reused_across_config_reloads(monkeypatch, tmp_pat
     first = AppSettings.from_sources()
     second = AppSettings.from_sources()
 
+    from app.security.local_secret import read_local_secret
+
     assert first.jwt_secret == second.jwt_secret
     assert first.jwt_secret
-    assert (data_dir / "mobile_jwt.secret").read_text(encoding="utf-8").strip() == first.jwt_secret
+    assert read_local_secret(data_dir / "mobile_jwt.secret") == first.jwt_secret
 
 
 def test_env_jwt_secret_overrides_local_secret(monkeypatch, tmp_path: Path):
