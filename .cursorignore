@@ -1,0 +1,5 @@
+﻿# vendor/lengrvis-code is an independent repository (see .gitignore). Keeping it
+# out of the agent workspace decouples its AGENTS.md/CLAUDE.md from this
+# project's always-apply rules and stops vendor file volume from dominating
+# editor tooling. Remove this entry temporarily if vendor code must be inspected.
+vendor/lengrvis-code/

@@ -29,7 +29,7 @@
   "devDependencies": {
     "@types/react": "^19.2.15",
     "eas-cli": "^20.1.0",
-    "typescript": "^6.0.3"
+    "typescript": "~5.9.3"
   },
   "overrides": {
     "@xmldom/xmldom": "0.8.13",
