@@ -3,9 +3,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.services import document_intelligence_service as svc
 from app.tools import document_tools
 from app.tools.registry import ToolRegistry
+
+
+@pytest.fixture(autouse=True)
+def _force_builtin_parser(monkeypatch):
+    """Make these contract tests deterministic across environments.
+
+    CI installs docling/unstructured from the resolved lock while developer
+    machines may not have them; both must exercise the builtin fallback
+    semantics asserted below.
+    """
+
+    def _unavailable(_path: Path):
+        raise svc.AdvancedParserUnavailable("heavy parser disabled for builtin-contract tests")
+
+    monkeypatch.setattr(svc, "_parse_with_docling", _unavailable)
+    monkeypatch.setattr(svc, "_parse_with_unstructured", _unavailable)
 
 
 class _StubProvider:
