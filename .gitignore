@@ -18,6 +18,11 @@ vendor/ollama/
 vendor/ollama-models/
 vendor/ollama-bundle-manifest.json
 
+# vendor/lengrvis-code now lives as an independent git repository (repo slimming).
+# Clone/restore it locally when the Lengrvis Code integration is needed; convert
+# to a submodule with scripts/migrate_vendor_to_submodule.ps1 once it has a remote.
+vendor/lengrvis-code/
+
 # Local configuration and runtime data
 .env
 config.yaml

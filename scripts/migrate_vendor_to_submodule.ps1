@@ -1,14 +1,13 @@
-# Converts vendor/lengrvis-code from an in-tree copy (thousands of files, the
-# bulk of this repository) into a git submodule.
+# Converts vendor/lengrvis-code into a git submodule of this repository.
+#
+# Current state: vendor/lengrvis-code has already been exported to its own
+# standalone git repository in place (it contains a .git directory) and is
+# untracked/ignored by the main repository (.gitignore). To finish the
+# submodule conversion once a remote exists:
 #
 # Prerequisites:
-#   1. Push the current contents of vendor/lengrvis-code to its own repository
-#      first (the directory has no .git of its own; it is tracked by this repo).
-#      Example:
-#        mkdir ..\lengrvis-code-export
-#        robocopy vendor\lengrvis-code ..\lengrvis-code-export /E
-#        cd ..\lengrvis-code-export
-#        git init && git add -A && git commit -m "chore: export vendor/lengrvis-code"
+#   1. Create an empty remote repository, then push the standalone repo:
+#        cd vendor\lengrvis-code
 #        git remote add origin <vendor-repo-url> && git push -u origin main
 #   2. Run this script from a CLEAN worktree (commit or stash everything else).
 #
