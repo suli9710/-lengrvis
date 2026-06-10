@@ -1,0 +1,98 @@
+# Main CI gate (market-readiness checklist #2 golden tasks, #41 release:check-in-CI).
+# Scope: machine-verifiable dev evidence only. This gate does NOT replace
+# clean-machine RC sign-off, real-device evidence, or human result-quality review.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Repo hygiene + dependency locks
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Repo hygiene check
+        run: npm run hygiene
+      - name: Dependency lock verification
+        run: npm run deps:verify
+
+  backend:
+    name: Backend pytest + golden task gate
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-lock.txt
+            requirements-dev.txt
+      - name: Install backend dependencies (direct lock + dev)
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r backend/requirements-lock.txt -r requirements-dev.txt
+      - name: Install Playwright Chromium (browser tool tests)
+        run: python -m playwright install chromium
+      - name: Backend test suite
+        run: python -m pytest backend/tests -q --maxfail=1
+      - name: Golden task gate (>=95% pass rate report)
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1
+      - name: Upload golden task report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-tasks-report
+          path: .tmp/qa-evidence/golden-tasks/
+          if-no-files-found: ignore
+
+  desktop:
+    name: Desktop typecheck
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install desktop dependencies
+        run: npm --prefix desktop ci
+      - name: Desktop typecheck
+        run: npm --prefix desktop run typecheck
+
+  mobile:
+    name: Mobile typecheck + behavior smokes
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install mobile dependencies
+        run: npm --prefix mobile ci
+      - name: Mobile typecheck
+        run: npm --prefix mobile run typecheck
+      - name: Mobile token smoke
+        run: npm --prefix mobile run smoke:token
+      - name: Mobile task companion smoke
+        run: npm --prefix mobile run smoke:task-companion
+      - name: Mobile remote input grant smoke
+        run: npm --prefix mobile run smoke:remote-input-grant

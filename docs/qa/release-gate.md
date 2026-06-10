@@ -34,7 +34,16 @@ When dependency manifests, lockfiles, or backend requirements change, also run:
 
 ```powershell
 npm run deps:verify
+npm run audit:deps
 ```
+
+`qa:gate` already executes the golden-task regression set (`backend/tests/test_golden_tasks.py`, >=30 real tasks asserting plans, risk levels, approvals, file side effects, and tool outputs). To produce the standalone pass-rate report (95% threshold, archived under `.tmp/qa-evidence/golden-tasks/`), run:
+
+```powershell
+npm run golden:gate
+```
+
+Golden-task results are machine self-verified regression evidence only; they are not a human result-quality review, clean-machine pass, real-device pass, or RC sign-off. See `docs/qa/golden-tasks.md` for the dataset and the human review boundary.
 
 Use the top-level npm evidence helpers below as the newcomer-friendly entrypoints. They wrap the PowerShell helpers and only produce evidence/template/preflight artifacts; they are not clean-machine passes, real-device passes, public-safe/signoff, RC signoff, release signoff, or completed task-result signoff. The raw PowerShell equivalents are listed for CI logs, parameterized handoffs, and reviewers who need to trace the exact helper script.
 
@@ -65,7 +74,7 @@ Raw PowerShell equivalent:
 .\scripts\verify_android_release_gate.ps1 -PreflightOnly
 ```
 
-Preflight validates `mobile/app.json`, `mobile/eas.json`, package scripts, camera/notification permissions, `usesCleartextTraffic=false`, keyboard resize, and EAS preview/production build profiles. It emits `.tmp\android-release-gate\...\android-release-gate.redacted.json` with `status=preflight_ready_not_release` when source configuration is ready, and marks APK/device gates as not evaluated. `npm --prefix mobile run build:android:preview` and `build:android:production` must run `preflight:android-release` before EAS build. EAS project/account/credentials are external to source; if `expo.extra.eas.projectId` is not recorded, the candidate build log must still prove the redacted EAS project/build label used for the APK. This preflight is not an APK pass, install pass, WSS pass, Play submission/publication proof, or release signoff.
+Preflight validates `mobile/app.json`, `mobile/eas.json`, package scripts, local `eas-cli` devDependency, camera/notification permissions, `usesCleartextTraffic=false`, keyboard resize, the Android remote-control hardening plugin, and EAS preview/production build profiles. The hardening plugin must inject `network_security_config` with system/user trust anchors for explicitly installed local CA testing while keeping cleartext disabled, and must add Android `FLAG_SECURE` to protect remote-screen screenshots and recent-task snapshots. The preflight emits `.tmp\android-release-gate\...\android-release-gate.redacted.json` with `status=preflight_ready_not_release` when source configuration is ready, and marks APK/device gates as not evaluated. `npm --prefix mobile run build:android:preview` and `build:android:production` must run `preflight:android-release` before EAS build and use the repository-pinned EAS CLI instead of a global `eas` command. EAS project/account/credentials are external to source; if `expo.extra.eas.projectId` is not recorded, the candidate build log must still prove the redacted EAS project/build label used for the APK. This preflight is not an APK pass, install pass, WSS pass, Play submission/publication proof, or release signoff.
 
 For a strict Android claim, run:
 

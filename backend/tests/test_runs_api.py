@@ -63,7 +63,7 @@ def _wait_for_run_inactive(run_id: str) -> None:
 def test_run_api_routes_developer_engine_and_replays_events(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
-    fake_cli = tmp_path / "fake_claude_success.py"
+    fake_cli = tmp_path / "fake_lengrvis_success.py"
     fake_cli.write_text(
         """
 from __future__ import annotations
@@ -90,7 +90,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 """.lstrip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("LENGRVIS_CLAUDE_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
+    monkeypatch.setenv("LENGRVIS_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
     monkeypatch.setenv("LENGRVIS_API_KEY", "test-api-key")
     monkeypatch.setenv("LENGRVIS_MODEL", "openai/gpt-5")
     db.init_db()
@@ -1126,13 +1126,13 @@ def test_cancelled_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, 
         assert "run.completed" not in names
 
 
-def test_developer_cancel_terminates_fake_claude_and_publishes_diagnostics(monkeypatch, tmp_path):
+def test_developer_cancel_terminates_fake_lengrvis_and_publishes_diagnostics(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_API_KEY", "test-api-key")
     monkeypatch.setenv("LENGRVIS_MODEL", "openai/gpt-5")
-    record_path = tmp_path / "fake-claude-started.json"
-    fake_cli = tmp_path / "fake_claude_sleep.py"
+    record_path = tmp_path / "fake-lengrvis-started.json"
+    fake_cli = tmp_path / "fake_lengrvis_sleep.py"
     fake_cli.write_text(
         """
 from __future__ import annotations
@@ -1158,7 +1158,7 @@ parser.add_argument("--allowedTools")
 parser.add_argument("prompt")
 args = parser.parse_args()
 
-Path(os.environ["FAKE_CLAUDE_RECORD"]).write_text(json.dumps({"argv": sys.argv[1:]}), encoding="utf-8")
+Path(os.environ["FAKE_LENGRVIS_RECORD"]).write_text(json.dumps({"argv": sys.argv[1:]}), encoding="utf-8")
 print(json.dumps({"type": "system", "subtype": "init", "tools": args.allowedTools.split(",")}), flush=True)
 
 def handle_signal(signum, frame):
@@ -1170,8 +1170,8 @@ time.sleep(30)
 """.lstrip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("FAKE_CLAUDE_RECORD", str(record_path))
-    monkeypatch.setenv("LENGRVIS_CLAUDE_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
+    monkeypatch.setenv("FAKE_LENGRVIS_RECORD", str(record_path))
+    monkeypatch.setenv("LENGRVIS_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
     db.init_db()
 
     with TestClient(_test_app()) as client:
@@ -1195,14 +1195,14 @@ time.sleep(30)
             timeline = client.get(f"/api/runs/{created['run_id']}/timeline").json()
             tool_results = [event for event in timeline["events"] if event["name"] == "tool.result"]
             if any(
-                event["payload"].get("tool_name") == "claude_code"
+                event["payload"].get("tool_name") == "lengrvis_code"
                 and event["payload"].get("output", {}).get("cancelled") is True
                 for event in tool_results
             ):
                 break
             time.sleep(0.05)
         else:
-            raise AssertionError("cancelled Claude Code tool.result was not published")
+            raise AssertionError("cancelled Lengrvis Code tool.result was not published")
 
 
 def test_paused_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, tmp_path):

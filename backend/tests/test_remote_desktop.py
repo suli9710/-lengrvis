@@ -23,6 +23,10 @@ from app.services import mobile_pairing_service, remote_desktop_service
 from app.services.settings_service import update_settings
 from app.tools.registry import register_all_tools
 
+REMOTE_WS_RETRY_CLOSE_CODE = 1012
+REMOTE_WS_AUTH_CLOSE_CODE = 4401
+REMOTE_WS_GRANT_CLOSE_CODE = 4403
+
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -106,6 +110,19 @@ def test_capture_screen_returns_base64(monkeypatch: pytest.MonkeyPatch):
     assert image.startswith("/9j/")
 
 
+def test_capture_screen_frame_includes_virtual_desktop_origin(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (1600, 900), "red"))
+    monkeypatch.setattr(remote_desktop_service, "_virtual_screen_origin", lambda: (-1920, -120))
+
+    frame = remote_desktop_service.capture_screen_frame()
+
+    assert frame.original_width == 1600
+    assert frame.original_height == 900
+    assert frame.screen_origin_x == -1920
+    assert frame.screen_origin_y == -120
+
+
 def test_remote_tools_require_approval():
     registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
 
@@ -149,7 +166,7 @@ def test_remote_disabled_by_default():
         ):
             raise AssertionError("Remote desktop WebSocket should be disabled by default")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
 
 
 def test_remote_view_token_cannot_open_remote_screen_after_remote_desktop_disabled(monkeypatch: pytest.MonkeyPatch):
@@ -166,7 +183,7 @@ def test_remote_view_token_cannot_open_remote_screen_after_remote_desktop_disabl
         ):
             raise AssertionError("Remote view token should not open screen after remote desktop is disabled")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
 
 
 def test_mobile_approval_token_cannot_open_remote_screen():
@@ -180,7 +197,7 @@ def test_mobile_approval_token_cannot_open_remote_screen():
         ):
             raise AssertionError("Approval-scoped token should not open remote screen")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_remote_input_scope_cannot_open_remote_screen():
@@ -195,7 +212,7 @@ def test_remote_input_scope_cannot_open_remote_screen():
         ):
             raise AssertionError("Remote input token should not open remote screen")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_remote_view_scope_cannot_open_remote_input():
@@ -210,7 +227,7 @@ def test_remote_view_scope_cannot_open_remote_input():
         ):
             raise AssertionError("Remote view token should not open remote input")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_mobile_approval_token_cannot_open_remote_input():
@@ -224,7 +241,7 @@ def test_mobile_approval_token_cannot_open_remote_input():
         ):
             raise AssertionError("Approval-scoped token should not open remote input")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_plain_remote_input_scope_without_grant_cannot_open_remote_input():
@@ -244,12 +261,13 @@ def test_plain_remote_input_scope_without_grant_cannot_open_remote_input():
         ):
             raise AssertionError("Remote input scope without a grant should not open remote input")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_remote_view_scope_can_open_remote_screen(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (100, 100), "blue"))
+    monkeypatch.setattr(remote_desktop_service, "_virtual_screen_origin", lambda: (-1920, -120))
     client = TestClient(_test_app())
     token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
 
@@ -261,6 +279,8 @@ def test_remote_view_scope_can_open_remote_screen(monkeypatch: pytest.MonkeyPatc
         frame = websocket.receive_json()
         assert frame["type"] == "frame"
         assert frame["sequence"] == 1
+        assert frame["screen_origin_x"] == -1920
+        assert frame["screen_origin_y"] == -120
 
 
 def test_pairing_token_with_mobile_and_remote_view_scope_can_open_remote_screen(monkeypatch: pytest.MonkeyPatch):
@@ -288,6 +308,7 @@ def test_pairing_token_with_mobile_and_remote_view_scope_can_open_remote_screen(
 def test_remote_screen_sends_next_frame_after_ack(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (100, 100), "blue"))
+    monkeypatch.setattr(remote_desktop_service, "_virtual_screen_origin", lambda: (-1920, -120))
     client = TestClient(_test_app())
     token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
 
@@ -305,6 +326,8 @@ def test_remote_screen_sends_next_frame_after_ack(monkeypatch: pytest.MonkeyPatc
 
     assert second["type"] == "frame"
     assert second["sequence"] == 2
+    assert second["screen_origin_x"] == -1920
+    assert second["screen_origin_y"] == -120
 
 
 def test_remote_screen_rejects_query_token(monkeypatch: pytest.MonkeyPatch):
@@ -317,7 +340,7 @@ def test_remote_screen_rejects_query_token(monkeypatch: pytest.MonkeyPatch):
         with client.websocket_connect(f"/ws/remote/screen?token={token}"):
             raise AssertionError("Remote screen should reject URL query tokens")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_AUTH_CLOSE_CODE
 
 
 def test_remote_input_rejects_query_token():
@@ -329,7 +352,7 @@ def test_remote_input_rejects_query_token():
         with client.websocket_connect(f"/ws/remote/input?token={token}"):
             raise AssertionError("Remote input should reject URL query tokens")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_AUTH_CLOSE_CODE
 
 
 def test_remote_view_scope_can_open_remote_screen_with_token_subprotocol(monkeypatch: pytest.MonkeyPatch):
@@ -465,7 +488,7 @@ def test_revoked_remote_view_token_cannot_open_remote_screen(monkeypatch: pytest
         ):
             raise AssertionError("Revoked token should not open remote screen")
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_AUTH_CLOSE_CODE
 
 
 def test_connected_remote_screen_closes_after_device_revoked(monkeypatch: pytest.MonkeyPatch):
@@ -488,7 +511,7 @@ def test_connected_remote_screen_closes_after_device_revoked(monkeypatch: pytest
                 close_code = exc.code
                 break
 
-    assert close_code == 1008
+    assert close_code == REMOTE_WS_AUTH_CLOSE_CODE
 
 
 def test_connected_remote_screen_closes_after_token_expires(monkeypatch: pytest.MonkeyPatch):
@@ -514,7 +537,7 @@ def test_connected_remote_screen_closes_after_token_expires(monkeypatch: pytest.
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_AUTH_CLOSE_CODE
 
 
 def test_connected_remote_screen_closes_after_remote_desktop_disabled(monkeypatch: pytest.MonkeyPatch):
@@ -535,7 +558,7 @@ def test_connected_remote_screen_closes_after_remote_desktop_disabled(monkeypatc
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
 
 
 def test_input_events_audited(monkeypatch: pytest.MonkeyPatch):
@@ -1182,7 +1205,7 @@ def test_connected_remote_input_closes_after_grant_revoked(monkeypatch: pytest.M
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_idle_remote_input_closes_after_grant_revoked(monkeypatch: pytest.MonkeyPatch):
@@ -1208,7 +1231,7 @@ def test_idle_remote_input_closes_after_grant_revoked(monkeypatch: pytest.Monkey
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_connected_remote_input_closes_after_grant_expires(monkeypatch: pytest.MonkeyPatch):
@@ -1235,7 +1258,7 @@ def test_connected_remote_input_closes_after_grant_expires(monkeypatch: pytest.M
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_connected_remote_input_closes_after_token_expires(monkeypatch: pytest.MonkeyPatch):
@@ -1271,7 +1294,7 @@ def test_connected_remote_input_closes_after_token_expires(monkeypatch: pytest.M
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_AUTH_CLOSE_CODE
 
 
 def test_idle_remote_input_closes_after_token_expires(monkeypatch: pytest.MonkeyPatch):
@@ -1306,7 +1329,7 @@ def test_idle_remote_input_closes_after_token_expires(monkeypatch: pytest.Monkey
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_AUTH_CLOSE_CODE
 
 
 def test_idle_remote_input_closes_after_remote_desktop_disabled(monkeypatch: pytest.MonkeyPatch):
@@ -1332,4 +1355,4 @@ def test_idle_remote_input_closes_after_remote_desktop_disabled(monkeypatch: pyt
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE

@@ -41,7 +41,7 @@ Evidence boundary for parity claims: helper and preflight commands keep the prod
 
 ## Differentiated Positioning
 
-Lengrvis should not be positioned as a replacement for Marvis, Copilot, ChatGPT Agent, Claude Code, Manus, or Genspark. The credible lane is:
+Lengrvis should not be positioned as a replacement for Marvis, Copilot, ChatGPT Agent, Anthropic's developer agent, Manus, or Genspark. The credible lane is:
 
 1. **本机 OS agent**: focus on the user's own Windows files, apps, settings, browser, approvals, and remote desktop, not a cloud-only workspace.
 2. **可审计**: every meaningful local-state change should have risk level, preview, approval, audit event, and rollback/handoff thinking.

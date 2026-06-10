@@ -8,7 +8,7 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus
-from app.orchestration.claude_code_config import ClaudeCodeConfig, default_allowed_tools
+from app.orchestration.lengrvis_code_config import LengrvisCodeConfig, default_allowed_tools
 from app.orchestration.developer_engine import DeveloperExecutionEngine
 from app.orchestration.engine_router import EngineRouter, configured_default_engine, configured_max_turns, route_engine
 from app.orchestration.execution_engine import InMemoryRunStore
@@ -85,8 +85,8 @@ def test_default_engine_env_keeps_legacy_agent_loop_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_developer_engine_run_turn_uses_claude_code_adapter(tmp_path) -> None:
-    fake_cli = tmp_path / "fake_claude.py"
+async def test_developer_engine_run_turn_uses_lengrvis_code_adapter(tmp_path) -> None:
+    fake_cli = tmp_path / "fake_lengrvis.py"
     fake_cli.write_text(
         """
 from __future__ import annotations
@@ -107,8 +107,8 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
             model="openai/gpt-5",
         ),
         store=store,
-        claude_code_config=ClaudeCodeConfig(command=(sys.executable, "-u", str(fake_cli)), max_turns=2),
-        use_claude_code=True,
+        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-u", str(fake_cli)), max_turns=2),
+        use_lengrvis_code=True,
     )
 
     state = await engine.start_run("inspect goal-token implementation", "efficiency", "developer")
@@ -118,22 +118,22 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
     assert result.state.phase == RunPhase.COMPLETED
     assert result.state.current_plan["writes_enabled"] is False
     assert result.state.current_plan["allowed_tools"] == list(default_allowed_tools())
-    assert result.outputs["claude_code"]["ok"] is True
-    assert result.outputs["claude_code"]["tool_events"][0]["name"] == "Read"
-    assert result.state.observations[0].source == "claude_code.stream_json"
+    assert result.outputs["lengrvis_code"]["ok"] is True
+    assert result.outputs["lengrvis_code"]["tool_events"][0]["name"] == "Read"
+    assert result.state.observations[0].source == "lengrvis_code.stream_json"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("unsafe_tool", ["Edit", "Agent"])
 async def test_developer_engine_rejects_write_capable_tools_before_launch(tmp_path, monkeypatch, unsafe_tool: str) -> None:
-    async def fail_run_claude_code(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
+    async def fail_run_lengrvis_code(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
         raise AssertionError("unsafe developer tool allowlists must be rejected before launch")
 
-    monkeypatch.setattr("app.orchestration.developer_engine.run_claude_code", fail_run_claude_code)
+    monkeypatch.setattr("app.orchestration.developer_engine.run_lengrvis_code", fail_run_lengrvis_code)
     engine = DeveloperExecutionEngine(
         settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
         store=InMemoryRunStore(),
-        claude_code_config=ClaudeCodeConfig(command=(sys.executable, "-c", "print('should not run')"), allowed_tools=("Read", unsafe_tool)),
+        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('should not run')"), allowed_tools=("Read", unsafe_tool)),
     )
 
     state = await engine.start_run("edit repository files", "efficiency", "developer")
@@ -142,9 +142,9 @@ async def test_developer_engine_rejects_write_capable_tools_before_launch(tmp_pa
     assert state.phase == RunPhase.FAILED
     assert state.current_plan["allowed_tools"] == []
     assert state.current_plan["writes_enabled"] is False
-    assert state.current_plan["claude_code_enabled"] is False
+    assert state.current_plan["lengrvis_code_enabled"] is False
     assert state.current_plan["steps"][0]["status"] == "failed"
-    assert "Unsafe Claude Code allowedTools" in state.current_plan["safety_error"]
+    assert "Unsafe Lengrvis Code allowedTools" in state.current_plan["safety_error"]
     assert result.finished is True
     assert result.state.phase == RunPhase.FAILED
     assert result.message == "Run is already failed."
@@ -153,10 +153,10 @@ async def test_developer_engine_rejects_write_capable_tools_before_launch(tmp_pa
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", [RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED, RunPhase.DENIED])
 async def test_developer_engine_does_not_execute_non_executable_phases(tmp_path, monkeypatch, phase) -> None:
-    async def fail_run_claude_code(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
-        raise AssertionError("non-executable developer phases must not invoke Claude Code")
+    async def fail_run_lengrvis_code(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
+        raise AssertionError("non-executable developer phases must not invoke Lengrvis Code")
 
-    monkeypatch.setattr("app.orchestration.developer_engine.run_claude_code", fail_run_claude_code)
+    monkeypatch.setattr("app.orchestration.developer_engine.run_lengrvis_code", fail_run_lengrvis_code)
     engine = DeveloperExecutionEngine(
         settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
         store=InMemoryRunStore(),

@@ -16,6 +16,7 @@ const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 function withAndroidNetworkSecurityConfig(config) {
   config = withAndroidManifest(config, (modConfig) => {
     const mainApplication = AndroidConfig.Manifest.getMainApplicationOrThrow(modConfig.modResults);
+    mainApplication.$["android:allowBackup"] = "false";
     mainApplication.$["android:networkSecurityConfig"] = "@xml/network_security_config";
     mainApplication.$["android:usesCleartextTraffic"] = "false";
     return modConfig;

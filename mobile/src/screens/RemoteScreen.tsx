@@ -92,6 +92,8 @@ interface ScreenFrame {
   height: number;
   originalWidth: number;
   originalHeight: number;
+  screenOriginX: number;
+  screenOriginY: number;
 }
 
 interface TransportNotice {
@@ -355,6 +357,8 @@ export function RemoteScreen({
             height: payload.height,
             originalWidth: payload.original_width,
             originalHeight: payload.original_height,
+            screenOriginX: finiteIntegerOrZero(payload.screen_origin_x),
+            screenOriginY: finiteIntegerOrZero(payload.screen_origin_y),
           };
           scheduleFrameRender();
           return;
@@ -1101,6 +1105,10 @@ function zoomRemoteViewerSurface(
     width: surface.width * factor,
     height: surface.height * factor,
   };
+}
+
+function finiteIntegerOrZero(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 0;
 }
 
 function readableStreamConnectionError(error: unknown): string {

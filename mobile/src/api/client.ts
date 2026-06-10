@@ -173,6 +173,8 @@ export type RemoteScreenEvent =
       height: number;
       original_width: number;
       original_height: number;
+      screen_origin_x?: number;
+      screen_origin_y?: number;
     }
   | { type: "error"; message: string };
 

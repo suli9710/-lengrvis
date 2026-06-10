@@ -28,7 +28,6 @@ const viewKeys = new Set<ViewKey>([
   "files",
   "computer",
   "agents",
-  "agentOps",
   "browser",
   "memories",
   "safety",

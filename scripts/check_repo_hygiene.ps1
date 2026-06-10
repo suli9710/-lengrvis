@@ -28,8 +28,8 @@ $blockedPathspecs = @(
     "desktop/xiaoma-office*.png",
     "tmp-office-review/",
     "desktop/tmp-office-review/",
-    "UsersSuliAppDataLocalTempClaude-Code-review",
-    "UsersSuliAppDataLocalTempClaude-Code-review/"
+    "UsersSuliAppDataLocalTempLengrvis-Code-review",
+    "UsersSuliAppDataLocalTempLengrvis-Code-review/"
 )
 
 $trackedArtifacts = & git -C $resolvedRoot ls-files -- $blockedPathspecs

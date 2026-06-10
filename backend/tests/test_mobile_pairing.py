@@ -40,6 +40,8 @@ from app.services.settings_service import update_settings
 from app.tools.registry import register_all_tools
 from tls_test_material import write_lan_tls_material
 
+REMOTE_WS_GRANT_CLOSE_CODE = 4403
+
 
 def test_pair_request_generates_code(monkeypatch, tmp_path):
     cert, key = write_lan_tls_material(tmp_path)
@@ -1996,7 +1998,7 @@ def test_remote_input_grant_full_websocket_lifecycle(monkeypatch, tmp_path):
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 input_websocket.receive_json()
 
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == REMOTE_WS_GRANT_CLOSE_CODE
 
 
 def test_mobile_websocket_filters_other_device_remote_input_grant_revoked(monkeypatch, tmp_path):
@@ -3063,7 +3065,7 @@ def _run_mobile_jwt_subprocess(script: str, data_dir: Path, extra_env: dict[str,
         env.update(extra_env)
     return subprocess.check_output(
         [sys.executable, "-c", script],
-        cwd=Path(__file__).resolve().parents[2],
+        cwd=Path(__file__).resolve().parents[1],
         env=env,
         text=True,
     ).strip()

@@ -12,6 +12,8 @@ export interface RemoteFrameGeometry {
   height: number;
   originalWidth: number;
   originalHeight: number;
+  screenOriginX?: number;
+  screenOriginY?: number;
 }
 
 export interface RemoteInputGrantDisplayStatus {
@@ -148,9 +150,11 @@ export function mapViewerPointToRemote(
   const localY = y - offsetY;
   if (localX < 0 || localY < 0 || localX > renderedWidth || localY > renderedHeight) return null;
 
+  const frameX = clamp(Math.floor((localX / renderedWidth) * frame.originalWidth), 0, frame.originalWidth - 1);
+  const frameY = clamp(Math.floor((localY / renderedHeight) * frame.originalHeight), 0, frame.originalHeight - 1);
   return {
-    x: clamp(Math.floor((localX / renderedWidth) * frame.originalWidth), 0, frame.originalWidth - 1),
-    y: clamp(Math.floor((localY / renderedHeight) * frame.originalHeight), 0, frame.originalHeight - 1),
+    x: finiteIntegerOrZero(frame.screenOriginX) + frameX,
+    y: finiteIntegerOrZero(frame.screenOriginY) + frameY,
   };
 }
 
@@ -160,4 +164,8 @@ function isPositiveFinite(value: number): boolean {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function finiteIntegerOrZero(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 0;
 }

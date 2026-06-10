@@ -802,7 +802,10 @@ class OSExecutionEngine(ExecutionEngine):
 
         goal_review = orchestrator.safety.review_goal(task.id, task.user_goal)
         if goal_review.verdict.value == "deny":
-            orchestrator._set_status(task, TaskStatus.DENIED, final_summary=goal_review.safe_alternative)
+            denial_summary = "; ".join(
+                part for part in [*goal_review.reasons, goal_review.safe_alternative] if part
+            ) or "Forbidden intent detected."
+            orchestrator._set_status(task, TaskStatus.DENIED, final_summary=denial_summary)
             return Plan(task_id=task.id, goal=task.user_goal, steps=[])
 
         memory_context = await orchestrator._recall_memory(task.user_goal)
