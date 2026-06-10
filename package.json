@@ -10,6 +10,8 @@
     "deps:verify": "npm run hygiene && powershell -ExecutionPolicy Bypass -File ./scripts/verify_dependency_locks.ps1",
     "build": "powershell -ExecutionPolicy Bypass -File ./scripts/build.ps1",
     "qa:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/test.ps1 -- --maxfail=1 && npm --prefix desktop run smoke",
+    "golden:gate": "powershell -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1",
+    "audit:deps": "powershell -ExecutionPolicy Bypass -File ./scripts/run_dependency_audit.ps1",
     "release:safety": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_release_safety.ps1",
     "release:quick": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
     "release:check": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45",

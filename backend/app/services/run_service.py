@@ -244,9 +244,9 @@ def cancel_run(run_id: str) -> Run:
     _cancel_persisted_state(run)
     if run.engine == RunEngine.DEVELOPER:
         try:
-            from app.orchestration.claude_code_runner import cancel_claude_code_run
+            from app.orchestration.lengrvis_code_runner import cancel_lengrvis_code_run
 
-            _schedule_background(cancel_claude_code_run(run.id), data_dir=_run_data_dir(run))
+            _schedule_background(cancel_lengrvis_code_run(run.id), data_dir=_run_data_dir(run))
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to schedule developer run cancellation for %s: %s", run.id, exc, exc_info=True)
     if run.task_id:
@@ -782,13 +782,15 @@ def _phase_for_task(task: Any) -> RunPhase:
 
 def _phase_for_task_plan(task: Any, plan: Plan | None) -> RunPhase:
     phase = _phase_for_task(task)
-    if phase != RunPhase.CANCELLED or plan is None:
+    if phase != RunPhase.CANCELLED:
         return phase
     summary = (getattr(task, "final_summary", "") or "").casefold()
     if "cancel" in summary or "rejected" in summary:
         return RunPhase.CANCELLED
     if "deny" in summary or "denied" in summary or "forbidden" in summary or "safety" in summary:
         return RunPhase.DENIED
+    if plan is None:
+        return RunPhase.CANCELLED
     if plan.global_risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF:
         return RunPhase.DENIED
     if any(step.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF for step in plan.steps):

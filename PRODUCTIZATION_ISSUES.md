@@ -27,6 +27,21 @@
 
 ## P0 发布门禁与验收
 
+- [x] **建立黄金任务 E2E 回归集并纳入发布门禁。**
+  - 证据：`test_data/golden_tasks/golden_tasks.json`（≥30 条真实任务，覆盖 system/cleanup/approval/safety/file/document/chat/files_api 八类）+ `backend/tests/test_golden_tasks.py`（2026-06-10 本地 `34 passed`，含数据集完整性守护）。断言对象是关键产物而非返回码：计划工具序列、全局风险等级、审批数量、审批前后文件副作用、工具输出结构（诊断字段/重复组/摘要 note/引用数）、R4 拒绝与 `SecurityError` 越权边界。套件位于 `backend/tests` 下，`qa:gate`/`release:check` 自动执行；`npm run golden:gate` 产出通过率报告（`.tmp/qa-evidence/golden-tasks/golden-tasks-report.json`，阈值 95%）。
+  - 修复：建套件时发现 goal 级安全拒绝（如"读取浏览器保存的密码"）在 run 相位上显示为 `cancelled` 而非 `denied`（`TaskStatus.DENIED` 落库为 cancelled 且 goal 拒绝路径无 plan 可供升级)；已修正 `os_execution_engine._create_reviewed_plan` 的拒绝摘要与 `run_service._phase_for_task_plan` 的 plan-None 短路，并由黄金任务 `gt-run-deny-*` 锁住回归。同日全量 backend pytest 本地复跑 `1566 passed, 1 skipped`（dirty workspace 开发证据）。
+  - 边界：本套件用 MockProvider/确定性规划器/extractive fallback 离线运行，是机器自证版本回归证据；不证明真实 LLM 结果质量，不等同真人评分、clean-machine、真机或 RC sign-off。真人结果质量基线（成功率≥90%、返工≤10%、签字归档）仍为开放项，流程见 `docs/qa/golden-tasks.md` 与 `npm run evidence:result-quality-review`。
+
+- [x] **修复 Android release gate 脚本在 PowerShell 7（含 preview）父进程下的可移植性缺陷。**
+  - 证据：`scripts/verify_android_release_gate.ps1` 此前依赖 `Get-FileHash` 与模块自动加载；当父进程是 pwsh 7 时 PSModulePath 被前置 7.x 模块目录污染，Windows PowerShell 5.1 子进程无法解析 `Microsoft.PowerShell.Utility`（Get-FileHash/ConvertTo-Json 缺失），严格 gate 在写出 redacted packet 之前崩溃，`backend/tests/test_android_release_gate.py` 与 `test_start_app_script.py` 共 2 项失败。已改为 .NET SHA256 哈希并在 Desktop edition 下显式从 `$PSHOME` 导入 Utility/Management；2026-06-10 本地定向重跑 3 passed，全量 backend `1566 passed, 1 skipped`。
+  - 附带约定：`scripts/*.ps1` 必须保持 ASCII/英文注释（仓库 ps1 为 UTF-8 无 BOM，Windows PowerShell 5.1 会按 ANSI 解析多字节注释并吞掉换行导致语法错误）。
+  - 边界：这是开发机修复与回归证据，不替代 clean-machine 安装验收或真机 Android gate 证据。
+
+- [x] **补齐依赖漏洞扫描入口与安全披露文档。**
+  - 证据：根目录 `SECURITY.md`（报告渠道、响应 SLA、高优先级攻击面、协同披露）；`npm run audit:deps`（desktop/mobile `npm audit --audit-level=high` + backend `pip-audit -r requirements-lock.txt`，任一高危或 pip-audit 缺失即非零退出，可用 `-SkipPython` 显式记录 waiver）。
+  - CI 接入：2026-06-10 新增 `.github/workflows/security-audit.yml`（每周一定时 + 手动触发跑 `audit:deps`）与 `.github/workflows/ci.yml`（push/PR 跑 hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck、mobile behavior smokes）。两个 workflow 已通过 YAML 解析校验，但**尚未在 GitHub 上发生首次绿色运行**；在首次远端运行通过之前，只能写成"CI 配置已提交"，不能写成"CI 已上线/门禁已生效"。
+  - 边界：这是 SCA 入口与流程文档，不等同第三方渗透测试或外部安全背书。
+
 - [x] **补齐 P0 gate：mobile remote-input grant smoke 必须进入统一门禁。**
   - 证据：`docs/qa/e2e-acceptance-matrix.md` 把 `npm --prefix mobile run smoke:remote-input-grant` 列为 E2E-006 P0，并把 `npm --prefix mobile run smoke:task-companion` 列入 E2E-010 移动伴侣验收；`scripts/run_tests.ps1`、根目录 `qa:gate` 和 `docs/qa/release-gate.md` 已纳入 mobile typecheck、`smoke:token`、`smoke:task-companion` 与 `smoke:remote-input-grant`。
   - 影响：发布流程会漏掉“远控输入授权边界”这类核心跨端能力，门禁名义上严肃，实际像纸糊的。
@@ -104,7 +119,7 @@
   - 验收：首屏已提供 5 个任务模板：整理下载目录、总结本地文档、查找大文件、检查电脑状态、文档问答；每个模板展示本机处理、云端边界、审批、回滚、预计耗时。
 
 - [ ] **补齐自然语言结果质量与 Task Workspace 证据。**
-  - 证据：portable smoke 已证明 `帮我检查这台电脑` 能在 packaged renderer 里触发 `/api/runs`，并生成后端只读系统诊断任务证据；first-launch smoke 也覆盖 Task Workspace 的只读边界。
+  - 证据：portable smoke 已证明 `帮我检查这台电脑` 能在 packaged renderer 里触发 `/api/runs`，并生成后端只读系统诊断任务证据；first-launch smoke 也覆盖 Task Workspace 的只读边界。2026-06-10 起黄金任务回归集（`backend/tests/test_golden_tasks.py`，≥30 条）进一步锁住自然语言任务的路由、风险分级、审批与产物契约（机器自证）。
   - 剩余缺口：这还不是用户可读成果质量签收，也不证明 Task Workspace 已展示可复核的结果摘要、下一步、成果物或失败行动建议；不能把 submission/task evidence 写成 completed task-result、result quality review 或 RC sign-off。
   - 验收：候选版本必须在 Task Workspace 中展示一个自然语言只读任务的可读结果、来源/系统诊断边界、无写入副作用、下一步或成果物，并记录人工结果质量结论；失败路径必须给出用户可执行的下一步。
 
@@ -133,6 +148,10 @@
 
 ## P1 文档、品牌、竞品叙事
 
+- [x] **补齐面向用户与商业化的文档批次（2026-06-10）。**
+  - 证据：`docs/user-guide.md`（安装到首个任务的快速上手 + FAQ + 故障排查，覆盖 5 个首屏模板、模型三档、手机配对、诊断包导出）；`docs/legal/privacy-policy-draft.md` 与 `docs/legal/eula-draft.md`（基于真实产品行为起草，**显式标注 DRAFT/未经法务定稿不得对外发布**）；`docs/business/pricing.md`（Free/Pro/Team 三档，高风险远控绑定付费层+强审批，标注 entitlement/license/支付通道均未实现）；`docs/business/target-segment.md`（定位一页纸：首选隐私敏感专业用户，3 条差异化主张，标注用户访谈未做）。
+  - 边界：用户手册描述的是当前 dirty workspace 行为，候选版本发布前需按包内实际行为复核；法务两份是草稿不是可发布法务文件；定价/定位是内部定稿，对外投放前需访谈与市场验证。
+
 - [x] **清理旧品牌/竞品名残留。**
   - 扫描证据：`rg -n -i "mavris|marvis"` 仅剩竞品引用、旧 env prefix 拒绝测试和本条白名单说明；`rg --files | rg -i "mavris|marvis"` 无文件名命中。
   - 用户可见文案：README、启动脚本、package/mobile manifest/display name 未命中旧名，当前显示名统一为 Lengrvis。
@@ -157,7 +176,7 @@
 | 腾讯 Marvis | Win/macOS/Android 分发、本地模式、手机接管、AI 图库/文档库 | 跨端分发弱，本地模型不是开箱即用，图库/文档库消费体验不够顺 | Windows + Android demo path；隐私模式一键安装；手机审批/只读查看任务 | demo script 录屏、local model smoke、mobile companion flow |
 | Microsoft Copilot+ PC | OS 原生入口、agent workspace、硬件/安全叙事 | 没有用户一眼看懂的任务隔离空间，Windows 入口不够产品化 | Task Workspace、Manifest、时间线回放、文件右键/通知轻入口 | workspace 截图、审计事件、Explorer 入口 smoke |
 | ChatGPT Agent / Operator | 云端虚拟电脑、connectors、可暂停/接管、成果产出 | 任务运行中协作弱，结果区不像交付物，connector 生态弱 | 成果区、下一步按钮、Skill sample、浏览器/文档 demo | template demo path、Skill sample、document citation |
-| Claude Code / Computer Use | 开发者工作流、移动路由、权限/差异预览 | 手机不能完整续写任务，审批缺规则记忆/替代建议 | 手机发起/续写、审批 preview、follow-up、暂停/取消 | mobile task create/follow-up tests、approval replay |
+| Lengrvis Code / Computer Use | 开发者工作流、移动路由、权限/差异预览 | 手机不能完整续写任务，审批缺规则记忆/替代建议 | 手机发起/续写、审批 preview、follow-up、暂停/取消 | mobile task create/follow-up tests、approval replay |
 | Manus / Genspark | 模板工作台、Slides/Sheets/Docs 成果包装 | 首页模板仍需向导化，产出库和导出成果不足 | 5 个任务向导、清理计划/摘要/表格成果区、导出路径说明 | browser smoke、demo-script、成果区截图 |
 
 - [x] **补齐截图、录屏、演示脚本。**
@@ -167,6 +186,11 @@
   - 验收：`docs/demo-script.md` 已包含 60 秒、3 分钟、10 分钟三档演示脚本；每档有准备数据、失败兜底、预期画面。
 
 ## P2 工程交付卫生
+
+- [x] **清理根目录重复 `/app` 别名包。**
+  - 证据：2026-06-10 删除根目录 `/app`（原为指向 `backend/app` 的 `__path__` 别名），`pytest.ini` 的 `pythonpath` 由 `.` 改为 `backend`，import 解析直接落到 `backend/app`，结构歧义消除。`npm run hygiene` 通过；定向回归 `test_system_diagnostics.py + test_golden_tasks.py` 42 passed；同日全量 backend pytest 复跑 `1569 passed, 1 skipped`（dirty workspace 开发证据，含新增 3 项数据删除入口回归）。
+  - 附带修复：`test_mobile_pairing.py` 的 `_run_mobile_jwt_subprocess` 此前以仓库根为 cwd 启动 `python -c "from app...."` 子进程，依赖已删除的根 `/app` 别名解析；已改为 cwd=`backend`（与 pythonpath 同口径），定向重跑 `test_mobile_pairing.py` 94 passed。
+  - 剩余边界：GitHub 仓库名 `-lengrvis` 的前缀连字符仍在（重命名远端仓库是用户操作）；产品改名议题（市场化清单 #28）独立未启动。
 
 - [x] **源代码 map 策略产品化。**
   - 证据：开发 watch 仍使用 `desktop/tsconfig.node.json` 保留 source map；发布构建改用 `desktop/tsconfig.node.release.json`，`desktop/vite.config.ts` 显式 `sourcemap: false`，`desktop/electron-builder.yml` 排除 `dist/**/*.map`。
@@ -193,6 +217,8 @@
 ## 暂缓处理的安全硬化项
 
 这些不在本轮产品化清单中展开，但不能忘：
+
+- [x] PIPL/GDPR 本机数据删除入口（市场化清单 #14）：`POST /api/system/privacy/erase-local-data`（显式确认词 fail-closed），删除任务/对话/运行/录屏/审批/配对/记忆/索引/LLM 用量/感知数据与已导出诊断包，DB 执行 VACUUM；默认保留 settings 与防篡改审计链并追加 `privacy.local_data_erased` 审计事件。证据：`backend/tests/test_privacy_erase.py`（2026-06-10 本地 3 passed，覆盖确认词拒绝、内容删除+审计链保留+响应无路径/正文泄漏、include_settings 路径）。合规自查清单见 `docs/compliance/pipl-gdpr-checklist.md`。剩余缺口：桌面 UI 删除按钮、日志目录自动清理、完整用户数据导出/导入、隐私政策法务定稿与安装时同意——这些未完成前不得对外宣称 PIPL/GDPR 合规。
 
 - [x] 移动端 LAN 明文 token 与 `ws://` 传输已默认阻断：非 loopback HTTP LAN 即使传入 `allowInsecureLan` 也不能配对、恢复旧 session、调用 token-bearing mobile API，或构造 approvals/remote screen/remote input WebSocket；本地 loopback HTTP 仅保留给开发/行为 smoke。证据：2026-06-08 `npm --prefix mobile run smoke:token` 覆盖旧持久化 session 清理、stale metadata 防绕过和 API/WS 拒绝。剩余风险是系统级证书信任链和真机 HTTPS/WSS 信任路径仍需人工证据。
 - [x] 桌面 preload 通用 API 代理扩大 renderer XSS 影响面已收窄：`api.request` 会递归 clone/sanitize plain JSON data，拒绝 function、symbol、accessor、非枚举字段、危险键名、class instance、File/Blob/ArrayBuffer、稀疏数组和数组额外字段。证据：2026-06-08 `npm --prefix desktop run smoke:preload-api` 通过；主进程仍保留 endpoint/method/query/body 二次校验。

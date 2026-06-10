@@ -11,7 +11,7 @@ Lengrvis 当前最可信的市场叙事不是“全面替代某个 OS Agent”�
 
 按仓库实证，Lengrvis 的实质编排组件是 Orchestrator、Planner、Supervisor、SafetyReview、OSExecutionEngine 和 Memory；File、Document、Computer、App、Browser、Search 更准确地说是 domain shell agents，提供 owner/prompt/allowed tools 边界并共享 `act()`。正常成功路径大量依赖 deterministic fast path、PolicyEngine、ToolRuntime 和 schema validation，LLM 主要介入规划、文档 AI、失败恢复和复杂改参。这种口径比“很多个完全自主 Agent”更诚实，也更适合做安全可靠的 OS 自动化。
 
-与腾讯 Marvis、Microsoft Copilot+ PC 等发布级 OS AI 产品相比，Lengrvis 不应硬碰平台分发、端侧模型品牌和消费级图库/跨端打磨。它的可辩护差异是工程透明度和控制面：R0-R4 风险等级、路径沙盒、审批绑定、审计日志、Skill 安全审查、工具注册、上下文管理、移动审批和远程输入授权都有可读代码支撑。与 OpenAI ChatGPT Agent、Manus、Genspark 这类云端通用 Agent 相比，Lengrvis 的优势不是通用智能，而是能直接在本机 PC 上处理私域文件、系统状态、App 和审批闭环。与 Claude Code/Computer Use 相比，Lengrvis 应服务普通电脑用户，而不是主要服务代码仓库。
+与腾讯 Marvis、Microsoft Copilot+ PC 等发布级 OS AI 产品相比，Lengrvis 不应硬碰平台分发、端侧模型品牌和消费级图库/跨端打磨。它的可辩护差异是工程透明度和控制面：R0-R4 风险等级、路径沙盒、审批绑定、审计日志、Skill 安全审查、工具注册、上下文管理、移动审批和远程输入授权都有可读代码支撑。与 OpenAI ChatGPT Agent、Manus、Genspark 这类云端通用 Agent 相比，Lengrvis 的优势不是通用智能，而是能直接在本机 PC 上处理私域文件、系统状态、App 和审批闭环。与 Anthropic developer agent / Computer Use 相比，Lengrvis 应服务普通电脑用户，而不是主要服务代码仓库。
 
 **判断**：Lengrvis 的路线图应从“追平别人所有表面能力”转向“把本机可控执行做深”：隐私/本地模型开箱路径、移动审批/只读查看/短授权输入、文件索引与文档引用、App Integration Protocol、Skill/MCP 生态、发布证据门禁。只在这些证据充分时，才对外写“可演示”或“可发布”。
 
@@ -65,11 +65,11 @@ Microsoft 在 Copilot+ PC 上提供 Recall、Click to Do、Windows Search、Copi
 
 **对 Lengrvis 的意义**：Microsoft 代表“平台方终局”：OS 原生入口、NPU、系统设置、屏幕理解、文件入口、企业策略与安全。Lengrvis 无法复制 Windows 原生分发，但可以在非平台方角度提供更独立、可审计、可定制的 agent runtime。
 
-### 3.4 Anthropic Computer Use / Claude Code：通用电脑控制与开发者 Agent
+### 3.4 Anthropic Computer Use / Developer Agent：通用电脑控制与开发者 Agent
 
-Anthropic 在 2024-10-22 发布 computer use public beta，让 Claude 通过屏幕、鼠标、键盘使用电脑，官方同时提醒该能力仍实验性、可能笨拙和出错。Claude Code 则是开发者产品，官方描述为能在终端、IDE、Slack、Web、桌面中处理代码任务，桌面版支持并行任务、视觉 diff、预览服务器、PR 状态，并且可从手机把任务路由到本地机器。
+Anthropic 在 2024-10-22 发布 computer use public beta，让 Claude 通过屏幕、鼠标、键盘使用电脑，官方同时提醒该能力仍实验性、可能笨拙和出错。Anthropic developer agent 则是开发者产品，官方描述为能在终端、IDE、Slack、Web、桌面中处理代码任务，桌面版支持并行任务、视觉 diff、预览服务器、PR 状态，并且可从手机把任务路由到本地机器。
 
-**对 Lengrvis 的意义**：Claude Code 是强邻近参照，但不是同一主赛道。它验证了“本地机器 + 远程发起 + 审批/差异预览 + 自动 PR”的价值。Lengrvis 可以借鉴其任务可观察性和多端任务路由，但需要围绕普通 PC 用户，而不是代码仓库。
+**对 Lengrvis 的意义**：Anthropic developer agent 是强邻近参照，但不是同一主赛道。它验证了“本地机器 + 远程发起 + 审批/差异预览 + 自动 PR”的价值。Lengrvis 可以借鉴其任务可观察性和多端任务路由，但需要围绕普通 PC 用户，而不是代码仓库。
 
 ### 3.5 Manus / Genspark：云端工作空间型通用 Agent
 
@@ -79,17 +79,17 @@ Manus 官网主打“Hands On AI”，入口任务包括创建 slides、建网�
 
 ## 4. 竞品矩阵
 
-| 维度 | Lengrvis | 腾讯同类 OS Agent | ChatGPT Agent / Operator | Microsoft Copilot+ PC | Anthropic Computer Use / Claude Code | Manus / Genspark |
+| 维度 | Lengrvis | 腾讯同类 OS Agent | ChatGPT Agent / Operator | Microsoft Copilot+ PC | Anthropic Computer Use / Developer Agent | Manus / Genspark |
 |---|---|---|---|---|---|---|
 | 产品定位 | 本地电脑管家/OS Agent 原型 | 消费级全端私人 AI 助手 | 云端虚拟电脑通用任务 Agent | Windows 平台原生 AI 体验 | API 电脑控制 + 开发者 Agent | 云端 AI 工作空间/通用 Agent |
-| 平台 | Windows 优先；Electron；Android companion；macOS 打包路径 | Windows / macOS / Android；iOS 规划 | ChatGPT Web/App | Windows 11 / Copilot+ PC | API、Claude Code 桌面/终端/IDE/Web/Slack/移动路由 | Web、桌面/移动入口、工作区工具 |
-| OS 控制深度 | 文件、系统信息、Windows 设置 URI、远程桌面、UIAutomation 语义控件、屏幕截图、鼠标/键盘输入；写入动作 dry-run + 审批 | 官方宣称深度理解 PC OS，可改设置和手机接管 | 主要在自有虚拟电脑和网页环境 | OS 原生 Settings agent、Recall、Click to Do、文件/屏幕上下文 | Computer Use 可用屏幕/鼠标/键盘；Claude Code 操作开发环境 | 以云端任务和内容生产为主 |
-| 本地模型 | 探测 ONNX / Ollama / LM Studio / llama.cpp；未捆绑模型 | 本地模式端侧大模型，文件 0 上传 | 云端模型为主 | Phi Silica/NPU、本地 OCR/Click to Do | Claude 云端/API；Claude Code 在本机执行但模型云端 | 云端模型为主 |
-| 文件/文档 | FTS5、语义搜索、OCR、文档 AI、文件工具、Excel COM | AI 图库、AI 文档库、文档/表格理解与生成 | 可上传/生成/编辑文件，侧重云端任务产物 | Recall/Click to Do/文件 Actions，和 Windows/Office 集成 | Claude Code 读写代码文件；Computer Use 可操控应用 | 大量文档/报告/表格/PPT 工具 |
+| 平台 | Windows 优先；Electron；Android companion；macOS 打包路径 | Windows / macOS / Android；iOS 规划 | ChatGPT Web/App | Windows 11 / Copilot+ PC | API、developer agent 桌面/终端/IDE/Web/Slack/移动路由 | Web、桌面/移动入口、工作区工具 |
+| OS 控制深度 | 文件、系统信息、Windows 设置 URI、远程桌面、UIAutomation 语义控件、屏幕截图、鼠标/键盘输入；写入动作 dry-run + 审批 | 官方宣称深度理解 PC OS，可改设置和手机接管 | 主要在自有虚拟电脑和网页环境 | OS 原生 Settings agent、Recall、Click to Do、文件/屏幕上下文 | Computer Use 可用屏幕/鼠标/键盘；developer agent 操作开发环境 | 以云端任务和内容生产为主 |
+| 本地模型 | 探测 ONNX / Ollama / LM Studio / llama.cpp；未捆绑模型 | 本地模式端侧大模型，文件 0 上传 | 云端模型为主 | Phi Silica/NPU、本地 OCR/Click to Do | Claude 云端/API；developer agent 在本机执行但模型云端 | 云端模型为主 |
+| 文件/文档 | FTS5、语义搜索、OCR、文档 AI、文件工具、Excel COM | AI 图库、AI 文档库、文档/表格理解与生成 | 可上传/生成/编辑文件，侧重云端任务产物 | Recall/Click to Do/文件 Actions，和 Windows/Office 集成 | developer agent 读写代码文件；Computer Use 可操控应用 | 大量文档/报告/表格/PPT 工具 |
 | 浏览器/网页 | Playwright/httpx；读写动作审批 | 官网场景含微博签到、票务信息、搜索监控等 | 强项：网页浏览、登录接管、采购/预订等 | Edge/Copilot/Actions 生态 | Computer Use 能网页操作，Claude for Chrome/Code 生态 | Browser operator / Web app |
 | App 自动化 | 应用扫描、启动、卸载、Excel COM；深度集成少 | 官方宣称 APK/EXE 一句话调用、多端在线 | 主要网页和云工具，非本机 App | Windows/Office/Teams/Paint/Photos 等平台集成 | 开发工具链强，通用 App 依赖 computer use | 内容/办公工具强，本机 App 弱 |
-| 安全审批 | R0-R4、dry-run、审批绑定、HMAC、审计、PII 脱敏、路径沙盒 | 官方强调本地模式、隐私条款；细节未公开 | 重要动作前确认、接管、Watch Mode、隐私控制 | Windows 安全、设备加密、Hello/ESS、agent workspace | 安全分类器和低风险建议；Claude Code 有开发者权限模型 | 公开细节相对少 |
-| 可扩展性 | Skill YAML、MCP、OpenAI-compatible、工具注册 | 未公开 | Connectors、API、ChatGPT 工具 | Windows/Graph/Office/企业策略 | API、MCP/工具、Claude Code 集成 | 模板/工具生态 |
+| 安全审批 | R0-R4、dry-run、审批绑定、HMAC、审计、PII 脱敏、路径沙盒 | 官方强调本地模式、隐私条款；细节未公开 | 重要动作前确认、接管、Watch Mode、隐私控制 | Windows 安全、设备加密、Hello/ESS、agent workspace | 安全分类器和低风险建议；developer agent 有开发者权限模型 | 公开细节相对少 |
+| 可扩展性 | Skill YAML、MCP、OpenAI-compatible、工具注册 | 未公开 | Connectors、API、ChatGPT 工具 | Windows/Graph/Office/企业策略 | API、MCP/工具、developer agent 集成 | 模板/工具生态 |
 | 成熟度 | 技术底盘较完整，产品化中 | 发布级消费产品 | 发布级云端 Agent | 平台原生、逐步 rollout | API/开发者产品成熟，通用电脑控制仍实验性 | 发布级云端工具工作区 |
 
 ## 5. 三类差异
@@ -138,7 +138,7 @@ Lengrvis 有 ONNX provider、WinML/DirectML/OpenVINO 检测和 warmup/test_gener
 Lengrvis 有应用扫描、启动、卸载和 Excel COM，但缺 WPS/Office 全套、微信/浏览器收藏/邮件/日历/网盘/图片管理等消费常用 App 的稳定集成。个人 OS Agent 的粘性来自“真能替我操作常用软件”，不是只会列进程或打开设置。
 
 **跨端体验已有闭环雏形，但还不是发布级远控产品**
-Android companion 已覆盖配对、内置 QR 扫码/粘贴入口、审批、任务状态、只读屏幕流、短授权远程输入、结束接管和 LAN/TLS 风险提示。它已经超过“只有审批列表”的阶段，但仍需要真实手机/模拟器扫码配对、网络穿透、证书信任链、锁屏/权限、延迟、输入映射和移动端继续/发起任务的产品化证据；当前源码 smoke 只能证明扫码路径存在，不能替代真实设备闭环。腾讯 Marvis 已把手机操控电脑放在官网核心卖点，Claude Code 也强调从手机把任务路由到本机；Lengrvis 应先把“手机看进度、看屏幕、批准/拒绝、短授权接管、可撤销”做成可信闭环。
+Android companion 已覆盖配对、内置 QR 扫码/粘贴入口、审批、任务状态、只读屏幕流、短授权远程输入、结束接管和 LAN/TLS 风险提示。它已经超过“只有审批列表”的阶段，但仍需要真实手机/模拟器扫码配对、网络穿透、证书信任链、锁屏/权限、延迟、输入映射和移动端继续/发起任务的产品化证据；当前源码 smoke 只能证明扫码路径存在，不能替代真实设备闭环。腾讯 Marvis 已把手机操控电脑放在官网核心卖点，Anthropic developer agent 也强调从手机把任务路由到本机；Lengrvis 应先把“手机看进度、看屏幕、批准/拒绝、短授权接管、可撤销”做成可信闭环。
 
 **消费级 UX 和可信解释不足**  
 Lengrvis 桌面端已有办公室 Agent、能力卡、审批弹窗、设置页，但仍需要针对普通用户的任务模板、错误恢复、权限解释、模型安装引导、隐私状态指示、任务回放和“失败时下一步怎么办”。
@@ -296,7 +296,7 @@ Microsoft 有 Windows 原生入口和 NPU，腾讯有应用生态和消费级分
 
 Lengrvis 与市场同类产品的核心差异可以浓缩为一句话：
 
-**Lengrvis 是一个 Windows-first、本机执行、可审计、可扩展、可自托管的个人电脑 Agent 技术底盘；Marvis/Copilot+ PC 更像发布级 OS AI 产品；ChatGPT Agent/Manus/Genspark 更像云端通用任务 Agent；Claude Code 更像开发者工作流 Agent。**
+**Lengrvis 是一个 Windows-first、本机执行、可审计、可扩展、可自托管的个人电脑 Agent 技术底盘；Marvis/Copilot+ PC 更像发布级 OS AI 产品；ChatGPT Agent/Manus/Genspark 更像云端通用任务 Agent；Anthropic developer agent 更像开发者工作流 Agent。**
 
 因此，Lengrvis 的下一步不应盲目追逐“万能 Agent”，而应把已有底盘产品化为三个明确卖点：
 
@@ -342,6 +342,6 @@ Lengrvis 与市场同类产品的核心差异可以浓缩为一句话：
 - Windows Experience Blog，Securing AI agents on Windows：https://blogs.windows.com/windowsexperience/2025/10/16/securing-ai-agents-on-windows/
 - Windows Experience Blog，Making every Windows 11 PC an AI PC：https://blogs.windows.com/windowsexperience/2025/10/16/making-every-windows-11-pc-an-ai-pc/
 - Anthropic，Introducing computer use：https://www.anthropic.com/news/3-5-models-and-computer-use
-- Anthropic，Claude Code：https://www.anthropic.com/claude-code
+- Anthropic developer agent：https://www.anthropic.com/lengrvis-code
 - Manus 官网：https://manus.im/
 - Genspark 官网：https://www.genspark.ai/

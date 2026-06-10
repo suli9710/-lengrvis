@@ -151,6 +151,8 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                         "height": frame.height,
                         "original_width": frame.original_width,
                         "original_height": frame.original_height,
+                        "screen_origin_x": int(getattr(frame, "screen_origin_x", 0) or 0),
+                        "screen_origin_y": int(getattr(frame, "screen_origin_y", 0) or 0),
                     }
                 )
             except Exception as exc:  # noqa: BLE001

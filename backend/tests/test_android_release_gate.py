@@ -62,6 +62,8 @@ def test_android_release_gate_preflight_subgates_are_not_passed(
     assert packet["status"] == "preflight_ready_not_release"
     assert packet["release_ready"] is False
     assert packet["preflight_only"] is True
+    assert packet["source_config"]["passed"] is True
+    assert packet["source_config"]["issues"] == []
     assert packet["artifact_gate"]["evaluated"] is False
     assert packet["artifact_gate"]["passed"] is False
     assert packet["real_device_gate"]["evaluated"] is False
@@ -96,12 +98,31 @@ def test_android_real_device_template_cannot_satisfy_strict_gate(
         "pixel-emulator-redacted",
         "-BackendBuildLabel",
         "backend-build-redacted",
+        "-BlockedReason",
+        f"EAS preview build blocked at {tmp_path}\\private token=build-secret",
     )
     template_output = template_result.stdout + template_result.stderr
     assert template_result.returncode == 0, template_output
+    assert str(tmp_path) not in template_output
+    assert "build-secret" not in template_output
 
     template_packet = _latest_json(template_root, "android-real-device-evidence.redacted.template.json")
+    template_text = json.dumps(template_packet, ensure_ascii=False)
+    assert str(tmp_path) not in template_text
+    assert "build-secret" not in template_text
     assert template_packet["real_device_result"] == "uncollected"
+    assert "[redacted" in template_packet["blocked_reason"]
+    build_environment = template_packet["build_environment"]
+    assert isinstance(build_environment["java_available"], bool)
+    assert isinstance(build_environment["adb_available"], bool)
+    assert isinstance(build_environment["android_sdk_env_present"], bool)
+    assert isinstance(build_environment["native_android_project_present"], bool)
+    assert isinstance(build_environment["local_apk_build_ready"], bool)
+    assert build_environment["local_apk_build_ready"] is False
+    assert build_environment["local_eas_cli_declared"] is True
+    assert build_environment["local_eas_cli_declared_version"]
+    assert build_environment["eas_cloud_auth_verified"] is False
+    assert "whoami" in build_environment["eas_cloud_auth_verification"]
     assert template_packet["claim_controls"]["real_device_pass_claim_allowed"] is False
     assert template_packet["redaction"]["tokens_absent"] is False
 

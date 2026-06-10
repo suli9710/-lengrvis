@@ -132,6 +132,10 @@ function assertRemoteScreenBeginnerCopy() {
   assertSourceIncludes(source, "onSessionExpired: () => void;", "RemoteScreen must accept an app-level session-expired callback");
   assertSourceIncludes(source, "if (currentError instanceof AuthExpiredError)", "RemoteScreen must detect locally expired mobile sessions");
   assertSourceIncludes(source, "if (transportBlocked)", "RemoteScreen must avoid opening remote sockets when transport is blocked");
+  assertSourceIncludes(source, "payload.screen_origin_x", "RemoteScreen must preserve frame virtual desktop x origin from the backend");
+  assertSourceIncludes(source, "payload.screen_origin_y", "RemoteScreen must preserve frame virtual desktop y origin from the backend");
+  assertSourceIncludes(source, "screenOriginX", "RemoteScreen must carry frame virtual desktop x origin into tap mapping");
+  assertSourceIncludes(source, "screenOriginY", "RemoteScreen must carry frame virtual desktop y origin into tap mapping");
   assertSourceIncludes(
     source,
     'const canRetry = !transportBlocked && (connection === "offline" || !!error);',
@@ -723,6 +727,19 @@ async function main() {
     assert.equal(JSON.stringify(mapViewerPointToRemote(100, 225, { width: 1000, height: 450 }, remoteFrame)), JSON.stringify({ x: 0, y: 450 }));
     assert.equal(mapViewerPointToRemote(99, 225, { width: 1000, height: 450 }, remoteFrame), null);
     assert.equal(mapViewerPointToRemote(400, 225, { width: 0, height: 450 }, remoteFrame), null);
+    const negativeOriginFrame = {
+      width: 800,
+      height: 450,
+      originalWidth: 1600,
+      originalHeight: 900,
+      screenOriginX: -1920,
+      screenOriginY: -120,
+    };
+    assert.equal(JSON.stringify(mapViewerPointToRemote(0, 0, { width: 800, height: 450 }, negativeOriginFrame)), JSON.stringify({ x: -1920, y: -120 }));
+    assert.equal(JSON.stringify(mapViewerPointToRemote(400, 225, { width: 800, height: 450 }, negativeOriginFrame)), JSON.stringify({ x: -1120, y: 330 }));
+    assert.equal(JSON.stringify(mapViewerPointToRemote(800, 450, { width: 800, height: 450 }, negativeOriginFrame)), JSON.stringify({ x: -321, y: 779 }));
+    assert.equal(JSON.stringify(mapViewerPointToRemote(100, 225, { width: 1000, height: 450 }, negativeOriginFrame)), JSON.stringify({ x: -1920, y: 330 }));
+    assert.equal(mapViewerPointToRemote(99, 225, { width: 1000, height: 450 }, negativeOriginFrame), null);
 
     const session = makeSession(client, server.origin);
     const lanSession = makeSession(client, "http://192.168.1.20:8000");

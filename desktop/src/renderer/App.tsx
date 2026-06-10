@@ -51,7 +51,6 @@ import {
   mergeStreamedAgentMessage,
   preserveStreamedRunConversations as preserveStreamedRunConversationsFromEvents
 } from "./events";
-import { AgentOpsView } from "./features/agents";
 import {
   inferActiveOfficeAgentId,
   officeAgents,
@@ -1068,7 +1067,12 @@ export function App() {
 
         {isLocalLibraryView ? (
           <Suspense fallback={<RouteLoading />}>
-            <LocalLibraryView api={api} activeSection={sectionForView(activeView)} onUseDocument={openDocumentTool} />
+            <LocalLibraryView
+              api={api}
+              activeSection={sectionForView(activeView)}
+              onSectionChange={(section) => setActiveView(section)}
+              onUseDocument={openDocumentTool}
+            />
           </Suspense>
         ) : null}
 
@@ -1113,21 +1117,6 @@ export function App() {
               <PlanViewer plan={plan} />
               <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
             </div>
-          </section>
-        ) : null}
-
-        {activeView === "agentOps" ? (
-          <section className="agent-ops-view">
-            <AgentOpsView
-              tasks={tasks}
-              safetyReview={safetyReview}
-              onDraftPrompt={setDraft}
-              onOpenChat={() => setActiveView("chat")}
-              onOpenApprovals={() => {
-                setApprovalSelectionContext("task");
-                setIsApprovalOpen(true);
-              }}
-            />
           </section>
         ) : null}
 

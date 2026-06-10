@@ -300,7 +300,7 @@ def project_ledger_for_llm(
     """Project the durable message ledger into a provider-safe prompt view.
 
     The ledger remains ``agent_messages``/OpenAI-like dicts. This adapter
-    carries Claude Code compact-boundary semantics through Lengrvis metadata
+    carries Lengrvis Code compact-boundary semantics through Lengrvis metadata
     rather than importing the TypeScript session runtime.
     """
 

@@ -201,6 +201,7 @@ def _android_release_gate_summary(
 
     return {
         "artifact_type": "android-release-gate-summary",
+        "generated_by": "scripts/verify_android_release_gate.ps1",
         "generated_at_utc": "2026-06-09T00:00:00.0000000Z",
         "status": status,
         "release_ready": release_ready,
@@ -334,6 +335,8 @@ def _android_real_device_evidence(artifact_sha256: str) -> dict:
         "app": {
             "artifact_sha256": artifact_sha256,
             "artifact_label_redacted": "mavris-preview.apk",
+            "build_profile": "preview",
+            "eas_build_label_redacted": "eas-preview-build-redacted",
         },
         "claim_controls": {
             "apk_installed": True,
@@ -1778,6 +1781,77 @@ def test_release_evidence_packet_indexes_strict_android_gate_without_release_sig
         "It does not create installable Android APK pass or real-device Android remote-control pass"
         in "\n".join(packet["not_clean_machine_or_signoff"])
     )
+
+
+def test_release_evidence_packet_rejects_forged_passed_android_gate_summary(
+    project_root: Path, tmp_path: Path
+) -> None:
+    android_root = tmp_path / "android-release-gate"
+    forged_summary = _android_release_gate_summary(
+        status="passed",
+        release_ready=True,
+        preflight_only=False,
+        installable_claim_allowed=True,
+        remote_claim_allowed=True,
+        artifact_provided=True,
+        artifact_label="Lengrvis-preview.apk",
+        artifact_bytes=512,
+        installable_apk=True,
+        apk_zip_header_valid=True,
+        artifact_gate_evaluated=True,
+        artifact_gate_passed=True,
+        real_device_gate_evaluated=True,
+        real_device_gate_passed=True,
+        real_device_evidence_label="android-real-device-evidence.redacted.json",
+        must_not_claim=[],
+    )
+    forged_summary["generated_by"] = "manual-forged-summary"
+    forged_summary["generated_at_utc"] = "not-a-timestamp"
+    forged_summary["android_artifact"]["sha256"] = "not-a-sha256"
+    forged_summary["artifact_gate"]["issues"] = [
+        {"code": "forged_artifact_issue", "message": "should fail closed"},
+    ]
+    _write_android_release_gate_summary(android_root, forged_summary)
+
+    evidence_root = tmp_path / "release-evidence-packet"
+    result = _run_release_evidence_packet_with_android_gate(
+        project_root,
+        tmp_path,
+        evidence_root,
+        android_root,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    packet = json.loads(
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
+            encoding="utf-8-sig"
+        )
+    )
+    latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
+    blocker = {
+        item["id"]: item
+        for item in packet["release_readiness_blockers"]
+    }["android_installable_remote_control"]
+    mismatch_reasons = "\n".join(latest["mismatch_reasons"])
+
+    assert packet["summary"]["packet_status"] == "source_contract_failure"
+    assert latest["source_contract_status"] == "source_contract_mismatch"
+    assert latest["status"] == "source_contract_mismatch"
+    assert latest["release_ready"] is False
+    assert latest["android_artifact"]["provided"] is False
+    assert latest["android_artifact"]["bytes"] == 0
+    assert latest["artifact_gate_passed"] is False
+    assert latest["real_device_gate_passed"] is False
+    assert latest["claim_controls"]["installable_android_app_claim_allowed"] is False
+    assert latest["claim_controls"]["real_device_remote_control_claim_allowed"] is False
+    assert blocker["status"] == "missing_apk_or_real_device_gate"
+    assert blocker["claim_allowed"] is False
+    assert "generated_by is not scripts/verify_android_release_gate.ps1" in mismatch_reasons
+    assert "generated_at_utc is not a UTC timestamp" in mismatch_reasons
+    assert "passed Android gate must include a 64-character android_artifact.sha256" in mismatch_reasons
+    assert "passed Android gate must include an Android artifact of at least 1 MiB" in mismatch_reasons
+    assert "passed Android gate must have no artifact_gate issues" in mismatch_reasons
 
 
 def test_release_evidence_packet_fail_closes_android_gate_overclaim_artifact(

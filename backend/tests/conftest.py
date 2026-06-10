@@ -20,9 +20,9 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATA = PROJECT_ROOT / "test_data"
 SLOW_TEST_NODEID_SUFFIXES = {
-    "test_claude_code_runner.py::test_cancel_terminates_fake_claude_code_process",
+    "test_lengrvis_code_runner.py::test_cancel_terminates_fake_lengrvis_code_process",
     "test_runs_api.py::test_cancelled_run_is_not_overwritten_by_finishing_engine_turn",
-    "test_runs_api.py::test_developer_cancel_terminates_fake_claude_and_publishes_diagnostics",
+    "test_runs_api.py::test_developer_cancel_terminates_fake_lengrvis_and_publishes_diagnostics",
     "test_runs_api.py::test_paused_run_is_not_overwritten_by_finishing_engine_turn",
     "test_skill_loader.py::test_handler_timeout_returns_inline_error",
     "test_start_app_script.py::test_start_app_recent_log_summary_redacts_secrets",

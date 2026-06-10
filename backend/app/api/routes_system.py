@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.config import PROJECT_ROOT
 from app.core import audit as audit_core, db
@@ -197,6 +197,69 @@ def export_diagnostics(request: Request):
         "created_at": generated_at,
         "bytes": package_path.stat().st_size,
         "scope": "local_only",
+    }
+
+
+ERASE_LOCAL_DATA_CONFIRM = "erase-local-data"
+
+
+@router.post("/system/privacy/erase-local-data")
+def erase_local_data(payload: dict):
+    """One-click local personal data deletion (PIPL/GDPR deletion-right entry).
+
+    Erases locally stored user content (tasks, chats, runs, recordings,
+    approvals, pairings, memories, index data) and exported diagnostic
+    packages. The tamper-evident audit chain is preserved and an erase event
+    is appended so the deletion itself stays provable. Local log directories
+    are reported for manual cleanup instead of being deleted at runtime.
+    """
+    if str(payload.get("confirm") or "") != ERASE_LOCAL_DATA_CONFIRM:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Confirmation required: pass {{"confirm": "{ERASE_LOCAL_DATA_CONFIRM}"}}.',
+        )
+    include_settings = bool(payload.get("include_settings", False))
+    settings = get_effective_settings()
+
+    deleted_packages = 0
+    export_dir = Path(settings.data_dir) / "diagnostic-packages"
+    if export_dir.is_dir():
+        for package in export_dir.glob("*.json"):
+            try:
+                package.unlink()
+                deleted_packages += 1
+            except OSError:
+                continue
+
+    counts = db.erase_local_user_data(include_settings=include_settings)
+    total_rows = sum(counts.values())
+    preserved = ["audit_events"]
+    if not include_settings:
+        preserved.extend(["app_settings", "permission_policies"])
+
+    audit_core.record(
+        "privacy.local_data_erased",
+        "user",
+        {
+            "deleted_rows": total_rows,
+            "deleted_diagnostic_packages": deleted_packages,
+            "include_settings": include_settings,
+            "preserved": preserved,
+        },
+    )
+    return {
+        "ok": True,
+        "scope": "local_only",
+        "deleted": {
+            "rows_by_table": counts,
+            "rows_total": total_rows,
+            "diagnostic_packages": deleted_packages,
+        },
+        "preserved": preserved,
+        "manual_cleanup": {
+            "log_dirs": "not_deleted_at_runtime_see_settings_system_info",
+        },
+        "audit": "erase_event_appended_to_local_audit_chain",
     }
 
 

@@ -1200,6 +1200,55 @@ def _audit_column_mismatch(row: sqlite3.Row, data: dict[str, Any]) -> list[str]:
     return mismatched
 
 
+PERSONAL_DATA_TABLES: tuple[str, ...] = (
+    "tasks",
+    "chat_messages",
+    "plans",
+    "goals",
+    "agent_messages",
+    "runs",
+    "run_events",
+    "task_recordings",
+    "safety_reviews",
+    "tool_calls",
+    "tool_results",
+    "approvals",
+    "mobile_pairings",
+    "mobile_devices",
+    "llm_usage_events",
+    "indexed_files",
+    "document_chunks",
+    "document_chunk_embeddings",
+    "scheduled_tasks",
+    "wakeups",
+    "memories",
+    "session_contexts",
+    "perception_observations",
+    "perception_suggestions",
+)
+SETTINGS_TABLES: tuple[str, ...] = ("app_settings", "permission_policies")
+
+
+def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
+    """Delete locally stored user content (PIPL/GDPR local deletion entry).
+
+    Audit events are preserved by default so the tamper-evident chain can show
+    that the erase happened; callers should append an erase audit event after
+    this returns. The database file is VACUUMed so deleted rows do not survive
+    in free pages.
+    """
+    tables = PERSONAL_DATA_TABLES + (SETTINGS_TABLES if include_settings else ())
+    counts: dict[str, int] = {}
+    with connect() as conn:
+        for table in tables:
+            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+            counts[table] = int(row[0] or 0)
+            conn.execute(f"DELETE FROM {table}")
+    with connect() as conn:
+        conn.execute("VACUUM")
+    return counts
+
+
 def local_product_diagnostics(*, recent_limit: int = 200) -> dict[str, Any]:
     limit = _query_limit(recent_limit)
     tasks = fetch_many("tasks", limit=limit)

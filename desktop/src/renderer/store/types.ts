@@ -38,7 +38,6 @@ export type ViewKey =
   | "files"
   | "computer"
   | "agents"
-  | "agentOps"
   | "browser"
   | "memories"
   | "safety"

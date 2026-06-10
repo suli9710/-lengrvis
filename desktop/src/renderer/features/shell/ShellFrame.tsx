@@ -1,24 +1,19 @@
 import {
-  AppWindow,
   Bell,
   BookOpenText,
-  Bot,
-  CalendarDays,
   CheckCircle2,
   CircleDashed,
-  FileImage,
+  FolderOpen,
   Home,
   Image as ImageIcon,
   Laptop,
   Loader2,
-  MapPin,
   MessageSquarePlus,
   RefreshCw,
   Settings,
   Sparkles,
   TerminalSquare,
   TriangleAlert,
-  UserRound,
   type LucideIcon
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -28,6 +23,7 @@ import xiaomaErrorGif from "../../assets/xiaoma-agent/sleeping.gif";
 import xiaomaCompletedGif from "../../assets/xiaoma-agent/salute.gif";
 import xiaomaRunningGif from "../../assets/xiaoma-agent/working.gif";
 import xiaomaStandbyGif from "../../assets/xiaoma-agent/standby.gif";
+import { libraryFamilyForView } from "../../views/localLibrarySections";
 import type { ConnectionState, ViewKey } from "../../store";
 
 export interface NavItem {
@@ -56,35 +52,20 @@ export const primaryNavGroups: NavGroup[] = [
     items: [
       { icon: Home, label: "首页", view: "home" },
       { icon: MessageSquarePlus, label: "对话", view: "chat" },
-      { icon: Bot, label: "总览", view: "agentOps" },
       { icon: TerminalSquare, label: "进度", view: "agents" },
       { icon: Settings, label: "设置", view: "settings" }
     ]
   },
   {
-    label: "本地知识库",
+    label: "本地内容",
     items: [
-      { icon: AppWindow, label: "应用", view: "apps" },
-      { icon: BookOpenText, label: "文档", view: "documents" },
-      { icon: BookOpenText, label: "文档识别", view: "documentOcr" },
-      { icon: BookOpenText, label: "论文", view: "papers" },
-      { icon: BookOpenText, label: "课件", view: "courseware" },
-      { icon: BookOpenText, label: "报告", view: "reports" }
-    ]
-  },
-  {
-    label: "图库",
-    items: [
-      { icon: ImageIcon, label: "图库", view: "gallery" },
-      { icon: FileImage, label: "图片识别", view: "imageOcr" },
-      { icon: UserRound, label: "人物印象", view: "people" },
-      { icon: MapPin, label: "足迹地点", view: "places" },
-      { icon: CalendarDays, label: "时光长廊", view: "timeline" }
+      { icon: BookOpenText, label: "知识库", view: "documents" },
+      { icon: ImageIcon, label: "图库", view: "gallery" }
     ]
   },
   {
     items: [
-      { icon: BookOpenText, label: "文件工具", view: "files" },
+      { icon: FolderOpen, label: "文件工具", view: "files" },
       { icon: Laptop, label: "此电脑", view: "computer" }
     ]
   }
@@ -96,7 +77,6 @@ export const viewTitles: Record<ViewKey, ViewTitle> = {
   browser: { title: "浏览器监看", subtitle: "查看浏览器活动，并在需要时接管控制" },
   home: { title: "首页", subtitle: "让 Lengrvis 帮你处理电脑上的事务" },
   chat: { title: "对话", subtitle: "自然对话，全程 Agent 协作" },
-  agentOps: { title: "Agent 总览", subtitle: "查看真实协作状态，并从对话或审批继续" },
   apps: { title: "应用", subtitle: "直接查看本地应用和脚本" },
   documents: { title: "文档", subtitle: "直接查看本地文档内容" },
   documentOcr: { title: "文档识别", subtitle: "定位本地文档并按需识别" },
@@ -500,7 +480,7 @@ function Sidebar({
                   key={item.view}
                   icon={item.icon}
                   label={item.label}
-                  active={activeView === item.view}
+                  active={isNavItemActive(item.view, activeView)}
                   onClick={() => onViewChange(item.view)}
                 />
               ))}
@@ -580,24 +560,26 @@ function WindowBar({
   );
 }
 
+function isNavItemActive(itemView: ViewKey, activeView: ViewKey): boolean {
+  if (itemView === activeView) return true;
+  const family = libraryFamilyForView(activeView);
+  if (family === "knowledge") return itemView === "documents";
+  if (family === "gallery") return itemView === "gallery";
+  return false;
+}
+
 function SideButton({
   icon: Icon,
   label,
   active,
-  onClick,
-  mobileOnly = false
+  onClick
 }: {
   icon: LucideIcon;
   label: string;
   active?: boolean;
   onClick: () => void;
-  mobileOnly?: boolean;
 }) {
-  const className = [
-    "side-button",
-    active ? "side-button--active" : "",
-    mobileOnly ? "side-button--mobile-priority" : ""
-  ].filter(Boolean).join(" ");
+  const className = ["side-button", active ? "side-button--active" : ""].filter(Boolean).join(" ");
   return (
     <button className={className} onClick={onClick} type="button">
       <Icon size={15} aria-hidden="true" />

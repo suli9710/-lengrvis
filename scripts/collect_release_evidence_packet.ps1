@@ -228,6 +228,23 @@ function Get-StrictJsonNonNegativeIntegerOrZero($Value) {
     return 0
 }
 
+function Test-UtcTimestampValue([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($Value, [ref]$parsed)) {
+        return $false
+    }
+
+    return $Value.TrimEnd().EndsWith("Z", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-EmptyArrayValue($Value) {
+    return (Get-ArrayCount $Value) -eq 0
+}
+
 function Test-MobileRedactedHostLabel([string]$Value) {
     return $Value -in @("[redacted-host]", "[loopback]", "[bind-address]")
 }
@@ -560,6 +577,8 @@ $androidRealDeviceTemplateNeedles = @(
     "mobile_end_control_readonly",
     "desktop_revoke_readonly",
     "grant_expiry_readonly",
+    "build_environment",
+    "local_apk_build_ready",
     "binding_ref",
     "raw_device_ids_absent",
     "raw_grant_ids_absent"
@@ -1136,6 +1155,14 @@ $androidRealDeviceTemplateLatestSummary = if ($latestAndroidRealDeviceTemplate.f
         redaction_reviewed = $false
         evidence_artifacts_reviewed = $false
         check_statuses = $androidTemplateCheckStatuses
+        build_environment = [ordered]@{
+            local_apk_build_ready = Test-JsonTrue $latestAndroidRealDeviceTemplate.data.build_environment.local_apk_build_ready
+            local_eas_cli_declared = Test-JsonTrue $latestAndroidRealDeviceTemplate.data.build_environment.local_eas_cli_declared
+            local_eas_cli_binary_present = Test-JsonTrue $latestAndroidRealDeviceTemplate.data.build_environment.local_eas_cli_binary_present
+            expo_token_present = Test-JsonTrue $latestAndroidRealDeviceTemplate.data.build_environment.expo_token_present
+            eas_cloud_auth_verified = Test-JsonTrue $latestAndroidRealDeviceTemplate.data.build_environment.eas_cloud_auth_verified
+            build_blocker_summary = Redact-TextValue ([string]$latestAndroidRealDeviceTemplate.data.build_environment.build_blocker_summary)
+        }
         shareable_identity_policy = [ordered]@{
             public_remote_input_correlation = Redact-TextValue ([string]$latestAndroidRealDeviceTemplate.data.shareable_identity_policy.public_remote_input_correlation)
             raw_device_id_storage = Redact-TextValue ([string]$latestAndroidRealDeviceTemplate.data.shareable_identity_policy.raw_device_id_storage)
@@ -1170,6 +1197,9 @@ else {
 $latestAndroidReleaseGate = Find-LatestJsonArtifact $androidReleaseGateEvidenceRootPath "android-release-gate.redacted.json"
 $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $null -ne $latestAndroidReleaseGate.data) {
     $androidGateMismatches = New-Object System.Collections.Generic.List[string]
+    $androidArtifactType = [string]$latestAndroidReleaseGate.data.artifact_type
+    $androidGeneratedBy = [string]$latestAndroidReleaseGate.data.generated_by
+    $androidGeneratedAt = [string]$latestAndroidReleaseGate.data.generated_at_utc
     $androidStatus = [string]$latestAndroidReleaseGate.data.status
     $allowedAndroidStatuses = @("preflight_ready_not_release", "blocked", "passed")
     $androidReleaseReady = Test-JsonTrue $latestAndroidReleaseGate.data.release_ready
@@ -1181,6 +1211,7 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
     $requiresWssEvidence = Test-JsonTrue $latestAndroidReleaseGate.data.claim_controls.requires_reviewed_https_wss_remote_control_evidence
     $artifactLabel = Redact-DisplayLabel ([string]$latestAndroidReleaseGate.data.android_artifact.label)
     $artifactProvided = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.provided
+    $artifactSha256 = [string]$latestAndroidReleaseGate.data.android_artifact.sha256
     $installableApk = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.installable_apk
     $apkZipHeaderValid = Test-JsonTrue $latestAndroidReleaseGate.data.android_artifact.apk_zip_header_valid
     $artifactBytes = Get-StrictJsonNonNegativeIntegerOrZero $latestAndroidReleaseGate.data.android_artifact.bytes
@@ -1190,6 +1221,15 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
     $realDeviceGatePassed = Test-JsonTrue $latestAndroidReleaseGate.data.real_device_gate.passed
     $sourceConfigPassed = Test-JsonTrue $latestAndroidReleaseGate.data.source_config.passed
 
+    if ($androidArtifactType -ne "android-release-gate-summary") {
+        $androidGateMismatches.Add("artifact_type is not android-release-gate-summary")
+    }
+    if ($androidGeneratedBy -ne "scripts/verify_android_release_gate.ps1") {
+        $androidGateMismatches.Add("generated_by is not scripts/verify_android_release_gate.ps1")
+    }
+    if (-not (Test-UtcTimestampValue $androidGeneratedAt)) {
+        $androidGateMismatches.Add("generated_at_utc is not a UTC timestamp")
+    }
     if ($androidStatus -notin $allowedAndroidStatuses) {
         $androidGateMismatches.Add("status is not an allowed Android release gate status")
     }
@@ -1235,7 +1275,22 @@ $androidReleaseGateLatestSummary = if ($latestAndroidReleaseGate.found -and $nul
         if (-not $remoteClaimAllowed) {
             $androidGateMismatches.Add("passed Android gate must allow real-device remote-control claims")
         }
-        if (-not ($artifactProvided -and $installableApk -and $apkZipHeaderValid -and $artifactBytes -gt 0 -and $artifactGatePassed -and $realDeviceGatePassed)) {
+        if ($artifactSha256 -notmatch "^[a-fA-F0-9]{64}$") {
+            $androidGateMismatches.Add("passed Android gate must include a 64-character android_artifact.sha256")
+        }
+        if ($artifactBytes -lt 1048576) {
+            $androidGateMismatches.Add("passed Android gate must include an Android artifact of at least 1 MiB")
+        }
+        if (-not (Test-EmptyArrayValue $latestAndroidReleaseGate.data.source_config.issues)) {
+            $androidGateMismatches.Add("passed Android gate must have no source_config issues")
+        }
+        if (-not (Test-EmptyArrayValue $latestAndroidReleaseGate.data.artifact_gate.issues)) {
+            $androidGateMismatches.Add("passed Android gate must have no artifact_gate issues")
+        }
+        if (-not (Test-EmptyArrayValue $latestAndroidReleaseGate.data.real_device_gate.issues)) {
+            $androidGateMismatches.Add("passed Android gate must have no real_device_gate issues")
+        }
+        if (-not ($artifactProvided -and $installableApk -and $apkZipHeaderValid -and $artifactBytes -ge 1048576 -and $artifactGateEvaluated -and $artifactGatePassed -and $realDeviceGateEvaluated -and $realDeviceGatePassed)) {
             $androidGateMismatches.Add("passed Android gate must include installable APK and real-device evidence gates")
         }
     }

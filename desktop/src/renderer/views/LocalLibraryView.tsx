@@ -17,11 +17,18 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { IndexStatus, LocalLibraryItem, LocalLibraryResponse } from "../../shared/types";
 import { absoluteRendererLoopbackBackendUrl, type LengrvisApiClient } from "../lib/apiClient";
-import { sectionForView, type LocalLibrarySection } from "./localLibrarySections";
+import {
+  gallerySectionKeys,
+  knowledgeSectionKeys,
+  libraryFamilyForView,
+  sectionForView,
+  type LocalLibrarySection
+} from "./localLibrarySections";
 
 interface LocalLibraryViewProps {
   api: LengrvisApiClient;
   activeSection: LocalLibrarySection;
+  onSectionChange?: (section: LocalLibrarySection) => void;
   onUseDocument?: (path: string, action: "read" | "summarize" | "ask") => void;
 }
 
@@ -148,11 +155,15 @@ export function libraryMetaForView(view: LocalLibrarySection): LibrarySectionMet
   return section ?? SECTIONS[6];
 }
 
-export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLibraryViewProps) {
+export function LocalLibraryView({ api, activeSection, onSectionChange, onUseDocument }: LocalLibraryViewProps) {
   const sectionMeta = useMemo(
     () => SECTIONS.find((section) => section.id === activeSection) ?? SECTIONS[6],
     [activeSection]
   );
+  const familySections = useMemo(() => {
+    const keys = libraryFamilyForView(sectionMeta.id) === "knowledge" ? knowledgeSectionKeys : gallerySectionKeys;
+    return SECTIONS.filter((section) => keys.includes(section.id));
+  }, [sectionMeta.id]);
   const [query, setQuery] = useState("");
   const [library, setLibrary] = useState<LocalLibraryResponse | null>(null);
   const [selectedItem, setSelectedItem] = useState<LocalLibraryItem | null>(null);
@@ -249,6 +260,22 @@ export function LocalLibraryView({ api, activeSection, onUseDocument }: LocalLib
             </button>
           </div>
         </div>
+
+        {onSectionChange && familySections.length > 1 ? (
+          <nav className="library-tabs" aria-label="内容分类">
+            {familySections.map((section) => (
+              <button
+                key={section.id}
+                type="button"
+                className={section.id === sectionMeta.id ? "library-tab library-tab--active" : "library-tab"}
+                onClick={() => onSectionChange(section.id)}
+              >
+                <section.icon size={14} aria-hidden="true" />
+                {section.label}
+              </button>
+            ))}
+          </nav>
+        ) : null}
 
         <div className="library-summary">
           <span>{items.length} 项</span>

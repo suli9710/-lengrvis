@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import sys
 from dataclasses import dataclass
 from io import BytesIO
@@ -28,6 +29,8 @@ class ScreenFrame:
     original_width: int
     original_height: int
     quality: int
+    screen_origin_x: int = 0
+    screen_origin_y: int = 0
 
 
 def capture_screen(
@@ -50,6 +53,7 @@ def capture_screen_frame(
         raise RuntimeError("Remote desktop screen capture is only supported on Windows.")
 
     image = _grab_screen()
+    screen_origin_x, screen_origin_y = _screen_origin_from_grabbed_image(image)
     original_width, original_height = image.size
     resized = _resize_for_stream(image, max_width=max_width, max_height=max_height)
     buffer = BytesIO()
@@ -63,6 +67,8 @@ def capture_screen_frame(
         original_width=original_width,
         original_height=original_height,
         quality=jpeg_quality,
+        screen_origin_x=screen_origin_x,
+        screen_origin_y=screen_origin_y,
     )
 
 
@@ -91,9 +97,36 @@ def _grab_screen() -> Image.Image:
 
     try:
         image = ImageGrab.grab(all_screens=True)
+        screen_origin = _virtual_screen_origin()
     except TypeError:
         image = ImageGrab.grab()
-    return image.convert("RGB")
+        screen_origin = (0, 0)
+    converted = image.convert("RGB")
+    try:
+        setattr(converted, "_lengrvis_screen_origin", screen_origin)
+    except Exception:
+        pass
+    return converted
+
+
+def _screen_origin_from_grabbed_image(image: Image.Image) -> tuple[int, int]:
+    origin = getattr(image, "_lengrvis_screen_origin", None)
+    if isinstance(origin, tuple | list) and len(origin) >= 2:
+        try:
+            return int(origin[0]), int(origin[1])
+        except (TypeError, ValueError):
+            return 0, 0
+    return _virtual_screen_origin()
+
+
+def _virtual_screen_origin() -> tuple[int, int]:
+    if sys.platform != "win32":
+        return 0, 0
+    try:
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        return int(user32.GetSystemMetrics(76)), int(user32.GetSystemMetrics(77))
+    except Exception:
+        return 0, 0
 
 
 def _resize_for_stream(image: Image.Image, *, max_width: int, max_height: int) -> Image.Image:

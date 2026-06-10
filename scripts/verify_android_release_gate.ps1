@@ -10,6 +10,16 @@ param(
 $ErrorActionPreference = "Stop"
 $script:ResolvedRootForDisplay = ""
 
+# Windows PowerShell 5.1 can inherit a polluted PSModulePath when the parent
+# process is PowerShell 7 (including preview builds). Module autoloading may
+# then resolve Microsoft.PowerShell.Utility to an incompatible 7.x copy and
+# core cmdlets such as Get-FileHash / ConvertTo-Json disappear. Re-import the
+# bundled modules from $PSHOME explicitly to self-heal.
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Utility" -ErrorAction SilentlyContinue
+    Import-Module "$PSHOME\Modules\Microsoft.PowerShell.Management" -ErrorAction SilentlyContinue
+}
+
 function Redact-DisplayLabel {
     param([string]$Label)
 
@@ -111,6 +121,27 @@ function Read-TextFile {
     catch {
         Add-Issue $Issues "unreadable_$Label" "$Label file could not be read: $(Get-DisplayPath $Path)"
         return ""
+    }
+}
+
+function Get-Sha256Hex {
+    param([string]$Path)
+
+    # Avoid Get-FileHash: it depends on module autoloading, which breaks when a
+    # PowerShell 7 parent pollutes PSModulePath for Windows PowerShell 5.1.
+    # Plain .NET SHA256 is immune to module resolution issues.
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace "-", "").ToLowerInvariant()
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
     }
 }
 
@@ -505,6 +536,7 @@ if ($null -ne $appJson) {
         'certificates src="system"',
         'certificates src="user"',
         'cleartextTrafficPermitted="false"',
+        'mainApplication.$["android:allowBackup"] = "false"',
         "android:networkSecurityConfig",
         "android:usesCleartextTraffic",
         "WindowManager.LayoutParams.FLAG_SECURE"
@@ -556,10 +588,14 @@ if ($null -ne $easJson) {
 
 if ($null -ne $mobilePackage) {
     $scripts = Get-PropertyValue $mobilePackage "scripts"
+    $devDependencies = Get-PropertyValue $mobilePackage "devDependencies"
     foreach ($scriptName in @("typecheck", "smoke:token", "smoke:task-companion", "smoke:remote-input-grant", "preflight:android-release", "build:android:preview", "build:android:production", "gate:android-release")) {
         if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $scripts $scriptName))) {
             Add-Issue $sourceIssues "missing_mobile_script" "mobile/package.json must define script '$scriptName'."
         }
+    }
+    if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $devDependencies "eas-cli"))) {
+        Add-Issue $sourceIssues "missing_mobile_eas_cli_dev_dependency" "mobile/package.json must include devDependency eas-cli so APK builds do not rely on a global EAS CLI install."
     }
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "preflight:android-release" @("verify_android_release_gate.ps1", "-PreflightOnly")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:preview" @("preflight:android-release", "eas build", "--platform android", "--profile preview", "--non-interactive")
@@ -584,6 +620,18 @@ $artifactSummary = [ordered]@{
     apk_zip_header_valid = $false
     apk_structure_valid = $false
 }
+$realDeviceEvidence = $null
+$realDeviceEvidenceReview = $null
+$realDeviceEvidenceDevice = $null
+$realDeviceEvidenceTransport = $null
+$realDeviceEvidenceCertificate = $null
+$realDeviceEvidenceClaimControls = $null
+$realDeviceEvidenceChecks = $null
+$realDeviceEvidenceRedaction = $null
+$realDeviceEvidenceApp = $null
+$realDeviceEvidenceLabels = @()
+$realDeviceEvidenceDeviceKind = ""
+$realDeviceEvidenceSha = ""
 
 if ($PreflightOnly) {
     Add-Issue $warnings "preflight_only" "Preflight mode checks source configuration only. It is not APK, install, WSS, or remote-control evidence." "warning"
@@ -607,7 +655,7 @@ else {
         $extension = $artifactItem.Extension.ToLowerInvariant()
         $artifactSummary.label = Redact-DisplayLabel $artifactItem.Name
         $artifactSummary.bytes = $artifactItem.Length
-        $artifactSummary.sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $resolvedArtifact).Hash.ToLowerInvariant()
+        $artifactSummary.sha256 = Get-Sha256Hex $resolvedArtifact
         $artifactSummary.apk_zip_header_valid = ($extension -eq ".apk" -and (Test-ApkZipHeader $resolvedArtifact))
         $artifactSummary.apk_structure_valid = ($extension -eq ".apk" -and $artifactSummary.apk_zip_header_valid -and (Test-ApkZipStructure $resolvedArtifact))
         $artifactSummary.installable_apk = ($extension -eq ".apk" -and $artifactSummary.apk_zip_header_valid -and $artifactSummary.apk_structure_valid)
@@ -845,6 +893,7 @@ New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
 
 $summary = [ordered]@{
     artifact_type = "android-release-gate-summary"
+    generated_by = "scripts/verify_android_release_gate.ps1"
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     status = $status
     release_ready = $releaseReady

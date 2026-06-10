@@ -39,6 +39,27 @@ function Protect-Label {
     return $text
 }
 
+function Get-DisplayPath {
+    param([string]$PathValue)
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) {
+        return ""
+    }
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($PathValue)
+        $rootPrefix = $resolvedRoot.TrimEnd([char[]]@("\", "/")) + [System.IO.Path]::DirectorySeparatorChar
+        if ($fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return (Protect-Label ($fullPath.Substring($rootPrefix.Length)))
+        }
+
+        return (Protect-Label (Split-Path -Leaf $fullPath))
+    }
+    catch {
+        return (Protect-Label (Split-Path -Leaf $PathValue))
+    }
+}
+
 function New-UncollectedCheck {
     param(
         [string]$Why,
@@ -62,11 +83,68 @@ function New-UncollectedCheck {
     }
 }
 
+function Test-CommandAvailable {
+    param([string]$Name)
+
+    return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Test-EnvValuePresent {
+    param([string]$Name)
+
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    return -not [string]::IsNullOrWhiteSpace($value)
+}
+
+function Read-MobileEasCliVersion {
+    $packagePath = Join-Path $resolvedRoot "mobile\package.json"
+    if (-not (Test-Path -LiteralPath $packagePath)) {
+        return "uncollected"
+    }
+
+    try {
+        $packageJson = Get-Content -Raw -Encoding UTF8 -LiteralPath $packagePath | ConvertFrom-Json
+        $version = [string]$packageJson.devDependencies."eas-cli"
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            return "uncollected"
+        }
+        return Protect-Label $version
+    }
+    catch {
+        return "uncollected"
+    }
+}
+
 $runId = "run-{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), ([guid]::NewGuid().ToString("N").Substring(0, 8))
 $runRoot = Join-Path $EvidenceRoot $runId
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
 
 $blocked = Protect-Label $BlockedReason
+$easCliVersion = Read-MobileEasCliVersion
+$localEasCliBinaryPresent = (
+    (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas.cmd")) -or
+    (Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\node_modules\.bin\eas"))
+)
+$javaAvailable = Test-CommandAvailable "java"
+$adbAvailable = Test-CommandAvailable "adb"
+$gradleAvailable = Test-CommandAvailable "gradle"
+$androidSdkEnvPresent = (Test-EnvValuePresent "ANDROID_HOME") -or (Test-EnvValuePresent "ANDROID_SDK_ROOT")
+$nativeAndroidProjectPresent = Test-Path -LiteralPath (Join-Path $resolvedRoot "mobile\android")
+$expoTokenPresent = Test-EnvValuePresent "EXPO_TOKEN"
+$localApkBuildReady = $javaAvailable -and $androidSdkEnvPresent -and $nativeAndroidProjectPresent
+$easCloudBuildPrereqsPresent = ($easCliVersion -ne "uncollected") -and $localEasCliBinaryPresent
+$buildBlockerSummary = if ($expoTokenPresent) {
+    "EAS cloud build auth may be available through EXPO_TOKEN; run the preview build and attach the redacted EAS build label/log."
+}
+elseif ($easCloudBuildPrereqsPresent) {
+    "EAS preview APK build still requires eas login or EXPO_TOKEN before artifact creation."
+}
+elseif (-not $localApkBuildReady) {
+    "Local APK build environment is incomplete; install Android SDK or use EAS with credentials."
+}
+else {
+    "Build prerequisites need manual verification before claiming APK evidence."
+}
 $packet = [ordered]@{
     artifact_type = "android-real-device-remote-control-evidence"
     generated_at_utc = (Get-Date).ToUniversalTime().ToString("o")
@@ -81,6 +159,21 @@ $packet = [ordered]@{
     }
     real_device_result = "uncollected"
     blocked_reason = $blocked
+    build_environment = [ordered]@{
+        java_available = $javaAvailable
+        adb_available = $adbAvailable
+        gradle_available = $gradleAvailable
+        android_sdk_env_present = $androidSdkEnvPresent
+        native_android_project_present = $nativeAndroidProjectPresent
+        local_apk_build_ready = $localApkBuildReady
+        local_eas_cli_declared = $easCliVersion -ne "uncollected"
+        local_eas_cli_declared_version = $easCliVersion
+        local_eas_cli_binary_present = $localEasCliBinaryPresent
+        expo_token_present = $expoTokenPresent
+        eas_cloud_auth_verified = $false
+        eas_cloud_auth_verification = "not_checked_by_template; run npm --prefix mobile exec eas -- whoami --non-interactive or set EXPO_TOKEN"
+        build_blocker_summary = Protect-Label $buildBlockerSummary
+    }
     app = [ordered]@{
         artifact_label = Protect-Label $ArtifactLabel
         artifact_label_redacted = Protect-Label $ArtifactLabel
@@ -200,6 +293,10 @@ $markdown = @(
     "- APK label: $($packet.app.artifact_label_redacted)",
     "- Device label: $($packet.device.profile_label_redacted)",
     "- Blocked reason: $blocked",
+    "- Build blocker: $($packet.build_environment.build_blocker_summary)",
+    "- Local APK build ready: $($packet.build_environment.local_apk_build_ready)",
+    "- EAS CLI declared: $($packet.build_environment.local_eas_cli_declared)",
+    "- EXPO_TOKEN present: $($packet.build_environment.expo_token_present)",
     "",
     "Fill this template only from reviewed Android/emulator evidence. It is not a pass until every claim-control flag and required check is true/passed and redaction review is complete.",
     "",
@@ -227,6 +324,6 @@ $markdown = @(
 $markdown | Set-Content -Encoding UTF8 -LiteralPath $mdPath
 
 Write-Host "Android real-device evidence template created:"
-Write-Host " - $jsonPath"
-Write-Host " - $mdPath"
+Write-Host " - $(Get-DisplayPath $jsonPath)"
+Write-Host " - $(Get-DisplayPath $mdPath)"
 Write-Host "This template is fail-closed and is not a real-device pass."

@@ -16,10 +16,12 @@
 3. 启动成功后会打开 Lengrvis 桌面窗口。首屏可以直接从“整理下载目录、总结本地文档、查找大文件、检查电脑状态、文档问答”开始，每个模板都会显示本机处理、云端边界、审批、回滚和预计耗时。
 4. 如果启动失败，请先双击 `Start-Lengrvis-Debug.cmd`，它会把最近的错误日志打印出来；完整日志在 `logs` 文件夹。
 5. 如果你下载的是源码或 Git 仓库，请先看下面的“源码开发 setup”；源码依赖安装不属于普通用户启动路径。
+6. 完整的上手步骤、FAQ 与故障排查见 `docs/user-guide.md`。
 
 ## 普通用户配置与诊断入口
 
 - 配置 AI、隐私模式、本地模型、硬件加速和手机配对时，优先打开桌面窗口里的“设置”。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
+- 删除本机个人数据：当前提供 API 入口 `POST /api/system/privacy/erase-local-data`（需显式确认词），会删除任务、对话、录屏、配对、索引与已导出诊断包，保留防篡改审计链并记录删除事件；桌面设置页按钮入口尚未提供。数据清单与合规自查见 `docs/compliance/pipl-gdpr-checklist.md`（法务定稿未完成，不得对外宣称合规）。
 - 应用能打开但任务异常时，打开“系统信息”。这里会显示桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明入口。
 - “刷新本机状态”只刷新当前安装版本、后端状态和诊断快照；当前没有完整在线自动更新、下载更新或自动安装更新通道。
 - 需要反馈问题时再点“导出诊断包”。诊断包会写入本机数据目录下的 `diagnostic-packages`，包含版本、服务状态、本机范围摘要、网络接口、进程、启动项和最近失败统计；导出内容会尽量把 data/database/log 绝对路径、进程用户名、密钥、任务正文、设备名、配对码、grant id 和模型路径脱敏。
@@ -196,10 +198,12 @@ npm --prefix desktop run dev
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket smoke、mobile task companion smoke 和 mobile remote-input grant smoke。
 这些 mobile smoke 都是本地行为桩/客户端契约证据，避免发布门禁漏掉移动任务监督和远程输入授权边界；它们不等同于真机 LAN/WSS 或证书信任路径验收。
 
-最近一次记录的核心门禁验证结果：
+CI：`.github/workflows/ci.yml`（push/PR：hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck、mobile smokes）与 `.github/workflows/security-audit.yml`（每周 SCA）已提交，但尚未发生首次远端绿色运行；在那之前这只是 CI 配置，不是已生效的远端门禁。
+
+最近一次记录的核心门禁验证结果（backend 行更新于 2026-06-10，新增 3 项本机数据删除入口回归；同日完成根目录 `/app` 别名清理并将 `pytest.ini` pythonpath 指向 `backend`；其余各项为上一次完整 qa:gate 记录）：
 
 ```text
-backend: 1337 passed, 1 skipped
+backend: 1569 passed, 1 skipped
 desktop typecheck passed
 mobile typecheck passed
 mobile token smoke passed
@@ -234,6 +238,20 @@ git diff --check
 
 ```powershell
 npm run qa:gate
+```
+
+黄金任务回归（≥30 条真实任务的 E2E 回归，断言计划/风险/审批/文件副作用/工具产物，已包含在 backend pytest 与 `qa:gate` 中；单命令报告与 95% 通过率守门）：
+
+```powershell
+npm run golden:gate
+```
+
+数据集与证据边界见 `docs/qa/golden-tasks.md`：机器通过率是版本回归自证，不等同真人结果质量评分（成功率/可读性/返工率）签收；真人评审打包入口仍是 `npm run evidence:result-quality-review`。
+
+依赖漏洞扫描（desktop/mobile `npm audit` + backend `pip-audit`，高危即失败；漏洞披露流程见根目录 `SECURITY.md`）：
+
+```powershell
+npm run audit:deps
 ```
 
 已有 Windows 发布产物时再跑产物门禁：
@@ -332,7 +350,7 @@ npm run evidence:android-real-device-template -- -ArtifactLabel "<redacted apk l
 npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>"
 ```
 
-`npm --prefix mobile run build:android:preview` 和 `build:android:production` 会先跑 `preflight:android-release`，再进入 EAS build。`mobile/eas.json` 的 `preview` profile 产出内部 QA APK；`production` profile 产出商店 AAB，但不会提交或发布到 Play。EAS project/account/credentials 不写入仓库，候选构建日志必须记录 redacted EAS project/build label。严格 gate 默认 fail-closed：没有可安装 APK、没有真实 Android/模拟器 HTTPS/WSS、扫码配对、远程屏幕、click/text/PageDown、revoke/expiry 和脱敏复核证据时，不允许宣称安卓 App 或真机远控通过；即使严格 gate 通过，也只证明该 QA APK 和真机/模拟器证据，不代表 EAS submit、Play Console 审核、灰度或正式上架。
+`npm --prefix mobile run build:android:preview` 和 `build:android:production` 会先跑 `preflight:android-release`，再使用项目本地 `eas-cli` 进入 EAS build，避免依赖全局 `eas` 命令。Android 预检会确认远控硬化插件已注入 `network_security_config`（保留 cleartext=false，并允许测试设备显式安装的本地 CA）和 `FLAG_SECURE`（保护远控截图/最近任务快照）。`mobile/eas.json` 的 `preview` profile 产出内部 QA APK；`production` profile 产出商店 AAB，但不会提交或发布到 Play。EAS project/account/credentials 不写入仓库，候选构建日志必须记录 redacted EAS project/build label。严格 gate 默认 fail-closed：没有可安装 APK、没有真实 Android/模拟器 HTTPS/WSS、扫码配对、远程屏幕、click/text/PageDown、revoke/expiry 和脱敏复核证据时，不允许宣称安卓 App 或真机远控通过；即使严格 gate 通过，也只证明该 QA APK 和真机/模拟器证据，不代表 EAS submit、Play Console 审核、灰度或正式上架。
 
 只验证已有发布产物：
 
