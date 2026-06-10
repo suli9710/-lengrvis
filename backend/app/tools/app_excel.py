@@ -11,6 +11,7 @@ from app.core.audit import record
 from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 ALLOWED_OPERATIONS = frozenset(
@@ -326,7 +327,8 @@ def register(registry) -> None:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema={},
                 output_schema={},
                 risk_level=risk,

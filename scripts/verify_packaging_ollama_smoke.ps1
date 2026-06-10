@@ -8,6 +8,9 @@ Set-Location $Root
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+$DesktopPackage = Get-Content -LiteralPath (Join-Path $Root "desktop\package.json") -Raw | ConvertFrom-Json
+$SelfExtractingName = "Lengrvis-$($DesktopPackage.version)-x64-self-extracting.exe"
+
 function Resolve-SmokePath([string]$Path) {
     if ([System.IO.Path]::IsPathRooted($Path)) {
         return $Path
@@ -186,6 +189,25 @@ function New-SmokeSelfExtractingExecutable([string]$Path) {
     [System.IO.File]::WriteAllBytes($Path, $bytes)
 }
 
+function New-SmokeBackendCapabilityManifest([string]$Path) {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
+    $manifest = [ordered]@{
+        schema = "lengrvis-backend-capabilities/v1"
+        generated_at = (Get-Date).ToUniversalTime().ToString("o")
+        python = "smoke"
+        platform = "win32"
+        capabilities = [ordered]@{
+            docling = $false
+            unstructured = $false
+            paddleocr = $false
+            pytesseract = $false
+            playwright = $false
+            pywhispercpp = $false
+        }
+    }
+    Set-Content -LiteralPath $Path -Value ($manifest | ConvertTo-Json -Depth 4) -Encoding ASCII
+}
+
 function New-SmokePackage {
     param(
         [string]$RootPath,
@@ -210,7 +232,9 @@ function New-SmokePackage {
     }
     New-Item -ItemType Directory -Path (Join-Path $resources "app\dist") -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $resources "app\package.json") -Value '{"name":"lengrvis-smoke"}' -Encoding ASCII
-    New-SmokeSelfExtractingExecutable (Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe")
+    New-SmokeBackendCapabilityManifest (Join-Path $dist "backend-capabilities.json")
+    New-SmokeBackendCapabilityManifest (Join-Path $resources "backend\backend-capabilities.json")
+    New-SmokeSelfExtractingExecutable (Join-Path $dist $SelfExtractingName)
 
     if ($IncludeOllama) {
         $ollamaDir = Join-Path $resources "ollama"
@@ -243,7 +267,7 @@ function New-SmokePackage {
         dist = $dist
         portable = $portable
         zip = $zipPath
-        selfExtracting = Join-Path $dist "Lengrvis-0.1.0-x64-self-extracting.exe"
+        selfExtracting = Join-Path $dist $SelfExtractingName
     }
 }
 

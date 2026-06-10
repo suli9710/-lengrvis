@@ -221,10 +221,6 @@ def _sandbox_env() -> dict[str, str]:
             continue
         if key.startswith("LENGRVIS_SKILL_ENV_"):
             env[key.removeprefix("LENGRVIS_SKILL_ENV_")] = value
-        elif key.startswith("LENGRVIS_SKILL_ENV_"):
-            env[key.removeprefix("LENGRVIS_SKILL_ENV_")] = value
-        elif key.startswith("LENGRVIS_SKILL_ENV_"):
-            env[key.removeprefix("LENGRVIS_SKILL_ENV_")] = value
     return env
 
 

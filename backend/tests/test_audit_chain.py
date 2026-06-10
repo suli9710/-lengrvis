@@ -10,6 +10,7 @@ import pytest
 from app.core import db
 from app.core.audit import record
 from app.main import create_app
+from app.security import local_secret
 
 
 def test_audit_events_are_append_only_hash_chained(monkeypatch, tmp_path):
@@ -158,7 +159,12 @@ def test_audit_hmac_secret_is_generated_and_reused(monkeypatch, tmp_path):
     second = record("security.local_secret_second", "pytest", {"ok": True})
 
     assert secret_path.exists()
-    assert len(stored_secret) == 64
+    decrypted_secret = local_secret.read_local_secret(secret_path)
+    assert len(decrypted_secret) == 64
+    if local_secret.dpapi_available():
+        assert stored_secret.startswith(local_secret.LOCAL_SECRET_DPAPI_PREFIX)
+    else:
+        assert stored_secret == decrypted_secret
     assert first.hmac
     assert second.hmac
     assert secret_path.read_text(encoding="utf-8").strip() == stored_secret

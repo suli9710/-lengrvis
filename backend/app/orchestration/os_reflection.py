@@ -46,8 +46,17 @@ PROTECTED_STATUSES = {
 class OSReflectionDecider:
     """Small, bounded observe-reflect-decide layer for native OS execution."""
 
+    def __init__(
+        self,
+        *,
+        max_per_run: int = MAX_REFLECTIONS_PER_RUN,
+        max_per_step: int = MAX_REFLECTIONS_PER_STEP,
+    ) -> None:
+        self.max_per_run = max(0, max_per_run)
+        self.max_per_step = max(0, max_per_step)
+
     def should_reflect(self, data: OSReflectionInput) -> bool:
-        if data.run_reflection_count >= MAX_REFLECTIONS_PER_RUN:
+        if data.run_reflection_count >= self.max_per_run:
             return False
         if data.graph_error:
             return True
@@ -56,7 +65,7 @@ class OSReflectionDecider:
         for step, outcome in data.step_outcomes:
             if outcome.kind not in {"failed", "fatal_failed"}:
                 continue
-            if data.step_reflection_counts.get(step.id, 0) >= MAX_REFLECTIONS_PER_STEP:
+            if data.step_reflection_counts.get(step.id, 0) >= self.max_per_step:
                 continue
             if _result_wants_replan(outcome.result) or _is_low_information_failure(outcome.result):
                 return True
@@ -69,7 +78,7 @@ class OSReflectionDecider:
         for step, outcome in data.step_outcomes:
             if outcome.kind not in {"failed", "fatal_failed"}:
                 continue
-            if data.step_reflection_counts.get(step.id, 0) >= MAX_REFLECTIONS_PER_STEP:
+            if data.step_reflection_counts.get(step.id, 0) >= self.max_per_step:
                 continue
             result = outcome.result
             if _resource_state_error(result):

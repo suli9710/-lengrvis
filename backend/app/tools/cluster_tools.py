@@ -13,6 +13,7 @@ from app.indexer.embedding_service import embed_texts_sync
 from app.indexer.ocr_service import IMAGE_EXTENSIONS
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 _VALID_CLUSTER_BY = {"auto", "scene", "people", "objects", "time", "location", "tags"}
 _EXACT_GROUP_BY = {"scene", "people", "objects", "tags"}
@@ -886,18 +887,32 @@ def register(registry) -> None:
             },
         },
     }
+    _cluster_by_content_schema = {
+        "type": "object",
+        "properties": {
+            "k": {"type": "integer", "description": "Target cluster count; omit for automatic selection."},
+            "group_by": {
+                "type": "string",
+                "description": "Exact grouping key instead of semantic clustering: category, type, or extension.",
+            },
+        },
+    }
+    _no_args_schema = {"type": "object", "properties": {}, "additionalProperties": False}
+    # image.cluster* stays off the fast path: describe_image may route through a
+    # vision model, which deserves the full per-call review pipeline.
     defs = [
-        ("file.cluster_by_content", cluster_by_content, {}),
-        ("app.cluster_installed", cluster_apps, {}),
-        ("image.cluster", cluster_images, _image_cluster_schema),
-        ("image.cluster_images", cluster_images, _image_cluster_schema),
-        ("file.suggest_folder_structure", suggest_folder_structure, {}),
+        ("file.cluster_by_content", cluster_by_content, _cluster_by_content_schema, True),
+        ("app.cluster_installed", cluster_apps, _no_args_schema, True),
+        ("image.cluster", cluster_images, _image_cluster_schema, False),
+        ("image.cluster_images", cluster_images, _image_cluster_schema, False),
+        ("file.suggest_folder_structure", suggest_folder_structure, _no_args_schema, True),
     ]
-    for name, fn, schema in defs:
+    for name, fn, schema, fast_path in defs:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema=schema,
                 output_schema={},
                 risk_level=RiskLevel.R0_READ_ONLY,
@@ -905,5 +920,12 @@ def register(registry) -> None:
                 supports_dry_run=False,
                 requires_authorized_path=True,
                 execute=fn,
+                read_only=True,
+                concurrency_safe=True,
+                capabilities=["filesystem"],
+                effects=["read", "list"],
+                resource_kinds=["image"] if name.startswith("image.") else ["file", "directory", "app"],
+                fast_path_eligible=fast_path,
+                trust_tier="builtin",
             )
         )

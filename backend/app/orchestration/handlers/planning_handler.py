@@ -17,6 +17,24 @@ if TYPE_CHECKING:
     from app.orchestration.dispatcher import EventDispatcher
 
 
+def _planner_tool_spec(tool) -> str:
+    """One prompt line per tool: name, description, and required args.
+
+    Falls back to the bare name when the description is the generated
+    placeholder, so the planner prompt never shows redundant text.
+    """
+    name = str(getattr(tool, "name", "") or "")
+    spec = name
+    description = str(getattr(tool, "description", "") or "").strip()
+    if description and description != name.replace(".", " "):
+        spec = f"{name}: {description}"
+    schema = getattr(tool, "input_schema", None)
+    required = schema.get("required") if isinstance(schema, dict) else None
+    if required:
+        spec += f" (required: {', '.join(str(item) for item in required)})"
+    return spec
+
+
 class PlanningHandler:
     def __init__(self, orchestrator: OrchestratorAgent) -> None:
         self.orchestrator = orchestrator
@@ -78,7 +96,9 @@ class PlanningHandler:
     ) -> Plan:
         orchestrator = self.orchestrator
         list_tools = getattr(orchestrator.registry, "list_for_planning", orchestrator.registry.list)
-        tools = [tool.name for tool in list_tools() if tool.name == "tool.search" or not getattr(tool, "defer_loading", False)]
+        visible_tools = [tool for tool in list_tools() if tool.name == "tool.search" or not getattr(tool, "defer_loading", False)]
+        tools = [tool.name for tool in visible_tools]
+        tool_specs = [_planner_tool_spec(tool) for tool in visible_tools]
         perception_context = perception_context_summary(latest_perception_context())
         try:
             plan = await orchestrator.planner.create_plan(
@@ -90,11 +110,31 @@ class PlanningHandler:
                 perception_context=perception_context,
                 goal_context=goal_context,
                 session_context=session_context,
+                tool_specs=tool_specs,
             )
             self._annotate_plan_tool_contracts(plan, tools)
             self._publish_annotated_plan(task.id, plan)
             return plan
         except TypeError as exc:
+            if "tool_specs" in str(exc):
+                # Planner predates tool_specs: drop only that kwarg first so
+                # session/goal/perception context still reaches it.
+                try:
+                    plan = await orchestrator.planner.create_plan(
+                        task.id,
+                        goal,
+                        mode,
+                        tools,
+                        memory_context=memory_context,
+                        perception_context=perception_context,
+                        goal_context=goal_context,
+                        session_context=session_context,
+                    )
+                    self._annotate_plan_tool_contracts(plan, tools)
+                    self._publish_annotated_plan(task.id, plan)
+                    return plan
+                except TypeError as retry_exc:
+                    exc = retry_exc
             if (
                 "perception_context" not in str(exc)
                 and "goal_context" not in str(exc)

@@ -1,0 +1,6 @@
+# vendor/lengrvis-code is a full copy of a separate decompiled CLI repository
+# (thousands of files). Keep it out of editor indexing so the main project's
+# search/context tooling is not dominated by vendor content. Files remain
+# readable on demand. This also prepares for the planned submodule conversion
+# (scripts/migrate_vendor_to_submodule.ps1).
+vendor/lengrvis-code/

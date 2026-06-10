@@ -12,7 +12,7 @@ from app.core.schemas import AgentMessage, Task, TaskStatus
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.policy.redaction import redact_public_text, redact_value
-from app.services import task_recording_service
+from app.services import task_artifact_service, task_recording_service
 from app.services.task_explain_service import (
     build_task_completion_evidence,
     build_task_explain,
@@ -1059,6 +1059,26 @@ def progress(task_id: str):
             )
     progress_events.sort(key=lambda item: (item.get("created_at") or "", item.get("id") or ""))
     return {"task_id": task.id, "status": task.status, "progress": progress_events, "count": len(progress_events)}
+
+
+@router.get("/tasks/{task_id}/artifacts")
+def artifacts(task_id: str):
+    """Desktop-only workspace view: real local artifact paths for this task.
+
+    Accepts either a task id or a run id (the desktop merges run/task views and
+    uses run ids for engine-backed tasks). Mobile/public clients must keep
+    using the redacted timeline/replay payloads.
+    """
+    resolved_task_id = task_id
+    try:
+        get_task(task_id)
+    except KeyError:
+        run = db.fetch_one("runs", task_id)
+        linked_task_id = str((run or {}).get("task_id") or "")
+        if not linked_task_id:
+            raise HTTPException(status_code=404, detail="Task not found") from None
+        resolved_task_id = linked_task_id
+    return task_artifact_service.collect_task_artifacts(resolved_task_id)
 
 
 @router.get("/tasks/{task_id}/explain")

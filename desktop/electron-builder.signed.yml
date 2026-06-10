@@ -1,0 +1,25 @@
+# Azure Trusted Signing 构建配置（在基础配置上叠加签名选项）。
+#
+# 用法（CI 或本地持有凭证的机器）：
+#   electron-builder --config electron-builder.signed.yml
+#   或 npm run dist:signed
+#
+# 必需的环境变量（Azure service principal 凭证，electron-builder 自动读取）：
+#   AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
+#
+# 下面三个字段需要在 Azure 门户开通 Trusted Signing 后按实际资源填写，
+# 占位值会让构建在签名阶段显式失败，避免误发未签名包。
+extends: ./electron-builder.yml
+
+win:
+  azureSignOptions:
+    # Trusted Signing 账户所在区域 endpoint，例如 https://eus.codesigning.azure.net
+    endpoint: REPLACE_WITH_AZURE_CODESIGNING_ENDPOINT
+    # Trusted Signing 账户名
+    codeSigningAccountName: REPLACE_WITH_ACCOUNT_NAME
+    # 证书配置文件名（Certificate Profile）
+    certificateProfileName: REPLACE_WITH_CERTIFICATE_PROFILE
+  # 签名后启用更新包签名校验；publisherName 必须与证书 Subject CN 完全一致。
+  verifyUpdateCodeSignature: true
+  publisherName:
+    - REPLACE_WITH_CERTIFICATE_SUBJECT_CN

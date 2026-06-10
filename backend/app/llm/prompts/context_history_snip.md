@@ -1,1 +1,1 @@
-[Context history snip] {{removed}} older messages were omitted from this prompt view. Durable session memory and recent messages are preserved.
+[Context history snip] $removed older messages were omitted from this prompt view. Durable session memory and recent messages are preserved. Do not guess omitted content; rely on the summary and recent messages, and re-read files or re-run read-only tools if a detail is missing.

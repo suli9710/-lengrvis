@@ -35,7 +35,9 @@ import type {
 } from "../shared/types";
 import { AgentConversationPanel } from "./components/AgentConversationPanel";
 import { ApprovalDialog } from "./components/ApprovalDialog";
+import { ArtifactsPanel } from "./components/ArtifactsPanel";
 import { AuditLogPanel } from "./components/AuditLogPanel";
+import { MetricsPanel } from "./components/MetricsPanel";
 import { ChatPanel } from "./components/ChatPanel";
 import type { DocumentIntentAction, FileToolTab } from "./components/FileSearchPanel";
 import { MemoryPanel } from "./components/MemoryPanel";
@@ -1112,6 +1114,7 @@ export function App() {
               onExecuteSuggestion={executeSuggestion}
               suggestions={intentSuggestions}
               autoFocus
+              api={api}
             />
             <div className="conversation-side">
               <PlanViewer plan={plan} />
@@ -1152,7 +1155,7 @@ export function App() {
                 onRequestCleanupApproval={requestCleanupApproval}
               />
             </Suspense>
-            <ChatPanel messages={recentReadableMessages} connectionState={connectionState} onSend={sendMessage} />
+            <ChatPanel messages={recentReadableMessages} connectionState={connectionState} onSend={sendMessage} api={api} />
           </section>
         ) : null}
 
@@ -1183,6 +1186,8 @@ export function App() {
             <AgentConversationPanel conversations={agentConversations} />
             <SchedulePanel api={api} />
             <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
+            <ArtifactsPanel tasks={tasks} api={api} focusedTaskId={focusedTaskId} onRevealPath={revealPath} />
+            <MetricsPanel api={api} />
             <PlanViewer plan={plan} />
           </section>
         ) : null}

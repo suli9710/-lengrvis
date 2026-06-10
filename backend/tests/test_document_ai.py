@@ -225,3 +225,50 @@ def test_tool_respects_document_llm_budget(monkeypatch, tmp_path: Path):
 
     assert result["note"] == "llm_summary"
     assert len(stub.calls[0][-1]["content"]) <= 1200
+
+
+def test_document_tools_register_validate_input_for_error_prone_tools():
+    from app.llm.registry import get_effective_settings
+    from app.tools.registry import register_all_tools
+
+    registry = register_all_tools(settings=get_effective_settings())
+    assert registry.get("document.compare").validate_input is not None
+    assert registry.get("document.qa").validate_input is not None
+    assert registry.get("document.ask_with_citations").validate_input is not None
+    # Tools without a semantic precondition stay unconstrained.
+    assert registry.get("document.summarize").validate_input is None
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {},
+        {"left_path": "only-one.txt"},
+        {"paths": ["just-one.txt"]},
+        {"left_path": ["not", "a", "string"], "right_path": "b.txt"},
+    ],
+)
+def test_validate_compare_rejects_incomplete_path_pairs(args):
+    with pytest.raises(ValueError, match="two document paths|path strings"):
+        document_tools._validate_compare(args, {})
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"left_path": "a.txt", "right_path": "b.txt"},
+        {"paths": ["a.txt", "b.txt"]},
+    ],
+)
+def test_validate_compare_accepts_two_paths(args):
+    document_tools._validate_compare(args, {})  # does not raise
+
+
+@pytest.mark.parametrize("args", [{}, {"question": ""}, {"question": "   "}])
+def test_validate_question_requires_non_empty_question(args):
+    with pytest.raises(ValueError, match="non-empty 'question'"):
+        document_tools._validate_question(args, {})
+
+
+def test_validate_question_accepts_real_question():
+    document_tools._validate_question({"question": "What is the payment term?"}, {})  # does not raise

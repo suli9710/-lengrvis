@@ -9,8 +9,9 @@ MOBILE_SECURE_TRANSPORT_ERROR = "Remote mobile pairing and mobile APIs require H
 
 
 def is_loopback_host(host: str | None) -> bool:
+    # Fail closed: an absent/unknown client host must never be treated as local.
     if not host:
-        return True
+        return False
     normalized = host.strip().lower()
     if normalized.startswith("[") and "]" in normalized:
         normalized = normalized[1:normalized.index("]")]

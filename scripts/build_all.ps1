@@ -9,15 +9,31 @@
     [string]$DistDir = "dist",
     [string]$PortableDir = "dist\Lengrvis-win-portable",
     [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
-    [string]$SelfExtractingExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe",
+    # Defaults to dist\Lengrvis-<version>-x64-self-extracting.exe; the version is
+    # read from desktop\package.json (single source of truth).
+    [string]$SelfExtractingExe = "",
     [string]$BundledOllamaDir = "",
     [string]$BundledOllamaModelsDir = "",
-    [string]$BundledOllamaManifest = ""
+    [string]$BundledOllamaManifest = "",
+    [string[]]$RequiredBackendCapabilities = @()
 )
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
+
+function Get-DesktopVersion {
+    $packageJsonPath = Join-Path $Root "desktop\package.json"
+    $package = Get-Content -LiteralPath $packageJsonPath -Raw | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($package.version)) {
+        throw "desktop\package.json has no version field; it is the single source of truth for artifact names."
+    }
+    return $package.version
+}
+
+if ([string]::IsNullOrWhiteSpace($SelfExtractingExe)) {
+    $SelfExtractingExe = "dist\Lengrvis-$(Get-DesktopVersion)-x64-self-extracting.exe"
+}
 
 function Resolve-ProjectPath {
     param([string]$Path)
@@ -34,6 +50,7 @@ function Invoke-PackagingVerification {
         PortableZip = $PortableZip
         SelfExtractingExe = $SelfExtractingExe
         SmokeTimeoutSeconds = $SmokeTimeoutSeconds
+        RequiredBackendCapabilities = $RequiredBackendCapabilities
     }
     if ($RequireBundledOllama) {
         $verifyArgs.RequireBundledOllama = $true

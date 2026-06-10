@@ -141,7 +141,12 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
     }
     if key in int_min_one_keys:
         return _coerce_int_setting(key, value, minimum=1)
-    if key in {"llm_api_max_retries", "recovery_max_retries"}:
+    if key in {
+        "llm_api_max_retries",
+        "recovery_max_retries",
+        "os_reflection_max_per_run",
+        "os_reflection_max_per_step",
+    }:
         return _coerce_int_setting(key, value, minimum=0)
     float_min_zero_keys = {
         "llm_api_retry_backoff_seconds",

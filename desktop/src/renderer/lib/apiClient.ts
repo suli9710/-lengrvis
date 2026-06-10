@@ -54,6 +54,7 @@ import type {
   LLMHealthStatus,
   LLMProfile,
   LocalLLMHealth,
+  LocalMetricsSummary,
   LocalModelReadiness,
   LocalModelSetupPlan,
   PerceptionSuggestionLaunchRequest,
@@ -66,6 +67,7 @@ import type {
   SystemDiagnostic,
   SystemInfo,
   SystemProcess,
+  TaskArtifactsSummary,
   TaskCompletionEvidence,
   TaskEvent,
   TaskBoundaryEvent,
@@ -353,6 +355,92 @@ export class LengrvisApiClient {
       data: event,
       receivedAt: taskResponse.receivedAt
     };
+  }
+
+  getVoiceHealth(): Promise<ApiResponse<{ available: boolean; provider: string; detail: string }>> {
+    return this.request<{ available: boolean; provider: string; detail: string }>({
+      endpoint: "/api/perception/voice/health",
+      timeoutMs: 2500
+    });
+  }
+
+  transcribeVoice(body: { audioBase64: string; sampleRate: number; language?: string }): Promise<
+    ApiResponse<{ transcript: string; confidence: number | null; language: string; provider: string }>
+  > {
+    return this.request<
+      { transcript: string; confidence: number | null; language: string; provider: string },
+      { audio_base64: string; sample_rate: number; language?: string }
+    >({
+      endpoint: "/api/perception/voice/transcribe",
+      method: "POST",
+      timeoutMs: 30_000,
+      body: {
+        audio_base64: body.audioBase64,
+        sample_rate: body.sampleRate,
+        ...(body.language ? { language: body.language } : {})
+      }
+    });
+  }
+
+  listTaskArtifacts(taskId: string): Promise<ApiResponse<TaskArtifactsSummary>> {
+    return this.request<BackendTaskArtifacts>({ endpoint: `/api/tasks/${taskId}/artifacts`, timeoutMs: 10_000 }).then(
+      (response) =>
+        mapResponse(response, (data) => ({
+          taskId: data.task_id,
+          artifacts: (data.artifacts ?? []).map((item) => ({
+            path: item.path,
+            kind: item.kind,
+            toolName: item.tool_name,
+            stepId: item.step_id,
+            createdAt: item.created_at,
+            exists: Boolean(item.exists),
+            isDir: Boolean(item.is_dir),
+            sizeBytes: Number(item.size_bytes ?? 0)
+          })),
+          counts: {
+            total: Number(data.counts?.total ?? 0),
+            existing: Number(data.counts?.existing ?? 0),
+            missing: Number(data.counts?.missing ?? 0),
+            changed: Number(data.counts?.changed ?? 0),
+            generated: Number(data.counts?.generated ?? 0)
+          }
+        }))
+    );
+  }
+
+  getLocalMetrics(days = 7): Promise<ApiResponse<LocalMetricsSummary>> {
+    return this.request<BackendLocalMetrics>({ endpoint: `/api/metrics/local?days=${days}`, timeoutMs: 10_000 }).then(
+      (response) =>
+        mapResponse(response, (data) => ({
+          windowDays: Number(data.window_days ?? days),
+          generatedAt: data.generated_at ?? "",
+          tasks: {
+            total: Number(data.tasks?.total ?? 0),
+            terminal: Number(data.tasks?.terminal ?? 0),
+            succeeded: Number(data.tasks?.succeeded ?? 0),
+            successRate: data.tasks?.success_rate ?? null,
+            byStatus: data.tasks?.by_status ?? {}
+          },
+          runs: {
+            total: Number(data.runs?.total ?? 0),
+            byPhase: data.runs?.by_phase ?? {}
+          },
+          recovery: {
+            reflectionsStarted: Number(data.recovery?.reflections_started ?? 0),
+            runsWithReflection: Number(data.recovery?.runs_with_reflection ?? 0),
+            recoveryTriggerRate: data.recovery?.recovery_trigger_rate ?? null,
+            decidedActions: data.recovery?.decided_actions ?? {},
+            askUserShare: data.recovery?.ask_user_share ?? null
+          },
+          llm: {
+            calls: Number(data.llm?.calls ?? 0),
+            anomalies: Number(data.llm?.anomalies ?? 0),
+            anomalyRate: data.llm?.anomaly_rate ?? null,
+            estimatedCalls: Number(data.llm?.estimated_calls ?? 0),
+            byFinishReason: data.llm?.by_finish_reason ?? {}
+          }
+        }))
+    );
   }
 
   async getCurrentPlan(): Promise<ApiResponse<Plan>> {
@@ -4338,6 +4426,59 @@ interface BackendIntentSuggestion {
   confidence?: number;
   agent_hint?: string;
   reason?: string;
+}
+
+interface BackendTaskArtifactItem {
+  path: string;
+  kind: string;
+  tool_name: string;
+  step_id: string;
+  created_at: string;
+  exists?: boolean;
+  is_dir?: boolean;
+  size_bytes?: number;
+}
+
+interface BackendTaskArtifacts {
+  task_id: string;
+  artifacts?: BackendTaskArtifactItem[];
+  counts?: {
+    total?: number;
+    existing?: number;
+    missing?: number;
+    changed?: number;
+    generated?: number;
+  };
+}
+
+interface BackendLocalMetrics {
+  window_days?: number;
+  generated_at?: string;
+  tasks?: {
+    total?: number;
+    terminal?: number;
+    succeeded?: number;
+    success_rate?: number | null;
+    by_status?: Record<string, number>;
+  };
+  runs?: {
+    total?: number;
+    by_phase?: Record<string, number>;
+  };
+  recovery?: {
+    reflections_started?: number;
+    runs_with_reflection?: number;
+    recovery_trigger_rate?: number | null;
+    decided_actions?: Record<string, number>;
+    ask_user_share?: number | null;
+  };
+  llm?: {
+    calls?: number;
+    anomalies?: number;
+    anomaly_rate?: number | null;
+    estimated_calls?: number;
+    by_finish_reason?: Record<string, number>;
+  };
 }
 
 interface BackendTask {

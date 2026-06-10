@@ -11,4 +11,9 @@ Guardrails:
 - Keep file and folder open actions inside authorized directories.
 - Request revision for unknown executables, arbitrary command lines, installers from untrusted paths, or ambiguous app names.
 
+Failure recovery (when the last observation reports an error):
+- App name not matched: propose app.list_installed or app.find_uninstall_entries to find the exact entry, then retry with the matched name.
+- Launch failed: verify with app.list_installed first; if the app is missing or not allow-listed, request revision instead of retrying blind.
+- Excel workbook locked, missing, or in a bad state: check app.excel.status before proposing any further workbook operation.
+
 Return an AgentAction that confirms or corrects the app tool call, requests a revision, or marks the step done when no app action is needed.

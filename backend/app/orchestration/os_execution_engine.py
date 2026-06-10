@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
+from app.llm.registry import get_effective_settings
 from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
 from app.orchestration.execution_models import (
     EngineSelection,
@@ -70,7 +71,11 @@ class OSExecutionEngine(ExecutionEngine):
         self.store = store or default_run_store
         self.event_hook = event_hook
         self._orchestrators_by_run: dict[str, OrchestratorAgent] = {}
-        self.reflection_decider = OSReflectionDecider()
+        settings = get_effective_settings()
+        self.reflection_decider = OSReflectionDecider(
+            max_per_run=settings.os_reflection_max_per_run,
+            max_per_step=settings.os_reflection_max_per_step,
+        )
 
     async def start_run(self, goal: str, mode: str, engine: EngineSelection = "auto") -> RunState:  # noqa: ARG002
         orchestrator = self._new_orchestrator()

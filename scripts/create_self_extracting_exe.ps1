@@ -1,11 +1,16 @@
 ﻿param(
     [string]$PortableDir = "dist\Lengrvis-win-portable",
-    [string]$OutputExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe"
+    [string]$OutputExe = ""
 )
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $Root
+
+if ([string]::IsNullOrWhiteSpace($OutputExe)) {
+    $desktopPackage = Get-Content -LiteralPath (Join-Path $Root "desktop\package.json") -Raw | ConvertFrom-Json
+    $OutputExe = "dist\Lengrvis-$($desktopPackage.version)-x64-self-extracting.exe"
+}
 
 function Resolve-ProjectPath {
     param([string]$Path)

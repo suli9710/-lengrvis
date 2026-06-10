@@ -2,9 +2,15 @@
     [string]$DistDir = "dist",
     [string]$PortableDir = "dist\Lengrvis-win-portable",
     [string]$PortableZip = "dist\Lengrvis-win-portable.zip",
-    [string]$SelfExtractingExe = "dist\Lengrvis-0.1.0-x64-self-extracting.exe",
+    # Defaults to dist\Lengrvis-<version>-x64-self-extracting.exe; the version is
+    # read from desktop\package.json (single source of truth).
+    [string]$SelfExtractingExe = "",
     [switch]$RequireBundledOllama,
     [switch]$RunExecutableSmoke,
+    # Optional capability names that MUST be true in backend-capabilities.json
+    # (e.g. "docling","paddleocr"). Guards against build machines silently
+    # producing a backend.exe with fewer bundled capabilities.
+    [string[]]$RequiredBackendCapabilities = @(),
     [ValidateRange(1, 300)]
     [int]$SmokeTimeoutSeconds = 30
 )
@@ -12,6 +18,14 @@
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
+
+if ([string]::IsNullOrWhiteSpace($SelfExtractingExe)) {
+    $desktopPackage = Get-Content -LiteralPath (Join-Path $Root "desktop\package.json") -Raw | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($desktopPackage.version)) {
+        throw "desktop\package.json has no version field; it is the single source of truth for artifact names."
+    }
+    $SelfExtractingExe = "dist\Lengrvis-$($desktopPackage.version)-x64-self-extracting.exe"
+}
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -73,6 +87,54 @@ function Test-NonEmptyDirectory([string]$Label, [string]$Path) {
         return
     }
     Write-Host "[ok] $Label contains files"
+}
+
+$BackendCapabilityManifestSchema = "lengrvis-backend-capabilities/v1"
+# Must stay in sync with OPTIONAL_CAPABILITY_MODULES in backend/build_backend.py.
+$ExpectedBackendCapabilityNames = @("docling", "unstructured", "paddleocr", "pytesseract", "playwright", "pywhispercpp")
+
+function Test-BackendCapabilityManifest {
+    param(
+        [string]$Label,
+        [string]$Path,
+        [string[]]$RequiredCapabilities
+    )
+    $FullPath = Resolve-ProjectPath $Path
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+        $Failures.Add("$Label missing: $FullPath (rebuild the backend with scripts\build_backend.ps1; the build emits this manifest next to backend.exe)")
+        $MissingArtifacts.Add([pscustomobject]@{ Label = $Label; Path = $FullPath; Type = "file" })
+        return
+    }
+    try {
+        $Manifest = Get-Content -LiteralPath $FullPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        $Failures.Add("$Label is not valid JSON: $FullPath")
+        return
+    }
+    if ($Manifest.schema -ne $BackendCapabilityManifestSchema) {
+        $Failures.Add("$Label has unexpected schema '$($Manifest.schema)'; expected '$BackendCapabilityManifestSchema': $FullPath")
+        return
+    }
+    if ($null -eq $Manifest.capabilities) {
+        $Failures.Add("$Label has no capabilities object: $FullPath")
+        return
+    }
+    $MissingNames = @($ExpectedBackendCapabilityNames | Where-Object {
+        $null -eq $Manifest.capabilities.PSObject.Properties[$_]
+    })
+    if ($MissingNames.Count -gt 0) {
+        $Failures.Add("$Label is stale; missing capability entries: $($MissingNames -join ', ') (rebuild the backend so the manifest matches backend/build_backend.py)")
+        return
+    }
+    $EnabledNames = @($Manifest.capabilities.PSObject.Properties | Where-Object { $_.Value -eq $true } | ForEach-Object { $_.Name })
+    $MissingRequired = @($RequiredCapabilities | Where-Object { $EnabledNames -notcontains $_ })
+    if ($MissingRequired.Count -gt 0) {
+        $Failures.Add("$Label shows this backend.exe was built WITHOUT required capabilities: $($MissingRequired -join ', ') (install them in the build environment and rebuild)")
+        return
+    }
+    $EnabledText = if ($EnabledNames.Count -gt 0) { $EnabledNames -join ", " } else { "none" }
+    Write-Host "[ok] $Label (enabled: $EnabledText): $FullPath"
 }
 
 function Test-ZipEntry([System.IO.Compression.ZipArchive]$Zip, [string]$EntryName) {
@@ -905,6 +967,8 @@ Test-RequiredDirectory "portable renderer dist" $PortableAppDistPath
 Test-RequiredFile "portable app package manifest" (Join-Path $PortablePath "resources\app\package.json")
 Test-RequiredFile "portable zip" $PortableZipPath
 Test-RequiredFile "self-extracting executable" $SelfExtractingPath
+Test-BackendCapabilityManifest -Label "backend capability manifest" -Path (Join-Path $DistPath "backend-capabilities.json") -RequiredCapabilities $RequiredBackendCapabilities
+Test-BackendCapabilityManifest -Label "portable backend capability manifest" -Path (Join-Path $PortablePath "resources\backend\backend-capabilities.json") -RequiredCapabilities $RequiredBackendCapabilities
 Test-PEExecutableHeader -Label "backend executable" -Path $BackendExePath -MinimumBytes $MinimumBackendExecutableBytes | Out-Null
 $PortableLauncherPreflightPassed = Test-PEExecutableHeader -Label "portable launcher" -Path $PortableLauncherPath -MinimumBytes $MinimumPortableLauncherBytes
 Test-PEExecutableHeader -Label "portable backend executable" -Path $PortableBackendExePath -MinimumBytes $MinimumBackendExecutableBytes | Out-Null
@@ -925,6 +989,7 @@ if (Test-Path -LiteralPath $PortableZipPath -PathType Leaf) {
     try {
         Test-ZipEntry $Zip "Lengrvis.exe"
         Test-ZipEntry $Zip "resources/backend/backend.exe"
+        Test-ZipEntry $Zip "resources/backend/backend-capabilities.json"
         Test-ZipEntry $Zip "resources/app/package.json"
         Test-ZipReleaseSourceMapFree -Zip $Zip -Label "portable zip app dist" -Prefix "resources/app/dist"
         if ($RequireBundledOllama) {

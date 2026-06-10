@@ -3,7 +3,6 @@ from __future__ import annotations
 import hmac
 import json
 import re
-import secrets
 import sqlite3
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1485,25 +1484,16 @@ def _audit_event_hmac(event_hash: str) -> str:
 
 
 def _audit_hmac_secret() -> str:
+    from app.security.local_secret import load_or_create_local_secret
+
     configured = str(get_env("LENGRVIS_AUDIT_HMAC_SECRET") or "").strip()
     if configured:
         return configured
 
-    secret_path = db_path().parent / AUDIT_HMAC_SECRET_FILE
-    try:
-        if secret_path.exists():
-            value = secret_path.read_text(encoding="utf-8").strip()
-            if value:
-                return value
-        value = secrets.token_hex(32)
-        secret_path.write_text(value, encoding="utf-8")
-        try:
-            secret_path.chmod(0o600)
-        except OSError:
-            pass
-        return value
-    except OSError as exc:
-        raise RuntimeError("Audit HMAC secret is unavailable.") from exc
+    return load_or_create_local_secret(
+        db_path().parent / AUDIT_HMAC_SECRET_FILE,
+        unavailable_message="Audit HMAC secret is unavailable.",
+    )
 
 
 def fetch_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:

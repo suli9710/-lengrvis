@@ -13,6 +13,7 @@ from app.policy.risk import RiskLevel
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
 from app.services.remote_desktop_service import capture_screen
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 _REMOTE_ACTOR = "RemoteDesktop"
@@ -355,7 +356,8 @@ def register(registry) -> None:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema={},
                 output_schema={},
                 risk_level=risk,

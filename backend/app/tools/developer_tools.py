@@ -14,6 +14,7 @@ from app.core.paths import resolve_authorized
 from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 READONLY_SHELL_COMMANDS = {
@@ -838,7 +839,8 @@ def register(registry) -> None:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema=_schema(name),
                 output_schema={"type": "object"},
                 risk_level=risk_level,
@@ -850,7 +852,6 @@ def register(registry) -> None:
                 read_only=read_only,
                 concurrency_safe=read_only,
                 result_summary=_result_summary,
-                search_hint="developer cli grep glob git diff shell read-only pytest test inventory worktree preview controlled test run background",
                 ui_summary=f"{name} developer tool",
                 capabilities=capabilities,
                 effects=effects,

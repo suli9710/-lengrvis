@@ -77,6 +77,20 @@ def desktop_api_token_optional_for_testclient(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
 
 
+@pytest.fixture(autouse=True)
+def isolate_local_runtime_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep contract tests independent of the developer's real config.yaml/.env.
+
+    AppSettings.from_sources() auto-discovers config.yaml/.env from the repo
+    root, so a developer's live cloud configuration would otherwise leak into
+    contract assertions. Point discovery at nonexistent paths; tests that need
+    a specific config file set LENGRVIS_CONFIG_FILE/LENGRVIS_ENV_FILE themselves.
+    """
+    missing = tmp_path / "_no_runtime_config"
+    monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(missing / "config.yaml"))
+    monkeypatch.setenv("LENGRVIS_ENV_FILE", str(missing / ".env"))
+
+
 def import_first(module_names: Iterable[str]) -> Any:
     """Import the first available module from a list of expected locations."""
 

@@ -1,35 +1,763 @@
-# Direct dependency lock for backend/requirements.txt.
+﻿# Fully resolved dependency lock for backend/requirements.txt.
 #
-# This file pins only the direct backend requirements. Pins were captured from
-# the current Python 3.12 environment when installed; dependencies absent from
-# that environment are pinned to the existing minimum declared in
-# backend/requirements.txt so the gate can verify every direct dependency.
-# Upgrade this to a full resolved lock with uv or pip-tools when the project
-# adopts a dedicated Python lock workflow.
+# Generated with: python -m uv pip compile backend/requirements.txt --python-version 3.12
+#   -o backend/requirements-lock.txt
+# Resolved on win32 / CPython 3.12. Regenerate with the same command after
+# editing backend/requirements.txt.
 
-fastapi==0.136.3
-uvicorn[standard]==0.47.0
-pydantic==2.13.4
-PyJWT==2.13.0
-httpx==0.28.1
-PyYAML==6.0.3
-psutil==7.2.2
-send2trash==2.1.0
-pypdf==6.12.1
-Pillow==12.2.0
-pytesseract==0.3.13
-python-docx==1.2.0
-openpyxl==3.1.5
-python-pptx==1.0.2
-pandas==3.0.3
-beautifulsoup4==4.14.3
-playwright==1.60.0
+accelerate==1.13.0
+    # via
+    #   docling-ibm-models
+    #   docling-slim
+    #   unstructured-inference
+aiofiles==25.1.0
+    # via unstructured-client
+albucore==0.0.24
+    # via
+    #   albumentations
+    #   paddleocr
+albumentations==2.0.8
+    # via paddleocr
+annotated-doc==0.0.4
+    # via
+    #   fastapi
+    #   typer
+annotated-types==0.7.0
+    # via pydantic
+antlr4-python3-runtime==4.9.3
+    # via omegaconf
+anyio==4.13.0
+    # via
+    #   httpx
+    #   starlette
+    #   watchfiles
+attrs==26.1.0
+    # via
+    #   jsonlines
+    #   jsonschema
+    #   referencing
+beautifulsoup4==4.15.0
+    # via
+    #   -r backend/requirements.txt
+    #   docling-slim
+    #   paddleocr
+    #   unstructured
+blake3==1.0.8
+    # via -r backend/requirements.txt
+blis==1.3.3
+    # via thinc
+catalogue==2.0.10
+    # via
+    #   spacy
+    #   srsly
+    #   thinc
+certifi==2026.5.20
+    # via
+    #   docling-slim
+    #   httpcore
+    #   httpx
+    #   requests
+cffi==2.0.0
+    # via cryptography
+charset-normalizer==3.4.7
+    # via
+    #   pdfminer-six
+    #   requests
+    #   unstructured
+click==8.4.1
+    # via
+    #   huggingface-hub
+    #   python-oxmsg
+    #   typer
+    #   uvicorn
+cloudpathlib==0.24.0
+    # via weasel
+colorama==0.4.6
+    # via
+    #   click
+    #   colorlog
+    #   tqdm
+    #   uvicorn
+    #   wasabi
+colorlog==6.10.1
+    # via rapidocr
+comtypes==1.4.16
+    # via -r backend/requirements.txt
+confection==1.3.3
+    # via
+    #   spacy
+    #   thinc
+    #   weasel
+contourpy==1.3.3
+    # via matplotlib
 croniter==6.2.2
+    # via -r backend/requirements.txt
+cryptography==48.0.1
+    # via
+    #   google-auth
+    #   msoffcrypto-tool
+    #   pdfminer-six
+cycler==0.12.1
+    # via matplotlib
+cymem==2.0.13
+    # via
+    #   preshed
+    #   spacy
+    #   thinc
+cython==3.2.5
+    # via paddleocr
+defusedxml==0.7.1
+    # via
+    #   docling-core
+    #   docling-slim
+dill==0.4.1
+    # via multiprocess
+docling==2.101.0
+    # via -r backend/requirements.txt
+docling-core==2.81.0
+    # via
+    #   docling-ibm-models
+    #   docling-parse
+    #   docling-slim
+docling-ibm-models==3.13.3
+    # via docling-slim
+docling-parse==6.2.0
+    # via docling-slim
+docling-slim==2.101.0
+    # via docling
+emoji==2.15.0
+    # via unstructured
+et-xmlfile==2.0.0
+    # via openpyxl
+faker==40.23.0
+    # via polyfactory
+fastapi==0.136.3
+    # via -r backend/requirements.txt
+filelock==3.29.3
+    # via
+    #   huggingface-hub
+    #   torch
+    #   unstructured
+filetype==1.2.0
+    # via
+    #   docling-slim
+    #   unstructured
+fire==0.7.1
+    # via paddleocr
+flatbuffers==25.12.19
+    # via onnxruntime
+fonttools==4.63.0
+    # via
+    #   matplotlib
+    #   paddleocr
+fsspec==2026.4.0
+    # via
+    #   huggingface-hub
+    #   torch
+google-api-core==2.31.0
+    # via google-cloud-vision
+google-auth==2.53.0
+    # via
+    #   google-api-core
+    #   google-cloud-vision
+google-cloud-vision==3.14.0
+    # via unstructured
+googleapis-common-protos==1.75.0
+    # via
+    #   google-api-core
+    #   grpcio-status
+greenlet==3.5.1
+    # via playwright
+grpcio==1.81.0
+    # via
+    #   google-api-core
+    #   google-cloud-vision
+    #   grpcio-status
+grpcio-status==1.81.0
+    # via google-api-core
+h11==0.16.0
+    # via
+    #   httpcore
+    #   uvicorn
+hf-xet==1.5.1
+    # via huggingface-hub
+html5lib==1.1
+    # via unstructured
+httpcore==1.0.9
+    # via
+    #   httpx
+    #   unstructured-client
+httptools==0.8.0
+    # via uvicorn
+httpx==0.28.1
+    # via
+    #   -r backend/requirements.txt
+    #   docling-slim
+    #   huggingface-hub
+    #   unstructured-client
+    #   weasel
+huggingface-hub==1.18.0
+    # via
+    #   accelerate
+    #   docling-ibm-models
+    #   docling-slim
+    #   timm
+    #   tokenizers
+    #   transformers
+    #   unstructured-inference
+idna==3.18
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+imageio==2.37.3
+    # via scikit-image
+installer==0.7.0
+    # via unstructured
+jinja2==3.1.6
+    # via
+    #   spacy
+    #   torch
+jsonlines==4.0.0
+    # via docling-ibm-models
+jsonref==1.1.0
+    # via docling-core
+jsonschema==4.26.0
+    # via docling-core
+jsonschema-specifications==2025.9.1
+    # via jsonschema
+kiwisolver==1.5.0
+    # via matplotlib
+langdetect==1.0.9
+    # via unstructured
+latex2mathml==3.81.0
+    # via docling-core
+lazy-loader==0.5
+    # via scikit-image
+llvmlite==0.47.0
+    # via numba
+lmdb==2.2.1
+    # via paddleocr
+lxml==6.1.1
+    # via
+    #   docling-slim
+    #   pikepdf
+    #   python-docx
+    #   python-pptx
+    #   unstructured
+mail-parser==4.3.0
+    # via docling-slim
+markdown==3.10.2
+    # via unstructured
+markdown-it-py==4.2.0
+    # via rich
+marko==2.2.3
+    # via docling-slim
+markupsafe==3.0.3
+    # via jinja2
+matplotlib==3.10.9
+    # via unstructured-inference
+mdurl==0.1.2
+    # via markdown-it-py
+ml-dtypes==0.5.4
+    # via onnx
+more-itertools==11.1.0
+    # via openai-whisper
+mpire==2.10.2
+    # via semchunk
+mpmath==1.3.0
+    # via sympy
+msoffcrypto-tool==6.0.0
+    # via unstructured
+multiprocess==0.70.19
+    # via mpire
+murmurhash==1.0.15
+    # via
+    #   preshed
+    #   spacy
+    #   thinc
+networkx==3.6.1
+    # via
+    #   scikit-image
+    #   torch
+    #   unstructured
+numba==0.65.1
+    # via
+    #   openai-whisper
+    #   unstructured
 numpy==2.4.6
-pywin32==311; platform_system=="Windows"
-comtypes==1.4; platform_system=="Windows"
+    # via
+    #   -r backend/requirements.txt
+    #   accelerate
+    #   albucore
+    #   albumentations
+    #   blis
+    #   contourpy
+    #   docling-ibm-models
+    #   docling-slim
+    #   imageio
+    #   matplotlib
+    #   ml-dtypes
+    #   numba
+    #   onnx
+    #   onnxruntime
+    #   openai-whisper
+    #   opencv-contrib-python
+    #   opencv-python
+    #   opencv-python-headless
+    #   paddleocr
+    #   pandas
+    #   rapidocr
+    #   safetensors
+    #   scikit-image
+    #   scipy
+    #   shapely
+    #   spacy
+    #   thinc
+    #   tifffile
+    #   torchvision
+    #   transformers
+    #   unstructured
+    #   unstructured-inference
+olefile==0.47
+    # via
+    #   msoffcrypto-tool
+    #   python-oxmsg
+omegaconf==2.3.0
+    # via rapidocr
+onnx==1.21.0
+    # via unstructured-inference
+onnxruntime==1.26.0
+    # via unstructured-inference
+openai-whisper==20250625
+    # via unstructured
+opencv-contrib-python==4.13.0.92
+    # via paddleocr
+opencv-python==4.13.0.92
+    # via
+    #   paddleocr
+    #   rapidocr
+    #   unstructured-inference
+opencv-python-headless==4.13.0.92
+    # via
+    #   albucore
+    #   albumentations
+openpyxl==3.1.5
+    # via
+    #   -r backend/requirements.txt
+    #   docling-slim
+    #   unstructured
+packaging==26.2
+    # via
+    #   accelerate
+    #   huggingface-hub
+    #   lazy-loader
+    #   matplotlib
+    #   onnxruntime
+    #   pikepdf
+    #   pytesseract
+    #   scikit-image
+    #   spacy
+    #   thinc
+    #   transformers
+    #   unstructured-pytesseract
+    #   weasel
+paddleocr==2.10.0
+    # via -r backend/requirements.txt
+pandas==2.3.3
+    # via
+    #   -r backend/requirements.txt
+    #   docling-core
+    #   unstructured
+    #   unstructured-inference
+pdf2image==1.17.0
+    # via unstructured
+pdfminer-six==20260107
+    # via
+    #   unstructured
+    #   unstructured-inference
+pi-heif==1.4.0
+    # via unstructured
+pikepdf==10.8.0
+    # via unstructured
+pillow==12.2.0
+    # via
+    #   -r backend/requirements.txt
+    #   docling-core
+    #   docling-ibm-models
+    #   docling-parse
+    #   docling-slim
+    #   imageio
+    #   matplotlib
+    #   paddleocr
+    #   pdf2image
+    #   pi-heif
+    #   pikepdf
+    #   pytesseract
+    #   python-pptx
+    #   rapidocr
+    #   scikit-image
+    #   torchvision
+    #   unstructured-pytesseract
+playwright==1.60.0
+    # via -r backend/requirements.txt
+pluggy==1.6.0
+    # via docling-slim
+polyfactory==3.3.0
+    # via docling-slim
+preshed==3.0.13
+    # via
+    #   spacy
+    #   thinc
+proto-plus==1.28.0
+    # via
+    #   google-api-core
+    #   google-cloud-vision
+protobuf==7.35.0
+    # via
+    #   google-api-core
+    #   google-cloud-vision
+    #   googleapis-common-protos
+    #   grpcio-status
+    #   onnx
+    #   onnxruntime
+    #   proto-plus
+psutil==7.2.2
+    # via
+    #   -r backend/requirements.txt
+    #   accelerate
+    #   unstructured
+pyasn1==0.6.3
+    # via pyasn1-modules
+pyasn1-modules==0.4.2
+    # via google-auth
+pyclipper==1.4.0
+    # via
+    #   paddleocr
+    #   rapidocr
+pycparser==3.0
+    # via cffi
+pydantic==2.13.4
+    # via
+    #   -r backend/requirements.txt
+    #   albumentations
+    #   docling-core
+    #   docling-ibm-models
+    #   docling-parse
+    #   docling-slim
+    #   fastapi
+    #   pydantic-settings
+    #   spacy
+    #   thinc
+    #   unstructured-client
+    #   weasel
+pydantic-core==2.46.4
+    # via pydantic
+pydantic-settings==2.14.1
+    # via
+    #   docling-core
+    #   docling-slim
+pyee==13.0.1
+    # via playwright
+pygments==2.20.0
+    # via
+    #   mpire
+    #   rich
+pyjwt==2.13.0
+    # via -r backend/requirements.txt
+pylatexenc==2.10
+    # via docling-slim
+pypandoc-binary==1.17
+    # via unstructured
+pyparsing==3.3.2
+    # via matplotlib
+pypdf==6.13.2
+    # via
+    #   -r backend/requirements.txt
+    #   unstructured
+    #   unstructured-client
+pypdfium2==5.9.0
+    # via
+    #   docling-slim
+    #   unstructured-client
+    #   unstructured-inference
+pytesseract==0.3.13
+    # via -r backend/requirements.txt
+python-dateutil==2.9.0.post0
+    # via
+    #   croniter
+    #   matplotlib
+    #   pandas
+python-docx==1.2.0
+    # via
+    #   -r backend/requirements.txt
+    #   docling-slim
+    #   paddleocr
+    #   unstructured
+python-dotenv==1.2.2
+    # via
+    #   pydantic-settings
+    #   uvicorn
+python-iso639==2026.4.20
+    # via unstructured
+python-magic==0.4.27
+    # via unstructured
+python-oxmsg==0.0.2
+    # via unstructured
+python-pptx==1.0.2
+    # via
+    #   -r backend/requirements.txt
+    #   docling-slim
+    #   unstructured
+pytz==2026.2
+    # via pandas
+pywin32==312
+    # via
+    #   -r backend/requirements.txt
+    #   docling-parse
+    #   mpire
+pyyaml==6.0.3
+    # via
+    #   -r backend/requirements.txt
+    #   accelerate
+    #   albumentations
+    #   docling-core
+    #   huggingface-hub
+    #   omegaconf
+    #   paddleocr
+    #   rapidocr
+    #   timm
+    #   transformers
+    #   uvicorn
+rapidfuzz==3.14.5
+    # via
+    #   paddleocr
+    #   unstructured
+    #   unstructured-inference
+rapidocr==3.8.2
+    # via docling-slim
+referencing==0.37.0
+    # via
+    #   jsonschema
+    #   jsonschema-specifications
+regex==2026.5.9
+    # via
+    #   tiktoken
+    #   transformers
+    #   unstructured
+requests==2.34.2
+    # via
+    #   docling-slim
+    #   google-api-core
+    #   paddleocr
+    #   rapidocr
+    #   requests-toolbelt
+    #   spacy
+    #   tiktoken
+    #   unstructured
+requests-toolbelt==1.0.0
+    # via unstructured-client
+rich==15.0.0
+    # via
+    #   docling-slim
+    #   typer
+rpds-py==2026.5.1
+    # via
+    #   jsonschema
+    #   referencing
+rtree==1.4.1
+    # via
+    #   docling-ibm-models
+    #   docling-slim
+safetensors==0.8.0
+    # via
+    #   accelerate
+    #   docling-ibm-models
+    #   timm
+    #   transformers
+scikit-image==0.26.0
+    # via paddleocr
+scipy==1.17.1
+    # via
+    #   albumentations
+    #   docling-slim
+    #   scikit-image
+    #   unstructured-inference
+semchunk==3.2.5
+    # via docling-core
+send2trash==2.1.0
+    # via -r backend/requirements.txt
+setuptools==81.0.0
+    # via
+    #   spacy
+    #   thinc
+    #   torch
+shapely==2.1.2
+    # via
+    #   paddleocr
+    #   rapidocr
+shellingham==1.5.4
+    # via typer
+simsimd==6.5.16
+    # via albucore
+six==1.17.0
+    # via
+    #   html5lib
+    #   langdetect
+    #   python-dateutil
+    #   rapidocr
+smart-open==7.6.1
+    # via weasel
+soupsieve==2.8.4
+    # via beautifulsoup4
+spacy==3.8.14
+    # via unstructured
+spacy-legacy==3.0.12
+    # via spacy
+spacy-loggers==1.0.5
+    # via spacy
+srsly==2.5.3
+    # via
+    #   spacy
+    #   thinc
+    #   weasel
+starlette==1.2.1
+    # via fastapi
+stringzilla==4.6.2
+    # via albucore
+sympy==1.14.0
+    # via torch
+tabulate==0.10.0
+    # via
+    #   docling-core
+    #   docling-parse
+termcolor==3.3.0
+    # via fire
+thinc==8.3.13
+    # via spacy
+tifffile==2026.6.1
+    # via scikit-image
+tiktoken==0.13.0
+    # via openai-whisper
+timm==1.0.27
+    # via unstructured-inference
+tokenizers==0.22.2
+    # via transformers
+torch==2.12.0
+    # via
+    #   accelerate
+    #   docling-ibm-models
+    #   docling-slim
+    #   openai-whisper
+    #   safetensors
+    #   timm
+    #   torchvision
+    #   unstructured-inference
+torchvision==0.27.0
+    # via
+    #   docling-ibm-models
+    #   docling-slim
+    #   timm
+tqdm==4.68.2
+    # via
+    #   docling-ibm-models
+    #   docling-slim
+    #   huggingface-hub
+    #   mpire
+    #   openai-whisper
+    #   paddleocr
+    #   rapidocr
+    #   semchunk
+    #   spacy
+    #   transformers
+    #   unstructured
+transformers==5.11.0
+    # via
+    #   docling-core
+    #   docling-ibm-models
+    #   unstructured-inference
+tree-sitter==0.25.2
+    # via docling-core
+tree-sitter-c==0.24.2
+    # via docling-core
+tree-sitter-javascript==0.25.0
+    # via docling-core
+tree-sitter-python==0.25.0
+    # via docling-core
+tree-sitter-typescript==0.23.2
+    # via docling-core
+typer==0.21.2
+    # via
+    #   docling-core
+    #   docling-slim
+    #   huggingface-hub
+    #   spacy
+    #   transformers
+    #   weasel
+typing-extensions==4.15.0
+    # via
+    #   anyio
+    #   beautifulsoup4
+    #   docling-core
+    #   fastapi
+    #   grpcio
+    #   huggingface-hub
+    #   onnx
+    #   polyfactory
+    #   pydantic
+    #   pydantic-core
+    #   pyee
+    #   python-docx
+    #   python-oxmsg
+    #   python-pptx
+    #   referencing
+    #   starlette
+    #   torch
+    #   typing-inspection
+    #   unstructured
+typing-inspection==0.4.2
+    # via
+    #   fastapi
+    #   pydantic
+    #   pydantic-settings
+tzdata==2026.2
+    # via
+    #   faker
+    #   pandas
+unstructured==0.23.0
+    # via -r backend/requirements.txt
+unstructured-client==0.45.0
+    # via unstructured
+unstructured-inference==1.6.12
+    # via unstructured
+unstructured-pytesseract==0.3.15
+    # via unstructured
+urllib3==2.7.0
+    # via requests
+uvicorn==0.49.0
+    # via -r backend/requirements.txt
+wasabi==1.1.3
+    # via
+    #   spacy
+    #   thinc
+    #   weasel
 watchdog==6.0.0
-blake3==0.4.1
-docling==2.30
-unstructured[all-docs]==0.16
-paddleocr==2.8
+    # via -r backend/requirements.txt
+watchfiles==1.2.0
+    # via uvicorn
+weasel==1.0.0
+    # via spacy
+webencodings==0.5.1
+    # via html5lib
+websockets==16.0
+    # via
+    #   docling-slim
+    #   uvicorn
+wrapt==2.2.1
+    # via
+    #   smart-open
+    #   unstructured
+xlrd==2.0.2
+    # via unstructured
+xlsxwriter==3.2.9
+    # via python-pptx

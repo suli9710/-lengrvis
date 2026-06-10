@@ -533,6 +533,18 @@ def test_lengrvis_dev_does_not_disable_desktop_token_guard(monkeypatch, tmp_path
     assert allowed.status_code == 200
 
 
+def test_missing_client_host_is_not_treated_as_loopback():
+    from app.security.lan import is_loopback_host
+
+    assert is_loopback_host(None) is False
+    assert is_loopback_host("") is False
+    assert is_loopback_host("   ") is False
+    assert is_loopback_host("127.0.0.1") is True
+    assert is_loopback_host("::1") is True
+    assert is_loopback_host("localhost") is True
+    assert is_loopback_host("192.168.1.22") is False
+
+
 def _configure_production_desktop_token(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)

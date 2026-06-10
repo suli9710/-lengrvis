@@ -2,8 +2,10 @@ import { AlertTriangle, Bot, Brain, CheckCircle2, CircleDashed, Pencil, Play, Se
 import { useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, ChatMessagePart, IntentSuggestion } from "../../shared/types";
+import type { LengrvisApiClient } from "../lib/apiClient";
 import { zhUserFacingError } from "../lib/zh";
 import { Badge, Panel } from "./Panel";
+import { VoiceInputButton } from "./VoiceInputButton";
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -13,6 +15,7 @@ interface ChatPanelProps {
   initialDraft?: string;
   autoFocus?: boolean;
   suggestions?: IntentSuggestion[];
+  api?: LengrvisApiClient;
 }
 
 type SendResult = { ok: boolean; error?: string } | void;
@@ -24,7 +27,8 @@ export function ChatPanel({
   onExecuteSuggestion,
   initialDraft = "",
   autoFocus = false,
-  suggestions = []
+  suggestions = [],
+  api
 }: ChatPanelProps) {
   const [draft, setDraft] = useState(initialDraft);
   const [isSending, setIsSending] = useState(false);
@@ -161,14 +165,28 @@ export function ChatPanel({
           aria-invalid={Boolean(submitError)}
           aria-describedby={submitError ? "chat-composer-error" : undefined}
         />
-        <button
-          className="button button--primary composer__send"
-          onClick={() => void submit()}
-          disabled={isSending || !hasDraft}
-        >
-          <Send size={16} aria-hidden="true" />
-          {isSending ? "发送中" : "发送"}
-        </button>
+        <div className="composer__actions">
+          {api ? (
+            <VoiceInputButton
+              api={api}
+              disabled={isSending}
+              onTranscript={(transcript) => {
+                setSubmitError(null);
+                setDraft((current) => (current.trim() ? `${current.trimEnd()} ${transcript}` : transcript));
+                window.setTimeout(() => inputRef.current?.focus(), 0);
+              }}
+              onError={(message) => setSubmitError(message)}
+            />
+          ) : null}
+          <button
+            className="button button--primary composer__send"
+            onClick={() => void submit()}
+            disabled={isSending || !hasDraft}
+          >
+            <Send size={16} aria-hidden="true" />
+            {isSending ? "发送中" : "发送"}
+          </button>
+        </div>
         {submitError ? (
           <p className="field-error composer__error" id="chat-composer-error" role="alert">
             {submitError}

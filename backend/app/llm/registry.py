@@ -114,6 +114,8 @@ def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
         "LENGRVIS_ALLOW_MOCK_FALLBACK": "allow_mock_fallback",
         "LENGRVIS_STRICT_STATE_MACHINE": "strict_state_machine",
         "LENGRVIS_RECOVERY_MAX_RETRIES": "recovery_max_retries",
+        "LENGRVIS_OS_REFLECTION_MAX_PER_RUN": "os_reflection_max_per_run",
+        "LENGRVIS_OS_REFLECTION_MAX_PER_STEP": "os_reflection_max_per_step",
         "LENGRVIS_EXECUTION_ENGINES": "execution_engines",
         "LENGRVIS_DEFAULT_ENGINE": "default_engine",
         "LENGRVIS_AGENT_LOOP_MAX_TURNS": "agent_loop_max_turns",

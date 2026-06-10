@@ -245,6 +245,14 @@ Copy-Item -Path (Join-Path $DesktopDist "*") -Destination $AppDistDir -Recurse -
 Copy-Item -Path (Join-Path $Root "desktop\package.json") -Destination $AppDir -Force
 Copy-Item -Path $BackendExe -Destination (Join-Path $BackendDir "backend.exe") -Force
 
+# Carry the build-time capability manifest alongside the backend so the
+# packaging gate (and clean-machine debugging) can assert which optional
+# capabilities this backend.exe was built with.
+$BackendCapabilities = Join-Path (Split-Path -Parent $BackendExe) "backend-capabilities.json"
+if (Test-Path -LiteralPath $BackendCapabilities -PathType Leaf) {
+    Copy-Item -LiteralPath $BackendCapabilities -Destination (Join-Path $BackendDir "backend-capabilities.json") -Force
+}
+
 if ($ResolvedOllamaDir -and $ResolvedOllamaModelsDir) {
     Test-OllamaBundleManifest -ManifestPath $ResolvedOllamaManifest -RuntimeDir $ResolvedOllamaDir -ModelsDir $ResolvedOllamaModelsDir
 }

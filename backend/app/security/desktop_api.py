@@ -195,6 +195,9 @@ def _websocket_protocols(websocket: WebSocket) -> list[str]:
 
 
 def _local_desktop_api_token() -> str:
+    # Stored plaintext on purpose: the Electron main process reads this file
+    # directly (desktop/src/main/desktopApiToken.ts) as the loopback bootstrap
+    # contract. Backend-private secrets use app.security.local_secret (DPAPI).
     try:
         data_dir = Path(get_base_settings().data_dir)
         secret_path = data_dir / DESKTOP_API_TOKEN_FILE

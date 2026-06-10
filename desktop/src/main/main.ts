@@ -1,9 +1,10 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, shell, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, globalShortcut, Menu, Tray, nativeImage, shell, type MenuItemConstructorOptions } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { BackendStatus } from "../shared/types";
+import { checkForUpdatesInteractive, describeUpdaterForTray, setupAutoUpdater } from "./autoUpdater";
 import { BackendProcessManager } from "./backendProcess";
 import { BrowserHost, BrowserHostWebSocketBridge } from "./browserHost";
 import { registerDesktopWebSocketIpcHandlers } from "./desktopWebSocket";
@@ -12,6 +13,7 @@ import { NotificationBridge } from "./notifications";
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const BACKEND_STATUS_POLL_MS = 60_000;
+const GLOBAL_TOGGLE_SHORTCUT = "CommandOrControl+Alt+L";
 const TRAY_ICON_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAI/SURBVFhH1VcxTwIxGGV0dHTDxFZXR0d/ghtuaMvg6OiG8Q84urEwODrq5kLiaJgcSVg4rgTCQIhhqPlKr7RfW+7OHCa+5EWOe/R7fe199Wq1/wrSSs6OuDi3iTWVot4cHxCW3FAmXikXMkomPsj1+O6kOTrEY/wK9eZsn3JxT7lYesVyOXkC43jMwoBYKU9n/sCluKQsvcRj54Ky8dXvZh3lPa4RhS6OB6iCj7iWh3Xslc7cIWxkXNMANkwFa57HJW2NT3FtBYgo8APZ7ksHw7epp6EPCzm0RclCNrBGk/DJC66tZx+OHhsIDd54W+VqHOIUoHl4ImwgWelZrmT3wdZMZTdZfz9UfwsY4JMnxwB0MF8UM4CWwcT/LXtGm2dAjExx3e2wIGBgIbuBAib+/tzR5hjYLAMcLN7NiIFG51tfZMuQxS9lr7P5XMhA1iGPWXLh3YwZ4HPZ05dqGaz425aZIgbIdXq7TgBOuYAgbMC9blvx22kUMWDaM0QRuBk1QM0ybDZdrwPacgbgyVMGdPv1BFEDdiEFiL+8AThz9FOgmpAviBpAjUfFX94AbH79INZqhIsBFmwzYLfedfylDSzrzcGeMRA7B3ZF7zyApoBFuyQ8+o4BALjCwl2QMPGJayv8VQrB2WfYdipWQ3QKhkC4ePZ/WAGZ+HB2fgwgqtyEKj7bx7W2Qr+Q+IOVJrygFJh5CKpNs/TdHzSfhKdfWzdcGcBAelmC/zc6hPfHrM/vApCKflpgiQzh+7JR/wBFmasNoNL4MAAAAABJRU5ErkJggg==";
 const backend = new BackendProcessManager();
 const browserHost = new BrowserHost(() => mainWindow);
@@ -166,6 +168,7 @@ function rebuildTrayMenu(): void {
     },
     {
       label: "打开 Lengrvis",
+      sublabel: GLOBAL_TOGGLE_SHORTCUT.replace("CommandOrControl", "Ctrl"),
       click: showMainWindow
     },
     {
@@ -174,6 +177,16 @@ function rebuildTrayMenu(): void {
         void refreshTrayBackendStatus();
       }
     },
+    { type: "separator" },
+    {
+      label: "开机自动启动",
+      type: "checkbox",
+      checked: isOpenAtLoginEnabled(),
+      click: (menuItem) => {
+        setOpenAtLogin(menuItem.checked);
+      }
+    },
+    ...buildUpdaterMenuItems(),
     { type: "separator" },
     {
       label: "退出",
@@ -186,6 +199,58 @@ function rebuildTrayMenu(): void {
 
   tray.setToolTip(`Lengrvis - ${statusText}`);
   tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+function buildUpdaterMenuItems(): MenuItemConstructorOptions[] {
+  const updater = describeUpdaterForTray();
+  if (!updater) {
+    return [];
+  }
+  return [
+    {
+      label: updater.label,
+      enabled: updater.enabled,
+      click: () => {
+        checkForUpdatesInteractive();
+      }
+    }
+  ];
+}
+
+function toggleMainWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()) {
+    void enterTrayBackground();
+    return;
+  }
+  showMainWindow();
+}
+
+function registerGlobalShortcut(): void {
+  try {
+    const registered = globalShortcut.register(GLOBAL_TOGGLE_SHORTCUT, toggleMainWindow);
+    if (!registered) {
+      console.warn(`Global shortcut ${GLOBAL_TOGGLE_SHORTCUT} is taken by another app; skipping.`);
+    }
+  } catch (error) {
+    console.warn("Failed to register global shortcut:", error);
+  }
+}
+
+function isOpenAtLoginEnabled(): boolean {
+  try {
+    return app.getLoginItemSettings().openAtLogin;
+  } catch {
+    return false;
+  }
+}
+
+function setOpenAtLogin(enabled: boolean): void {
+  try {
+    app.setLoginItemSettings({ openAtLogin: enabled, args: ["--hidden"] });
+  } catch (error) {
+    console.warn("Failed to update login item settings:", error);
+  }
+  rebuildTrayMenu();
 }
 
 async function refreshTrayBackendStatus(): Promise<void> {
@@ -260,13 +325,22 @@ if (!gotSingleInstanceLock) {
     notifications.registerIpcHandlers();
     mainWindow = createMainWindow();
     createTray();
+    registerGlobalShortcut();
+    setupAutoUpdater(() => {
+      rebuildTrayMenu();
+    });
     notifications.startBackendListener();
 
     if (!process.defaultApp || app.isPackaged || isPortableMode() || backendAutostartEnabled()) {
       latestBackendStatus = await backend.start();
       rebuildTrayMenu();
     }
-    await enterForegroundAndShow();
+    if (startHiddenRequested()) {
+      // Login-item launch: stay in the tray until the user summons the window.
+      await enterTrayBackground();
+    } else {
+      await enterForegroundAndShow();
+    }
     startTrayBackendStatusPolling();
 
     app.on("activate", () => {
@@ -282,6 +356,10 @@ if (!gotSingleInstanceLock) {
     }
   });
 
+  app.on("will-quit", () => {
+    globalShortcut.unregisterAll();
+  });
+
   app.on("before-quit", async () => {
     isQuitting = true;
     stopTrayBackendStatusPolling();
@@ -294,4 +372,8 @@ if (!gotSingleInstanceLock) {
 
 function backendAutostartEnabled(): boolean {
   return process.env.LENGRVIS_BACKEND_AUTOSTART === "1";
+}
+
+function startHiddenRequested(): boolean {
+  return process.argv.includes("--hidden") || app.getLoginItemSettings().wasOpenedAsHidden;
 }

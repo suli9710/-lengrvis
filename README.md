@@ -325,11 +325,16 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 .\scripts\build_all.ps1
 ```
 
-默认产物为 `dist\Lengrvis-win-portable`、`dist\Lengrvis-win-portable.zip` 和 `dist\Lengrvis-0.1.0-x64-self-extracting.exe`。发布到自定义目录时，这些参数会贯穿 backend、portable、zip、SFX 和最终验证：
+默认产物为 `dist\Lengrvis-win-portable`、`dist\Lengrvis-win-portable.zip` 和 `dist\Lengrvis-<version>-x64-self-extracting.exe`（版本号唯一来源是 `desktop\package.json`）。发布到自定义目录时，这些参数会贯穿 backend、portable、zip、SFX 和最终验证：
 
 ```powershell
 .\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Lengrvis-win-portable -PortableZip release\win\Lengrvis-win-portable.zip -SelfExtractingExe release\win\Lengrvis-0.1.0-x64-self-extracting.exe
 ```
+
+代码签名与自动更新（公开发布通道）：
+
+- **签名**：本地 `npm --prefix desktop run dist` 不签名（仅内部分发）。持 OV/EV PFX 证书时设置 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` 环境变量后照常构建即可；走 Azure Trusted Signing 时用 `npm --prefix desktop run dist:signed`（配置见 `desktop/electron-builder.signed.yml`，需 `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`）。随包的 `backend.exe` 需在打包前单独用 signtool 签名。
+- **自动更新**：通过 electron-updater + GitHub Releases。`npm --prefix desktop run dist:publish`（需 `GH_TOKEN`）构建并上传 Release 资产；安装版应用启动时静默检查更新，托盘菜单提供「检查更新」，下载完成后提示重启安装；后端 exe 在安装包 resources 内随更新整体替换。
 
 macOS DMG：
 
@@ -338,7 +343,7 @@ npm --prefix desktop install
 npm --prefix desktop run dist:mac:arm64
 ```
 
-`dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Lengrvis-0.1.0-arm64.dmg`。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。
+`dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Lengrvis-<version>-arm64.dmg`（版本号来自 `desktop/package.json`）。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。
 
 Android QA APK 走 Expo/EAS managed 配置，源码预检和严格发布门禁分开跑：
 

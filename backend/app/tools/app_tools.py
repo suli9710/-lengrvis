@@ -15,6 +15,7 @@ from app.core.paths import resolve_authorized
 from app.llm.registry import get_effective_settings
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_catalog import tool_description, tool_search_hint
 
 
 ALLOWLIST = {"notepad": "notepad.exe", "calculator": "calc.exe", "calc": "calc.exe"}
@@ -530,7 +531,8 @@ def register(registry) -> None:
         registry.register(
             ToolDefinition(
                 name=name,
-                description=name.replace(".", " "),
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
                 input_schema=_input_schema(name),
                 output_schema={},
                 risk_level=risk,
