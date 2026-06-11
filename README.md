@@ -1,5 +1,16 @@
 # Lengrvis
 
+Windows 优先的本机 OS Agent / 电脑助手：自然语言描述目标，多 Agent 协作规划与执行，修改文件或系统设置前经过策略审查与用户确认。
+
+**仓库：** [github.com/suli9710/-lengrvis](https://github.com/suli9710/-lengrvis)
+
+| 组件 | 技术栈 |
+| --- | --- |
+| 桌面端 | Electron · React · TypeScript · Vite · Zustand |
+| 后端 | Python 3.12 · FastAPI · SQLite · Playwright |
+| 移动伴侣 | Expo · React Native（Android Preview） |
+| CI | GitHub Actions（hygiene · pytest · golden gate · typecheck） |
+
 ## 平台支持矩阵
 
 | 平台 | 状态 | 当前交付 | 已知限制 |
@@ -43,11 +54,15 @@
 ## 架构
 
 ```text
-desktop/                 Electron + React + TypeScript 桌面端
-backend/app/             FastAPI 后端、Agent、策略、工具、索引、服务
-backend/tests/           pytest 契约测试和 smoke 测试
-scripts/                 PowerShell 启动、开发 setup、测试和打包脚本
-test_data/               授权目录、策略和隐私测试数据
+mavris/
+├── backend/app/         FastAPI 后端、Agent、策略、工具、索引、服务
+├── backend/tests/       pytest 契约测试（~135 文件）与 golden tasks
+├── desktop/src/         Electron main/preload + React 渲染层
+├── desktop/scripts/     Playwright UI smoke（14 项，本地 qa:gate 覆盖）
+├── mobile/              Expo Android 伴侣（配对、审批、远程监督）
+├── scripts/             PowerShell 启动、开发 setup、测试和打包
+├── test_data/           授权目录、策略和隐私测试数据
+└── docs/                用户手册、QA 门禁、发布与合规文档
 ```
 
 运行时流程：
@@ -76,7 +91,7 @@ test_data/               授权目录、策略和隐私测试数据
 - `MockProvider` 仅用于开发、测试和非隐私路径的演示兜底。
 - ONNX Runtime Provider 框架（WinML / DirectML / OpenVINO / CPU）。
 - 上下文管理运行时：所有 `get_provider()` 返回的 LLM provider 都会先经过统一 ContextManager，按 `tool result budget -> history snip -> micro-compact -> session memory -> auto-compact -> LLM call -> prompt-too-long reactive retry` 控制模型可见上下文；原始 AgentBus/DB 历史不删除。
-- Token 预算配置：`LENGRVIS_MODEL_CONTEXT_WINDOW`、`LENGRVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT`、`LENGRVIS_CONTEXT_*`。默认保留输出预算，接近阈值时自动摘要旧消息并保留最近消息尾部。
+- Token 预算配置：`LENGRVIS_MODEL_CONTEXT_WINDOW`、`LENGRVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT`、`LENGRVIS_CONTEXT_*`。默认保留输出预算，接近阈值时自动摘要旧消息并保留最近消息尾部；中文/ CJK 文本使用更密的 token 估算，避免过早触顶或迟迟不触发 auto-compact。
 
 ### 安全
 - 风险等级：`R0_READ_ONLY`、`R1_OPEN_ONLY`、`R2_REVERSIBLE_MODIFY`、`R3_DESTRUCTIVE_OR_SYSTEM`、`R4_FORBIDDEN_OR_HANDOFF`。
@@ -87,8 +102,8 @@ test_data/               授权目录、策略和隐私测试数据
 - 全链路审计日志 + 自动 PII 脱敏。
 
 ### 文件与文档
-- 授权目录文件搜索、FTS5 全文索引、重复文件检测。
-- **向量语义搜索**：FTS5 候选召回 → Embedding rerank → cosine similarity → 按文件折叠。
+- 授权目录文件搜索、FTS5 全文索引（含 CJK trigram 迁移）、重复文件检测。
+- **向量语义搜索**：FTS5 候选召回 → Embedding rerank（BLOB 存储）→ cosine similarity → 按文件折叠。
 - **文档 AI**：LLM 驱动的摘要（map-reduce 分块）、问答（chunk 检索 + 引用）、报告生成，含 extractive fallback。
 - 文档文本提取：PDF / DOCX / XLSX / PPTX / CSV。
 - **离线 OCR**：本地 Tesseract → 元数据 OCR → 云 vision fallback；PDF 图片自动 OCR。
@@ -119,6 +134,13 @@ test_data/               授权目录、策略和隐私测试数据
 ```
 
 `setup_dev.ps1` 会创建 `.venv`、安装 Python 开发依赖，并按 `desktop/package-lock.json` 安装桌面/前端依赖。
+
+可选：安装 pre-commit 钩子（backend 使用 ruff 格式化与 lint）：
+
+```powershell
+python -m pip install pre-commit
+pre-commit install
+```
 
 如需手动排查，等价命令是：
 
@@ -192,24 +214,39 @@ npm --prefix desktop run dev
 ## 测试
 
 ```powershell
-.\scripts\run_tests.ps1
+.\scripts\run_tests.ps1          # backend pytest（xdist）+ desktop/mobile typecheck + mobile smokes
+npm run qa:gate                  # 上述 + desktop 全量 smoke（14 项）
+npm run golden:gate              # golden tasks 报告（≥95% 通过率）
 ```
 
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket smoke、mobile task companion smoke 和 mobile remote-input grant smoke。
 这些 mobile smoke 都是本地行为桩/客户端契约证据，避免发布门禁漏掉移动任务监督和远程输入授权边界；它们不等同于真机 LAN/WSS 或证书信任路径验收。
 
-CI：`.github/workflows/ci.yml`（push/PR：hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck、mobile smokes）与 `.github/workflows/security-audit.yml`（每周 SCA）已提交，但尚未发生首次远端绿色运行；在那之前这只是 CI 配置，不是已生效的远端门禁。
+**CI 与本地差异：** `.github/workflows/ci.yml` 在 push/PR 上跑 hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck 和 mobile smokes；**不包含** desktop Playwright smoke 与 `release:check`。完整发布前请本地跑 `npm run qa:gate`。每周 SCA 见 `.github/workflows/security-audit.yml`。
 
-最近一次记录的核心门禁验证结果（backend 行更新于 2026-06-10，新增 3 项本机数据删除入口回归；同日完成根目录 `/app` 别名清理并将 `pytest.ini` pythonpath 指向 `backend`；其余各项为上一次完整 qa:gate 记录）：
+### 最近一次全量验证（2026-06-11，本机 Windows）
+
+| 门禁 | 结果 |
+| --- | --- |
+| `npm run hygiene` + `deps:verify` | 通过 |
+| `npm --prefix desktop run typecheck` | 通过 |
+| `npm --prefix mobile run typecheck` + 3 smokes | 通过 |
+| `npm run golden:gate` | **35/35（100%）** |
+| `python -m pytest backend/tests -q --maxfail=1` | **137 passed 后 1 failed**（见下） |
+| `npm --prefix desktop run smoke` | **12/13 通过**（`browser-activity` 超时） |
+
+已知失败（修复中/需跟进）：
+
+- `backend/tests/test_browser_writes.py::test_browser_act_is_classified_by_nested_action_kind` — nested `browser.act` observe 动作的风险分级与 PolicyEngine 预期不一致。
+- `desktop/scripts/browser-activity-smoke.cjs` — 等待 `Task Workspace` 可见超时（导航/时序，非 CSS 回归）。
+
+此前完整 qa:gate 记录（2026-06-10）供对照：
 
 ```text
 backend: 1569 passed, 1 skipped
 desktop typecheck passed
-mobile typecheck passed
-mobile token smoke passed
-mobile task companion smoke passed
-mobile remote-input grant smoke passed
-desktop smoke passed
+mobile typecheck + smokes passed
+desktop smoke passed（全 14 项）
 ```
 
 诊断和产品化边界的针对性证据：
