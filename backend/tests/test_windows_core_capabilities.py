@@ -197,6 +197,8 @@ def test_browser_read_page_and_extract_links_with_local_http(monkeypatch, tmp_pa
         encoding="utf-8",
     )
     _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOW_BROWSER_NETWORK="true")
+    # Loopback test server requires the explicit private-host opt-in (SSRF guard).
+    monkeypatch.setenv("LENGRVIS_BROWSER_ALLOW_PRIVATE_HOSTS", "1")
 
     class QuietHandler(http.server.SimpleHTTPRequestHandler):
         def log_message(self, format: str, *args):  # noqa: A002

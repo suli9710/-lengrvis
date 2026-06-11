@@ -531,7 +531,7 @@ function WindowBar({
   return (
     <header className="window-bar">
       <div className="window-bar__left">
-        <div className="window-bar__title">
+        <div className="window-bar__title" key={activeView}>
           <span>{viewMeta.title}</span>
           <small>{viewMeta.subtitle}</small>
         </div>
@@ -551,7 +551,7 @@ function WindowBar({
           )}
         </button>
         {hasPendingApproval ? (
-          <button className="icon-button" aria-label="有待审批项目" onClick={onOpenApprovals} type="button">
+          <button className="icon-button icon-button--alert" aria-label="有待审批项目" onClick={onOpenApprovals} type="button">
             <Bell size={15} aria-hidden="true" />
           </button>
         ) : null}

@@ -32,6 +32,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+  "ruff>=0.8",
+  "pytest-xdist>=3.5",
+  "pre-commit>=4.0",
+]
 acceleration = [
   "tokenizers>=0.20",
   "transformers>=4.45",
@@ -56,3 +61,13 @@ testpaths = ["tests"]
 markers = [
   "slow: tests that are intentionally slower or rely on subprocess/thread timeout behavior or full local diagnostic/evaluation flows; exclude with -m 'not slow' in short runner budgets and run explicitly for full sign-off.",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]

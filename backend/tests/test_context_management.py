@@ -38,6 +38,29 @@ def _settings(**overrides) -> AppSettings:
     return settings
 
 
+def test_rough_token_count_weighs_cjk_denser_than_ascii():
+    from app.context_management import rough_token_count
+
+    ascii_text = "a" * 400
+    chinese_text = "汉" * 400
+
+    ascii_tokens = rough_token_count(ascii_text)
+    chinese_tokens = rough_token_count(chinese_text)
+
+    assert ascii_tokens == 100  # ~4 chars/token
+    assert chinese_tokens == 250  # ~1.6 chars/token
+    assert chinese_tokens > ascii_tokens * 2
+
+
+def test_rough_token_count_mixed_cjk_ascii():
+    from app.context_management import rough_token_count
+
+    mixed = "hello 世界！" * 100  # 6 ASCII+space, 3 CJK (incl. fullwidth punctuation)
+    tokens = rough_token_count(mixed)
+    expected = round((600 / 4) + (300 / 1.6))
+    assert tokens == expected
+
+
 def test_context_thresholds_reserve_output_tokens():
     settings = _settings(model_context_window=2000, model_auto_compact_token_limit=0, max_tokens=250)
 

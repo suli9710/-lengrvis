@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import os
 import re
+import socket
 import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -120,13 +123,16 @@ class LocalBrowserActivityAdapter:
                 page = browser.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 html = page.content()
-                final_url = page.url
+                final_url = _validate_final_url(page.url)
                 browser.close()
             data = _extract_page(html, final_url, max_chars)
             data["adapter"] = "playwright"
+        except ValueError:
+            raise
         except Exception as exc:
             with httpx.Client(timeout=30, follow_redirects=True) as client:
                 html, final_url, response_truncated = _read_limited_http_response(client, url, max_chars)
+            final_url = _validate_final_url(final_url)
             data = _extract_page(html, final_url, max_chars)
             data["adapter"] = "httpx"
             data["playwright_error"] = str(exc)
@@ -154,7 +160,7 @@ class LocalBrowserActivityAdapter:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 page.screenshot(path=str(out_path), full_page=bool(action.get("full_page", True)))
                 title = page.title()
-                final_url = page.url
+                final_url = _validate_final_url(page.url)
                 browser.close()
         except Exception as exc:
             return {"ok": False, "error": f"Playwright screenshot failed: {exc}"}
@@ -175,7 +181,7 @@ class LocalBrowserActivityAdapter:
                 page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 page.wait_for_selector(selector, timeout=timeout)
                 title = page.title()
-                final_url = page.url
+                final_url = _validate_final_url(page.url)
                 browser.close()
         except Exception as exc:
             return {"ok": False, "error": f"wait_for failed: {exc}"}
@@ -204,7 +210,7 @@ class LocalBrowserActivityAdapter:
                     page.evaluate("(y) => window.scrollBy(0, y)", int(action.get("delta_y") or action.get("y") or 500))
                 else:
                     return {"ok": False, "error": "CUA actions require a dedicated CUA provider."}
-                final_url = page.url
+                final_url = _validate_final_url(page.url)
                 title = page.title()
                 browser.close()
         except Exception as exc:
@@ -609,11 +615,75 @@ def _read_limited_http_response(client: httpx.Client, url: str, max_bytes: int) 
     return bytes(chunks).decode(encoding, errors="replace"), final_url, truncated
 
 
+ALLOW_PRIVATE_HOSTS_ENV = "LENGRVIS_BROWSER_ALLOW_PRIVATE_HOSTS"
+_LOCAL_HOST_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".intranet")
+
+
+def _validate_final_url(url: str) -> str:
+    return _validate_url(str(url or ""))
+
+
 def _validate_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Only absolute http(s) URLs are allowed.")
+    hostname = parsed.hostname or ""
+    if not _private_hosts_allowed() and _is_private_host(hostname):
+        raise ValueError(
+            "URLs targeting loopback, private, or link-local hosts are blocked to prevent SSRF. "
+            f"Set {ALLOW_PRIVATE_HOSTS_ENV}=1 to explicitly allow LAN browsing."
+        )
     return url
+
+
+def _private_hosts_allowed() -> bool:
+    return str(os.environ.get(ALLOW_PRIVATE_HOSTS_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+# RFC 2544 benchmarking range, used as the fake-IP pool by local tunneling
+# proxies (Clash/mihomo/sing-box). When DNS answers land here the connection
+# actually goes through the proxy to the public site, so blocking it would
+# break every domain on such machines. Literal fake-IP URLs stay blocked.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+
+
+def _is_private_host(hostname: str) -> bool:
+    if not hostname:
+        return True
+    lowered = hostname.lower().rstrip(".")
+    try:
+        return _is_blocked_ip(ipaddress.ip_address(lowered.split("%")[0]))
+    except ValueError:
+        pass
+    if lowered == "localhost" or lowered.endswith(_LOCAL_HOST_SUFFIXES) or "." not in lowered:
+        return True
+    try:
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        # Unresolvable hosts fail later at connection time with a clearer error.
+        return False
+    for info in infos:
+        addr = str(info[4][0]).split("%")[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if isinstance(ip, ipaddress.IPv4Address) and ip in _FAKE_IP_NETWORK:
+            continue
+        if _is_blocked_ip(ip):
+            return True
+    return False
 
 
 def _extract_page(html: str, url: str, max_chars: int) -> dict[str, Any]:

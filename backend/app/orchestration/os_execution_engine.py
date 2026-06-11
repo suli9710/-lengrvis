@@ -496,7 +496,14 @@ class OSExecutionEngine(ExecutionEngine):
             )
             work[task_work] = (step, observation)
 
-        raw_outcomes = await asyncio.gather(*work.keys(), return_exceptions=True)
+        try:
+            raw_outcomes = await asyncio.gather(*work.keys(), return_exceptions=True)
+        except asyncio.CancelledError:
+            for task_work in work:
+                task_work.cancel()
+            if work:
+                await asyncio.gather(*work.keys(), return_exceptions=True)
+            raise
         results: list[tuple[PlanStep, StepExecutionOutcome]] = []
         for task_work, raw_outcome in zip(work.keys(), raw_outcomes, strict=True):
             step, observation = work[task_work]

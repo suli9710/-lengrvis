@@ -114,17 +114,19 @@ _OBJECT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def _resolve_image(args: dict[str, Any], context: dict[str, Any]) -> Path | None:
+    from app.core.errors import SecurityError
     from app.core.paths import resolve_authorized
 
     raw = args.get("path") or args.get("image_path")
     if not raw:
         return None
     allowed = list(context.get("allowed_directories") or [])
+    # SecurityError propagates: never fall back to the raw path, that would
+    # bypass the path sandbox (previously an authorization bypass).
     try:
-        path = resolve_authorized(raw, allowed)
-    except Exception:
-        path = Path(raw)
-    return path
+        return resolve_authorized(raw, allowed)
+    except OSError as exc:
+        raise SecurityError(f"image path could not be resolved: {exc}") from exc
 
 
 def _resolve_image_batch(args: dict[str, Any], context: dict[str, Any]) -> list[Path]:

@@ -5,6 +5,7 @@ import concurrent.futures
 import importlib.util
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -372,13 +373,28 @@ def _ocr_text_with_tesseract(image_path: Path) -> str:
         return ""
 
 
+# PaddleOCR loads its detection/recognition models at construction time
+# (seconds of latency); reuse one engine per language across calls.
+_PADDLE_OCR_CACHE: dict[str, Any] = {}
+_PADDLE_OCR_LOCK = threading.Lock()
+
+
+def _get_paddle_ocr(lang: str) -> Any:
+    with _PADDLE_OCR_LOCK:
+        engine = _PADDLE_OCR_CACHE.get(lang)
+        if engine is None:
+            from paddleocr import PaddleOCR
+
+            engine = PaddleOCR(use_angle_cls=True, lang=lang)
+            _PADDLE_OCR_CACHE[lang] = engine
+        return engine
+
+
 def _ocr_text_with_paddleocr(image_path: Path) -> str:
     if (get_env("LENGRVIS_ENABLE_PADDLEOCR") or "").strip().lower() not in {"1", "true", "yes"}:
         return ""
     try:
-        from paddleocr import PaddleOCR
-
-        ocr = PaddleOCR(use_angle_cls=True, lang=get_env("LENGRVIS_PADDLEOCR_LANG", "en"))
+        ocr = _get_paddle_ocr(get_env("LENGRVIS_PADDLEOCR_LANG", "en") or "en")
         result = ocr.ocr(str(image_path), cls=True)
     except Exception:
         return ""

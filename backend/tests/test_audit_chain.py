@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
@@ -171,18 +170,59 @@ def test_audit_hmac_secret_is_generated_and_reused(monkeypatch, tmp_path):
     assert db.verify_audit_log()["ok"] is True
 
 
+def test_audit_chain_head_cache_keeps_chain_consistent(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    db.init_db()
+
+    events = [record(f"security.cache_{index}", "pytest", {"index": index}) for index in range(5)]
+
+    # Invalidate the in-memory head mid-chain: the next event must fall back
+    # to a database query and still extend the chain correctly.
+    db.reset_audit_caches()
+    recovered = record("security.cache_recovered", "pytest", {"ok": True})
+
+    assert [event.sequence for event in events] == [1, 2, 3, 4, 5]
+    assert recovered.sequence == 6
+    assert recovered.prev_hash == events[-1].event_hash
+    verification = db.verify_audit_log()
+    assert verification["ok"] is True
+    assert verification["checked"] == 6
+
+
+def test_audit_hmac_secret_read_once_per_process(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
+    db.init_db()
+
+    calls = {"count": 0}
+    original = local_secret.load_or_create_local_secret
+    audit_secret_path = tmp_path / db.AUDIT_HMAC_SECRET_FILE
+
+    def counting_loader(path, **kwargs):  # noqa: ANN001, ANN202
+        if str(path) == str(audit_secret_path):
+            calls["count"] += 1
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(local_secret, "load_or_create_local_secret", counting_loader)
+
+    record("security.secret_cache_first", "pytest", {"ok": True})
+    record("security.secret_cache_second", "pytest", {"ok": True})
+    record("security.secret_cache_third", "pytest", {"ok": True})
+
+    assert calls["count"] == 1
+    assert db.verify_audit_log()["ok"] is True
+
+
 def test_audit_hmac_secret_unavailable_does_not_fall_back_to_empty_key(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
     db.init_db()
-    original_write_text = Path.write_text
 
-    def fail_audit_secret_write(self, *args, **kwargs):  # noqa: ANN001, ANN202
-        if self.name == db.AUDIT_HMAC_SECRET_FILE:
-            raise OSError("blocked audit secret write")
-        return original_write_text(self, *args, **kwargs)
+    def fail_audit_secret_write(path, value):  # noqa: ANN001, ANN202
+        raise OSError("blocked audit secret write")
 
-    monkeypatch.setattr(Path, "write_text", fail_audit_secret_write)
+    monkeypatch.setattr(local_secret, "_write_secret_file", fail_audit_secret_write)
 
     with pytest.raises(RuntimeError, match="Audit HMAC secret is unavailable"):
         record("security.no_empty_secret", "pytest", {"ok": True})

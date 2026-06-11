@@ -4,6 +4,7 @@ import hmac
 import json
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -20,6 +21,21 @@ from app.config import get_base_settings, get_env
 _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_override", default=None)
 AUDIT_GENESIS_HASH = "0" * 64
 AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"
+
+# Audit hot-path caches (2-H2): avoid re-reading the HMAC secret file and
+# re-querying the chain tail on every event. Single-writer assumption: failed
+# inserts invalidate the chain head and fall back to a fresh DB query.
+_AUDIT_CACHE_LOCK = threading.Lock()
+_AUDIT_SECRET_CACHE: dict[str, str] = {}
+_AUDIT_CHAIN_HEADS: dict[str, tuple[int, str]] = {}
+
+
+def reset_audit_caches() -> None:
+    with _AUDIT_CACHE_LOCK:
+        _AUDIT_SECRET_CACHE.clear()
+        _AUDIT_CHAIN_HEADS.clear()
+
+
 DATA_TABLES = frozenset(
     {
         "approvals",
@@ -480,6 +496,9 @@ def init_db() -> None:
 def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, status: str | None = None) -> None:
     data = json.loads(model.model_dump_json())
     now = data.get("updated_at") or data.get("created_at") or _now_iso()
+    if table == "audit_events":
+        _insert_audit_event_record(data)
+        return
     with connect() as conn:
         if table == "tasks":
             conn.execute(
@@ -591,28 +610,6 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
                     _json(data),
                     status or data.get("status", "pending"),
                     data.get("created_at", now),
-                ),
-            )
-            return
-        if table == "audit_events":
-            conn.execute("BEGIN IMMEDIATE")
-            stored = _prepare_audit_event_locked(conn, data)
-            conn.execute(
-                """
-                INSERT INTO audit_events (id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    stored["id"],
-                    stored.get("task_id"),
-                    stored["event_type"],
-                    stored["actor"],
-                    stored["sequence"],
-                    stored["prev_hash"],
-                    stored["event_hash"],
-                    stored["hmac"],
-                    _json(stored),
-                    stored.get("created_at", now),
                 ),
             )
             return
@@ -1068,27 +1065,38 @@ def _insert_run_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> 
 
 def insert_audit_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
     data = json.loads(model.model_dump_json()) if isinstance(model, BaseModel) else dict(model)
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        stored = _prepare_audit_event_locked(conn, data)
-        conn.execute(
-            """
-            INSERT INTO audit_events (id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                stored["id"],
-                stored.get("task_id"),
-                stored["event_type"],
-                stored["actor"],
-                stored["sequence"],
-                stored["prev_hash"],
-                stored["event_hash"],
-                stored["hmac"],
-                _json(stored),
-                stored["created_at"],
-            ),
-        )
+    return _insert_audit_event_record(data)
+
+
+def _insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
+    try:
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            stored = _prepare_audit_event_locked(conn, data)
+            conn.execute(
+                """
+                INSERT INTO audit_events (id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored["id"],
+                    stored.get("task_id"),
+                    stored["event_type"],
+                    stored["actor"],
+                    stored["sequence"],
+                    stored["prev_hash"],
+                    stored["event_hash"],
+                    stored["hmac"],
+                    _json(stored),
+                    stored["created_at"],
+                ),
+            )
+            # Update the in-memory head before commit releases the write lock so
+            # concurrent writers cannot derive the same sequence from a stale tail.
+            _store_audit_chain_head(stored["sequence"], stored["event_hash"])
+    except Exception:
+        _invalidate_audit_chain_head()
+        raise
     return stored
 
 
@@ -1245,6 +1253,10 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
             conn.execute(f"DELETE FROM {table}")
     with connect() as conn:
         conn.execute("VACUUM")
+    if include_settings:
+        from app.llm.registry import invalidate_settings_cache
+
+        invalidate_settings_cache()
     return counts
 
 
@@ -1458,11 +1470,18 @@ def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) 
     stored.setdefault("id", f"audit_{uuid4().hex}")
     stored["created_at"] = stored.get("created_at") or _now_iso()
 
-    row = conn.execute(
-        "SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1"
-    ).fetchone()
-    sequence = int(row["sequence"] or 0) + 1 if row else 1
-    prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
+    key = str(db_path())
+    with _AUDIT_CACHE_LOCK:
+        head = _AUDIT_CHAIN_HEADS.get(key)
+    if head is None:
+        row = conn.execute(
+            "SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1"
+        ).fetchone()
+        sequence = int(row["sequence"] or 0) + 1 if row else 1
+        prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
+    else:
+        sequence = head[0] + 1
+        prev_hash = head[1]
 
     stored["sequence"] = sequence
     stored["prev_hash"] = prev_hash
@@ -1472,6 +1491,16 @@ def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) 
     stored["event_hash"] = event_hash
     stored["hmac"] = _audit_event_hmac(event_hash)
     return stored
+
+
+def _store_audit_chain_head(sequence: int, event_hash: str) -> None:
+    with _AUDIT_CACHE_LOCK:
+        _AUDIT_CHAIN_HEADS[str(db_path())] = (int(sequence), str(event_hash))
+
+
+def _invalidate_audit_chain_head() -> None:
+    with _AUDIT_CACHE_LOCK:
+        _AUDIT_CHAIN_HEADS.pop(str(db_path()), None)
 
 
 def _audit_event_hash(event: dict[str, Any]) -> str:
@@ -1490,10 +1519,20 @@ def _audit_hmac_secret() -> str:
     if configured:
         return configured
 
-    return load_or_create_local_secret(
-        db_path().parent / AUDIT_HMAC_SECRET_FILE,
+    secret_path = db_path().parent / AUDIT_HMAC_SECRET_FILE
+    key = str(secret_path)
+    with _AUDIT_CACHE_LOCK:
+        cached = _AUDIT_SECRET_CACHE.get(key)
+    if cached:
+        return cached
+
+    secret = load_or_create_local_secret(
+        secret_path,
         unavailable_message="Audit HMAC secret is unavailable.",
     )
+    with _AUDIT_CACHE_LOCK:
+        _AUDIT_SECRET_CACHE[key] = secret
+    return secret
 
 
 def fetch_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
@@ -1670,6 +1709,9 @@ def set_setting(key: str, value: Any) -> None:
             """,
             (key, _json(value), _now_iso()),
         )
+    from app.llm.registry import invalidate_settings_cache
+
+    invalidate_settings_cache()
 
 
 def get_settings_overrides() -> dict[str, Any]:

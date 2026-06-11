@@ -12,10 +12,10 @@
 
 1. **同步阻塞遍布 async 事件循环**——工具执行、SQLite、ONNX 推理、OCR 都在事件循环线程同步执行，这是全局性能问题的根源
 2. **SQLite 使用方式原始**——每操作新建连接、无 WAL、`init_db()` 在 18 处热路径被反复全量执行、关键索引缺失
-3. **前端"轮询 + 推送"双通道驱动单体根组件**——任务运行时每 2.5s 拉 6 个接口并触发全树重渲染
+3. **前端"轮询 + 推送"双通道驱动单体根组件**——已降级为 WS 主通道 + 10s/30s 兜底轮询；`App.tsx` 仍偏大，AbortController 已贯通 IPC `abortGroup`
 4. **Python 侧静态检查链完全空白**——无 ruff/mypy/pre-commit，代码里的 `# noqa` 全是死注释
 
-另有一项**需要立即处理的安全缺陷**：vision 工具的路径授权绕过（见 3.1 节 H1）。
+vision 工具路径授权绕过（3-H1）已在第一批修复；剩余风险见 4-H5 desktop token 契约等待独立方案。
 
 ---
 
@@ -259,11 +259,11 @@ except Exception:
 - **问题**：任务运行时每条 WS 事件 + 轮询都更新 `tasks/agentConversations/messages`，导致整个 App（含全部面板）重渲染；子组件无 `React.memo`，且 props 全是内联箭头函数（即使加 memo 也失效）。
 - **修复**：视图拆为自取数据的容器组件（直接 `useLengrvisStore(selector)`）；业务动作移为 store action 或独立 service 模块（zustand 的 `set/get` 在组件外可用）；`useShallow` + `memo` + `useCallback`。
 
-#### 4-H3. 双通道驱动的高频全量轮询
+#### 4-H3. 双通道驱动的高频全量轮询 ✅ 已解决
 
-- **位置**：`App.tsx:780-828`（2.5s interval × 6 接口 + WS 事件 1.2s 防抖再触发同一刷新）
-- **问题**：长任务期间后端持续承受 ~4 req/s，每次都触发全树重渲染；无 `AbortController`，慢响应可能乱序覆盖新数据。
-- **修复**：WS 增量 merge 为主数据源（`runEvents.ts` 已有 merge 逻辑），仅关键事件后做一次校准快照；轮询降为 10-30s 兜底且仅在 WS 断开时启用；加 `AbortController` 取消上一轮未完成请求。
+- **位置**：`App.tsx` polling / `apiClient.ts` / `ipc.ts` `abortGroup`
+- **问题**：长任务期间高频全量轮询触发全树重渲染；慢响应可能乱序覆盖新数据。
+- **修复**：WS 增量 merge 为主数据源；轮询降为 WS 连通 30s / 断开 10s 兜底；`beginBatch` + `abortGroup` 贯通 IPC 取消在途 fetch；renderer `AbortController` 阻止过期 batch 写回 state。
 
 #### 4-H4. `refreshWorkspace` 依赖循环：mode 变化重拉 16 个接口
 
@@ -370,7 +370,7 @@ except Exception:
 11. **4-H3/4-H4**：轮询降级为 WS 兜底 + `refreshWorkspace` 依赖修复 + AbortController
 12. **5-H1**：ruff + pre-commit + pytest-xdist 落地
 13. **3-H2/3-M2**：工具注册声明 `risk_level` + 权限默认 deny（fail-closed 化）
-14. **2-H6**：reconcile 移出 timeline 读路径
+14. ✅ **2-H6**：reconcile 移出 timeline 读路径（approval 写路径仍 reconcile；其他完成路径可能短暂陈旧，靠 WS 校准）
 
 ### 第三批（结构性重构，分项立项）
 

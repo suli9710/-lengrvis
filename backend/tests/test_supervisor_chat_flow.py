@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 import app.agents.planner_agent as planner_module
 import app.agents.supervisor_agent as supervisor_module
@@ -236,11 +236,11 @@ async def test_executable_turn_uses_local_provider_when_available(monkeypatch, t
 
     response = await handle_chat(r"open C:\Temp\report.txt", "privacy")
 
-    await asyncio.sleep(0.1)
     assert response.delegated is True
     assert response.task_id
+    task = await _await_task_status(response.task_id, "completed")
     assert provider.calls == 1
-    assert db.fetch_one("tasks", response.task_id)["status"] == "completed"
+    assert task["status"] == "completed"
 
 
 @pytest.mark.anyio
@@ -323,9 +323,14 @@ async def test_file_delete_path_creates_trash_approval(monkeypatch, tmp_path):
 
     response = await handle_chat(f"delete {target}", "privacy")
 
-    await asyncio.sleep(0.2)
+    # Tool execution hops through asyncio.to_thread; poll instead of a fixed sleep.
+    approvals: list[dict] = []
+    for _ in range(40):
+        await asyncio.sleep(0.1)
+        approvals = db.fetch_many("approvals", "task_id = ?", (response.task_id,), limit=10)
+        if approvals:
+            break
     task = db.fetch_one("tasks", response.task_id)
-    approvals = db.fetch_many("approvals", "task_id = ?", (response.task_id,), limit=10)
     plans = db.fetch_many("plans", "task_id = ?", (response.task_id,), limit=1)
 
     assert task["status"] == "execution"
@@ -336,7 +341,8 @@ async def test_file_delete_path_creates_trash_approval(monkeypatch, tmp_path):
     assert plans[0]["steps"][0]["tool_name"] == "file.trash"
 
 
-def test_approval_executes_trash_step_after_user_approval(monkeypatch, tmp_path):
+@pytest.mark.anyio
+async def test_approval_executes_trash_step_after_user_approval(monkeypatch, tmp_path):
     target = tmp_path / "workspace" / "old-folder"
     target.mkdir(parents=True)
     (target / "note.txt").write_text("remove me\n", encoding="utf-8")
@@ -346,26 +352,30 @@ def test_approval_executes_trash_step_after_user_approval(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(target.parent))
     db.init_db()
 
-    client = TestClient(app)
-    chat_response = client.post(
-        "/api/chat",
-        json={"message": f"delete {target}", "mode": "privacy"},
-    )
-    assert chat_response.status_code == 200
+    # ASGITransport keeps everything on this test's event loop so the
+    # background task (which hops through asyncio.to_thread) can progress to
+    # the approval checkpoint while we poll with asyncio.sleep.
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        chat_response = await client.post(
+            "/api/chat",
+            json={"message": f"delete {target}", "mode": "privacy"},
+        )
+        assert chat_response.status_code == 200
 
-    task_id = chat_response.json()["task_id"]
-    approval = _wait_for_pending_approval(task_id)
-    approve_response = client.post(f"/api/approvals/{approval['id']}/approve")
+        task_id = chat_response.json()["task_id"]
+        approval = await _await_pending_approval(task_id)
+        approve_response = await client.post(f"/api/approvals/{approval['id']}/approve")
+        assert approve_response.status_code == 200
+        task = await _await_task_status(task_id, "completed")
 
-    assert approve_response.status_code == 200
-    task = db.fetch_one("tasks", task_id)
     assert task["status"] == "completed"
     assert not target.exists()
     results = db.fetch_many("tool_results", limit=10)
     assert any(str(target) in result.get("changed_paths", []) for result in results)
 
 
-def test_explicit_path_trash_can_run_without_global_authorized_directory(monkeypatch, tmp_path):
+@pytest.mark.anyio
+async def test_explicit_path_trash_can_run_without_global_authorized_directory(monkeypatch, tmp_path):
     target = tmp_path / "workspace" / "old-folder"
     target.mkdir(parents=True)
     (target / "note.txt").write_text("remove me\n", encoding="utf-8")
@@ -375,20 +385,21 @@ def test_explicit_path_trash_can_run_without_global_authorized_directory(monkeyp
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", "")
     db.init_db()
 
-    client = TestClient(app)
-    chat_response = client.post(
-        "/api/chat",
-        json={"message": f"delete {target}", "mode": "privacy"},
-    )
-    assert chat_response.status_code == 200
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        chat_response = await client.post(
+            "/api/chat",
+            json={"message": f"delete {target}", "mode": "privacy"},
+        )
+        assert chat_response.status_code == 200
 
-    task_id = chat_response.json()["task_id"]
-    approval = _wait_for_pending_approval(task_id)
-    assert Path(approval["diff_preview"]["diff_preview"][0]["path"]) == target
-    approve_response = client.post(f"/api/approvals/{approval['id']}/approve")
+        task_id = chat_response.json()["task_id"]
+        approval = await _await_pending_approval(task_id)
+        assert Path(approval["diff_preview"]["diff_preview"][0]["path"]) == target
+        approve_response = await client.post(f"/api/approvals/{approval['id']}/approve")
+        assert approve_response.status_code == 200
+        task = await _await_task_status(task_id, "completed")
 
-    assert approve_response.status_code == 200
-    assert db.fetch_one("tasks", task_id)["status"] == "completed"
+    assert task["status"] == "completed"
     assert not target.exists()
 
 
@@ -406,12 +417,20 @@ async def test_domain_mention_without_action_stays_conversational(monkeypatch, t
     assert db.fetch_many("tasks") == []
 
 
-def _wait_for_pending_approval(task_id: str, attempts: int = 20) -> dict:
+async def _await_pending_approval(task_id: str, attempts: int = 100) -> dict:
     for _ in range(attempts):
         approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task_id, "pending"), limit=10)
         if approvals:
             return approvals[0]
-        import time
-
-        time.sleep(0.05)
+        await asyncio.sleep(0.05)
     raise AssertionError("Expected pending approval.")
+
+
+async def _await_task_status(task_id: str, status: str, attempts: int = 100) -> dict:
+    task: dict = {}
+    for _ in range(attempts):
+        task = db.fetch_one("tasks", task_id) or {}
+        if task.get("status") == status:
+            return task
+        await asyncio.sleep(0.05)
+    return task

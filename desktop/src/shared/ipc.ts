@@ -1,5 +1,6 @@
 export const IPC_CHANNELS = {
   apiRequest: "lengrvis:api:request",
+  apiAbortInflight: "lengrvis:api:abort-inflight",
   backendStatus: "lengrvis:backend:status",
   backendStart: "lengrvis:backend:start",
   backendStop: "lengrvis:backend:stop",
@@ -73,7 +74,7 @@ export const API_REQUEST_SECURITY_LIMITS = {
   maxTimeoutMs: 120_000
 } as const;
 
-export const API_REQUEST_ALLOWED_KEYS = ["endpoint", "method", "query", "body", "timeoutMs"] as const;
+export const API_REQUEST_ALLOWED_KEYS = ["endpoint", "method", "query", "body", "timeoutMs", "abortGroup"] as const;
 
 export const API_REQUEST_DENIED_PATH_PREFIXES = [
   "/api/dev",

@@ -211,7 +211,24 @@ def _sandbox_env() -> dict[str, str]:
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUTF8": "1",
     }
-    for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC"):
+    # PSMODULEPATH/USERPROFILE/LOCALAPPDATA/APPDATA keep Windows PowerShell
+    # handlers working: without them module auto-discovery and the startup
+    # cache fall back to slow rediscovery paths that can exceed handler
+    # timeouts on cold machines (observed on CI runners).
+    for key in (
+        "PATH",
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+        "PSMODULEPATH",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "PROGRAMDATA",
+    ):
         value = os.environ.get(key)
         if value:
             env[key] = value

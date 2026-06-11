@@ -978,9 +978,10 @@ class ToolRuntime:
             current_state=current_state,
             expected_approval_state=context.get("_expected_resource_state"),
         )
-        if threaded or str(getattr(tool, "name", "") or "").startswith("browser."):
-            return await asyncio.to_thread(tool.execute, args, context)
-        return tool.execute(args, context)
+        # Tool implementations are synchronous (file IO, COM automation, OCR,
+        # subprocess, HTTP). Always run them off the event loop thread so a
+        # slow tool cannot freeze every concurrent request and WebSocket.
+        return await asyncio.to_thread(tool.execute, args, context)
 
     def _write_lock_keys(self, tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
         if not self._is_write_tool(tool) and not tool.concurrency_key:

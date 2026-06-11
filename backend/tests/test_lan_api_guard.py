@@ -11,7 +11,11 @@ from app.core import db
 from app.core.schemas import Run, RunEngine, RunPhase
 from app.main import app
 from app.guardian import create_guardian_app
-from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX, signed_desktop_resource_query
+from app.security.desktop_api import (
+    DESKTOP_API_WS_PROTOCOL_PREFIX,
+    desktop_api_token,
+    signed_desktop_resource_query,
+)
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
     REMOTE_VIEW_SCOPE,
@@ -410,7 +414,6 @@ def test_desktop_get_requires_desktop_token_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
-    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     db.init_db()
     remote = TestClient(app, client=("192.168.1.22", 50100))
     loopback = TestClient(app, client=("127.0.0.1", 50100))
@@ -471,8 +474,6 @@ def test_loopback_state_changes_require_persisted_desktop_token_by_default(monke
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.delenv("LENGRVIS_DEV", raising=False)
     monkeypatch.delenv("LENGRVIS_TEST", raising=False)
@@ -481,7 +482,7 @@ def test_loopback_state_changes_require_persisted_desktop_token_by_default(monke
 
     blocked = client.post("/api/pair/code")
     blocked_read = client.get("/api/tasks")
-    token = (tmp_path / "desktop_api.secret").read_text(encoding="utf-8").strip()
+    token = desktop_api_token()
     allowed = client.post("/api/pair/code", headers={"X-Lengrvis-Desktop-Token": token})
     allowed_read = client.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": token})
 
@@ -496,7 +497,6 @@ def test_signed_desktop_resource_is_bound_to_http_method(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
-    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     image_path = tmp_path / "preview.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -517,8 +517,6 @@ def test_lengrvis_dev_does_not_disable_desktop_token_guard(monkeypatch, tmp_path
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
-    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.delenv("LENGRVIS_TEST", raising=False)
     monkeypatch.setenv("LENGRVIS_DEV", "1")
@@ -526,7 +524,7 @@ def test_lengrvis_dev_does_not_disable_desktop_token_guard(monkeypatch, tmp_path
     client = TestClient(app, client=("127.0.0.1", 50100))
 
     blocked = client.post("/api/pair/code")
-    token = (tmp_path / "desktop_api.secret").read_text(encoding="utf-8").strip()
+    token = desktop_api_token()
     allowed = client.post("/api/pair/code", headers={"X-Lengrvis-Desktop-Token": token})
 
     assert blocked.status_code == 401
@@ -548,7 +546,6 @@ def test_missing_client_host_is_not_treated_as_loopback():
 def _configure_production_desktop_token(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
-    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     db.init_db()
 

@@ -103,12 +103,7 @@ function persistTokenIfAbsent(
 ): Pick<DesktopApiTokenResolution, "token" | "source"> {
   try {
     mkdirSync(dirname(tokenPath), { recursive: true });
-    writeFileSync(tokenPath, `${token}\n`, { encoding: "utf-8", flag: "wx", mode: 0o600 });
-    try {
-      chmodSync(tokenPath, 0o600);
-    } catch {
-      // Best-effort parity with the backend; Windows ACLs may not honor chmod.
-    }
+    writeTokenFile(tokenPath, token, "wx");
     return { token, source };
   } catch (error) {
     if (isFileAlreadyExistsError(error)) {
@@ -117,18 +112,22 @@ function persistTokenIfAbsent(
         return { token: existing, source: "file" };
       }
       try {
-        writeFileSync(tokenPath, `${token}\n`, { encoding: "utf-8", flag: "w", mode: 0o600 });
-        try {
-          chmodSync(tokenPath, 0o600);
-        } catch {
-          // Best-effort parity with the backend; Windows ACLs may not honor chmod.
-        }
+        writeTokenFile(tokenPath, token, "w");
         return { token, source };
       } catch {
         return { token, source: "memory" };
       }
     }
     return { token, source: "memory" };
+  }
+}
+
+function writeTokenFile(tokenPath: string, token: string, flag: "wx" | "w"): void {
+  writeFileSync(tokenPath, `${token}\n`, { encoding: "utf-8", flag, mode: 0o600 });
+  try {
+    chmodSync(tokenPath, 0o600);
+  } catch {
+    // Best-effort parity with the backend; Windows ACLs may not honor chmod.
   }
 }
 

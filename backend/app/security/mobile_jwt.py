@@ -167,6 +167,9 @@ def _decode_mobile_token_payload(token: str) -> dict[str, Any]:
             algorithms=["HS256"],
             audience=TOKEN_AUDIENCE,
             issuer=TOKEN_ISSUER,
+            # PyJWT only verifies exp/aud/iss when the claim is present;
+            # require them so a forged claimless token cannot skip checks.
+            options={"require": ["exp", "iat", "aud", "iss"]},
         )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Mobile token expired") from None

@@ -294,7 +294,7 @@ class PolicyEngine:
         context: dict[str, Any] | None = None,
         tool_definition: Any | None = None,
     ) -> SafetyReview:
-        classified_risk = self.classify_tool_call(tool_name, args)
+        classified_risk = self.classify_tool_call(tool_name, args, tool_definition=tool_definition)
         static_risk = classified_risk if tool_name == "browser.act" else max_risk([risk_level, classified_risk])
         permission_decision = self._review_permission_policy(tool_name, args, context)
         if not permission_decision.allowed:
@@ -545,7 +545,32 @@ class PolicyEngine:
     def classify_tool_name(self, tool_name: str) -> RiskLevel:
         return self.classify_tool_call(tool_name, {})
 
-    def classify_tool_call(self, tool_name: str, args: dict[str, Any] | None = None) -> RiskLevel:
+    def classify_tool_call(
+        self,
+        tool_name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        tool_definition: Any | None = None,
+    ) -> RiskLevel:
+        args = args or {}
+        if tool_name == "browser.act":
+            return _browser_activity_risk(args)
+        declared = self._declared_tool_risk(tool_name, tool_definition)
+        if declared is not None:
+            return declared
+        return self._legacy_classify_tool_call(tool_name, args)
+
+    def _declared_tool_risk(self, tool_name: str, tool_definition: Any | None) -> RiskLevel | None:
+        if tool_definition is not None and getattr(tool_definition, "risk_level", None) is not None:
+            return tool_definition.risk_level
+        try:
+            from app.tools.registry import registry
+
+            return registry.get(tool_name).risk_level
+        except KeyError:
+            return None
+
+    def _legacy_classify_tool_call(self, tool_name: str, args: dict[str, Any]) -> RiskLevel:
         if tool_name.startswith("mcp."):
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if any(term in tool_name for term in ["password", "cookie", "token", "shell"]):
@@ -585,8 +610,6 @@ class PolicyEngine:
             "browser.cua_run",
         }:
             return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
-        if tool_name == "browser.act":
-            return _browser_activity_risk(args)
         if tool_name in {
             "file.copy",
             "file.move",
@@ -611,7 +634,7 @@ class PolicyEngine:
             "system.open_settings_uri",
         }:
             return RiskLevel.R1_OPEN_ONLY
-        return RiskLevel.R0_READ_ONLY
+        return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
 
     def review_browser_write_call(
         self,

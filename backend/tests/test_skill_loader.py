@@ -81,6 +81,7 @@ tools:
     execution:
       type: shell
       entry: {shell_entry}
+      timeout_seconds: 60
 """.strip(),
         encoding="utf-8",
     )
@@ -98,8 +99,11 @@ print(json.dumps({"ok": True, "echo": text, "context": payload.get("context", {}
         encoding="utf-8",
     )
     if os.name == "nt":
+        # Avoid ConvertTo-Json/Out-Null: cmdlet auto-loading is the slow,
+        # environment-sensitive part of a cold Windows PowerShell start and
+        # has timed out inside the sandbox on CI runners.
         (handlers / "shell_pid.ps1").write_text(
-            "$input | Out-Null\n@{ ok = $true; pid = $PID } | ConvertTo-Json -Compress\n",
+            "$null = @($input)\n'{\"ok\":true,\"pid\":' + $PID + '}'\n",
             encoding="utf-8",
         )
     else:
@@ -241,7 +245,7 @@ def test_shell_handler_runs_in_bounded_child_process(tmp_path: Path):
 
     result = registry.get("skill.demo.shell_pid").execute({}, {})
 
-    assert result["ok"] is True
+    assert result.get("ok") is True, f"shell handler failed: {result!r}"
     assert result["pid"] != os.getpid()
 
 

@@ -232,6 +232,12 @@ export function App() {
   const [realtimeStatus, setRealtimeStatus] = useState<RealtimeConnectionStatus | null>(null);
   const heroSubmitInFlight = useRef(false);
   const backendStatusRef = useRef(backendStatus);
+  const modeRef = useRef(mode);
+  const activeBrowserSessionIdRef = useRef(activeBrowserSessionId);
+  const realtimeStatusRef = useRef(realtimeStatus);
+  const hasRunningTaskRef = useRef(false);
+  const workspaceAbortRef = useRef<AbortController | null>(null);
+  const taskSnapshotAbortRef = useRef<AbortController | null>(null);
   const realtimeBadMessageNotice = useRef<RealtimeBadMessageNotice>({
     count: 0,
     messageId: `realtime-bad-message-${crypto.randomUUID()}`,
@@ -304,6 +310,18 @@ export function App() {
     backendStatusRef.current = backendStatus;
   }, [backendStatus]);
 
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
+    activeBrowserSessionIdRef.current = activeBrowserSessionId;
+  }, [activeBrowserSessionId]);
+
+  useEffect(() => {
+    realtimeStatusRef.current = realtimeStatus;
+  }, [realtimeStatus]);
+
   const handleRealtimeStatus = useCallback((status: RealtimeConnectionStatus) => {
     setRealtimeStatus(status);
     if (shouldShowRealtimeStatusMessage(status)) {
@@ -323,10 +341,16 @@ export function App() {
   }, [latestLegacyTaskId, latestTaskId]);
 
   const refreshWorkspace = useCallback(async () => {
+    workspaceAbortRef.current?.abort();
+    const controller = new AbortController();
+    workspaceAbortRef.current = controller;
+    const { signal } = controller;
+    await api.beginBatch("workspace-refresh");
     setIsLoading(true);
 
     try {
       const currentStatus = await api.getBackendStatus();
+      if (signal.aborted) return;
       setBackendStatus(currentStatus);
 
       const [
@@ -365,6 +389,7 @@ export function App() {
         api.getBrowserHostSnapshot()
       ]);
 
+      if (signal.aborted) return;
       if (chatResult.status === "fulfilled" && chatResult.value.ok && chatResult.value.data) setMessages(chatResult.value.data);
       const initialRunTasks = runsResult.status === "fulfilled" && runsResult.value.ok ? runsResult.value.data : undefined;
       const initialLegacyTasks =
@@ -401,7 +426,7 @@ export function App() {
       }
       if (browserSessionsResult.status === "fulfilled" && browserSessionsResult.value.ok && browserSessionsResult.value.data) {
         setBrowserSessions(browserSessionsResult.value.data);
-        if (!activeBrowserSessionId && browserSessionsResult.value.data[0]) {
+        if (!activeBrowserSessionIdRef.current && browserSessionsResult.value.data[0]) {
           setActiveBrowserSessionId(browserSessionsResult.value.data[0].id);
         }
       }
@@ -415,9 +440,11 @@ export function App() {
       const currentMode =
         settingsResult.status === "fulfilled" && settingsResult.value.ok && settingsResult.value.data
           ? settingsResult.value.data.mode
-          : mode;
+          : modeRef.current;
+      if (signal.aborted) return;
       if (requiresLocalLlmHealth(currentMode)) {
         const localLlmResult = await api.getLocalLlmHealth();
+        if (signal.aborted) return;
         if (localLlmResult.ok && localLlmResult.data) {
           setLocalLlmHealth(localLlmResult.data);
         } else {
@@ -432,6 +459,7 @@ export function App() {
         setLocalLlmHealth(null);
       }
     } catch (error) {
+      if (signal.aborted) return;
       setBackendStatus({
         ...backendStatusRef.current,
         state: "error",
@@ -439,13 +467,20 @@ export function App() {
         lastCheckedAt: new Date().toISOString()
       });
     } finally {
-      setIsLoading(false);
+      api.endBatch("workspace-refresh");
+      if (!signal.aborted) {
+        setIsLoading(false);
+      }
     }
-  }, [activeBrowserSessionId, api, mode]);
+  }, [api]);
 
   useEffect(() => {
     void refreshWorkspace();
-  }, [refreshWorkspace]);
+    return () => {
+      workspaceAbortRef.current?.abort();
+      api.abortInflight("workspace-refresh");
+    };
+  }, [api, refreshWorkspace]);
 
   useEffect(() => {
     if (activeView !== "browser") {
@@ -778,26 +813,38 @@ export function App() {
   };
 
   const refreshTaskSnapshot = useCallback(async () => {
-    const [runsResult, legacyTasksResult, planResult, agentsResult, safetyResult, approvalsResult] = await Promise.allSettled([
-      api.listRuns(),
-      api.listTaskTimeline(),
-      api.getCurrentPlan(),
-      api.listAgentConversations(),
-      api.getSafetyReview(),
-      api.listPendingApprovals()
-    ]);
-    const runTasks = runsResult.status === "fulfilled" && runsResult.value.ok ? runsResult.value.data : undefined;
-    const legacyTasks =
-      legacyTasksResult.status === "fulfilled" && legacyTasksResult.value.ok ? legacyTasksResult.value.data : undefined;
-    if (runTasks || legacyTasks) {
-      setTasks(mergeTaskSnapshots(runTasks ?? [], legacyTasks ?? []));
+    taskSnapshotAbortRef.current?.abort();
+    const controller = new AbortController();
+    taskSnapshotAbortRef.current = controller;
+    const { signal } = controller;
+    await api.beginBatch("task-snapshot");
+    try {
+      const [runsResult, legacyTasksResult, planResult, agentsResult, safetyResult, approvalsResult] = await Promise.allSettled([
+        api.listRuns(),
+        api.listTaskTimeline(),
+        api.getCurrentPlan(),
+        api.listAgentConversations(),
+        api.getSafetyReview(),
+        api.listPendingApprovals()
+      ]);
+      if (signal.aborted) return;
+      const runTasks = runsResult.status === "fulfilled" && runsResult.value.ok ? runsResult.value.data : undefined;
+      const legacyTasks =
+        legacyTasksResult.status === "fulfilled" && legacyTasksResult.value.ok ? legacyTasksResult.value.data : undefined;
+      if (runTasks || legacyTasks) {
+        setTasks(mergeTaskSnapshots(runTasks ?? [], legacyTasks ?? []));
+      }
+      if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
+      if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) {
+        setAgentConversations((current) => preserveStreamedRunConversationsFromEvents(current, agentsResult.value.data ?? []));
+      }
+      if (safetyResult.status === "fulfilled" && safetyResult.value.ok && safetyResult.value.data) setSafetyReview(safetyResult.value.data);
+      if (approvalsResult.status === "fulfilled" && approvalsResult.value.ok && approvalsResult.value.data) {
+        setApprovalRequests(approvalsResult.value.data);
+      }
+    } finally {
+      api.endBatch("task-snapshot");
     }
-    if (planResult.status === "fulfilled" && planResult.value.ok && planResult.value.data) setPlan(planResult.value.data);
-    if (agentsResult.status === "fulfilled" && agentsResult.value.ok && agentsResult.value.data) {
-      setAgentConversations((current) => preserveStreamedRunConversationsFromEvents(current, agentsResult.value.data ?? []));
-    }
-    if (safetyResult.status === "fulfilled" && safetyResult.value.ok && safetyResult.value.data) setSafetyReview(safetyResult.value.data);
-    if (approvalsResult.status === "fulfilled" && approvalsResult.value.ok && approvalsResult.value.data) setApprovalRequests(approvalsResult.value.data);
   }, [api]);
 
   const scheduleTaskSnapshotRefresh = useCallback(() => {
@@ -813,19 +860,26 @@ export function App() {
       window.clearTimeout(refreshTaskSnapshotTimer.current);
       refreshTaskSnapshotTimer.current = null;
     }
-  }, []);
+    taskSnapshotAbortRef.current?.abort();
+    api.abortInflight("task-snapshot");
+  }, [api]);
+
+  useEffect(() => {
+    hasRunningTaskRef.current = tasks.some(
+      (task) => isActiveTask(task) && (Boolean(task.runId) || wasUpdatedRecently(task))
+    );
+  }, [tasks]);
 
   useEffect(() => {
     if (!hasLoadedBackendTasks) return;
-    const hasRunningTask = tasks.some(
-      (task) => isActiveTask(task) && (Boolean(task.runId) || wasUpdatedRecently(task))
-    );
-    if (!hasRunningTask) return;
+    const wsHealthy = realtimeStatusRef.current?.state === "open";
+    const pollIntervalMs = wsHealthy ? 30_000 : 10_000;
     const intervalId = window.setInterval(() => {
+      if (!hasRunningTaskRef.current) return;
       void refreshTaskSnapshot();
-    }, 2500);
+    }, pollIntervalMs);
     return () => window.clearInterval(intervalId);
-  }, [hasLoadedBackendTasks, refreshTaskSnapshot, tasks]);
+  }, [hasLoadedBackendTasks, realtimeStatus?.state, refreshTaskSnapshot]);
 
   useEffect(() => {
     if (!latestTaskId) return;

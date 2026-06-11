@@ -148,6 +148,38 @@ interface ValidatedApiRequest {
   query?: Record<string, Exclude<ApiQueryValue, null | undefined>>;
   serializedBody?: string;
   timeoutMs: number;
+  abortGroup?: string;
+}
+
+const apiInflightGroups = new Map<string, AbortController>();
+
+function abortInflightApiGroup(abortGroup: string): void {
+  apiInflightGroups.get(abortGroup)?.abort();
+  apiInflightGroups.delete(abortGroup);
+}
+
+function resolveInflightGroupSignal(abortGroup: string | undefined): AbortSignal | undefined {
+  if (!abortGroup) {
+    return undefined;
+  }
+  let controller = apiInflightGroups.get(abortGroup);
+  if (!controller || controller.signal.aborted) {
+    controller = new AbortController();
+    apiInflightGroups.set(abortGroup, controller);
+  }
+  return controller.signal;
+}
+
+function mergeAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort();
+      return controller.signal;
+    }
+    signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  return controller.signal;
 }
 
 interface ApiRequestValidationOptions {
@@ -299,6 +331,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
       }
     }
     return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken());
+  });
+
+  ipcMain.handle(IPC_CHANNELS.apiAbortInflight, async (event, abortGroup: unknown) => {
+    assertTrustedRenderer(event);
+    abortInflightApiGroup(validateApiAbortGroup(abortGroup));
   });
 
   ipcMain.handle(IPC_CHANNELS.commandsExecute, async (event, request: unknown) => {
@@ -821,11 +858,15 @@ async function proxyApiRequest<TData>(
   try {
     const validatedRequest = validateApiRequest(request, options);
     const url = buildValidatedRequestUrl(baseUrl, validatedRequest);
-    const controller = new AbortController();
+    const timeoutController = new AbortController();
     timeout = setTimeout(
-      () => controller.abort(),
+      () => timeoutController.abort(),
       validatedRequest.timeoutMs
     );
+    const groupSignal = resolveInflightGroupSignal(validatedRequest.abortGroup);
+    const signal = groupSignal
+      ? mergeAbortSignals([groupSignal, timeoutController.signal])
+      : timeoutController.signal;
 
     const response = await fetch(url, {
       method: validatedRequest.method,
@@ -835,7 +876,7 @@ async function proxyApiRequest<TData>(
         ...(validatedRequest.serializedBody !== undefined ? { "Content-Type": "application/json" } : {})
       },
       body: validatedRequest.serializedBody,
-      signal: controller.signal
+      signal
     });
 
     const data = await parseResponseBody(response);
@@ -931,7 +972,26 @@ function validateApiRequest(request: unknown, options: ApiRequestValidationOptio
   const query = validateApiQuery(request.query);
   const timeoutMs = validateApiTimeout(request.timeoutMs);
   const serializedBody = serializeApiRequestBody(request, method);
-  return { endpoint, method, query, serializedBody, timeoutMs };
+  const abortGroup = validateOptionalApiAbortGroup(request.abortGroup);
+  return { endpoint, method, query, serializedBody, timeoutMs, abortGroup };
+}
+
+function validateApiAbortGroup(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new ApiRequestValidationError("Renderer API abort group is invalid");
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 64 || !/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    throw new ApiRequestValidationError("Renderer API abort group is invalid");
+  }
+  return trimmed;
+}
+
+function validateOptionalApiAbortGroup(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return validateApiAbortGroup(value);
 }
 
 function rejectUnexpectedApiRequestKeys(request: Record<string, unknown>): void {

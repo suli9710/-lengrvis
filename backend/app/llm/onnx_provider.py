@@ -6,6 +6,7 @@ continue to use the existing local HTTP backends from `local_provider.py`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import dataclasses
@@ -106,7 +107,10 @@ class OnnxProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
         prompt = self._format_messages(messages)
-        return self._generate_text(
+        # GenAI token generation is CPU/GPU-bound and holds state.lock for the
+        # whole generation; run it off the event loop so the API stays live.
+        return await asyncio.to_thread(
+            self._generate_text,
             prompt,
             temperature=self.settings.temperature if temperature is None else temperature,
         )

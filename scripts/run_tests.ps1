@@ -62,9 +62,17 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
 
 $ParsedArgs = Split-TestArguments -RawArgs $args
 
+function Test-PytestXdistAvailable {
+    python -c "import xdist" 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
 $ArgsList = @()
 if (-not (Test-ExplicitPytestTarget -PytestArgs $ParsedArgs.PytestArgs)) {
-    $ArgsList += "backend/tests"
+    $ArgsList += @("backend/tests")
+    if (Test-PytestXdistAvailable) {
+        $ArgsList += @("-n", "auto")
+    }
 }
 if ($ParsedArgs.Coverage) {
     $ArgsList += @("--cov=backend", "--cov-report=term-missing")

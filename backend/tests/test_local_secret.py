@@ -50,3 +50,15 @@ def test_legacy_plaintext_secret_is_kept_and_migrated(tmp_path: Path):
 
 def test_read_local_secret_missing_file_returns_empty(tmp_path: Path):
     assert read_local_secret(tmp_path / "missing.secret") == ""
+
+
+def test_write_leaves_no_temp_file_and_survives_stale_temp(tmp_path: Path):
+    secret_path = tmp_path / "unit.secret"
+    stale = tmp_path / "unit.secret.tmp"
+    stale.write_text("stale", encoding="utf-8")
+
+    value = load_or_create_local_secret(secret_path, unavailable_message="unavailable")
+
+    assert value
+    assert read_local_secret(secret_path) == value
+    assert not stale.exists()

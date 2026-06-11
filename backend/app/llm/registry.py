@@ -3,9 +3,11 @@ from __future__ import annotations
 import dataclasses
 import ipaddress
 import os
+import threading
+import time
 from urllib.parse import urlparse
 
-from app.config import AppSettings, get_base_settings
+from app.config import ENV_PREFIX, AppSettings, get_base_settings
 from app.context_management import ContextAwareProvider
 from app.core import db
 from app.llm.profiles import profile_for_provider
@@ -21,11 +23,50 @@ LOCAL_PROVIDERS = {"ollama", "lmstudio", "llamacpp", "llama.cpp", "vllm_local", 
 KNOWN_TASKS = {"planner", "supervisor", "subagent", "embed", "vision", "ocr", "default"}
 
 
+# get_effective_settings() is called several times per orchestration step
+# (tool context, provider build, planner, engine init); each uncached call
+# re-reads config.yaml/.env plus the settings table. A short TTL keeps reads
+# hot while writes invalidate immediately via db.set_setting().
+_SETTINGS_CACHE_TTL_SECONDS = 2.0
+_SETTINGS_CACHE_LOCK = threading.Lock()
+_settings_cache_value: AppSettings | None = None
+_settings_cache_key: tuple[tuple[str, str], ...] | None = None
+_settings_cache_expires_at = 0.0
+
+
+def _settings_env_fingerprint() -> tuple[tuple[str, str], ...]:
+    """Capture LENGRVIS_* env state so monkeypatched env changes bypass the cache."""
+    return tuple(sorted((key, value) for key, value in os.environ.items() if key.startswith(ENV_PREFIX)))
+
+
+def invalidate_settings_cache() -> None:
+    global _settings_cache_value, _settings_cache_key
+    with _SETTINGS_CACHE_LOCK:
+        _settings_cache_value = None
+        _settings_cache_key = None
+
+
 def get_effective_settings() -> AppSettings:
+    global _settings_cache_value, _settings_cache_key, _settings_cache_expires_at
+    fingerprint = _settings_env_fingerprint()
+    with _SETTINGS_CACHE_LOCK:
+        if (
+            _settings_cache_value is not None
+            and _settings_cache_key == fingerprint
+            and time.monotonic() < _settings_cache_expires_at
+        ):
+            return _settings_cache_value
+
     db.init_db()
     base = get_base_settings()
     persisted = base.merged(db.get_settings_overrides())
-    return persisted.merged(_explicit_process_env_overrides(base))
+    effective = persisted.merged(_explicit_process_env_overrides(base))
+
+    with _SETTINGS_CACHE_LOCK:
+        _settings_cache_value = effective
+        _settings_cache_key = fingerprint
+        _settings_cache_expires_at = time.monotonic() + _SETTINGS_CACHE_TTL_SECONDS
+    return effective
 
 
 def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
