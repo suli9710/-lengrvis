@@ -212,7 +212,10 @@ function Resolve-LanTlsConfig {
 function Test-Health {
     try {
         $healthUrl = "$BackendUrl/api/health"
-        if ($BackendScheme -eq "https") {
+        # Self-signed certs are only expected on loopback; never skip
+        # certificate validation when probing a non-loopback host.
+        $isLoopbackHost = $BackendHost -in @("127.0.0.1", "localhost", "::1", "[::1]")
+        if ($BackendScheme -eq "https" -and $isLoopbackHost) {
             $invokeCommand = Get-Command Invoke-WebRequest
             if ($invokeCommand.Parameters.ContainsKey("SkipCertificateCheck")) {
                 $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2 -SkipCertificateCheck

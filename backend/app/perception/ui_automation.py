@@ -1325,7 +1325,9 @@ def _focus_window_sync(
     try:
         user32.ShowWindow(target_hwnd, 9)
     except Exception:
-        pass
+        # Restoring a minimized window is best-effort; SetForegroundWindow
+        # below still runs and its result is what gets reported.
+        logger.debug("ShowWindow failed for hwnd %s", target_hwnd, exc_info=True)
     ok = bool(user32.SetForegroundWindow(target_hwnd))
     return {"ok": ok, "window": target, "action": "focus_window", "error": "" if ok else "SetForegroundWindow failed."}
 

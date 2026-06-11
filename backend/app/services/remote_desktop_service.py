@@ -102,6 +102,8 @@ def _grab_screen() -> Image.Image:
         image = ImageGrab.grab()
         screen_origin = (0, 0)
     converted = image.convert("RGB")
+    # Attaching the origin is an optional optimization; readers fall back to
+    # _virtual_screen_origin() when the attribute is missing.
     try:
         setattr(converted, "_lengrvis_screen_origin", screen_origin)
     except Exception:
