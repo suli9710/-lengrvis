@@ -1302,8 +1302,13 @@ function isWebSocketSubprotocolToken(token: string): boolean {
   return Boolean(token && token.trim() === token && WEB_SOCKET_SUBPROTOCOL_TOKEN_PATTERN.test(token));
 }
 
+// Smoke tests load this module via vm.runInNewContext; array literals created in
+// that sandbox fail assert.deepEqual against host-context arrays even when contents
+// match. URLSearchParams#getAll returns a host Array we can push into.
 function webSocketProtocolList(protocol: string): string[] {
-  return [protocol];
+  const protocols = new URL("https://lengrvis.invalid").searchParams.getAll("protocol");
+  protocols.push(protocol);
+  return protocols;
 }
 
 type RemoteInputGrantJsonContext = "claim" | "use";
