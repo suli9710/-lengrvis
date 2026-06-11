@@ -62,7 +62,10 @@ function Wait-BackendHealth {
                 UseBasicParsing = $true
                 TimeoutSec = 2
             }
-            if ($Scheme -eq "https" -and (Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipCertificateCheck")) {
+            # Self-signed certs are only expected on loopback; never skip
+            # certificate validation when probing a non-loopback host.
+            $isLoopbackHost = $HostName -in @("127.0.0.1", "localhost", "::1", "[::1]")
+            if ($Scheme -eq "https" -and $isLoopbackHost -and (Get-Command Invoke-WebRequest).Parameters.ContainsKey("SkipCertificateCheck")) {
                 $request.SkipCertificateCheck = $true
             }
             $response = Invoke-WebRequest @request
