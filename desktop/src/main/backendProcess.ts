@@ -222,8 +222,9 @@ export class BackendProcessManager {
       return this.refreshStatus("stopped", message);
     }
 
-    this.child.kill();
+    const child = this.child;
     this.child = null;
+    await terminateProcessTree(child);
     return this.refreshStatus("stopped", "后端进程已停止");
   }
 
@@ -424,6 +425,70 @@ export class BackendProcessManager {
 
 function formatServiceState(service: WindowsServiceProbe): string {
   return service.stateName ? `处于 ${service.stateName}` : "未就绪";
+}
+
+const PROCESS_EXIT_TIMEOUT_MS = 5000;
+
+/**
+ * Terminate the backend process and all of its descendants.
+ *
+ * On Windows, `child.kill()` maps to TerminateProcess which does NOT kill the
+ * process tree: the PyInstaller onefile bootstrap spawns the real backend as a
+ * child that would survive as an orphan, keeping port 8000 and GPU memory.
+ * `taskkill /T /F` kills the whole tree. On other platforms SIGTERM followed
+ * by SIGKILL after a timeout is used.
+ */
+export async function terminateProcessTree(child: ChildProcessWithoutNullStreams): Promise<void> {
+  const pid = child.pid;
+  if (!pid) {
+    child.kill();
+    return;
+  }
+
+  const exited = waitForExit(child, PROCESS_EXIT_TIMEOUT_MS);
+
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      execFile(
+        "taskkill",
+        ["/PID", String(pid), "/T", "/F"],
+        { timeout: PROCESS_EXIT_TIMEOUT_MS, windowsHide: true },
+        (error) => {
+          if (error) {
+            void writeBackendLog(`taskkill failed for pid=${pid}; falling back to kill(); error=${error.message}`);
+            child.kill();
+          }
+          resolve();
+        }
+      );
+    });
+  } else {
+    child.kill("SIGTERM");
+  }
+
+  const finished = await exited;
+  if (!finished) {
+    void writeBackendLog(`backend process pid=${pid} did not exit within ${PROCESS_EXIT_TIMEOUT_MS}ms; sending SIGKILL`);
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Process may already be gone.
+    }
+  }
+}
+
+function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.killed) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
 }
 
 function resolveBundledOllamaEnv(command: string): NodeJS.ProcessEnv {

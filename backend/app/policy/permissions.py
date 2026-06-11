@@ -240,6 +240,13 @@ def evaluate_permission_policy(
     allow = next((rule for rule in matching if rule.effect == "allow"), None)
     if allow:
         return _decision(True, allow)
+    has_allow_rules = any(rule.enabled and rule.effect == "allow" for rule in policy.rules)
+    if has_allow_rules:
+        return PermissionDecision(
+            allowed=False,
+            matched=False,
+            reason="No permission rule matched; allow-list policy default deny.",
+        )
     return PermissionDecision(allowed=True)
 
 

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-import json
-import math
-import re
+import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from app.core import db
 from app.indexer.embedding_service import Embedder, embed_texts_sync
+from app.indexer.embedding_storage import cosine_similarity_batch, vector_from_storage
+from app.indexer.fts_query import fts_match_query
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_LIMIT = 10
@@ -56,34 +60,15 @@ class VectorIndex:
             candidates = _filter_allowed_rows(self._recent_chunks(scan_limit), allowed_bases)
             source = "vector_scan"
 
-        ranked = []
-        for row in candidates:
-            vector = _loads_vector(row.get("embedding"))
-            if not vector:
-                continue
-            vector_score = _cosine_similarity(query_vector, vector)
-            lexical_score = float(row.get("lexical_score") or 0.0)
-            score = vector_score + min(0.2, lexical_score / 100.0)
-            ranked.append(
-                {
-                    "file_id": row["file_id"],
-                    "chunk_id": row["chunk_id"],
-                    "chunk_index": row["chunk_index"],
-                    "path": row["path"],
-                    "name": row["name"],
-                    "snippet": _snippet(row["text"], query),
-                    "score": score,
-                    "vector_score": vector_score,
-                    "lexical_score": lexical_score,
-                }
-            )
+        ranked = _rank_vector_candidates(candidates, query_vector, query)
 
         lexical_candidates = _filter_allowed_rows(self._lexical_chunks(query, candidate_limit), allowed_bases)
         embedded_chunk_ids = {row["chunk_id"] for row in candidates}
         missing_embedding_candidates = [
             row
             for row in lexical_candidates
-            if row["chunk_id"] not in embedded_chunk_ids and not _loads_vector(row.get("embedding"))
+            if row["chunk_id"] not in embedded_chunk_ids
+            and vector_from_storage(row.get("embedding")) is None
         ]
         if missing_embedding_candidates:
             ranked.extend(_lexical_fallback_rows(missing_embedding_candidates, query))
@@ -110,9 +95,10 @@ class VectorIndex:
                     ORDER BY rank
                     LIMIT ?
                     """,
-                    (_fts_query(query), limit),
+                    (fts_match_query(query), limit),
                 ).fetchall()
-            except Exception:
+            except Exception as exc:
+                logger.debug("FTS candidate lookup failed, using LIKE fallback: %s", exc)
                 fts_rows = []
 
             if fts_rows:
@@ -122,6 +108,7 @@ class VectorIndex:
                     file_scores[row["file_id"]] = max(file_scores.get(row["file_id"], 0.0), score)
                 return self._chunks_for_files(conn, file_scores, limit)
 
+            logger.info("FTS unavailable for candidate lookup; falling back to LIKE for query=%r", query)
             like_rows = conn.execute(
                 """
                 SELECT dc.file_id
@@ -145,9 +132,10 @@ class VectorIndex:
                     ORDER BY rank
                     LIMIT ?
                     """,
-                    (_fts_query(query), limit),
+                    (fts_match_query(query), limit),
                 ).fetchall()
-            except Exception:
+            except Exception as exc:
+                logger.debug("FTS lexical lookup failed, using LIKE fallback: %s", exc)
                 fts_rows = []
 
             if fts_rows:
@@ -162,6 +150,7 @@ class VectorIndex:
                     require_embeddings=False,
                 )
 
+            logger.info("FTS unavailable for lexical lookup; falling back to LIKE for query=%r", query)
             like_rows = conn.execute(
                 """
                 SELECT dc.file_id
@@ -274,35 +263,71 @@ def _within_allowed_bases(path: str, allowed_bases: list[Path]) -> bool:
     return False
 
 
-def _loads_vector(raw: Any) -> list[float]:
-    if isinstance(raw, str):
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            return []
-    else:
-        data = raw
-    if not isinstance(data, list):
-        return []
-    return [float(value) for value in data]
+def _rank_vector_candidates(
+    candidates: list[dict[str, Any]],
+    query_vector: list[float],
+    query: str,
+) -> list[dict[str, Any]]:
+    query_dim = len(query_vector)
+    vectors: list[np.ndarray] = []
+    valid_rows: list[dict[str, Any]] = []
+    ranked: list[dict[str, Any]] = []
+    for row in candidates:
+        vector = vector_from_storage(row.get("embedding"))
+        if vector is None or vector.size == 0:
+            continue
+        lexical_score = float(row.get("lexical_score") or 0.0)
+        if vector.size != query_dim:
+            ranked.append(
+                _ranked_candidate_row(
+                    row,
+                    query=query,
+                    score=min(0.2, lexical_score / 100.0),
+                    vector_score=0.0,
+                    lexical_score=lexical_score,
+                )
+            )
+            continue
+        vectors.append(vector)
+        valid_rows.append(row)
+
+    if valid_rows:
+        matrix = np.vstack(vectors)
+        scores = cosine_similarity_batch(query_vector, matrix)
+        for index, row in enumerate(valid_rows):
+            vector_score = float(scores[index])
+            lexical_score = float(row.get("lexical_score") or 0.0)
+            ranked.append(
+                _ranked_candidate_row(
+                    row,
+                    query=query,
+                    score=vector_score + min(0.2, lexical_score / 100.0),
+                    vector_score=vector_score,
+                    lexical_score=lexical_score,
+                )
+            )
+    return ranked
 
 
-def _fts_query(query: str) -> str:
-    tokens = re.findall(r"[\w]+", query, flags=re.UNICODE)
-    if not tokens:
-        return query
-    return " OR ".join(f'"{token}"' for token in tokens[:8])
-
-
-def _cosine_similarity(left: list[float], right: list[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    dot = sum(a * b for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(a * a for a in left))
-    right_norm = math.sqrt(sum(b * b for b in right))
-    if left_norm == 0.0 or right_norm == 0.0:
-        return 0.0
-    return dot / (left_norm * right_norm)
+def _ranked_candidate_row(
+    row: dict[str, Any],
+    *,
+    query: str,
+    score: float,
+    vector_score: float,
+    lexical_score: float,
+) -> dict[str, Any]:
+    return {
+        "file_id": row["file_id"],
+        "chunk_id": row["chunk_id"],
+        "chunk_index": row["chunk_index"],
+        "path": row["path"],
+        "name": row["name"],
+        "snippet": _snippet(row["text"], query),
+        "score": score,
+        "vector_score": vector_score,
+        "lexical_score": lexical_score,
+    }
 
 
 def _snippet(text: str, query: str, *, size: int = 240) -> str:

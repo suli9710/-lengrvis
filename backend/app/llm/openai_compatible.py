@@ -34,6 +34,23 @@ class _CircuitState:
 
 
 _CIRCUITS: dict[tuple[str, str, str, str], _CircuitState] = {}
+_SHARED_HTTP_CLIENT: httpx.AsyncClient | None = None
+_HTTP_LIMITS = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=30.0)
+
+
+def _shared_http_client() -> httpx.AsyncClient:
+    """Process-wide AsyncClient so LLM calls reuse TCP/TLS connections."""
+    global _SHARED_HTTP_CLIENT
+    if _SHARED_HTTP_CLIENT is None or _SHARED_HTTP_CLIENT.is_closed:
+        _SHARED_HTTP_CLIENT = httpx.AsyncClient(limits=_HTTP_LIMITS, timeout=httpx.Timeout(60.0))
+    return _SHARED_HTTP_CLIENT
+
+
+async def close_shared_http_client() -> None:
+    global _SHARED_HTTP_CLIENT
+    if _SHARED_HTTP_CLIENT is not None and not _SHARED_HTTP_CLIENT.is_closed:
+        await _SHARED_HTTP_CLIENT.aclose()
+    _SHARED_HTTP_CLIENT = None
 
 
 def normalize_openai_base_url(base_url: str) -> str:
@@ -129,21 +146,22 @@ class OpenAICompatibleProvider(LLMProvider):
         for attempt in range(attempts):
             try:
                 trace["attempts"] = attempt + 1
-                async with httpx.AsyncClient(timeout=self.settings.timeout) as client:
-                    response = await client.post(
-                        endpoint,
-                        headers=self._headers(),
-                        json=payload,
-                    )
-                    trace["last_status_code"] = response.status_code
-                    response.raise_for_status()
-                    try:
-                        data = response.json()
-                    except ValueError as exc:
-                        content_type = response.headers.get("content-type", "")
-                        raise LLMApiResponseError(
-                            f"LLM provider returned non-JSON response with content-type {content_type or 'unknown'}."
-                        ) from exc
+                client = _shared_http_client()
+                response = await client.post(
+                    endpoint,
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=self.settings.timeout,
+                )
+                trace["last_status_code"] = response.status_code
+                response.raise_for_status()
+                try:
+                    data = response.json()
+                except ValueError as exc:
+                    content_type = response.headers.get("content-type", "")
+                    raise LLMApiResponseError(
+                        f"LLM provider returned non-JSON response with content-type {content_type or 'unknown'}."
+                    ) from exc
                 self._record_success(circuit_key)
                 trace["ok"] = True
                 trace["circuit_after"] = circuit_snapshot(self.settings)

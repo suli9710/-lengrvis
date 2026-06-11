@@ -13,8 +13,10 @@ from app.llm.openai_compatible import (
     LLMApiResponseError,
     OpenAICompatibleProvider,
     _CIRCUITS,
+    _shared_http_client,
     _validate_structured_payload_lightweight,
     circuit_snapshot,
+    close_shared_http_client,
     normalize_openai_base_url,
 )
 from app.llm.registry import get_provider_for_mode
@@ -35,7 +37,7 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
         return None
 
-    async def post(self, url, headers=None, json=None):  # noqa: ANN001, A002
+    async def post(self, url, headers=None, json=None, **kwargs):  # noqa: ANN001, A002, ARG002
         FakeAsyncClient.calls += 1
         FakeAsyncClient.requests.append({"url": url, "headers": headers, "json": json})
         if FakeAsyncClient.errors:
@@ -52,6 +54,11 @@ def _clear_circuit_state():
     FakeAsyncClient.errors = []
     yield
     _CIRCUITS.clear()
+    asyncio.run(close_shared_http_client())
+
+
+def _patch_shared_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.llm.openai_compatible._shared_http_client", lambda: FakeAsyncClient())
 
 
 def _settings(**overrides) -> AppSettings:
@@ -106,7 +113,7 @@ def test_normalize_openai_base_url(raw, normalized):
 
 
 def test_chat_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "ok"}}]})]
     provider = OpenAICompatibleProvider(_settings(base_url="https://api.example.test"))
 
@@ -117,7 +124,7 @@ def test_chat_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
 
 
 def test_responses_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(200, {"status": "completed", "output": [{"content": [{"text": "ok"}]}]})
     ]
@@ -130,7 +137,7 @@ def test_responses_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
 
 
 def test_circuit_snapshot_uses_normalized_base_url(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [_response(503, {"error": "down"})]
     settings = _settings(
         base_url="https://api.example.test/",
@@ -147,7 +154,7 @@ def test_circuit_snapshot_uses_normalized_base_url(monkeypatch):
 
 
 def test_chat_retries_transient_http_error(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(500, {"error": "temporary"}),
         _response(200, {"choices": [{"message": {"content": "ok"}}]}),
@@ -161,7 +168,7 @@ def test_chat_retries_transient_http_error(monkeypatch):
 
 
 def test_chat_result_metadata_includes_retry_trace(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(500, {"error": "temporary"}),
         _response(200, {"choices": [{"message": {"content": "ok"}}]}),
@@ -177,7 +184,7 @@ def test_chat_result_metadata_includes_retry_trace(monkeypatch):
 
 
 def test_chat_rejects_non_json_success_payload(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [_text_response(200, "<html>not json</html>", {"content-type": "text/html"})]
     provider = OpenAICompatibleProvider(_settings())
 
@@ -186,7 +193,7 @@ def test_chat_rejects_non_json_success_payload(monkeypatch):
 
 
 def test_circuit_opens_after_repeated_transient_failures(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(500, {"error": "first"}),
         _response(503, {"error": "second"}),
@@ -207,7 +214,7 @@ def test_circuit_opens_after_repeated_transient_failures(monkeypatch):
 
 
 def test_prompt_too_long_does_not_retry_or_open_circuit(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(400, {"error": {"message": "context_length_exceeded: prompt too long"}}),
         _response(500, {"error": "would be consumed by a bad retry"}),
@@ -226,7 +233,7 @@ def test_prompt_too_long_does_not_retry_or_open_circuit(monkeypatch):
 
 
 def test_prompt_too_long_parses_reported_token_gap(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(413, {"error": {"message": "prompt is too long: 137500 tokens > 135000 maximum"}}),
     ]
@@ -257,7 +264,7 @@ def test_retry_after_header_controls_retry_sleep(monkeypatch):
     async def fake_sleep(delay: float) -> None:
         sleeps.append(delay)
 
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     monkeypatch.setattr("asyncio.sleep", fake_sleep)
     FakeAsyncClient.responses = [
         _response_with_headers(429, {"error": "slow down"}, {"Retry-After": "1.25"}),
@@ -272,7 +279,7 @@ def test_retry_after_header_controls_retry_sleep(monkeypatch):
 
 
 def test_chat_result_parses_usage(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(
             200,
@@ -294,7 +301,7 @@ def test_chat_result_parses_usage(monkeypatch):
 
 
 def test_chat_payload_strips_non_provider_message_fields(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(200, {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}),
     ]
@@ -319,7 +326,7 @@ def test_chat_payload_strips_non_provider_message_fields(monkeypatch):
 
 
 def test_structured_chat_validates_schema_and_extracts_embedded_json(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(
             200,
@@ -363,7 +370,7 @@ def test_structured_chat_validates_schema_and_extracts_embedded_json(monkeypatch
 
 
 def test_structured_chat_rejects_missing_required_field(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(200, {"choices": [{"message": {"content": '{"count": 1}'}, "finish_reason": "stop"}]}),
     ]
@@ -382,7 +389,7 @@ def test_structured_chat_rejects_missing_required_field(monkeypatch):
 
 
 def test_structured_chat_rejects_wrong_nested_type(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(
             200,
@@ -445,7 +452,7 @@ def test_lightweight_schema_validation_rejects_extra_fields_and_bad_array_item_t
     ],
 )
 def test_chat_rejects_malformed_success_payload(monkeypatch, payload):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [_response(200, payload)]
     provider = OpenAICompatibleProvider(_settings())
 
@@ -463,7 +470,7 @@ def test_chat_rejects_malformed_success_payload(monkeypatch, payload):
     ],
 )
 def test_responses_api_rejects_failed_or_empty_success_payload(monkeypatch, payload):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [_response(200, payload)]
     provider = OpenAICompatibleProvider(_settings(wire_api="responses"))
 
@@ -483,7 +490,7 @@ def test_responses_api_rejects_failed_or_empty_success_payload(monkeypatch, payl
 def test_vision_rejects_malformed_success_payload(monkeypatch, tmp_path, payload):
     image = tmp_path / "sample.png"
     image.write_bytes(b"not really an image but enough for base64")
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [_response(200, payload)]
     provider = OpenAICompatibleProvider(_settings())
 
@@ -503,7 +510,7 @@ def test_vision_rejects_malformed_success_payload(monkeypatch, tmp_path, payload
 def test_responses_vision_rejects_failed_or_empty_success_payload(monkeypatch, tmp_path, payload):
     image = tmp_path / "sample.png"
     image.write_bytes(b"not really an image but enough for base64")
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [_response(200, payload)]
     provider = OpenAICompatibleProvider(_settings(wire_api="responses"))
 
@@ -526,7 +533,7 @@ def test_responses_api_rejects_tool_role_messages():
 
 
 def test_auth_error_does_not_retry_or_open_circuit(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
         _response(401, {"error": "bad key"}),
         _response(200, {"choices": [{"message": {"content": "unused"}}]}),
@@ -541,7 +548,7 @@ def test_auth_error_does_not_retry_or_open_circuit(monkeypatch):
 
 
 def test_timeout_and_429_retry(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     FakeAsyncClient.errors = [httpx.TimeoutException("slow")]
     FakeAsyncClient.responses = [
         _response(429, {"error": "rate limited"}),
@@ -556,7 +563,7 @@ def test_timeout_and_429_retry(monkeypatch):
 
 
 def test_circuit_cooldown_allows_success_and_clears_state(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     provider = OpenAICompatibleProvider(
         _settings(llm_api_max_retries=0, llm_api_circuit_failure_threshold=1, llm_api_circuit_cooldown_seconds=0)
     )
@@ -574,7 +581,7 @@ def test_circuit_cooldown_allows_success_and_clears_state(monkeypatch):
 
 
 def test_circuit_isolated_by_endpoint_and_actual_model(monkeypatch):
-    monkeypatch.setattr("app.llm.openai_compatible.httpx.AsyncClient", FakeAsyncClient)
+    _patch_shared_client(monkeypatch)
     provider = OpenAICompatibleProvider(
         _settings(llm_api_max_retries=0, llm_api_circuit_failure_threshold=1, embedding_model="embed-a")
     )

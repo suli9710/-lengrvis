@@ -116,10 +116,9 @@ def list_runs(limit: int = 100) -> list[Run]:
 
 
 def get_timeline(run_id: str) -> dict[str, Any]:
+    # Reconcile belongs on write paths (approval resume, task mutation), not on
+    # every timeline read — it replays agent_messages for every run on the task.
     run = get_run(run_id)
-    if run.task_id:
-        reconcile_task_runs(run.task_id)
-        run = get_run(run_id)
     events = [event.model_dump(mode="json") for event in list_run_events(run_id)]
     return {"run": run.model_dump(mode="json"), "events": events, "count": len(events)}
 
@@ -257,8 +256,26 @@ def cancel_run(run_id: str) -> Run:
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to mark task %s cancelled while cancelling run %s: %s", run.task_id, run.id, exc, exc_info=True)
     _update_run(run, phase=RunPhase.CANCELLED)
+    _cancel_active_run_task(run.id)
     run_event_bus.publish(run.id, "run.cancelled", {"task_id": run.task_id, "reason": "cancel_requested"})
     return run
+
+
+def _cancel_active_run_task(run_id: str) -> None:
+    """Cancel the in-flight engine loop so long turns stop promptly.
+
+    Persisting RunPhase.CANCELLED alone only stops the loop between turns; a
+    turn blocked on a slow tool call would keep executing until it finished.
+    """
+    with _ACTIVE_RUN_TASKS_LOCK:
+        work = _ACTIVE_RUN_TASKS.get(run_id)
+    if work is None or work.done():
+        return
+    if isinstance(work, asyncio.Task):
+        # cancel_run may execute on a worker thread; marshal onto the loop.
+        work.get_loop().call_soon_threadsafe(work.cancel)
+    else:
+        work.cancel()
 
 
 def _expire_pending_approvals(task_id: str, reason: str) -> list[Approval]:
@@ -459,6 +476,20 @@ async def _bridge_task_messages(
             except asyncio.TimeoutError:
                 continue
             _publish_translated_message(run_id, message, seen_message_ids)
+        # stop_event fires as soon as the run reaches a terminal phase; tail
+        # messages (final tool.progress/tool.result) may still be queued or
+        # only persisted. Drain both before unsubscribing or the run timeline
+        # silently loses them.
+        while True:
+            try:
+                message = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _publish_translated_message(run_id, message, seen_message_ids)
+        for raw in reversed(db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=1000)):
+            message = _agent_message(raw)
+            if message is not None:
+                _publish_translated_message(run_id, message, seen_message_ids)
     finally:
         AgentBus().unsubscribe(task_id, queue)
 

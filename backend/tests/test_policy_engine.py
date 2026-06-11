@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
 from app.config import AppSettings
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.tools.registry import register_all_tools
 from app.tools.schemas import ToolDefinition
+
+
+@pytest.fixture(autouse=True)
+def _register_builtin_tools():
+    register_all_tools(load_skills=False)
 
 
 LEGACY_STUB_MODULES = (
@@ -96,6 +104,10 @@ def test_policy_requires_approval_for_modifying_file_tool_call():
 
     assert review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
     assert review.risk_level == RiskLevel.R2_REVERSIBLE_MODIFY
+
+
+def test_classify_unknown_tool_is_fail_closed():
+    assert PolicyEngine().classify_tool_name("totally.unknown.tool") == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
 
 
 def test_policy_denies_forbidden_shell_or_secret_tool_call():

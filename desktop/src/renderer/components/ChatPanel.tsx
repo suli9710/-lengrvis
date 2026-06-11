@@ -110,6 +110,18 @@ export function ChatPanel({
         ) : (
           <p className="empty-state">暂无对话。发送消息后会显示真实回复。</p>
         )}
+        {isSending ? (
+          <article className="chat-message chat-message--assistant chat-message--pending" aria-label="Lengrvis 正在处理">
+            <div className="chat-message__meta">
+              <strong>Lengrvis</strong>
+            </div>
+            <span className="chat-typing" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </article>
+        ) : null}
       </div>
       {suggestions.length ? (
         <div className="intent-suggestions" aria-label="建议">

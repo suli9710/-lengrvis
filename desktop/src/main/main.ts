@@ -360,13 +360,34 @@ if (!gotSingleInstanceLock) {
     globalShortcut.unregisterAll();
   });
 
-  app.on("before-quit", async () => {
+  let backendCleanupDone = false;
+  let backendCleanupInProgress = false;
+  app.on("before-quit", (event) => {
     isQuitting = true;
-    stopTrayBackendStatusPolling();
-    notifications.stopBackendListener();
-    browserHostBridge.stop();
-    browserHost.destroy();
-    await backend.stop();
+    if (backendCleanupDone) {
+      return;
+    }
+    if (backendCleanupInProgress) {
+      event.preventDefault();
+      return;
+    }
+    // Electron does not await async before-quit listeners; preventDefault
+    // keeps the app alive until backend.stop() finishes.
+    event.preventDefault();
+    backendCleanupInProgress = true;
+    void (async () => {
+      stopTrayBackendStatusPolling();
+      notifications.stopBackendListener();
+      browserHostBridge.stop();
+      browserHost.destroy();
+      try {
+        await backend.stop();
+      } finally {
+        backendCleanupDone = true;
+        backendCleanupInProgress = false;
+        app.quit();
+      }
+    })();
   });
 }
 

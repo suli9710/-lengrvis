@@ -25,6 +25,21 @@ logger = logging.getLogger(__name__)
 
 CHARS_PER_TOKEN = 4
 JSON_CHARS_PER_TOKEN = 2
+# CJK text tokenizes far denser than ASCII (~1-1.5 chars/token vs ~4); a flat
+# len/4 underestimates Chinese contexts 3-5x, so auto-compaction would never
+# trigger before the provider rejects the prompt.
+CJK_CHARS_PER_TOKEN = 1.6
+_CJK_CHARS_RE = re.compile(
+    "["
+    "\u3000-\u303f"  # CJK punctuation
+    "\u3040-\u30ff"  # Hiragana / Katakana
+    "\u3400-\u4dbf"  # CJK Extension A
+    "\u4e00-\u9fff"  # CJK Unified Ideographs
+    "\uac00-\ud7af"  # Hangul syllables
+    "\uf900-\ufaff"  # CJK Compatibility Ideographs
+    "\uff00-\uffef"  # Fullwidth forms
+    "]"
+)
 IMAGE_OR_DOCUMENT_TOKENS = 2000
 SUMMARY_RESERVED_TOKENS = 20000
 ATTACHMENT_BLOCK_TYPES = {"image", "image_url", "document", "input_audio"}
@@ -145,11 +160,17 @@ def _visible_tool_ids(tools: list[dict[str, Any]] | None) -> list[str]:
 COMPACT_BOUNDARY_TYPES = {"manual_compact", "auto_compact", "reactive_compact"}
 
 
+def _string_token_estimate(text: str, bytes_per_token: int) -> int:
+    non_cjk_length = len(_CJK_CHARS_RE.sub("", text))
+    cjk_length = len(text) - non_cjk_length
+    return max(0, round(cjk_length / CJK_CHARS_PER_TOKEN + non_cjk_length / max(1, bytes_per_token)))
+
+
 def rough_token_count(content: Any, *, bytes_per_token: int = CHARS_PER_TOKEN) -> int:
     if content is None:
         return 0
     if isinstance(content, str):
-        return max(0, round(len(content) / max(1, bytes_per_token)))
+        return _string_token_estimate(content, bytes_per_token)
     if isinstance(content, (int, float, bool)):
         return rough_token_count(str(content), bytes_per_token=bytes_per_token)
     if isinstance(content, list):

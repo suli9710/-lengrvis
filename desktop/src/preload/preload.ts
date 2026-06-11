@@ -52,7 +52,9 @@ const bridge: LengrvisDesktopBridge = {
       } catch (error) {
         return Promise.reject(error);
       }
-    }
+    },
+    abortInflight: (abortGroup: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.apiAbortInflight, sanitizeApiAbortGroup(abortGroup))
   },
   realtime: {
     subscribe: subscribeDesktopWebSocket
@@ -210,7 +212,21 @@ function sanitizeApiBridgeRequest<TBody>(request: ApiRequest<TBody>): ApiRequest
   if (requestRecord.timeoutMs !== undefined) {
     sanitized.timeoutMs = sanitizeApiTimeout(requestRecord.timeoutMs);
   }
+  if (requestRecord.abortGroup !== undefined) {
+    sanitized.abortGroup = sanitizeApiAbortGroup(requestRecord.abortGroup);
+  }
   return sanitized;
+}
+
+function sanitizeApiAbortGroup(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("Renderer API abort group is invalid");
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 64 || !/^[A-Za-z0-9._-]+$/.test(trimmed)) {
+    throw new Error("Renderer API abort group is invalid");
+  }
+  return trimmed;
 }
 
 function sanitizeApiMethod(value: unknown): ApiMethod {

@@ -38,6 +38,52 @@ def weekend_delete_rule() -> PermissionRule:
     )
 
 
+def test_permission_policy_denies_when_allow_list_has_no_match():
+    allow_rule = PermissionRule(
+        id="allow_browser_read",
+        name="Allow browser read",
+        effect="allow",
+        tools=["browser.read"],
+        path_patterns=["*"],
+        reason="Allow browser read only.",
+    )
+    policy = PermissionPolicy(rules=[allow_rule])
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="file.read_text",
+        args={"path": "/tmp/example.txt"},
+    )
+
+    assert decision.allowed is False
+    assert decision.matched is False
+    assert "allow-list" in decision.reason.lower()
+
+
+def test_permission_policy_allows_unmatched_when_only_deny_rules_exist():
+    policy = PermissionPolicy(rules=[weekend_delete_rule()])
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="file.read_text",
+        args={"path": "/tmp/example.txt"},
+    )
+
+    assert decision.allowed is True
+    assert decision.matched is False
+
+
+def test_permission_policy_allows_when_no_rules_configured():
+    decision = evaluate_permission_policy(
+        PermissionPolicy(rules=[]),
+        tool_name="file.read_text",
+        args={"path": "/tmp/example.txt"},
+    )
+
+    assert decision.allowed is True
+    assert decision.matched is False
+
+
 def test_permission_policy_denies_matching_weekend_delete():
     policy = PermissionPolicy(rules=[weekend_delete_rule()])
     saturday = datetime.fromisoformat("2026-05-30T12:00:00+00:00")

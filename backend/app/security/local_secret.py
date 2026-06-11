@@ -48,11 +48,19 @@ def _dpapi_unprotect(stored: str) -> str:
 
 def _write_secret_file(path: Path, value: str) -> None:
     stored = _dpapi_protect(value) if dpapi_available() else value
-    path.write_text(stored, encoding="utf-8")
+    # Write to a sibling temp file created with O_EXCL and restrictive mode,
+    # then replace atomically: the secret is never on disk with default
+    # permissions, even briefly (the old write-then-chmod left a window).
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.unlink(missing_ok=True)  # clear stale temp from a crashed writer
+    fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     try:
-        path.chmod(0o600)
-    except OSError as exc:
-        logger.debug("could not restrict secret permissions at %s: %s", path, exc)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(stored)
+        os.replace(tmp_path, path)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def read_local_secret(path: Path) -> str:

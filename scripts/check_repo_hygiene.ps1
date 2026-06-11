@@ -29,7 +29,18 @@ $blockedPathspecs = @(
     "tmp-office-review/",
     "desktop/tmp-office-review/",
     "UsersSuliAppDataLocalTempLengrvis-Code-review",
-    "UsersSuliAppDataLocalTempLengrvis-Code-review/"
+    "UsersSuliAppDataLocalTempLengrvis-Code-review/",
+    # Secrets, local databases, and bytecode caches must never be tracked.
+    "*.secret",
+    "*.key",
+    "*.pem",
+    "*.db",
+    "*.sqlite",
+    "*.sqlite3",
+    ".lengrvis_data/",
+    ":(glob)**/__pycache__/**",
+    ":(glob)**/*.pyc",
+    ":(glob)**/node_modules/**"
 )
 
 $trackedArtifacts = & git -C $resolvedRoot ls-files -- $blockedPathspecs

@@ -99,6 +99,9 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        from app.llm.openai_compatible import close_shared_http_client
+
+        await close_shared_http_client()
         session_store.save()
         await watcher.stop()
         watcher.unsubscribe_changes(file_environment_sink)

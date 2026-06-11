@@ -91,6 +91,16 @@ def isolate_local_runtime_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     monkeypatch.setenv("LENGRVIS_ENV_FILE", str(missing / ".env"))
 
 
+@pytest.fixture(autouse=True)
+def reset_settings_cache() -> Iterable[None]:
+    """The settings TTL cache must never leak state across tests."""
+    from app.llm.registry import invalidate_settings_cache
+
+    invalidate_settings_cache()
+    yield
+    invalidate_settings_cache()
+
+
 def import_first(module_names: Iterable[str]) -> Any:
     """Import the first available module from a list of expected locations."""
 

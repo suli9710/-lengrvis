@@ -9,7 +9,7 @@ from app.agents.memory_agent import MemoryAgent
 from app.core import db
 from app.indexer import embedding_service
 from app.indexer import local_embedding_provider
-from app.indexer.vector_index import _cosine_similarity as vector_cosine_similarity
+from app.indexer.embedding_storage import cosine_similarity as vector_cosine_similarity
 from app.config import AppSettings
 
 

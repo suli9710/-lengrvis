@@ -148,16 +148,43 @@ export interface OllamaActionResponse {
   models_dir?: string;
 }
 
+const rendererBatchControllers = new Map<string, AbortController>();
+
 export class LengrvisApiClient {
   private lastLoadedSettings: AppSettings | null = null;
+  private activeAbortGroup: string | null = null;
+  private activeBatchStack: string[] = [];
+
+  async abortInflight(abortGroup: string): Promise<void> {
+    rendererBatchControllers.get(abortGroup)?.abort();
+    rendererBatchControllers.delete(abortGroup);
+    await window.lengrvis?.api.abortInflight(abortGroup);
+  }
+
+  async beginBatch(abortGroup: string): Promise<void> {
+    await this.abortInflight(abortGroup);
+    this.activeBatchStack.push(abortGroup);
+    this.activeAbortGroup = abortGroup;
+    rendererBatchControllers.set(abortGroup, new AbortController());
+  }
+
+  endBatch(abortGroup: string): void {
+    const index = this.activeBatchStack.lastIndexOf(abortGroup);
+    if (index >= 0) {
+      this.activeBatchStack.splice(index, 1);
+    }
+    this.activeAbortGroup = this.activeBatchStack[this.activeBatchStack.length - 1] ?? null;
+  }
 
   async request<TResponse, TBody = unknown>(request: ApiRequest<TBody>): Promise<ApiResponse<TResponse>> {
-    emitRendererApiRequestEvent(request);
+    const abortGroup = request.abortGroup ?? this.activeAbortGroup ?? undefined;
+    const enrichedRequest = abortGroup ? { ...request, abortGroup } : request;
+    emitRendererApiRequestEvent(enrichedRequest);
     if (!window.lengrvis) {
-      return requestBackendDirect<TResponse, TBody>(FALLBACK_BACKEND_URL, request);
+      return requestBackendDirect<TResponse, TBody>(FALLBACK_BACKEND_URL, enrichedRequest);
     }
 
-    return window.lengrvis.api.request<TResponse, TBody>(request);
+    return window.lengrvis.api.request<TResponse, TBody>(enrichedRequest);
   }
 
   async getBackendStatus(): Promise<BackendStatus> {
@@ -1650,6 +1677,30 @@ interface BackendMemory {
   created_at?: string;
 }
 
+function mergeRendererAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort();
+      return controller.signal;
+    }
+    signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  return controller.signal;
+}
+
+function resolveRendererBatchSignal(abortGroup: string | undefined): AbortSignal | undefined {
+  if (!abortGroup) {
+    return undefined;
+  }
+  let controller = rendererBatchControllers.get(abortGroup);
+  if (!controller || controller.signal.aborted) {
+    controller = new AbortController();
+    rendererBatchControllers.set(abortGroup, controller);
+  }
+  return controller.signal;
+}
+
 async function requestBackendDirect<TResponse, TBody = unknown>(
   baseUrl: string,
   request: ApiRequest<TBody>
@@ -1658,8 +1709,12 @@ async function requestBackendDirect<TResponse, TBody = unknown>(
 
   try {
     const url = buildRequestUrl(baseUrl, request);
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), request.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const timeoutController = new AbortController();
+    const timeout = window.setTimeout(() => timeoutController.abort(), request.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const batchSignal = resolveRendererBatchSignal(request.abortGroup);
+    const signal = batchSignal
+      ? mergeRendererAbortSignals([batchSignal, timeoutController.signal])
+      : timeoutController.signal;
     const response = await fetch(url, {
       method: request.method ?? "GET",
       headers: {
@@ -1667,7 +1722,7 @@ async function requestBackendDirect<TResponse, TBody = unknown>(
         ...(request.body ? { "Content-Type": "application/json" } : {})
       },
       body: request.body ? JSON.stringify(request.body) : undefined,
-      signal: controller.signal
+      signal
     });
     window.clearTimeout(timeout);
 

@@ -49,10 +49,12 @@ def reset_browser_activity_runtime(adapter: BrowserActivityAdapter | None = None
 
 
 def _validate_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("Only absolute http(s) URLs are allowed.")
-    return url
+    # Shared validator: scheme allowlist plus loopback/private/link-local SSRF
+    # blocking (see browser_activity_runtime._validate_url). This also covers
+    # the use_system_browser path before webbrowser.open().
+    from app.services.browser_activity_runtime import _validate_url as _runtime_validate_url
+
+    return _runtime_validate_url(url)
 
 
 def _settings(context: dict[str, Any]):

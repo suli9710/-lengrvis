@@ -197,3 +197,62 @@ def test_indexer_parser_unknown_image_returns_string(tmp_path: Path):
     missing = tmp_path / "ghost.png"
     text = parsers.parse_file(missing)
     assert isinstance(text, str)
+
+
+# --- path sandbox regression (code review 3-H1) ---------------------------
+# _resolve_image previously swallowed SecurityError and fell back to the raw
+# path, letting vision tools read arbitrary images outside authorized dirs.
+
+
+def _outside_image(tmp_path: Path) -> Path:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    path = outside / "secret.png"
+    path.write_bytes(b"png-bytes")
+    return path
+
+
+def test_vision_tools_reject_unauthorized_path(tmp_path: Path):
+    from app.core.errors import SecurityError
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    secret = _outside_image(tmp_path)
+    context = {"allowed_directories": [str(allowed)]}
+
+    for tool in (vision_tools.describe_image, vision_tools.ocr_image, vision_tools.embed_image):
+        with pytest.raises(SecurityError):
+            tool({"path": str(secret)}, context)
+
+
+def test_vision_tools_reject_when_no_authorized_directories(tmp_path: Path, sample_png: Path):
+    from app.core.errors import SecurityError
+
+    context = {"allowed_directories": []}
+    with pytest.raises(SecurityError):
+        vision_tools.describe_image({"path": str(sample_png)}, context)
+
+
+def test_resolve_image_batch_rejects_unauthorized_directory(tmp_path: Path):
+    from app.core.errors import SecurityError
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    _outside_image(tmp_path)
+    context = {"allowed_directories": [str(allowed)]}
+
+    with pytest.raises(SecurityError):
+        vision_tools._resolve_image_batch({"paths": [str(tmp_path / "outside")]}, context)
+
+
+def test_compare_images_rejects_unauthorized_path(tmp_path: Path):
+    from app.core.errors import SecurityError
+
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    inside = allowed / "ok.png"
+    inside.write_bytes(b"png-bytes")
+    secret = _outside_image(tmp_path)
+    context = {"allowed_directories": [str(allowed)]}
+    with pytest.raises(SecurityError):
+        vision_tools.compare_images({"path_a": str(inside), "path_b": str(secret)}, context)

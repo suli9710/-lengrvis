@@ -14,6 +14,7 @@ from app.core.paths import resolve_authorized
 from app.core.schemas import DocumentChunk, IndexedFile, now_iso
 from app.indexer.chunker import chunk_text
 from app.indexer.embedding_service import Embedder, embed_texts_sync
+from app.indexer.fts_query import fts_match_query
 from app.indexer.parsers import parse_file
 from app.llm.registry import get_effective_settings
 from app.tools.file_tools import sha256_file
@@ -424,23 +425,29 @@ class FTSIndex:
 
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         db.init_db()
+        cleaned = str(query or "").strip()
         with db.connect() as conn:
             try:
                 rows = conn.execute(
                     "SELECT file_id, path, snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet FROM document_chunks_fts WHERE document_chunks_fts MATCH ? LIMIT ?",
-                    (query, limit),
+                    (fts_match_query(cleaned), limit),
                 ).fetchall()
-                return [dict(row) for row in rows]
-            except Exception:
-                rows = conn.execute(
-                    "SELECT dc.file_id, dc.text, f.data FROM document_chunks dc JOIN indexed_files f ON f.id = dc.file_id WHERE dc.text LIKE ? LIMIT ?",
-                    (f"%{query}%", limit),
-                ).fetchall()
-                results = []
-                for row in rows:
-                    file_data = json.loads(row["data"])
-                    results.append({"file_id": row["file_id"], "path": file_data["path"], "snippet": row["text"][:240]})
-                return results
+                if rows or len(cleaned) >= 3:
+                    return [dict(row) for row in rows]
+            except Exception as exc:
+                logger.info("FTS search failed; falling back to LIKE for query=%r: %s", cleaned, exc)
+            return self._search_like(conn, cleaned, limit)
+
+    def _search_like(self, conn, query: str, limit: int) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT dc.file_id, dc.text, f.data FROM document_chunks dc JOIN indexed_files f ON f.id = dc.file_id WHERE dc.text LIKE ? LIMIT ?",
+            (f"%{query}%", limit),
+        ).fetchall()
+        results = []
+        for row in rows:
+            file_data = json.loads(row["data"])
+            results.append({"file_id": row["file_id"], "path": file_data["path"], "snippet": row["text"][:240]})
+        return results
 
     def duplicates(self) -> list[dict[str, Any]]:
         db.init_db()

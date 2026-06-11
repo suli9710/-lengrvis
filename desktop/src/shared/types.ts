@@ -9,6 +9,8 @@ export interface ApiRequest<TBody = unknown> {
   body?: TBody;
   headers?: never;
   timeoutMs?: number;
+  /** Groups in-flight IPC fetches so a new batch can abort the previous one. */
+  abortGroup?: string;
 }
 
 export interface ApiError {
@@ -1592,6 +1594,7 @@ export interface LengrvisDesktopBridge {
     request: <TResponse = unknown, TBody = unknown>(
       request: ApiRequest<TBody>
     ) => Promise<ApiResponse<TResponse>>;
+    abortInflight: (abortGroup: string) => Promise<void>;
   };
   realtime: {
     subscribe: (

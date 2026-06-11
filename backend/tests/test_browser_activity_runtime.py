@@ -208,3 +208,59 @@ def test_open_url_defaults_to_isolated_session_without_system_browser(monkeypatc
     assert events[0]["type"] == "session.start"
     assert "secret-token" not in str(result)
     assert "secret-token" not in str(events)
+
+
+# --- SSRF guard regression (code review 3-H3 / 3-L4) -----------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:8000/api/system/diagnostics",
+        "http://localhost/admin",
+        "http://[::1]:8000/",
+        "http://10.0.0.5/",
+        "http://172.16.1.1/",
+        "http://192.168.1.1/router",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://router.local/",
+        "http://intranet/",
+    ],
+)
+def test_validate_url_blocks_private_and_loopback_hosts(url: str, monkeypatch) -> None:
+    from app.services.browser_activity_runtime import ALLOW_PRIVATE_HOSTS_ENV, _validate_url
+
+    monkeypatch.delenv(ALLOW_PRIVATE_HOSTS_ENV, raising=False)
+    with pytest.raises(ValueError):
+        _validate_url(url)
+
+
+def test_validate_url_allows_private_hosts_with_explicit_opt_in(monkeypatch) -> None:
+    from app.services.browser_activity_runtime import ALLOW_PRIVATE_HOSTS_ENV, _validate_url
+
+    monkeypatch.setenv(ALLOW_PRIVATE_HOSTS_ENV, "1")
+    assert _validate_url("http://192.168.1.1/router") == "http://192.168.1.1/router"
+
+
+def test_validate_url_still_allows_public_and_unresolvable_hosts(monkeypatch) -> None:
+    from app.services.browser_activity_runtime import ALLOW_PRIVATE_HOSTS_ENV, _validate_url
+
+    monkeypatch.delenv(ALLOW_PRIVATE_HOSTS_ENV, raising=False)
+    # Unresolvable test domains pass validation and fail later at connect time.
+    assert _validate_url("https://example.test/page") == "https://example.test/page"
+
+
+def test_browser_tools_validate_url_shares_ssrf_guard(monkeypatch) -> None:
+    from app.services.browser_activity_runtime import ALLOW_PRIVATE_HOSTS_ENV
+
+    monkeypatch.delenv(ALLOW_PRIVATE_HOSTS_ENV, raising=False)
+    with pytest.raises(ValueError):
+        browser_tools._validate_url("http://127.0.0.1:8000/api/runs")
+
+
+def test_validate_final_url_blocks_post_redirect_loopback_targets(monkeypatch) -> None:
+    from app.services.browser_activity_runtime import ALLOW_PRIVATE_HOSTS_ENV, _validate_final_url
+
+    monkeypatch.delenv(ALLOW_PRIVATE_HOSTS_ENV, raising=False)
+    with pytest.raises(ValueError):
+        _validate_final_url("http://127.0.0.1:8000/api/system/diagnostics")

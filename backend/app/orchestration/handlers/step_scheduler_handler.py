@@ -52,30 +52,83 @@ class StepSchedulerHandler:
         revision_requested = False
         stop_requested = False
 
-        while pending or running:
-            if not stop_requested:
-                ready = self._ready_steps(pending, by_id)
-                threaded_tools = self._parallel_batch_allowed(task, ready)
-                if running and not threaded_tools:
-                    ready = []
-                elif len(ready) > 1 and not threaded_tools:
-                    ready = ready[:1]
-                if len(ready) == 1 and not running:
-                    step = ready[0]
-                    pending.remove(step.id)
-                    observation = self._dependency_observation(step, observations)
-                    outcome = await orchestrator._execute_step(task, plan, step, context, observation, threaded_tools=False)
+        try:
+            while pending or running:
+                if not stop_requested:
+                    ready = self._ready_steps(pending, by_id)
+                    threaded_tools = self._parallel_batch_allowed(task, ready)
+                    if running and not threaded_tools:
+                        ready = []
+                    elif len(ready) > 1 and not threaded_tools:
+                        ready = ready[:1]
+                    if len(ready) == 1 and not running:
+                        step = ready[0]
+                        pending.remove(step.id)
+                        observation = self._dependency_observation(step, observations)
+                        outcome = await orchestrator._execute_step(task, plan, step, context, observation, threaded_tools=False)
+                        if outcome.result is not None:
+                            observations[step.id] = outcome.result
+                        if outcome.kind == "failed":
+                            outcome = await orchestrator.recovery_handler.recover_failed_step(
+                                task,
+                                plan,
+                                step,
+                                outcome.result,
+                                context,
+                                observation,
+                                threaded_tools=False,
+                            )
+                            if outcome.result is not None:
+                                observations[step.id] = outcome.result
+                        if outcome.kind == "waiting_user_approval":
+                            any_waiting = True
+                            stop_requested = True
+                        elif outcome.kind == "revision_requested":
+                            revision_requested = True
+                            stop_requested = True
+                        elif outcome.kind in {"step_denied", "fatal_denied", "fatal_failed"}:
+                            stop_requested = True
+                        if stop_requested:
+                            break
+                        continue
+                    for step in ready:
+                        pending.remove(step.id)
+                        observation = self._dependency_observation(step, observations)
+                        work = asyncio.create_task(
+                            orchestrator._execute_step(task, plan, step, context, observation, threaded_tools=threaded_tools),
+                            name=f"step-{step.id}",
+                        )
+                        running[work] = step
+
+                if not running:
+                    self._mark_blocked_steps(pending, by_id)
+                    break
+
+                done_set, _ = await asyncio.wait(running.keys(), return_when=asyncio.FIRST_COMPLETED)
+                done = list(done_set)  # freeze iteration order before zip
+                outcomes = await asyncio.gather(*done, return_exceptions=True)
+                for work, outcome in zip(done, outcomes):
+                    step = running.pop(work)
+                    # BaseException also covers asyncio.CancelledError, which
+                    # gather(return_exceptions=True) returns but Exception misses.
+                    if isinstance(outcome, BaseException):
+                        set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
+                        orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(outcome)))
+                        record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
+                        stop_requested = True
+                        continue
                     if outcome.result is not None:
                         observations[step.id] = outcome.result
                     if outcome.kind == "failed":
+                        dependency_observation = self._dependency_observation(step, observations)
                         outcome = await orchestrator.recovery_handler.recover_failed_step(
                             task,
                             plan,
                             step,
                             outcome.result,
                             context,
-                            observation,
-                            threaded_tools=False,
+                            dependency_observation,
+                            threaded_tools=True,
                         )
                         if outcome.result is not None:
                             observations[step.id] = outcome.result
@@ -87,76 +140,39 @@ class StepSchedulerHandler:
                         stop_requested = True
                     elif outcome.kind in {"step_denied", "fatal_denied", "fatal_failed"}:
                         stop_requested = True
-                    if stop_requested:
-                        break
-                    continue
-                for step in ready:
-                    pending.remove(step.id)
-                    observation = self._dependency_observation(step, observations)
-                    work = asyncio.create_task(
-                        orchestrator._execute_step(task, plan, step, context, observation, threaded_tools=threaded_tools),
-                        name=f"step-{step.id}",
-                    )
-                    running[work] = step
 
-            if not running:
-                self._mark_blocked_steps(pending, by_id)
-                break
+                if stop_requested and running:
+                    remaining = list(running.keys())
+                    outcomes = await asyncio.gather(*remaining, return_exceptions=True)
+                    for work, outcome in zip(remaining, outcomes):
+                        step = running.pop(work)
+                        if isinstance(outcome, BaseException):
+                            set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
+                            record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
+                            continue
+                        if outcome.result is not None:
+                            observations[step.id] = outcome.result
+                        if outcome.kind == "waiting_user_approval":
+                            any_waiting = True
+                        elif outcome.kind == "revision_requested":
+                            revision_requested = True
+                    break
 
-            done, _ = await asyncio.wait(running.keys(), return_when=asyncio.FIRST_COMPLETED)
-            outcomes = await asyncio.gather(*done, return_exceptions=True)
-            for work, outcome in zip(done, outcomes):
-                step = running.pop(work)
-                if isinstance(outcome, Exception):
-                    set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
-                    orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(outcome)))
-                    record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
-                    stop_requested = True
-                    continue
-                if outcome.result is not None:
-                    observations[step.id] = outcome.result
-                if outcome.kind == "failed":
-                    dependency_observation = self._dependency_observation(step, observations)
-                    outcome = await orchestrator.recovery_handler.recover_failed_step(
-                        task,
-                        plan,
-                        step,
-                        outcome.result,
-                        context,
-                        dependency_observation,
-                        threaded_tools=True,
-                    )
-                    if outcome.result is not None:
-                        observations[step.id] = outcome.result
-                if outcome.kind == "waiting_user_approval":
-                    any_waiting = True
-                    stop_requested = True
-                elif outcome.kind == "revision_requested":
-                    revision_requested = True
-                    stop_requested = True
-                elif outcome.kind in {"step_denied", "fatal_denied", "fatal_failed"}:
-                    stop_requested = True
-
-            if stop_requested and running:
-                remaining = list(running.keys())
-                outcomes = await asyncio.gather(*remaining, return_exceptions=True)
-                for work, outcome in zip(remaining, outcomes):
-                    step = running.pop(work)
-                    if isinstance(outcome, Exception):
-                        set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
-                        record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
-                        continue
-                    if outcome.result is not None:
-                        observations[step.id] = outcome.result
-                    if outcome.kind == "waiting_user_approval":
-                        any_waiting = True
-                    elif outcome.kind == "revision_requested":
-                        revision_requested = True
-                break
-
-            if not running and pending and not self._ready_steps(pending, by_id):
-                self._mark_blocked_steps(pending, by_id)
-                break
+                if not running and pending and not self._ready_steps(pending, by_id):
+                    self._mark_blocked_steps(pending, by_id)
+                    break
+        except asyncio.CancelledError:
+            # When the scheduler itself is cancelled (run cancellation), the
+            # in-flight step tasks must be cancelled too or they keep running
+            # tools detached from any supervision.
+            for work in running:
+                work.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+            for step in running.values():
+                set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
+                record("task.step_cancelled", orchestrator.name, {"step": step.id}, task_id=task.id)
+            raise
 
         if pending and any(step.status in {StepStatus.FAILED, StepStatus.DENIED} for step in plan.steps):
             self._mark_blocked_steps(pending, by_id)
