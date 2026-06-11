@@ -269,6 +269,9 @@ class EnvironmentStream:
         self._last_app_signature: tuple[str, str, int | None] | None = None
         self._lock = threading.RLock()
         self._sinks: list[EnvironmentSink] = []
+        # The event loop only keeps weak refs to tasks; hold scheduled
+        # fire-and-forget tasks until done so they can't be GC'd mid-run.
+        self._pending_tasks: set[asyncio.Task] = set()
 
     @property
     def started(self) -> bool:
@@ -361,17 +364,22 @@ class EnvironmentStream:
     def submit_perception_event(self, event: PerceptionEvent) -> None:
         self._schedule(self.handle_perception_event(event))
 
+    def _spawn_tracked(self, coroutine: Any) -> None:
+        task = asyncio.create_task(coroutine)
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+
     def _schedule(self, coroutine: Any) -> None:
         loop = self._loop
         if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(lambda: asyncio.create_task(coroutine))
+            loop.call_soon_threadsafe(self._spawn_tracked, coroutine)
             return
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(coroutine)
         else:
-            asyncio.create_task(coroutine)
+            self._spawn_tracked(coroutine)
 
     async def handle_perception_event(self, event: PerceptionEvent) -> list[ProactiveSuggestion]:
         state = event.screen_state

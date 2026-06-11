@@ -62,6 +62,8 @@ class Scheduler:
         self._stop: asyncio.Event | None = None
         self._executor = executor  # async callable (goal, mode) -> None; injected for tests
         self._fired_ids: set[str] = set()
+        # Holds strong refs to in-flight executions (loop keeps only weak refs).
+        self._executions: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -166,7 +168,9 @@ class Scheduler:
             schedule = ScheduledTask.model_validate(claimed)
             fired.append(schedule.id)
             self._fired_ids.add(schedule.id)
-            asyncio.create_task(self._execute(schedule))
+            execution = asyncio.create_task(self._execute(schedule))
+            self._executions.add(execution)
+            execution.add_done_callback(self._executions.discard)
         return fired
 
     async def _execute(self, schedule: ScheduledTask) -> None:

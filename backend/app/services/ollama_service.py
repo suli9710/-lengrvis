@@ -476,6 +476,31 @@ async def install() -> dict[str, Any]:
         return _ollama_action_error(str(exc), "install_runtime")
 
 
+# Handle to the `ollama serve` process we spawned (None if Ollama was already
+# running or started externally). Used to stop it on backend shutdown.
+_SERVER_PROCESS: subprocess.Popen | None = None
+
+
+def stop_spawned_server() -> bool:
+    """Terminate the `ollama serve` process this backend spawned, if any."""
+    global _SERVER_PROCESS
+    proc = _SERVER_PROCESS
+    _SERVER_PROCESS = None
+    if proc is None or proc.poll() is not None:
+        return False
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        record("ollama.stop", "OllamaService", {"ok": True, "spawned_by_backend": True})
+        return True
+    except Exception as exc:  # noqa: BLE001
+        record("ollama.stop", "OllamaService", {"ok": False, "error": _public_text(exc)})
+        return False
+
+
 async def start_server() -> dict[str, Any]:
     """Start Ollama server in the background when the CLI is available."""
     if await is_running():
@@ -492,7 +517,8 @@ async def start_server() -> dict[str, Any]:
         models_dir = _preferred_ollama_models_dir()
         if models_dir:
             env["OLLAMA_MODELS"] = str(models_dir)
-        subprocess.Popen(
+        global _SERVER_PROCESS
+        _SERVER_PROCESS = subprocess.Popen(
             [executable, "serve"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

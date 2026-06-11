@@ -12,6 +12,17 @@ files:
 
 asar: true
 
+# Electron Fuses：关闭危险的运行时入口（默认全开）。
+# runAsNode / NODE_OPTIONS / --inspect 否则允许本地恶意进程把已安装应用
+# 当作通用 Node.js 运行；同时启用 cookie 加密与 asar 完整性校验。
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+
 extraMetadata:
   main: dist/main/main.js
 

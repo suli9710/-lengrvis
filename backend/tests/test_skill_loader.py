@@ -10,10 +10,22 @@ from pathlib import Path
 import pytest
 
 from app.config import AppSettings
+from app.core import db
 from app.policy.risk import RiskLevel
 from app.skills.loader import load_skill_package, scan_skill_directories
 from app.skills.schemas import LEGACY_PERMISSION, SkillLoadError
 from app.tools.registry import register_all_tools
+
+
+@pytest.fixture(autouse=True)
+def isolated_audit_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """register_skills records audit events; keep them out of the default DB.
+
+    Without this, the module only passes when an earlier test happened to
+    initialize the default-location database (ordering-dependent on CI).
+    """
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "audit_data"))
+    db.init_db()
 
 
 def _make_http_skill_handler():

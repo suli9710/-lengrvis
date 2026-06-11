@@ -129,6 +129,11 @@ def connect() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL + busy_timeout: watcher/scheduler threads and async handlers open
+    # concurrent connections; without these, writers race into
+    # "database is locked" errors under load.
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
         conn.commit()
@@ -144,7 +149,30 @@ def _model_json(model: BaseModel) -> str:
     return model.model_dump_json()
 
 
+_INIT_DB_LOCK = threading.Lock()
+_INITIALIZED_DB_PATHS: set[str] = set()
+
+
+def reset_init_db_cache() -> None:
+    with _INIT_DB_LOCK:
+        _INITIALIZED_DB_PATHS.clear()
+
+
 def init_db() -> None:
+    # init_db is used as a lazy-init guard on hot paths (event publishing,
+    # usage recording, ...). Re-running the full schema script there is pure
+    # overhead, so each db path is initialized once per process.
+    path = str(db_path())
+    if path in _INITIALIZED_DB_PATHS and Path(path).exists():
+        return
+    with _INIT_DB_LOCK:
+        if path in _INITIALIZED_DB_PATHS and Path(path).exists():
+            return
+        _init_db_schema()
+        _INITIALIZED_DB_PATHS.add(path)
+
+
+def _init_db_schema() -> None:
     with connect() as conn:
         conn.executescript(
             """

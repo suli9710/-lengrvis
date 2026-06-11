@@ -88,7 +88,7 @@ if ($SkipInstaller) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 else {
-    npm --prefix desktop install
+    npm --prefix desktop ci
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     npm --prefix desktop run build

@@ -11,12 +11,24 @@ from app.core.schemas import Task
 
 
 class TaskPool:
+    # Bound on the completed-status history; without it the dict grows for
+    # the lifetime of the (long-running desktop) process.
+    COMPLETED_HISTORY_LIMIT = 200
+
     def __init__(self, max_concurrent: int = 3) -> None:
         self.max_concurrent = max_concurrent
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._queued: dict[str, asyncio.Task] = {}
         self._running: dict[str, asyncio.Task] = {}
         self._completed: dict[str, str] = {}
+
+    def _record_completed(self, task_id: str, status: str, *, keep_existing: bool = False) -> None:
+        if keep_existing and task_id in self._completed:
+            return
+        self._completed.pop(task_id, None)
+        self._completed[task_id] = status
+        while len(self._completed) > self.COMPLETED_HISTORY_LIMIT:
+            self._completed.pop(next(iter(self._completed)))
 
     async def submit(
         self,
@@ -30,18 +42,18 @@ class TaskPool:
                     self._running[task.id] = asyncio.current_task()  # type: ignore[assignment]
                     try:
                         await runner(task)
-                        self._completed[task.id] = "completed"
+                        self._record_completed(task.id, "completed")
                     except asyncio.CancelledError:
-                        self._completed[task.id] = "cancelled"
+                        self._record_completed(task.id, "cancelled")
                         raise
                     except Exception as exc:  # noqa: BLE001
-                        self._completed[task.id] = f"failed:{exc}"
+                        self._record_completed(task.id, f"failed:{exc}")
                         record("task_pool.run_failed", "TaskPool", {"task_id": task.id, "error": str(exc)}, task_id=task.id)
                     finally:
                         self._running.pop(task.id, None)
             except asyncio.CancelledError:
                 # task was cancelled while still queued
-                self._completed.setdefault(task.id, "cancelled")
+                self._record_completed(task.id, "cancelled", keep_existing=True)
                 raise
             finally:
                 self._queued.pop(task.id, None)

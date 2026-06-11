@@ -33,7 +33,8 @@ if (-not (Test-Path (Join-Path $PortablePath "Lengrvis.exe"))) {
 
 if (Test-Path $BuildDir) {
     $ResolvedBuild = Resolve-Path -LiteralPath $BuildDir
-    if ($ResolvedBuild.Path -notlike "$Root*") {
+    $RootPrefix = $Root.TrimEnd('\') + '\'
+    if (-not $ResolvedBuild.Path.StartsWith($RootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to remove build dir outside project root: $($ResolvedBuild.Path)"
     }
     Remove-Item -LiteralPath $ResolvedBuild.Path -Recurse -Force
