@@ -12,6 +12,7 @@ import { app, dialog } from "electron";
 export type UpdaterState =
   | "idle"
   | "checking"
+  | "available"
   | "downloading"
   | "ready"
   | "up-to-date"
@@ -30,12 +31,14 @@ let cachedUpdater: ElectronAppUpdater | null = null;
 let loadAttempted = false;
 let stateListener: (() => void) | null = null;
 let restartPromptShown = false;
+let downloadPromptShown = false;
 
 interface ElectronAppUpdater {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   on(event: string, listener: (...args: unknown[]) => void): void;
   checkForUpdates(): Promise<unknown>;
+  downloadUpdate(): Promise<unknown>;
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
 }
 
@@ -61,13 +64,16 @@ function loadUpdater(): ElectronAppUpdater | null {
     // 延迟加载：dev/未安装依赖时不拖垮主进程启动。
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { autoUpdater } = require("electron-updater") as { autoUpdater: ElectronAppUpdater };
-    autoUpdater.autoDownload = true;
+    // 默认构建未签名（verifyUpdateCodeSignature: false），更新包无签名校验，
+    // 因此不静默下载安装：发现新版本先征求用户确认，把信任决定交给用户。
+    autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
 
     autoUpdater.on("checking-for-update", () => setState("checking"));
     autoUpdater.on("update-available", (...args: unknown[]) => {
       const info = args[0] as { version?: string } | undefined;
-      setState("downloading", { version: info?.version ?? null });
+      setState("available", { version: info?.version ?? null });
+      void promptDownload(info?.version ?? null);
     });
     autoUpdater.on("update-not-available", () => setState("up-to-date"));
     autoUpdater.on("update-downloaded", (...args: unknown[]) => {
@@ -88,6 +94,34 @@ function loadUpdater(): ElectronAppUpdater | null {
     setState("unsupported");
   }
   return cachedUpdater;
+}
+
+async function promptDownload(version: string | null): Promise<void> {
+  if (downloadPromptShown) {
+    return;
+  }
+  downloadPromptShown = true;
+  try {
+    const result = await dialog.showMessageBox({
+      type: "info",
+      title: "发现新版本",
+      message: version ? `发现新版本 ${version}。` : "发现新版本。",
+      detail: "是否下载更新？下载完成后会提示重启安装。",
+      buttons: ["下载更新", "稍后"],
+      defaultId: 0,
+      cancelId: 1
+    });
+    if (result.response === 0 && cachedUpdater) {
+      setState("downloading", { version });
+      void cachedUpdater.downloadUpdate().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("Update download failed:", message);
+        setState("error", { error: message });
+      });
+    }
+  } finally {
+    downloadPromptShown = false;
+  }
 }
 
 async function promptRestart(version: string | null): Promise<void> {
@@ -134,6 +168,10 @@ export function checkForUpdatesInteractive(): void {
   if (status.state === "checking" || status.state === "downloading") {
     return;
   }
+  if (status.state === "available") {
+    void promptDownload(status.version);
+    return;
+  }
   if (status.state === "ready") {
     void promptRestart(status.version);
     return;
@@ -154,6 +192,8 @@ export function describeUpdaterForTray(): { label: string; enabled: boolean } | 
       return null;
     case "checking":
       return { label: "正在检查更新…", enabled: false };
+    case "available":
+      return { label: status.version ? `下载更新 ${status.version}` : "下载更新", enabled: true };
     case "downloading":
       return { label: status.version ? `正在下载 ${status.version}…` : "正在下载更新…", enabled: false };
     case "ready":

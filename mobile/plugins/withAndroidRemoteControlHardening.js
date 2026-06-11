@@ -2,6 +2,10 @@ const { AndroidConfig, withAndroidManifest, withDangerousMod, withMainActivity }
 const fs = require("fs");
 const path = require("path");
 
+// Loopback cleartext is exempted because the API client deliberately allows
+// http://127.0.0.1 / http://localhost (emulator and adb-reverse pairing flows);
+// without this domain-config the release build would block that path at the
+// network layer while the client UI still offers it.
 const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
   <base-config cleartextTrafficPermitted="false">
@@ -10,6 +14,10 @@ const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
       <certificates src="user" />
     </trust-anchors>
   </base-config>
+  <domain-config cleartextTrafficPermitted="true">
+    <domain includeSubdomains="false">127.0.0.1</domain>
+    <domain includeSubdomains="false">localhost</domain>
+  </domain-config>
 </network-security-config>
 `;
 

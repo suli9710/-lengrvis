@@ -279,10 +279,6 @@ export interface BaseUrlSecurity {
   warning?: string;
 }
 
-export interface BaseUrlSafetyOptions {
-  allowInsecureLan?: boolean;
-}
-
 export interface WebSocketConnectionInfo {
   url: string;
   protocols: string[];
@@ -360,9 +356,8 @@ export async function pairWithBackend(
   baseUrl: string,
   code: string,
   deviceName: string,
-  options: BaseUrlSafetyOptions = {},
 ): Promise<PairingSession> {
-  const baseUrlSecurity = assertSafeBaseUrl(baseUrl, options);
+  const baseUrlSecurity = assertSafeBaseUrl(baseUrl);
   const normalizedBaseUrl = baseUrlSecurity.normalizedBaseUrl;
   const response = await fetch(`${normalizedBaseUrl}/api/pair/confirm`, {
     method: "POST",
@@ -839,8 +834,9 @@ export function describeBaseUrlSecurity(value: string, pairingMetadata?: unknown
   return mergeBaseUrlSecurityMetadata(security, normalizePairingSecurityMetadata(pairingMetadata, security));
 }
 
-export function assertSafeBaseUrl(value: string, options: BaseUrlSafetyOptions = {}): BaseUrlSecurity {
-  void options;
+// Insecure LAN base URLs are always rejected; there is intentionally no opt-out
+// (see mobile-token-smoke.cjs which asserts `allowInsecureLan` has no effect).
+export function assertSafeBaseUrl(value: string): BaseUrlSecurity {
   const security = describeBaseUrlSecurity(value);
   if (security.isInsecureLan) {
     throw new InsecureLanBaseUrlError(security);
@@ -1307,9 +1303,7 @@ function isWebSocketSubprotocolToken(token: string): boolean {
 }
 
 function webSocketProtocolList(protocol: string): string[] {
-  const protocols = new URL("https://lengrvis.invalid").searchParams.getAll("protocol");
-  protocols.push(protocol);
-  return protocols;
+  return [protocol];
 }
 
 type RemoteInputGrantJsonContext = "claim" | "use";

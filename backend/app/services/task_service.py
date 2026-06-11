@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
-from typing import Any
+from typing import Any, Coroutine
 
 from app.agents.supervisor_agent import SupervisorAgent, SupervisorDecision
 from app.agents.orchestrator_agent import OrchestratorAgent
@@ -36,6 +36,16 @@ FILE_ACTION_TERMS = (
     "open",
 )
 UNINSTALL_TERMS = ("卸载", "uninstall")
+
+# The event loop only keeps weak references to tasks; fire-and-forget tasks
+# must be held here until done or they can be garbage collected mid-run.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro: Coroutine[Any, Any, Any]) -> None:
+    spawned = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(spawned)
+    spawned.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
 async def create_task(message: str, mode: str) -> ChatResponse:
@@ -140,15 +150,10 @@ def _delegate_task(message: str, mode: str, decision: SupervisorDecision, *, met
         },
         task_id=task.id,
     )
-    pool = get_pool()
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.create_task(pool.submit(task, _run_task_through_orchestrator))
-        else:
-            asyncio.create_task(_run_task_background(task))
-    except RuntimeError:
-        asyncio.create_task(_run_task_background(task))
+    # Callers (handle_chat, mobile task routes) are async handlers, so a
+    # running loop is guaranteed; all runs go through the TaskPool to respect
+    # its concurrency bound.
+    _spawn_background(get_pool().submit(task, _run_task_through_orchestrator))
     reply = decision.reply or "收到，我会交给对应 Agent 执行，并把进展反馈给你。"
     assistant_message = ChatMessage(
         role=OpenAIMessageRole.ASSISTANT,
@@ -173,15 +178,6 @@ async def _run_task_through_orchestrator(task: Task) -> Task:
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
         raise
-
-
-async def _run_task_background(task: Task) -> None:
-    try:
-        await OrchestratorAgent().run_task(task)
-    except Exception as exc:
-        task.final_summary = f"任务执行失败：{exc}"
-        safe_transition(task, TaskStatus.FAILED, actor="TaskService")
-        record("task.background_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)
 
 
 def list_chat_messages() -> list[ChatMessage]:
@@ -209,15 +205,12 @@ def set_task_status(task_id: str, status: TaskStatus, *, strict: bool | None = N
 
 def resume_task(task_id: str, *, strict: bool | None = None) -> Task:
     task = set_task_status(task_id, TaskStatus.EXECUTING_STEP, strict=strict)
-    pool = get_pool()
     try:
-        loop = asyncio.get_running_loop()
-        if loop.is_running():
-            asyncio.create_task(pool.submit(task, _resume_task_through_orchestrator))
-        else:
-            _start_resume_thread(task)
+        asyncio.get_running_loop()
     except RuntimeError:
         _start_resume_thread(task)
+    else:
+        _spawn_background(get_pool().submit(task, _resume_task_through_orchestrator))
     record("task.resume_requested", "TaskService", {"task_id": task.id}, task_id=task.id)
     return task
 

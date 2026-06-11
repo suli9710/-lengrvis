@@ -37,7 +37,8 @@ if (-not (Test-Path $Csc)) {
 
 if (Test-Path $BuildDir) {
     $Resolved = Resolve-Path -LiteralPath $BuildDir
-    if ($Resolved.Path -notlike "$Root*") {
+    $RootPrefix = $Root.TrimEnd('\') + '\'
+    if (-not $Resolved.Path.StartsWith($RootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to remove build dir outside project root: $($Resolved.Path)"
     }
     Remove-Item -LiteralPath $Resolved.Path -Recurse -Force

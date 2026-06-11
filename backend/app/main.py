@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         from app.llm.openai_compatible import close_shared_http_client
+        from app.services.ollama_service import stop_spawned_server
 
         await close_shared_http_client()
         session_store.save()
@@ -107,6 +108,9 @@ async def lifespan(app: FastAPI):
         watcher.unsubscribe_changes(file_environment_sink)
         await environment_stream.stop()
         await scheduler.stop()
+        # Only stops the `ollama serve` process this backend itself spawned;
+        # externally started Ollama instances are left untouched.
+        stop_spawned_server()
 
 
 def create_app() -> FastAPI:

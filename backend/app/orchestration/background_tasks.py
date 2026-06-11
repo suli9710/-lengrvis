@@ -49,6 +49,22 @@ class BackgroundTask:
 
 _TASKS: dict[str, BackgroundTask] = {}
 _LOCK = threading.RLock()
+# Completed/failed tasks beyond this count are evicted (oldest first, along
+# with their log files) so the registry doesn't grow for the process lifetime.
+_COMPLETED_HISTORY_LIMIT = 200
+
+
+def _prune_completed_locked() -> None:
+    finished = [task for task in _TASKS.values() if task.status != "running"]
+    excess = len(finished) - _COMPLETED_HISTORY_LIMIT
+    for task in finished[:max(0, excess)]:
+        refresh_background_task(task)
+        if task.status == "running":
+            continue
+        _TASKS.pop(task.id, None)
+        for log_path in (task.stdout_path, task.stderr_path):
+            with suppress(OSError):
+                Path(log_path).unlink()
 
 
 def start_background_process(
@@ -75,10 +91,6 @@ def start_background_process(
             text=True,
             shell=False,
         )
-    except Exception:
-        stdout_file.close()
-        stderr_file.close()
-        raise
     finally:
         # Popen has duplicated the file descriptors it needs on supported
         # platforms, so the parent can close its handles immediately.
@@ -97,6 +109,7 @@ def start_background_process(
     )
     with _LOCK:
         _TASKS[task.id] = task
+        _prune_completed_locked()
     thread = threading.Thread(target=_watch_process, args=(task,), name=f"lengrvis-{task.id}", daemon=True)
     thread.start()
     return task
