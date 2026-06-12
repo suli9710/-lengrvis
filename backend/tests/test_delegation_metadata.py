@@ -84,8 +84,8 @@ async def test_create_run_persists_supervisor_hint_on_os_task(monkeypatch, tmp_p
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
-    monkeypatch.setattr("app.services.run_service.schedule_background", lambda coro, **kwargs: None)
-    monkeypatch.setattr("app.services.run_service.track_active_run", lambda run_id, task: None)
+    monkeypatch.setattr("app.services.run_service._schedule_background", lambda coro, **kwargs: None)
+    monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
 
     from app.core import db
@@ -152,8 +152,8 @@ async def test_runs_api_accepts_agent_hint(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
-    monkeypatch.setattr("app.services.run_service.schedule_background", lambda coro, **kwargs: None)
-    monkeypatch.setattr("app.services.run_service.track_active_run", lambda run_id, task: None)
+    monkeypatch.setattr("app.services.run_service._schedule_background", lambda coro, **kwargs: None)
+    monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
 
     from fastapi import FastAPI
@@ -196,8 +196,8 @@ async def test_create_run_developer_engine_capabilities(monkeypatch, tmp_path):
     def _discard_background(coro, **kwargs):  # noqa: ANN001, ARG001
         coro.close()
 
-    monkeypatch.setattr("app.services.run_service.schedule_background", _discard_background)
-    monkeypatch.setattr("app.services.run_service.track_active_run", lambda run_id, task: None)
+    monkeypatch.setattr("app.services.run_service._schedule_background", _discard_background)
+    monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
 
     from app.core import db
@@ -220,8 +220,8 @@ async def test_runs_api_exposes_engine_route_rule_for_chinese_os_goal(monkeypatc
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
-    monkeypatch.setattr("app.services.run_service.schedule_background", lambda coro, **kwargs: None)
-    monkeypatch.setattr("app.services.run_service.track_active_run", lambda run_id, task: None)
+    monkeypatch.setattr("app.services.run_service._schedule_background", lambda coro, **kwargs: None)
+    monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
 
     from fastapi import FastAPI

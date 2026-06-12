@@ -27,14 +27,14 @@ from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel
 from app.services.run_service_background import (
     active_run_ids,
-    cancel_active_run_task,
+    cancel_active_run_task as _bg_cancel_active_run_task,
     leftover_active_tasks,
-    register_resident_task,
-    run_active,
-    schedule_background,
-    track_active_run,
-    unregister_resident_task,
-    untrack_active_run,
+    register_resident_task as _bg_register_resident_task,
+    run_active as _bg_run_active,
+    schedule_background as _bg_schedule_background,
+    track_active_run as _bg_track_active_run,
+    unregister_resident_task as _bg_unregister_resident_task,
+    untrack_active_run as _bg_untrack_active_run,
 )
 from app.agents.delegation_metadata import merge_run_task_metadata
 from app.services.run_service_capabilities import engine_capabilities_for_run, engine_route_rule_for_run
@@ -53,6 +53,34 @@ _RUN_ENGINE_ROUTERS: dict[str, EngineRouter] = {}
 _RUN_ENGINE_ROUTERS_LOCK = threading.RLock()
 _ACCEPTING_NEW_RUNS = True
 logger = logging.getLogger(__name__)
+
+
+def _schedule_background(coro, *, data_dir: str | None = None) -> concurrent.futures.Future:
+    return _bg_schedule_background(coro, data_dir=data_dir)
+
+
+def _track_active_run(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> None:
+    _bg_track_active_run(run_id, task)
+
+
+def _untrack_active_run(run_id: str) -> None:
+    _bg_untrack_active_run(run_id)
+
+
+def _run_active(run_id: str) -> bool:
+    return _bg_run_active(run_id)
+
+
+def _cancel_active_run_task(run_id: str, *, grace_seconds: float = 0.0) -> None:
+    _bg_cancel_active_run_task(run_id, grace_seconds=grace_seconds)
+
+
+def _register_resident_task(run_id: str, task: asyncio.Task) -> None:
+    _bg_register_resident_task(run_id, task)
+
+
+def _unregister_resident_task(run_id: str) -> None:
+    _bg_unregister_resident_task(run_id)
 
 
 async def create_run(
@@ -123,11 +151,11 @@ async def create_run(
     _publish_plan_events(run.id, state)
 
     _track_run_router(run.id, router)
-    task = schedule_background(
+    task = _schedule_background(
         _start_engine_loop(run.id, router, state, task_id=run.task_id),
         data_dir=settings.data_dir,
     )
-    track_active_run(run.id, task)
+    _track_active_run(run.id, task)
     return run
 
 
@@ -230,7 +258,7 @@ def recover_interrupted_runs() -> list[str]:
             run = Run.model_validate(row)
         except Exception:
             continue
-        if run_active(run.id):
+        if _run_active(run.id):
             continue
         _sync_persisted_state_phase(run, RunPhase.PAUSED, "interrupted_by_restart")
         _update_run(run, phase=RunPhase.PAUSED, error=run.error or "interrupted_by_restart")
@@ -308,7 +336,7 @@ def resume_run(run_id: str) -> Run:
     run = get_run(run_id)
     if run.phase in TERMINAL_PHASES or run.phase == RunPhase.AWAITING_APPROVAL:
         return run
-    if run_active(run.id):
+    if _run_active(run.id):
         return run
     return _schedule_resume(run)
 
@@ -337,12 +365,12 @@ def _schedule_resume(run: Run) -> Run:
         _update_run(run, phase=RunPhase.FAILED, error=error)
         run_event_bus.publish(run.id, "run.failed", {"error": error, "task_id": run.task_id})
         return run
-    if run.phase == RunPhase.RUNNING and run_active(run.id):
+    if run.phase == RunPhase.RUNNING and _run_active(run.id):
         return run
     _update_run(run, phase=RunPhase.RUNNING)
     run_event_bus.publish(run.id, "turn.started", {"reason": "resume_requested", "task_id": run.task_id})
-    task = schedule_background(_resume_engine_loop(run.id, router, state), data_dir=_run_data_dir(run))
-    track_active_run(run.id, task)
+    task = _schedule_background(_resume_engine_loop(run.id, router, state), data_dir=_run_data_dir(run))
+    _track_active_run(run.id, task)
     return run
 
 
@@ -355,14 +383,14 @@ def cancel_run(run_id: str) -> Run:
         try:
             from app.orchestration.lengrvis_code_runner import cancel_lengrvis_code_run
 
-            schedule_background(cancel_lengrvis_code_run(run.id), data_dir=_run_data_dir(run))
+            _schedule_background(cancel_lengrvis_code_run(run.id), data_dir=_run_data_dir(run))
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to schedule developer run cancellation for %s: %s", run.id, exc, exc_info=True)
     elif run.engine in {RunEngine.OS, RunEngine.AUTO}:
         try:
             settings = get_effective_settings()
             router = _router_for_run(run.id, settings)
-            schedule_background(router.cancel_run(run.id), data_dir=_run_data_dir(run))
+            _schedule_background(router.cancel_run(run.id), data_dir=_run_data_dir(run))
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to schedule engine run cancellation for %s: %s", run.id, exc, exc_info=True)
     if run.task_id:
@@ -373,7 +401,7 @@ def cancel_run(run_id: str) -> Run:
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to mark task %s cancelled while cancelling run %s: %s", run.task_id, run.id, exc, exc_info=True)
     _update_run(run, phase=RunPhase.CANCELLED)
-    cancel_active_run_task(run.id, grace_seconds=2.0)
+    _cancel_active_run_task(run.id, grace_seconds=2.0)
     run_event_bus.publish(run.id, "run.cancelled", {"task_id": run.task_id, "reason": "cancel_requested"})
     return run
 
@@ -459,7 +487,7 @@ async def _run_engine_loop(
 ) -> None:
     current_task = asyncio.current_task()
     if current_task is not None:
-        register_resident_task(run_id, current_task)
+        _register_resident_task(run_id, current_task)
     try:
         current = state
         max_turns = max(1, int(router.max_turns))
@@ -500,7 +528,7 @@ async def _run_engine_loop(
         _update_run(run, phase=RunPhase.FAILED, error=error)
         run_event_bus.publish(run_id, "run.failed", {"error": error})
     finally:
-        unregister_resident_task(run_id)
+        _unregister_resident_task(run_id)
         if stop_event is not None:
             stop_event.set()
         if bridge_task is not None:
@@ -510,7 +538,7 @@ async def _run_engine_loop(
                 bridge_task.cancel()
             except Exception as exc:
                 logger.debug("run bridge task failed while stopping %s: %s", run_id, exc, exc_info=True)
-        untrack_active_run(run_id)
+        _untrack_active_run(run_id)
         _release_run_router(run_id)
         _release_terminal_orchestrator(run_id)
 
@@ -853,7 +881,7 @@ def _sync_run_phase_from_task(run: Run) -> Run:
     phase = _phase_for_task(task)
     if phase == RunPhase.CANCELLED:
         phase = _phase_for_task_plan(task, _latest_plan_for_task(task.id))
-    if run_active(run.id) and run.phase == RunPhase.RUNNING and phase == RunPhase.PAUSED:
+    if _run_active(run.id) and run.phase == RunPhase.RUNNING and phase == RunPhase.PAUSED:
         return run
     if phase == RunPhase.RUNNING or phase == run.phase:
         return run
@@ -989,3 +1017,8 @@ def _phase_for_task_plan(task: Any, plan: Plan | None) -> RunPhase:
     if any(str(step.status) == "denied" for step in plan.steps):
         return RunPhase.DENIED
     return RunPhase.CANCELLED
+
+
+# Public re-exports for callers/tests (patchable via _schedule_background in tests).
+track_active_run = _track_active_run
+untrack_active_run = _untrack_active_run
