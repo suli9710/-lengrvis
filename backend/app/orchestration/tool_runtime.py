@@ -44,6 +44,7 @@ from app.policy.approval_binding import (
     redacted_preview,
     settings_fingerprint,
 )
+from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
 from app.policy.model_boundary import model_control_arg_error
 from app.policy.permission_modes import permission_mode_from_context, trusted_reversible_edit_allowed
@@ -409,6 +410,10 @@ class ToolRuntime:
         tool_context = runtime.tool_context()
         tool_context.update({"task_id": task.id, "step_id": step.id})
         tool_context["_expected_resource_state"] = self._approved_resource_state(approval_id)
+        # This path runs only after PolicyEngine review (auto-clear) or an atomic
+        # approval claim, so stamp the context as a validated execution. Tool-layer
+        # write gates require this marker in addition to approved/approval_id args.
+        mark_execution_approved(tool_context)
         self._publish_tool_progress(task, step, tool, call.id, "started", detail=f"Starting {step.tool_name}.")
         before_resource_state: list[dict[str, Any]] = []
         try:

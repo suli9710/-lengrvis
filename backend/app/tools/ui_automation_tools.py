@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.perception.ui_automation import create_ui_automation_target
+from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -57,7 +58,7 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     selector = _selector_args(args)
     if args.get("dry_run", True):
         return _preview("click", selector)
-    if not _has_approval(args):
+    if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("click")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
     return asyncio.run(
@@ -76,7 +77,7 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     text = str(args.get("text") or "")
     if args.get("dry_run", True):
         return _preview("type_text", {**selector, "characters": len(text)})
-    if not _has_approval(args):
+    if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("type_text")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
     return asyncio.run(
@@ -126,7 +127,7 @@ def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     }
     if args.get("dry_run", True):
         return _preview("click_at", detail)
-    if not _has_approval(args):
+    if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("click_at")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
     return asyncio.run(
@@ -154,7 +155,7 @@ def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     }
     if args.get("dry_run", True):
         return _preview("drag", detail)
-    if not _has_approval(args):
+    if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("drag")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
     return asyncio.run(
@@ -179,7 +180,7 @@ def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "Key is required."}
     if args.get("dry_run", True):
         return _preview("key_press", {"key": key})
-    if not _has_approval(args):
+    if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("key_press")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
     return asyncio.run(
@@ -202,7 +203,7 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "At least one key is required."}
     if args.get("dry_run", True):
         return _preview("hotkey", {"keys": keys})
-    if not _has_approval(args):
+    if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("hotkey")
     target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
     return asyncio.run(
