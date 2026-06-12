@@ -2,7 +2,19 @@ from __future__ import annotations
 
 import pytest
 
-from app.policy.redaction import redact_public_text, redact_text
+from app.policy.redaction import redact_audit_payload, redact_public_text, redact_text, redact_value
+
+
+def test_redact_audit_payload_scrubs_local_paths_in_free_text():
+    # SEC-003 regression: the audit read-path must scrub local absolute paths
+    # that the generic write-path sanitizer (redact_value) leaves intact.
+    payload = {"note": "saved to C:\\Users\\alice\\Documents\\report.docx", "status": "ok"}
+    scrubbed = redact_audit_payload(payload)
+    assert "C:\\Users\\alice" not in str(scrubbed)
+    assert "[REDACTED_LOCAL_PATH]" in scrubbed["note"]
+    assert scrubbed["status"] == "ok"
+    # Baseline redact_value still leaves the path (documents the gap this closes).
+    assert "C:\\Users\\alice" in redact_value(payload)["note"]
 from conftest import load_json_fixture
 
 
