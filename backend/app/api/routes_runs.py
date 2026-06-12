@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.core.schemas import Run, RunCreateRequest, RunCreateResponse, RunStateResponse
 from app.orchestration.run_event_bus import run_event_bus, run_event_to_wire
+from app.policy.redaction import redact_run_payload
 from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.services import run_service
 
@@ -133,11 +134,11 @@ def _state_response(run: Run) -> RunStateResponse:
         engine=run.engine,
         phase=run.phase,
         task_id=run.task_id,
-        message=run.message,
+        message=redact_run_payload(run.message),
         mode=run.mode,
         requested_engine=run.requested_engine,
         engine_route_rule=run_service.engine_route_rule_for_run(run),
-        error=run.error,
+        error=redact_run_payload(run.error),
         created_at=run.created_at,
         updated_at=run.updated_at,
         engine_capabilities=run_service.engine_capabilities_for_run(run),

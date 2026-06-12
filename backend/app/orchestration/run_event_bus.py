@@ -10,6 +10,7 @@ from typing import Any
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentMessage, MessageType, RunEvent, now_iso
+from app.policy.redaction import redact_run_payload
 
 
 RUN_EVENT_NAMES = {
@@ -116,7 +117,7 @@ class RunEventBus:
 
 
 def run_event_to_wire(event: RunEvent, *, replay: bool = False) -> dict[str, Any]:
-    payload = event.model_dump(mode="json")
+    payload = redact_run_payload(event.model_dump(mode="json"))
     payload["type"] = "run_event"
     payload["event"] = event.name
     payload["event_type"] = event.name

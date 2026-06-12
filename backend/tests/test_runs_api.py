@@ -124,6 +124,115 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
         assert any(event.get("event") == "run.started" for event in replayed)
 
 
+def test_run_timeline_progress_and_wire_redact_secrets_and_internal_paths(monkeypatch, tmp_path):
+    # SEC-001 regression: the run-engine read/stream surfaces must (1) drop the
+    # internal ``state._runtime`` block (which otherwise leaks an absolute local
+    # path) and (2) redact secrets in event payloads / run message, while still
+    # preserving 32-hex identifiers and the structured payload shape the desktop
+    # client and the other contract tests depend on.
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    runtime_path = "C:\\Users\\Operator\\AppData\\Lengrvis\\data-dir-secret"
+    run_id = "osrun_" + "abcdef0123456789abcdef0123456789"
+    task_id = "task_" + "0123456789abcdef0123456789abcdef"
+    run = run_service.Run(
+        id=run_id,
+        message="summarize the report token=run-message-secret-1234567890",
+        mode="efficiency",
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        task_id=task_id,
+        state={
+            "run_id": run_id,
+            "engine": "os",
+            "phase": "running",
+            "goal": "summarize the report",
+            "mode": "efficiency",
+            "task_id": task_id,
+            "_runtime": {"data_dir": runtime_path},
+        },
+    )
+    db.upsert_model("runs", run)
+    bus = run_service.run_event_bus
+    bus.publish(
+        run_id,
+        "tool.proposed",
+        {
+            "tool_name": "file.read_text",
+            "step_id": "step_1",
+            "structured_payload": {
+                "api_key": "sk-proposedapikeyvalue1234567890",
+                "password": "hunter2-proposed-secret",
+                "note": "Authorization: Bearer proposedbearertoken1234567890",
+            },
+        },
+    )
+    bus.publish(
+        run_id,
+        "tool.progress",
+        {
+            "tool_name": "file.read_text",
+            "status": "running",
+            "structured_payload": {
+                "tool_name": "file.read_text",
+                "status": "running",
+                "api_key": "sk-progressapikeyvalue1234567890",
+            },
+        },
+    )
+
+    with TestClient(_test_app()) as client:
+        timeline = client.get(f"/api/runs/{run_id}/timeline").json()
+        progress = client.get(f"/api/runs/{run_id}/progress").json()
+        state = client.get(f"/api/runs/{run_id}").json()
+        with client.websocket_connect(f"/ws/runs/{run_id}") as websocket:
+            assert websocket.receive_json()["type"] == "connected"
+            replayed = []
+            while True:
+                event = websocket.receive_json()
+                if event["type"] == "replay.completed":
+                    break
+                replayed.append(event)
+
+    timeline_text = json.dumps(timeline, ensure_ascii=False)
+    progress_text = json.dumps(progress, ensure_ascii=False)
+    state_text = json.dumps(state, ensure_ascii=False)
+    wire_text = json.dumps(replayed, ensure_ascii=False)
+
+    # Internal runtime metadata and the absolute data dir path are stripped.
+    assert "_runtime" not in timeline["run"]["state"]
+    assert "data_dir" not in str(timeline["run"]["state"])
+    assert runtime_path not in timeline_text
+    assert runtime_path not in progress_text
+    assert runtime_path not in wire_text
+
+    # Secrets in event payloads and the run message are redacted everywhere.
+    for secret in (
+        "sk-proposedapikeyvalue1234567890",
+        "sk-progressapikeyvalue1234567890",
+        "hunter2-proposed-secret",
+        "proposedbearertoken1234567890",
+    ):
+        assert secret not in timeline_text, secret
+        assert secret not in wire_text, secret
+    assert "sk-progressapikeyvalue1234567890" not in progress_text
+    assert "run-message-secret-1234567890" not in timeline_text
+    assert "run-message-secret-1234567890" not in state_text
+
+    # Identifiers and structured payload shape are preserved (desktop contract).
+    assert timeline["run"]["id"] == run_id
+    assert timeline["run"]["task_id"] == task_id
+    assert progress["run_id"] == run_id
+    assert progress["task_id"] == task_id
+    proposed = next(event for event in timeline["events"] if event["name"] == "tool.proposed")
+    assert proposed["payload"]["tool_name"] == "file.read_text"
+    assert proposed["payload"]["step_id"] == "step_1"
+    assert proposed["payload"]["structured_payload"]["note"] == "Authorization: Bearer [REDACTED]"
+    assert any(event.get("event") == "tool.proposed" for event in replayed)
+    assert progress["progress"][-1]["payload"]["status"] == "running"
+
+
 def test_auto_routing_uses_os_for_write_intent_code_goal(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
