@@ -268,7 +268,7 @@ class AgentBus:
                 AgentMessage.model_validate(item)
                 for item in db.fetch_many(
                     "agent_messages",
-                    "task_id = ? AND created_at > ?",
+                    "task_id = ? AND created_at >= ?",
                     (task_id, created_after),
                     limit=limit,
                 )
