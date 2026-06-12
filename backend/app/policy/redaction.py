@@ -104,6 +104,55 @@ def redact_payload(value: Any) -> Any:
     return _redact_value(value)
 
 
+def redact_run_payload(value: Any) -> Any:
+    """Redaction for run-engine read surfaces (timeline / replay / progress / state).
+
+    The run timeline is a desktop-token-gated local surface whose structured
+    payloads are rendered by the desktop client, so unlike ``redact_value`` this
+    helper preserves the payload shape **and identifiers** (no generic 24+ token
+    collapse, which would destroy 32-hex run/task/step ids). It still:
+
+    - drops internal ``_``-prefixed keys (e.g. ``state._runtime.data_dir``, which
+      otherwise leaks an absolute local path onto the timeline), and
+    - redacts values under sensitive key names plus inline secret patterns
+      (api keys, bearer tokens, ``sk-`` keys, PEM blocks, cards, email, phone).
+    """
+    return _redact_run_value(value)
+
+
+def _redact_run_value(value: Any, *, key: str = "", in_form: bool = False) -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for item_key, item in value.items():
+            text_key = str(item_key)
+            if text_key.startswith("_"):
+                continue
+            result[text_key] = _redact_run_keyed_value(text_key, item, in_form=in_form)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_redact_run_value(item, key=key, in_form=in_form) for item in value]
+    if isinstance(value, set):
+        return [_redact_run_value(item, key=key, in_form=in_form) for item in sorted(value, key=str)]
+    if isinstance(value, str):
+        if in_form or _is_form_value_key(key):
+            return REDACTED
+        # Keep generic tokens so identifiers (run/task/step ids) survive; inline
+        # secret patterns (api_key=, Bearer, sk-, PEM, card/email/phone) still apply.
+        return redact_text(value, redact_generic_tokens=False)
+    if in_form and value is not None:
+        return REDACTED
+    return value
+
+
+def _redact_run_keyed_value(key: str, value: Any, *, in_form: bool = False) -> Any:
+    if contains_sensitive_key(key):
+        if isinstance(value, (dict, list, tuple, set)):
+            return _redact_run_value(value)
+        return REDACTED
+    child_in_form = in_form or _is_form_container_key(key)
+    return _redact_run_value(value, key=key, in_form=child_in_form)
+
+
 def redact(value: Any) -> Any:
     return _redact_value(value)
 
