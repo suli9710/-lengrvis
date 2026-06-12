@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.core import audit as audit_core, db
 from app.core.schemas import AuditChainVerification
+from app.policy.redaction import redact_audit_payload
 
 
 router = APIRouter()
@@ -15,7 +16,9 @@ def _public_audit_events(events: list[dict]) -> list[dict]:
         item = dict(event)
         payload = item.get("payload")
         if isinstance(payload, dict):
-            item["payload"] = audit_core.sanitize_payload(payload)
+            # Read-path scrub also removes local absolute paths / file names that
+            # the write-path sanitizer (redact_value) intentionally leaves intact.
+            item["payload"] = redact_audit_payload(payload)
         result.append(item)
     return result
 
