@@ -33,7 +33,8 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
   - 桥接的 agent `content`/`structured_payload`/`tool_calls`、`plan.generated` 完整计划、`tool.result` 原始 `output`。
   - 与**任务**侧（`routes_tasks.py` 的 `_public_*` 系列做了正文/工具参数/录屏/审查理由脱敏）形成鲜明对比——**Run 侧完全没有等价的公开脱敏器**。
 - **影响/范围**：项目在 `SECURITY.md` 明确把"时间线/公开 API 泄露本机路径、任务正文"列为**最高优先级攻击面**。这些 `/api/runs/*` 端点默认受桌面 API token 约束、且远程 LAN 客户端被 `lan_api_guard` 直接拦截（仅放行 mobile 路径），因此**默认部署下暴露面限于持有桌面 token 的本机/桌面客户端**；但一旦开启 `LENGRVIS_ALLOW_LAN_DESKTOP_API`，持桌面 token 的 LAN 客户端即可读取**未脱敏**的运行正文与本机绝对路径，违反既定脱敏契约。
-- **建议**：新增统一的 run-event 公开脱敏器（镜像 `routes_tasks._public_*`），应用于 `get_timeline`、`get_progress` 与 `run_event_to_wire`；并在所有 run API 响应中剔除 `state._runtime` 与原样 `run.message`。
+- **建议**：新增统一的 run-event 公开脱敏器，应用于 `get_timeline`、`get_progress` 与 `run_event_to_wire`；并在所有 run API 响应中剔除 `state._runtime` 与原样 `run.message`。
+- **状态**：**已修复**（2026-06-12）。新增 `redaction.redact_run_payload`，并在 `run_service.get_timeline`/`get_progress`、`run_event_bus.run_event_to_wire`、`routes_runs._state_response`（`message`/`error`）统一接入。该脱敏器在保留标识符（不做会破坏 32 位十六进制 id 的 24+ 通用 token 折叠）与桌面所需结构化负载的前提下：剔除 `_` 前缀内部键（消除 `state._runtime.data_dir` 绝对路径泄露），并对敏感键值与内联密钥模式（api key、Bearer、`sk-`、PEM、卡号、邮箱、电话）脱敏。考虑到该面是桌面 token 约束的本机面（而非公开/移动面），刻意**未**采用任务侧那种激进的路径折叠，以保留本机桌面 UX。回归测试：`backend/tests/test_runs_api.py::test_run_timeline_progress_and_wire_redact_secrets_and_internal_paths`（覆盖 timeline / progress / WS wire / state 四个面，并锁定标识符与结构化负载保留契约）。
 - **备注**：原 `AGENT_REVIEW_ISSUES.md` 的 ORCH-002 仅讨论时间线"事件回填"，未覆盖此脱敏缺口。
 
 ---
@@ -160,7 +161,7 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 
 ## 优先处理建议（按 ROI 排序）
 
-1. **SEC-001**：补齐 run 引擎时间线/进度/状态的公开脱敏，剔除 `state._runtime`/原始 `run.message`（与既定脱敏契约一致）。
+1. ~~**SEC-001**：补齐 run 引擎时间线/进度/状态的公开脱敏，剔除 `state._runtime`/原始 `run.message`（与既定脱敏契约一致）。~~ **已修复（2026-06-12）**，见上文 SEC-001 状态。
 2. **SEC-002 / SEC-003**：把审批 HMAC 校验下沉为工具/runtime 硬前置；统一字符串脱敏走 `redact_public_text`。
 3. **SEC-004 / SEC-005 / SEC-006**：提升配对码熵 + 持久化限速；移动 JWT 引入 `jti`/吊销或更短 TTL；远程输入 grant token 轮换作废。
 4. **SEC-008 / SEC-009**：浏览器 SSRF IP 钉死；敏感字段按元素语义而非选择器文本判定（并修复 README 已知失败用例）。
