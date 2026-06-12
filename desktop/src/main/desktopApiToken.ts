@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { cwd as getCwd } from "node:process";
 
 import { app } from "electron";
+
+import { dpapiAvailable, protectLocalSecret, unprotectLocalSecret } from "./localSecret";
 
 export const DESKTOP_API_TOKEN_FILE = "desktop_api.secret";
 
@@ -11,7 +13,14 @@ const CONFIG_PARENT_SEARCH_DEPTH = 5;
 const TOKEN_BYTES = 32;
 const DEFAULT_DATA_DIR_NAME = ".lengrvis_data";
 
-type DesktopApiTokenSource = "file" | "env" | "created" | "memory";
+type DesktopApiTokenSource = "file" | "env" | "created";
+
+export class DesktopApiTokenPersistError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DesktopApiTokenPersistError";
+  }
+}
 
 export interface DesktopApiTokenResolution {
   token: string;
@@ -99,11 +108,11 @@ export function resolveBackendDataDir(options: {
 function persistTokenIfAbsent(
   tokenPath: string,
   token: string,
-  source: Exclude<DesktopApiTokenSource, "file" | "memory">
+  source: Exclude<DesktopApiTokenSource, "file">
 ): Pick<DesktopApiTokenResolution, "token" | "source"> {
   try {
     mkdirSync(dirname(tokenPath), { recursive: true });
-    writeTokenFile(tokenPath, token, "wx");
+    writeTokenFile(tokenPath, token);
     return { token, source };
   } catch (error) {
     if (isFileAlreadyExistsError(error)) {
@@ -112,18 +121,43 @@ function persistTokenIfAbsent(
         return { token: existing, source: "file" };
       }
       try {
-        writeTokenFile(tokenPath, token, "w");
+        writeTokenFile(tokenPath, token);
         return { token, source };
-      } catch {
-        return { token, source: "memory" };
+      } catch (persistError) {
+        throw new DesktopApiTokenPersistError(
+          `Desktop API token file exists but could not be read or rewritten at ${tokenPath}: ${
+            persistError instanceof Error ? persistError.message : String(persistError)
+          }`
+        );
       }
     }
-    return { token, source: "memory" };
+    throw new DesktopApiTokenPersistError(
+      `Desktop API token could not be persisted to ${tokenPath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
   }
 }
 
-function writeTokenFile(tokenPath: string, token: string, flag: "wx" | "w"): void {
-  writeFileSync(tokenPath, `${token}\n`, { encoding: "utf-8", flag, mode: 0o600 });
+function writeTokenFile(tokenPath: string, token: string): void {
+  const stored = dpapiAvailable() ? protectLocalSecret(token) : token;
+  writeSecretFileAtomic(tokenPath, stored);
+}
+
+function writeSecretFileAtomic(tokenPath: string, stored: string): void {
+  const tmpPath = `${tokenPath}.tmp`;
+  try {
+    unlinkSync(tmpPath);
+  } catch {
+    // Ignore stale temp files from a crashed writer.
+  }
+  const fd = openSync(tmpPath, "wx", 0o600);
+  try {
+    writeSync(fd, `${stored}\n`, undefined, "utf-8");
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(tmpPath, tokenPath);
   try {
     chmodSync(tokenPath, 0o600);
   } catch {
@@ -132,11 +166,26 @@ function writeTokenFile(tokenPath: string, token: string, flag: "wx" | "w"): voi
 }
 
 function readTokenFile(tokenPath: string): string | null {
-  try {
-    const value = readFileSync(tokenPath, "utf-8").trim();
-    return value || null;
-  } catch {
+  if (!existsSync(tokenPath)) {
     return null;
+  }
+  let stored = "";
+  try {
+    stored = readFileSync(tokenPath, "utf-8").trim();
+  } catch (error) {
+    throw new DesktopApiTokenPersistError(
+      `Failed to read desktop API token from ${tokenPath}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (!stored) {
+    return null;
+  }
+  try {
+    return unprotectLocalSecret(stored);
+  } catch (error) {
+    throw new DesktopApiTokenPersistError(
+      `Failed to decrypt desktop API token at ${tokenPath}: ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 }
 

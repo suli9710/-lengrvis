@@ -8,6 +8,8 @@ from app.llm.base import LLMProvider
 from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
 
+from app.agents.delegation_rules import contains_any
+
 
 class MockProvider(LLMProvider):
     name = "mock"
@@ -39,13 +41,26 @@ class MockProvider(LLMProvider):
         )
 
     async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:
-        raw_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        planner_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+        supervisor_hint = self._extract_supervisor_routing_hint(planner_user)
+        revision_feedback = self._extract_planner_revision_feedback(planner_user)
+        raw_user = planner_user
         if "User goal:" in raw_user:
             raw_user = raw_user.split("User goal:", 1)[1]
         if self._is_supervisor_schema(output_schema):
             return self._supervisor_decision(raw_user)
         if self._is_agent_action_schema(output_schema):
             return self._agent_action(raw_user, messages)
+        hint_plan = self._plan_from_supervisor_hint(
+            supervisor_hint,
+            raw_user,
+            force_hint=bool(revision_feedback.strip()),
+        )
+        if hint_plan is not None:
+            return hint_plan
+        return self._build_goal_plan(raw_user)
+
+    def _build_goal_plan(self, raw_user: str) -> dict[str, Any]:
         user = raw_user.lower()
         if any(term in user for term in ["password", "cookie", "token", "credential"]):
             tool = "security.forbidden"
@@ -62,7 +77,7 @@ class MockProvider(LLMProvider):
             agent = "ComputerAgent"
             risk = "R0_READ_ONLY"
             description = "Read basic local system information."
-        elif any(term in user for term in ["organize", "整理", "move", "移动", "invoice", "发票"]):
+        elif contains_any(user, ("organize", "整理", "move", "移动", "invoice", "发票")):
             tool = "file.preview_batch_operation"
             agent = "FileAgent"
             risk = "R2_REVERSIBLE_MODIFY"
@@ -225,32 +240,154 @@ class MockProvider(LLMProvider):
                 "reply": reply,
                 "agent_hint": "",
             }
-        if any(term in user for term in ["查", "看", "读取", "获取", "诊断", "检测", "列出"]) and any(
-            term in user for term in ["电脑", "配置", "系统", "cpu", "memory", "内存", "磁盘", "进程"]
-        ):
+        from app.agents.delegation_rules import (
+            CLEANUP_TERMS,
+            COMPUTER_ACTION_TERMS,
+            COMPUTER_DOMAIN_TERMS,
+            FILE_ACTION_TERMS,
+            FILE_DOMAIN_TERMS,
+            FILE_TARGET_TERMS,
+            SEARCH_HINT_TERMS,
+            contains_any,
+        )
+
+        if contains_any(user, COMPUTER_ACTION_TERMS) and contains_any(user, COMPUTER_DOMAIN_TERMS):
             return {
                 "delegate": True,
                 "reply": "收到，我会把这个执行请求交给电脑 Agent，后台处理并持续反馈进展。",
                 "agent_hint": "ComputerAgent",
             }
-        if any(term in user for term in ["清理", "cleanup", "clean up"]) and any(term in user for term in ["文件", "目录", "文件夹", "盘"]):
+        if contains_any(user, CLEANUP_TERMS) and contains_any(user, FILE_TARGET_TERMS + ("盘",)):
             return {
                 "delegate": True,
                 "reply": "收到，我会先生成清理预览，不会直接删除文件；需要执行清理时会再请你审批。",
                 "agent_hint": "FileAgent",
             }
-        if any(term in user for term in ["查", "找", "搜索", "整理", "复制", "移动", "重命名", "删除"]) and any(
-            term in user for term in ["文件", "文档", "目录", "文件夹", "发票", "合同", "素材"]
-        ):
+        if contains_any(user, FILE_ACTION_TERMS) and contains_any(user, FILE_DOMAIN_TERMS):
             return {
                 "delegate": True,
                 "reply": "收到，我会把这个执行请求交给文件 Agent，后台处理并持续反馈进展。",
                 "agent_hint": "FileAgent",
             }
+        if any(term in user for term in ["网页", "浏览器", "网址", "链接", "http", "www."]) or "example.com" in user:
+            return {
+                "delegate": True,
+                "reply": "收到，我会把这个网页读取请求交给浏览器 Agent，后台处理并持续反馈进展。",
+                "agent_hint": "BrowserAgent",
+            }
+        if contains_any(user, SEARCH_HINT_TERMS) and not contains_any(user, FILE_TARGET_TERMS):
+            return {
+                "delegate": True,
+                "reply": "收到，我会把这个联网搜索请求交给搜索 Agent，后台处理并持续反馈进展。",
+                "agent_hint": "SearchAgent",
+            }
         return {
             "delegate": False,
             "reply": self._natural_chat_reply(user),
             "agent_hint": "",
+        }
+
+    def _extract_supervisor_routing_hint(self, raw_user: str) -> str:
+        match = re.search(r"Supervisor routing hint:\s*([A-Za-z]+Agent)", raw_user)
+        if match:
+            return match.group(1)
+        return ""
+
+    def _extract_planner_revision_feedback(self, raw_user: str) -> str:
+        match = re.search(r"Planner revision feedback:\n(.*?)(?:\n\nMode:|\Z)", raw_user, re.DOTALL)
+        if not match:
+            return ""
+        return match.group(1).strip()
+
+    def _plan_from_supervisor_hint(self, hint: str, user: str, *, force_hint: bool = False) -> dict[str, Any] | None:
+        normalized = hint.strip()
+        if not normalized:
+            return None
+        lowered = normalized.casefold()
+        user_lower = user.lower()
+        if not force_hint:
+            goal_plan = self._build_goal_plan(user)
+            step_agent = str(goal_plan["steps"][0]["agent_name"]).casefold()
+            if step_agent == lowered:
+                return goal_plan
+        if lowered == "browseragent":
+            url_match = re.search(r"https?://[^\s]+", user)
+            return self._mock_plan_payload(
+                user_lower,
+                tool="browser.read_page",
+                agent="BrowserAgent",
+                description="Read the requested web page without submitting forms.",
+                args={"url": url_match.group(0) if url_match else "https://example.com", "dry_run": True},
+            )
+        if lowered == "searchagent":
+            return self._mock_plan_payload(
+                user_lower,
+                tool="search.query",
+                agent="SearchAgent",
+                description="Query the configured web search provider and return sourced results.",
+                args={"query": user.strip() or "latest news", "dry_run": True},
+            )
+        if lowered == "documentagent":
+            return self._mock_plan_payload(
+                user_lower,
+                tool="document.summarize",
+                agent="DocumentAgent",
+                description="Summarize the requested document.",
+                args={"dry_run": True},
+            )
+        if lowered == "computeragent":
+            return self._mock_plan_payload(
+                user_lower,
+                tool="system.get_info",
+                agent="ComputerAgent",
+                description="Read basic local system information.",
+                args={},
+            )
+        if lowered == "appagent":
+            return self._mock_plan_payload(
+                user_lower,
+                tool="app.list_installed",
+                agent="AppAgent",
+                description="Inspect installed applications relevant to the request.",
+                args={},
+            )
+        if lowered == "fileagent":
+            return self._mock_plan_payload(
+                user_lower,
+                tool="file.search_by_name",
+                agent="FileAgent",
+                description="Search authorized files by name.",
+                args={"query": user.strip() or "search", "dry_run": True},
+            )
+        return None
+
+    def _mock_plan_payload(
+        self,
+        user: str,
+        *,
+        tool: str,
+        agent: str,
+        description: str,
+        args: dict[str, Any],
+        risk: str = "R0_READ_ONLY",
+    ) -> dict[str, Any]:
+        return {
+            "goal": user or "mock task",
+            "assumptions": [f"Generated by MockProvider for supervisor hint {agent}."],
+            "steps": [
+                {
+                    "id": "step_1",
+                    "agent_name": agent,
+                    "tool_name": tool,
+                    "description": description,
+                    "args": args,
+                    "expected_observation": "Structured observation recorded in the task timeline.",
+                    "risk_level": risk,
+                    "requires_approval": risk.startswith("R2") or risk.startswith("R3"),
+                    "depends_on": [],
+                    "rollback_strategy": "No changes during dry-run; modifying execution must return rollback_info.",
+                }
+            ],
         }
 
     def _natural_chat_reply(self, user: str) -> str:

@@ -526,7 +526,7 @@ async function assertComputerResultQualityState(previewUrl, { task, outcomeMatch
 
     const outcomeCard = page.getByTestId("home-outcome-computer");
     await outcomeCard.waitFor({ timeout: 15_000 });
-    const outcomeText = await outcomeCard.innerText();
+    const outcomeText = await waitForCardText(outcomeCard, outcomeMatches[0], `${label} outcome`, 15_000);
     for (const pattern of outcomeMatches) {
       assert.match(outcomeText, pattern, `${label} outcome should expose beginner-safe result quality`);
     }
@@ -566,14 +566,19 @@ async function assertHomeTrustBoundary(page) {
 }
 
 async function expectText(locator, pattern, message, timeoutMs = 10_000) {
+  await waitForCardText(locator, pattern, message, timeoutMs);
+}
+
+async function waitForCardText(locator, pattern, message, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   let lastText = "";
   while (Date.now() < deadline) {
     lastText = await locator.innerText().catch(() => "");
-    if (pattern.test(lastText)) return;
+    if (pattern.test(lastText)) return lastText;
     await delay(100);
   }
   assert.match(lastText, pattern, message);
+  return lastText;
 }
 
 async function waitForCounter(predicate, label, timeoutMs = 10_000) {
@@ -637,6 +642,9 @@ async function installHealthyBackendMocks(page, counters, options = {}) {
     if (url.pathname === "/api/chat/messages") return json([]);
     if (url.pathname === "/api/runs") return json(runTasks);
     if (url.pathname === "/api/tasks") return json(tasks);
+    if (url.pathname.endsWith("/timeline")) return json({ messages: [], recordings: [] });
+    if (url.pathname.endsWith("/agent-messages")) return json([]);
+    if (url.pathname.endsWith("/safety-reviews")) return json([]);
     if (url.pathname === "/api/approvals/pending") return json([]);
     if (url.pathname === "/api/settings") return json(backendSettings);
     if (url.pathname === "/api/settings/llm/health") return json({ active: { available: true, provider: "smoke", model: "smoke" }, retry: {} });

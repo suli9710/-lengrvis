@@ -18,6 +18,7 @@ try:
 except Exception:  # pragma: no cover - optional in stripped-down test envs
     psutil = None  # type: ignore[assignment]
 
+from app.config import get_env
 from app.core.audit import record
 from app.policy.redaction import redact_public_text
 
@@ -607,7 +608,7 @@ def _bundled_ollama_executable() -> str | None:
 def _bundled_runtime_dirs() -> list[Path]:
     roots: list[Path] = []
     for key in _BUNDLED_ENV_KEYS:
-        value = os.getenv(key)
+        value = get_env(key)
         if value:
             roots.append(Path(value).expanduser())
 
@@ -627,7 +628,7 @@ def _bundled_ollama_models_dir() -> Path | None:
 def _bundled_model_dirs() -> list[Path]:
     roots: list[Path] = []
     for key in _BUNDLED_MODEL_ENV_KEYS:
-        value = os.getenv(key)
+        value = get_env(key)
         if value:
             roots.append(Path(value).expanduser())
 
@@ -647,7 +648,7 @@ def _bundle_anchor_dirs() -> list[Path]:
 
 def _ollama_bundle_manifest_path() -> Path | None:
     for key in _BUNDLED_MANIFEST_ENV_KEYS:
-        value = os.getenv(key)
+        value = get_env(key)
         if value:
             path = Path(value).expanduser()
             if path.exists() and path.is_file():
@@ -686,7 +687,7 @@ def _ollama_bundle_manifest_summary() -> dict[str, Any]:
 
 
 def _preferred_ollama_models_dir() -> Path | None:
-    existing = os.getenv("OLLAMA_MODELS")
+    existing = get_env("OLLAMA_MODELS")
     if existing:
         return Path(existing).expanduser()
     return _bundled_ollama_models_dir()
@@ -1214,7 +1215,7 @@ def _total_memory_bytes() -> int:
 
 
 def _ollama_disk_free_bytes() -> int:
-    target = os.getenv("OLLAMA_MODELS") or os.path.expanduser("~/.ollama")
+    target = get_env("OLLAMA_MODELS") or os.path.expanduser("~/.ollama")
     try:
         existing = target
         while existing and not os.path.exists(existing):

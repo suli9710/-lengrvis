@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.config import PROJECT_ROOT
+from app.config import PROJECT_ROOT, env_raw
 from app.core import audit as audit_core, db
 from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
 from app.policy.redaction import contains_sensitive_key, redact_text
@@ -309,7 +309,19 @@ def _diagnostics_payload(request: Request) -> dict[str, Any]:
             ),
         }
     )
-    return base
+    local_paths = base.get("local_paths")
+    lan_transport = base.get("lan_transport")
+    support_package_redaction = base.get("support_package_redaction")
+    path_replacements = _support_package_path_replacements(base)
+    sanitized = _sanitize_support_package_value(base, path_replacements)
+    result = dict(sanitized) if isinstance(sanitized, dict) else {"diagnostics": sanitized}
+    if isinstance(local_paths, dict):
+        result["local_paths"] = local_paths
+    if isinstance(lan_transport, dict):
+        result["lan_transport"] = lan_transport
+    if isinstance(support_package_redaction, dict):
+        result["support_package_redaction"] = support_package_redaction
+    return result
 
 
 def _diagnostics_export_payload(request: Request) -> dict[str, Any]:
@@ -931,7 +943,7 @@ def _task_recording_privacy_status() -> dict[str, Any]:
 
 
 def _task_recording_env_override() -> str:
-    raw = os.environ.get("LENGRVIS_TASK_RECORDING_ENABLED")
+    raw = env_raw("LENGRVIS_TASK_RECORDING_ENABLED")
     if raw is None:
         return "unset"
     if raw.strip().casefold() in {"1", "true", "yes", "on"}:

@@ -69,18 +69,20 @@ def test_transition_raises_typed_error_on_invalid_phase_transition():
 
 
 def test_safe_transition_no_longer_forces_invalid_transition():
+    # created -> completed skips every intermediate phase and stays invalid
+    # (created -> failed became legal so pre-planning crashes can terminate).
     task = _make_task(TaskStatus.CREATED)
 
-    task = safe_transition(task, TaskStatus.ROLLED_BACK, actor="UnitTest")
+    task = safe_transition(task, TaskStatus.COMPLETED, actor="UnitTest")
 
-    assert task.status == TaskPhase.FAILED
+    assert task.status == TaskPhase.CREATED
 
 
 def test_safe_transition_strict_raises_invalid_transition():
     task = _make_task(TaskStatus.CREATED)
 
     with pytest.raises(StateTransitionError):
-        safe_transition(task, TaskStatus.ROLLED_BACK, actor="UnitTest", strict=True)
+        safe_transition(task, TaskStatus.COMPLETED, actor="UnitTest", strict=True)
 
     persisted = Task.model_validate(db.fetch_one("tasks", task.id))
     assert persisted.status == TaskPhase.CREATED
@@ -114,10 +116,11 @@ def test_task_status_api_returns_app_error_for_invalid_transition():
 
     assert response.status_code == 409
     assert response.json() == {
+        "detail": "Invalid state transition planning -> failed",
         "error": {
             "code": "invalid_state_transition",
             "message": "Invalid state transition planning -> failed",
-        }
+        },
     }
     persisted = Task.model_validate(db.fetch_one("tasks", task.id))
     assert persisted.status == TaskPhase.PLANNING

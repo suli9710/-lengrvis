@@ -26,6 +26,34 @@ def test_publish_cross_task_persists_global_message(monkeypatch, tmp_path):
     assert bus.get_messages(GLOBAL_TASK_ID)[0].id == message.id
 
 
+def test_publish_persists_off_thread_and_reads_flush_pending_writes(monkeypatch, tmp_path):
+    """publish() must not run the SQLite insert on the calling thread, while
+    any DB read of agent_messages still observes the message (read barrier)."""
+    import threading
+
+    from app.orchestration import agent_bus as agent_bus_module
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    bus = AgentBus()
+    writer_threads: set[str] = []
+    original_upsert = db.upsert_model
+
+    def tracking_upsert(table, model, **kwargs):
+        if table == "agent_messages":
+            writer_threads.append(threading.current_thread().name)
+        return original_upsert(table, model, **kwargs)
+
+    monkeypatch.setattr(db, "upsert_model", tracking_upsert)
+
+    message = bus.publish_text("task_async_persist", "PlannerAgent", "off-thread persist")
+
+    rows = db.fetch_many("agent_messages", "task_id = ?", ("task_async_persist",), limit=5)
+    assert [row["id"] for row in rows] == [message.id]
+    assert agent_bus_module.flush_agent_message_writes(timeout_seconds=5)
+    assert writer_threads == ["agent-bus-writer"]
+
+
 def test_global_subscription_receives_matching_event_type(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()

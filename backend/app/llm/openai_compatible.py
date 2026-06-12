@@ -12,6 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from app.config import AppSettings
+from app.core.outbound_url import is_local_base_url, pin_outbound_http_url, validate_outbound_http_url
 from app.context_management import PromptTooLongError, is_prompt_too_long_error, prompt_too_long_error_from_exception
 from app.llm.base import LLMProvider
 from app.llm.prompts import load_prompt, render_prompt
@@ -42,7 +43,11 @@ def _shared_http_client() -> httpx.AsyncClient:
     """Process-wide AsyncClient so LLM calls reuse TCP/TLS connections."""
     global _SHARED_HTTP_CLIENT
     if _SHARED_HTTP_CLIENT is None or _SHARED_HTTP_CLIENT.is_closed:
-        _SHARED_HTTP_CLIENT = httpx.AsyncClient(limits=_HTTP_LIMITS, timeout=httpx.Timeout(60.0))
+        _SHARED_HTTP_CLIENT = httpx.AsyncClient(
+            limits=_HTTP_LIMITS,
+            timeout=httpx.Timeout(60.0),
+            follow_redirects=False,
+        )
     return _SHARED_HTTP_CLIENT
 
 
@@ -103,7 +108,15 @@ class OpenAICompatibleProvider(LLMProvider):
         return headers
 
     def _api_base_url(self) -> str:
-        return normalize_openai_base_url(self.settings.base_url)
+        base = normalize_openai_base_url(self.settings.base_url)
+        if base:
+            validate_outbound_http_url(base, allow_private=self._allow_private_base(base))
+        return base
+
+    def _allow_private_base(self, base: str) -> bool:
+        from app.llm.registry import LOCAL_PROVIDERS
+
+        return is_local_base_url(base) and self.settings.provider_name.lower() in LOCAL_PROVIDERS
 
     def _chat_endpoint(self) -> str:
         base_url = self._api_base_url()
@@ -147,11 +160,16 @@ class OpenAICompatibleProvider(LLMProvider):
             try:
                 trace["attempts"] = attempt + 1
                 client = _shared_http_client()
+                # Re-pin per attempt (DNS-rebinding TOCTOU): connect to the IP
+                # that passed SSRF validation; Host/SNI keep the real hostname
+                # so TLS certificate verification is unchanged.
+                pinned = pin_outbound_http_url(endpoint, allow_private=self._allow_private_base(endpoint))
                 response = await client.post(
-                    endpoint,
-                    headers=self._headers(),
+                    pinned.url,
+                    headers={**self._headers(), **pinned.headers},
                     json=payload,
                     timeout=self.settings.timeout,
+                    extensions=dict(pinned.extensions),
                 )
                 trace["last_status_code"] = response.status_code
                 response.raise_for_status()

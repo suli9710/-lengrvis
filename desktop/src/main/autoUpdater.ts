@@ -64,8 +64,8 @@ function loadUpdater(): ElectronAppUpdater | null {
     // 延迟加载：dev/未安装依赖时不拖垮主进程启动。
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { autoUpdater } = require("electron-updater") as { autoUpdater: ElectronAppUpdater };
-    // 默认构建未签名（verifyUpdateCodeSignature: false），更新包无签名校验，
-    // 因此不静默下载安装：发现新版本先征求用户确认，把信任决定交给用户。
+    // 打包构建默认校验更新包签名（verifyUpdateCodeSignature: true）；
+    // 未签名本地 dist 不会通过签名校验，因此不静默下载安装。
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
 

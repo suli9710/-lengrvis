@@ -82,7 +82,12 @@ async def launch_suggestion(
     suggestion = get_suggestion(suggestion_id)
     if suggestion is None:
         raise KeyError(suggestion_id)
-    run = await run_service.create_run(_launch_prompt(suggestion), mode, engine)
+    run = await run_service.create_run(
+        _launch_prompt(suggestion),
+        mode,
+        engine,
+        agent_hint=suggestion.agent_hint,
+    )
     _mark_suggestion_launched(suggestion, run)
     return run
 

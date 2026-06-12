@@ -1,4 +1,4 @@
-﻿const assert = require("node:assert/strict");
+const assert = require("node:assert/strict");
 const Module = require("node:module");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -87,8 +87,13 @@ global.fetch = async (url, options = {}) => {
 (async () => {
   try {
     const { BackendProcessManager } = require("../dist/main/backendProcess.js");
+    const { unprotectLocalSecret } = require("../dist/main/localSecret.js");
     const manager = new BackendProcessManager();
     await manager.start();
+    const desktopApiToken = manager.getDesktopApiToken();
+    const storedDesktopApiToken = unprotectLocalSecret(
+      fs.readFileSync(path.join(process.env.LENGRVIS_DATA_DIR, "desktop_api.secret"), "utf8").trim()
+    );
 
     assert.ok(spawnCall, "backend process should be spawned");
     assert.equal(spawnCall.command, backendExe);
@@ -97,11 +102,8 @@ global.fetch = async (url, options = {}) => {
     assert.equal(spawnCall.options.env.LENGRVIS_OLLAMA_BUNDLE_MANIFEST, manifestPath);
     assert.equal(spawnCall.options.env.OLLAMA_MODELS, modelsDir);
     assert.equal(spawnCall.options.env.LENGRVIS_DATA_DIR, process.env.LENGRVIS_DATA_DIR);
-    assert.equal(spawnCall.options.env.LENGRVIS_DESKTOP_API_TOKEN, manager.getDesktopApiToken());
-    assert.equal(
-      fs.readFileSync(path.join(process.env.LENGRVIS_DATA_DIR, "desktop_api.secret"), "utf8").trim(),
-      manager.getDesktopApiToken()
-    );
+    assert.equal(spawnCall.options.env.LENGRVIS_DESKTOP_API_TOKEN, desktopApiToken);
+    assert.equal(storedDesktopApiToken, desktopApiToken);
 
     const foregroundStatus = await manager.enterForeground("smoke_foreground");
     assert.equal(foregroundStatus.state, "starting", "failed health should remain starting instead of reporting a ready backend");

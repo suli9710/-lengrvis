@@ -634,7 +634,7 @@ $mobileRemoteInputSmokeNeedles = @(
 )
 $mobileRemoteInputContracts = @(
     Get-SourceContract "mobile/src/approvalSafetyDisplay.ts" $mobileRemoteInputUiNeedles
-    Get-SourceContract "mobile/src/api/client.ts" $mobileRemoteInputClientNeedles
+    Get-SourceContract "mobile/src/api/client/endpoints.ts" $mobileRemoteInputClientNeedles
     Get-SourceContract "mobile/scripts/remote-input-grant-smoke.cjs" $mobileRemoteInputSmokeNeedles
 )
 foreach ($contract in $mobileRemoteInputContracts) {

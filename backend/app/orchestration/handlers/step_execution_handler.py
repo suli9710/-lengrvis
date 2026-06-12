@@ -18,6 +18,7 @@ from app.core.schemas import (
     ToolResult,
     now_iso,
 )
+from app.orchestration.execution_models import APPROVAL_REMAINING_STEPS_SUMMARY
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.runtime_context import TaskRuntimeContext
@@ -65,6 +66,8 @@ class StepExecutionHandler:
         context: dict[str, Any] | None = None,
     ) -> TaskRuntimeContext:
         runtime = self._runtime_context(task, context)
+        runtime.extra_context["task_id"] = task.id
+        runtime.extra_context["step_id"] = step.id
         if step.tool_name == "file.trash" and not runtime.allowed_directories:
             target = _path_arg(step.args, "path")
             if target:
@@ -326,6 +329,7 @@ class StepExecutionHandler:
 
         if result and result.ok:
             db.upsert_model("approvals", approval, status=approval.status)
+            orchestrator.step_scheduler_handler.revive_dependency_blocked_skips(plan)
             pending_approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task.id, "pending"), limit=100)
             target_status = (
                 TaskStatus.WAITING_USER_APPROVAL
@@ -335,7 +339,7 @@ class StepExecutionHandler:
                 else TaskStatus.COMPLETED
             )
             summary = (
-                "Approved modifying operation completed; continuing remaining plan steps."
+                APPROVAL_REMAINING_STEPS_SUMMARY
                 if target_status == TaskStatus.EXECUTING_STEP
                 else
                 "Approved file trash operation completed."

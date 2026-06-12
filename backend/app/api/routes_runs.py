@@ -16,8 +16,15 @@ ws_router = APIRouter()
 
 @router.post("/runs", response_model=RunCreateResponse)
 async def create_run(request: RunCreateRequest) -> RunCreateResponse:
-    run = await run_service.create_run(request.message, request.mode, request.engine)
-    return RunCreateResponse(run_id=run.id, engine=run.engine, phase=run.phase)
+    hint = request.agent_hint.strip() or None
+    run = await run_service.create_run(request.message, request.mode, request.engine, agent_hint=hint)
+    return RunCreateResponse(
+        run_id=run.id,
+        engine=run.engine,
+        phase=run.phase,
+        engine_route_rule=run_service.engine_route_rule_for_run(run),
+        engine_capabilities=run_service.engine_capabilities_for_run(run),
+    )
 
 
 @router.get("/runs", response_model=list[RunStateResponse])
@@ -129,7 +136,9 @@ def _state_response(run: Run) -> RunStateResponse:
         message=run.message,
         mode=run.mode,
         requested_engine=run.requested_engine,
+        engine_route_rule=run_service.engine_route_rule_for_run(run),
         error=run.error,
         created_at=run.created_at,
         updated_at=run.updated_at,
+        engine_capabilities=run_service.engine_capabilities_for_run(run),
     )

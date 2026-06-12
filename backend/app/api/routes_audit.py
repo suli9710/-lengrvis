@@ -9,9 +9,20 @@ from app.core.schemas import AuditChainVerification
 router = APIRouter()
 
 
+def _public_audit_events(events: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    for event in events:
+        item = dict(event)
+        payload = item.get("payload")
+        if isinstance(payload, dict):
+            item["payload"] = audit_core.sanitize_payload(payload)
+        result.append(item)
+    return result
+
+
 @router.get("/audit")
 def audit():
-    return db.fetch_many("audit_events", limit=500)
+    return _public_audit_events(db.fetch_many("audit_events", limit=500))
 
 
 @router.get("/audit/verify-chain", response_model=AuditChainVerification)
@@ -30,4 +41,4 @@ def plan_risk_consistency(limit: int = 500):
 
 @router.get("/audit/{task_id}")
 def audit_for_task(task_id: str):
-    return db.fetch_many("audit_events", "task_id = ?", (task_id,), limit=500)
+    return _public_audit_events(db.fetch_many("audit_events", "task_id = ?", (task_id,), limit=500))

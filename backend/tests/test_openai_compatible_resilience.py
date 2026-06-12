@@ -7,6 +7,7 @@ import pytest
 
 from app.config import AppSettings
 from app.context_management import PromptTooLongError
+from app.core.outbound_url import PinnedOutboundRequest
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.openai_compatible import (
     LLMApiCircuitOpen,
@@ -59,6 +60,12 @@ def _clear_circuit_state():
 
 def _patch_shared_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.llm.openai_compatible._shared_http_client", lambda: FakeAsyncClient())
+    # Keep these tests hermetic: the connect-time SSRF pin would otherwise hit
+    # the host resolver (and fake-IP tunnel setups rewrite every hostname).
+    monkeypatch.setattr(
+        "app.llm.openai_compatible.pin_outbound_http_url",
+        lambda url, *, allow_private=False: PinnedOutboundRequest(url=url),
+    )
 
 
 def _settings(**overrides) -> AppSettings:
@@ -134,6 +141,29 @@ def test_responses_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
 
     assert text == "ok"
     assert FakeAsyncClient.requests[0]["url"] == "https://api.example.test/v1/responses"
+
+
+def test_chat_posts_to_pinned_ip_with_host_and_sni_preserved(monkeypatch):
+    """Connect-time SSRF pin: the request goes to the validated IP, while the
+    Host header and TLS SNI keep the real hostname."""
+    monkeypatch.setattr("app.llm.openai_compatible._shared_http_client", lambda: FakeAsyncClient())
+    monkeypatch.setattr(
+        "app.llm.openai_compatible.pin_outbound_http_url",
+        lambda url, *, allow_private=False: PinnedOutboundRequest(
+            url=url.replace("api.example.test", "93.184.216.34"),
+            headers={"Host": "api.example.test"},
+            extensions={"sni_hostname": "api.example.test"},
+        ),
+    )
+    FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "ok"}}]})]
+    provider = OpenAICompatibleProvider(_settings(base_url="https://api.example.test"))
+
+    text = asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
+
+    assert text == "ok"
+    request = FakeAsyncClient.requests[0]
+    assert request["url"] == "https://93.184.216.34/v1/chat/completions"
+    assert request["headers"]["Host"] == "api.example.test"
 
 
 def test_circuit_snapshot_uses_normalized_base_url(monkeypatch):

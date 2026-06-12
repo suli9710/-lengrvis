@@ -49,6 +49,27 @@ def get_env(env_key: str, default: str | None = None) -> str | None:
     return raw if raw is not None else default
 
 
+def env_raw(env_key: str) -> str | None:
+    """Raw environment read that preserves "set but empty" values.
+
+    Prefer get_env unless the caller must distinguish an unset variable from
+    one explicitly set to an empty/falsy string (e.g. tri-state overrides).
+    Reads os.environ at call time so test monkeypatching keeps working.
+    """
+    for alias in env_aliases(env_key):
+        if alias in os.environ:
+            return os.environ[alias]
+    return None
+
+
+def env_flag(env_key: str, default: bool = False) -> bool:
+    """Shared truthy-flag parsing for boolean environment switches."""
+    raw = get_env(env_key)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _load_dotenv(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -249,13 +270,18 @@ class AppSettings:
     skill_directories: list[str] = field(default_factory=list)
     mcp_servers: list[dict] = field(default_factory=list)
     allow_mock_fallback: bool = False
+    # Non-strict (default): invalid transitions are audited but not persisted.
+    # Strict: StateTransitionError on illegal phase/stage changes.
     strict_state_machine: bool = False
+    tool_timeout_seconds: float = 300.0
     recovery_max_retries: int = 3
     os_reflection_max_per_run: int = 2
     os_reflection_max_per_step: int = 1
     execution_engines: str = "dual"
     default_engine: str = "auto"
     agent_loop_max_turns: int = 30
+    developer_writes_enabled: bool = False  # When True, write-intent goals route to Developer Engine with verification.
+    developer_writes_require_verification: bool = True
     run_event_retention_days: int = 30
     perception_enabled: bool = False
     perception_interval_seconds: float = 5.0
@@ -573,6 +599,12 @@ class AppSettings:
             mcp_servers=_normalize_mcp_servers(value("LENGRVIS_MCP_SERVERS", "mcp_servers", [])),
             allow_mock_fallback=flag("LENGRVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", False),
             strict_state_machine=flag("LENGRVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
+            tool_timeout_seconds=float_value(
+                "LENGRVIS_TOOL_TIMEOUT_SECONDS",
+                "tool_timeout_seconds",
+                300.0,
+                minimum=1.0,
+            ),
             recovery_max_retries=int_value("LENGRVIS_RECOVERY_MAX_RETRIES", "recovery_max_retries", 3),
             os_reflection_max_per_run=int_value(
                 "LENGRVIS_OS_REFLECTION_MAX_PER_RUN", "os_reflection_max_per_run", 2
@@ -583,6 +615,16 @@ class AppSettings:
             execution_engines=str(value("LENGRVIS_EXECUTION_ENGINES", "execution_engines", "dual")),
             default_engine=str(value("LENGRVIS_DEFAULT_ENGINE", "default_engine", "auto")),
             agent_loop_max_turns=int_value("LENGRVIS_AGENT_LOOP_MAX_TURNS", "agent_loop_max_turns", 30, minimum=1),
+            developer_writes_enabled=flag(
+                "LENGRVIS_DEVELOPER_WRITES_ENABLED",
+                "developer_writes_enabled",
+                False,
+            ),
+            developer_writes_require_verification=flag(
+                "LENGRVIS_DEVELOPER_WRITES_REQUIRE_VERIFICATION",
+                "developer_writes_require_verification",
+                True,
+            ),
             run_event_retention_days=int_value(
                 "LENGRVIS_RUN_EVENT_RETENTION_DAYS",
                 "run_event_retention_days",

@@ -57,20 +57,23 @@ def test_permission_policy_denies_when_allow_list_has_no_match():
 
     assert decision.allowed is False
     assert decision.matched is False
-    assert "allow-list" in decision.reason.lower()
+    assert "default deny" in decision.reason.lower()
 
 
 def test_permission_policy_allows_unmatched_when_only_deny_rules_exist():
     policy = PermissionPolicy(rules=[weekend_delete_rule()])
+    weekday = datetime.fromisoformat("2026-05-28T12:00:00+00:00")
 
     decision = evaluate_permission_policy(
         policy,
         tool_name="file.read_text",
         args={"path": "/tmp/example.txt"},
+        now=weekday,
     )
 
     assert decision.allowed is True
     assert decision.matched is False
+    assert "default allow" in decision.reason.lower()
 
 
 def test_permission_policy_allows_when_no_rules_configured():
@@ -82,6 +85,7 @@ def test_permission_policy_allows_when_no_rules_configured():
 
     assert decision.allowed is True
     assert decision.matched is False
+    assert "default allow" in decision.reason.lower()
 
 
 def test_permission_policy_denies_matching_weekend_delete():
@@ -335,3 +339,24 @@ def test_policy_engine_fails_closed_when_permission_store_errors(monkeypatch: py
 
     assert review.verdict == SafetyVerdict.DENY
     assert "fail-closed" in review.reasons[0].lower()
+
+
+def test_evaluate_user_permission_for_tool_matches_policy_engine():
+    from app.policy.permissions import evaluate_user_permission_for_tool
+
+    PermissionStore().save_policy(PermissionPolicy(rules=[weekend_delete_rule()]))
+    saturday = datetime.fromisoformat("2026-05-30T12:00:00+00:00")
+    engine = PolicyEngine(now_provider=lambda: saturday)
+    args = {"path": "/tmp/example.txt", "dry_run": False}
+
+    via_engine = engine._review_permission_policy("file.trash", args, {})
+    via_helper = evaluate_user_permission_for_tool(
+        tool_name="file.trash",
+        args=args,
+        context={},
+        policy_engine=engine,
+    )
+
+    assert via_engine.allowed == via_helper.allowed
+    assert via_helper.allowed is False
+    assert "Weekend" in via_helper.reason

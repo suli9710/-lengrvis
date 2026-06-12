@@ -29,6 +29,21 @@ NON_EXECUTABLE_RUN_PHASES: frozenset[RunPhase] = frozenset(
     {*TERMINAL_RUN_PHASES, RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED}
 )
 
+EngineRouteRule = Literal[
+    "explicit_override",
+    "developer_write_os",
+    "developer_write_enabled",
+    "system_diagnostics",
+    "developer_read_only",
+    "os_goal",
+    "ambiguous_fallback",
+]
+
+RunContinuationKind = Literal["", "approval_remaining_steps"]
+APPROVAL_REMAINING_STEPS_SUMMARY = (
+    "Approved modifying operation completed; continuing remaining plan steps."
+)
+
 
 class RunObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -65,6 +80,8 @@ class RunState(BaseModel):
     mode: str = "privacy"
     task_id: str = ""
     paused: bool = False
+    route_rule: EngineRouteRule = "ambiguous_fallback"
+    continuation_kind: RunContinuationKind = ""
 
     @field_validator("turn_count")
     @classmethod
@@ -78,6 +95,7 @@ class EngineRouteDecision(BaseModel):
     requested_engine: EngineSelection = "auto"
     selected_engine: EngineName
     reason: str
+    rule: EngineRouteRule = "ambiguous_fallback"
 
 
 class EngineTurnResult(BaseModel):

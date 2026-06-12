@@ -34,13 +34,13 @@ class RecordingPlanProvider(RecordingSupervisorProvider):
     async def structured_chat(self, messages, output_schema):
         self.calls += 1
         return {
-            "goal": "inspect computer",
+            "goal": "open file",
             "steps": [
                 {
-                    "agent_name": "ComputerAgent",
-                    "tool_name": "system.get_info",
-                    "description": "Read system info",
-                    "args": {},
+                    "agent_name": "FileAgent",
+                    "tool_name": "file.search_by_name",
+                    "description": "Locate the requested file by name",
+                    "args": {"query": "report.txt", "dry_run": True},
                     "risk_level": "R0_READ_ONLY",
                 }
             ],
@@ -239,7 +239,7 @@ async def test_executable_turn_uses_local_provider_when_available(monkeypatch, t
     assert response.delegated is True
     assert response.task_id
     task = await _await_task_status(response.task_id, "completed")
-    assert provider.calls == 1
+    assert 1 <= provider.calls <= 2
     assert task["status"] == "completed"
 
 

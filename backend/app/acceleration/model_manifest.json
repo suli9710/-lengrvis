@@ -1,13 +1,15 @@
 {
   "version": 1,
+  "_revision_note": "Each downloadable model must use a 40-char HuggingFace commit sha. install_acceleration.ps1 refuses branch pins (main/master). Qwen ONNX GenAI is installed manually until a public pinned repo is recorded.",
   "models_root": ".lengrvis_data/models",
   "models": [
     {
       "id": "qwen2.5-3b-instruct-onnx-genai",
       "task": "llm",
-      "recommended": true,
+      "recommended": false,
       "path": "qwen2.5-3b-instruct-onnx",
       "repo": "onnx-community/Qwen2.5-3B-Instruct-ONNX",
+      "revision": "",
       "patterns": ["**/genai_config.json", "**/config.json", "**/*.onnx", "**/*.json", "**/*.txt"]
     },
     {
@@ -16,6 +18,7 @@
       "recommended": true,
       "path": "multilingual-e5-small",
       "repo": "Xenova/multilingual-e5-small",
+      "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
       "patterns": ["onnx/model.onnx", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]
     },
     {
@@ -24,6 +27,7 @@
       "recommended": true,
       "path": "clip-vit-base-patch32",
       "repo": "Xenova/clip-vit-base-patch32",
+      "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
       "patterns": ["onnx/vision_model.onnx", "preprocessor_config.json", "tokenizer.json", "vocab.json", "merges.txt"]
     },
     {
@@ -32,6 +36,7 @@
       "recommended": false,
       "path": "ocr",
       "repo": "",
+      "revision": "",
       "patterns": ["*.onnx", "vocab.txt", "tokens.txt", "charset.txt"]
     }
   ]

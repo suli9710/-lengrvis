@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import os
 import re
 import socket
 import threading
+from collections import deque
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
@@ -14,6 +15,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from app.config import env_flag
 from app.core.audit import record
 from app.core.schemas import new_id, now_iso
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
@@ -218,12 +220,43 @@ class LocalBrowserActivityAdapter:
         return {"ok": True, "url": final_url, "title": title, "changed_paths": [], "rollback_info": {}}
 
 
+# Long-running processes accumulate sessions and events forever without a
+# bound (R7-H1); events keep a rolling window and closed/stale sessions are
+# pruned opportunistically on writes.
+MAX_RETAINED_EVENTS = 2000
+MAX_RETAINED_SESSIONS = 200
+CLOSED_SESSION_TTL = timedelta(hours=1)
+STALE_SESSION_TTL = timedelta(hours=24)
+
+
 class BrowserActivityRuntime:
     def __init__(self, adapter: BrowserActivityAdapter | None = None) -> None:
         self.adapter = adapter or LocalBrowserActivityAdapter()
         self._sessions: dict[str, BrowserSession] = {}
-        self._events: list[BrowserActivityEvent] = []
+        self._events: deque[BrowserActivityEvent] = deque(maxlen=MAX_RETAINED_EVENTS)
         self._lock = threading.RLock()
+
+    def _prune_sessions_locked(self) -> None:
+        now = datetime.now(timezone.utc)
+        expired: list[str] = []
+        for session_id, session in self._sessions.items():
+            updated = _parse_iso(session.updated_at)
+            if updated is None:
+                continue
+            ttl = CLOSED_SESSION_TTL if session.status == "closed" else STALE_SESSION_TTL
+            if now - updated > ttl:
+                expired.append(session_id)
+        for session_id in expired:
+            self._sessions.pop(session_id, None)
+        overflow = len(self._sessions) - MAX_RETAINED_SESSIONS
+        if overflow > 0:
+            # Evict closed sessions first, then the least recently updated.
+            ordered = sorted(
+                self._sessions.values(),
+                key=lambda item: (item.status != "closed", item.updated_at),
+            )
+            for session in ordered[:overflow]:
+                self._sessions.pop(session.id, None)
 
     def session_start(self, args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         allowed, reason = _network_allowed(context)
@@ -244,6 +277,7 @@ class BrowserActivityRuntime:
             takeover=bool(args.get("takeover", False)),
         )
         with self._lock:
+            self._prune_sessions_locked()
             self._sessions[session.id] = session
         event = self._append_event(
             session,
@@ -637,7 +671,7 @@ def _validate_url(url: str) -> str:
 
 
 def _private_hosts_allowed() -> bool:
-    return str(os.environ.get(ALLOW_PRIVATE_HOSTS_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_flag(ALLOW_PRIVATE_HOSTS_ENV)
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -834,6 +868,16 @@ def _safe_url(url: str) -> str:
 
 def _safe_text(text: str) -> str:
     return redact_text(text) if text else ""
+
+
+def _parse_iso(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _optional_text(value: Any) -> str | None:

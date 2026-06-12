@@ -127,6 +127,7 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
 def test_auto_routing_uses_os_for_write_intent_code_goal(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_DEVELOPER_WRITES_ENABLED", raising=False)
     db.init_db()
     scheduled = []
 
@@ -149,7 +150,125 @@ def test_auto_routing_uses_os_for_write_intent_code_goal(monkeypatch, tmp_path):
         )
         assert created.status_code == 200
         assert created.json()["engine"] == "os"
-    assert len(scheduled) == 2
+    # create_run now schedules a single wrapper coroutine that sets up the
+    # message bridge and drives the engine loop on the resident loop.
+    assert len(scheduled) == 1
+    assert scheduled[0].__name__ == "_start_engine_loop"
+
+
+def test_auto_routing_uses_developer_when_writes_enabled_for_pytest_fix_goal(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DEVELOPER_WRITES_ENABLED", "true")
+    db.init_db()
+    scheduled = []
+
+    def schedule_spy(coro, *, data_dir=None):  # noqa: ANN001, ANN202, ARG001
+        scheduled.append(coro)
+        coro.close()
+
+        class Done:
+            def done(self) -> bool:
+                return True
+
+        return Done()
+
+    monkeypatch.setattr(run_service, "_schedule_background", schedule_spy)
+
+    with TestClient(_test_app()) as client:
+        created = client.post(
+            "/api/runs",
+            json={"message": "fix failing pytest in backend", "mode": "privacy", "engine": "auto"},
+        )
+        assert created.status_code == 200
+        assert created.json()["engine"] == "developer"
+    assert len(scheduled) == 1
+
+
+def test_developer_writes_enabled_run_passes_write_tools_and_default_permission_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DEVELOPER_WRITES_ENABLED", "true")
+    record_path = tmp_path / "lengrvis_argv.json"
+    fake_cli = tmp_path / "fake_lengrvis_writes.py"
+    fake_cli.write_text(
+        """
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--print", action="store_true")
+parser.add_argument("--output-format")
+parser.add_argument("--verbose", action="store_true")
+parser.add_argument("--bare", action="store_true")
+parser.add_argument("--model")
+parser.add_argument("--max-turns")
+parser.add_argument("--add-dir")
+parser.add_argument("--permission-mode")
+parser.add_argument("--allowedTools")
+parser.add_argument("prompt")
+args = parser.parse_args()
+
+record_path = os.environ.get("FAKE_LENGRVIS_RECORD")
+if record_path:
+    with open(record_path, "w", encoding="utf-8") as fh:
+        json.dump({"argv": sys.argv[1:], "prompt": args.prompt}, fh)
+
+print(json.dumps({"type": "system", "subtype": "init", "tools": args.allowedTools.split(",")}), flush=True)
+print(json.dumps({"type": "assistant", "message": {"content": [
+    {"type": "text", "text": "Attempting write"},
+    {"type": "tool_use", "name": "Write", "input": {"file_path": "backend/tests/smoke.txt", "content": "x"}},
+]}}), flush=True)
+print(json.dumps({
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "result": "Write blocked pending approval",
+    "permission_denials": [{"tool_name": "Write", "reason": "default permission mode requires user approval"}],
+}), flush=True)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LENGRVIS_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
+    monkeypatch.setenv("FAKE_LENGRVIS_RECORD", str(record_path))
+    monkeypatch.setenv("LENGRVIS_API_KEY", "test-api-key")
+    monkeypatch.setenv("LENGRVIS_MODEL", "openai/gpt-5")
+    db.init_db()
+    app = _test_app()
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/runs",
+            json={"message": "fix failing pytest in backend/tests", "mode": "privacy", "engine": "developer"},
+        )
+        assert created.status_code == 200
+        assert created.json()["engine"] == "developer"
+        final = _wait_for_phase(client, created.json()["run_id"], "awaiting_approval", "completed", "failed")
+        assert final["phase"] == "awaiting_approval"
+
+        timeline = client.get(f"/api/runs/{created.json()['run_id']}/timeline").json()
+        tool_results = [
+            event
+            for event in timeline["events"]
+            if event.get("name") == "tool.result" and event.get("payload", {}).get("tool_name") == "lengrvis_code"
+        ]
+        assert tool_results, timeline["events"]
+        payload = tool_results[-1]["payload"]["output"]
+        assert payload.get("permission_denials"), payload
+        assert payload["permission_denials"][0]["tool_name"] == "Write"
+        assert payload.get("awaiting_write_approval") is True
+
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    argv = record["argv"]
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert "Write" in allowed and "Edit" in allowed
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert "skip-permissions" not in " ".join(argv)
+    assert "Write/Edit tools are enabled" in record["prompt"]
 
 
 @pytest.mark.parametrize(
@@ -261,7 +380,7 @@ def test_run_start_failure_redacts_error_in_state_and_timeline(monkeypatch, tmp_
     class Router:
         max_turns = 1
 
-        async def start_run(self, goal, mode, engine):  # noqa: ANN001, ANN202, ARG002
+        async def start_run(self, goal, mode, engine, *, task_metadata=None):  # noqa: ANN001, ANN202, ARG002
             raise RuntimeError("provider failed token=run-start-secret-1234567890")
 
     monkeypatch.setattr(run_service, "_engine_router", lambda settings: Router())
@@ -399,6 +518,8 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     target = tmp_path / "approved-multi-step.txt"
     target.write_text("remove me", encoding="utf-8")
+    keep_file = tmp_path / "keep-after-trash.txt"
+    keep_file.write_text("still here", encoding="utf-8")
     db.init_db()
 
     async def spy_create_plan(self, task_id, goal, mode, tools, **kwargs):  # noqa: ARG001
@@ -418,11 +539,11 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
             id="follow_up_step",
             task_id=task_id,
             order=2,
-            agent_name="ComputerAgent",
-            tool_name="system.get_info",
-            description="Inspect system after approval.",
-            args={},
-            expected_observation="system.get_info completed.",
+            agent_name="FileAgent",
+            tool_name="file.read_text",
+            description="Read remaining file after approval.",
+            args={"path": str(keep_file)},
+            expected_observation="file.read_text completed.",
             risk_level=RiskLevel.R0_READ_ONLY,
             depends_on=[approval_step.id],
         )
@@ -447,8 +568,10 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
         assert approved.status_code == 200
         final = _wait_for_phase(client, created["run_id"], "completed", "failed", "denied")
         assert final["phase"] == "completed"
-        plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=1)[0])
-        follow_up = next(step for step in plan.steps if step.id == "follow_up_step")
+        plans = db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=5)
+        plan = Plan.model_validate(plans[0])
+        follow_up = next((step for step in plan.steps if step.id == "follow_up_step"), None)
+        assert follow_up is not None, f"plan steps={[(s.id, s.status) for s in plan.steps]}"
         assert follow_up.status == "succeeded"
 
 
@@ -622,11 +745,11 @@ def test_active_running_run_is_not_synced_back_to_paused_task_state(monkeypatch,
         def done(self) -> bool:
             return False
 
-    run_service._track_active_run(run.id, ActiveFuture())
+    run_service.track_active_run(run.id, ActiveFuture())
     try:
         synced = run_service.get_run(run.id)
     finally:
-        run_service._untrack_active_run(run.id)
+        run_service.untrack_active_run(run.id)
 
     assert synced.phase == run_service.RunPhase.RUNNING
     assert synced.state["phase"] == "running"
@@ -851,7 +974,7 @@ def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(
     from app.perception.intent_predictor import IntentSuggestion
     from app.services import perception_suggestion_service
 
-    async def start_run(self, goal, mode, engine):  # noqa: ANN001, ANN202
+    async def start_run(self, goal, mode, engine, *, task_metadata=None):  # noqa: ANN001, ANN202, ARG002
         started.append({"goal": goal, "mode": mode, "engine": engine})
         return RunState(
             run_id="osrun_suggestion_launch",
@@ -1089,8 +1212,10 @@ def test_cancelled_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, 
     class BlockingRouter:
         max_turns = 1
 
-        async def start_run(self, goal, mode, engine):  # noqa: ANN001, ANN202
-            return await original_router_factory(run_service.get_effective_settings()).start_run(goal, mode, engine)
+        async def start_run(self, goal, mode, engine, *, task_metadata=None):  # noqa: ANN001, ANN202
+            return await original_router_factory(run_service.get_effective_settings()).start_run(
+                goal, mode, engine, task_metadata=task_metadata
+            )
 
         async def run_turn(self, state):  # noqa: ANN001, ANN202
             started.set()
@@ -1215,8 +1340,10 @@ def test_paused_run_is_not_overwritten_by_finishing_engine_turn(monkeypatch, tmp
     class BlockingRouter:
         max_turns = 1
 
-        async def start_run(self, goal, mode, engine):  # noqa: ANN001, ANN202
-            return await original_router_factory(run_service.get_effective_settings()).start_run(goal, mode, engine)
+        async def start_run(self, goal, mode, engine, *, task_metadata=None):  # noqa: ANN001, ANN202
+            return await original_router_factory(run_service.get_effective_settings()).start_run(
+                goal, mode, engine, task_metadata=task_metadata
+            )
 
         async def run_turn(self, state):  # noqa: ANN001, ANN202
             started.set()

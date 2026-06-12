@@ -246,7 +246,7 @@ def _resolve_embedding_model_path(settings: AppSettings | None) -> Path | None:
 
 def _configured_model_path(settings: AppSettings | None) -> str | None:
     for env_key in _MODEL_ENV_KEYS:
-        value = os.environ.get(env_key)
+        value = get_env(env_key)
         if value and value.strip():
             return value.strip()
     if settings is not None:
@@ -297,7 +297,7 @@ def _looks_like_local_model_path(value: str) -> bool:
 
 def _configured_execution_provider(settings: AppSettings | None) -> str | None:
     for env_key in _EXECUTION_PROVIDER_ENV_KEYS:
-        value = os.environ.get(env_key)
+        value = get_env(env_key)
         if value and value.strip():
             return value.strip()
     if settings is not None:

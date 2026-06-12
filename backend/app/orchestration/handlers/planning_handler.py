@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING
 
 from app.core.audit import record
 from app.core import db
 from app.core.schemas import MessageType, Plan, StepStatus, Task, TaskStatus
+from app.agents.delegation_metadata import (
+    SupervisorHintPlanError,
+    plan_matches_supervisor_hint,
+    plan_tools_outside_visible,
+)
+from app.agents.worker_agents import normalize_supervisor_agent_hint
 from app.perception.context_store import latest_perception_context
 from app.perception.storage import perception_context_summary
 from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error
@@ -15,6 +22,23 @@ from app.orchestration.step_phase import set_step_status
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
     from app.orchestration.dispatcher import EventDispatcher
+
+
+def _filter_planner_kwargs(create_plan, optional_kwargs: dict) -> dict:
+    """Keep only the keyword arguments the planner's ``create_plan`` accepts.
+
+    Legacy planners (older signatures without ``tool_specs``/``agent_hint``/
+    perception kwargs) are supported by signature introspection instead of
+    fragile TypeError string sniffing. Planners exposing ``**kwargs`` (or
+    uninspectable callables such as mocks) receive everything.
+    """
+    try:
+        parameters = inspect.signature(create_plan).parameters
+    except (TypeError, ValueError):
+        return dict(optional_kwargs)
+    if any(param.kind is inspect.Parameter.VAR_KEYWORD for param in parameters.values()):
+        return dict(optional_kwargs)
+    return {name: value for name, value in optional_kwargs.items() if name in parameters}
 
 
 def _planner_tool_spec(tool) -> str:
@@ -65,7 +89,17 @@ class PlanningHandler:
         memory_context = await orchestrator._recall_memory(goal)
         goal_context = self._goal_context_for_planning(task, goal)
         session_context = self._session_context_for_planning(task)
-        plan = await self._create_plan(task, goal, mode, memory_context, goal_context, session_context)
+        agent_hint = normalize_supervisor_agent_hint((task.metadata or {}).get("supervisor_agent_hint")) or None
+        try:
+            plan = await self._create_plan(task, goal, mode, memory_context, goal_context, session_context, agent_hint=agent_hint)
+        except SupervisorHintPlanError as exc:
+            record(
+                "planner.supervisor_hint_denied",
+                "PlanningHandler",
+                {"error": str(exc), "agent_hint": agent_hint or ""},
+                task_id=task.id,
+            )
+            return orchestrator._set_status(task, TaskStatus.FAILED, final_summary=str(exc))
         db.upsert_model("plans", plan)
         if not orchestrator._supervise_new_agent_messages(task.id, "planner_output"):
             return orchestrator._set_status(
@@ -93,80 +127,99 @@ class PlanningHandler:
         memory_context: list,
         goal_context: dict | None = None,
         session_context: dict | None = None,
+        *,
+        agent_hint: str | None = None,
     ) -> Plan:
         orchestrator = self.orchestrator
         list_tools = getattr(orchestrator.registry, "list_for_planning", orchestrator.registry.list)
         visible_tools = [tool for tool in list_tools() if tool.name == "tool.search" or not getattr(tool, "defer_loading", False)]
+        hint = normalize_supervisor_agent_hint(agent_hint)
+        if hint:
+            hinted_tools = [
+                tool
+                for tool in visible_tools
+                if tool.name == "tool.search" or getattr(tool, "agent_owner", "") == hint
+            ]
+            visible_tools = hinted_tools or [tool for tool in visible_tools if tool.name == "tool.search"]
         tools = [tool.name for tool in visible_tools]
         tool_specs = [_planner_tool_spec(tool) for tool in visible_tools]
         perception_context = perception_context_summary(latest_perception_context())
-        try:
-            plan = await orchestrator.planner.create_plan(
-                task.id,
-                goal,
-                mode,
-                tools,
-                memory_context=memory_context,
-                perception_context=perception_context,
-                goal_context=goal_context,
-                session_context=session_context,
-                tool_specs=tool_specs,
-            )
+        create_plan = orchestrator.planner.create_plan
+        base_planner_kwargs = {
+            "memory_context": memory_context,
+            "perception_context": perception_context,
+            "goal_context": goal_context,
+            "session_context": session_context,
+            "tool_specs": tool_specs,
+            "agent_hint": agent_hint,
+        }
+        plan: Plan | None = None
+        last_outside: list[str] = []
+        attempts = 2 if hint else 1
+        for attempt in range(attempts):
+            planner_kwargs = dict(base_planner_kwargs)
+            if attempt > 0 and last_outside:
+                planner_kwargs["planner_revision_feedback"] = (
+                    f"Previous plan used tools outside the allowed surface for {hint}: "
+                    f"{', '.join(last_outside)}. "
+                    f"Regenerate using only these tools: {', '.join(tools)}."
+                )
+            planner_kwargs = _filter_planner_kwargs(create_plan, planner_kwargs)
+            plan = await create_plan(task.id, goal, mode, tools, **planner_kwargs)
             self._annotate_plan_tool_contracts(plan, tools)
-            self._publish_annotated_plan(task.id, plan)
+            if not hint:
+                break
+            last_outside = plan_tools_outside_visible(plan, tools)
+            if not last_outside and plan_matches_supervisor_hint(plan, hint, tools):
+                break
+            record(
+                "planner.supervisor_hint_retry",
+                "PlanningHandler",
+                {"attempt": attempt + 1, "outside_tools": last_outside, "agent_hint": hint},
+                task_id=task.id,
+            )
+        assert plan is not None
+        plan = self._guard_supervisor_hint_plan(task.id, plan, tools, hint, last_outside)
+        self._publish_annotated_plan(task.id, plan)
+        return plan
+
+    def _guard_supervisor_hint_plan(
+        self,
+        task_id: str,
+        plan: Plan,
+        tools: list[str],
+        agent_hint: str | None,
+        outside_tools: list[str],
+    ) -> Plan:
+        hint = normalize_supervisor_agent_hint(agent_hint)
+        if not hint:
             return plan
-        except TypeError as exc:
-            if "tool_specs" in str(exc):
-                # Planner predates tool_specs: drop only that kwarg first so
-                # session/goal/perception context still reaches it.
-                try:
-                    plan = await orchestrator.planner.create_plan(
-                        task.id,
-                        goal,
-                        mode,
-                        tools,
-                        memory_context=memory_context,
-                        perception_context=perception_context,
-                        goal_context=goal_context,
-                        session_context=session_context,
-                    )
-                    self._annotate_plan_tool_contracts(plan, tools)
-                    self._publish_annotated_plan(task.id, plan)
-                    return plan
-                except TypeError as retry_exc:
-                    exc = retry_exc
-            if (
-                "perception_context" not in str(exc)
-                and "goal_context" not in str(exc)
-                and "session_context" not in str(exc)
-            ):
-                raise
-            try:
-                plan = await orchestrator.planner.create_plan(
-                    task.id,
-                    goal,
-                    mode,
-                    tools,
-                    memory_context=memory_context,
-                    perception_context=perception_context,
-                    goal_context=goal_context,
-                )
-                self._annotate_plan_tool_contracts(plan, tools)
-                self._publish_annotated_plan(task.id, plan)
+        had_steps = bool(plan.steps)
+        stripped = outside_tools or plan_tools_outside_visible(plan, tools)
+        if stripped:
+            allowed = set(tools)
+            plan.steps = [step for step in plan.steps if step.tool_name in allowed]
+            record(
+                "planner.supervisor_hint_stripped",
+                "PlanningHandler",
+                {"outside_tools": stripped, "agent_hint": hint},
+                task_id=task_id,
+            )
+        if not plan.steps:
+            # A plan that was empty from the start is a legitimate
+            # clarification-style reply and must not hard-fail the hint
+            # (consistent with plan_matches_supervisor_hint). Only a plan
+            # emptied by stripping out-of-surface tools is a violation.
+            if not had_steps:
                 return plan
-            except TypeError as inner_exc:
-                if "perception_context" not in str(inner_exc) and "goal_context" not in str(inner_exc):
-                    raise
-                plan = await orchestrator.planner.create_plan(
-                    task.id,
-                    goal,
-                    mode,
-                    tools,
-                    memory_context=memory_context,
-                )
-                self._annotate_plan_tool_contracts(plan, tools)
-                self._publish_annotated_plan(task.id, plan)
-                return plan
+            raise SupervisorHintPlanError(
+                f"Supervisor hint {hint} could not be satisfied by the generated plan."
+            )
+        if not plan_matches_supervisor_hint(plan, hint, tools):
+            raise SupervisorHintPlanError(
+                f"Supervisor hint {hint} could not be satisfied by the generated plan."
+            )
+        return plan
 
     def _annotate_plan_tool_contracts(self, plan: Plan, visible_tool_ids: list[str]) -> None:
         for step in plan.steps:

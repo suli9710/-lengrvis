@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import Field
 
+from app.config import get_env
 from app.core.schemas import new_id, now_iso
 from app.indexer.file_watcher import DirectoryChangeWatcher, FileChangeCallback
 from app.core.schemas import MessageType
@@ -727,13 +728,7 @@ def get_environment_stream(
 
 
 def load_rules_from_env(env_var: str = "LENGRVIS_ENVIRONMENT_RULES") -> list[EnvironmentRule]:
-    raw = (
-        os.getenv(env_var)
-        or os.getenv("LENGRVIS_ENVIRONMENT_RULES")
-        or os.getenv("LENGRVIS_ENVIRONMENT_RULES")
-        or os.getenv("LENGRVIS_ENVIRONMENT_RULES")
-        or ""
-    )
+    raw = get_env(env_var) or get_env("LENGRVIS_ENVIRONMENT_RULES") or ""
     if not raw.strip():
         return []
     text = raw

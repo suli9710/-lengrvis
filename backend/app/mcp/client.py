@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 
+from app.core.outbound_url import pin_outbound_http_url
+
 
 DEFAULT_TIMEOUT = 30
 JSONRPC_VERSION = "2.0"
@@ -90,9 +92,19 @@ class MCPClient:
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self._auth_required():
             return {"error": {"message": "authentication required", "type": "auth_required"}}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        try:
+            # Connect-time IP pin (DNS-rebinding TOCTOU): we connect to the IP
+            # that passed validation, not whatever the name resolves to later.
+            pinned = pin_outbound_http_url(self.config.url, allow_private=False)
+        except ValueError as exc:
+            return {"error": {"message": str(exc), "type": "invalid_url"}}
+        headers = {"Content-Type": "application/json", **pinned.headers}
+        token = (self.config.auth or {}).get("token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
             try:
-                response = await client.post(self.config.url, json=payload, headers={"Content-Type": "application/json"})
+                response = await client.post(pinned.url, json=payload, headers=headers, extensions=dict(pinned.extensions))
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPError as exc:

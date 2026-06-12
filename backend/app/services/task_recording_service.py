@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.config import AppSettings
+from app.config import AppSettings, env_raw, get_env
 from app.core import db
 from app.core.schemas import now_iso
 from app.llm.registry import get_effective_settings
@@ -240,16 +240,17 @@ def _timestamp() -> str:
 
 
 def _env_flag(name: str) -> bool | None:
-    raw = os.environ.get(name)
+    # env_raw keeps the tri-state contract: unset -> None, set -> parsed bool.
+    raw = env_raw(name)
     if raw is None:
         return None
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_test_environment() -> bool:
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    if get_env("PYTEST_CURRENT_TEST"):
         return True
     return any(
-        str(os.environ.get(name) or "").strip().lower() in _TEST_ENV_TRUE_VALUES
+        str(get_env(name) or "").strip().lower() in _TEST_ENV_TRUE_VALUES
         for name in ("LENGRVIS_TEST", "APP_ENV", "LENGRVIS_ENV")
     )

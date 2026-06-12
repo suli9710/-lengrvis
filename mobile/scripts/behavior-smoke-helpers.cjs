@@ -14,8 +14,14 @@ function mobilePath(...segments) {
   return path.resolve(MOBILE_ROOT, ...segments);
 }
 
-function loadTsModule(modulePath, sandboxOverrides = {}) {
-  const source = fs.readFileSync(modulePath, "utf8");
+function loadTsModule(modulePath, sandboxOverrides = {}, moduleCache = new Map()) {
+  const resolvedPath = path.resolve(modulePath);
+  const cached = moduleCache.get(resolvedPath);
+  if (cached) {
+    return cached.exports;
+  }
+
+  const source = fs.readFileSync(resolvedPath, "utf8");
   const compiled = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -24,10 +30,26 @@ function loadTsModule(modulePath, sandboxOverrides = {}) {
     },
   }).outputText;
 
+  const moduleRef = { exports: {} };
+  moduleCache.set(resolvedPath, moduleRef);
+
+  // Relative TS imports are compiled to require() calls; resolve them against
+  // the importing file and load them through the same transpiling loader so
+  // multi-module sources (e.g. src/api/client/) work in smokes. The module
+  // cache is shared per top-level load, keeping module state isolated between
+  // separate loadMobileClient() calls.
+  const sandboxRequire = (specifier) => {
+    if (specifier.startsWith("./") || specifier.startsWith("../")) {
+      const target = resolveTsImportPath(path.resolve(path.dirname(resolvedPath), specifier));
+      return loadTsModule(target, sandboxOverrides, moduleCache);
+    }
+    return require(specifier);
+  };
+
   const sandbox = {
-    exports: {},
-    module: { exports: {} },
-    require,
+    exports: moduleRef.exports,
+    module: moduleRef,
+    require: sandboxRequire,
     URL,
     fetch: globalThis.fetch,
     console,
@@ -36,8 +58,18 @@ function loadTsModule(modulePath, sandboxOverrides = {}) {
     ...sandboxOverrides,
   };
   sandbox.exports = sandbox.module.exports;
-  vm.runInNewContext(compiled, sandbox, { filename: modulePath });
-  return sandbox.module.exports;
+  vm.runInNewContext(compiled, sandbox, { filename: resolvedPath });
+  return moduleRef.exports;
+}
+
+function resolveTsImportPath(basePath) {
+  const candidates = [basePath, `${basePath}.ts`, `${basePath}.tsx`, path.join(basePath, "index.ts")];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return candidate;
+    }
+  }
+  throw new Error(`Cannot resolve TypeScript import: ${basePath}`);
 }
 
 function loadMobileClient(sandboxOverrides = {}) {

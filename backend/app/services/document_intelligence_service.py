@@ -5,12 +5,14 @@ import difflib
 import hashlib
 import json
 import re
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_fallback, ocr_image_result
+from app.orchestration.resource_state import resource_states
 from app.services import document_service
 
 
@@ -1010,6 +1012,265 @@ def _meaningful_diff_tokens(text: str) -> set[str]:
         "with",
     }
     return {token for token in re.findall(r"[\w\u4e00-\u9fff]+", text, flags=re.UNICODE) if token not in stop_words}
+
+
+def _backup_document(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    backup = path.with_suffix(path.suffix + ".bak")
+    shutil.copy2(path, backup)
+    return str(backup)
+
+
+def _document_resource_state(path: Path) -> list[dict[str, Any]]:
+    return resource_states([path])
+
+
+def _replace_in_paragraph_preserve_runs(paragraph: Any, needle: str, replacement: str, *, dry_run: bool) -> int:
+    if needle not in paragraph.text:
+        return 0
+    count = paragraph.text.count(needle)
+    if dry_run:
+        return count
+    runs = list(paragraph.runs)
+    for run in runs:
+        if needle in run.text:
+            run.text = run.text.replace(needle, replacement)
+    if needle not in paragraph.text:
+        return count
+    new_text = paragraph.text.replace(needle, replacement)
+    if not runs:
+        paragraph.add_run(new_text)
+        return count
+    runs[0].text = new_text
+    for run in runs[1:]:
+        run.text = ""
+    return count
+
+
+def _docx_replace_in_paragraph(paragraph: Any, needle: str, replacement: str, *, dry_run: bool) -> int:
+    return _replace_in_paragraph_preserve_runs(paragraph, needle, replacement, dry_run=dry_run)
+
+
+def _docx_replace_text(doc: Any, needle: str, replacement: str, *, dry_run: bool) -> int:
+    match_count = 0
+    for paragraph in doc.paragraphs:
+        match_count += _docx_replace_in_paragraph(paragraph, needle, replacement, dry_run=dry_run)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    match_count += _docx_replace_in_paragraph(paragraph, needle, replacement, dry_run=dry_run)
+    return match_count
+
+
+def _pptx_replace_text(prs: Any, needle: str, replacement: str, *, dry_run: bool) -> int:
+    match_count = 0
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            text_frame = shape.text_frame
+            for paragraph in text_frame.paragraphs:
+                match_count += _replace_in_paragraph_preserve_runs(paragraph, needle, replacement, dry_run=dry_run)
+    return match_count
+
+
+def edit_pptx(
+    path: str | Path,
+    *,
+    find: str,
+    replace: str,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    from pptx import Presentation
+
+    path_obj = Path(path)
+    needle = str(find or "")
+    if not needle:
+        raise ValueError("document.edit_pptx requires a non-empty 'find' string.")
+    replacement = str(replace or "")
+    prs = Presentation(str(path_obj))
+    match_count = _pptx_replace_text(prs, needle, replacement, dry_run=True)
+    diff_preview = [{"action": "edit_pptx", "path": str(path_obj), "find": needle, "replace": replacement, "match_count": match_count}]
+    if dry_run:
+        return {
+            "dry_run": True,
+            "path": str(path_obj),
+            "match_count": match_count,
+            "diff_preview": diff_preview,
+            "_resource_state": _document_resource_state(path_obj),
+        }
+    if match_count <= 0:
+        return {"ok": False, "error_code": "NO_MATCH", "path": str(path_obj), "match_count": 0}
+    backup = _backup_document(path_obj)
+    prs = Presentation(str(path_obj))
+    _pptx_replace_text(prs, needle, replacement, dry_run=False)
+    prs.save(str(path_obj))
+    return {
+        "ok": True,
+        "path": str(path_obj),
+        "match_count": match_count,
+        "changed_paths": [str(path_obj)],
+        "diff_preview": diff_preview,
+        "rollback_info": {"backup": backup},
+    }
+
+
+def apply_redaction(
+    path: str | Path,
+    *,
+    settings: Any | None = None,
+    custom_patterns: dict[str, str] | None = None,
+    max_chars: int = DEFAULT_PREVIEW_CHARS,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    path_obj = Path(path)
+    preview = redact_preview(
+        path_obj,
+        settings=settings,
+        custom_patterns=custom_patterns,
+        max_chars=max_chars,
+    )
+    diff_preview = [
+        {
+            "action": "apply_redaction",
+            "path": str(path_obj),
+            "findings": preview.get("findings") or [],
+        }
+    ]
+    if dry_run:
+        return {
+            "dry_run": True,
+            "path": str(path_obj),
+            "preview": preview,
+            "diff_preview": diff_preview,
+            "findings": preview.get("findings") or [],
+            "_resource_state": _document_resource_state(path_obj),
+        }
+    backup = _backup_document(path_obj)
+    ext = path_obj.suffix.lower()
+    if ext in {".txt", ".md", ".csv", ".json"}:
+        path_obj.write_text(str(preview.get("redacted_text") or ""), encoding="utf-8")
+    elif ext == ".docx":
+        _apply_redaction_docx(path_obj, custom_patterns)
+    else:
+        raise ValueError(f"document.apply_redaction does not support {ext} files yet.")
+    return {
+        "ok": True,
+        "path": str(path_obj),
+        "findings": preview.get("findings") or [],
+        "changed_paths": [str(path_obj)],
+        "diff_preview": diff_preview,
+        "rollback_info": {"backup": backup},
+    }
+
+
+def edit_docx(
+    path: str | Path,
+    *,
+    find: str,
+    replace: str,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    from docx import Document
+
+    path_obj = Path(path)
+    needle = str(find or "")
+    if not needle:
+        raise ValueError("document.edit_docx requires a non-empty 'find' string.")
+    replacement = str(replace or "")
+    doc = Document(str(path_obj))
+    match_count = _docx_replace_text(doc, needle, replacement, dry_run=True)
+    diff_preview = [{"action": "edit_docx", "path": str(path_obj), "find": needle, "replace": replacement, "match_count": match_count}]
+    if dry_run:
+        return {
+            "dry_run": True,
+            "path": str(path_obj),
+            "match_count": match_count,
+            "diff_preview": diff_preview,
+            "_resource_state": _document_resource_state(path_obj),
+        }
+    if match_count <= 0:
+        return {"ok": False, "error_code": "NO_MATCH", "path": str(path_obj), "match_count": 0}
+    backup = _backup_document(path_obj)
+    doc = Document(str(path_obj))
+    _docx_replace_text(doc, needle, replacement, dry_run=False)
+    doc.save(str(path_obj))
+    return {
+        "ok": True,
+        "path": str(path_obj),
+        "match_count": match_count,
+        "changed_paths": [str(path_obj)],
+        "diff_preview": diff_preview,
+        "rollback_info": {"backup": backup},
+    }
+
+
+def edit_xlsx(
+    path: str | Path,
+    *,
+    sheet: str,
+    cell: str,
+    value: Any,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    from openpyxl import load_workbook
+
+    path_obj = Path(path)
+    sheet_name = str(sheet or "").strip()
+    cell_ref = str(cell or "").strip().upper()
+    if not sheet_name or not cell_ref:
+        raise ValueError("document.edit_xlsx requires non-empty 'sheet' and 'cell'.")
+    workbook = load_workbook(path_obj)
+    if sheet_name not in workbook.sheetnames:
+        raise ValueError(f"Sheet not found: {sheet_name}")
+    worksheet = workbook[sheet_name]
+    previous = worksheet[cell_ref].value
+    diff_preview = [
+        {
+            "action": "edit_xlsx",
+            "path": str(path_obj),
+            "sheet": sheet_name,
+            "cell": cell_ref,
+            "from": previous,
+            "to": value,
+        }
+    ]
+    if dry_run:
+        return {
+            "dry_run": True,
+            "path": str(path_obj),
+            "sheet": sheet_name,
+            "cell": cell_ref,
+            "diff_preview": diff_preview,
+            "_resource_state": _document_resource_state(path_obj),
+        }
+    backup = _backup_document(path_obj)
+    worksheet[cell_ref].value = value
+    workbook.save(path_obj)
+    return {
+        "ok": True,
+        "path": str(path_obj),
+        "sheet": sheet_name,
+        "cell": cell_ref,
+        "changed_paths": [str(path_obj)],
+        "diff_preview": diff_preview,
+        "rollback_info": {"backup": backup},
+    }
+
+
+def _apply_redaction_docx(path: Path, custom_patterns: dict[str, str] | None) -> None:
+    from docx import Document
+
+    doc = Document(str(path))
+    patterns = _redaction_patterns(custom_patterns)
+    for paragraph in doc.paragraphs:
+        text = paragraph.text
+        for label, pattern in patterns.items():
+            text = re.compile(pattern).sub(f"[REDACTED:{label}]", text)
+        paragraph.text = text
+    doc.save(str(path))
 
 
 def _redaction_patterns(custom_patterns: dict[str, str] | None) -> dict[str, str]:

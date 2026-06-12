@@ -15,6 +15,7 @@ import threading
 import pytest
 
 from app.config import AppSettings
+from app.core.outbound_url import PinnedOutboundRequest
 from app.mcp import MCPClient, MCPServerConfig, MCPRegistry
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -69,7 +70,11 @@ def _make_handler():
 
 
 @pytest.fixture
-def mcp_server():
+def mcp_server(monkeypatch):
+    monkeypatch.setattr(
+        "app.mcp.client.pin_outbound_http_url",
+        lambda url, *, allow_private=False: PinnedOutboundRequest(url=url),
+    )
     server = socketserver.TCPServer(("127.0.0.1", 0), _make_handler())
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -141,7 +146,11 @@ def test_mcp_registry_skips_disabled_servers():
     assert registry.clients == {}
 
 
-def test_mcp_client_transport_error_returns_inline_error():
+def test_mcp_client_transport_error_returns_inline_error(monkeypatch):
+    monkeypatch.setattr(
+        "app.mcp.client.pin_outbound_http_url",
+        lambda url, *, allow_private=False: PinnedOutboundRequest(url=url),
+    )
     client = MCPClient(MCPServerConfig(name="demo", url="http://127.0.0.1:1/"))
     result = asyncio.run(client.call_tool("echo", {"text": "hi"}))
     assert result["ok"] is False

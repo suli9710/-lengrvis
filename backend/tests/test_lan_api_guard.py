@@ -12,6 +12,7 @@ from app.core.schemas import Run, RunEngine, RunPhase
 from app.main import app
 from app.guardian import create_guardian_app
 from app.security.desktop_api import (
+    DESKTOP_API_TOKEN_FILE,
     DESKTOP_API_WS_PROTOCOL_PREFIX,
     desktop_api_token,
     signed_desktop_resource_query,
@@ -25,6 +26,7 @@ from app.security.mobile_jwt import (
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import mobile_pairing_service
 from app.services.settings_service import update_settings
+from app.security.local_secret import LOCAL_SECRET_DPAPI_PREFIX, dpapi_available
 from tls_test_material import write_lan_tls_material
 
 
@@ -468,6 +470,22 @@ def test_remote_input_grant_creation_requires_desktop_token(monkeypatch, tmp_pat
     assert payload["device_id"] == "mobile_input_guard"
     assert "token" not in payload
     assert "token_type" not in payload
+
+
+def test_desktop_api_token_is_persisted_with_dpapi_when_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
+
+    token = desktop_api_token()
+    stored = (tmp_path / DESKTOP_API_TOKEN_FILE).read_text(encoding="utf-8").strip()
+
+    assert token
+    assert len(token) >= 32
+    if dpapi_available():
+        assert stored.startswith(LOCAL_SECRET_DPAPI_PREFIX)
+        assert token not in stored
+    else:
+        assert stored == token
 
 
 def test_loopback_state_changes_require_persisted_desktop_token_by_default(monkeypatch, tmp_path):

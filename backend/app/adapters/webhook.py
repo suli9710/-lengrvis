@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from app.adapters.base import AdapterBase, AdapterConfig, AdapterResult
+from app.core.outbound_url import pin_outbound_http_url
 
 
 class WebhookClient(Protocol):
@@ -34,6 +35,10 @@ class WebhookAdapter(AdapterBase):
         url = str(payload.get("url") or self.config.base_url).strip()
         if not url:
             return {"ok": False, "adapter": self.config.service_name, "error": "Webhook 'url' is required."}
+        try:
+            pinned = pin_outbound_http_url(url, allow_private=False)
+        except ValueError as exc:
+            return {"ok": False, "adapter": self.config.service_name, "error": str(exc)}
         body = payload.get("payload")
         if not isinstance(body, dict):
             return {"ok": False, "adapter": self.config.service_name, "error": "Webhook 'payload' must be an object."}
@@ -45,19 +50,19 @@ class WebhookAdapter(AdapterBase):
                 "adapter": self.config.service_name,
                 "dry_run": True,
                 "request": {
-                    "url": url,
+                    "url": pinned.url,
                     "payload": _redact_sensitive_values(body),
-                    "headers": _redact_headers(headers),
+                    "headers": _redact_headers({**pinned.headers, **headers}),
                     "timeout_seconds": timeout,
                 },
-                "diff_preview": [{"action": "post_webhook", "url": url}],
+                "diff_preview": [{"action": "post_webhook", "url": pinned.url}],
             }
         connected_error = self._ensure_connected()
         if connected_error is not None:
             return connected_error
         if self.client is None:
             return {"ok": False, "adapter": self.config.service_name, "error": "Webhook client is not configured."}
-        result = self.client.post(url, body, headers, timeout)
+        result = self.client.post(pinned.url, body, {**pinned.headers, **headers}, timeout)
         return {"ok": bool(result.get("ok", True)), "adapter": self.config.service_name, **result}
 
     def health_check(self) -> AdapterResult:

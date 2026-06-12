@@ -92,6 +92,33 @@ PATH_SUFFIXES = (
     " 文件",
 )
 
+from app.agents.worker_agents import KNOWN_SUPERVISOR_WORKER_AGENTS, normalize_supervisor_agent_hint
+
+
+def supervisor_hint_allows_deterministic(agent_hint: str | None, owning_agent: str) -> bool:
+    hint = normalize_supervisor_agent_hint(agent_hint)
+    if not hint:
+        return True
+    return hint == owning_agent
+
+
+def format_supervisor_hint_block(agent_hint: str | None) -> str:
+    hint = normalize_supervisor_agent_hint(agent_hint)
+    if not hint:
+        return ""
+    return (
+        f"Supervisor routing hint: {hint}\n"
+        f"Prefer tools owned by {hint} when they satisfy the user goal. "
+        f"If another worker is clearly required, say so in assumptions.\n\n"
+    )
+
+
+def format_planner_revision_feedback_block(feedback: str | None) -> str:
+    text = str(feedback or "").strip()
+    if not text:
+        return ""
+    return f"Planner revision feedback:\n{text}\n\n"
+
 # Context block truncation budgets (characters). Generous on purpose: the
 # planner runs against large-window models (C1 calibrated 128k+) and starved
 # memory/session snippets were costing plan quality far more than the tokens
@@ -119,6 +146,8 @@ class PlannerAgent(BaseAgent):
         goal_context: dict[str, Any] | str | None = None,
         session_context: dict[str, Any] | str | None = None,
         tool_specs: list[str] | None = None,
+        agent_hint: str | None = None,
+        planner_revision_feedback: str | None = None,
     ) -> Plan:
         for build_deterministic in (
             self._deterministic_cleanup_plan,
@@ -128,11 +157,13 @@ class PlannerAgent(BaseAgent):
             self._deterministic_open_app_plan,
             self._deterministic_search_plan,
         ):
-            deterministic_plan = build_deterministic(task_id, goal, tools)
+            deterministic_plan = build_deterministic(task_id, goal, tools, agent_hint=agent_hint)
             if deterministic_plan:
                 self._publish_plan(task_id, deterministic_plan)
                 return deterministic_plan
 
+        supervisor_hint_block = format_supervisor_hint_block(agent_hint)
+        revision_feedback_block = format_planner_revision_feedback_block(planner_revision_feedback)
         memory_block = ""
         if memory_context:
             memory_lines = []
@@ -165,6 +196,8 @@ class PlannerAgent(BaseAgent):
                     "planner_user.md",
                     {
                         "memory_block": context_blocks,
+                        "supervisor_hint_block": supervisor_hint_block,
+                        "revision_feedback_block": revision_feedback_block,
                         "mode": mode,
                         "tools": "\n".join(f"- {entry}" for entry in (tool_specs or tools)),
                         "goal": goal,
@@ -357,7 +390,9 @@ class PlannerAgent(BaseAgent):
             structured_payload=plan.model_dump(),
         )
 
-    def _deterministic_file_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+    def _deterministic_file_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+        if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
+            return None
         if "file.trash" not in tools or not self._has_delete_intent(goal):
             return None
 
@@ -387,7 +422,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=True,
         )
 
-    def _deterministic_cleanup_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+    def _deterministic_cleanup_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+        if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
+            return None
         if "file.cleanup_plan" not in tools or not self._has_cleanup_intent(goal):
             return None
         if self._extract_windows_path(goal):
@@ -439,7 +476,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=False,
         )
 
-    def _deterministic_uninstall_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+    def _deterministic_uninstall_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+        if not supervisor_hint_allows_deterministic(agent_hint, "AppAgent"):
+            return None
         if "app.uninstall_app" not in tools or not self._has_uninstall_intent(goal):
             return None
 
@@ -469,7 +508,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=True,
         )
 
-    def _deterministic_system_check_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+    def _deterministic_system_check_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+        if not supervisor_hint_allows_deterministic(agent_hint, "ComputerAgent"):
+            return None
         if "system.diagnostics" not in tools or not self._has_system_check_intent(goal):
             return None
 
@@ -495,7 +536,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=False,
         )
 
-    def _deterministic_open_app_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+    def _deterministic_open_app_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+        if not supervisor_hint_allows_deterministic(agent_hint, "AppAgent"):
+            return None
         if "app.launch_installed" not in tools or not self._has_open_app_intent(goal):
             return None
         if self._has_delete_intent(goal) or self._has_uninstall_intent(goal) or self._has_system_check_intent(goal):
@@ -529,7 +572,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=False,
         )
 
-    def _deterministic_search_plan(self, task_id: str, goal: str, tools: list[str]) -> Plan | None:
+    def _deterministic_search_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+        if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
+            return None
         if "file.search_by_name" not in tools or not self._has_file_search_intent(goal):
             return None
         normalized = goal.casefold()

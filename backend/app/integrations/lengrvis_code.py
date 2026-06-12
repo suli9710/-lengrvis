@@ -37,6 +37,7 @@ DEFAULT_ALLOWED_TOOLS: tuple[str, ...] = (
 )
 MAX_ADAPTER_EVENTS = 500
 FORBIDDEN_ALLOWED_TOOLS: tuple[str, ...] = ("Bash", "Bash(*)", "Edit", "Write", "Agent")
+WRITE_CAPABLE_ALLOWED_TOOLS: tuple[str, ...] = ("Write", "Edit")
 BLOCKED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 FORBIDDEN_CLI_FLAGS: tuple[str, ...] = ("--dangerously-skip-permissions", "--allow-dangerously-skip-permissions")
 OPENAI_MODEL_ENV_KEYS: tuple[str, ...] = (
@@ -435,19 +436,34 @@ def build_lengrvis_code_env(settings: AppSettings, *, base_env: Mapping[str, str
     return env
 
 
-def default_allowed_tools() -> tuple[str, ...]:
-    return DEFAULT_ALLOWED_TOOLS
+def default_allowed_tools(*, writes_enabled: bool = False) -> tuple[str, ...]:
+    return allowed_tools_for_developer(writes_enabled=writes_enabled)
 
 
-def validate_allowed_tools(allowed_tools: Sequence[str]) -> tuple[str, ...]:
+def allowed_tools_for_developer(*, writes_enabled: bool = False) -> tuple[str, ...]:
+    tools = DEFAULT_ALLOWED_TOOLS
+    if writes_enabled:
+        tools = DEFAULT_ALLOWED_TOOLS + WRITE_CAPABLE_ALLOWED_TOOLS
+    return validate_allowed_tools(tools, allow_write_tools=writes_enabled)
+
+
+def validate_allowed_tools(allowed_tools: Sequence[str], *, allow_write_tools: bool = False) -> tuple[str, ...]:
     normalized = tuple(str(tool).strip() for tool in allowed_tools if str(tool).strip())
     for tool in normalized:
-        tool_name = tool.split("(", 1)[0]
-        if tool in FORBIDDEN_ALLOWED_TOOLS or tool_name in {"Edit", "Write", "Agent"}:
+        if _is_forbidden_allowed_tool(tool, allow_write_tools=allow_write_tools):
             raise ValueError(f"Unsafe {LENGRVIS_CODE_DISPLAY_NAME} allowedTools entry is not permitted: {tool}")
-        if tool.startswith("Bash(") and not _is_allowed_bash_tool(tool):
-            raise ValueError(f"Unsafe {LENGRVIS_CODE_DISPLAY_NAME} Bash allowedTools entry is not permitted: {tool}")
     return normalized
+
+
+def _is_forbidden_allowed_tool(tool: str, *, allow_write_tools: bool) -> bool:
+    tool_name = tool.split("(", 1)[0]
+    if tool_name == "Agent" or tool in {"Bash", "Bash(*)"}:
+        return True
+    if tool_name in WRITE_CAPABLE_ALLOWED_TOOLS:
+        return not allow_write_tools
+    if tool.startswith("Bash("):
+        return not _is_allowed_bash_tool(tool)
+    return False
 
 
 def build_lengrvis_code_command(
@@ -466,7 +482,10 @@ def build_lengrvis_code_command(
         raise RuntimeError(runtime.reason)
 
     model = str((settings.model if settings is not None else "") or "").strip()
-    allowed_tools = validate_allowed_tools(active.allowed_tools)
+    allow_write_tools = any(
+        str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in active.allowed_tools
+    )
+    allowed_tools = validate_allowed_tools(active.allowed_tools, allow_write_tools=allow_write_tools)
 
     command = [
         *runtime.command,
@@ -708,7 +727,10 @@ def _command_safety_error(command: Sequence[str], *, build_env: Mapping[str, Any
     try:
         _assert_no_forbidden_flags(command)
         for raw_tools in _allowed_tools_args(command):
-            validate_allowed_tools(raw_tools)
+            allow_write_tools = any(
+                str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in raw_tools
+            )
+            validate_allowed_tools(raw_tools, allow_write_tools=allow_write_tools)
     except ValueError as exc:
         return str(exc)
     if build_env is not None:
@@ -883,6 +905,8 @@ def _summary_payload(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
         "runtime_health": summary.runtime_health,
         "stderr_diagnostics": _stderr_diagnostics(summary),
     }
+    if summary.permission_denials:
+        payload["awaiting_write_approval"] = True
     if summary.launch_error:
         payload["launch_error"] = summary.launch_error
     if summary.stderr:
@@ -1282,7 +1306,7 @@ def _terminal_status(summary: LengrvisCodeStreamSummary) -> str:
 
 
 def _result_output_payload(event: Mapping[str, Any], summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
-    return {
+    payload = {
         "result": event.get("result"),
         "subtype": event.get("subtype"),
         "is_error": bool(event.get("is_error")),
@@ -1293,6 +1317,9 @@ def _result_output_payload(event: Mapping[str, Any], summary: LengrvisCodeStream
         "returncode": summary.returncode,
         "stderr_diagnostics": _stderr_diagnostics(summary),
     }
+    if summary.permission_denials:
+        payload["awaiting_write_approval"] = True
+    return payload
 
 
 def _assistant_tool_names(event: Mapping[str, Any]) -> list[str]:

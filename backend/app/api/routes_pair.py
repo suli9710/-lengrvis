@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 class PairRedeemRequest(BaseModel):
-    code: str = Field(min_length=4, max_length=16)
+    code: str = Field(min_length=8, max_length=8, pattern=r"^[a-f0-9]{8}$")
     device_name: str = Field(default="Android device", max_length=80)
 
 

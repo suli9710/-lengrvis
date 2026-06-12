@@ -98,6 +98,56 @@ def test_tool_runtime_validation_failure_blocks_execution():
     assert task.status == TaskStatus.FAILED
 
 
+def test_tool_runtime_enforces_user_deny_rule_even_when_safety_review_allows():
+    """P0-18 convergence guard: user PermissionStore deny rules must hold at
+    the execution boundary itself, not only inside the safety review rail."""
+    calls: list[dict[str, Any]] = []
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        calls.append(dict(args))
+        return {"ok": True}
+
+    PermissionStore().save_policy(
+        PermissionPolicy(
+            rules=[
+                PermissionRule(
+                    name="deny runtime tool",
+                    effect="deny",
+                    tools=["test.user_denied"],
+                    reason="User blocked this tool.",
+                )
+            ]
+        )
+    )
+    orchestrator = OrchestratorAgent()
+    orchestrator.subagents["FileAgent"] = DoneAgent()
+    # Simulate a future drift where the safety-review rail forgets the user
+    # policy: it must not matter, because the runtime checks the store itself.
+    orchestrator.safety.review_tool_call = lambda *args, **kwargs: SafetyReview(  # type: ignore[method-assign]
+        task_id="", target_type="tool_call", verdict=SafetyVerdict.ALLOW, risk_level=RiskLevel.R0_READ_ONLY
+    )
+    tool = ToolDefinition(
+        name="test.user_denied",
+        description="user denied tool",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+    )
+    orchestrator.registry.register(tool)
+    task, _plan, step = _task_plan_step("test.user_denied")
+    runtime = orchestrator.step_execution_handler._runtime_context(task)
+
+    outcome = asyncio.run(ToolRuntime(orchestrator).review_and_maybe_prepare_approval(task, step, tool, runtime))
+
+    assert outcome.kind == "step_denied"
+    assert calls == []
+    assert step.status == StepStatus.DENIED
+
+
 def test_tool_runtime_denies_model_supplied_approval_control_fields():
     calls: list[dict[str, Any]] = []
 
@@ -437,6 +487,51 @@ def test_file_edit_text_blocks_stale_write_after_read(tmp_path: Path):
     assert output["resource_state_error"] is True
 
 
+@pytest.mark.asyncio
+async def test_file_edit_text_accepts_prior_step_read_state_across_runtimes(tmp_path: Path) -> None:
+    target = tmp_path / "workspace" / "edit.txt"
+    target.write_text("alpha beta", encoding="utf-8")
+    orchestrator = OrchestratorAgent()
+    task = Task(user_goal="edit after read", mode="efficiency", status=TaskStatus.EXECUTING_STEP)
+    read_step = PlanStep(
+        task_id=task.id,
+        order=1,
+        agent_name="FileAgent",
+        tool_name="file.read_text",
+        description="read",
+        args={"path": str(target)},
+        expected_observation="read ok",
+        risk_level=RiskLevel.R0_READ_ONLY,
+    )
+    edit_step = PlanStep(
+        task_id=task.id,
+        order=2,
+        agent_name="FileAgent",
+        tool_name="file.edit_text",
+        description="edit",
+        args={"path": str(target), "old_string": "alpha", "new_string": "omega", "dry_run": False},
+        expected_observation="edit ok",
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+    )
+    read_tool = orchestrator.registry.get("file.read_text")
+    edit_tool = orchestrator.registry.get("file.edit_text")
+    settings = orchestrator.step_execution_handler._runtime_context(task).settings
+    workspace = str(tmp_path / "workspace")
+
+    read_runtime = TaskRuntimeContext.from_task(task, settings, orchestrator.bus)
+    read_runtime.allowed_directories = [workspace]
+    read_context = read_runtime.tool_context()
+    read_context.update({"task_id": task.id, "step_id": read_step.id})
+    await ToolRuntime(orchestrator).execute_tool_with_locks(read_tool, read_step, read_step.args, read_context)
+
+    write_runtime = TaskRuntimeContext.from_task(task, settings, orchestrator.bus)
+    write_runtime.allowed_directories = [workspace]
+    execution = await ToolRuntime(orchestrator).execute_allowed(task, edit_step, edit_tool, write_runtime)
+    assert execution.result is not None
+    assert execution.result.ok is True
+    assert target.read_text(encoding="utf-8") == "omega beta"
+
+
 def test_file_edit_text_dry_run_requires_unique_match(tmp_path: Path):
     target = tmp_path / "workspace" / "edit.txt"
     target.write_text("alpha alpha", encoding="utf-8")
@@ -582,6 +677,78 @@ def test_write_locks_are_shared_across_runtime_instances(tmp_path: Path):
     starts = {label: timestamp for label, phase, timestamp in events if phase == "start"}
     ends = {label: timestamp for label, phase, timestamp in events if phase == "end"}
     assert starts["B"] >= ends["A"] or starts["A"] >= ends["B"]
+
+
+def test_dry_run_preview_serializes_with_real_write_on_same_path(tmp_path: Path):
+    events: list[tuple[str, str, float]] = []
+    target = tmp_path / "workspace" / "same.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        import time
+
+        label = str(args["label"])
+        events.append((label, "start", time.perf_counter()))
+        time.sleep(0.05)
+        events.append((label, "end", time.perf_counter()))
+        return {"ok": True, "dry_run": bool(args.get("dry_run")), "changed_paths": [str(args["path"])]}
+
+    tool = ToolDefinition(
+        name="test.dry_run_write_lock",
+        description="dry-run write lock",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=execute,
+        trust_tier="builtin",
+        effects=["write"],
+    )
+    orchestrator = OrchestratorAgent()
+    preview_task, _preview_plan, preview_step = _task_plan_step(
+        "test.dry_run_write_lock",
+        {"label": "preview", "path": str(target), "dry_run": True},
+    )
+    write_task, _write_plan, write_step = _task_plan_step(
+        "test.dry_run_write_lock",
+        {"label": "write", "path": str(target), "dry_run": False},
+    )
+    preview_runtime = TaskRuntimeContext.from_task(
+        preview_task,
+        orchestrator.step_execution_handler._runtime_context(preview_task).settings,
+        orchestrator.bus,
+    )
+    write_runtime = TaskRuntimeContext.from_task(
+        write_task,
+        orchestrator.step_execution_handler._runtime_context(write_task).settings,
+        orchestrator.bus,
+    )
+
+    async def run_both():
+        await asyncio.gather(
+            ToolRuntime(orchestrator).execute_tool_with_locks(
+                tool,
+                preview_step,
+                preview_step.args,
+                preview_runtime.tool_context(),
+                threaded=True,
+            ),
+            ToolRuntime(orchestrator).execute_tool_with_locks(
+                tool,
+                write_step,
+                write_step.args,
+                write_runtime.tool_context(),
+                threaded=True,
+            ),
+        )
+
+    asyncio.run(run_both())
+
+    starts = {label: timestamp for label, phase, timestamp in events if phase == "start"}
+    ends = {label: timestamp for label, phase, timestamp in events if phase == "end"}
+    assert starts["write"] >= ends["preview"] or starts["preview"] >= ends["write"]
 
 
 def test_runtime_safety_review_uses_context_for_dynamic_risk():

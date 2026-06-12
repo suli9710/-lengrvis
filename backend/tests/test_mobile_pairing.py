@@ -56,7 +56,7 @@ def test_pair_request_generates_code(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     payload = response.json()
-    assert len(payload["code"]) == 6
+    assert len(payload["code"]) == mobile_pairing_service.PAIR_CODE_HEX_LENGTH * 2
     int(payload["code"], 16)
     assert payload["expires_in"] <= 300
     assert payload["server"]["scheme"] == "https"
@@ -924,7 +924,7 @@ def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
     code_response = client.post("/api/pair/code")
     assert code_response.status_code == 200
     code = code_response.json()["code"]
-    assert len(code) == 6
+    assert len(code) == mobile_pairing_service.PAIR_CODE_HEX_LENGTH * 2
 
     pair_response = client.post("/api/pair", json={"code": code, "device_name": "Pixel"})
     assert pair_response.status_code == 200
@@ -1021,12 +1021,103 @@ def test_pair_confirm_rate_limits_failed_attempts_by_client(monkeypatch, tmp_pat
     client = TestClient(app, client=("192.0.2.88", 50100), base_url="https://testserver")
 
     for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
-        response = client.post("/api/pair/confirm", json={"code": "ffffff", "device_name": "Phone"})
+        response = client.post("/api/pair/confirm", json={"code": "ffffffff", "device_name": "Phone"})
         assert response.status_code == 401
 
-    limited = client.post("/api/pair/confirm", json={"code": "ffffff", "device_name": "Phone"})
+    limited = client.post("/api/pair/confirm", json={"code": "ffffffff", "device_name": "Phone"})
 
     assert limited.status_code == 429
+
+
+def test_pair_confirm_rejects_short_or_long_codes(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _clear_pairing_failures()
+    client = TestClient(app)
+
+    short = client.post("/api/pair/confirm", json={"code": "abc123", "device_name": "Phone"})
+    long = client.post("/api/pair/confirm", json={"code": "a" * 12, "device_name": "Phone"})
+
+    assert short.status_code == 422
+    assert long.status_code == 422
+    detail = short.json()["detail"]
+    if isinstance(detail, list):
+        messages = " ".join(str(item.get("msg", "")) for item in detail if isinstance(item, dict))
+    else:
+        messages = str(detail)
+    assert "8 characters" in messages
+
+
+def test_pair_confirm_does_not_rate_limit_unrelated_hosts(monkeypatch, tmp_path):
+    """R3-013: per-host limits must not grief block pairing for other source IPs."""
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _clear_pairing_failures()
+    invalid_code = "deadbeef"
+    blocked_host = ("198.51.100.88", 50100)
+
+    for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
+        response = TestClient(app, client=blocked_host, base_url="https://testserver").post(
+            "/api/pair/confirm",
+            json={"code": invalid_code, "device_name": "Phone"},
+        )
+        assert response.status_code == 401
+
+    limited = TestClient(app, client=blocked_host, base_url="https://testserver").post(
+        "/api/pair/confirm",
+        json={"code": invalid_code, "device_name": "Phone"},
+    )
+    assert limited.status_code == 429
+
+    unrelated = TestClient(app, client=("203.0.113.50", 51050), base_url="https://testserver").post(
+        "/api/pair/confirm",
+        json={"code": invalid_code, "device_name": "Phone"},
+    )
+    assert unrelated.status_code == 401
+
+
+def test_pair_confirm_malformed_codes_do_not_count_toward_rate_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _clear_pairing_failures()
+    client = TestClient(app, client=("192.0.2.77", 50200), base_url="https://testserver")
+
+    for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT + 4):
+        response = client.post("/api/pair/confirm", json={"code": "abc", "device_name": "Phone"})
+        assert response.status_code == 422
+
+    still_allowed = client.post("/api/pair/confirm", json={"code": "ffffffff", "device_name": "Phone"})
+    assert still_allowed.status_code == 401
+
+
+def test_successful_pairing_clears_host_confirm_failure_bucket(monkeypatch, tmp_path):
+    cert, key = write_lan_tls_material(tmp_path)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_ENABLED", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_CERT_FILE", str(cert))
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
+    db.init_db()
+    _clear_pairing_failures()
+    invalid_code = "deadbeef"
+    host = "203.0.113.250"
+
+    for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT - 1):
+        with pytest.raises(HTTPException) as exc:
+            mobile_pairing_service.confirm_pairing(code=invalid_code, device_name="Phone", client_host=host)
+        assert exc.value.status_code == 401
+
+    code = mobile_pairing_service.create_pairing_request()["code"]
+    payload = mobile_pairing_service.confirm_pairing(code=code, device_name="Owner Phone", client_host=host)
+    assert payload["token"]
+
+    for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
+        with pytest.raises(HTTPException) as exc:
+            mobile_pairing_service.confirm_pairing(code=invalid_code, device_name="Phone", client_host=host)
+        assert exc.value.status_code == 401
+
+    with pytest.raises(HTTPException) as exc:
+        mobile_pairing_service.confirm_pairing(code=invalid_code, device_name="Phone", client_host=host)
+    assert exc.value.status_code == 429
 
 
 def test_mobile_approval_routes_require_bearer_token(monkeypatch, tmp_path):

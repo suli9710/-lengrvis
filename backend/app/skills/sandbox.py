@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.config import get_env
 from app.skills.schemas import SkillExecution, SkillExecutionType
 
 
@@ -46,7 +47,7 @@ class SkillSandbox:
         return {"error": f"Unsupported skill execution type: {execution.type}"}
 
     def _local_skill_execution_allowed(self, context: dict[str, Any]) -> bool:
-        if _truthy(os.environ.get(UNSAFE_LOCAL_SKILL_EXECUTION_ENV)):
+        if _truthy(get_env(UNSAFE_LOCAL_SKILL_EXECUTION_ENV)):
             return True
         if self.allow_unsafe_local_skill_execution is True:
             return True
@@ -229,7 +230,7 @@ def _sandbox_env() -> dict[str, str]:
         "APPDATA",
         "PROGRAMDATA",
     ):
-        value = os.environ.get(key)
+        value = get_env(key)
         if value:
             env[key] = value
     for key, value in os.environ.items():

@@ -6,6 +6,8 @@ import {
   type PairingSecurityMetadata,
 } from "./client";
 
+export const PAIRING_CODE_LENGTH = 8;
+
 export type PairingPayloadSource = "json" | "url" | "text";
 
 export interface PairingPayload {
@@ -51,7 +53,7 @@ export function parsePairingPayload(value: string): PairingPayload {
   const text = parsePlainTextPayload(raw);
   if (text) return text;
 
-  throw new PairingPayloadParseError("missing_code", "Pairing payload must include a 6-character code and a computer address.");
+  throw new PairingPayloadParseError("missing_code", `Pairing payload must include a ${PAIRING_CODE_LENGTH}-character code and a computer address.`);
 }
 
 export function classifyPairingPayloadSecurity(payload: Pick<PairingPayload, "baseUrl" | "expiresAt" | "security">, nowMs = Date.now()): PairingPayloadSecurityState {
@@ -235,19 +237,19 @@ function firstAddress(value: string): string | undefined {
 }
 
 function firstLabeledCode(value: string): string | undefined {
-  const match = value.match(/(?:配对码|pair(?:ing)?\s*code|code)\s*[:：#-]?\s*([a-z0-9]{6})/i);
+  const match = value.match(new RegExp(`(?:配对码|pair(?:ing)?\\s*code|code)\\s*[:：#-]?\\s*([a-z0-9]{${PAIRING_CODE_LENGTH}})`, "i"));
   return match?.[1];
 }
 
 function firstStandaloneCode(value: string): string | undefined {
-  const matches = value.match(/\b[a-z0-9]{6}\b/gi) ?? [];
+  const matches = value.match(new RegExp(`\\b[a-z0-9]{${PAIRING_CODE_LENGTH}}\\b`, "gi")) ?? [];
   const blocked = new Set(["server", "origin", "mobile", "pairin", "lengrv"]);
   return matches.find((candidate) => !blocked.has(candidate.toLowerCase()));
 }
 
 function normalizePairingCode(value: string | undefined): string | undefined {
   const normalized = value?.replace(/[^a-z0-9]/gi, "").toLowerCase();
-  return normalized && normalized.length === 6 ? normalized : undefined;
+  return normalized && normalized.length === PAIRING_CODE_LENGTH ? normalized : undefined;
 }
 
 function baseUrlFromParts(parts: { scheme?: string; host?: string; port?: string }): string | undefined {

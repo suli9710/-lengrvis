@@ -49,6 +49,13 @@ def test_route_engine_auto_write_intent_ignores_developer_fallback() -> None:
     assert decision.requested_engine == "auto"
 
 
+def test_route_engine_auto_write_intent_uses_developer_when_writes_enabled() -> None:
+    decision = route_engine("fix failing backend pytest around planner imports", developer_writes_enabled=True)
+
+    assert decision.selected_engine == "developer"
+    assert "developer writes enabled" in decision.reason
+
+
 def test_route_engine_auto_selects_os_for_browser_goals() -> None:
     decision = route_engine("open the browser and click the account settings")
 
@@ -60,7 +67,7 @@ def test_route_engine_auto_selects_os_for_chinese_system_diagnostics() -> None:
 
     assert decision.selected_engine == "os"
     assert decision.requested_engine == "auto"
-    assert "system diagnostics" in decision.reason
+    assert decision.rule == "system_diagnostics"
 
 
 def test_route_engine_explicit_override_wins() -> None:
@@ -121,6 +128,129 @@ print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "re
     assert result.outputs["lengrvis_code"]["ok"] is True
     assert result.outputs["lengrvis_code"]["tool_events"][0]["name"] == "Read"
     assert result.state.observations[0].source == "lengrvis_code.stream_json"
+
+
+@pytest.mark.asyncio
+async def test_developer_engine_writes_enabled_expands_allowed_tools(tmp_path) -> None:
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(
+            allowed_directories=[str(tmp_path)],
+            api_key="test-api-key",
+            developer_writes_enabled=True,
+        ),
+        store=InMemoryRunStore(),
+        use_lengrvis_code=False,
+    )
+
+    state = await engine.start_run("fix failing pytest in backend", "efficiency", "developer")
+
+    assert state.phase == RunPhase.PLANNING
+    assert state.current_plan["writes_enabled"] is True
+    assert state.current_plan["writes_require_verification"] is True
+    assert "Write" in state.current_plan["allowed_tools"]
+    assert "Edit" in state.current_plan["allowed_tools"]
+    assert state.current_plan["capability_mode"] == "controlled_code_editing"
+    assert any(step.get("id") == "write_verification" for step in state.current_plan["steps"])
+
+
+@pytest.mark.asyncio
+async def test_developer_engine_run_turn_passes_write_tools_to_lengrvis_code(tmp_path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+        captured["allowed_tools"] = tuple(config.allowed_tools)
+        captured["prompt"] = prompt
+        from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
+
+        return LengrvisCodeStreamSummary(
+            result={"is_error": False, "result": "ok"},
+            assistant_text=["done"],
+        )
+
+    monkeypatch.setattr("app.orchestration.developer_engine.run_lengrvis_code", spy_run_lengrvis_code)
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(
+            allowed_directories=[str(tmp_path)],
+            api_key="test-api-key",
+            developer_writes_enabled=True,
+        ),
+        store=InMemoryRunStore(),
+        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('noop')"), max_turns=1),
+        use_lengrvis_code=True,
+    )
+    state = await engine.start_run("fix failing pytest", "efficiency", "developer")
+    await engine.run_turn(state)
+
+    assert "Write" in captured["allowed_tools"]
+    assert "Edit" in captured["allowed_tools"]
+    assert "Write/Edit tools are enabled" in str(captured["prompt"])
+
+
+@pytest.mark.asyncio
+async def test_developer_engine_run_turn_honors_live_writes_setting_over_plan_snapshot(tmp_path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+        captured["allowed_tools"] = tuple(config.allowed_tools)
+        captured["prompt"] = prompt
+        from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
+
+        return LengrvisCodeStreamSummary(result={"is_error": False, "result": "ok"}, assistant_text=["done"])
+
+    monkeypatch.setattr("app.orchestration.developer_engine.run_lengrvis_code", spy_run_lengrvis_code)
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(
+            allowed_directories=[str(tmp_path)],
+            api_key="test-api-key",
+            developer_writes_enabled=False,
+        ),
+        store=InMemoryRunStore(),
+        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('noop')"), max_turns=1),
+        use_lengrvis_code=True,
+    )
+    state = await engine.start_run("fix failing pytest", "efficiency", "developer")
+    # Simulate a stale/tampered plan snapshot that still lists write tools.
+    state = state.model_copy(
+        update={
+            "current_plan": {
+                **state.current_plan,
+                "writes_enabled": True,
+                "allowed_tools": ["Read", "Write", "Edit"],
+            }
+        },
+        deep=True,
+    )
+    await engine.run_turn(state)
+
+    assert "Write" not in captured["allowed_tools"]
+    assert "Edit" not in captured["allowed_tools"]
+    assert "Write/Edit tools are enabled" not in str(captured["prompt"])
+
+
+def test_build_lengrvis_command_writes_enabled_uses_default_permission_mode(tmp_path) -> None:
+    from app.config import AppSettings
+    from app.integrations.lengrvis_code import allowed_tools_for_developer, build_lengrvis_code_command
+    from app.orchestration.developer_engine import _prompt_from_goal
+    from app.orchestration.lengrvis_code_config import LengrvisCodeConfig
+
+    settings = AppSettings(
+        allowed_directories=[str(tmp_path)],
+        api_key="test-api-key",
+        developer_writes_enabled=True,
+    )
+    tools = allowed_tools_for_developer(writes_enabled=True)
+    config = LengrvisCodeConfig(max_turns=1, allowed_tools=tools, permission_mode="default")
+    command = build_lengrvis_code_command(
+        _prompt_from_goal("fix failing pytest in backend/tests", writes_enabled=True),
+        cwd=tmp_path,
+        settings=settings,
+        config=config,
+    )
+    assert "--permission-mode" in command
+    assert command[command.index("--permission-mode") + 1] == "default"
+    allowed = command[command.index("--allowedTools") + 1]
+    assert "Write" in allowed and "Edit" in allowed
+    assert not any("skip-permissions" in str(part) for part in command)
 
 
 @pytest.mark.asyncio
@@ -488,6 +618,79 @@ async def test_os_engine_reflection_limit_pauses_low_information_failure(tmp_pat
     assert result.state.phase == RunPhase.FAILED
     assert step.status == StepStatus.FAILED
     assert calls == [{"label": "primary"}]
+
+
+class SlowPassthroughAgent:
+    """Forces interleaving across awaits so concurrent runs actually overlap."""
+
+    name = "FileAgent"
+
+    async def act(self, step: PlanStep, context, observation=None, *, provider=None):  # noqa: ARG002
+        import asyncio
+
+        await asyncio.sleep(0.02)
+        return AgentAction(kind="propose_tool", tool_name=step.tool_name, args=dict(step.args))
+
+    async def reflect(self, step: PlanStep, result, *, provider=None):  # noqa: ARG002
+        return "ok"
+
+
+@pytest.mark.asyncio
+async def test_os_engine_concurrent_runs_on_shared_engine_do_not_cross_orchestrators(tmp_path, monkeypatch) -> None:
+    """R4-H2 guard: two runs sharing ONE engine must each resolve their own
+    run-bound orchestrator through the whole run_plan_turn chain.
+
+    Each orchestrator only registers its own tool, so any cross-talk makes the
+    other run's tool lookup fail and the run finish FAILED instead of COMPLETED.
+    """
+    import asyncio
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    monkeypatch.setenv("LENGRVIS_API_KEY", "")
+    db.init_db()
+
+    calls_a: list[dict] = []
+    calls_b: list[dict] = []
+    orchestrator_a = OrchestratorAgent()
+    orchestrator_a.subagents["FileAgent"] = SlowPassthroughAgent()
+    orchestrator_a.registry.register(_runtime_tool("test.dual_a", calls_a))
+    orchestrator_b = OrchestratorAgent()
+    orchestrator_b.subagents["FileAgent"] = SlowPassthroughAgent()
+    orchestrator_b.registry.register(_runtime_tool("test.dual_b", calls_b))
+
+    task_a, plan_a, step_a = _task_plan("test.dual_a")
+    task_b, plan_b, step_b = _task_plan("test.dual_b")
+
+    def _state(task: Task, plan: Plan, step: PlanStep) -> RunState:
+        return RunState(
+            run_id=f"os_{task.id}",
+            engine="os",
+            phase=RunPhase.RUNNING,
+            task_id=task.id,
+            goal=task.user_goal,
+            mode=task.mode,
+            current_plan={"task_id": task.id, "plan_id": plan.id, "steps": [step.model_dump(mode="json")]},
+        )
+
+    state_a = _state(task_a, plan_a, step_a)
+    state_b = _state(task_b, plan_b, step_b)
+
+    engine = OSExecutionEngine(store=InMemoryRunStore())
+    engine._orchestrators_by_run[state_a.run_id] = orchestrator_a
+    engine._orchestrators_by_run[state_b.run_id] = orchestrator_b
+
+    result_a, result_b = await asyncio.gather(
+        engine.run_plan_turn(task_a, plan_a, state=state_a),
+        engine.run_plan_turn(task_b, plan_b, state=state_b),
+    )
+
+    assert result_a.state.phase == RunPhase.COMPLETED
+    assert result_b.state.phase == RunPhase.COMPLETED
+    assert step_a.status == StepStatus.SUCCEEDED
+    assert step_b.status == StepStatus.SUCCEEDED
+    assert calls_a == [{"label": "primary"}]
+    assert calls_b == [{"label": "primary"}]
 
 
 def test_os_reflection_decider_respects_configured_limits() -> None:

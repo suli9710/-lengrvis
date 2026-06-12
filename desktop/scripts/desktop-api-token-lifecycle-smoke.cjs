@@ -66,7 +66,13 @@ try {
   assert.equal(envBacked.source, "env");
   assert.equal(envBacked.token, "env-secret");
   assert.equal(envBacked.dataDir, envDataDir);
-  assert.equal(readSecret(envDataDir), "env-secret");
+  const envReread = resolveDesktopApiToken({
+    configDir: envRoot,
+    env: { LENGRVIS_DATA_DIR: "relative-data" },
+    generateToken: () => "wrong-generated-secret"
+  });
+  assert.equal(envReread.source, "file");
+  assert.equal(envReread.token, "env-secret");
 
   const createdRoot = mkdirp(path.join(tmpRoot, "created-root"));
   const created = resolveDesktopApiToken({
@@ -84,7 +90,12 @@ try {
   assert.equal(created.token, "created-secret");
   assert.equal(reused.source, "file");
   assert.equal(reused.token, "created-secret");
-  assert.equal(readSecret(created.dataDir), "created-secret");
+  const createdReread = resolveDesktopApiToken({
+    configDir: createdRoot,
+    env: {},
+    generateToken: () => "different-secret"
+  });
+  assert.equal(createdReread.token, "created-secret");
 
   const emptyRoot = mkdirp(path.join(tmpRoot, "empty-root"));
   const emptyDataDir = mkdirp(resolveBackendDataDir({ configDir: emptyRoot, env: {} }));
@@ -97,7 +108,12 @@ try {
 
   assert.equal(repaired.source, "created");
   assert.equal(repaired.token, "repaired-secret");
-  assert.equal(readSecret(emptyDataDir), "repaired-secret");
+  const repairedReread = resolveDesktopApiToken({
+    configDir: emptyRoot,
+    env: {},
+    generateToken: () => "different-secret"
+  });
+  assert.equal(repairedReread.token, "repaired-secret");
 
   const projectRoot = mkdirp(path.join(tmpRoot, "project"));
   mkdirp(path.join(projectRoot, "backend", "app"));

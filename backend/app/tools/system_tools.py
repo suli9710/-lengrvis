@@ -7,6 +7,7 @@ import re
 import subprocess
 from typing import Any
 
+from app.config import get_env
 from app.core.audit import record
 from app.core.paths import resolve_authorized
 from app.policy.redaction import redact_value
@@ -223,7 +224,7 @@ def cleanup_suggestions(args: dict[str, Any], context: dict[str, Any]) -> dict[s
     approval: list[dict[str, Any]] = []
     info_only: list[dict[str, Any]] = []
 
-    temp_dir = os.environ.get("TEMP") or os.path.expandvars(r"%TEMP%")
+    temp_dir = get_env("TEMP") or os.path.expandvars(r"%TEMP%")
     if temp_dir and os.path.isdir(temp_dir):
         immediate.append({
             "action": "clean_temp",
@@ -358,7 +359,7 @@ def diagnostics(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 
 def _quick_local_ai_status() -> dict[str, Any]:
     configured = any(
-        str(os.getenv(name) or "").strip()
+        str(get_env(name) or "").strip()
         for name in (
             "LENGRVIS_ONNX_MODEL_PATH",
             "LENGRVIS_ONNX_MODELS_DIR",

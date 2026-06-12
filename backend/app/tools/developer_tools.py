@@ -621,10 +621,10 @@ def _run_test_foreground(
 
 
 def _safe_command_env() -> dict[str, str]:
-    import os
+    from app.config import get_env
 
     keys = ("COMSPEC", "HOME", "LANG", "LOCALAPPDATA", "PATH", "PATHEXT", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR")
-    env = {key: value for key in keys if (value := os.environ.get(key))}
+    env = {key: value for key in keys if (value := get_env(key))}
     env.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",

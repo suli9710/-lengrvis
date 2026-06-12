@@ -45,7 +45,7 @@ def test_golden_dataset_integrity():
     assert len(ids) == len(set(ids)), "golden task id must be unique"
     assert len(ids) >= 30, f"golden task count must stay >= 30, got {len(ids)}"
     categories = {task["category"] for task in GOLDEN_TASKS}
-    for required in ("system", "cleanup", "approval", "safety", "file", "document", "chat"):
+    for required in ("system", "cleanup", "approval", "safety", "file", "document", "chat", "browser", "search"):
         assert required in categories, f"missing golden category: {required}"
     for task in GOLDEN_TASKS:
         assert task.get("entry") in {"runs", "chat", "files_api", "tool"}, task["id"]
@@ -68,6 +68,15 @@ def test_golden_task(task, monkeypatch, tmp_path):
 # environment
 
 
+def _write_docx_fixture(target: Path, spec: dict[str, Any]) -> None:
+    from docx import Document
+
+    doc = Document()
+    for paragraph in spec.get("paragraphs") or []:
+        doc.add_paragraph(str(paragraph))
+    doc.save(str(target))
+
+
 def _golden_env(monkeypatch, tmp_path, task: dict[str, Any]):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -76,7 +85,10 @@ def _golden_env(monkeypatch, tmp_path, task: dict[str, Any]):
     for rel, content in (task.get("fixtures") or {}).items():
         target = workspace / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        if isinstance(content, dict) and content.get("__docx__"):
+            _write_docx_fixture(target, content)
+        else:
+            target.write_text(content, encoding="utf-8")
 
     monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(tmp_path / "missing-config.yaml"))
     monkeypatch.setenv("LENGRVIS_ENV_FILE", str(tmp_path / "missing.env"))
@@ -105,6 +117,30 @@ def _sub(value: Any, workspace: Path, outside: Path) -> Any:
     return value
 
 
+def _register_golden_deferred_tools(task: dict[str, Any]) -> None:
+    """tool.search only indexes deferred tools; golden tasks may register stubs."""
+    from app.policy.risk import RiskLevel
+    from app.tools.schemas import ToolDefinition
+
+    for spec in task.get("deferred_tools") or []:
+        registry.register(
+            ToolDefinition(
+                name=str(spec["name"]),
+                description=str(spec.get("description") or spec["name"].replace(".", " ")),
+                input_schema={"type": "object", "properties": {}},
+                output_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+                risk_level=RiskLevel.R0_READ_ONLY,
+                agent_owner=str(spec.get("agent_owner") or "SearchAgent"),
+                supports_dry_run=False,
+                requires_authorized_path=False,
+                execute=lambda args, context: {"ok": True},
+                search_hint=str(spec.get("search_hint") or spec["name"]),
+                defer_loading=True,
+                read_only=True,
+            )
+        )
+
+
 def _golden_app() -> FastAPI:
     """轻量测试应用：只挂载黄金任务用到的公共路由，避免 lifespan watcher。"""
     app = FastAPI()
@@ -129,6 +165,9 @@ def _run_entry(task: dict[str, Any], workspace: Path, outside: Path) -> None:
         )
         assert created.status_code == 200, created.text
         run = created.json()
+        if task.get("routing_only"):
+            _assert_routing_expectations(run, expect)
+            return
         final = _wait_for_phase(client, run["run_id"], set(expect["phase"]))
         assert final["phase"] in expect["phase"], f"phase={final['phase']} expected={expect['phase']}"
         task_id = final["task_id"]
@@ -165,6 +204,14 @@ def _chat_entry(task: dict[str, Any], workspace: Path, outside: Path) -> None:
             assert db.fetch_many("tasks") == []
         if expect.get("agent"):
             assert payload.get("agent") == expect["agent"], payload
+        if expect.get("task_plan_tools"):
+            task_id = payload.get("task_id")
+            assert task_id, payload
+            _wait_for_plan_tools(task_id, expect["task_plan_tools"])
+        if expect.get("task_metadata_hint"):
+            task_id = payload.get("task_id")
+            assert task_id, payload
+            _wait_for_task_metadata_hint(task_id, expect["task_metadata_hint"])
         if expect.get("task_completed"):
             task_id = payload["task_id"]
             assert task_id
@@ -194,6 +241,7 @@ def _files_api_entry(task: dict[str, Any], workspace: Path, outside: Path) -> No
 def _tool_entry(task: dict[str, Any], workspace: Path, outside: Path) -> None:
     expect = task["expect"]
     register_all_tools(load_skills=False)
+    _register_golden_deferred_tools(task)
     definition = registry.get(task["tool"])
     args = _sub(task.get("args") or {}, workspace, outside)
     settings = __import__("app.llm.registry", fromlist=["get_effective_settings"]).get_effective_settings()
@@ -217,6 +265,16 @@ def _tool_entry(task: dict[str, Any], workspace: Path, outside: Path) -> None:
 # assertions
 
 
+def _assert_routing_expectations(run: dict[str, Any], expect: dict[str, Any]) -> None:
+    if expect.get("route_rule"):
+        assert run.get("engine_route_rule") == expect["route_rule"], run
+    if expect.get("engine"):
+        assert run.get("engine") == expect["engine"], run
+    caps = run.get("engine_capabilities") or {}
+    for key, value in (expect.get("engine_capabilities") or {}).items():
+        assert caps.get(key) == value, f"engine_capabilities[{key}]={caps.get(key)!r} expected {value!r}"
+
+
 def _assert_run_expectations(
     client: TestClient,
     run_id: str,
@@ -224,6 +282,10 @@ def _assert_run_expectations(
     expect: dict[str, Any],
     workspace: Path,
 ) -> None:
+    if expect.get("route_rule") or expect.get("engine_capabilities"):
+        detail = client.get(f"/api/runs/{run_id}")
+        assert detail.status_code == 200, detail.text
+        _assert_routing_expectations(detail.json(), expect)
     if expect.get("plan_tools"):
         assert _plan_tools(task_id) == expect["plan_tools"]
     if expect.get("global_risk"):
@@ -250,8 +312,16 @@ def _assert_run_expectations(
         encoded = json.dumps(outputs, ensure_ascii=False)
         assert spec["text"] in encoded, f"{spec['text']!r} not in {spec['tool']} output"
     for name in expect.get("timeline_any") or []:
-        timeline = client.get(f"/api/runs/{run_id}/timeline").json()
-        names = [event["name"] for event in timeline.get("events", [])]
+        # The run phase (derived from the task row) can be observed slightly
+        # before the resident engine loop publishes the matching run event;
+        # poll briefly instead of asserting a single snapshot.
+        names: list[str] = []
+        for _ in range(40):
+            timeline = client.get(f"/api/runs/{run_id}/timeline").json()
+            names = [event["name"] for event in timeline.get("events", [])]
+            if name in names:
+                break
+            time.sleep(0.05)
         assert name in names, f"{name} not in timeline events: {names}"
     _assert_file_states(expect, workspace)
 
@@ -338,6 +408,30 @@ def _wait_for_run_inactive(run_id: str) -> None:
             return
         time.sleep(0.05)
     raise AssertionError(f"Run {run_id} still active after terminal phase")
+
+
+def _wait_for_plan_tools(task_id: str, expected: list[str]) -> None:
+    last: list[str] = []
+    for _ in range(240):
+        plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
+        if plans:
+            last = [step["tool_name"] for step in plans[0]["steps"]]
+            if last == expected:
+                return
+        time.sleep(0.05)
+    raise AssertionError(f"task {task_id} plan tools {last!r} != expected {expected!r}")
+
+
+def _wait_for_task_metadata_hint(task_id: str, expected_hint: str) -> None:
+    for _ in range(240):
+        task = db.fetch_one("tasks", task_id)
+        metadata = (task or {}).get("metadata") or {}
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata) if metadata.startswith("{") else {}
+        if metadata.get("supervisor_agent_hint") == expected_hint:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"task {task_id} metadata hint != {expected_hint!r}")
 
 
 def _wait_for_task_status(task_id: str, *statuses: str) -> dict[str, Any]:

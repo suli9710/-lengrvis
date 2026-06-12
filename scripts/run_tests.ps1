@@ -63,8 +63,15 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
 $ParsedArgs = Split-TestArguments -RawArgs $args
 
 function Test-PytestXdistAvailable {
-    python -c "import xdist" 2>$null
-    return $LASTEXITCODE -eq 0
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    try {
+        python -c "import xdist" 2>$null
+        return $LASTEXITCODE -eq 0
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 }
 
 $ArgsList = @()

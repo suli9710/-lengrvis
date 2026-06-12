@@ -69,6 +69,21 @@ def test_guardian_health_is_lightweight(monkeypatch, tmp_path: Path):
     assert payload["mode"] == "guardian"
 
 
+def test_guardian_pairing_routes_are_single_sourced_from_routes_pair(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+
+    from app.api import routes_pair
+
+    pair_endpoints = {getattr(route, "endpoint", None) for route in routes_pair.router.routes}
+    app = create_guardian_app()
+    guardian_pair_routes = [route for route in app.routes if getattr(route, "path", "").startswith("/api/pair")]
+
+    assert guardian_pair_routes, "guardian must expose pairing endpoints"
+    for route in guardian_pair_routes:
+        assert route.endpoint in pair_endpoints, f"guardian route {route.path} is not the shared routes_pair handler"
+
+
 def test_guardian_rejects_remote_desktop_websocket_proxy(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)

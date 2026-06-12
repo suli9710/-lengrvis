@@ -67,38 +67,299 @@ def test_uninstall_app_rejects_direct_uninstall_command(monkeypatch, tmp_path):
     assert "Direct uninstall commands" in result["error"]
 
 
+def _registry_product_apps():
+    return [
+        {
+            "id": "sample product",
+            "name": "Sample Product",
+            "publisher": "Vendor",
+            "uninstall_string": "MsiExec.exe /I {ABC-123}",
+            "source": "registry",
+        }
+    ]
+
+
 def test_uninstall_app_executes_scanned_entry_without_shell(monkeypatch, tmp_path):
     _init_test_settings(monkeypatch, tmp_path)
     monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
+    call_count = 0
+
+    def registry_scan():
+        nonlocal call_count
+        call_count += 1
+        return _registry_product_apps() if call_count == 1 else []
+
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", registry_scan)
+    runs: list[dict[str, object]] = []
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        runs.append({"command": command, **kwargs})
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+
+    result = app_tools.uninstall_app({"query": "Sample Product", "dry_run": False}, _settings_context())
+
+    assert result["ok"] is True
+    assert result["verified_removed"] is True
+    assert result["returncode"] == 0
+    assert runs[0]["command"] == ["MsiExec.exe", "/X", "{ABC-123}"]
+
+
+def test_uninstall_app_prefers_quiet_uninstall_string(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
+    call_count = 0
+
+    def registry_scan():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [
+                {
+                    "id": "quiet product",
+                    "name": "Quiet Product",
+                    "publisher": "Vendor",
+                    "uninstall_string": "MsiExec.exe /I {ABC-123}",
+                    "quiet_uninstall_string": "MsiExec.exe /X {ABC-123} /qn /norestart",
+                    "source": "registry",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", registry_scan)
+    runs: list[list[str]] = []
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        runs.append(list(command))
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+
+    result = app_tools.uninstall_app({"query": "Quiet Product", "dry_run": False}, _settings_context())
+
+    assert result["ok"] is True
+    assert result["uninstall_method"] == "quiet_registry"
+    assert runs[0] == ["MsiExec.exe", "/X", "{ABC-123}", "/qn", "/norestart"]
+
+
+def test_uninstall_app_winget_channel(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    call_count = 0
+
+    def winget_scan():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [
+                {
+                    "id": "vendor.wingetapp",
+                    "name": "Winget App",
+                    "winget_id": "Vendor.WingetApp",
+                    "source": "winget",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", winget_scan)
+    runs: list[list[str]] = []
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        runs.append(list(command))
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+
+    result = app_tools.uninstall_app({"query": "Winget App", "dry_run": False}, _settings_context())
+
+    assert result["ok"] is True
+    assert result["uninstall_method"] == "winget"
+    assert runs[0][:4] == ["winget", "uninstall", "--id", "Vendor.WingetApp"]
+
+
+def test_uninstall_app_appx_channel(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
+    call_count = 0
+
+    def appx_scan():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [
+                {
+                    "id": "store app",
+                    "name": "Store App",
+                    "package_full_name": "Publisher.StoreApp_8wekyb3d8bbwe!App",
+                    "source": "appx",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", appx_scan)
+    runs: list[list[str]] = []
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        runs.append(list(command))
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+
+    result = app_tools.uninstall_app({"query": "Store App", "dry_run": False}, _settings_context())
+
+    assert result["ok"] is True
+    assert result["uninstall_method"] == "appx"
+    assert "Remove-AppxPackage" in runs[0][-1]
+    assert "Publisher.StoreApp_8wekyb3d8bbwe!App" in runs[0][-1]
+
+
+def test_installed_apps_prefers_registry_uninstall_over_shortcut(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        app_tools,
+        "_scan_shortcuts",
+        lambda: [
+            {"id": "shared app", "name": "Shared App", "path": "C:\\shortcut.lnk", "source": "start_menu"},
+        ],
+    )
     monkeypatch.setattr(
         app_tools,
         "_scan_registry_apps",
         lambda: [
             {
-                "id": "sample product",
-                "name": "Sample Product",
-                "publisher": "Vendor",
-                "uninstall_string": "MsiExec.exe /I {ABC-123}",
+                "id": "shared app",
+                "name": "Shared App",
+                "uninstall_string": "MsiExec.exe /X {ABC-123}",
                 "source": "registry",
             }
         ],
     )
-    launched: list[dict[str, object]] = []
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
 
-    def fake_popen(command, *, shell):  # noqa: ANN001
-        launched.append({"command": command, "shell": shell})
+    apps = app_tools.installed_apps(_settings_context())
+    shared = next(app for app in apps if app["name"] == "Shared App")
 
-    monkeypatch.setattr(app_tools.subprocess, "Popen", fake_popen)
+    assert shared["source"] == "registry"
+    assert shared["uninstall_string"] == "MsiExec.exe /X {ABC-123}"
 
-    result = app_tools.uninstall_app({"query": "Sample Product", "dry_run": False}, _settings_context())
+
+def test_uninstall_verification_ignores_shortcut_with_same_name(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        app_tools,
+        "_scan_shortcuts",
+        lambda: [
+            {"id": "shared app", "name": "Shared App", "path": "C:\\shortcut.lnk", "source": "start_menu"},
+        ],
+    )
+    call_count = 0
+
+    def registry_scan():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [
+                {
+                    "id": "shared app",
+                    "name": "Shared App",
+                    "uninstall_string": "MsiExec.exe /X {ABC-123}",
+                    "source": "registry",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", registry_scan)
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
+    monkeypatch.setattr(app_tools.time, "sleep", lambda _seconds: None)
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(app_tools.subprocess, "run", fake_run)
+
+    result = app_tools.uninstall_app({"query": "Shared App", "dry_run": False}, _settings_context())
 
     assert result["ok"] is True
-    assert launched == [{"command": ["MsiExec.exe", "/X", "{ABC-123}"], "shell": False}]
+    assert result["verified_removed"] is True
+
+
+def test_find_uninstall_entries_includes_appx_and_winget(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", lambda: [])
+    monkeypatch.setattr(
+        app_tools,
+        "_scan_appx_packages",
+        lambda: [
+            {
+                "id": "store app",
+                "name": "Store App",
+                "package_full_name": "Publisher.StoreApp_8wekyb3d8bbwe!App",
+                "source": "appx",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        app_tools,
+        "_scan_winget_packages",
+        lambda: [
+            {
+                "id": "vendor.wingetapp",
+                "name": "Winget App",
+                "winget_id": "Vendor.WingetApp",
+                "source": "winget",
+            }
+        ],
+    )
+
+    appx_matches = app_tools.find_uninstall_entries({"query": "store"}, _settings_context())["matches"]
+    winget_matches = app_tools.find_uninstall_entries({"query": "winget"}, _settings_context())["matches"]
+
+    assert appx_matches[0]["uninstall_method"] == "appx"
+    assert winget_matches[0]["uninstall_method"] == "winget"
 
 
 def test_uninstall_app_blocks_scanned_shell_host(monkeypatch, tmp_path):
     _init_test_settings(monkeypatch, tmp_path)
     monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
     monkeypatch.setattr(
         app_tools,
         "_scan_registry_apps",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -80,7 +81,17 @@ READ_OUTPUT_PATH_KEYS = {
     "cwd",
 }
 
-_TASK_READ_STATES: dict[str, dict[str, dict[str, Any]]] = {}
+_TASK_READ_STATES: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+# Written from to_thread tool worker threads and read/cleared from the event
+# loop; guard every access so concurrent setdefault/pop cannot drop entries
+# (dropped read-state surfaces as spurious READ_STATE_REQUIRED errors).
+_TASK_READ_STATES_LOCK = threading.Lock()
+
+
+def clear_task_read_states(task_id: str) -> None:
+    if task_id:
+        with _TASK_READ_STATES_LOCK:
+            _TASK_READ_STATES.pop(str(task_id), None)
 
 
 class ResourceStateError(RuntimeError):
@@ -218,14 +229,16 @@ def remember_read_states_for_tool(
         return
 
     task_id = _task_id(context, runtime)
+    step_id = _step_id(context, runtime)
     now = time.time()
     for state in states:
         if not state.get("path"):
             continue
         key = normalize_path_key(str(state["path"]))
         cached = {"state": state, "read_at": now, "tool_name": str(getattr(tool, "name", ""))}
-        if task_id:
-            _TASK_READ_STATES.setdefault(task_id, {})[key] = cached
+        if task_id and step_id:
+            with _TASK_READ_STATES_LOCK:
+                _TASK_READ_STATES.setdefault(task_id, {}).setdefault(step_id, {})[key] = cached
         if runtime is not None:
             try:
                 runtime.remember_file(str(state["path"]), partial_view=False, size=int(state.get("size") or 0))
@@ -264,7 +277,7 @@ def validate_write_preconditions(
         approved_state = approval_by_path.get(key)
         if approved_state and compare_single_resource_state(approved_state, state) == {}:
             continue
-        read_state = _read_state_for_path(key, context)
+        read_state = _read_state_for_path(key, context, include_prior_steps=True)
         if read_state is None:
             missing_read.append(_public_state_ref(state))
             continue
@@ -367,8 +380,32 @@ def _states_from_output(output: dict[str, Any]) -> list[dict[str, Any]]:
     return canonical_state_list(states or [])
 
 
-def _read_state_for_path(key: str, context: dict[str, Any]) -> dict[str, Any] | None:
+def _read_state_for_path(
+    key: str,
+    context: dict[str, Any],
+    *,
+    include_prior_steps: bool = False,
+) -> dict[str, Any] | None:
     runtime = context.get("runtime")
+    task_id = _task_id(context, runtime)
+    step_id = _step_id(context, runtime)
+    if task_id:
+        with _TASK_READ_STATES_LOCK:
+            per_step = _TASK_READ_STATES.get(task_id, {})
+            if step_id:
+                hit = per_step.get(step_id, {}).get(key)
+                if hit:
+                    return hit
+            if include_prior_steps:
+                best: dict[str, Any] | None = None
+                for bucket in per_step.values():
+                    candidate = bucket.get(key)
+                    if candidate is None:
+                        continue
+                    if best is None or float(candidate.get("read_at") or 0) > float(best.get("read_at") or 0):
+                        best = candidate
+                if best is not None:
+                    return best
     if runtime is not None:
         try:
             cached = runtime.extra_context.get("_resource_read_states", {}).get(key)
@@ -376,10 +413,7 @@ def _read_state_for_path(key: str, context: dict[str, Any]) -> dict[str, Any] | 
                 return cached
         except Exception as exc:
             logger.debug("could not read runtime resource cache for %s: %s", key, exc, exc_info=True)
-    task_id = _task_id(context, runtime)
-    if not task_id:
-        return None
-    return _TASK_READ_STATES.get(task_id, {}).get(key)
+    return None
 
 
 def _read_state_is_recent(cached: dict[str, Any]) -> bool:
@@ -425,6 +459,19 @@ def _task_id(context: dict[str, Any], runtime: Any | None = None) -> str:
     if runtime is not None:
         try:
             return str(runtime.task.id)
+        except Exception:
+            return ""
+    return ""
+
+
+def _step_id(context: dict[str, Any], runtime: Any | None = None) -> str:
+    if context.get("step_id"):
+        return str(context["step_id"])
+    if runtime is not None:
+        try:
+            step = getattr(runtime, "step", None)
+            if step is not None and getattr(step, "id", None):
+                return str(step.id)
         except Exception:
             return ""
     return ""

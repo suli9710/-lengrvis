@@ -8,6 +8,8 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1 --port 5173 --strictPort\" \"tsc -p tsconfig.node.json --watch --preserveWatchOutput\" \"wait-on tcp:5173 dist/main/main.js dist/preload/preload.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "dev:web": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "build:renderer": "vite build",
     "build:electron:dev": "tsc -p tsconfig.node.json",
     "build:electron": "node scripts/clean-electron-dist.cjs && tsc -p tsconfig.node.release.json && node scripts/bundle-preload.cjs",
@@ -28,9 +30,10 @@
     "smoke:browser-activity": "npm run build && node scripts/browser-activity-smoke.cjs",
     "smoke": "npm run smoke:first-launch && npm run smoke:system-diagnostics-ui && npm run smoke:document-scope && npm run smoke:mobile-pairing-qr && npm run smoke:settings-local-model && npm run smoke:remote-input-grant && npm run smoke:skill-manifest-ui && npm run smoke:preload-api && npm run smoke:desktop-ws && npm run smoke:desktop-token && npm run smoke:backend-log-redaction && npm run smoke:ipc && npm run smoke:browser-activity && npm run smoke:source-map-policy",
     "verify:backend-resource": "node scripts/verify-backend-resource.cjs",
+    "verify:backend-signature": "node scripts/verify-backend-signature.cjs",
     "dist": "npm run build && npm run verify:backend-resource && electron-builder --config electron-builder.yml",
-    "dist:signed": "npm run build && npm run verify:backend-resource && electron-builder --config electron-builder.signed.yml",
-    "dist:publish": "npm run build && npm run verify:backend-resource && electron-builder --config electron-builder.signed.yml --publish always",
+    "dist:signed": "npm run build && npm run verify:backend-resource && npm run verify:backend-signature && electron-builder --config electron-builder.signed.yml",
+    "dist:publish": "npm run build && npm run verify:backend-resource && npm run verify:backend-signature && electron-builder --config electron-builder.signed.yml --publish always",
     "dist:mac": "npm run build && node scripts/verify-backend-resource.cjs darwin && electron-builder --config electron-builder.yml --mac dmg",
     "dist:mac:arm64": "npm run build && node scripts/verify-backend-resource.cjs darwin && electron-builder --config electron-builder.yml --mac dmg --arm64",
     "dist:mac:x64": "npm run build && node scripts/verify-backend-resource.cjs darwin && electron-builder --config electron-builder.yml --mac dmg --x64",
@@ -58,6 +61,10 @@
     "esbuild": "^0.25.12",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
+    "vitest": "^4.1.8",
     "wait-on": "^8.0.1"
+  },
+  "overrides": {
+    "shell-quote": "^1.8.4"
   }
 }

@@ -76,7 +76,13 @@ class OrchestratorAgent:
             "BrowserAgent": BrowserAgent(self.bus),
             "SearchAgent": SearchAgent(self.bus),
         }
-        self.registry = register_all_tools(settings=get_effective_settings())
+        # Per-orchestrator toolset: rebuilding the module-global registry here
+        # would wipe custom tool registrations of every other live orchestrator
+        # (and briefly empty the toolset for in-flight runs).
+        from app.tools.registry import ToolRegistry, sync_extension_tools_from_global
+
+        self.registry = register_all_tools(settings=get_effective_settings(), target=ToolRegistry())
+        sync_extension_tools_from_global(self.registry)
         self._supervised: dict[str, set[str]] = {}
         self._supervision_cursor: dict[str, str] = {}
         self.planning_handler = PlanningHandler(self)
@@ -105,7 +111,11 @@ class OrchestratorAgent:
     def create_task_shell(self, goal: str, mode: str, *, metadata: dict[str, Any] | None = None) -> Task:
         task = Task(user_goal=goal, mode=mode, status=TaskStatus.PLANNING, metadata=dict(metadata or {}))
         db.upsert_model("tasks", task)
-        record("task.created", self.name, {"goal": goal, "mode": mode}, task_id=task.id)
+        audit_payload: dict[str, Any] = {"goal": goal, "mode": mode}
+        hint = str((metadata or {}).get("supervisor_agent_hint") or "").strip()
+        if hint:
+            audit_payload["supervisor_agent_hint"] = hint
+        record("task.created", self.name, audit_payload, task_id=task.id)
         self.bus.publish_text(
             task.id,
             "User",

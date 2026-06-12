@@ -265,6 +265,22 @@ TOOL_CATALOG: dict[str, tuple[str, str]] = {
         "Preview a document with sensitive data redaction patterns applied",
         "redact preview sensitive privacy mask 脱敏 预览 隐私 敏感",
     ),
+    "document.apply_redaction": (
+        "Apply redaction patterns to a document after preview approval",
+        "apply redaction sensitive privacy mask write 脱敏 写入 应用 隐私",
+    ),
+    "document.edit_docx": (
+        "Find and replace text inside a Word docx document (headings, body, tables); dry-run preview then write with rollback backup",
+        "edit docx word replace find modify heading title 编辑 替换 文档 word 标题",
+    ),
+    "document.edit_xlsx": (
+        "Update a single cell value in an Excel xlsx workbook; dry-run preview then write with rollback backup",
+        "edit xlsx excel cell value modify 编辑 单元格 表格 excel",
+    ),
+    "document.edit_pptx": (
+        "Find and replace text inside a PowerPoint pptx deck; dry-run preview then write with rollback backup",
+        "edit pptx powerpoint slide replace find modify 编辑 替换 幻灯片 ppt",
+    ),
     "document.generate_cited_report": (
         "Generate a report answering a query over documents with inline citations",
         "generate report cited citations query 生成 报告 引用 查询",

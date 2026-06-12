@@ -33,6 +33,7 @@ from app.security.mobile_jwt import (
 PAIR_CODE_TTL_SECONDS = 300
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 REMOTE_INPUT_GRANT_TTL_SECONDS = 5 * 60
+PAIR_CODE_HEX_LENGTH = 4
 PAIR_CONFIRM_FAILURE_LIMIT = 8
 PAIR_CONFIRM_FAILURE_WINDOW_SECONDS = 60
 
@@ -91,9 +92,12 @@ def confirm_pairing(*, code: str, device_name: str, client_host: str = "") -> di
     rate_key = _pairing_rate_key(client_host)
     _raise_if_pairing_rate_limited(rate_key)
     normalized = _normalize_code(code)
-    if len(normalized) != 6:
-        _record_pairing_failure(rate_key)
-        raise HTTPException(status_code=422, detail="Pairing code must be 6 characters")
+    expected_code_length = PAIR_CODE_HEX_LENGTH * 2
+    if len(normalized) != expected_code_length:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Pairing code must be {expected_code_length} characters",
+        )
 
     result = _redeem_pairing_record(normalized, device_name)
     if result is None:
@@ -1025,7 +1029,7 @@ def safe_approval_payload(approval: Approval | dict[str, Any], claims: dict[str,
 
 def _unique_code() -> str:
     for _ in range(100):
-        code = secrets.token_hex(3)
+        code = secrets.token_hex(PAIR_CODE_HEX_LENGTH)
         if not db.fetch_one("mobile_pairings", code):
             return code
     raise HTTPException(status_code=503, detail="Unable to allocate a pairing code")
@@ -1170,9 +1174,9 @@ def _lan_ip() -> str:
 
 
 def _backend_port() -> int:
-    import os
+    from app.config import get_env
 
-    return int(os.environ.get("LENGRVIS_BACKEND_PORT") or "8000")
+    return int(get_env("LENGRVIS_BACKEND_PORT") or "8000")
 
 
 def _iso(value: float) -> str:

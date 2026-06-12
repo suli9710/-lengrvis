@@ -247,7 +247,41 @@ def evaluate_permission_policy(
             matched=False,
             reason="No permission rule matched; allow-list policy default deny.",
         )
-    return PermissionDecision(allowed=True)
+    return PermissionDecision(
+        allowed=True,
+        matched=False,
+        reason="No deny rule matched; default allow.",
+    )
+
+
+def evaluate_user_permission_for_tool(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    context: dict[str, Any] | None = None,
+    policy_engine: Any | None = None,
+    permission_store: PermissionStore | None = None,
+    now: datetime | None = None,
+) -> PermissionDecision:
+    """Single evaluation path for user permission rules (PolicyEngine + ToolRuntime)."""
+    if policy_engine is None:
+        store = permission_store or PermissionStore()
+        return store.evaluate(tool_name=tool_name, args=args, context=context, now=now)
+    policy_override = getattr(policy_engine, "permission_policy", None)
+    store = getattr(policy_engine, "permission_store", None) or permission_store or PermissionStore()
+    effective_now = now
+    now_provider = getattr(policy_engine, "now_provider", None)
+    if effective_now is None and callable(now_provider):
+        effective_now = now_provider()
+    if policy_override is not None:
+        return evaluate_permission_policy(
+            policy_override,
+            tool_name=tool_name,
+            args=args,
+            context=context,
+            now=effective_now,
+        )
+    return store.evaluate(tool_name=tool_name, args=args, context=context, now=effective_now)
 
 
 def weekend_delete_rule() -> PermissionRule:

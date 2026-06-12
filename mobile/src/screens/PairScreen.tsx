@@ -30,6 +30,7 @@ import {
   type PairingSession,
 } from "../api/client";
 import {
+  PAIRING_CODE_LENGTH,
   PairingPayloadParseError,
   classifyPairingPayloadSecurity,
   parsePairingPayload,
@@ -58,7 +59,7 @@ type PairingFailureSource = "scan" | "input";
 
 const MAX_PAIRING_PAYLOAD_LENGTH = 4096;
 const MAX_BASE_URL_LENGTH = 2048;
-const MAX_PAIRING_CODE_LENGTH = 6;
+const MAX_PAIRING_CODE_LENGTH = PAIRING_CODE_LENGTH;
 const MAX_PAIRING_CODE_RAW_INPUT_LENGTH = 16;
 const MAX_DEVICE_NAME_LENGTH = 80;
 
@@ -289,7 +290,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       if (code.length !== MAX_PAIRING_CODE_LENGTH) {
         setFailure({
           title: "配对码不可用",
-          detail: "手机没有识别到电脑端生成的 6 位配对码。",
+          detail: `手机没有识别到电脑端生成的 ${PAIRING_CODE_LENGTH} 位配对码。`,
           action: "请粘贴电脑端最新的配对信息；手动输入只作为备用方式。",
         });
         return;
@@ -462,7 +463,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                 ) : null}
                 <Text style={styles.label}>配对码</Text>
                 <TextInput
-                  accessibilityHint="输入电脑端显示的 6 位字母或数字"
+                  accessibilityHint={`输入电脑端显示的 ${PAIRING_CODE_LENGTH} 位字母或数字`}
                   accessibilityLabel="配对码"
                   accessibilityValue={{ text: pairCodeAccessibilityValue }}
                   autoCapitalize="none"
@@ -472,7 +473,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
                   inputMode="text"
                   maxLength={MAX_PAIRING_CODE_RAW_INPUT_LENGTH}
                   onChangeText={handleManualPairCodeChange}
-                  placeholder="6 位字母或数字"
+                  placeholder={`${PAIRING_CODE_LENGTH} 位字母或数字`}
                   spellCheck={false}
                   style={[styles.input, styles.codeInput]}
                   testID="pair-code-input"
@@ -552,7 +553,7 @@ function PairingScanner({
         <View style={styles.scannerHint} testID="pairing-scanner-hint">
           {scanLocked ? <ActivityIndicator color="#ffffff" /> : null}
           <Text style={styles.scannerHintTitle}>{scanLocked ? "正在识别二维码" : "将电脑端二维码放入取景框"}</Text>
-          <Text style={styles.scannerHintText}>{scanLocked ? "如果内容不是 Lengrvis 配对信息，手机会回到上一页并给出下一步。" : "识别后会自动填入电脑地址和 6 位配对码。"}</Text>
+          <Text style={styles.scannerHintText}>{scanLocked ? "如果内容不是 Lengrvis 配对信息，手机会回到上一页并给出下一步。" : `识别后会自动填入电脑地址和 ${PAIRING_CODE_LENGTH} 位配对码。`}</Text>
         </View>
       </SafeAreaView>
     </Modal>
@@ -731,7 +732,7 @@ function pairingButtonLabel({
 }): string {
   if (isBusy) return "正在连接";
   if (blockedStatus) return blockedPairingButtonLabel(blockedStatus);
-  if (!hasSubmitInput) return showManualEntry ? "输入电脑地址和 6 位配对码" : "先扫码或粘贴配对信息";
+  if (!hasSubmitInput) return showManualEntry ? `输入电脑地址和 ${PAIRING_CODE_LENGTH} 位配对码` : "先扫码或粘贴配对信息";
   return "连接手机";
 }
 
@@ -876,7 +877,7 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source
       }
       return {
         title: "没有识别到 Lengrvis 配对二维码",
-        detail: "手机扫到的内容里没有同时包含电脑地址和 6 位配对码。",
+        detail: `手机扫到的内容里没有同时包含电脑地址和 ${PAIRING_CODE_LENGTH} 位配对码。`,
         action: "请对准电脑端 Lengrvis 配对页的二维码；如果屏幕反光或太远，可以复制二维码内容后粘贴。",
       };
     }
@@ -896,7 +897,7 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source
     }
     return {
       title: "配对信息不可用",
-      detail: "手机没有从这段内容里识别到电脑和 6 位配对码。",
+      detail: `手机没有从这段内容里识别到电脑和 ${PAIRING_CODE_LENGTH} 位配对码。`,
       action: "请粘贴电脑端完整配对信息，或在电脑端重新生成。",
     };
   }
@@ -924,11 +925,11 @@ function pairingFailureNotice(error: unknown, security?: BaseUrlSecurity, source
   if (error instanceof AuthExpiredError || status === 401 || message.includes("expired") || message.includes("invalid or expired")) {
     return {
       title: "配对码已过期",
-      detail: "配对信息里的 6 位配对码只能短时间使用，过期后会被电脑端拒绝。",
+      detail: `配对信息里的 ${PAIRING_CODE_LENGTH} 位配对码只能短时间使用，过期后会被电脑端拒绝。`,
       action: "请回到电脑端重新生成配对信息，不要复用旧截图或旧粘贴内容。",
     };
   }
-  if (status === 422 || message.includes("url") || message.includes("address") || message.includes("must be 6 characters")) {
+  if (status === 422 || message.includes("url") || message.includes("address") || message.includes("must be 8 characters")) {
     return {
       title: "地址格式错误",
       detail: "手机无法识别这段地址或配对码。",

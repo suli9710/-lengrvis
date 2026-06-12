@@ -972,17 +972,17 @@ class PolicyEngine:
         return hits
 
     def _review_permission_policy(self, tool_name: str, args: dict[str, Any], context: dict[str, Any] | None = None):
-        policy = self.permission_policy
-        if policy is None:
-            try:
-                now = self.now_provider() if self.now_provider else None
-                return self.permission_store.evaluate(tool_name=tool_name, args=args, context=context, now=now)
-            except Exception as exc:  # noqa: BLE001
-                return _PermissionCheckDenied(str(exc))
-        now = self.now_provider() if self.now_provider else None
-        from app.policy.permissions import evaluate_permission_policy
+        from app.policy.permissions import evaluate_user_permission_for_tool
 
-        return evaluate_permission_policy(policy, tool_name=tool_name, args=args, context=context, now=now)
+        try:
+            return evaluate_user_permission_for_tool(
+                tool_name=tool_name,
+                args=args,
+                context=context,
+                policy_engine=self,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _PermissionCheckDenied(str(exc))
 
     def _review_cleanup_tool_call(
         self,
