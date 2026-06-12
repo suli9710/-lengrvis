@@ -59,6 +59,15 @@ def _context(*, mode: str = "efficiency", allow_browser_network: bool = True) ->
     return {"settings": settings, "allowed_directories": []}
 
 
+def _approved_context(**kwargs) -> dict[str, Any]:
+    """Context stamped as a validated execution (as the orchestrator/routes do)."""
+    from app.policy.execution_marker import mark_execution_approved
+
+    context = _context(**kwargs)
+    mark_execution_approved(context)
+    return context
+
+
 def test_runtime_starts_session_observes_and_records_redacted_events() -> None:
     runtime = BrowserActivityRuntime(adapter=FakeBrowserAdapter())
 
@@ -130,12 +139,16 @@ def test_live_write_action_requires_approval_then_records_sanitized_event() -> N
     }
 
     blocked = runtime.act(args, _context())
-    allowed = runtime.act({**args, "approved": True, "approval_id": "approval-1"}, _context())
+    unmarked = runtime.act({**args, "approved": True, "approval_id": "approval-1"}, _context())
+    allowed = runtime.act({**args, "approved": True, "approval_id": "approval-1"}, _approved_context())
     events = runtime.events({"session_id": started["session"]["id"]})["events"]
     replay = runtime.replay_export({"session_id": started["session"]["id"]}, _context())
 
     assert blocked["ok"] is False
     assert "approval_id" in blocked["error"]
+    # SEC-002: approval flags without a validated-execution context are not enough.
+    assert unmarked["ok"] is False
+    assert "validated approval gate" in unmarked["error"]
     assert allowed["ok"] is True
     assert adapter.calls[-1]["action"]["kind"] == "fill"
     assert any(event["type"] == "act.fill" and event["ok"] is True for event in events)

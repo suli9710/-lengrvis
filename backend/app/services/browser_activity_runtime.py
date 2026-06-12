@@ -19,6 +19,7 @@ from app.config import env_flag
 from app.core.audit import record
 from app.core.outbound_url import pin_outbound_http_url
 from app.core.schemas import new_id, now_iso
+from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
 from app.policy.redaction import REDACTED, redact_text, redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
@@ -394,6 +395,25 @@ class BrowserActivityRuntime:
 
         if kind in WRITE_ACTION_KINDS and not _has_approval(args, action):
             error = f"browser.{kind} requires an approved approval_id after dry-run preview."
+            event = self._append_event(
+                session,
+                type=f"act.{kind}",
+                action=action,
+                step_id=step_id,
+                ok=False,
+                error=error,
+                risk_level=review["risk_level"],
+                verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+            )
+            return {"ok": False, "error": error, "event": self._event_dict(event)}
+
+        # Defense-in-depth (SEC-002): approved/approval_id in args are not enough.
+        # A live write must run through a context validated by the orchestrator
+        # (tool_runtime.execute_allowed) or a direct API route that claimed the
+        # approval; both stamp the execution marker. This blocks any future caller
+        # that reaches the runtime directly with forged approval flags.
+        if kind in WRITE_ACTION_KINDS and not execution_is_marked_approved(context):
+            error = f"browser.{kind} live execution must run through the validated approval gate."
             event = self._append_event(
                 session,
                 type=f"act.{kind}",
