@@ -11,6 +11,7 @@ from app.core.outbound_url import (
     is_local_base_url,
     pin_outbound_http_url,
     validate_outbound_http_url,
+    validate_outbound_http_url_preview,
 )
 
 
@@ -49,6 +50,16 @@ def test_validate_outbound_http_url_allows_private_when_opted_in() -> None:
 def test_validate_outbound_http_url_allows_public_hosts() -> None:
     url = "https://api.openai.com/v1"
     assert validate_outbound_http_url(url, allow_private=False) == url
+
+
+def test_validate_outbound_http_url_preview_allows_unresolvable_public_hostnames() -> None:
+    url = "https://hooks.example.test/lengrvis"
+    assert validate_outbound_http_url_preview(url, allow_private=False) == url
+
+
+def test_validate_outbound_http_url_preview_blocks_static_private_hosts() -> None:
+    with pytest.raises(ValueError, match="blocked to prevent SSRF"):
+        validate_outbound_http_url_preview("http://127.0.0.1/hook", allow_private=False)
 
 
 def test_validate_outbound_http_url_rejects_unresolvable_public_hostnames() -> None:

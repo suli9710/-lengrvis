@@ -43,6 +43,20 @@ def validate_outbound_http_url(url: str, *, allow_private: bool = False) -> str:
     return raw
 
 
+def validate_outbound_http_url_preview(url: str, *, allow_private: bool = False) -> str:
+    """Validate outbound URL syntax and static SSRF indicators without DNS resolution."""
+    raw = str(url or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Only absolute http(s) URLs are allowed.")
+    hostname = parsed.hostname or ""
+    if not allow_private and _is_statically_blocked_host(hostname):
+        raise ValueError(
+            "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
+        )
+    return raw
+
+
 @dataclass(frozen=True)
 class PinnedOutboundRequest:
     """An outbound request whose connect target is pinned to a validated IP.
@@ -117,7 +131,7 @@ def _resolve_pinned_outbound_ip(hostname: str) -> str | None:
     )
 
 
-def _is_blocked_outbound_host(hostname: str) -> bool:
+def _is_statically_blocked_host(hostname: str) -> bool:
     if not hostname:
         return True
     lowered = hostname.lower().rstrip(".")
@@ -127,8 +141,13 @@ def _is_blocked_outbound_host(hostname: str) -> bool:
         return _is_blocked_ip(ipaddress.ip_address(lowered.split("%")[0]))
     except ValueError:
         pass
-    if lowered == "localhost" or lowered.endswith(_LOCAL_HOST_SUFFIXES) or "." not in lowered:
+    return lowered == "localhost" or lowered.endswith(_LOCAL_HOST_SUFFIXES) or "." not in lowered
+
+
+def _is_blocked_outbound_host(hostname: str) -> bool:
+    if _is_statically_blocked_host(hostname):
         return True
+    lowered = hostname.lower().rstrip(".")
     try:
         infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
     except OSError as exc:
