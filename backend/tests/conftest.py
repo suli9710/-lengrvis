@@ -101,6 +101,28 @@ def reset_settings_cache() -> Iterable[None]:
     invalidate_settings_cache()
 
 
+@pytest.fixture(autouse=True)
+def reset_pairing_rate_limit_state() -> Iterable[None]:
+    """Pairing failure counters are process-global and must not leak across tests."""
+    from app.services import mobile_pairing_service
+
+    with mobile_pairing_service._PAIR_CONFIRM_FAILURES_LOCK:
+        mobile_pairing_service._PAIR_CONFIRM_FAILURES.clear()
+    yield
+    with mobile_pairing_service._PAIR_CONFIRM_FAILURES_LOCK:
+        mobile_pairing_service._PAIR_CONFIRM_FAILURES.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_audit_chain_head_cache() -> Iterable[None]:
+    """Audit sequence allocation uses an in-memory head keyed by db path."""
+    from app.core import db
+
+    db.reset_audit_caches()
+    yield
+    db.reset_audit_caches()
+
+
 def import_first(module_names: Iterable[str]) -> Any:
     """Import the first available module from a list of expected locations."""
 

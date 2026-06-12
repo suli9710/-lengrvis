@@ -51,6 +51,10 @@ jobs:
       - name: Install Playwright Chromium (browser tool tests)
         run: python -m playwright install chromium
       - name: Backend test suite
+        # Explicit audit HMAC secret as defense-in-depth (R4-C1): the first
+        # audit write must never depend on secret-file bootstrap in CI.
+        env:
+          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
         run: python -m pytest backend/tests -q --maxfail=1
       - name: Golden task gate (>=95% pass rate report)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1
@@ -63,9 +67,9 @@ jobs:
           if-no-files-found: ignore
 
   desktop:
-    name: Desktop typecheck
+    name: Desktop typecheck + audit + behavior smokes
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -75,8 +79,16 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
+      - name: Desktop dependency audit gate (high+ blocks the PR)
+        run: npm --prefix desktop audit --audit-level=high
       - name: Desktop typecheck
         run: npm --prefix desktop run typecheck
+      - name: Desktop unit tests (Vitest)
+        run: npm --prefix desktop test
+      - name: Install Playwright Chromium (UI smokes)
+        run: npm --prefix desktop exec playwright install chromium
+      - name: Desktop behavior smokes
+        run: npm --prefix desktop run smoke
 
   mobile:
     name: Mobile typecheck + behavior smokes
@@ -91,6 +103,8 @@ jobs:
           cache-dependency-path: mobile/package-lock.json
       - name: Install mobile dependencies
         run: npm --prefix mobile ci
+      - name: Mobile dependency audit gate (high+ blocks the PR)
+        run: npm --prefix mobile audit --audit-level=high
       - name: Mobile typecheck
         run: npm --prefix mobile run typecheck
       - name: Mobile token smoke
@@ -99,3 +113,5 @@ jobs:
         run: npm --prefix mobile run smoke:task-companion
       - name: Mobile remote input grant smoke
         run: npm --prefix mobile run smoke:remote-input-grant
+      - name: Mobile wakeup contract smoke
+        run: npm --prefix mobile run smoke:wakeup-contract

@@ -247,7 +247,8 @@ async function installApiMocks(page, options = {}) {
     if (url.pathname === "/api/settings/llm/health") return json({});
     if (url.pathname === "/api/settings/llm/cost-summary") return json({});
     if (url.pathname === "/api/context/usage") return json({});
-    if (url.pathname === "/api/audit/logs") return json([]);
+    if (url.pathname === "/api/audit" || url.pathname === "/api/audit/logs") return json([]);
+    if (url.pathname.endsWith("/timeline")) return json({ messages: [], recordings: [] });
     if (url.pathname === "/api/system/info") {
       if (counters) counters.systemInfoRequests = (counters.systemInfoRequests ?? 0) + 1;
       return json({ system: "Windows", platform: "win32", machine: "x64" });
@@ -368,11 +369,12 @@ async function assertNoPlaceholderContent(page, label) {
 }
 
 async function assertHomeQuickTemplates(page) {
+  await page.getByTestId("office-template-check-computer").waitFor({ timeout: 20_000 });
   for (const name of Object.values(quickTemplateButtonNames)) {
-    await page.getByRole("button", { name }).first().waitFor({ timeout: 10_000 });
+    await page.getByRole("button", { name }).first().waitFor({ timeout: 20_000 });
   }
-  await page.getByText(/Task Workspace/).first().waitFor({ timeout: 10_000 });
-  await page.getByText(/成果区|鎴愭灉鍖?/).first().waitFor({ timeout: 10_000 });
+  await page.getByText(/任务工作区|Task Workspace/).first().waitFor({ timeout: 20_000 });
+  await page.getByText(/成果区|鎴愭灉鍖?/).first().waitFor({ timeout: 20_000 });
   await assertComputerTemplateFallback(page);
 }
 
@@ -438,7 +440,7 @@ async function assertQuickPromptEntry(page, counters) {
   await page.getByText(/已填好这句话|宸插～濂借繖鍙ヨ瘽/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/理解目标|鐞嗚В鐩爣/).first().waitFor({ timeout: 10_000 });
   await page.getByText(/清理前会确认|实时显示进度|瀹炴椂鏄剧ず杩涘害/).first().waitFor({ timeout: 10_000 });
-  await assertRootTextIncludes(page, /Task Workspace.*文件工具|文件工具.*Task Workspace|Task Workspace.*鏂囦欢宸ュ叿|鏂囦欢宸ュ叿.*Task Workspace/s, "quick prompt should update Task Workspace");
+  await assertRootTextIncludes(page, /(?:任务工作区|Task Workspace).*(?:文件工具|鏂囦欢宸ュ叿)|(?:文件工具|鏂囦欢宸ュ叿).*(?:任务工作区|Task Workspace)/s, "quick prompt should update Task Workspace");
   await assertRootTextIncludes(page, /发送后先选文件夹|清理前会确认|清理前不会删除任何文件/, "large-file quick entry should explain scope and deletion safety");
   assert.equal(counters.taskLaunchRequests ?? 0, 0, "quick prompt should fill the command box without starting a task");
   await assertNoHorizontalOverflow(page, "quick prompt entry");

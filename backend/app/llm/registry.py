@@ -8,6 +8,7 @@ import time
 from urllib.parse import urlparse
 
 from app.config import ENV_PREFIX, AppSettings, get_base_settings
+from app.core.outbound_url import validate_outbound_http_url
 from app.context_management import ContextAwareProvider
 from app.core import db
 from app.llm.profiles import profile_for_provider
@@ -44,6 +45,11 @@ def invalidate_settings_cache() -> None:
     with _SETTINGS_CACHE_LOCK:
         _settings_cache_value = None
         _settings_cache_key = None
+
+
+# Registered at import time so db can notify us on settings writes without
+# importing this module (core must not depend on llm).
+db.register_settings_invalidation_hook(invalidate_settings_cache)
 
 
 def get_effective_settings() -> AppSettings:
@@ -154,6 +160,7 @@ def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
         "LENGRVIS_MCP_SERVERS": "mcp_servers",
         "LENGRVIS_ALLOW_MOCK_FALLBACK": "allow_mock_fallback",
         "LENGRVIS_STRICT_STATE_MACHINE": "strict_state_machine",
+        "LENGRVIS_TOOL_TIMEOUT_SECONDS": "tool_timeout_seconds",
         "LENGRVIS_RECOVERY_MAX_RETRIES": "recovery_max_retries",
         "LENGRVIS_OS_REFLECTION_MAX_PER_RUN": "os_reflection_max_per_run",
         "LENGRVIS_OS_REFLECTION_MAX_PER_STEP": "os_reflection_max_per_step",
@@ -206,6 +213,8 @@ def _build_cloud_provider(settings: AppSettings) -> LLMProvider:
     if name in CLOUD_PROVIDERS:
         if not settings.api_key:
             return _fallback_or_raise(settings, reason="cloud provider without api_key")
+        if settings.base_url:
+            validate_outbound_http_url(settings.base_url, allow_private=False)
         return OpenAICompatibleProvider(settings)
     if name in LOCAL_PROVIDERS and settings.base_url:
         return OpenAICompatibleProvider(settings)

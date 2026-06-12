@@ -73,11 +73,13 @@ def transition(task: Task, target: str | TaskPhase, actor: str = "StateMachine",
         if strict:
             raise _invalid_transition_error(source_phase, target_phase)
         _record_invalid_transition(task, actor, source_phase.value, target_phase.value)
+        return task
     if source_phase == target_phase and task.execution_stage != target_stage:
         if not _is_stage_update_allowed(task.execution_stage, target_stage):
             if strict:
                 raise StateTransitionError(task.execution_stage.value, target_stage.value)
             _record_invalid_transition(task, actor, task.execution_stage.value, target_stage.value)
+            return task
 
     old_phase = task.status
     old_stage = task.execution_stage
@@ -123,8 +125,8 @@ def safe_transition(
 ) -> Task:
     """Transition using configured strictness.
 
-    Default mode audits invalid transitions and still syncs explicit phase fields;
-    strict mode raises StateTransitionError for fail-fast callers and APIs.
+    Non-strict mode audits invalid transitions without persisting the target
+    status; strict mode raises StateTransitionError for fail-fast callers.
     """
 
     if strict is None:

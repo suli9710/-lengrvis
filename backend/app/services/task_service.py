@@ -1,41 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import threading
 from typing import Any, Coroutine
 
+from app.agents.delegation_metadata import build_task_delegation_metadata
+from app.agents.delegation_rules import FILE_ACTION_TERMS, UNINSTALL_TERMS, WINDOWS_PATH_RE, contains_any
 from app.agents.supervisor_agent import SupervisorAgent, SupervisorDecision
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import ChatMessage, ChatResponse, OpenAIMessageRole, RunEngine, RunPhase, Task, TaskStatus
 from app.orchestration.engine_router import route_engine
+from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.services.task_pool import get_pool
 
-
-PATH_ACTION_RE = re.compile(r"[A-Za-z]:[\\/][^\r\n\"<>|?*]+")
-FILE_ACTION_TERMS = (
-    "删除",
-    "删掉",
-    "移除",
-    "清理",
-    "复制",
-    "移动",
-    "重命名",
-    "读取",
-    "打开",
-    "delete",
-    "remove",
-    "trash",
-    "copy",
-    "move",
-    "rename",
-    "open",
-)
-UNINSTALL_TERMS = ("卸载", "uninstall")
 
 # The event loop only keeps weak references to tasks; fire-and-forget tasks
 # must be held here until done or they can be garbage collected mid-run.
@@ -49,7 +30,9 @@ def _spawn_background(coro: Coroutine[Any, Any, Any]) -> None:
 
 
 async def create_task(message: str, mode: str) -> ChatResponse:
-    task = await OrchestratorAgent().handle_user_goal(message, mode)
+    orchestrator = OrchestratorAgent()
+    task = await orchestrator.handle_user_goal(message, mode)
+    orchestrator_registry.bind(task_id=task.id, orchestrator=orchestrator)
     return ChatResponse(
         task_id=task.id,
         status=task.status,
@@ -64,7 +47,7 @@ async def handle_chat(message: str, mode: str) -> ChatResponse:
     db.upsert_model("chat_messages", user_message)
 
     route = route_engine(message, "auto")
-    if route.selected_engine == "os" and "system diagnostics" in route.reason:
+    if route.rule == "system_diagnostics":
         return await _delegate_system_diagnostics_run(message, mode)
 
     supervisor = SupervisorAgent()
@@ -90,13 +73,13 @@ async def handle_chat(message: str, mode: str) -> ChatResponse:
         db.upsert_model("chat_messages", assistant_message)
         return ChatResponse(message=decision.reply, delegated=False, agent="SupervisorAgent")
 
-    return _delegate_task(message, mode, decision)
+    return await _delegate_task(message, mode, decision)
 
 
 async def _delegate_system_diagnostics_run(message: str, mode: str) -> ChatResponse:
     from app.services import run_service
 
-    run = await run_service.create_run(message, mode, RunEngine.AUTO)
+    run = await run_service.create_run(message, mode, RunEngine.AUTO, agent_hint="ComputerAgent")
     reply = "好的，这个任务和电脑/系统有关，我将分配给电脑 Agent。"
     assistant_message = ChatMessage(
         role=OpenAIMessageRole.ASSISTANT,
@@ -127,17 +110,20 @@ def _task_phase_from_run_phase(phase: RunPhase) -> TaskPhase:
 
 def _is_explicit_file_path_request(message: str) -> bool:
     normalized = message.lower()
-    return bool(PATH_ACTION_RE.search(message)) and any(term in normalized for term in FILE_ACTION_TERMS)
+    return bool(WINDOWS_PATH_RE.search(message)) and contains_any(normalized, FILE_ACTION_TERMS)
 
 
 def _is_uninstall_request(message: str) -> bool:
     normalized = message.lower()
-    return any(term in normalized for term in UNINSTALL_TERMS)
+    return contains_any(normalized, UNINSTALL_TERMS)
 
 
-def _delegate_task(message: str, mode: str, decision: SupervisorDecision, *, metadata: dict[str, Any] | None = None) -> ChatResponse:
+async def _delegate_task(message: str, mode: str, decision: SupervisorDecision, *, metadata: dict[str, Any] | None = None) -> ChatResponse:
     orchestrator = OrchestratorAgent()
-    task = orchestrator.create_task_shell(message, mode, metadata=metadata)
+    merged_metadata = build_task_delegation_metadata(agent_hint=decision.agent_hint, extra=metadata)
+    agent_hint = str(merged_metadata.get("supervisor_agent_hint") or "")
+    task = orchestrator.create_task_shell(message, mode, metadata=merged_metadata)
+    orchestrator_registry.bind(task_id=task.id, orchestrator=orchestrator)
     record(
         "supervisor.decision",
         "SupervisorAgent",
@@ -166,13 +152,15 @@ def _delegate_task(message: str, mode: str, decision: SupervisorDecision, *, met
         status=task.status,
         message=reply,
         delegated=True,
-        agent=decision.agent_hint or "OrchestratorAgent",
+        agent=agent_hint or decision.agent_hint or "OrchestratorAgent",
     )
 
 
 async def _run_task_through_orchestrator(task: Task) -> Task:
     try:
-        return await OrchestratorAgent().run_task(task)
+        orchestrator = orchestrator_registry.get_or_create_for_task(task.id, OrchestratorAgent)
+        task = get_task(task.id)
+        return await orchestrator.run_task(task)
     except Exception as exc:
         task.final_summary = f"任务执行失败：{exc}"
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
@@ -245,7 +233,7 @@ def _start_resume_thread(task: Task) -> None:
 
 
 async def _run_existing_plan(task: Task) -> None:
-    orchestrator = OrchestratorAgent()
+    orchestrator = orchestrator_registry.get_or_create_for_task(task.id, OrchestratorAgent)
     plan = orchestrator._latest_plan_for_task(task.id)
     await orchestrator._process_steps(task, plan)
     await orchestrator.completion_handler.finalize(task, plan)

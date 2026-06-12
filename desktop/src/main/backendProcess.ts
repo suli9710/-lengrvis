@@ -113,9 +113,6 @@ export class BackendProcessManager {
     for (const alias of envAliases("LENGRVIS_DATA_DIR")) {
       process.env[alias] = process.env[alias] ?? this.backendDataDir;
     }
-    if (tokenResolution.source === "memory") {
-      void writeBackendLog("desktop API token could not be persisted; Windows Service authentication may fail");
-    }
     this.status = {
       state: "stopped",
       baseUrl: this.getBaseUrl(),
@@ -224,6 +221,19 @@ export class BackendProcessManager {
 
     const child = this.child;
     this.child = null;
+    // Graceful drain before the hard kill: ask the backend to pause in-flight
+    // runs (bounded wait) so they survive as resumable PAUSED rows instead of
+    // crash-orphaned RUNNING zombies that startup recovery has to reconcile.
+    const drainError = await postRuntimeMode(
+      this.getBaseUrl(),
+      RUNTIME_BACKGROUND_ENDPOINT,
+      "desktop_quit",
+      this.desktopApiToken,
+      10_000
+    );
+    if (drainError) {
+      void writeBackendLog(`backend drain before stop failed; error=${drainError.message}`);
+    }
     await terminateProcessTree(child);
     return this.refreshStatus("stopped", "后端进程已停止");
   }
@@ -682,14 +692,20 @@ async function probeRuntimeStatus(baseUrl: string): Promise<Partial<BackendStatu
   }
 }
 
-async function postRuntimeMode(baseUrl: string, endpoint: string, reason: string, desktopApiToken: string): Promise<Error | null> {
+async function postRuntimeMode(
+  baseUrl: string,
+  endpoint: string,
+  reason: string,
+  desktopApiToken: string,
+  timeoutMs = 35_000
+): Promise<Error | null> {
   try {
     const backendUrl = assertLoopbackBackendUrl(baseUrl, "Runtime mode desktop token request");
     const response = await fetch(new URL(endpoint, backendUrl), {
       method: "POST",
       headers: { "Content-Type": "application/json", [DESKTOP_API_TOKEN_HEADER]: desktopApiToken },
       body: JSON.stringify({ reason }),
-      signal: AbortSignal.timeout(35_000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
     if (!response.ok) {
       throw new Error(`Runtime mode request failed: ${response.status} ${await runtimeModeErrorText(response)}`);

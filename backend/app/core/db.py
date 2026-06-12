@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -29,11 +29,41 @@ _AUDIT_CACHE_LOCK = threading.Lock()
 _AUDIT_SECRET_CACHE: dict[str, str] = {}
 _AUDIT_CHAIN_HEADS: dict[str, tuple[int, str]] = {}
 
+# Single-process event-write serializer (R4-C2): audit/run_events inserts open
+# BEGIN IMMEDIATE transactions from both the event loop and worker threads
+# (watcher, scheduler, cancel storms writing step.invalid_transition_audited).
+# Serializing these hot writes inside the process prevents them from racing
+# each other into "database is locked" once any writer holds the SQLite write
+# lock longer than busy_timeout. Cross-process contention is still covered by
+# WAL + busy_timeout. RLock so a path that already holds the lock can audit
+# its own failure without self-deadlocking.
+_EVENT_WRITE_LOCK = threading.RLock()
+
 
 def reset_audit_caches() -> None:
     with _AUDIT_CACHE_LOCK:
         _AUDIT_SECRET_CACHE.clear()
         _AUDIT_CHAIN_HEADS.clear()
+
+
+# Settings invalidation hooks (dependency inversion for core->llm): instead of
+# db deferred-importing app.llm.registry, interested modules register a
+# callback here at import time and db notifies them when settings change.
+_SETTINGS_HOOK_LOCK = threading.Lock()
+_SETTINGS_INVALIDATION_HOOKS: list[Callable[[], None]] = []
+
+
+def register_settings_invalidation_hook(fn: Callable[[], None]) -> None:
+    with _SETTINGS_HOOK_LOCK:
+        if fn not in _SETTINGS_INVALIDATION_HOOKS:
+            _SETTINGS_INVALIDATION_HOOKS.append(fn)
+
+
+def _notify_settings_invalidated() -> None:
+    with _SETTINGS_HOOK_LOCK:
+        hooks = tuple(_SETTINGS_INVALIDATION_HOOKS)
+    for hook in hooks:
+        hook()
 
 
 DATA_TABLES = frozenset(
@@ -521,214 +551,277 @@ def _init_db_schema() -> None:
         )
 
 
+def _upsert_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO tasks (id, data, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
+        """,
+        (data["id"], _json(data), data.get("created_at", now), now),
+    )
+
+
+def _upsert_chat_messages(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO chat_messages (id, data, created_at) VALUES (?, ?, ?)",
+        (data["id"], _json(data), data.get("created_at", now)),
+    )
+
+
+def _upsert_plans(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO plans (id, task_id, data, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            data=excluded.data,
+            task_id=excluded.task_id
+        """,
+        (data["id"], data["task_id"], _json(data), data.get("created_at", now)),
+    )
+
+
+def _upsert_goals(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO goals (id, scope, parent_goal_id, status, depth, task_ids, data, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            scope=excluded.scope,
+            parent_goal_id=excluded.parent_goal_id,
+            status=excluded.status,
+            depth=excluded.depth,
+            task_ids=excluded.task_ids,
+            data=excluded.data,
+            updated_at=excluded.updated_at
+        """,
+        (
+            data["id"],
+            data.get("scope", "default"),
+            data.get("parent_goal_id") or None,
+            data.get("status", "active"),
+            int(data.get("depth") or 0),
+            _json(data.get("related_task_ids") or data.get("task_ids") or []),
+            _json(data),
+            data.get("created_at", now),
+            now,
+        ),
+    )
+
+
+def _upsert_agent_messages(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO agent_messages (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
+        (data["id"], data["task_id"], data.get("step_id"), _json(data), data.get("created_at", now)),
+    )
+
+
+def _upsert_runs(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO runs (id, task_id, engine, phase, data, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            task_id=excluded.task_id,
+            engine=excluded.engine,
+            phase=excluded.phase,
+            data=excluded.data,
+            updated_at=excluded.updated_at
+        """,
+        (
+            data["id"],
+            data.get("task_id") or None,
+            data.get("engine", "auto"),
+            data.get("phase", "created"),
+            _json(data),
+            data.get("created_at", now),
+            data.get("updated_at", now),
+        ),
+    )
+
+
+def _upsert_safety_reviews(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO safety_reviews (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
+        (data["id"], data["task_id"], data.get("step_id"), _json(data), data.get("created_at", now)),
+    )
+
+
+def _upsert_tool_calls(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO tool_calls (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
+        (data["id"], data["task_id"], data["step_id"], _json(data), data.get("created_at", now)),
+    )
+
+
+def _upsert_tool_results(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO tool_results (id, tool_call_id, data, created_at) VALUES (?, ?, ?, ?)",
+        (data["id"], data["tool_call_id"], _json(data), data.get("created_at", now)),
+    )
+
+
+def _upsert_approvals(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO approvals (id, task_id, step_id, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            data["id"],
+            data["task_id"],
+            data.get("step_id"),
+            _json(data),
+            status or data.get("status", "pending"),
+            data.get("created_at", now),
+        ),
+    )
+
+
+def _upsert_scheduled_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO scheduled_tasks (id, cron, goal, mode, enabled, next_run_at, last_run_at, data, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            cron=excluded.cron,
+            goal=excluded.goal,
+            mode=excluded.mode,
+            enabled=excluded.enabled,
+            next_run_at=excluded.next_run_at,
+            last_run_at=excluded.last_run_at,
+            data=excluded.data,
+            updated_at=excluded.updated_at
+        """,
+        (
+            data["id"],
+            data["cron"],
+            data["goal"],
+            data.get("mode", "efficiency"),
+            1 if data.get("enabled", True) else 0,
+            data.get("next_run_at") or None,
+            data.get("last_run_at") or None,
+            _json(data),
+            data.get("created_at", now),
+            now,
+        ),
+    )
+
+
+def _upsert_wakeups(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO wakeups (id, source, source_id, status, due_at, data, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            source=excluded.source,
+            source_id=excluded.source_id,
+            status=excluded.status,
+            due_at=excluded.due_at,
+            data=excluded.data,
+            updated_at=excluded.updated_at
+        """,
+        (
+            data["id"],
+            data.get("source", "schedule"),
+            data.get("source_id") or "",
+            data.get("status", "pending"),
+            data.get("due_at") or data.get("created_at", now),
+            _json(data),
+            data.get("created_at", now),
+            now,
+        ),
+    )
+
+
+def _upsert_memories(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO memories (id, kind, content, tags, task_id, embedding, data, created_at, last_used_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            data["id"],
+            data.get("kind", "fact"),
+            data.get("content", ""),
+            ",".join(data.get("tags") or []),
+            data.get("task_id") or "",
+            data.pop("embedding_blob", None) if isinstance(data.get("embedding_blob", None), (bytes, bytearray)) else None,
+            _json(data),
+            data.get("created_at", now),
+            data.get("last_used_at") or None,
+        ),
+    )
+
+
+def _upsert_session_contexts(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
+    conn.execute(
+        """
+        INSERT INTO session_contexts (id, data, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
+        """,
+        (data["id"], _json(data), data.get("created_at", now), now),
+    )
+
+
+# Table-driven dispatch for upsert_model. Each handler runs inside one
+# `connect()` transaction; audit_events and run_events stay outside because
+# they manage their own serialized write transactions (R4-C2).
+_UPSERT_HANDLERS: dict[str, Callable[[sqlite3.Connection, dict[str, Any], str, str | None], None]] = {
+    "tasks": _upsert_tasks,
+    "chat_messages": _upsert_chat_messages,
+    "plans": _upsert_plans,
+    "goals": _upsert_goals,
+    "agent_messages": _upsert_agent_messages,
+    "runs": _upsert_runs,
+    "safety_reviews": _upsert_safety_reviews,
+    "tool_calls": _upsert_tool_calls,
+    "tool_results": _upsert_tool_results,
+    "approvals": _upsert_approvals,
+    "scheduled_tasks": _upsert_scheduled_tasks,
+    "wakeups": _upsert_wakeups,
+    "memories": _upsert_memories,
+    "session_contexts": _upsert_session_contexts,
+}
+
+
 def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, status: str | None = None) -> None:
     data = json.loads(model.model_dump_json())
     now = data.get("updated_at") or data.get("created_at") or _now_iso()
     if table == "audit_events":
         _insert_audit_event_record(data)
         return
+    if table == "run_events":
+        # Route through the serialized writer so the BEGIN IMMEDIATE txn is
+        # held (and committed) entirely under _EVENT_WRITE_LOCK.
+        _insert_run_event_record(data)
+        return
+    handler = _UPSERT_HANDLERS.get(table)
+    if handler is None:
+        raise ValueError(f"Unsupported table: {table}")
     with connect() as conn:
-        if table == "tasks":
-            conn.execute(
-                """
-                INSERT INTO tasks (id, data, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
-                """,
-                (data["id"], _json(data), data.get("created_at", now), now),
-            )
-            return
-        if table == "chat_messages":
-            conn.execute(
-                "INSERT OR REPLACE INTO chat_messages (id, data, created_at) VALUES (?, ?, ?)",
-                (data["id"], _json(data), data.get("created_at", now)),
-            )
-            return
-        if table == "plans":
-            conn.execute(
-                "INSERT OR REPLACE INTO plans (id, task_id, data, created_at) VALUES (?, ?, ?, ?)",
-                (data["id"], data["task_id"], _json(data), now),
-            )
-            return
-        if table == "goals":
-            conn.execute(
-                """
-                INSERT INTO goals (id, scope, parent_goal_id, status, depth, task_ids, data, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    scope=excluded.scope,
-                    parent_goal_id=excluded.parent_goal_id,
-                    status=excluded.status,
-                    depth=excluded.depth,
-                    task_ids=excluded.task_ids,
-                    data=excluded.data,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    data["id"],
-                    data.get("scope", "default"),
-                    data.get("parent_goal_id") or None,
-                    data.get("status", "active"),
-                    int(data.get("depth") or 0),
-                    _json(data.get("related_task_ids") or data.get("task_ids") or []),
-                    _json(data),
-                    data.get("created_at", now),
-                    now,
-                ),
-            )
-            return
-        if table == "agent_messages":
-            conn.execute(
-                "INSERT OR REPLACE INTO agent_messages (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
-                (data["id"], data["task_id"], data.get("step_id"), _json(data), data.get("created_at", now)),
-            )
-            return
-        if table == "runs":
-            conn.execute(
-                """
-                INSERT INTO runs (id, task_id, engine, phase, data, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    task_id=excluded.task_id,
-                    engine=excluded.engine,
-                    phase=excluded.phase,
-                    data=excluded.data,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    data["id"],
-                    data.get("task_id") or None,
-                    data.get("engine", "auto"),
-                    data.get("phase", "created"),
-                    _json(data),
-                    data.get("created_at", now),
-                    data.get("updated_at", now),
-                ),
-            )
-            return
-        if table == "run_events":
-            conn.execute("BEGIN IMMEDIATE")
-            _insert_run_event_locked(conn, data)
-            return
-        if table == "safety_reviews":
-            conn.execute(
-                "INSERT OR REPLACE INTO safety_reviews (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
-                (data["id"], data["task_id"], data.get("step_id"), _json(data), data.get("created_at", now)),
-            )
-            return
-        if table == "tool_calls":
-            conn.execute(
-                "INSERT OR REPLACE INTO tool_calls (id, task_id, step_id, data, created_at) VALUES (?, ?, ?, ?, ?)",
-                (data["id"], data["task_id"], data["step_id"], _json(data), data.get("created_at", now)),
-            )
-            return
-        if table == "tool_results":
-            conn.execute(
-                "INSERT OR REPLACE INTO tool_results (id, tool_call_id, data, created_at) VALUES (?, ?, ?, ?)",
-                (data["id"], data["tool_call_id"], _json(data), data.get("created_at", now)),
-            )
-            return
-        if table == "approvals":
-            conn.execute(
-                "INSERT OR REPLACE INTO approvals (id, task_id, step_id, data, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    data["id"],
-                    data["task_id"],
-                    data.get("step_id"),
-                    _json(data),
-                    status or data.get("status", "pending"),
-                    data.get("created_at", now),
-                ),
-            )
-            return
-        if table == "scheduled_tasks":
-            conn.execute(
-                """
-                INSERT INTO scheduled_tasks (id, cron, goal, mode, enabled, next_run_at, last_run_at, data, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    cron=excluded.cron,
-                    goal=excluded.goal,
-                    mode=excluded.mode,
-                    enabled=excluded.enabled,
-                    next_run_at=excluded.next_run_at,
-                    last_run_at=excluded.last_run_at,
-                    data=excluded.data,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    data["id"],
-                    data["cron"],
-                    data["goal"],
-                    data.get("mode", "efficiency"),
-                    1 if data.get("enabled", True) else 0,
-                    data.get("next_run_at") or None,
-                    data.get("last_run_at") or None,
-                    _json(data),
-                    data.get("created_at", now),
-                    now,
-                ),
-            )
-            return
-        if table == "wakeups":
-            conn.execute(
-                """
-                INSERT INTO wakeups (id, source, source_id, status, due_at, data, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    source=excluded.source,
-                    source_id=excluded.source_id,
-                    status=excluded.status,
-                    due_at=excluded.due_at,
-                    data=excluded.data,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    data["id"],
-                    data.get("source", "schedule"),
-                    data.get("source_id") or "",
-                    data.get("status", "pending"),
-                    data.get("due_at") or data.get("created_at", now),
-                    _json(data),
-                    data.get("created_at", now),
-                    now,
-                ),
-            )
-            return
-        if table == "memories":
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO memories (id, kind, content, tags, task_id, embedding, data, created_at, last_used_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    data["id"],
-                    data.get("kind", "fact"),
-                    data.get("content", ""),
-                    ",".join(data.get("tags") or []),
-                    data.get("task_id") or "",
-                    data.pop("embedding_blob", None) if isinstance(data.get("embedding_blob", None), (bytes, bytearray)) else None,
-                    _json(data),
-                    data.get("created_at", now),
-                    data.get("last_used_at") or None,
-                ),
-            )
-            return
-        if table == "session_contexts":
-            conn.execute(
-                """
-                INSERT INTO session_contexts (id, data, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
-                """,
-                (data["id"], _json(data), data.get("created_at", now), now),
-            )
-            return
-    raise ValueError(f"Unsupported table: {table}")
+        handler(conn, data, now, status)
+
+
+# Read barriers: tables whose writes are deferred to a background writer
+# (currently agent_messages via AgentBus) register a flush callable here so
+# every reader—services, routes, and tests alike—keeps read-your-writes
+# semantics without knowing about the writer thread.
+_READ_BARRIERS: dict[str, Callable[[], None]] = {}
+
+
+def register_read_barrier(table: str, barrier: Callable[[], None]) -> None:
+    _READ_BARRIERS[_data_table_name(table)] = barrier
+
+
+def _apply_read_barrier(table_name: str) -> None:
+    barrier = _READ_BARRIERS.get(table_name)
+    if barrier is not None:
+        barrier()
 
 
 def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
     table_name = _data_table_name(table)
+    _apply_read_barrier(table_name)
     with connect() as conn:
         row = conn.execute(f"SELECT data FROM {table_name} WHERE id = ?", (record_id,)).fetchone()
     return json.loads(row["data"]) if row else None
@@ -782,6 +875,7 @@ def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: i
 
 
 def _fetch_many_data(table_name: str, where_clause: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
+    _apply_read_barrier(table_name)
     query = f"SELECT data FROM {table_name}"
     if where_clause:
         query += f" WHERE {where_clause}"
@@ -1056,9 +1150,14 @@ def next_run_event_sequence(run_id: str) -> int:
 
 def insert_run_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
     data = json.loads(model.model_dump_json()) if isinstance(model, BaseModel) else dict(model)
-    with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        return _insert_run_event_locked(conn, data)
+    return _insert_run_event_record(data)
+
+
+def _insert_run_event_record(data: dict[str, Any]) -> dict[str, Any]:
+    with _EVENT_WRITE_LOCK:
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            return _insert_run_event_locked(conn, data)
 
 
 def _insert_run_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
@@ -1098,7 +1197,7 @@ def insert_audit_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
 
 def _insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
     try:
-        with connect() as conn:
+        with _EVENT_WRITE_LOCK, connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             stored = _prepare_audit_event_locked(conn, data)
             conn.execute(
@@ -1119,8 +1218,7 @@ def _insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
                     stored["created_at"],
                 ),
             )
-            # Update the in-memory head before commit releases the write lock so
-            # concurrent writers cannot derive the same sequence from a stale tail.
+            # Head is reserved in _prepare_audit_event_locked; refresh with the committed hash.
             _store_audit_chain_head(stored["sequence"], stored["event_hash"])
     except Exception:
         _invalidate_audit_chain_head()
@@ -1282,9 +1380,7 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
     with connect() as conn:
         conn.execute("VACUUM")
     if include_settings:
-        from app.llm.registry import invalidate_settings_cache
-
-        invalidate_settings_cache()
+        _notify_settings_invalidated()
     return counts
 
 
@@ -1498,26 +1594,35 @@ def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) 
     stored.setdefault("id", f"audit_{uuid4().hex}")
     stored["created_at"] = stored.get("created_at") or _now_iso()
 
+    # Resolve the HMAC secret *before* taking the cache lock: _audit_hmac_secret
+    # acquires _AUDIT_CACHE_LOCK itself and threading.Lock is not reentrant, so
+    # calling it while holding the lock self-deadlocks the first audit write of
+    # every process (and freezes the DB via the open BEGIN IMMEDIATE txn).
+    hmac_secret = _audit_hmac_secret()
+
     key = str(db_path())
     with _AUDIT_CACHE_LOCK:
         head = _AUDIT_CHAIN_HEADS.get(key)
-    if head is None:
-        row = conn.execute(
-            "SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1"
-        ).fetchone()
-        sequence = int(row["sequence"] or 0) + 1 if row else 1
-        prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
-    else:
-        sequence = head[0] + 1
-        prev_hash = head[1]
+        if head is None:
+            row = conn.execute(
+                "SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            sequence = int(row["sequence"] or 0) + 1 if row else 1
+            prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
+        else:
+            sequence = head[0] + 1
+            prev_hash = head[1]
 
-    stored["sequence"] = sequence
-    stored["prev_hash"] = prev_hash
-    stored["event_hash"] = ""
-    stored["hmac"] = ""
-    event_hash = _audit_event_hash(stored)
-    stored["event_hash"] = event_hash
-    stored["hmac"] = _audit_event_hmac(event_hash)
+        stored["sequence"] = sequence
+        stored["prev_hash"] = prev_hash
+        stored["event_hash"] = ""
+        stored["hmac"] = ""
+        event_hash = _audit_event_hash(stored)
+        stored["event_hash"] = event_hash
+        stored["hmac"] = _audit_event_hmac(event_hash, secret=hmac_secret)
+        # Reserve the next sequence before releasing the lock so concurrent writers
+        # cannot derive the same sequence from a stale in-memory or DB tail.
+        _AUDIT_CHAIN_HEADS[key] = (sequence, event_hash)
     return stored
 
 
@@ -1536,8 +1641,9 @@ def _audit_event_hash(event: dict[str, Any]) -> str:
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _audit_event_hmac(event_hash: str) -> str:
-    return hmac.new(_audit_hmac_secret().encode("utf-8"), event_hash.encode("utf-8"), sha256).hexdigest()
+def _audit_event_hmac(event_hash: str, *, secret: str | None = None) -> str:
+    key = secret if secret is not None else _audit_hmac_secret()
+    return hmac.new(key.encode("utf-8"), event_hash.encode("utf-8"), sha256).hexdigest()
 
 
 def _audit_hmac_secret() -> str:
@@ -1737,9 +1843,7 @@ def set_setting(key: str, value: Any) -> None:
             """,
             (key, _json(value), _now_iso()),
         )
-    from app.llm.registry import invalidate_settings_cache
-
-    invalidate_settings_cache()
+    _notify_settings_invalidated()
 
 
 def get_settings_overrides() -> dict[str, Any]:

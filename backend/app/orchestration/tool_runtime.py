@@ -51,10 +51,13 @@ from app.policy.policy_engine import BROWSER_WRITE_TOOLS
 from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
+from app.llm.registry import get_effective_settings
 from app.tools.schemas import ToolDefinition
 
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_TOOL_TIMEOUT_SECONDS = 300.0
 
 
 # Failure strings that give the reflection layer nothing to reason about
@@ -229,6 +232,18 @@ class ToolRuntime:
             orchestrator._supervise_new_agent_messages(task.id, "tool_call_denied")
             return RuntimeExecutionResult("step_denied")
 
+        # Single-source user-policy backstop (P0-18 convergence): the safety
+        # review above already evaluates the PermissionStore and records the
+        # deny; this re-check only fires if the review rail ever drifts and
+        # stops consulting user rules, so the execution boundary itself can
+        # never run a user-denied tool.
+        backstop_error = self._user_permission_error(tool, step.args, runtime, getattr(orchestrator, "safety", None))
+        if backstop_error:
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            orchestrator.bus.publish_text(task.id, orchestrator.name, f"Denied step: {backstop_error}", step_id=step.id)
+            orchestrator._supervise_new_agent_messages(task.id, "tool_permission_denied")
+            return RuntimeExecutionResult("step_denied")
+
         approval_review = browser_review if browser_review is not None and browser_review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL else None
         if approval_review is None and review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             approval_review = review
@@ -298,6 +313,51 @@ class ToolRuntime:
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         args = approved_args or step.args
+        call = self._publish_tool_call_proposal(task, step, tool, args, approval_id=approval_id)
+        stage = "approved_tool_call_proposed" if approval_id else "tool_call_proposed"
+        if not orchestrator._supervise_new_agent_messages(task.id, stage):
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            orchestrator._set_status(
+                task,
+                TaskStatus.DENIED,
+                final_summary="SafetyReviewAgent stopped the task before executing a tool call.",
+            )
+            return RuntimeExecutionResult("fatal_denied")
+
+        result = await self._execute_tool_call(
+            task,
+            step,
+            tool,
+            runtime,
+            call,
+            args,
+            threaded_tools=threaded_tools,
+            approval_id=approval_id,
+        )
+
+        result = apply_result_budget(
+            result,
+            tool_name=step.tool_name,
+            max_result_size=tool.max_result_size,
+            runtime=runtime,
+        )
+        db.upsert_model("tool_results", result)
+        denial = self._post_result_review_denial(task, step, tool, result)
+        if denial is not None:
+            return denial
+
+        return await self._publish_result_and_finish(task, step, call, result, approval_id=approval_id)
+
+    def _publish_tool_call_proposal(
+        self,
+        task: Task,
+        step: PlanStep,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        *,
+        approval_id: str | None,
+    ) -> ToolCall:
+        orchestrator = self.orchestrator
         safe_args = self._redact_tool_args(args, tool)
         call = ToolCall(
             task_id=task.id,
@@ -328,16 +388,21 @@ class ToolRuntime:
             structured_payload=safe_call_payload,
             metadata={"approval_id": approval_id, "approved_by_user": bool(approval_id)} if approval_id else None,
         )
-        stage = "approved_tool_call_proposed" if approval_id else "tool_call_proposed"
-        if not orchestrator._supervise_new_agent_messages(task.id, stage):
-            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
-            orchestrator._set_status(
-                task,
-                TaskStatus.DENIED,
-                final_summary="SafetyReviewAgent stopped the task before executing a tool call.",
-            )
-            return RuntimeExecutionResult("fatal_denied")
+        return call
 
+    async def _execute_tool_call(
+        self,
+        task: Task,
+        step: PlanStep,
+        tool: ToolDefinition,
+        runtime: TaskRuntimeContext,
+        call: ToolCall,
+        args: dict[str, Any],
+        *,
+        threaded_tools: bool,
+        approval_id: str | None,
+    ) -> ToolResult:
+        orchestrator = self.orchestrator
         before_phase = "before_approved" if approval_id else "before"
         after_phase = "after_approved" if approval_id else "after"
         before_frame = await orchestrator._capture_step_frame(task, step, before_phase)
@@ -430,19 +495,33 @@ class ToolRuntime:
                 metadata={"approval_id": approval_id, "approved_by_user": True} if approval_id else None,
             )
 
-        result = apply_result_budget(
-            result,
-            tool_name=step.tool_name,
-            max_result_size=tool.max_result_size,
-            runtime=runtime,
-        )
-        db.upsert_model("tool_results", result)
+        return result
+
+    def _post_result_review_denial(
+        self,
+        task: Task,
+        step: PlanStep,
+        tool: ToolDefinition,
+        result: ToolResult,
+    ) -> RuntimeExecutionResult | None:
+        orchestrator = self.orchestrator
         post_tool_review = orchestrator.safety.review_tool_result(task.id, step.id, step.tool_name, result, tool.risk_level)
         if post_tool_review.verdict == SafetyVerdict.DENY:
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
             return RuntimeExecutionResult("fatal_denied", result)
+        return None
 
+    async def _publish_result_and_finish(
+        self,
+        task: Task,
+        step: PlanStep,
+        call: ToolCall,
+        result: ToolResult,
+        *,
+        approval_id: str | None,
+    ) -> RuntimeExecutionResult:
+        orchestrator = self.orchestrator
         orchestrator.bus.publish_text(
             task.id,
             step.agent_name,
@@ -818,6 +897,48 @@ class ToolRuntime:
             return str(exc)
         return "" if allowed else f"Tool permission policy denied {tool.name}."
 
+    def _user_permission_error(
+        self,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        runtime: TaskRuntimeContext,
+        safety: Any | None,
+    ) -> str:
+        # safety is usually a SafetyReviewAgent wrapping a PolicyEngine at
+        # .policy; tests may hand a PolicyEngine directly.
+        engine = None
+        for candidate in (safety, getattr(safety, "policy", None)):
+            if candidate is not None and (
+                getattr(candidate, "permission_store", None) is not None
+                or getattr(candidate, "permission_policy", None) is not None
+            ):
+                engine = candidate
+                break
+        if engine is None:
+            return ""
+        try:
+            from app.policy.permissions import evaluate_user_permission_for_tool
+
+            decision = evaluate_user_permission_for_tool(
+                tool_name=tool.name,
+                args=args,
+                context=runtime.tool_context(),
+                policy_engine=engine,
+            )
+        except Exception as exc:  # noqa: BLE001
+            record(
+                "tool.permission_store_failed",
+                "ToolRuntime",
+                {"tool": tool.name, "error": str(exc)},
+                task_id=runtime.task.id,
+            )
+            return f"Permission policy evaluation failed for {tool.name}: {exc}"
+        if getattr(decision, "allowed", True):
+            return ""
+        reason = str(getattr(decision, "reason", "") or f"Permission policy denied {tool.name}.")
+        rule_id = str(getattr(decision, "matched_rule_id", "") or getattr(decision, "rule_id", "") or "")
+        return f"{reason} (rule: {rule_id})" if rule_id else reason
+
     def _observation(self, step: PlanStep, tool: ToolDefinition, output: dict[str, Any]) -> str:
         if tool.result_summary:
             try:
@@ -981,12 +1102,28 @@ class ToolRuntime:
         # Tool implementations are synchronous (file IO, COM automation, OCR,
         # subprocess, HTTP). Always run them off the event loop thread so a
         # slow tool cannot freeze every concurrent request and WebSocket.
-        return await asyncio.to_thread(tool.execute, args, context)
+        timeout = self._tool_execution_timeout(context)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(tool.execute, args, context),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return {"error": f"{tool.name} timed out after {timeout:.0f}s"}
+
+    def _tool_execution_timeout(self, context: dict[str, Any]) -> float:
+        settings = context.get("settings")
+        if settings is not None:
+            configured = getattr(settings, "tool_timeout_seconds", None)
+            if configured is not None:
+                return max(1.0, float(configured))
+        configured = getattr(get_effective_settings(), "tool_timeout_seconds", None)
+        if configured is not None:
+            return max(1.0, float(configured))
+        return _DEFAULT_TOOL_TIMEOUT_SECONDS
 
     def _write_lock_keys(self, tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
         if not self._is_write_tool(tool) and not tool.concurrency_key:
-            return []
-        if args.get("dry_run") is True:
             return []
 
         keys: set[str] = set()

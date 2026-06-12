@@ -157,6 +157,8 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
     }
     if key in float_min_zero_keys:
         return _coerce_float_setting(key, value, minimum=0.0)
+    if key == "tool_timeout_seconds":
+        return _coerce_float_setting(key, value, minimum=1.0)
     if key in {
         "provider_name",
         "base_url",

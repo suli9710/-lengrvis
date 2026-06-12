@@ -6,6 +6,14 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from app.agents.delegation_rules import (
+    DELEGATION_RULES,
+    FILE_ACTION_TERMS,
+    UNINSTALL_TERMS as APP_ACTION_TERMS,
+    WINDOWS_PATH_RE,
+    contains_any,
+)
+from app.agents.worker_agents import KNOWN_SUPERVISOR_WORKER_AGENTS, normalize_supervisor_agent_hint
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.registry import get_provider
@@ -24,45 +32,16 @@ SUPERVISOR_SCHEMA: dict[str, Any] = {
         "reply": {"type": "string"},
         "agent_hint": {
             "type": "string",
-            "description": "One of ComputerAgent, FileAgent, BrowserAgent, SearchAgent, AppAgent, DocumentAgent, or empty.",
+            "description": (
+                "One of "
+                + ", ".join(sorted(KNOWN_SUPERVISOR_WORKER_AGENTS))
+                + ", or empty."
+            ),
         },
     },
 }
 
 SUPERVISOR_TIMEOUT_SECONDS = 20
-
-DELEGATION_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    (
-        "ComputerAgent",
-        ("电脑", "配置", "系统", "cpu", "memory", "内存", "磁盘", "进程", "启动项", "设置"),
-        ("查", "看", "读取", "获取", "诊断", "检测", "列出"),
-    ),
-    (
-        "FileAgent",
-        ("文件", "文档", "目录", "文件夹", "重复", "发票", "合同", "素材", ".txt", ".pdf", ".docx"),
-        ("查", "找", "搜索", "整理", "复制", "移动", "重命名", "删除", "删掉", "移除", "清理", "读取", "列出"),
-    ),
-    (
-        "BrowserAgent",
-        ("网页", "浏览器", "网址", "url", "页面", "链接"),
-        ("打开", "读取", "截图", "提取", "登录", "访问"),
-    ),
-    (
-        "SearchAgent",
-        ("搜索", "查询", "最新", "新闻", "资料", "信息"),
-        ("搜索", "查询", "查", "找"),
-    ),
-    (
-        "AppAgent",
-        ("应用", "软件", "程序", "app", "notepad", "记事本"),
-        ("打开", "启动", "运行", "卸载", "移除", "删除", "uninstall", "remove"),
-    ),
-    (
-        "DocumentAgent",
-        ("pdf", "word", "docx", "pptx", "表格", "文档"),
-        ("总结", "解析", "读取", "提取"),
-    ),
-)
 
 CHAT_ONLY_HINTS = (
     "你好",
@@ -78,33 +57,6 @@ CHAT_ONLY_HINTS = (
     "正常聊天",
     "旅途",
 )
-
-FILE_ACTION_TERMS = (
-    "查",
-    "找",
-    "搜索",
-    "整理",
-    "复制",
-    "移动",
-    "重命名",
-    "删除",
-    "删掉",
-    "移除",
-    "清理",
-    "读取",
-    "列出",
-    "delete",
-    "remove",
-    "trash",
-    "copy",
-    "move",
-    "rename",
-)
-
-APP_ACTION_TERMS = ("卸载", "uninstall")
-
-WINDOWS_PATH_RE = re.compile(r"[a-zA-Z]:[\\/][^\r\n\"<>|?*]+")
-
 
 @dataclass(frozen=True, slots=True)
 class SupervisorDecision:
@@ -259,14 +211,14 @@ class SupervisorAgent:
         if any(hint in normalized for hint in CHAT_ONLY_HINTS):
             return SupervisorDecision(False, self._chat_reply(text))
 
-        if WINDOWS_PATH_RE.search(text) and any(action in normalized for action in FILE_ACTION_TERMS):
+        if WINDOWS_PATH_RE.search(text) and contains_any(normalized, FILE_ACTION_TERMS):
             return SupervisorDecision(
                 delegate=True,
                 reply=self._delegation_reply("FileAgent", normalized),
                 agent_hint="FileAgent",
             )
 
-        if any(action in normalized for action in APP_ACTION_TERMS):
+        if contains_any(normalized, APP_ACTION_TERMS):
             return SupervisorDecision(
                 delegate=True,
                 reply=self._delegation_reply("AppAgent", normalized),
@@ -281,7 +233,7 @@ class SupervisorAgent:
             )
 
         for agent, domains, actions in DELEGATION_RULES:
-            if any(domain in normalized for domain in domains) and any(action in normalized for action in actions):
+            if contains_any(normalized, domains) and contains_any(normalized, actions):
                 return SupervisorDecision(
                     delegate=True,
                     reply=self._delegation_reply(agent, normalized),
@@ -342,14 +294,7 @@ class SupervisorAgent:
         return reply
 
     def _is_known_agent(self, agent: str) -> bool:
-        return agent in {
-            "ComputerAgent",
-            "FileAgent",
-            "BrowserAgent",
-            "SearchAgent",
-            "AppAgent",
-            "DocumentAgent",
-        }
+        return normalize_supervisor_agent_hint(agent) != ""
 
 
 def _typed_context(value: Any, expected_type: type[ScreenState] | type[AppContext]) -> Any:

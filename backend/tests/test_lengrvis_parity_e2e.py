@@ -204,7 +204,13 @@ def test_scenario_1_memory_planner_reflect_consolidation(memory_seed_capture):
 # ---------------------------------------------------------------------------
 
 
-def test_scenario_2_mcp_tools_visible_via_tool_registry(mock_mcp_server):
+def test_scenario_2_mcp_tools_visible_via_tool_registry(mock_mcp_server, monkeypatch):
+    from app.core.outbound_url import PinnedOutboundRequest
+
+    monkeypatch.setattr(
+        "app.mcp.client.pin_outbound_http_url",
+        lambda url, **kwargs: PinnedOutboundRequest(url=url),
+    )
     settings = AppSettings(
         provider_name="mock",
         mcp_servers=[

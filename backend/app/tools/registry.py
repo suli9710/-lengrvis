@@ -112,13 +112,38 @@ def _has_builtin_namespace(name: str) -> bool:
 registry = ToolRegistry()
 
 
+def sync_extension_tools_from_global(target: ToolRegistry) -> int:
+    """Copy MCP and other extension tools from the module-global registry.
+
+    Per-orchestrator registries are built via ``register_all_tools(..., target=...)``
+    without MCP definitions; after ``main`` lifespan registers MCP tools on the
+    global registry, each orchestrator must pull those entries in so plans and
+    execution see the same third-party surface.
+    """
+    copied = 0
+    for tool in registry.list():
+        if tool.name.startswith("mcp."):
+            target.register(tool)
+            copied += 1
+    return copied
+
+
 def register_all_tools(
     extra_definitions=(),
     *,
     settings: AppSettings | None = None,
     skill_directories: Iterable[str] | None = None,
     load_skills: bool = True,
+    target: ToolRegistry | None = None,
 ) -> ToolRegistry:
+    """Build the full toolset.
+
+    With ``target=None`` this rebuilds the module-global ``registry`` in place
+    (legacy behavior for API routes that import the global). Callers that need
+    an isolated toolset (one per orchestrator) MUST pass their own ``target``:
+    rebuilding the shared global would wipe custom registrations of every
+    other live orchestrator and briefly empty the toolset mid-run.
+    """
     from app.tools import (
         app_excel,
         app_tools,
@@ -137,42 +162,43 @@ def register_all_tools(
     )
     from app.adapters import tools as adapter_tools
 
-    registry._tools.clear()
-    file_tools.register(registry)
-    developer_tools.register(registry)
-    document_tools.register(registry)
-    system_tools.register(registry)
-    remote_tools.register(registry)
-    ui_automation_tools.register(registry)
-    workflow_tools.register(registry)
-    app_tools.register(registry)
-    app_excel.register(registry)
-    browser_tools.register(registry)
-    search_tools.register(registry)
-    tool_search.register(registry)
-    vision_tools.register(registry)
-    cluster_tools.register(registry)
-    adapter_tools.register(registry)
+    reg = target if target is not None else registry
+    reg._tools.clear()
+    file_tools.register(reg)
+    developer_tools.register(reg)
+    document_tools.register(reg)
+    system_tools.register(reg)
+    remote_tools.register(reg)
+    ui_automation_tools.register(reg)
+    workflow_tools.register(reg)
+    app_tools.register(reg)
+    app_excel.register(reg)
+    browser_tools.register(reg)
+    search_tools.register(reg)
+    tool_search.register(reg)
+    vision_tools.register(reg)
+    cluster_tools.register(reg)
+    adapter_tools.register(reg)
     for definition in extra_definitions or ():
-        registry.register(definition)
+        reg.register(definition)
     if load_skills:
         try:
             if settings is None:
                 from app.llm.registry import get_effective_settings
 
                 settings = get_effective_settings()
-            register_skills(registry, settings=settings, skill_directories=skill_directories)
+            register_skills(reg, settings=settings, skill_directories=skill_directories)
         except SkillLoadError:
             raise
         except Exception as exc:  # noqa: BLE001
             record("skills.load_failed", "ToolRegistry", {"error": str(exc)})
             raise SkillLoadError(f"Could not load configured skills: {exc}") from exc
-    _mark_builtin_tools_authoritative()
-    return registry
+    _mark_builtin_tools_authoritative(reg)
+    return reg
 
 
-def _mark_builtin_tools_authoritative() -> None:
-    for tool in registry.list():
+def _mark_builtin_tools_authoritative(reg: ToolRegistry | None = None) -> None:
+    for tool in (reg if reg is not None else registry).list():
         if tool.trust_tier == "unknown" and getattr(tool, "origin", "builtin") == "builtin":
             tool.trust_tier = "builtin"
         if tool.read_only is None:

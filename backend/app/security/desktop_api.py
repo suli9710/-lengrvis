@@ -3,7 +3,6 @@ from __future__ import annotations
 import hmac
 import logging
 import os
-import secrets
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -11,9 +10,9 @@ from typing import Mapping
 
 from fastapi import Request, WebSocket, WebSocketException, status
 
-from app.config import get_base_settings, get_env
+from app.config import env_flag, get_base_settings, get_env
 from app.security.lan import is_loopback_host
-from app.security.local_secret import read_local_secret
+from app.security.local_secret import load_or_create_local_secret
 
 
 DESKTOP_API_TOKEN_HEADER = "x-lengrvis-desktop-token"
@@ -161,15 +160,15 @@ def desktop_api_token_optional_for_test() -> bool:
 
 def _is_test_environment() -> bool:
     # Dedicated test flag: truthy values opt in explicitly.
-    if str(os.environ.get("LENGRVIS_TEST") or "").strip().lower() in {"1", "true", "yes", "on"}:
+    if env_flag("LENGRVIS_TEST"):
         return True
     # pytest sets this to the running test nodeid; any non-empty value counts.
-    if str(os.environ.get("PYTEST_CURRENT_TEST") or "").strip():
+    if str(get_env("PYTEST_CURRENT_TEST") or "").strip():
         return True
     # Deployment-style env names must say "test"/"testing" exactly. Generic
     # truthy values like APP_ENV=1 must not unlock token-optional mode.
     return any(
-        str(os.environ.get(name) or "").strip().lower() in {"test", "testing"}
+        str(get_env(name) or "").strip().lower() in {"test", "testing"}
         for name in ("APP_ENV", "LENGRVIS_ENV")
     )
 
@@ -199,28 +198,13 @@ def _websocket_protocols(websocket: WebSocket) -> list[str]:
 
 
 def _local_desktop_api_token() -> str:
-    # Stored plaintext on purpose: Electron and Windows Service read this file directly.
-    # Backend-private secrets use app.security.local_secret (DPAPI). Existing dpapi:
-    # files remain readable via read_local_secret for backward compatibility.
     try:
         data_dir = Path(get_base_settings().data_dir)
         secret_path = data_dir / DESKTOP_API_TOKEN_FILE
-        if secret_path.exists():
-            value = read_local_secret(secret_path)
-            if value:
-                return value
-        data_dir.mkdir(parents=True, exist_ok=True)
-        value = secrets.token_hex(32)
-        try:
-            fd = os.open(secret_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError:
-            existing = read_local_secret(secret_path)
-            if existing:
-                return existing
-            raise OSError(f"desktop API token file at {secret_path} exists but is empty")
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(value)
-        return value
-    except OSError as exc:
+        return load_or_create_local_secret(
+            secret_path,
+            unavailable_message="Desktop API token is unavailable.",
+        )
+    except RuntimeError as exc:
         logger.warning("desktop API token is unavailable; state-changing desktop APIs will reject requests: %s", exc)
         return ""

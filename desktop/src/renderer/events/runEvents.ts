@@ -38,7 +38,8 @@ export function normalizeRunStreamEvent(runId: string, rawEvent: BackendRunStrea
   const createdAt = String(rawEvent.created_at ?? payload.created_at ?? new Date().toISOString());
   const id = String(rawEvent.id ?? payload.id ?? `${eventRunId}-${name}-${createdAt}`);
   const agent = String(payload.from_agent ?? payload.agent ?? "执行引擎");
-  const content = String(payload.content ?? payload.transition_reason ?? payload.message ?? name);
+  const fallbackContent = String(payload.content ?? payload.transition_reason ?? payload.message ?? name);
+  const content = formatRunEventContent(name, payload, fallbackContent);
 
   return {
     id,
@@ -203,10 +204,40 @@ function runEventKind(name: string, payload: Record<string, unknown>): RunUiEven
   if (name === "run.completed" || name === "run.finished") return "run_finished";
   if (name === "run.error" || name === "run.failed" || payload.error) return "error";
   if (name === "approval.needed" || name === "run.waiting_approval") return "approval_needed";
+  if (isLengrvisPermissionEvent(name, payload)) return "approval_needed";
   if (name === "tool.progress") return "tool_progress";
   if (name === "tool.result") return "tool_result";
   if (name === "agent.message" || payload.from_agent || payload.content) return "agent_message";
   return "run_updated";
+}
+
+function lengrvisPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const output = payload.output;
+  if (output && typeof output === "object" && !Array.isArray(output)) {
+    return output as Record<string, unknown>;
+  }
+  return payload;
+}
+
+function isLengrvisPermissionEvent(name: string, payload: Record<string, unknown>): boolean {
+  const source = lengrvisPayload(payload);
+  if (source.error_classification === "permission_denial") return true;
+  if (Array.isArray(source.permission_denials) && source.permission_denials.length > 0) return true;
+  if (name !== "tool.proposed") return false;
+  const toolName = String(payload.tool_name ?? "");
+  return /^(Write|Edit)$/i.test(toolName);
+}
+
+function formatRunEventContent(name: string, payload: Record<string, unknown>, fallback: string): string {
+  if (isLengrvisPermissionEvent(name, payload)) {
+    const source = lengrvisPayload(payload);
+    const denials = Array.isArray(source.permission_denials) ? source.permission_denials : [];
+    const denialTool = (denials[0] as Record<string, unknown> | undefined)?.tool_name;
+    const toolName = String(denialTool ?? payload.tool_name ?? "Write/Edit");
+    const reason = String((denials[0] as Record<string, unknown> | undefined)?.reason ?? source.message ?? payload.message ?? "需要用户批准后才能继续");
+    return `Lengrvis Code 请求 ${toolName} 权限：${reason}`;
+  }
+  return fallback;
 }
 
 function conversationStatusForEvent(event: RunUiEvent): AgentConversation["status"] {

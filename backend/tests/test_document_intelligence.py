@@ -146,6 +146,191 @@ def test_generate_cited_report_fallback_contains_citations(tmp_path: Path):
     assert "[p1:b1]" in result["report"]
 
 
+def test_edit_docx_dry_run_counts_matches_without_writing(tmp_path: Path):
+    path = tmp_path / "memo.docx"
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Quarterly memo for ada@example.com")
+    doc.save(path)
+
+    preview = svc.edit_docx(path, find="Quarterly", replace="Annual", dry_run=True)
+    after = Document(str(path)).paragraphs[0].text
+
+    assert preview["dry_run"] is True
+    assert preview["match_count"] == 1
+    assert after == "Quarterly memo for ada@example.com"
+
+
+def test_edit_docx_writes_replacement_when_dry_run_false(tmp_path: Path):
+    path = tmp_path / "memo.docx"
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Quarterly memo")
+    doc.save(path)
+
+    result = svc.edit_docx(path, find="Quarterly", replace="Annual", dry_run=False)
+    text = Document(str(path)).paragraphs[0].text
+
+    assert result["ok"] is True
+    assert text == "Annual memo"
+    assert result["rollback_info"]["backup"]
+    assert Path(result["rollback_info"]["backup"]).exists()
+
+
+def test_edit_docx_replaces_heading_and_table_text(tmp_path: Path):
+    from docx import Document
+
+    path = tmp_path / "report.docx"
+    doc = Document()
+    doc.add_paragraph("Old Title", style="Heading 1")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Old Title in table"
+    doc.save(path)
+
+    preview = svc.edit_docx(path, find="Old Title", replace="New Title", dry_run=True)
+    assert preview["match_count"] == 2
+
+    result = svc.edit_docx(path, find="Old Title", replace="New Title", dry_run=False)
+    updated = Document(str(path))
+
+    assert result["ok"] is True
+    assert updated.paragraphs[0].text == "New Title"
+    assert updated.tables[0].cell(0, 0).text == "New Title in table"
+
+
+def test_edit_docx_dry_run_includes_resource_state(tmp_path: Path):
+    path = tmp_path / "memo.docx"
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Quarterly memo")
+    doc.save(path)
+
+    preview = svc.edit_docx(path, find="Quarterly", replace="Annual", dry_run=True)
+
+    assert preview["_resource_state"]
+    assert preview["_resource_state"][0]["path"] == str(path.resolve())
+
+
+def test_edit_xlsx_dry_run_and_write_cell(tmp_path: Path):
+    path = tmp_path / "sheet.xlsx"
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.active.title = "Summary"
+    workbook.active["B2"] = "old"
+    workbook.save(path)
+
+    preview = svc.edit_xlsx(path, sheet="Summary", cell="B2", value="new", dry_run=True)
+    assert preview["dry_run"] is True
+    assert preview["diff_preview"][0]["to"] == "new"
+
+    result = svc.edit_xlsx(path, sheet="Summary", cell="B2", value="new", dry_run=False)
+    from openpyxl import load_workbook
+
+    assert result["ok"] is True
+    assert load_workbook(path).active["B2"].value == "new"
+    assert result["rollback_info"]["backup"]
+    assert Path(result["rollback_info"]["backup"]).exists()
+
+
+def test_edit_xlsx_dry_run_includes_resource_state(tmp_path: Path):
+    path = tmp_path / "sheet.xlsx"
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.active.title = "Summary"
+    workbook.active["B2"] = "old"
+    workbook.save(path)
+
+    preview = svc.edit_xlsx(path, sheet="Summary", cell="B2", value="new", dry_run=True)
+
+    assert preview["_resource_state"]
+    assert preview["_resource_state"][0]["path"] == str(path.resolve())
+
+
+def test_document_edit_tools_support_rollback_restore(tmp_path: Path):
+    from docx import Document
+
+    from app.tools import rollback_tools
+    from app.core.schemas import ToolResult
+
+    path = tmp_path / "memo.docx"
+    doc = Document()
+    doc.add_paragraph("Original title")
+    doc.save(path)
+
+    result = svc.edit_docx(path, find="Original", replace="Changed", dry_run=False)
+    assert Document(str(path)).paragraphs[0].text == "Changed title"
+
+    outcome = rollback_tools.rollback_tool_result(
+        ToolResult(tool_call_id="doc-edit", ok=True, rollback_info=result["rollback_info"]),
+        {"allowed_directories": [str(tmp_path)]},
+    )
+    assert outcome["ok"] is True
+    assert Document(str(path)).paragraphs[0].text == "Original title"
+
+
+def test_apply_redaction_preview_then_write(tmp_path: Path):
+    path = tmp_path / "contacts.txt"
+    path.write_text("Email ada@example.com", encoding="utf-8")
+
+    preview = svc.apply_redaction(path, dry_run=True)
+    assert preview["dry_run"] is True
+    assert preview["preview"]["findings"]
+
+    result = svc.apply_redaction(path, dry_run=False)
+    text = path.read_text(encoding="utf-8")
+
+    assert result["ok"] is True
+    assert "[REDACTED:EMAIL]" in text
+    assert result["rollback_info"]["backup"]
+
+
+def test_edit_docx_preserves_run_formatting_when_match_is_single_run(tmp_path: Path):
+    from docx import Document
+    from docx.shared import Pt
+
+    path = tmp_path / "styled.docx"
+    doc = Document()
+    paragraph = doc.add_paragraph()
+    bold_run = paragraph.add_run("Title")
+    bold_run.bold = True
+    paragraph.add_run(" body")
+    doc.save(path)
+
+    result = svc.edit_docx(path, find="Title", replace="Heading", dry_run=False)
+    updated = Document(str(path))
+    runs = updated.paragraphs[0].runs
+
+    assert result["ok"] is True
+    assert runs[0].text == "Heading"
+    assert runs[0].bold is True
+    assert runs[1].text == " body"
+
+
+def test_edit_pptx_dry_run_and_write_slide_text(tmp_path: Path):
+    from pptx import Presentation
+
+    path = tmp_path / "deck.pptx"
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    slide.shapes.title.text = "Quarterly Review"
+    prs.save(path)
+
+    preview = svc.edit_pptx(path, find="Quarterly", replace="Annual", dry_run=True)
+    assert preview["dry_run"] is True
+    assert preview["match_count"] == 1
+    assert Presentation(str(path)).slides[0].shapes.title.text == "Quarterly Review"
+
+    result = svc.edit_pptx(path, find="Quarterly", replace="Annual", dry_run=False)
+    assert result["ok"] is True
+    assert Presentation(str(path)).slides[0].shapes.title.text == "Annual Review"
+    assert result["rollback_info"]["backup"]
+
+
 def test_document_intelligence_tools_are_registered_readonly():
     registry = ToolRegistry()
     document_tools.register(registry)
@@ -163,6 +348,18 @@ def test_document_intelligence_tools_are_registered_readonly():
         assert tool.is_read_only() is True
         assert tool.requires_authorized_path is True
         assert tool.fast_path_eligible is True
+
+    for name in {
+        "document.edit_docx",
+        "document.edit_xlsx",
+        "document.edit_pptx",
+        "document.apply_redaction",
+    }:
+        tool = registry.get(name)
+        assert tool.risk_level.value == "R2_REVERSIBLE_MODIFY"
+        assert tool.supports_dry_run is True
+        assert tool.is_read_only() is False
+        assert tool.requires_authorized_path is True
 
 
 def test_document_tool_parse_advanced_authorizes_path(tmp_path: Path):

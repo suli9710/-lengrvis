@@ -57,7 +57,7 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
     assert update_channel["release_notes"]["label"] == "本地发布说明"
     assert update_channel["release_notes"]["detail"] == "打开随安装包提供的说明文件；本页不会联网检查更新。"
     assert update_channel["release_notes"]["filename"] == "README.md"
-    assert update_channel["release_notes"]["path"] == str(PROJECT_ROOT / "README.md")
+    assert update_channel["release_notes"]["path"] == "[path_label:release_notes]"
     assert update_channel["release_notes"]["path_kind"] == "local_file"
     assert update_channel["release_notes"]["source"] == "local_file"
     assert update_channel["next_steps"] == [
@@ -319,7 +319,7 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     assert local_paths["data_dir"] == str(data_dir)
     assert local_paths["database"].startswith(str(data_dir))
     assert any(str(data_dir) in path for path in local_paths["log_dirs"])
-    assert local_diagnostics["top_processes"][0]["username"] == "Suli"
+    assert local_diagnostics["top_processes"][0]["username"] == "[redacted:local_user]"
 
     response = client.post("/api/system/diagnostics/export")
 
@@ -659,6 +659,86 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
     assert "[path_label:app_data_dir]/[redacted:relative_path]" in package_text
     assert "[redacted:local_user]" in package_text
     assert "[REDACTED" in package_text or "[redacted:" in package_text
+
+
+def test_system_diagnostics_get_redacts_seeded_sensitive_evidence(monkeypatch, tmp_path):
+    data_dir = tmp_path / "Users" / "Suli" / "ContosoGetEvidence" / "LengrvisData"
+    model_path = tmp_path / "Users" / "Suli" / "Acme Research Models" / "private model" / "model.onnx"
+    model_path.parent.mkdir(parents=True)
+    model_path.write_bytes(b"placeholder")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_ONNX_MODEL_PATH", str(model_path))
+
+    task_body = "get fake task body marker: call finance team about Project Zeta"
+    api_key = "sk-get-diagnostics-secret"
+    device_name = "Pixel Get Evidence Phone"
+    grant_id = "grant-get-secret-1234567890"
+    pairing_code = "pair-get-secret-1234567890"
+    host_name = "SULI-WORKSTATION-GET-SECRET"
+    monkeypatch.setattr(
+        system_service,
+        "diagnostics",
+        lambda: {
+            "info": {"memory_total": 2048, "memory_available": 1024},
+            "disks": [{"mountpoint": str(data_dir), "note": f"org folder {data_dir}"}],
+            "network": {},
+            "battery": None,
+            "top_processes": [
+                {
+                    "pid": 4242,
+                    "name": "Lengrvis.exe",
+                    "username": "Suli",
+                    "cpu_percent": 0,
+                    "memory_bytes": 128,
+                    "status": "running",
+                }
+            ],
+            "local_ai": {"scope": "local_only", "error": f"failed loading model path {model_path}"},
+            "support_debug": {
+                "task_body": task_body,
+                "api_key": api_key,
+                "device_name": device_name,
+                "grant_id": grant_id,
+                "pairing_code": pairing_code,
+                "model_path": str(model_path),
+                "hostname": host_name,
+            },
+            "suggestions": ["No critical system issue detected from read-only diagnostics."],
+        },
+    )
+    db.init_db()
+    record("diagnostics.ready", "pytest", {"task_body": task_body, "token": api_key})
+
+    response = TestClient(create_app()).get("/api/system/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["local_paths"]["data_dir"] == str(data_dir)
+    assert payload["local_paths"]["database"].endswith("lengrvis.db")
+    assert payload["support_package_redaction"]["current_response"]["contains_local_paths"] is True
+    assert payload["support_debug"]["task_body"] == "[redacted:sensitive_field]"
+    assert payload["support_debug"]["api_key"] == "[redacted:sensitive_field]"
+    assert payload["support_debug"]["device_name"] == "[redacted:sensitive_field]"
+    assert payload["support_debug"]["grant_id"] == "[redacted:sensitive_field]"
+    assert payload["support_debug"]["pairing_code"] == "[redacted:sensitive_field]"
+    assert payload["support_debug"]["model_path"] == "[redacted:sensitive_field]"
+    assert payload["support_debug"]["hostname"] == "[redacted:sensitive_field]"
+    assert payload["top_processes"][0]["username"] == "[redacted:local_user]"
+
+    payload_text = json.dumps({key: value for key, value in payload.items() if key != "local_paths"}, ensure_ascii=False, sort_keys=True)
+    for secret in (
+        task_body,
+        api_key,
+        device_name,
+        grant_id,
+        pairing_code,
+        host_name,
+        str(model_path),
+        "Acme Research Models",
+    ):
+        assert secret not in payload_text
+    assert "[REDACTED" in payload_text or "[redacted:" in payload_text
 
 
 def _assert_support_package_review_metadata(redaction: dict):

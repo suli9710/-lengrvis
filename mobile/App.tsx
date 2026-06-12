@@ -7,10 +7,11 @@ import { ApprovalDetail } from "./src/screens/ApprovalDetail";
 import { ApprovalsScreen } from "./src/screens/ApprovalsScreen";
 import { PairScreen } from "./src/screens/PairScreen";
 import { RemoteScreen } from "./src/screens/RemoteScreen";
+import { WakeupsScreen } from "./src/screens/WakeupsScreen";
 import { isRemoteInputGrantUsable, reduceRemoteInputGrant, remoteInputGrantExpiryDelayMs } from "./src/remoteInputGrant";
 import { clearSession, loadSession } from "./src/store/auth";
 
-type ActiveScreen = "approvals" | "remote";
+type ActiveScreen = "approvals" | "remote" | "wakeups";
 type SessionLoadState = "loading" | "ready" | "failed";
 
 export default function App() {
@@ -147,6 +148,16 @@ export default function App() {
     return <PairScreen onPaired={handlePaired} />;
   }
 
+  if (activeScreen === "wakeups") {
+    return (
+      <WakeupsScreen
+        onBack={() => setActiveScreen("approvals")}
+        onSessionExpired={handleSessionExpired}
+        session={session}
+      />
+    );
+  }
+
   if (activeScreen === "remote") {
     return (
       <RemoteScreen
@@ -175,6 +186,7 @@ export default function App() {
   return (
     <ApprovalsScreen
       onOpenRemote={() => setActiveScreen("remote")}
+      onOpenWakeups={() => setActiveScreen("wakeups")}
       onRemoteInputGrant={handleRemoteInputGrant}
       onRemoteInputGrantRevoked={handleRemoteInputGrantRevoked}
       onSelectApproval={setSelectedApproval}

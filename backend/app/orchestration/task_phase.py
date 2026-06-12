@@ -17,7 +17,7 @@ class TaskPhase(StrEnum):
 
 
 TASK_PHASE_TRANSITIONS: dict[TaskPhase, set[TaskPhase]] = {
-    TaskPhase.CREATED: {TaskPhase.GOAL_ANALYSIS, TaskPhase.PLANNING, TaskPhase.CANCELLED},
+    TaskPhase.CREATED: {TaskPhase.GOAL_ANALYSIS, TaskPhase.PLANNING, TaskPhase.FAILED, TaskPhase.CANCELLED},
     TaskPhase.GOAL_ANALYSIS: {TaskPhase.PLANNING, TaskPhase.FAILED, TaskPhase.CANCELLED},
     TaskPhase.PLANNING: {TaskPhase.CONSULTATION, TaskPhase.PLAN_REVIEW, TaskPhase.FAILED, TaskPhase.CANCELLED},
     TaskPhase.CONSULTATION: {TaskPhase.PLAN_REVIEW, TaskPhase.PLANNING, TaskPhase.FAILED, TaskPhase.CANCELLED},

@@ -560,7 +560,7 @@ def _discover_model_path(settings: AppSettings | None) -> Path | None:
 def _candidate_model_roots(settings: AppSettings | None) -> list[Path]:
     roots: list[Path] = []
     for env_key in _MODEL_ROOT_ENV_KEYS:
-        raw = os.environ.get(env_key)
+        raw = get_env(env_key)
         if raw:
             roots.append(Path(raw).expanduser())
     if settings is not None and settings.data_dir:

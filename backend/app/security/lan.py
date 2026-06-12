@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
-import os
+
+from app.config import env_flag
 
 LAN_PUBLIC_HTTP_PATHS = {"/health", "/api/health"}
 MOBILE_TOKEN_HTTP_PATHS = {"/api/pair", "/api/pair/confirm"}
@@ -26,12 +27,7 @@ def is_loopback_host(host: str | None) -> bool:
 
 
 def allow_lan_desktop_api() -> bool:
-    return (os.environ.get("LENGRVIS_ALLOW_LAN_DESKTOP_API") or "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    return env_flag("LENGRVIS_ALLOW_LAN_DESKTOP_API")
 
 
 def is_mobile_lan_http_path(path: str) -> bool:

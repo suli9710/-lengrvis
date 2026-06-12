@@ -186,12 +186,15 @@ class RunCreateRequest(BaseModel):
     message: str
     mode: str = "efficiency"
     engine: RunEngine = RunEngine.AUTO
+    agent_hint: str = ""
 
 
 class RunCreateResponse(BaseModel):
     run_id: str
     engine: RunEngine
     phase: RunPhase
+    engine_route_rule: str = ""
+    engine_capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunStateResponse(BaseModel):
@@ -202,9 +205,11 @@ class RunStateResponse(BaseModel):
     message: str = ""
     mode: str = "efficiency"
     requested_engine: RunEngine = RunEngine.AUTO
+    engine_route_rule: str = ""
     error: str = ""
     created_at: str = ""
     updated_at: str = ""
+    engine_capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanStep(BaseModel):

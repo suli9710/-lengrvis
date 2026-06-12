@@ -12,6 +12,7 @@ from app.services.mobile_pairing_service import safe_approval_payload
 from app.services.mobile_pairing_service import list_pending_approvals
 from app.services.mobile_pairing_service import raise_if_mobile_claims_disallowed
 from app.services.mobile_pairing_service import reject_approval as reject_mobile_approval
+from app.policy.redaction import redact_public_text, redact_value
 from app.services.task_service import set_task_status
 
 
@@ -57,7 +58,7 @@ async def _execute_approved_step(approval: Approval) -> Approval:
             status_code=503,
             detail={
                 "message": "Approved operation did not complete execution.",
-                "error": str(exc),
+                "error": redact_public_text(str(exc)),
                 "approval": latest_approval_payload(latest),
             },
         ) from exc

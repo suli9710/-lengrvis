@@ -12,9 +12,11 @@ from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase,
 from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.engine_router import EngineRouter
+from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.execution_engine import default_run_store
 from app.orchestration.execution_models import (
     TERMINAL_RUN_PHASES,
+    APPROVAL_REMAINING_STEPS_SUMMARY,
     EngineTurnResult,
     RunPhase as EngineRunPhase,
     RunState,
@@ -23,6 +25,19 @@ from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_e
 from app.orchestration.task_phase import TaskPhase
 from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel
+from app.services.run_service_background import (
+    active_run_ids,
+    cancel_active_run_task,
+    leftover_active_tasks,
+    register_resident_task,
+    run_active,
+    schedule_background,
+    track_active_run,
+    unregister_resident_task,
+    untrack_active_run,
+)
+from app.agents.delegation_metadata import merge_run_task_metadata
+from app.services.run_service_capabilities import engine_capabilities_for_run, engine_route_rule_for_run
 from app.services.task_service import get_task, set_task_status
 
 
@@ -34,13 +49,20 @@ ENGINE_TERMINAL_PHASES = {
     EngineRunPhase.DENIED,
     EngineRunPhase.CANCELLED,
 }
-_ACTIVE_RUN_TASKS: dict[str, asyncio.Future | concurrent.futures.Future] = {}
-_ACTIVE_RUN_TASKS_LOCK = threading.RLock()
+_RUN_ENGINE_ROUTERS: dict[str, EngineRouter] = {}
+_RUN_ENGINE_ROUTERS_LOCK = threading.RLock()
 _ACCEPTING_NEW_RUNS = True
 logger = logging.getLogger(__name__)
 
 
-async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Run:
+async def create_run(
+    message: str,
+    mode: str,
+    requested_engine: RunEngine,
+    *,
+    agent_hint: str | None = None,
+    task_metadata: dict[str, Any] | None = None,
+) -> Run:
     db.init_db()
     if not _ACCEPTING_NEW_RUNS:
         run = Run(
@@ -57,9 +79,18 @@ async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Ru
     settings = get_effective_settings()
     run_event_bus.prune_old_events(settings)
     router = _engine_router(settings)
-
+    delegation_metadata = merge_run_task_metadata(
+        agent_hint=agent_hint,
+        task_metadata=task_metadata,
+        goal=message,
+    )
     try:
-        state = await router.start_run(message, mode, _engine_selection(requested_engine))
+        state = await router.start_run(
+            message,
+            mode,
+            _engine_selection(requested_engine),
+            task_metadata=delegation_metadata or None,
+        )
     except Exception as exc:  # noqa: BLE001
         error = _redacted_error(exc)
         run = Run(
@@ -86,22 +117,37 @@ async def create_run(message: str, mode: str, requested_engine: RunEngine) -> Ru
             "engine": run.engine.value,
             "requested_engine": requested_engine.value,
             "transition_reason": state.transition_reason,
+            "engine_route_rule": state.route_rule,
         },
     )
     _publish_plan_events(run.id, state)
 
+    _track_run_router(run.id, router)
+    task = schedule_background(
+        _start_engine_loop(run.id, router, state, task_id=run.task_id),
+        data_dir=settings.data_dir,
+    )
+    track_active_run(run.id, task)
+    return run
+
+
+async def _start_engine_loop(run_id: str, router: EngineRouter, state: RunState, *, task_id: str) -> None:
+    """Set up the message bridge and drive the engine loop on the resident loop.
+
+    The bus subscription must happen on the loop that consumes the queue
+    (AgentBus binds the queue to the subscribing loop), so it lives here
+    rather than in the request handler.
+    """
     stop_event: asyncio.Event | None = None
     bridge_task: asyncio.Future | None = None
-    if run.task_id:
+    if task_id:
         stop_event = asyncio.Event()
-        queue = AgentBus().subscribe(run.task_id)
-        bridge_task = _schedule_background(
-            _bridge_task_messages(run.id, run.task_id, queue, stop_event),
-            data_dir=settings.data_dir,
+        bus = orchestrator_registry.bus_for_task(task_id)
+        queue = bus.subscribe(task_id)
+        bridge_task = asyncio.get_running_loop().create_task(
+            _bridge_task_messages(run_id, task_id, queue, stop_event, bus=bus)
         )
-    task = _schedule_background(_run_engine_loop(run.id, router, state, stop_event=stop_event, bridge_task=bridge_task), data_dir=settings.data_dir)
-    _track_active_run(run.id, task)
-    return run
+    await _run_engine_loop(run_id, router, state, stop_event=stop_event, bridge_task=bridge_task)
 
 
 def get_run(run_id: str) -> Run:
@@ -164,6 +210,70 @@ async def prepare_for_background(*, timeout_seconds: float = 8.0) -> dict[str, A
     }
 
 
+def recover_interrupted_runs() -> list[str]:
+    """Reconcile crash-orphaned RUNNING runs at startup.
+
+    A run can only legitimately be RUNNING while this process holds its engine
+    loop task; after a crash/hard kill nothing is driving it, so a DB row stuck
+    in RUNNING is dead weight (perpetual spinner in the UI, cannot complete).
+    Flip such rows to PAUSED with an explicit reason so the existing resume
+    path can pick them up on demand.
+    """
+    db.init_db()
+    recovered: list[str] = []
+    try:
+        rows = db.fetch_many("runs", "phase = ?", (RunPhase.RUNNING.value,), limit=1000)
+    except Exception:
+        return recovered
+    for row in rows:
+        try:
+            run = Run.model_validate(row)
+        except Exception:
+            continue
+        if run_active(run.id):
+            continue
+        _sync_persisted_state_phase(run, RunPhase.PAUSED, "interrupted_by_restart")
+        _update_run(run, phase=RunPhase.PAUSED, error=run.error or "interrupted_by_restart")
+        run_event_bus.publish(
+            run.id,
+            "run.paused",
+            {"reason": "interrupted_by_restart", "task_id": run.task_id},
+        )
+        recovered.append(run.id)
+    return recovered
+
+
+async def shutdown_runs(*, timeout_seconds: float = 10.0) -> dict[str, Any]:
+    """Drain in-flight engine loops at backend shutdown (R4-M3).
+
+    The engine loops run on the process-resident background loop outside the
+    TaskPool, so lifespan must drain them explicitly or in-flight runs get
+    killed mid-write and stay RUNNING in the DB forever.
+    """
+    global _ACCEPTING_NEW_RUNS
+    _ACCEPTING_NEW_RUNS = False
+    paused_ids = active_run_ids()
+    for run_id in paused_ids:
+        try:
+            pause_run(run_id)
+        except Exception:
+            continue
+    deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
+    while active_run_ids() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.1)
+    leftovers = leftover_active_tasks()
+    for task in leftovers.values():
+        task.cancel()
+    awaitable = [
+        asyncio.wrap_future(task) if isinstance(task, concurrent.futures.Future) else task
+        for task in leftovers.values()
+        if asyncio.isfuture(task) or isinstance(task, concurrent.futures.Future)
+    ]
+    if awaitable:
+        await asyncio.gather(*awaitable, return_exceptions=True)
+    return {"ok": True, "pausedRunIds": paused_ids, "cancelledRunIds": sorted(leftovers)}
+
+
 def enter_foreground_runtime() -> dict[str, Any]:
     global _ACCEPTING_NEW_RUNS
     _ACCEPTING_NEW_RUNS = True
@@ -198,7 +308,7 @@ def resume_run(run_id: str) -> Run:
     run = get_run(run_id)
     if run.phase in TERMINAL_PHASES or run.phase == RunPhase.AWAITING_APPROVAL:
         return run
-    if _run_active(run.id):
+    if run_active(run.id):
         return run
     return _schedule_resume(run)
 
@@ -227,12 +337,12 @@ def _schedule_resume(run: Run) -> Run:
         _update_run(run, phase=RunPhase.FAILED, error=error)
         run_event_bus.publish(run.id, "run.failed", {"error": error, "task_id": run.task_id})
         return run
-    if run.phase == RunPhase.RUNNING and _run_active(run.id):
+    if run.phase == RunPhase.RUNNING and run_active(run.id):
         return run
     _update_run(run, phase=RunPhase.RUNNING)
     run_event_bus.publish(run.id, "turn.started", {"reason": "resume_requested", "task_id": run.task_id})
-    task = _schedule_background(_resume_engine_loop(run.id, router, state), data_dir=_run_data_dir(run))
-    _track_active_run(run.id, task)
+    task = schedule_background(_resume_engine_loop(run.id, router, state), data_dir=_run_data_dir(run))
+    track_active_run(run.id, task)
     return run
 
 
@@ -245,9 +355,16 @@ def cancel_run(run_id: str) -> Run:
         try:
             from app.orchestration.lengrvis_code_runner import cancel_lengrvis_code_run
 
-            _schedule_background(cancel_lengrvis_code_run(run.id), data_dir=_run_data_dir(run))
+            schedule_background(cancel_lengrvis_code_run(run.id), data_dir=_run_data_dir(run))
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to schedule developer run cancellation for %s: %s", run.id, exc, exc_info=True)
+    elif run.engine in {RunEngine.OS, RunEngine.AUTO}:
+        try:
+            settings = get_effective_settings()
+            router = _router_for_run(run.id, settings)
+            schedule_background(router.cancel_run(run.id), data_dir=_run_data_dir(run))
+        except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
+            logger.warning("Failed to schedule engine run cancellation for %s: %s", run.id, exc, exc_info=True)
     if run.task_id:
         expired = _expire_pending_approvals(run.task_id, "cancel_requested")
         _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
@@ -256,26 +373,9 @@ def cancel_run(run_id: str) -> Run:
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
             logger.warning("Failed to mark task %s cancelled while cancelling run %s: %s", run.task_id, run.id, exc, exc_info=True)
     _update_run(run, phase=RunPhase.CANCELLED)
-    _cancel_active_run_task(run.id)
+    cancel_active_run_task(run.id, grace_seconds=2.0)
     run_event_bus.publish(run.id, "run.cancelled", {"task_id": run.task_id, "reason": "cancel_requested"})
     return run
-
-
-def _cancel_active_run_task(run_id: str) -> None:
-    """Cancel the in-flight engine loop so long turns stop promptly.
-
-    Persisting RunPhase.CANCELLED alone only stops the loop between turns; a
-    turn blocked on a slow tool call would keep executing until it finished.
-    """
-    with _ACTIVE_RUN_TASKS_LOCK:
-        work = _ACTIVE_RUN_TASKS.get(run_id)
-    if work is None or work.done():
-        return
-    if isinstance(work, asyncio.Task):
-        # cancel_run may execute on a worker thread; marshal onto the loop.
-        work.get_loop().call_soon_threadsafe(work.cancel)
-    else:
-        work.cancel()
 
 
 def _expire_pending_approvals(task_id: str, reason: str) -> list[Approval]:
@@ -357,6 +457,9 @@ async def _run_engine_loop(
     stop_event: asyncio.Event | None,
     bridge_task: asyncio.Future | None,
 ) -> None:
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        register_resident_task(run_id, current_task)
     try:
         current = state
         max_turns = max(1, int(router.max_turns))
@@ -397,6 +500,7 @@ async def _run_engine_loop(
         _update_run(run, phase=RunPhase.FAILED, error=error)
         run_event_bus.publish(run_id, "run.failed", {"error": error})
     finally:
+        unregister_resident_task(run_id)
         if stop_event is not None:
             stop_event.set()
         if bridge_task is not None:
@@ -406,7 +510,55 @@ async def _run_engine_loop(
                 bridge_task.cancel()
             except Exception as exc:
                 logger.debug("run bridge task failed while stopping %s: %s", run_id, exc, exc_info=True)
-        _untrack_active_run(run_id)
+        untrack_active_run(run_id)
+        _release_run_router(run_id)
+        _release_terminal_orchestrator(run_id)
+
+
+def _release_terminal_orchestrator(run_id: str) -> None:
+    """Free the per-task orchestrator/bus cache once a run is terminal (R4-M5).
+
+    Without this, orchestrator_registry._by_task keeps every finished task's
+    orchestrator (+ bus + engine graph) alive for the process lifetime. Paused
+    and awaiting-approval runs keep their binding: resume and approval
+    execution must reuse the same bus.
+    """
+    try:
+        run = get_run(run_id)
+    except Exception:
+        return
+    if run.phase not in TERMINAL_PHASES:
+        return
+    orchestrator_registry.release_run(run_id)
+    if not run.task_id:
+        return
+    for other in db.fetch_many("runs", "task_id = ?", (run.task_id,), limit=50):
+        if str(other.get("id")) == run_id:
+            continue
+        try:
+            if RunPhase(str(other.get("phase"))) not in TERMINAL_PHASES:
+                return
+        except ValueError:
+            return
+    orchestrator_registry.release_task(run.task_id)
+
+
+def _track_run_router(run_id: str, router: EngineRouter) -> None:
+    with _RUN_ENGINE_ROUTERS_LOCK:
+        _RUN_ENGINE_ROUTERS[run_id] = router
+
+
+def _router_for_run(run_id: str, settings: AppSettings) -> EngineRouter:
+    with _RUN_ENGINE_ROUTERS_LOCK:
+        router = _RUN_ENGINE_ROUTERS.get(run_id)
+    if router is not None:
+        return router
+    return _engine_router(settings)
+
+
+def _release_run_router(run_id: str) -> None:
+    with _RUN_ENGINE_ROUTERS_LOCK:
+        _RUN_ENGINE_ROUTERS.pop(run_id, None)
 
 
 async def _monitor_task_to_terminal(
@@ -448,12 +600,13 @@ async def _resume_engine_loop(run_id: str, router: EngineRouter, state: RunState
         resumed = state
     stop_event: asyncio.Event | None = None
     bridge_task: asyncio.Future | None = None
+    _track_run_router(run_id, router)
     if resumed.task_id:
         stop_event = asyncio.Event()
-        queue = AgentBus().subscribe(resumed.task_id)
-        bridge_task = _schedule_background(
-            _bridge_task_messages(run_id, resumed.task_id, queue, stop_event),
-            data_dir=_run_data_dir(get_run(run_id)),
+        bus = orchestrator_registry.bus_for_task(resumed.task_id)
+        queue = bus.subscribe(resumed.task_id)
+        bridge_task = asyncio.get_running_loop().create_task(
+            _bridge_task_messages(run_id, resumed.task_id, queue, stop_event, bus=bus)
         )
     await _run_engine_loop(run_id, router, resumed, stop_event=stop_event, bridge_task=bridge_task)
 
@@ -463,6 +616,8 @@ async def _bridge_task_messages(
     task_id: str,
     queue: asyncio.Queue,
     stop_event: asyncio.Event,
+    *,
+    bus: AgentBus,
 ) -> None:
     seen_message_ids: set[str] = set()
     try:
@@ -491,7 +646,7 @@ async def _bridge_task_messages(
             if message is not None:
                 _publish_translated_message(run_id, message, seen_message_ids)
     finally:
-        AgentBus().unsubscribe(task_id, queue)
+        bus.unsubscribe(task_id, queue)
 
 
 def _publish_translated_message(run_id: str, message: Any, seen_message_ids: set[str]) -> None:
@@ -540,6 +695,7 @@ def _engine_router(settings: AppSettings) -> EngineRouter:
         },
         default_engine=default_engine,
         max_turns=settings.agent_loop_max_turns,
+        developer_writes_enabled=bool(getattr(settings, "developer_writes_enabled", False)),
     )
 
 
@@ -623,7 +779,7 @@ def _is_approval_continuation(run: Run) -> bool:
         state = RunState.model_validate(_run_state_payload(run.state or {}))
     except Exception:
         return False
-    return "continuing remaining plan steps" in state.transition_reason.casefold()
+    return state.continuation_kind == "approval_remaining_steps"
 
 
 def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> None:
@@ -633,10 +789,14 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
         state = RunState.model_validate(_run_state_payload(run.state))
     except Exception:
         return
+    continuation_kind: str = ""
+    if reason == APPROVAL_REMAINING_STEPS_SUMMARY:
+        continuation_kind = "approval_remaining_steps"
     state = state.model_copy(
         update={
             "phase": EngineRunPhase(phase.value),
             "transition_reason": reason or state.transition_reason,
+            "continuation_kind": continuation_kind,
         },
         deep=True,
     )
@@ -693,7 +853,7 @@ def _sync_run_phase_from_task(run: Run) -> Run:
     phase = _phase_for_task(task)
     if phase == RunPhase.CANCELLED:
         phase = _phase_for_task_plan(task, _latest_plan_for_task(task.id))
-    if _run_active(run.id) and run.phase == RunPhase.RUNNING and phase == RunPhase.PAUSED:
+    if run_active(run.id) and run.phase == RunPhase.RUNNING and phase == RunPhase.PAUSED:
         return run
     if phase == RunPhase.RUNNING or phase == run.phase:
         return run
@@ -829,50 +989,3 @@ def _phase_for_task_plan(task: Any, plan: Plan | None) -> RunPhase:
     if any(str(step.status) == "denied" for step in plan.steps):
         return RunPhase.DENIED
     return RunPhase.CANCELLED
-
-
-def _schedule_background(coro, *, data_dir: str | None = None) -> asyncio.Future:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        future: concurrent.futures.Future = concurrent.futures.Future()
-
-        def runner() -> None:
-            try:
-                with db.using_data_dir(data_dir):
-                    result = asyncio.run(coro)
-            except Exception as exc:  # noqa: BLE001
-                future.set_exception(exc)
-            else:
-                future.set_result(result)
-
-        threading.Thread(target=runner, name="run-service-background", daemon=True).start()
-        return future
-    async def run_with_data_dir():
-        with db.using_data_dir(data_dir):
-            return await coro
-
-    return loop.create_task(run_with_data_dir())
-
-
-def _track_active_run(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> None:
-    with _ACTIVE_RUN_TASKS_LOCK:
-        _ACTIVE_RUN_TASKS[run_id] = task
-
-
-def _untrack_active_run(run_id: str) -> None:
-    with _ACTIVE_RUN_TASKS_LOCK:
-        _ACTIVE_RUN_TASKS.pop(run_id, None)
-
-
-def _run_active(run_id: str) -> bool:
-    with _ACTIVE_RUN_TASKS_LOCK:
-        task = _ACTIVE_RUN_TASKS.get(run_id)
-    if task is None:
-        return False
-    return not task.done()
-
-
-def active_run_ids() -> list[str]:
-    with _ACTIVE_RUN_TASKS_LOCK:
-        return [run_id for run_id, task in _ACTIVE_RUN_TASKS.items() if not task.done()]

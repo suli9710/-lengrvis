@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import queue
 import threading
+import time
 from collections import defaultdict
 from contextlib import suppress
 from typing import Any
@@ -15,16 +18,95 @@ from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole
 
 GLOBAL_TASK_ID = "__global__"
 _ALL_EVENT_TYPES = "*"
+logger = logging.getLogger(__name__)
+
+# Message persistence runs on a dedicated writer thread: publish() is called
+# from event-loop coroutines, and a contended SQLite write (busy_timeout up to
+# 5s) on the loop thread stalls every WebSocket stream and API request. The
+# single queue preserves insertion order; read-your-writes is preserved by a
+# read barrier registered with db (every agent_messages read flushes first).
+_PERSIST_QUEUE: queue.Queue[tuple[AgentMessage, str]] = queue.Queue()
+_PERSIST_STATE = threading.Condition()
+_PERSIST_PENDING = 0
+_PERSIST_THREAD: threading.Thread | None = None
+_PERSIST_THREAD_LOCK = threading.Lock()
+
+
+def _persist_worker() -> None:
+    global _PERSIST_PENDING
+    while True:
+        message, data_dir = _PERSIST_QUEUE.get()
+        try:
+            with db.using_data_dir(data_dir):
+                db.init_db()
+                db.upsert_model("agent_messages", message)
+        except Exception:  # noqa: BLE001
+            logger.exception("agent_bus: failed to persist message %s", message.id)
+        finally:
+            with _PERSIST_STATE:
+                _PERSIST_PENDING -= 1
+                _PERSIST_STATE.notify_all()
+
+
+def _ensure_persist_thread() -> None:
+    global _PERSIST_THREAD
+    with _PERSIST_THREAD_LOCK:
+        if _PERSIST_THREAD is None or not _PERSIST_THREAD.is_alive():
+            _PERSIST_THREAD = threading.Thread(target=_persist_worker, name="agent-bus-writer", daemon=True)
+            _PERSIST_THREAD.start()
+
+
+def _enqueue_persist(message: AgentMessage) -> None:
+    global _PERSIST_PENDING
+    _ensure_persist_thread()
+    # Capture the effective data dir now: the writer thread must not depend on
+    # the publisher's ContextVar override or env state at flush time.
+    data_dir = str(db.db_path().parent)
+    with _PERSIST_STATE:
+        _PERSIST_PENDING += 1
+    _PERSIST_QUEUE.put((message, data_dir))
+
+
+def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
+    """Block until all queued message writes are committed (or timeout)."""
+    if threading.current_thread() is _PERSIST_THREAD:
+        return True
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    with _PERSIST_STATE:
+        while _PERSIST_PENDING > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _PERSIST_STATE.wait(remaining)
+    return True
+
+
+class AgentMessageReadConsistencyError(RuntimeError):
+    """Raised when agent_messages reads would observe a stale timeline."""
+
+
+def _flush_agent_messages_for_read() -> None:
+    if flush_agent_message_writes(timeout_seconds=10.0):
+        return
+    if flush_agent_message_writes(timeout_seconds=30.0):
+        return
+    logger.error("agent_messages write flush timed out; refusing stale read")
+    raise AgentMessageReadConsistencyError(
+        "agent_messages write flush timed out; read refused to avoid stale timeline"
+    )
+
+
+db.register_read_barrier("agent_messages", _flush_agent_messages_for_read)
 
 
 class AgentBus:
-    _lock = threading.RLock()
-    _subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = defaultdict(set)
-    _global_subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = defaultdict(set)
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = defaultdict(set)
+        self._global_subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = defaultdict(set)
 
     def publish(self, message: AgentMessage) -> AgentMessage:
-        db.init_db()
-        db.upsert_model("agent_messages", message)
+        _enqueue_persist(message)
         self._publish_to_subscribers(message)
         return message
 

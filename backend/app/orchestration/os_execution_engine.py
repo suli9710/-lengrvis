@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from app.core import db
@@ -22,6 +24,9 @@ from app.orchestration.execution_models import (
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.observations import summarize_result
+from app.orchestration.orchestrator_registry import orchestrator_registry
+from app.orchestration.plan_snapshot import snapshot_step, write_back_step
+from app.orchestration.resource_state import clear_task_read_states
 from app.orchestration.os_reflection import (
     OSReflectionDecider,
     OSReflectionInput,
@@ -36,6 +41,14 @@ if TYPE_CHECKING:
 
 
 OSEventHook = Callable[[str, dict[str, Any]], Awaitable[None] | None]
+
+# Per-run orchestrator binding (R4-H2). run_plan_turn binds the run's
+# orchestrator here for the duration of the turn; asyncio.create_task copies
+# the context, so parallel step tasks inherit the same binding.
+_CURRENT_RUN_ORCHESTRATOR: ContextVar["OrchestratorAgent | None"] = ContextVar(
+    "os_engine_current_run_orchestrator",
+    default=None,
+)
 
 _TERMINAL_STEP_STATUSES = {
     StepStatus.SUCCEEDED,
@@ -71,15 +84,23 @@ class OSExecutionEngine(ExecutionEngine):
         self.store = store or default_run_store
         self.event_hook = event_hook
         self._orchestrators_by_run: dict[str, OrchestratorAgent] = {}
+        self._run_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         settings = get_effective_settings()
         self.reflection_decider = OSReflectionDecider(
             max_per_run=settings.os_reflection_max_per_run,
             max_per_step=settings.os_reflection_max_per_step,
         )
 
-    async def start_run(self, goal: str, mode: str, engine: EngineSelection = "auto") -> RunState:  # noqa: ARG002
+    async def start_run(
+        self,
+        goal: str,
+        mode: str,
+        engine: EngineSelection = "auto",
+        *,
+        task_metadata: dict[str, Any] | None = None,
+    ) -> RunState:  # noqa: ARG002
         orchestrator = self._new_orchestrator()
-        task = orchestrator.create_task_shell(goal, mode)
+        task = orchestrator.create_task_shell(goal, mode, metadata=dict(task_metadata or {}))
         state = RunState(
             run_id=self.store.new_id("osrun"),
             engine="os",
@@ -91,10 +112,17 @@ class OSExecutionEngine(ExecutionEngine):
             current_plan={"task_id": task.id, "steps": []},
         )
         self._orchestrators_by_run[state.run_id] = orchestrator
+        orchestrator_registry.bind(task_id=task.id, orchestrator=orchestrator, run_id=state.run_id)
         return self.store.put(state)
 
     async def resume_run(self, run_id: str) -> RunState:
         state = self.store.get(run_id)
+        # Materialize + register the orchestrator now so the run-service bridge
+        # subscribes to the SAME bus the engine will publish on. Without this a
+        # fresh engine resolves its orchestrator lazily inside run_turn, while
+        # the bridge already fell back to a throwaway AgentBus -> the resumed
+        # run's live timeline/approval events are silently dropped.
+        self._orchestrator_for_state(state)
         if state.phase == RunPhase.PAUSED:
             resumed = state.model_copy(update={"phase": RunPhase.RUNNING, "transition_reason": "os run resumed"}, deep=True)
             return self.store.put(resumed)
@@ -109,7 +137,13 @@ class OSExecutionEngine(ExecutionEngine):
         state = self.store.get(run_id)
         orchestrator = self._orchestrator_for_state(state)
         task_id = state.task_id or str(state.current_plan.get("task_id") or "")
+        run_tasks = list(self._run_tasks.pop(run_id, set()))
+        for work in run_tasks:
+            work.cancel()
+        if run_tasks:
+            await asyncio.gather(*run_tasks, return_exceptions=True)
         if task_id:
+            clear_task_read_states(task_id)
             task_data = db.fetch_one("tasks", task_id)
             if task_data:
                 orchestrator._set_status(Task.model_validate(task_data), TaskStatus.CANCELLED, final_summary="Run cancelled.")
@@ -117,6 +151,7 @@ class OSExecutionEngine(ExecutionEngine):
             update={"phase": RunPhase.CANCELLED, "transition_reason": "os run cancelled"},
             deep=True,
         )
+        orchestrator_registry.release_run(run_id)
         return self.store.put(cancelled)
 
     async def run_turn(self, state: RunState) -> EngineTurnResult:
@@ -143,7 +178,9 @@ class OSExecutionEngine(ExecutionEngine):
         """Run an already-reviewed plan until it completes, pauses, or waits."""
 
         current = state or self._initial_state_for_plan(task, plan)
-        self._orchestrators_by_run[current.run_id] = self._orchestrator()
+        orchestrator = self._orchestrator_for_state(current)
+        self._orchestrators_by_run[current.run_id] = orchestrator
+        orchestrator_registry.bind(task_id=task.id, orchestrator=orchestrator, run_id=current.run_id)
         turns_remaining = max_turns if max_turns is not None else max(1, (len(plan.steps) + 1) * 4 + 32)
         last_result: EngineTurnResult | None = None
         while turns_remaining > 0:
@@ -156,7 +193,7 @@ class OSExecutionEngine(ExecutionEngine):
                 return last_result
 
         message = "OS execution engine reached its per-plan turn limit."
-        self._orchestrator()._set_status(task, TaskStatus.FAILED, final_summary=message)
+        orchestrator._set_status(task, TaskStatus.FAILED, final_summary=message)
         failed_state = self._state_from_task_plan(current, task, plan, phase=RunPhase.FAILED, reason=message)
         stored = self.store.put(failed_state)
         return EngineTurnResult(state=stored, finished=True, message=message)
@@ -169,8 +206,25 @@ class OSExecutionEngine(ExecutionEngine):
         state: RunState | None = None,
         event_hook: OSEventHook | None = None,
     ) -> EngineTurnResult:
-        orchestrator = self._orchestrator()
         current = state or self._initial_state_for_plan(task, plan)
+        # Resolve the run-bound orchestrator and pin it for the whole turn so
+        # every helper in the chain (selection, parallel execution, recovery,
+        # reflection, finish) resolves the same instance (R4-H2).
+        orchestrator = self._orchestrator_for_state(current)
+        token = _CURRENT_RUN_ORCHESTRATOR.set(orchestrator)
+        try:
+            return await self._run_plan_turn_bound(orchestrator, task, plan, current, event_hook)
+        finally:
+            _CURRENT_RUN_ORCHESTRATOR.reset(token)
+
+    async def _run_plan_turn_bound(
+        self,
+        orchestrator: OrchestratorAgent,
+        task: Task,
+        plan: Plan,
+        current: RunState,
+        event_hook: OSEventHook | None,
+    ) -> EngineTurnResult:
         turn = current.turn_count + 1
         outputs: dict[str, Any] = {"events": [], "turn": turn, "task_id": task.id, "plan_id": plan.id}
         hook = event_hook or self.event_hook
@@ -182,8 +236,7 @@ class OSExecutionEngine(ExecutionEngine):
         try:
             by_id, _dependents = orchestrator._build_step_graph(plan)
         except ValueError as exc:
-            record("task.step_graph_invalid", orchestrator.name, {"error": str(exc)}, task_id=task.id)
-            reflection_state = await self._maybe_reflect(
+            return await self._handle_step_graph_error(
                 current,
                 task,
                 plan,
@@ -191,26 +244,109 @@ class OSExecutionEngine(ExecutionEngine):
                 hook,
                 turn=turn,
                 context=context,
-                graph_error=str(exc),
-            )
-            if reflection_state is not None:
-                return reflection_state
-            for step in plan.steps:
-                if step.status == StepStatus.PENDING:
-                    set_step_status(step, StepStatus.FAILED, actor="OSExecutionEngine")
-            orchestrator._set_status(task, TaskStatus.FAILED, final_summary=str(exc))
-            return await self._finish_turn(
-                current,
-                task,
-                plan,
-                outputs,
-                hook,
-                phase=RunPhase.FAILED,
-                outcome="failed",
-                message=str(exc),
-                finished=True,
+                error=str(exc),
             )
 
+        selection = await self._select_turn_steps(
+            current,
+            task,
+            plan,
+            outputs,
+            hook,
+            turn=turn,
+            context=context,
+            by_id=by_id,
+        )
+        if isinstance(selection, EngineTurnResult):
+            return selection
+        selected, threaded_tools = selection
+
+        step_outcomes = await self._execute_selected_steps(
+            task,
+            plan,
+            selected,
+            context,
+            observations_by_step,
+            threaded_tools=threaded_tools,
+        )
+        outputs["step_outcomes"] = [self._step_outcome_payload(step, outcome) for step, outcome in step_outcomes]
+
+        current = await self._record_step_results(
+            current,
+            task,
+            outputs,
+            hook,
+            turn=turn,
+            step_outcomes=step_outcomes,
+            observations_by_step=observations_by_step,
+        )
+
+        return await self._resolve_turn_outcome(
+            current,
+            task,
+            plan,
+            outputs,
+            hook,
+            turn=turn,
+            context=context,
+            step_outcomes=step_outcomes,
+        )
+
+    async def _handle_step_graph_error(
+        self,
+        current: RunState,
+        task: Task,
+        plan: Plan,
+        outputs: dict[str, Any],
+        hook: OSEventHook | None,
+        *,
+        turn: int,
+        context: dict[str, Any],
+        error: str,
+    ) -> EngineTurnResult:
+        orchestrator = self._orchestrator()
+        record("task.step_graph_invalid", orchestrator.name, {"error": error}, task_id=task.id)
+        reflection_state = await self._maybe_reflect(
+            current,
+            task,
+            plan,
+            outputs,
+            hook,
+            turn=turn,
+            context=context,
+            graph_error=error,
+        )
+        if reflection_state is not None:
+            return reflection_state
+        for step in plan.steps:
+            if step.status == StepStatus.PENDING:
+                set_step_status(step, StepStatus.FAILED, actor="OSExecutionEngine")
+        orchestrator._set_status(task, TaskStatus.FAILED, final_summary=error)
+        return await self._finish_turn(
+            current,
+            task,
+            plan,
+            outputs,
+            hook,
+            phase=RunPhase.FAILED,
+            outcome="failed",
+            message=error,
+            finished=True,
+        )
+
+    async def _select_turn_steps(
+        self,
+        current: RunState,
+        task: Task,
+        plan: Plan,
+        outputs: dict[str, Any],
+        hook: OSEventHook | None,
+        *,
+        turn: int,
+        context: dict[str, Any],
+        by_id: dict[str, PlanStep],
+    ) -> EngineTurnResult | tuple[list[PlanStep], bool]:
+        orchestrator = self._orchestrator()
         pending = self._pending_step_ids(plan)
         ready = orchestrator._ready_steps(pending, by_id)
         if not ready:
@@ -245,17 +381,19 @@ class OSExecutionEngine(ExecutionEngine):
                 "parallel": threaded_tools,
             },
         )
+        return selected, threaded_tools
 
-        step_outcomes = await self._execute_selected_steps(
-            task,
-            plan,
-            selected,
-            context,
-            observations_by_step,
-            threaded_tools=threaded_tools,
-        )
-        outputs["step_outcomes"] = [self._step_outcome_payload(step, outcome) for step, outcome in step_outcomes]
-
+    async def _record_step_results(
+        self,
+        current: RunState,
+        task: Task,
+        outputs: dict[str, Any],
+        hook: OSEventHook | None,
+        *,
+        turn: int,
+        step_outcomes: list[tuple[PlanStep, StepExecutionOutcome]],
+        observations_by_step: dict[str, ToolResult],
+    ) -> RunState:
         observations = list(current.observations)
         large_refs = list(current.large_result_refs)
         for step, outcome in step_outcomes:
@@ -279,7 +417,20 @@ class OSExecutionEngine(ExecutionEngine):
                 },
             )
 
-        current = current.model_copy(update={"observations": observations, "large_result_refs": large_refs}, deep=True)
+        return current.model_copy(update={"observations": observations, "large_result_refs": large_refs}, deep=True)
+
+    async def _resolve_turn_outcome(
+        self,
+        current: RunState,
+        task: Task,
+        plan: Plan,
+        outputs: dict[str, Any],
+        hook: OSEventHook | None,
+        *,
+        turn: int,
+        context: dict[str, Any],
+        step_outcomes: list[tuple[PlanStep, StepExecutionOutcome]],
+    ) -> EngineTurnResult:
         stop_outcome = self._stop_outcome(step_outcomes)
         if stop_outcome == "waiting_approval":
             return await self._finish_turn(
@@ -487,40 +638,79 @@ class OSExecutionEngine(ExecutionEngine):
             outcome = await self._execute_one_step(task, plan, step, context, observations_by_step, threaded_tools=False)
             return [(step, outcome)]
 
-        work: dict[asyncio.Task[StepExecutionOutcome], tuple[PlanStep, ToolResult | None]] = {}
+        work: dict[asyncio.Task[StepExecutionOutcome], tuple[PlanStep, PlanStep, ToolResult | None]] = {}
+        run_id = str(context.get("run_id") or "")
         for step in selected:
             observation = self._dependency_observation(step, observations_by_step)
+            step_context = copy.deepcopy(context)
+            # Parallel executors mutate step fields across await points; hand each
+            # one an isolated snapshot and write it back serially on completion
+            # so siblings never observe (or persist) a half-updated step.
+            isolated = snapshot_step(step)
             task_work = asyncio.create_task(
-                self._orchestrator()._execute_step(task, plan, step, context, observation, threaded_tools=True),
+                self._orchestrator()._execute_step(task, plan, isolated, step_context, observation, threaded_tools=True),
                 name=f"os-step-{step.id}",
             )
-            work[task_work] = (step, observation)
+            if run_id:
+                self._register_run_task(run_id, task_work)
+            work[task_work] = (step, isolated, observation)
 
+        results: list[tuple[PlanStep, StepExecutionOutcome]] = []
+        stop_requested = False
         try:
-            raw_outcomes = await asyncio.gather(*work.keys(), return_exceptions=True)
+            while work and not stop_requested:
+                done_set, _ = await asyncio.wait(work.keys(), return_when=asyncio.FIRST_COMPLETED)
+                for task_work in list(done_set):
+                    step, isolated, observation = work.pop(task_work)
+                    try:
+                        raw_outcome = task_work.result()
+                    except BaseException as exc:
+                        raw_outcome = exc
+                    if not isinstance(raw_outcome, BaseException):
+                        write_back_step(step, isolated)
+                    outcome = self._normalize_step_outcome(task, step, raw_outcome)
+                    if outcome.result is not None:
+                        observations_by_step[step.id] = outcome.result
+                    if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
+                        outcome = await self._orchestrator().recovery_handler.recover_failed_step(
+                            task,
+                            plan,
+                            step,
+                            outcome.result,
+                            context,
+                            observation,
+                            threaded_tools=True,
+                        )
+                    results.append((step, outcome))
+                    if outcome.kind in {"step_denied", "fatal_denied", "fatal_failed", "waiting_user_approval", "revision_requested"}:
+                        stop_requested = True
+            if stop_requested and work:
+                # Drain like StepSchedulerHandler._drain_running_after_stop:
+                # siblings that already finished must be written back and kept
+                # in results, otherwise a resume re-runs their side effects.
+                # cancel() is a no-op for done tasks; gather hands back their
+                # real outcome instead of CancelledError.
+                remaining = list(work.keys())
+                for pending_work in remaining:
+                    pending_work.cancel()
+                raw_outcomes = await asyncio.gather(*remaining, return_exceptions=True)
+                for task_work, raw_outcome in zip(remaining, raw_outcomes):
+                    step, isolated, observation = work.pop(task_work)
+                    if isinstance(raw_outcome, asyncio.CancelledError):
+                        continue
+                    if not isinstance(raw_outcome, BaseException):
+                        write_back_step(step, isolated)
+                    outcome = self._normalize_step_outcome(task, step, raw_outcome)
+                    if outcome.result is not None:
+                        observations_by_step[step.id] = outcome.result
+                    results.append((step, outcome))
+                work.clear()
         except asyncio.CancelledError:
             for task_work in work:
                 task_work.cancel()
             if work:
                 await asyncio.gather(*work.keys(), return_exceptions=True)
             raise
-        results: list[tuple[PlanStep, StepExecutionOutcome]] = []
-        for task_work, raw_outcome in zip(work.keys(), raw_outcomes, strict=True):
-            step, observation = work[task_work]
-            outcome = self._normalize_step_outcome(task, step, raw_outcome)
-            if outcome.result is not None:
-                observations_by_step[step.id] = outcome.result
-            if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
-                outcome = await self._orchestrator().recovery_handler.recover_failed_step(
-                    task,
-                    plan,
-                    step,
-                    outcome.result,
-                    context,
-                    observation,
-                    threaded_tools=True,
-                )
-            results.append((step, outcome))
         return results
 
     async def _execute_one_step(
@@ -726,8 +916,24 @@ class OSExecutionEngine(ExecutionEngine):
         outputs["outcome"] = outcome
         outputs["phase"] = stored.phase.value
         outputs["current_plan"] = stored.current_plan
+        if finished and task.id:
+            clear_task_read_states(task.id)
         record("task.finished_or_waiting", self._orchestrator().name, {"status": task.status}, task_id=task.id)
         return EngineTurnResult(state=stored, finished=finished, message=message, outputs=outputs)
+
+    def _register_run_task(self, run_id: str, work: asyncio.Task[Any]) -> None:
+        bucket = self._run_tasks.setdefault(run_id, set())
+        bucket.add(work)
+
+        def _on_done(done: asyncio.Task[Any]) -> None:
+            tasks = self._run_tasks.get(run_id)
+            if tasks is None:
+                return
+            tasks.discard(done)
+            if not tasks:
+                self._run_tasks.pop(run_id, None)
+
+        work.add_done_callback(_on_done)
 
     def _mark_blocked_pending_steps(self, plan: Plan) -> set[str]:
         orchestrator = self._orchestrator()
@@ -789,7 +995,10 @@ class OSExecutionEngine(ExecutionEngine):
             if task_data:
                 return Task.model_validate(task_data)
         if state.goal:
-            return orchestrator.create_task_shell(state.goal, state.mode)
+            from app.agents.delegation_metadata import merge_run_task_metadata
+
+            metadata = merge_run_task_metadata(goal=state.goal)
+            return orchestrator.create_task_shell(state.goal, state.mode, metadata=metadata or None)
         raise KeyError(f"OS run has no task binding: {state.run_id}")
 
     async def _plan_for_state(self, orchestrator: OrchestratorAgent, task: Task, state: RunState) -> Plan:
@@ -823,6 +1032,9 @@ class OSExecutionEngine(ExecutionEngine):
         memory_context = await orchestrator._recall_memory(task.user_goal)
         goal_context = orchestrator.planning_handler._goal_context_for_planning(task, task.user_goal)
         session_context = orchestrator.planning_handler._session_context_for_planning(task)
+        from app.agents.worker_agents import normalize_supervisor_agent_hint
+
+        agent_hint = normalize_supervisor_agent_hint((task.metadata or {}).get("supervisor_agent_hint")) or None
         plan = await orchestrator.planning_handler._create_plan(
             task,
             task.user_goal,
@@ -830,6 +1042,7 @@ class OSExecutionEngine(ExecutionEngine):
             memory_context,
             goal_context,
             session_context,
+            agent_hint=agent_hint,
         )
         db.upsert_model("plans", plan)
         if not orchestrator._supervise_new_agent_messages(task.id, "planner_output"):
@@ -1017,6 +1230,13 @@ class OSExecutionEngine(ExecutionEngine):
         }.get(outcome, "")
 
     def _orchestrator(self) -> OrchestratorAgent:
+        # Prefer the orchestrator bound to the currently executing run turn
+        # (R4-H2): chain helpers then stay run-isolated even when two runs
+        # share one engine instance, instead of trusting the mutable
+        # self.orchestrator field that the last caller happened to set.
+        bound = _CURRENT_RUN_ORCHESTRATOR.get()
+        if bound is not None:
+            return bound
         if self.orchestrator is None:
             self.orchestrator = self._new_orchestrator()
         return self.orchestrator
@@ -1028,6 +1248,11 @@ class OSExecutionEngine(ExecutionEngine):
             return orchestrator
         orchestrator = self._orchestrator()
         self._orchestrators_by_run[state.run_id] = orchestrator
+        # Publish the bus into the registry so the run-service bridge and WS
+        # subscribers resolve this orchestrator's bus instead of a fallback.
+        task_id = state.task_id or str(state.current_plan.get("task_id") or "")
+        if task_id:
+            orchestrator_registry.bind(task_id=task_id, orchestrator=orchestrator, run_id=state.run_id)
         return orchestrator
 
     def _new_orchestrator(self) -> OrchestratorAgent:

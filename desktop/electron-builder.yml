@@ -47,9 +47,10 @@ win:
   #    需要 AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET 凭证。
   # 注意：随包分发的 backend.exe 属于 extraResources，electron-builder 不会自动签它，
   #   发布前需在 CI 中先对 dist/backend.exe 单独 signtool 签名再打包。
-  # 签名上线后请删除下面这行（恢复默认 true）并配置 publisherName，
-  # 让 electron-updater 校验更新包签名；签名前临时关闭以免更新自检失败。
-  verifyUpdateCodeSignature: false
+  #   dist:signed / dist:publish 会通过 scripts/verify-backend-signature.cjs
+  #   强制校验 backend 二进制的 Authenticode/codesign 签名，未签名直接失败。
+  # 签名上线后启用更新包签名校验；未签名本地 dist 构建请使用 electron-builder.signed.yml。
+  verifyUpdateCodeSignature: true
   extraResources:
     - from: ../dist/backend.exe
       to: backend/backend.exe

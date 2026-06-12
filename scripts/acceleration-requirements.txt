@@ -1,0 +1,18 @@
+# Pinned dependency set for scripts/install_acceleration.ps1 (supply-chain audit B-3).
+#
+# Versions mirror backend/requirements-lock.txt where the package is locked
+# there; keep the two files in sync when regenerating the backend lock.
+# TODO(B-3): add --require-hashes support (pip-compile --generate-hashes) once
+# the package set stabilizes.
+
+# Build toolchain
+pip==25.2
+setuptools==81.0.0
+wheel==0.45.1
+
+# Accelerated inference stack (matches backend/requirements-lock.txt)
+tokenizers==0.22.2
+transformers==5.11.0
+huggingface_hub==1.18.0
+numpy==2.4.6
+Pillow==12.2.0

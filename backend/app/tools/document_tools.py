@@ -243,6 +243,49 @@ def generate_cited_report(args: dict[str, Any], context: dict[str, Any]) -> dict
     )
 
 
+def edit_docx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    return document_intelligence_service.edit_docx(
+        path,
+        find=str(args.get("find") or ""),
+        replace=str(args.get("replace") or ""),
+        dry_run=bool(args.get("dry_run", True)),
+    )
+
+
+def edit_xlsx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    return document_intelligence_service.edit_xlsx(
+        path,
+        sheet=str(args.get("sheet") or ""),
+        cell=str(args.get("cell") or ""),
+        value=args.get("value"),
+        dry_run=bool(args.get("dry_run", True)),
+    )
+
+
+def edit_pptx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    return document_intelligence_service.edit_pptx(
+        path,
+        find=str(args.get("find") or ""),
+        replace=str(args.get("replace") or ""),
+        dry_run=bool(args.get("dry_run", True)),
+    )
+
+
+def apply_redaction(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    path = resolve_authorized(args["path"], _allowed(context))
+    custom_patterns = args.get("custom_patterns") if isinstance(args.get("custom_patterns"), dict) else None
+    return document_intelligence_service.apply_redaction(
+        path,
+        settings=context.get("settings"),
+        custom_patterns=custom_patterns,
+        max_chars=int(args.get("max_chars") or document_intelligence_service.DEFAULT_PREVIEW_CHARS),
+        dry_run=bool(args.get("dry_run", True)),
+    )
+
+
 def _compare_path_pair(args: dict[str, Any]) -> tuple[Any, Any]:
     paths = args.get("paths") if isinstance(args.get("paths"), list) else []
     left = args.get("left_path") or (paths[0] if len(paths) > 0 else None)
@@ -264,6 +307,21 @@ def _validate_compare(args: dict[str, Any], context: dict[str, Any]) -> None:  #
 def _validate_question(args: dict[str, Any], context: dict[str, Any]) -> None:  # noqa: ARG001
     if not str(args.get("question") or "").strip():
         raise ValueError("This tool needs a non-empty 'question' to answer from the document.")
+
+
+def _validate_edit_pptx(args: dict[str, Any], context: dict[str, Any]) -> None:  # noqa: ARG001
+    if not str(args.get("find") or "").strip():
+        raise ValueError("document.edit_pptx requires a non-empty 'find' string.")
+
+
+def _validate_edit_docx(args: dict[str, Any], context: dict[str, Any]) -> None:  # noqa: ARG001
+    if not str(args.get("find") or "").strip():
+        raise ValueError("document.edit_docx requires a non-empty 'find' string.")
+
+
+def _validate_edit_xlsx(args: dict[str, Any], context: dict[str, Any]) -> None:  # noqa: ARG001
+    if not str(args.get("sheet") or "").strip() or not str(args.get("cell") or "").strip():
+        raise ValueError("document.edit_xlsx requires non-empty 'sheet' and 'cell'.")
 
 
 def register(registry) -> None:
@@ -320,9 +378,47 @@ def register(registry) -> None:
                 "max_blocks": {"type": "integer", "description": "Optional cap on cited blocks."},
             }
         ),
+        "document.edit_docx": _path_schema(
+            {
+                "find": {"type": "string", "description": "Text to find in the document."},
+                "replace": {"type": "string", "description": "Replacement text."},
+                "dry_run": {"type": "boolean", "description": "Preview matches without writing (default true)."},
+            },
+            required=["path", "find", "replace"],
+        ),
+        "document.edit_xlsx": _path_schema(
+            {
+                "sheet": {"type": "string", "description": "Worksheet name."},
+                "cell": {"type": "string", "description": "Cell reference such as B2."},
+                "value": {"description": "New cell value."},
+                "dry_run": {"type": "boolean", "description": "Preview change without writing (default true)."},
+            },
+            required=["path", "sheet", "cell", "value"],
+        ),
+        "document.edit_pptx": _path_schema(
+            {
+                "find": {"type": "string", "description": "Text to find in slide shapes."},
+                "replace": {"type": "string", "description": "Replacement text."},
+                "dry_run": {"type": "boolean", "description": "Preview matches without writing (default true)."},
+            },
+            required=["path", "find", "replace"],
+        ),
+        "document.apply_redaction": _path_schema(
+            {
+                "custom_patterns": {"type": "object", "description": "Optional custom redaction patterns."},
+                "max_chars": {"type": "integer", "description": "Optional preview character cap."},
+                "dry_run": {"type": "boolean", "description": "Preview redaction without writing (default true)."},
+            }
+        ),
     }
 
-    defs = [
+    write_defs = [
+        ("document.edit_docx", edit_docx, _validate_edit_docx),
+        ("document.edit_xlsx", edit_xlsx, _validate_edit_xlsx),
+        ("document.edit_pptx", edit_pptx, _validate_edit_pptx),
+        ("document.apply_redaction", apply_redaction, None),
+    ]
+    read_defs = [
         ("document.extract_text", extract_text),
         ("document.summarize", summarize),
         ("document.qa", qa),
@@ -337,10 +433,14 @@ def register(registry) -> None:
         ("document.redact_preview", redact_preview),
         ("document.generate_cited_report", generate_cited_report),
     ]
+    defs = read_defs
     validators = {
         "document.qa": _validate_question,
         "document.ask_with_citations": _validate_question,
         "document.compare": _validate_compare,
+        "document.edit_docx": _validate_edit_docx,
+        "document.edit_xlsx": _validate_edit_xlsx,
+        "document.edit_pptx": _validate_edit_pptx,
     }
     for name, fn in defs:
         registry.register(
@@ -361,6 +461,41 @@ def register(registry) -> None:
                 effects=["read"],
                 resource_kinds=["document"],
                 fast_path_eligible=True,
+                trust_tier="builtin",
+            )
+        )
+    write_output_schema = {
+        "type": "object",
+        "properties": {
+            "ok": {"type": "boolean"},
+            "dry_run": {"type": "boolean"},
+            "path": {"type": "string"},
+            "changed_paths": {"type": "array", "items": {"type": "string"}},
+            "diff_preview": {"type": "array"},
+            "rollback_info": {"type": "object"},
+            "match_count": {"type": "integer"},
+            "error_code": {"type": "string"},
+        },
+    }
+    for name, fn, validator in write_defs:
+        registry.register(
+            ToolDefinition(
+                name=name,
+                description=tool_description(name),
+                search_hint=tool_search_hint(name),
+                input_schema=schemas[name],
+                output_schema=write_output_schema,
+                risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+                agent_owner="DocumentAgent",
+                supports_dry_run=True,
+                requires_authorized_path=True,
+                execute=fn,
+                validate_input=validator,
+                read_only=False,
+                concurrency_safe=False,
+                effects=["write"],
+                resource_kinds=["document"],
+                fast_path_eligible=False,
                 trust_tier="builtin",
             )
         )

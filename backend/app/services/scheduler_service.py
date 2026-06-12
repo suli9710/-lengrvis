@@ -83,6 +83,18 @@ class Scheduler:
                 self._task.cancel()
         self._task = None
         self._stop = None
+        pending = list(self._executions)
+        if pending:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                for execution in pending:
+                    if not execution.done():
+                        execution.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
 
     def schedule(self, cron: str, goal: str, mode: str = "efficiency", *, note: str = "") -> ScheduledTask:
         if not _CRONITER_AVAILABLE:

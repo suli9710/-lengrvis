@@ -16,6 +16,7 @@ import {
   View,
 } from "react-native";
 import {
+  AlarmClock,
   BellOff,
   ChevronRight,
   ClipboardList,
@@ -121,6 +122,7 @@ export function ApprovalsScreen({
   session,
   onSelectApproval,
   onOpenRemote,
+  onOpenWakeups,
   onRemoteInputGrant,
   onRemoteInputGrantRevoked,
   onUnpair,
@@ -129,6 +131,7 @@ export function ApprovalsScreen({
   session: PairingSession;
   onSelectApproval: (approval: BackendApproval) => void;
   onOpenRemote: () => void;
+  onOpenWakeups: () => void;
   onRemoteInputGrant: (grant: RemoteInputGrant) => void;
   onRemoteInputGrantRevoked: (grant: RemoteInputGrant) => void;
   onUnpair: () => void;
@@ -505,6 +508,7 @@ export function ApprovalsScreen({
             <Text style={styles.headerTitle}>{headerTitle}</Text>
           </View>
           <View style={styles.headerActions}>
+            <IconButton accessibilityLabel="查看定时唤醒" icon={<AlarmClock size={18} color="#23313d" />} onPress={onOpenWakeups} />
             <IconButton accessibilityLabel="查看电脑屏幕" icon={<Monitor size={18} color="#23313d" />} onPress={onOpenRemote} />
             <IconButton accessibilityLabel="刷新请求" icon={<RefreshCcw size={18} color="#23313d" />} onPress={handleRefresh} />
             <IconButton accessibilityLabel="断开手机连接" icon={<Unlink size={18} color="#8c2f39" />} onPress={handleUnpair} />

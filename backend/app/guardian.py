@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes_guardian import proxy_router, router, ws_router
+from app.api.routes_pair import router as pair_router
 from app.core import db
 from app.core.errors import AppError
 from app.security.lan import (
@@ -98,6 +99,10 @@ def create_guardian_app() -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content={"error": {"code": exc.code, "message": exc.message}})
 
     app.include_router(router)
+    # Pairing endpoints are the exact same router as the full backend so the
+    # two processes can never drift (single-source convergence of the old
+    # guardian mirror copies).
+    app.include_router(pair_router, prefix="/api")
     app.include_router(ws_router)
     app.include_router(proxy_router)
     return app

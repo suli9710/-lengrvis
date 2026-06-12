@@ -508,6 +508,123 @@
       "expect": {
         "error": "SecurityError"
       }
+    },
+    {
+      "id": "gt-chat-browser-hint",
+      "category": "browser",
+      "title": "浏览器委派 hint 进入 Planner",
+      "entry": "chat",
+      "message": "帮我读取 https://example.com 网页正文",
+      "mode": "efficiency",
+      "expect": {
+        "delegated": true,
+        "agent": "BrowserAgent",
+        "task_metadata_hint": "BrowserAgent",
+        "task_plan_tools": ["browser.read_page"]
+      }
+    },
+    {
+      "id": "gt-chat-search-hint",
+      "category": "search",
+      "title": "搜索委派 hint 进入 Planner",
+      "entry": "chat",
+      "message": "搜索一下最新的 AI 新闻",
+      "mode": "efficiency",
+      "expect": {
+        "delegated": true,
+        "agent": "SearchAgent",
+        "task_metadata_hint": "SearchAgent",
+        "task_plan_tools": ["search.query"]
+      }
+    },
+    {
+      "id": "gt-tool-tool-search",
+      "category": "search",
+      "title": "tool.search 返回候选工具",
+      "entry": "tool",
+      "tool": "tool.search",
+      "deferred_tools": [
+        {
+          "name": "skill.golden.file_search",
+          "search_hint": "file search filename lookup deferred"
+        }
+      ],
+      "args": {"query": "file search"},
+      "expect": {
+        "output": [
+          {"path": "ok", "equals": true},
+          {"path": "total", "min": 1}
+        ]
+      }
+    },
+    {
+      "id": "gt-chat-delete-colloquial-zh",
+      "category": "file",
+      "title": "中文口语删除这个文件委派 FileAgent",
+      "entry": "chat",
+      "message": "删除 $WS\\colloquial-note.txt 这个文件",
+      "mode": "efficiency",
+      "fixtures": {"colloquial-note.txt": "colloquial delete golden payload"},
+      "expect": {
+        "delegated": true,
+        "agent": "FileAgent",
+        "task_metadata_hint": "FileAgent",
+        "task_plan_tools": ["file.trash"]
+      }
+    },
+    {
+      "id": "gt-chat-open-download-folder-zh",
+      "category": "file",
+      "title": "打开下载文件夹委派 FileAgent hint",
+      "entry": "chat",
+      "message": "打开下载文件夹",
+      "mode": "efficiency",
+      "expect": {
+        "delegated": true,
+        "agent": "FileAgent",
+        "task_metadata_hint": "FileAgent"
+      }
+    },
+    {
+      "id": "gt-run-fix-login-bug-routing",
+      "category": "chat",
+      "title": "修复登录 bug 默认写意图路由到 OS 引擎",
+      "entry": "runs",
+      "message": "帮我修复登录功能的 bug",
+      "mode": "efficiency",
+      "engine": "auto",
+      "routing_only": true,
+      "expect": {
+        "route_rule": "developer_write_os",
+        "engine": "os",
+        "engine_capabilities": {
+          "route_rule": "developer_write_os",
+          "writes_enabled": false,
+          "mode": "os_execution"
+        }
+      }
+    },
+    {
+      "id": "gt-tool-doc-edit-docx-title",
+      "category": "document",
+      "title": "Word 标题 find/replace 写回",
+      "entry": "tool",
+      "tool": "document.edit_docx",
+      "fixtures": {
+        "report.docx": {
+          "__docx__": true,
+          "paragraphs": ["Old Title", "Quarterly summary body."]
+        }
+      },
+      "args": {"path": "$WS/report.docx", "find": "Old Title", "replace": "New Title", "dry_run": false},
+      "expect": {
+        "output": [
+          {"path": "ok", "equals": true},
+          {"path": "match_count", "min": 1},
+          {"path": "rollback_info.backup", "nonempty": true}
+        ],
+        "files_exist": ["report.docx"]
+      }
     }
   ]
 }

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import (
     routes_agents,
@@ -36,7 +40,7 @@ from app.api import (
 from app.config import AppSettings, get_env
 from app.core import db
 from app.core.audit import record
-from app.core.errors import AppError
+from app.core.errors import AppError, unified_error_body
 from app.core.session_context import get_session_context_store
 from app.llm.local_provider import health_snapshot
 from app.llm.registry import get_effective_settings
@@ -71,6 +75,20 @@ def _dev_api_enabled(settings: AppSettings) -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # A starting backend always accepts runs: shutdown_runs() below flips the
+    # module-level gate off, and the same process can restart lifespan (tests,
+    # embedded hosts), so reset it here rather than relying on import state.
+    from app.services.run_service import enter_foreground_runtime, recover_interrupted_runs
+
+    enter_foreground_runtime()
+    # Crash recovery: rows stuck in RUNNING from a previous process have no
+    # engine loop anymore; mark them PAUSED so they are resumable, not zombies.
+    try:
+        recovered = recover_interrupted_runs()
+        if recovered:
+            record("lifespan.runs_recovered", "lifespan", {"run_ids": recovered})
+    except Exception as exc:  # noqa: BLE001
+        record("lifespan.run_recovery_failed", "lifespan", {"error": str(exc)})
     settings = get_effective_settings()
     mcp_registry = get_mcp_registry()
     mcp_registry.load_from_settings(settings)
@@ -101,13 +119,28 @@ async def lifespan(app: FastAPI):
     finally:
         from app.llm.openai_compatible import close_shared_http_client
         from app.services.ollama_service import stop_spawned_server
+        from app.services.run_service import shutdown_runs
+        from app.services.task_pool import get_pool
 
+        # Drain in-flight run engine loops first (R4-M3): they are plain
+        # loop.create_task futures outside the TaskPool, so nothing else
+        # stops them gracefully on shutdown.
+        try:
+            await shutdown_runs()
+        except Exception as exc:  # noqa: BLE001
+            record("lifespan.run_drain_failed", "lifespan", {"error": str(exc)})
+        # Commit queued agent-message writes before exit (writer is a daemon
+        # thread; without the flush, tail messages would be lost on shutdown).
+        from app.orchestration.agent_bus import flush_agent_message_writes
+
+        await asyncio.to_thread(flush_agent_message_writes)
         await close_shared_http_client()
         session_store.save()
         await watcher.stop()
         watcher.unsubscribe_changes(file_environment_sink)
         await environment_stream.stop()
         await scheduler.stop()
+        await get_pool().shutdown()
         # Only stops the `ollama serve` process this backend itself spawned;
         # externally started Ollama instances are left untouched.
         stop_spawned_server()
@@ -134,17 +167,15 @@ def create_app() -> FastAPI:
         if is_mobile_token_http_path(path):
             if is_secure_mobile_transport(client_host, request.url.scheme):
                 return await call_next(request)
-            return JSONResponse(status_code=403, content={"detail": MOBILE_SECURE_TRANSPORT_ERROR})
+            return JSONResponse(status_code=403, content=unified_error_body(MOBILE_SECURE_TRANSPORT_ERROR))
         if path in LAN_PUBLIC_HTTP_PATHS or allow_lan_desktop_api():
             return await call_next(request)
         return JSONResponse(
             status_code=403,
-            content={
-                "error": {
-                    "code": "lan_desktop_api_blocked",
-                    "message": "Remote LAN clients may only redeem mobile pairing codes and use mobile APIs.",
-                }
-            },
+            content=unified_error_body(
+                "Remote LAN clients may only redeem mobile pairing codes and use mobile APIs.",
+                code="lan_desktop_api_blocked",
+            ),
         )
 
     @app.middleware("http")
@@ -153,28 +184,50 @@ def create_app() -> FastAPI:
             return await call_next(request)
         client_host = request.client.host if request.client else ""
         if not is_secure_mobile_transport(client_host, request.url.scheme):
-            return JSONResponse(status_code=403, content={"detail": MOBILE_SECURE_TRANSPORT_ERROR})
+            return JSONResponse(status_code=403, content=unified_error_body(MOBILE_SECURE_TRANSPORT_ERROR))
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not token:
-            return JSONResponse(status_code=401, content={"detail": "Missing mobile bearer token"})
+            return JSONResponse(status_code=401, content=unified_error_body("Missing mobile bearer token"))
         try:
             decode_mobile_token(token, allowed_scopes={TOKEN_SCOPE, REMOTE_INPUT_SCOPE})
         except Exception as exc:  # noqa: BLE001
             status_code = getattr(exc, "status_code", 401)
             detail = getattr(exc, "detail", "Invalid mobile token")
-            return JSONResponse(status_code=status_code, content={"detail": detail})
+            return JSONResponse(status_code=status_code, content=unified_error_body(detail))
         return await call_next(request)
 
     @app.middleware("http")
     async def desktop_api_token_guard(request: Request, call_next):
         if should_require_desktop_api_token(request) and not has_valid_desktop_api_token(request):
-            return JSONResponse(status_code=401, content={"detail": "Missing desktop API token"})
+            return JSONResponse(status_code=401, content=unified_error_body("Missing desktop API token"))
         return await call_next(request)
 
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError):
-        return JSONResponse(status_code=exc.status_code, content={"error": {"code": exc.code, "message": exc.message}})
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=unified_error_body(exc.message, code=exc.code, message=exc.message),
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=unified_error_body(jsonable_encoder(exc.detail)),
+            headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content=unified_error_body(
+                jsonable_encoder(exc.errors()),
+                code="validation_error",
+                message="Request validation failed",
+            ),
+        )
 
     @app.get("/health")
     @app.get("/api/health")

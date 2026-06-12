@@ -15,6 +15,7 @@ import {
 
 const SESSION_KEY = "lengrvis.mobile.session";
 const TOKEN_KEY = "lengrvis.mobile.session.token";
+const LEGACY_ASYNC_STORAGE_KEYS = [TOKEN_KEY] as const;
 const SESSION_RECOVERY_ERROR_MESSAGE = "手机没有读到可用的本地会话。";
 
 type StoredSessionMetadata = Partial<Omit<PairingSession, "token">> & {
@@ -49,6 +50,7 @@ export async function loadSession(): Promise<PairingSession | null> {
     };
 
     let token = await SecureStore.getItemAsync(TOKEN_KEY);
+    const migratedLegacyEmbeddedToken = !token && Boolean(parsed.token);
     if (!token && parsed.token) {
       token = parsed.token;
     }
@@ -59,6 +61,9 @@ export async function loadSession(): Promise<PairingSession | null> {
     try {
       const safeSession = assertSafePairingSession({ ...session, token });
       await saveSession(safeSession);
+      if (migratedLegacyEmbeddedToken) {
+        await eraseLegacyAsyncStorageSecrets();
+      }
       return safeSession;
     } catch (error) {
       if (error instanceof AuthExpiredError || error instanceof InsecureLanBaseUrlError) {
@@ -97,6 +102,7 @@ export async function saveSession(session: PairingSession): Promise<void> {
   try {
     await SecureStore.setItemAsync(TOKEN_KEY, safeSession.token);
     await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(metadata));
+    await eraseLegacyAsyncStorageSecrets();
   } catch (error) {
     await clearSessionQuietly();
     throw error;
@@ -108,7 +114,12 @@ export async function clearSession(): Promise<void> {
   await Promise.all([
     AsyncStorage.removeItem(SESSION_KEY),
     SecureStore.deleteItemAsync(TOKEN_KEY),
+    ...LEGACY_ASYNC_STORAGE_KEYS.map((key) => AsyncStorage.removeItem(key)),
   ]);
+}
+
+async function eraseLegacyAsyncStorageSecrets(): Promise<void> {
+  await Promise.all(LEGACY_ASYNC_STORAGE_KEYS.map((key) => AsyncStorage.removeItem(key)));
 }
 
 function restoredBaseUrlSecurity(parsed: StoredSessionMetadata) {

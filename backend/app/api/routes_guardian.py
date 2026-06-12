@@ -10,10 +10,9 @@ import websockets
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from app.api.routes_approvals import _deny_rejected_step, _reconcile_runs, approval_execution_response
-from app.api.routes_pair import PairRedeemRequest
+from app.api.routes_approvals import _deny_rejected_step, _reconcile_runs, approval_execution_response, approval_for_execution
 from app.core import db
-from app.core.schemas import AgentMessage, Approval, ApprovalStatus, MessageType, RunCreateRequest, Wakeup
+from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.policy.redaction import redact_value
 from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_api_token_headers
@@ -62,46 +61,6 @@ async def runtime_background(payload: dict[str, Any] | None = Body(default=None)
     return await runtime.enter_background(reason=str((payload or {}).get("reason") or "background_requested"))
 
 
-@router.post("/api/pair/request")
-@router.post("/api/pair/code")
-def create_pairing_code() -> dict:
-    return mobile_pairing_service.create_pairing_request()
-
-
-@router.post("/api/pair/confirm")
-@router.post("/api/pair")
-def confirm_pairing(payload: PairRedeemRequest, request: Request) -> dict:
-    client_host = request.client.host if request.client else ""
-    return mobile_pairing_service.confirm_pairing(
-        code=payload.code,
-        device_name=payload.device_name,
-        client_host=client_host,
-    )
-
-
-@router.get("/api/pair/devices")
-def list_paired_devices() -> dict:
-    return {"devices": mobile_pairing_service.list_mobile_devices()}
-
-
-@router.delete("/api/pair/devices/{device_id}")
-def revoke_paired_device(device_id: str) -> dict:
-    return mobile_pairing_service.revoke_mobile_device(device_id)
-
-
-@router.post("/api/pair/devices/{device_id}/remote-input-grants")
-def create_remote_input_grant(device_id: str, payload: dict[str, Any] | None = Body(default=None)) -> dict:
-    return mobile_pairing_service.create_remote_input_grant(
-        device_id,
-        expires_in_seconds=(payload or {}).get("expires_in") or mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS,
-    )
-
-
-@router.delete("/api/pair/devices/{device_id}/remote-input-grants/{grant_id}")
-def revoke_remote_input_grant(device_id: str, grant_id: str) -> dict:
-    return mobile_pairing_service.revoke_remote_input_grant(device_id, grant_id)
-
-
 @router.get("/api/approvals/pending")
 def pending_approvals() -> list[dict]:
     return mobile_pairing_service.list_pending_approvals()
@@ -109,7 +68,7 @@ def pending_approvals() -> list[dict]:
 
 @router.post("/api/approvals/{approval_id}/approve")
 async def approve_approval(approval_id: str) -> dict:
-    approval = _load_approval_for_guardian_execution(approval_id)
+    approval = approval_for_execution(approval_id)
     approval = await _wake_full_backend_for_approval(approval) or approval
     return approval_execution_response(approval)
 
@@ -134,7 +93,7 @@ def mobile_approval_detail(approval_id: str, token: dict = Depends(require_mobil
 
 @router.post("/api/mobile/approvals/{approval_id}/approve")
 async def approve_mobile_approval(approval_id: str, token: dict = Depends(require_mobile_token)) -> dict:
-    approval = _load_approval_for_guardian_execution(approval_id, token)
+    approval = approval_for_execution(approval_id, token)
     approval = await _wake_full_backend_for_approval(approval) or approval
     return approval_execution_response(approval)
 
@@ -504,27 +463,6 @@ def _safe_backend_detail_value(key: str, value: Any) -> Any:
 def _safe_backend_approval_payload(value: dict[str, Any]) -> dict[str, Any]:
     allowed = {key: item for key, item in value.items() if key in Approval.model_fields}
     return mobile_pairing_service.safe_approval_payload(allowed)
-
-
-def _load_approval_for_guardian_execution(approval_id: str, claims: dict[str, Any] | None = None) -> Approval:
-    data = db.fetch_one("approvals", approval_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Approval not found")
-    approval = Approval.model_validate(data)
-    mobile_pairing_service.raise_if_mobile_claims_disallowed(approval, claims)
-    if approval.status == ApprovalStatus.APPROVED:
-        if approval.consumed_at:
-            raise HTTPException(status_code=409, detail="Approval has already been consumed.")
-        return approval
-    if approval.status != ApprovalStatus.PENDING:
-        raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}.")
-    try:
-        return mobile_pairing_service.approve_approval(approval_id, claims)
-    except HTTPException as exc:
-        refreshed = Approval.model_validate(db.fetch_one("approvals", approval_id) or data)
-        if exc.status_code == 409 and refreshed.status == ApprovalStatus.APPROVED and not refreshed.consumed_at:
-            return refreshed
-        raise
 
 
 async def _execute_wakeup(wakeup: Wakeup) -> None:

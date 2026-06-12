@@ -18,15 +18,15 @@ if ($null -eq $python) {
 }
 else {
     $previousPythonPath = $env:PYTHONPATH
+    $backendRoot = Join-Path $resolvedRoot "backend"
     $pathSeparator = [System.IO.Path]::PathSeparator
     Push-Location $resolvedRoot
     try {
-        if ([string]::IsNullOrWhiteSpace($previousPythonPath)) {
-            $env:PYTHONPATH = $resolvedRoot
+        $pythonPathEntries = @($backendRoot, $resolvedRoot)
+        if (-not [string]::IsNullOrWhiteSpace($previousPythonPath)) {
+            $pythonPathEntries += $previousPythonPath
         }
-        else {
-            $env:PYTHONPATH = "$resolvedRoot$pathSeparator$previousPythonPath"
-        }
+        $env:PYTHONPATH = ($pythonPathEntries -join $pathSeparator)
 
         $pythonScript = @'
 import json

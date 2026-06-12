@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
 import re
 import shlex
 import subprocess
+import time
 from fnmatch import fnmatchcase
 from pathlib import PureWindowsPath
 from typing import Any
@@ -35,6 +37,12 @@ BLOCKED_UNINSTALL_EXECUTABLES = {
     "mshta.exe",
 }
 BLOCKED_UNINSTALL_EXTENSIONS = {".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".hta"}
+UNINSTALL_TIMEOUT_SECONDS = 300
+UNINSTALL_SCAN_TIMEOUT_SECONDS = 60
+UNINSTALL_VERIFY_ATTEMPTS = 4
+UNINSTALL_VERIFY_DELAY_SECONDS = 2.0
+WINGET_ID_PATTERN = re.compile(r"^[A-Za-z0-9._\-]+$")
+APPX_PACKAGE_PATTERN = re.compile(r"^[A-Za-z0-9._!\-]+$")
 
 APP_CATEGORY_HINTS: dict[str, tuple[str, ...]] = {
     "browser": (
@@ -248,17 +256,151 @@ def _scan_registry_apps() -> list[dict[str, Any]]:
     return apps
 
 
+def _scan_appx_packages() -> list[dict[str, Any]]:
+    if platform.system().lower() != "windows":
+        return []
+    try:
+        completed = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-AppxPackage | Select-Object Name,PackageFullName,Publisher,Version,InstallLocation | ConvertTo-Json -Compress",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=UNINSTALL_SCAN_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return []
+        payload = json.loads(completed.stdout)
+        rows = payload if isinstance(payload, list) else [payload]
+        apps: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("Name") or "").strip()
+            package_full_name = str(row.get("PackageFullName") or "").strip()
+            if not name or not package_full_name:
+                continue
+            apps.append(
+                {
+                    "id": name.lower(),
+                    "name": name,
+                    "path": str(row.get("InstallLocation") or "").strip(),
+                    "publisher": str(row.get("Publisher") or "").strip(),
+                    "version": str(row.get("Version") or "").strip(),
+                    "package_full_name": package_full_name,
+                    "uninstall_string": "",
+                    "quiet_uninstall_string": "",
+                    "source": "appx",
+                }
+            )
+        return apps
+    except Exception as exc:
+        logger.debug("appx package scan failed: %s", exc, exc_info=True)
+        return []
+
+
+def _scan_winget_packages() -> list[dict[str, Any]]:
+    try:
+        completed = subprocess.run(
+            [
+                "winget",
+                "list",
+                "--output",
+                "json",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=UNINSTALL_SCAN_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if completed.returncode != 0 or not completed.stdout.strip():
+            return []
+        payload = json.loads(completed.stdout)
+        rows = payload.get("Packages") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            return []
+        apps: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            winget_id = str(row.get("Id") or row.get("id") or "").strip()
+            name = str(row.get("Name") or row.get("name") or winget_id).strip()
+            if not winget_id or winget_id.lower() == "name":
+                continue
+            apps.append(
+                {
+                    "id": winget_id.lower(),
+                    "name": name,
+                    "publisher": str(row.get("Publisher") or row.get("publisher") or "").strip(),
+                    "version": str(row.get("Version") or row.get("version") or "").strip(),
+                    "winget_id": winget_id,
+                    "uninstall_string": "",
+                    "quiet_uninstall_string": "",
+                    "source": "winget",
+                }
+            )
+        return apps
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        logger.debug("winget package scan failed: %s", exc, exc_info=True)
+        return []
+
+
+def _app_merge_key(app: dict[str, Any]) -> str:
+    return str(app.get("id") or app.get("name") or "").strip().lower()
+
+
+def _app_record_richness(app: dict[str, Any]) -> int:
+    score = 0
+    if _has_uninstall_capability(app):
+        score += 20
+    if str(app.get("publisher") or "").strip():
+        score += 2
+    if str(app.get("version") or "").strip():
+        score += 2
+    if str(app.get("path") or "").strip():
+        score += 1
+    if str(app.get("source") or "") == "registry":
+        score += 3
+    return score
+
+
+def _has_uninstall_capability(app: dict[str, Any]) -> bool:
+    if str(app.get("quiet_uninstall_string") or "").strip():
+        return True
+    if str(app.get("uninstall_string") or "").strip():
+        return True
+    if str(app.get("source") or "") == "appx" and str(app.get("package_full_name") or "").strip():
+        return True
+    if str(app.get("source") or "") == "winget" and str(app.get("winget_id") or "").strip():
+        return True
+    return False
+
+
 def installed_apps(context: dict[str, Any]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
     apps = [{"id": key, "name": key, "command": value, "path": value, "source": "builtin"} for key, value in ALLOWLIST.items()]
     apps.extend(_scan_shortcuts())
     apps.extend(_scan_registry_apps())
-    unique = []
+    apps.extend(_scan_appx_packages())
+    apps.extend(_scan_winget_packages())
+    merged: dict[str, dict[str, Any]] = {}
     for app in apps:
-        key = str(app.get("id") or app.get("name")).lower()
-        if not key or key in seen:
+        key = _app_merge_key(app)
+        if not key:
             continue
-        seen.add(key)
+        existing = merged.get(key)
+        if existing is None or _app_record_richness(app) > _app_record_richness(existing):
+            merged[key] = app
+    unique = []
+    for app in merged.values():
         categories = _app_categories(app)
         if categories:
             app["categories"] = categories
@@ -279,15 +421,26 @@ def find_uninstall_entries(args: dict[str, Any], context: dict[str, Any]) -> dic
     query = str(args.get("query", "")).strip().lower()
     matches = []
     for app in installed_apps(context):
-        uninstall = str(app.get("uninstall_string") or "")
-        if not uninstall:
+        if not _has_uninstall_capability(app):
             continue
         haystack = " ".join(
             str(app.get(key) or "").lower()
-            for key in ("id", "name", "publisher", "path", "uninstall_string")
+            for key in (
+                "id",
+                "name",
+                "publisher",
+                "path",
+                "uninstall_string",
+                "quiet_uninstall_string",
+                "package_full_name",
+                "winget_id",
+            )
         )
         if query and query not in haystack:
             continue
+        uninstall = str(app.get("uninstall_string") or "")
+        quiet_uninstall = str(app.get("quiet_uninstall_string") or "")
+        method = _describe_uninstall_method(app)
         matches.append(
             {
                 "name": app.get("name"),
@@ -296,9 +449,181 @@ def find_uninstall_entries(args: dict[str, Any], context: dict[str, Any]) -> dic
                 "source": app.get("source", ""),
                 "path": app.get("path", ""),
                 "uninstall_string": uninstall,
+                "quiet_uninstall_string": quiet_uninstall,
+                "uninstall_method": method,
+                "package_full_name": app.get("package_full_name", ""),
+                "winget_id": app.get("winget_id", ""),
             }
         )
     return {"query": query, "matches": matches[:20], "count": len(matches)}
+
+
+def _describe_uninstall_method(app: dict[str, Any]) -> str:
+    if str(app.get("quiet_uninstall_string") or "").strip():
+        return "quiet_registry"
+    source = str(app.get("source") or "")
+    if source == "winget" and str(app.get("winget_id") or "").strip():
+        return "winget"
+    if source == "appx" and str(app.get("package_full_name") or "").strip():
+        return "appx"
+    if str(app.get("uninstall_string") or "").strip():
+        return "registry"
+    return "unknown"
+
+
+def _resolve_uninstall_plan(app: dict[str, Any]) -> tuple[str, list[str] | str]:
+    quiet = str(app.get("quiet_uninstall_string") or "").strip()
+    regular = str(app.get("uninstall_string") or "").strip()
+    source = str(app.get("source") or "")
+    if quiet:
+        return "quiet_registry", _safe_uninstall_args(quiet)
+    if source == "winget" and str(app.get("winget_id") or "").strip():
+        winget_id = _validate_winget_id(str(app["winget_id"]).strip())
+        return "winget", [
+            "winget",
+            "uninstall",
+            "--id",
+            winget_id,
+            "-e",
+            "-h",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+    if source == "appx" and str(app.get("package_full_name") or "").strip():
+        return "appx", _validate_appx_package_name(str(app["package_full_name"]).strip())
+    if regular:
+        return "registry", _safe_uninstall_args(regular)
+    raise ValueError("No uninstall method available for this application.")
+
+
+def _truncate_process_output(text: str, limit: int = 2000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _run_uninstall_command(command_args: list[str], *, timeout: int = UNINSTALL_TIMEOUT_SECONDS) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            command_args,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return {
+            "returncode": completed.returncode,
+            "stdout": _truncate_process_output(completed.stdout),
+            "stderr": _truncate_process_output(completed.stderr),
+            "timed_out": False,
+        }
+    except subprocess.TimeoutExpired:
+        return {"returncode": -1, "stdout": "", "stderr": "Uninstaller timed out.", "timed_out": True}
+    except OSError as exc:
+        return {"returncode": -1, "stdout": "", "stderr": str(exc), "timed_out": False}
+
+
+def _validate_winget_id(winget_id: str) -> str:
+    if not winget_id or not WINGET_ID_PATTERN.match(winget_id):
+        raise ValueError("Winget package id is invalid.")
+    return winget_id
+
+
+def _validate_appx_package_name(package_full_name: str) -> str:
+    if not package_full_name or not APPX_PACKAGE_PATTERN.match(package_full_name):
+        raise ValueError("Appx package name is invalid.")
+    return package_full_name
+
+
+def _run_appx_uninstall(package_full_name: str, *, timeout: int = UNINSTALL_TIMEOUT_SECONDS) -> dict[str, Any]:
+    package_full_name = _validate_appx_package_name(package_full_name)
+    escaped = package_full_name.replace("'", "''")
+    script = f"Remove-AppxPackage -Package '{escaped}'"
+    return _run_uninstall_command(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        timeout=timeout,
+    )
+
+
+def _entry_identity_keys(app: dict[str, Any]) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    winget_id = str(app.get("winget_id") or "").strip().lower()
+    package_full_name = str(app.get("package_full_name") or "").strip()
+    uninstall_string = str(app.get("uninstall_string") or "").strip()
+    quiet_uninstall = str(app.get("quiet_uninstall_string") or "").strip()
+    source = str(app.get("source") or "").strip().lower()
+    name = str(app.get("name") or "").strip().lower()
+    if winget_id:
+        keys["winget_id"] = winget_id
+    if package_full_name:
+        keys["package_full_name"] = package_full_name
+    if uninstall_string:
+        keys["uninstall_string"] = uninstall_string.lower()
+    if quiet_uninstall:
+        keys["quiet_uninstall_string"] = quiet_uninstall.lower()
+    if source:
+        keys["source"] = source
+    if name:
+        keys["name"] = name
+    return keys
+
+
+def _entries_match_identity(target: dict[str, str], candidate: dict[str, Any]) -> bool:
+    if not _has_uninstall_capability(candidate):
+        return False
+    candidate_keys = _entry_identity_keys(candidate)
+    if target.get("winget_id") and candidate_keys.get("winget_id") == target["winget_id"]:
+        return True
+    if target.get("package_full_name") and candidate_keys.get("package_full_name") == target["package_full_name"]:
+        return True
+    if target.get("quiet_uninstall_string") and candidate_keys.get("quiet_uninstall_string") == target["quiet_uninstall_string"]:
+        return True
+    if target.get("uninstall_string") and candidate_keys.get("uninstall_string") == target["uninstall_string"]:
+        return True
+    if (
+        target.get("source") == "registry"
+        and target.get("name")
+        and candidate_keys.get("source") == "registry"
+        and candidate_keys.get("name") == target["name"]
+    ):
+        return True
+    return False
+
+
+def _entry_still_present(app: dict[str, Any], context: dict[str, Any]) -> bool:
+    identity = _entry_identity_keys(app)
+    if not identity:
+        return False
+    for candidate in installed_apps(context):
+        if _entries_match_identity(identity, candidate):
+            return True
+    return False
+
+
+def _verify_removal(app: dict[str, Any], context: dict[str, Any]) -> bool:
+    for attempt in range(UNINSTALL_VERIFY_ATTEMPTS):
+        if not _entry_still_present(app, context):
+            return True
+        if attempt + 1 < UNINSTALL_VERIFY_ATTEMPTS:
+            time.sleep(UNINSTALL_VERIFY_DELAY_SECONDS)
+    return not _entry_still_present(app, context)
+
+
+def _find_installed_app_record(selected: dict[str, Any], context: dict[str, Any]) -> dict[str, Any] | None:
+    identity = _entry_identity_keys(selected)
+    if not identity:
+        return None
+    best: dict[str, Any] | None = None
+    best_score = -1
+    for app in installed_apps(context):
+        if not _entries_match_identity(identity, app):
+            continue
+        score = _app_record_richness(app)
+        if score > best_score:
+            best = app
+            best_score = score
+    return best
 
 
 def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -321,9 +646,9 @@ def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
             "matches": matches[:10],
         }
     selected = matches[0]
-    uninstall_string = str(selected.get("uninstall_string") or "")
+    app_record = _find_installed_app_record(selected, context) or selected
     try:
-        command_args = _safe_uninstall_args(uninstall_string)
+        method, command = _resolve_uninstall_plan(app_record)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -333,19 +658,60 @@ def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
         "app": selected.get("name", query),
         "publisher": selected.get("publisher", ""),
         "version": selected.get("version", ""),
-        "uninstall_string": uninstall_string,
-        "message": "Approval is required before launching the app uninstaller.",
+        "source": selected.get("source", ""),
+        "uninstall_method": method,
+        "uninstall_string": str(app_record.get("uninstall_string") or ""),
+        "quiet_uninstall_string": str(app_record.get("quiet_uninstall_string") or ""),
+        "package_full_name": app_record.get("package_full_name", ""),
+        "winget_id": app_record.get("winget_id", ""),
+        "message": "Approval is required before running the uninstaller.",
     }
     if args.get("dry_run", True):
         return preview
 
-    subprocess.Popen(command_args, shell=False)
-    record("app.uninstall_app", "AppAgent", {"app": selected.get("name", query), "command": uninstall_string})
+    if method == "appx":
+        execution = _run_appx_uninstall(str(command))
+        command_audit = f"Remove-AppxPackage -Package {command}"
+    else:
+        execution = _run_uninstall_command(list(command))
+        command_audit = subprocess.list2cmdline(list(command))
+
+    verified_removed = _verify_removal(app_record, context)
+    still_present = not verified_removed
+    ok = execution.get("returncode") == 0 and verified_removed and not execution.get("timed_out")
+    record(
+        "app.uninstall_app",
+        "AppAgent",
+        {
+            "app": selected.get("name", query),
+            "command": command_audit,
+            "method": method,
+            "returncode": execution.get("returncode"),
+            "verified_removed": verified_removed,
+        },
+    )
+    if ok:
+        message = "Application uninstall completed and removal was verified."
+    elif execution.get("timed_out"):
+        message = "Uninstaller timed out before completion."
+    elif execution.get("returncode") != 0:
+        message = "Uninstaller exited with a non-zero status."
+    elif still_present:
+        message = "Uninstaller finished but the application is still installed."
+    else:
+        message = "Uninstall finished with an unexpected outcome."
+
     return {
-        "ok": True,
+        "ok": ok,
         "app": selected.get("name", query),
-        "launched": True,
-        "message": "Uninstaller launched. Follow the vendor dialog to complete removal.",
+        "uninstall_method": method,
+        "returncode": execution.get("returncode"),
+        "verified_removed": verified_removed,
+        "still_present": still_present,
+        "timed_out": execution.get("timed_out", False),
+        "stdout": execution.get("stdout", ""),
+        "stderr": execution.get("stderr", ""),
+        "message": message,
     }
 
 

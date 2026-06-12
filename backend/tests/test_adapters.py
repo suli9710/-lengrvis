@@ -136,3 +136,35 @@ def test_webhook_dry_run_redacts_sensitive_payload_fields_recursively():
     assert result["request"]["payload"]["nested"][1]["safe"] == "visible"
     assert "payload-secret" not in str(result)
     assert "nested-secret" not in str(result)
+
+
+def test_webhook_execute_pins_outbound_url(monkeypatch):
+    from app.adapters.base import AdapterConfig
+    from app.adapters.webhook import WebhookAdapter
+
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, str]]] = []
+
+        def post(self, url: str, payload: dict, headers: dict[str, str], timeout_seconds: float) -> dict:
+            self.calls.append((url, headers))
+            return {"ok": True}
+
+    client = RecordingClient()
+    adapter = WebhookAdapter(
+        config=AdapterConfig(service_name="webhook", dry_run=False, test_mode=False),
+        client=client,
+    )
+    adapter.connect()
+    monkeypatch.setattr(
+        "app.adapters.webhook.pin_outbound_http_url",
+        lambda url, allow_private=False: type("Pinned", (), {"url": "https://203.0.113.10/hook", "headers": {"Host": "hooks.example.test"}, "extensions": {}})(),
+    )
+
+    result = adapter.execute(
+        "post_webhook",
+        {"url": "https://hooks.example.test/hook", "payload": {"text": "hello"}, "headers": {"X-Trace": "1"}},
+    )
+
+    assert result["ok"] is True
+    assert client.calls == [("https://203.0.113.10/hook", {"Host": "hooks.example.test", "X-Trace": "1"})]
