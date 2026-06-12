@@ -27,6 +27,7 @@ def issue_mobile_token(
     scope: str | Iterable[str] = TOKEN_SCOPE,
     source: str = "",
     grant_id: str = "",
+    token_id: str = "",
 ) -> str:
     now = datetime.now(timezone.utc)
     scopes = _scope_values(scope)
@@ -44,6 +45,10 @@ def issue_mobile_token(
         payload["source"] = source
     if grant_id:
         payload["grant_id"] = grant_id
+    if token_id:
+        # Binds the token to a single active session; lets a remote-input grant
+        # invalidate previously claimed tokens by rotating its stored token id.
+        payload["jti"] = token_id
     return jwt.encode(payload, _secret(), algorithm="HS256")
 
 
@@ -228,6 +233,11 @@ def _raise_if_remote_input_grant_inactive(payload: dict[str, Any], scopes: set[s
         expires_at = _remote_input_grant_expires_at(grant)
         if expires_at < now:
             raise HTTPException(status_code=401, detail="Remote input grant expired")
+        # Anti-replay: a grant binds to exactly one issued token. Re-claiming the
+        # grant rotates ``token_id``, so any previously minted token is rejected.
+        bound_token_id = str(grant.get("token_id") or "")
+        if bound_token_id and str(payload.get("jti") or "") != bound_token_id:
+            raise HTTPException(status_code=401, detail="Remote input grant token has been superseded")
         return
 
     raise HTTPException(status_code=401, detail="Remote input grant is not active")

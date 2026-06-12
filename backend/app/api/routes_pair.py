@@ -10,9 +10,16 @@ from app.services import mobile_pairing_service
 
 router = APIRouter()
 
+# Keep the request-schema length/pattern in sync with the generated code entropy.
+_PAIR_CODE_LENGTH = mobile_pairing_service.PAIR_CODE_HEX_LENGTH * 2
+
 
 class PairRedeemRequest(BaseModel):
-    code: str = Field(min_length=8, max_length=8, pattern=r"^[a-f0-9]{8}$")
+    code: str = Field(
+        min_length=_PAIR_CODE_LENGTH,
+        max_length=_PAIR_CODE_LENGTH,
+        pattern=rf"^[a-f0-9]{{{_PAIR_CODE_LENGTH}}}$",
+    )
     device_name: str = Field(default="Android device", max_length=80)
 
 
