@@ -381,10 +381,19 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.skillsImport, async (event, packagePath: unknown) => {
     assertTrustedRenderer(event);
+    const safePackagePath = validateBridgePathValue(packagePath, "skill package path");
+    // Skill import reads and registers code/tools from an arbitrary filesystem
+    // path. Require an explicit native confirmation that shows the path so a
+    // compromised renderer cannot silently import from an attacker-chosen location.
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm skill import",
+      message: "Import this skill package?",
+      detail: `Path: ${safePackagePath}\n\nOnly import skill packages you trust. Skills can register tools and run packaged code under the app's permissions.`
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/skills/import",
       method: "POST",
-      body: { path: validateBridgePathValue(packagePath, "skill package path") }
+      body: { path: safePackagePath }
     });
   });
 
