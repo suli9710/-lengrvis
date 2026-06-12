@@ -239,7 +239,12 @@ def test_build_lengrvis_command_writes_enabled_uses_default_permission_mode(tmp_
         developer_writes_enabled=True,
     )
     tools = allowed_tools_for_developer(writes_enabled=True)
-    config = LengrvisCodeConfig(max_turns=1, allowed_tools=tools, permission_mode="default")
+    config = LengrvisCodeConfig(
+        command=(sys.executable, "-c", "print('noop')"),
+        max_turns=1,
+        allowed_tools=tools,
+        permission_mode="default",
+    )
     command = build_lengrvis_code_command(
         _prompt_from_goal("fix failing pytest in backend/tests", writes_enabled=True),
         cwd=tmp_path,
