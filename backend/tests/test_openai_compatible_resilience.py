@@ -66,6 +66,10 @@ def _patch_shared_client(monkeypatch: pytest.MonkeyPatch) -> None:
         "app.llm.openai_compatible.pin_outbound_http_url",
         lambda url, *, allow_private=False: PinnedOutboundRequest(url=url),
     )
+    monkeypatch.setattr(
+        "app.llm.openai_compatible.validate_outbound_http_url",
+        lambda url, *, allow_private=False: url,
+    )
 
 
 def _settings(**overrides) -> AppSettings:
@@ -147,6 +151,10 @@ def test_chat_posts_to_pinned_ip_with_host_and_sni_preserved(monkeypatch):
     """Connect-time SSRF pin: the request goes to the validated IP, while the
     Host header and TLS SNI keep the real hostname."""
     monkeypatch.setattr("app.llm.openai_compatible._shared_http_client", lambda: FakeAsyncClient())
+    monkeypatch.setattr(
+        "app.llm.openai_compatible.validate_outbound_http_url",
+        lambda url, *, allow_private=False: url,
+    )
     monkeypatch.setattr(
         "app.llm.openai_compatible.pin_outbound_http_url",
         lambda url, *, allow_private=False: PinnedOutboundRequest(
