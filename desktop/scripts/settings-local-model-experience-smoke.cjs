@@ -455,7 +455,7 @@ async function assertNoSensitiveLocalModelText(page, label) {
 
 function runSourceAssertions() {
   const settingsSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "components", "SettingsPanel.tsx"), "utf8");
-  const apiClientSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "apiClient.ts"), "utf8");
+  const apiClientSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "api", "client.ts"), "utf8");
 
   assert.match(
     apiClientSource,

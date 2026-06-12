@@ -67,10 +67,10 @@ function assertSourceBoundaries() {
   assertIncludes(sharedTypes, "supportsDryRun: boolean;", "desktop skill type preview flag");
   assertIncludes(sharedTypes, "rollbackHint: string;", "desktop skill type rollback hint");
 
-  const apiClient = read("desktop/src/renderer/lib/apiClient.ts");
-  assertIncludes(apiClient, "permissions: Array.isArray(tool.permissions) ? tool.permissions.map(String) : []", "desktop API permission mapping");
-  assertIncludes(apiClient, "supportsDryRun: Boolean(tool.supports_dry_run)", "desktop API preview mapping");
-  assertIncludes(apiClient, "rollbackHint: String(tool.rollback_hint ?? \"\")", "desktop API rollback mapping");
+  const apiMappers = read("desktop/src/renderer/lib/api/mappers.ts");
+  assertIncludes(apiMappers, "permissions: Array.isArray(tool.permissions) ? tool.permissions.map(String) : []", "desktop API permission mapping");
+  assertIncludes(apiMappers, "supportsDryRun: Boolean(tool.supports_dry_run)", "desktop API preview mapping");
+  assertIncludes(apiMappers, "rollbackHint: String(tool.rollback_hint ?? \"\")", "desktop API rollback mapping");
 
   const skillsView = read("desktop/src/renderer/views/SkillsView.tsx");
   for (const label of ["读文件", "写文件", "操作 UI", "访问网络", "发送消息", "删除数据", "Preview", "Rollback/Handoff"]) {

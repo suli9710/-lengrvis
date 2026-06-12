@@ -96,14 +96,18 @@ for (const [name, query] of [
   );
 }
 
-const apiClientSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "lib", "apiClient.ts"), "utf8");
+const transportSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "lib", "api", "transport.ts"), "utf8");
 assert.match(
-  apiClientSource,
+  transportSource,
   /function subscribeDesktopJsonStream[\s\S]*window\.lengrvis(?:!|\?)?\.realtime\.subscribe/,
   "task/run streams should use preload realtime bridge in Electron"
 );
-assert.doesNotMatch(apiClientSource, /new WebSocket\(build(?:Task|Run)WebSocketUrl/, "task/run streams must not directly create protected WebSockets");
-assert.match(apiClientSource, /function isWebOnlyDevRealtimeFallbackEnabled[\s\S]*import\.meta\.env\.DEV/, "renderer fallback must be web-only dev gated");
+assert.doesNotMatch(transportSource, /new WebSocket\(build(?:Task|Run)WebSocketUrl/, "task/run streams must not directly create protected WebSockets");
+assert.match(
+  transportSource,
+  /function isWebOnlyDev(?:RealtimeFallbackEnabled|BackendBridge)[\s\S]*import\.meta\.env\.DEV/,
+  "renderer fallback must be web-only dev gated"
+);
 
 const settingsSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "components", "SettingsPanel.tsx"), "utf8");
 assert.match(settingsSource, /subscribeInstallModelProgressSocket/, "install progress should use the shared subscribe helper");
