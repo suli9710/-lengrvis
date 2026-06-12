@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,13 @@ from app.config import AppSettings
 from app.core import db
 from app.services.browser_activity_runtime import BrowserActivityRuntime, _read_limited_http_response
 from app.tools import browser_tools
+
+
+def _stub_public_dns(monkeypatch) -> None:
+    """Resolve any hostname to a fixed public IP so connect-time IP pinning works."""
+    infos = [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 0))]
+    monkeypatch.setattr("app.services.browser_activity_runtime.socket.getaddrinfo", lambda *a, **k: infos)
+    monkeypatch.setattr("app.core.outbound_url.socket.getaddrinfo", lambda *a, **k: infos)
 
 
 class FakeBrowserAdapter:
@@ -178,19 +186,37 @@ def test_legacy_read_page_uses_session_compatible_runtime_flow() -> None:
     assert "secret-token" not in str(events)
 
 
-def test_httpx_observe_reads_response_with_hard_byte_limit() -> None:
+def test_httpx_observe_reads_response_with_hard_byte_limit(monkeypatch) -> None:
+    _stub_public_dns(monkeypatch)
     body = b"<html><title>Example</title><main>" + (b"a" * 512) + b"</main></html>"
+    seen_hosts: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        seen_hosts.append(request.headers.get("host", ""))
         return httpx.Response(200, headers={"Content-Length": str(len(body))}, content=body, request=request)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         html, final_url, truncated = _read_limited_http_response(client, "https://example.test/page", 64)
 
     assert final_url == "https://example.test/page"
+    # Connect target is pinned to the resolved IP; the Host header restores the name.
+    assert seen_hosts == ["example.test"]
     assert truncated is True
     assert len(html.encode("utf-8")) <= 64
     assert "a" * 128 not in html
+
+
+def test_httpx_observe_rejects_redirect_to_internal_host(monkeypatch) -> None:
+    # SEC-008 regression: redirects are followed manually and re-validated, so a
+    # 3xx to an internal/metadata host is rejected instead of fetched.
+    _stub_public_dns(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"}, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError):
+            _read_limited_http_response(client, "https://example.test/page", 64)
 
 
 def test_open_url_defaults_to_isolated_session_without_system_browser(monkeypatch) -> None:
@@ -264,3 +290,37 @@ def test_validate_final_url_blocks_post_redirect_loopback_targets(monkeypatch) -
     monkeypatch.delenv(ALLOW_PRIVATE_HOSTS_ENV, raising=False)
     with pytest.raises(ValueError):
         _validate_final_url("http://127.0.0.1:8000/api/system/diagnostics")
+
+
+@pytest.mark.parametrize(
+    "attrs",
+    [
+        {"type": "password"},
+        {"type": "text", "autocomplete": "current-password"},
+        {"type": "text", "autocomplete": "one-time-code"},
+        {"type": "text", "autocomplete": "cc-number"},
+        {"type": "text", "name": "user_password"},
+        {"type": "text", "id": "otp-code"},
+        {"type": "text", "aria-label": "Card CVV"},
+    ],
+)
+def test_field_attributes_are_sensitive_by_element_semantics(attrs) -> None:
+    # SEC-009 regression: sensitivity is decided from element semantics, so a
+    # generic selector cannot smuggle input into a credential/payment/OTP field.
+    from app.services.browser_activity_runtime import _field_attributes_are_sensitive
+
+    assert _field_attributes_are_sensitive(attrs) is True
+
+
+@pytest.mark.parametrize(
+    "attrs",
+    [
+        {"type": "text", "name": "search", "autocomplete": "off"},
+        {"type": "email", "name": "email", "autocomplete": "email"},
+        {"type": "text", "id": "f1"},
+    ],
+)
+def test_field_attributes_are_not_sensitive_for_ordinary_inputs(attrs) -> None:
+    from app.services.browser_activity_runtime import _field_attributes_are_sensitive
+
+    assert _field_attributes_are_sensitive(attrs) is False
