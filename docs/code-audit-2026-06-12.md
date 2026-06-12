@@ -47,12 +47,14 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 - **问题**：这些写路径只检查 `approved`/`approval_id` 的真值；`perception/ui_automation` 甚至会在带这两个标志时把任何非 `DENY` 的策略结果（含 `NEEDS_USER_APPROVAL`）升级为 `ALLOW`。它们**不做 DB/HMAC 校验**。
 - **可利用性**：**正常编排/API 流程下不可直接利用**——`model_boundary` 拦截注入字段，`step_execution_handler` 与直连路由（`routes_browser.py:84-174`、`routes_ui_automation.py:240-325`）做 HMAC 绑定 + `claim_approval_for_execution`。风险在于：**若未来有新调用方直接调用 `tool.execute()`/runtime.act 并传入伪造 ID**，即可跳过审批。属经典纵深防御失效。
 - **建议**：将 HMAC/DB 校验下沉为工具/runtime 层的硬前置（或在这些入口显式拒绝裸布尔审批），不要依赖上层永远先跑。
+- **状态**：**已修复**（2026-06-12）。新增 `app/policy/execution_marker.py`：编排器 `tool_runtime._execute_tool_call` 与直连路由（`routes_browser`、`routes_ui_automation`）在通过 HMAC 绑定 + 原子 claim 后，对执行 `context` 打上进程唯一标记 `mark_execution_approved`；`browser_activity_runtime.act`、`ui_automation_tools`（6 个写函数）、`workflow_tools` 的实时写入除 `approved`/`approval_id` 外**额外要求** `execution_is_marked_approved(context)`。标记是 `_` 前缀私有 context 键（不入 args、不外泄）。回归：`test_browser_activity_runtime.py` 新增 `unmarked` 断言（伪造审批标志但无标记 → 拒绝）。
 
 ### SEC-003 — `redact_text` 不做本机路径脱敏，仅 `redact_public_text` 才做
 
 - **位置**：`backend/app/policy/redaction.py:83-96`（`redact_text` vs `redact_public_text`）、`66-68`（`LOCAL_PATH_PATTERN`）、`backend/app/core/audit.py`（读路径走 `redact_value`/`redact_text`）
 - **问题**：`LOCAL_PATH_PATTERN`/`PUBLIC_FILE_NAME_PATTERN`/`PUBLIC_PROMPT_TEXT_PATTERN` 只在 `redact_public_text` 中应用。形如路径的字符串如果落在非路径键（如 `note`、`error`、`summary`）里，经 `redact_text` 不会被替换。审计读路径与多个内部面用的是 `redact_value`/`redact_text`，因此**自由文本字段中的本机绝对路径可能未脱敏**。
 - **建议**：对字符串叶子统一走 `redact_public_text`，或合并两条脱敏管线。
+- **状态**：**已修复**（2026-06-12）。新增 `redaction.redact_audit_payload`（`_redact_value(scrub_local_paths=True)`），在 `/api/audit` 读路径（`routes_audit._public_audit_events`）对字符串叶子改走 `redact_public_text`，scrub 本机绝对路径 / 公开文件名 / prompt 注入文本；哈希链写路径不变。回归：`test_privacy_redaction.py::test_redact_audit_payload_scrubs_local_paths_in_free_text`。
 
 ### SEC-004 — 配对码熵仅 32 位 + 限速为单进程内存/按 IP
 
@@ -60,12 +62,14 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 - **问题**：配对码 32 位随机；爆破限速按 `client_host` 计、且存于**进程内存**（重启即清零，多 worker 各自计数）。LAN 上多个伪造源 IP 可显著放大单个配对码生命周期内的总尝试数。成功一次即获得 30 天 JWT（可含 `remote:view`）。
 - **缓解项**：配对码 300s 过期、单次使用（`BEGIN IMMEDIATE` 原子置 pending）、LAN 下 `/api/pair/confirm` 强制 HTTPS。单码被猜中的概率仍然很低，但不为零、且随重复配对累积。
 - **建议**：提高配对码熵（≥64 bit）；限速改为持久化 + 按配对请求维度（而非仅按源 IP）；多 worker 共享计数。
+- **状态**：**已修复（熵）**（2026-06-12）。`PAIR_CODE_HEX_LENGTH` 4→8（**64 位**，16 hex），`routes_pair.PairRedeemRequest` 的长度/pattern 由常量派生保持同步；64 位空间使 300s 生命周期内的在线爆破不可行。限速保留按 IP 进程内（产品为单进程桌面后端，多 worker 不适用），未引入会在快速串行测试间累积的全局时间窗限速。
 
 ### SEC-005 — 移动 JWT 30 天长有效期，无 `jti`/会话吊销表
 
 - **位置**：`backend/app/services/mobile_pairing_service.py:34`（`TOKEN_TTL_SECONDS = 30天`）、`backend/app/security/mobile_jwt.py:22-47`
 - **问题**：配对后的 bearer 30 天有效，且无 `jti`/吊销列表；仅能通过 `revoke_mobile_device` 设备级吊销。token 一旦泄露（日志/备份/恶意软件），在设备被吊销前持续可用于审批/任务/屏幕查看。
 - **建议**：引入 `jti` + 吊销表或更短 TTL + 刷新令牌。
+- **状态**：**已修复**（2026-06-12）。所有移动 token 现带 `jti`；设备记录新增单调 `token_epoch` 并嵌入 token，`_raise_if_device_inactive` 在每次校验时比对 epoch。新增 `revoke_mobile_device_sessions` 服务 + 桌面 token 约束路由 `POST /api/pair/devices/{id}/revoke-sessions`：bump epoch 即吊销该设备所有已签发 token（含 grant），无需删除配对。回归：`test_revoke_device_sessions_invalidates_existing_token`。TTL 维持 30 天（缩短需移动端刷新流程，避免破坏伴侣 App）。
 
 ### SEC-006 — 远程输入授权 JWT 可重放
 
@@ -73,12 +77,14 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 - **问题**：同一 grant 反复 claim 会铸造新 JWT，但**不作废此前的 token**，导致同一 grant 同时存在多个有效 `remote:input` token，直到过期/撤销。任一副本被窃取都会延长滥用窗口。
 - **缓解项**：grant TTL 仅 5 分钟、每条 WS 消息实时校验 grant 状态。
 - **建议**：claim 时绑定/轮换单一有效 token（如记录当前有效 token 指纹，旧的立即失效）。
+- **状态**：**已修复**（2026-06-12）。claim 时生成 `token_id` 并原子写入 grant（`_bind_remote_input_grant_token_id`），token 以其为 `jti`；`_raise_if_remote_input_grant_inactive` 要求 token 的 `jti` 等于 grant 当前 `token_id`，再次 claim 即轮换 `token_id` 使旧 token 失效。回归：`test_reclaiming_remote_input_grant_supersedes_prior_token`。
 
 ### SEC-007 — 技能包 zip 导入无解压体积上限（zip 炸弹 DoS）
 
 - **位置**：`backend/app/services/skill_service.py:268-284`
 - **问题**：导入已正确阻断路径穿越/zip-slip，但 `extractall` 无解压后体积上限，恶意压缩包可撑爆磁盘造成 DoS。
 - **建议**：导入前统计 `ZipInfo.file_size` 总和并设上限；逐条解压并累计校验。
+- **状态**：**已修复**（2026-06-12）。`_extract_zip_safely` 在 `extractall` 前校验成员数（≤5000）、累计解压体积（≤256MB）与单成员压缩比（≤200），任一超限即抛 `SkillServiceError`。回归：`test_extract_zip_safely_rejects_zip_bomb`、`test_extract_zip_safely_rejects_too_many_members`。
 
 ### SEC-008 — SSRF 校验与 Playwright `goto` 之间存在 DNS 重绑定 TOCTOU
 
@@ -86,17 +92,20 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 - **问题**：SSRF 守卫在校验时解析 DNS，而 Playwright `page.goto` 会再次解析；攻击者可在两次解析之间把域名重绑定到内网/元数据地址。
 - **缓解项**：httpx fallback 会对重定向后 URL 复检；默认私网阻断。
 - **建议**：将解析后的 IP 钉死后再交给浏览器（与 MCP 客户端 `outbound_url.py` 的 IP 钉死策略一致）。
+- **状态**：**已修复（httpx fallback）**（2026-06-12）。httpx 读取改为 `follow_redirects=False` + 手动逐跳：每跳 `_validate_url` + `pin_outbound_http_url`（连接到已校验 IP，Host/SNI 还原域名），重定向目标逐跳复校验，防 DNS 重绑定与重定向 SSRF。回归：`test_httpx_observe_rejects_redirect_to_internal_host`、`test_httpx_observe_reads_response_with_hard_byte_limit`（断言 Host 还原）。**残留**：Playwright 主读路径的预连接 DNS 钉死需 `--host-resolver-rules`（需真实浏览器验证），目前仍由导航后 `_validate_final_url` 兜底。
 
 ### SEC-009 — 敏感字段拦截基于选择器文本子串匹配
 
 - **位置**：`backend/app/services/browser_activity_runtime.py:799-807`、`backend/app/tools/browser_tools.py:218-220`
 - **问题**：对 `password`/`token` 等敏感字段的拦截是对**选择器文本**做子串匹配。使用通用选择器（如 `#f1`、`input:nth-child(3)`）即可绕过，从而对密码/支付字段进行写入。
 - **建议**：在执行端按元素的实际 `type=password`/`autocomplete` 语义判定，而非选择器字符串。
+- **状态**：**已修复**（2026-06-12）。新增 `_field_attributes_are_sensitive`（按 `type=password`、敏感 `autocomplete`（current/new-password、one-time-code、cc-*）、name/id/aria-label/placeholder 语义判定），在 Playwright 实时 `fill` 前经 `_playwright_field_is_sensitive` 读取元素属性并阻断。回归：`test_field_attributes_are_sensitive_by_element_semantics` 等参数化用例。
 
 ### SEC-010 — 桌面端 IPC 后利用放大面
 
 - **位置**：`desktop/src/main/desktopApiToken.ts:142-187`、`desktop/src/main/ipc.ts:382-388`（`skillsImport` 接受渲染层任意路径、无 picker 授权）、`341-379`（`cleanupExecute`/`cleanupRollback`/`commandsExecute` 无原生确认）、`534-542`（带 nonce 时策略改写无二次原生确认）、`815-833`（`showItemInFolder`/`getFileIcon` 默认根目录无 picker 授权）
 - **问题**：桌面 token 在非 Windows 平台明文存储；多个敏感 IPC 动作缺少原生确认。均非远程未认证 RCE，而是**渲染层被 XSS 攻陷后的放大面**。
+- **状态**：**部分修复**（2026-06-12）。`skillsImport`（任意路径、最高风险、用户主动且低频）现在在导入前 `confirmNativeDesktopAction` 显示路径并要求确认；desktop typecheck 通过。`cleanupExecute`/`cleanupRollback`（后端已有审批门）与 `commandsExecute`（命令 dock 高频，强制弹窗会破坏核心 UX）的原生确认、非 Windows token 加密，需结合桌面 Playwright/e2e 在真实 Electron 运行时验证后再加，本环境无法运行桌面 smoke，故未盲改。
 - **建议**：危险动作统一加原生确认；`skillsImport` 走文件选择器授权；非 Windows 平台对 token 文件加密或限制 ACL。
 
 ### SEC-011 — 移动端 Android 信任用户安装的 CA（LAN MITM）
@@ -104,6 +113,7 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 - **位置**：`mobile/plugins/withAndroidRemoteControlHardening.js:11-15`
 - **问题**：网络安全配置 `<certificates src="user" />` 信任用户安装 CA；若设备装有恶意 CA，LAN WSS 可被中间人。配对指纹 UI 仅在后端声明 `requiresTrust` 时触发，无法覆盖任意 user-CA MITM。
 - **建议**：对 LAN WSS 走证书钉扎（pinning）或仅信任系统 CA + 显式指纹确认。
+- **状态**：**未改（需移动运行时验证）**。直接移除 `<certificates src="user" />` 会破坏产品文档化的自签名 LAN 证书信任流程（README「信任本机证书」依赖用户安装 CA + 配对后 SHA-256 指纹确认）；而 Android `network-security-config` 的 `domain-config` 只能列具体域名，无法对动态 LAN 私网 IP 段做作用域信任。安全做法是改为**应用层证书钉扎**（在 fetch/WSS 层校验指纹）后再移除 user-CA 全局信任——属移动端 TLS 运行时改动，需在真实设备/模拟器验证，本环境无法构建/测试 Expo，故未盲改以免破坏 LAN 配对。
 
 ### SEC-012 — 部分桌面专用接口返回原始本机路径/按文件名取字节
 
@@ -111,6 +121,7 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 - **问题**：这些接口文档标注为桌面专用，但与脱敏后的 replay 共用同一 router；录屏可被按 `{step_id}-{phase}-{timestamp}.png` 文件名猜测取回。
 - **缓解项**：默认受桌面 token 约束；公开 timeline 已隐藏文件名/URL/recording_id。
 - **建议**：对这些接口加显式桌面专用门禁或签名资源（参考 `desktop_api.signed_desktop_resource_query`），录屏改为签名 URL 而非可猜文件名。
+- **状态**：**已缓解（已确认现有门禁充分）+ 加回归**（2026-06-12）。复核确认：这些 `/api/tasks/*` 接口已被 `lan_api_guard` 对远程 LAN 直接拦截、并受桌面 API token 约束；录屏读取经 SQL 按 `task_id` 作用域、`resolve_recording_path` 拒绝路径分隔符/穿越、文件名含微秒时间戳（高熵不可猜）。新增回归 `test_recording_read_is_task_scoped_and_rejects_traversal` 锁定该访问控制属性。进一步的签名 URL 改造需桌面客户端配合生成签名（桌面运行时验证），故未在后端单方改动。
 
 ---
 
@@ -161,10 +172,11 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 
 ## 优先处理建议（按 ROI 排序）
 
-1. ~~**SEC-001**：补齐 run 引擎时间线/进度/状态的公开脱敏，剔除 `state._runtime`/原始 `run.message`（与既定脱敏契约一致）。~~ **已修复（2026-06-12）**，见上文 SEC-001 状态。
-2. **SEC-002 / SEC-003**：把审批 HMAC 校验下沉为工具/runtime 硬前置；统一字符串脱敏走 `redact_public_text`。
-3. **SEC-004 / SEC-005 / SEC-006**：提升配对码熵 + 持久化限速；移动 JWT 引入 `jti`/吊销或更短 TTL；远程输入 grant token 轮换作废。
-4. **SEC-008 / SEC-009**：浏览器 SSRF IP 钉死；敏感字段按元素语义而非选择器文本判定（并修复 README 已知失败用例）。
-5. **SEC-007 / SEC-010 / SEC-011 / SEC-012**：zip 解压上限、桌面危险 IPC 原生确认、移动端 CA pinning、桌面专用接口签名资源化。
+截至 2026-06-12 的处理状态：
 
-> 说明：本报告为只读审计，不含代码改动。以上均为可操作的整改方向，建议按攻击面优先级分批落地并补充对应回归测试。
+- ✅ **已修复 + 回归测试**：SEC-001、SEC-002、SEC-003、SEC-004（熵）、SEC-005、SEC-006、SEC-007、SEC-008（httpx fallback）、SEC-009。
+- ✅ **已确认现有门禁充分 + 加回归**：SEC-012（接口已 LAN 拦截 + 桌面 token 约束；录屏按 task 作用域 + 防穿越 + 高熵文件名）。
+- 🔶 **部分修复**：SEC-010（`skillsImport` 已加原生确认；cleanup/commands 确认与 token 加密待桌面运行时验证）。
+- ⏳ **待运行时验证（未盲改以免破坏功能）**：SEC-008 的 Playwright 预连接 DNS 钉死（需真实浏览器）、SEC-011 的移动端证书钉扎（直接移除 user-CA 会破坏自签名 LAN 流程）。
+
+> 说明：后端修复均在本机 venv 通过定向回归与全量 `pytest backend/tests` 验证（无新增失败；现存失败均为 origin/main 上已存在的 Linux 环境限制：file.trash/回收站、Windows 路径、异步计时）。桌面改动经 `npm --prefix desktop run typecheck` 通过。移动端与桌面运行时（Electron/Expo）相关项在本环境无法构建/测试，已据实标注。
