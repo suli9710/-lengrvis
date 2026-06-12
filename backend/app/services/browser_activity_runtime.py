@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 
 from app.config import env_flag
 from app.core.audit import record
+from app.core.outbound_url import pin_outbound_http_url
 from app.core.schemas import new_id, now_iso
 from app.policy.privacy import can_use_browser_network, can_use_browser_writes
 from app.policy.redaction import REDACTED, redact_text, redact_value
@@ -132,7 +133,9 @@ class LocalBrowserActivityAdapter:
         except ValueError:
             raise
         except Exception as exc:
-            with httpx.Client(timeout=30, follow_redirects=True) as client:
+            # follow_redirects=False: redirects are followed manually so every
+            # hop is re-validated and IP-pinned (no rebinding / redirect SSRF).
+            with httpx.Client(timeout=30, follow_redirects=False) as client:
                 html, final_url, response_truncated = _read_limited_http_response(client, url, max_chars)
             final_url = _validate_final_url(final_url)
             data = _extract_page(html, final_url, max_chars)
@@ -204,6 +207,12 @@ class LocalBrowserActivityAdapter:
                 elif kind == "fill":
                     fields = action.get("fields") or {}
                     for selector, value in fields.items():
+                        # Element-semantics guard: block credential/payment/OTP
+                        # fields even when reached via a generic selector.
+                        if _playwright_field_is_sensitive(page, str(selector)):
+                            raise ValueError(
+                                "target field is a sensitive credential/payment field; user must fill it manually."
+                            )
                         page.fill(str(selector), str(value), timeout=8000)
                 elif kind == "submit":
                     selector = str(action.get("selector") or "form")
@@ -623,30 +632,48 @@ def _writes_allowed(context: dict[str, Any]) -> tuple[bool, str]:
     return decision.allowed, decision.reason
 
 
-def _read_limited_http_response(client: httpx.Client, url: str, max_bytes: int) -> tuple[str, str, bool]:
+def _read_limited_http_response(
+    client: httpx.Client, url: str, max_bytes: int, *, max_redirects: int = 5
+) -> tuple[str, str, bool]:
     limit = max(1, int(max_bytes or 1))
-    chunks = bytearray()
-    truncated = False
-    with client.stream("GET", url, headers={"User-Agent": "LengrvisAgent/0.1"}) as response:
-        response.raise_for_status()
-        content_length = response.headers.get("content-length")
-        if content_length and content_length.isdigit() and int(content_length) > limit:
-            truncated = True
-        for chunk in response.iter_bytes():
-            if not chunk:
+    allow_private = _private_hosts_allowed()
+    current = str(url or "")
+    for _ in range(max_redirects + 1):
+        # Re-validate every hop, then connect to the exact IP we just validated
+        # (Host header + SNI restore the name) so a rebinding answer or a
+        # redirect to an internal host cannot be reached.
+        current = _validate_url(current)
+        pinned = pin_outbound_http_url(current, allow_private=allow_private)
+        headers = {"User-Agent": "LengrvisAgent/0.1", **pinned.headers}
+        with client.stream("GET", pinned.url, headers=headers, extensions=dict(pinned.extensions)) as response:
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    response.raise_for_status()
+                    raise ValueError("Redirect response did not include a Location header.")
+                current = urljoin(current, location)
                 continue
-            remaining = limit - len(chunks)
-            if remaining <= 0:
+            response.raise_for_status()
+            chunks = bytearray()
+            truncated = False
+            content_length = response.headers.get("content-length")
+            if content_length and content_length.isdigit() and int(content_length) > limit:
                 truncated = True
-                break
-            if len(chunk) > remaining:
-                chunks.extend(chunk[:remaining])
-                truncated = True
-                break
-            chunks.extend(chunk)
-        encoding = response.encoding or "utf-8"
-        final_url = str(response.url)
-    return bytes(chunks).decode(encoding, errors="replace"), final_url, truncated
+            for chunk in response.iter_bytes():
+                if not chunk:
+                    continue
+                remaining = limit - len(chunks)
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if len(chunk) > remaining:
+                    chunks.extend(chunk[:remaining])
+                    truncated = True
+                    break
+                chunks.extend(chunk)
+            encoding = response.encoding or "utf-8"
+            return bytes(chunks).decode(encoding, errors="replace"), current, truncated
+    raise ValueError("Too many redirects while fetching the page.")
 
 
 ALLOW_PRIVATE_HOSTS_ENV = "LENGRVIS_BROWSER_ALLOW_PRIVATE_HOSTS"
@@ -795,6 +822,49 @@ def _sensitive_action_error(action: dict[str, Any]) -> str:
     if action.get("text") and _sensitive_value(action.get("text")):
         return "text looks sensitive; user must enter it manually."
     return ""
+
+
+# Autocomplete hints (WHATWG) for credential / payment / OTP fields.
+SENSITIVE_AUTOCOMPLETE_TOKENS = {
+    "current-password",
+    "new-password",
+    "one-time-code",
+    "cc-number",
+    "cc-csc",
+    "cc-exp",
+    "cc-exp-month",
+    "cc-exp-year",
+    "cc-name",
+}
+
+
+def _field_attributes_are_sensitive(attrs: dict[str, Any]) -> bool:
+    """Decide field sensitivity from element semantics, not the selector string.
+
+    A generic selector (e.g. ``#f1``) can still target a password/payment/OTP
+    input, so inspect the resolved element's ``type``/``autocomplete`` and
+    descriptive attributes instead of trusting the caller-supplied selector text.
+    """
+    if str(attrs.get("type") or "").strip().lower() == "password":
+        return True
+    autocomplete = str(attrs.get("autocomplete") or "").lower().replace(",", " ")
+    if {token.strip() for token in autocomplete.split()} & SENSITIVE_AUTOCOMPLETE_TOKENS:
+        return True
+    for key in ("name", "id", "aria-label", "placeholder"):
+        if _sensitive_selector(str(attrs.get(key) or "")):
+            return True
+    return False
+
+
+def _playwright_field_is_sensitive(page: Any, selector: str) -> bool:
+    try:
+        attrs = {
+            key: page.get_attribute(selector, key, timeout=4000)
+            for key in ("type", "autocomplete", "name", "id", "aria-label", "placeholder")
+        }
+    except Exception:  # noqa: BLE001 - element missing/un-introspectable; let fill surface its own error.
+        return False
+    return _field_attributes_are_sensitive(attrs)
 
 
 def _sensitive_selector(selector: str) -> bool:
