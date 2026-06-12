@@ -54,6 +54,13 @@ def revoke_paired_device(device_id: str) -> dict:
     return mobile_pairing_service.revoke_mobile_device(device_id)
 
 
+@router.post("/pair/devices/{device_id}/revoke-sessions")
+def revoke_paired_device_sessions(device_id: str) -> dict:
+    # Desktop-gated: rotates the device session epoch so every previously issued
+    # token is rejected, without un-pairing the device.
+    return mobile_pairing_service.revoke_mobile_device_sessions(device_id)
+
+
 @router.post("/pair/devices/{device_id}/remote-input-grants")
 def create_remote_input_grant(device_id: str, payload: RemoteInputGrantRequest | None = None) -> dict:
     expires_in = payload.expires_in if payload else mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS

@@ -1121,6 +1121,27 @@ def test_successful_pairing_clears_host_confirm_failure_bucket(monkeypatch, tmp_
     assert exc.value.status_code == 429
 
 
+def test_revoke_device_sessions_invalidates_existing_token(monkeypatch, tmp_path):
+    # SEC-005 regression: bumping the device session epoch must reject already
+    # issued tokens (without un-pairing the device).
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    device_id = decode_mobile_token(token)["device_id"]
+
+    before = client.get("/api/mobile/approvals/pending", headers={"Authorization": f"Bearer {token}"})
+    assert before.status_code == 200
+
+    revoked = client.post(f"/api/pair/devices/{device_id}/revoke-sessions")
+    assert revoked.status_code == 200
+    assert revoked.json()["token_epoch"] == 1
+    assert revoked.json()["status"] == "active"
+
+    after = client.get("/api/mobile/approvals/pending", headers={"Authorization": f"Bearer {token}"})
+    assert after.status_code == 401
+
+
 def test_mobile_approval_routes_require_bearer_token(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()

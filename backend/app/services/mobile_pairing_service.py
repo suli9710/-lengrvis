@@ -305,7 +305,7 @@ def claim_remote_input_grant_token(grant_id: str, claims: dict[str, Any]) -> dic
         raise HTTPException(status_code=403, detail="Remote desktop is disabled")
 
     token_id = secrets.token_hex(16)
-    grant = _bind_remote_input_grant_token_id(device_id, normalized_grant_id, token_id)
+    grant, device_token_epoch = _bind_remote_input_grant_token_id(device_id, normalized_grant_id, token_id)
     expires_at = _grant_expires_at(grant)
     remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
     if remaining <= 0:
@@ -318,6 +318,7 @@ def claim_remote_input_grant_token(grant_id: str, claims: dict[str, Any]) -> dic
         source="remote_input_grant",
         grant_id=normalized_grant_id,
         token_id=token_id,
+        token_epoch=device_token_epoch,
     )
     record(
         "mobile.remote_input_grant.claimed",
@@ -335,11 +336,12 @@ def claim_remote_input_grant_token(grant_id: str, claims: dict[str, Any]) -> dic
     }
 
 
-def _bind_remote_input_grant_token_id(device_id: str, grant_id: str, token_id: str) -> dict[str, Any]:
+def _bind_remote_input_grant_token_id(device_id: str, grant_id: str, token_id: str) -> tuple[dict[str, Any], int]:
     """Atomically bind ``token_id`` to the named grant, rotating any prior token.
 
-    Returns the normalized grant record. Raises the same HTTP errors the inline
-    claim path used to raise (missing/revoked device, unknown/inactive grant).
+    Returns ``(normalized_grant, device_token_epoch)``. Raises the same HTTP
+    errors the inline claim path used to raise (missing/revoked device,
+    unknown/inactive grant).
     """
     timestamp = now_iso()
     with db.connect() as conn:
@@ -363,7 +365,8 @@ def _bind_remote_input_grant_token_id(device_id: str, grant_id: str, token_id: s
             "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
             (json.dumps(device, ensure_ascii=False), timestamp, device_id),
         )
-    return target
+        token_epoch = int(device.get("token_epoch") or 0)
+    return target, token_epoch
 
 
 def revoke_remote_input_grant(device_id: str, grant_id: str) -> dict[str, Any]:
@@ -449,6 +452,44 @@ def revoke_mobile_device(device_id: str) -> dict[str, Any]:
     return payload
 
 
+def revoke_mobile_device_sessions(device_id: str) -> dict[str, Any]:
+    """Invalidate all tokens issued for a device without un-pairing it.
+
+    Bumps the device's ``token_epoch`` so every previously issued paired/grant
+    token fails validation, while the device stays active and can mint a fresh
+    token on the next claim/pair. Active remote-input grants are also revoked.
+    """
+    normalized_id = _text(device_id)
+    if not normalized_id:
+        raise HTTPException(status_code=422, detail="Missing mobile device id")
+    timestamp = now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (normalized_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Mobile device not found")
+        updated = json.loads(row["data"])
+        updated["token_epoch"] = int(updated.get("token_epoch") or 0) + 1
+        updated["remote_input_grants"] = _revoked_remote_input_grants(updated, timestamp)
+        updated["updated_at"] = timestamp
+        conn.execute(
+            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(updated, ensure_ascii=False), timestamp, normalized_id),
+        )
+    record(
+        "mobile.device.sessions_revoked",
+        "MobilePairingService",
+        {"device_id": normalized_id, "token_epoch": updated["token_epoch"]},
+    )
+    return {
+        "device_id": normalized_id,
+        "status": str(updated.get("status") or "active").lower(),
+        "token_epoch": updated["token_epoch"],
+        "updated_at": timestamp,
+        "remote_input_grants": _safe_remote_input_grants(updated),
+    }
+
+
 def revoke_own_mobile_device(device_id: str, claims: dict[str, Any]) -> dict[str, Any]:
     normalized_id = _text(device_id)
     claim_device_id = _text(claims.get("device_id"))
@@ -532,6 +573,7 @@ def _upsert_mobile_device_locked(conn: Any, *, device_id: str, device_name: str,
         "status": "active",
         "revoked_at": "",
         "remote_input_grants": [],
+        "token_epoch": 0,
         "created_at": timestamp,
         "updated_at": timestamp,
     }
