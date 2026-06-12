@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from app.adapters.base import AdapterBase, AdapterConfig, AdapterResult
-from app.core.outbound_url import pin_outbound_http_url
+from app.core.outbound_url import pin_outbound_http_url, validate_outbound_http_url_preview
 
 
 class WebhookClient(Protocol):
@@ -35,28 +35,32 @@ class WebhookAdapter(AdapterBase):
         url = str(payload.get("url") or self.config.base_url).strip()
         if not url:
             return {"ok": False, "adapter": self.config.service_name, "error": "Webhook 'url' is required."}
-        try:
-            pinned = pin_outbound_http_url(url, allow_private=False)
-        except ValueError as exc:
-            return {"ok": False, "adapter": self.config.service_name, "error": str(exc)}
         body = payload.get("payload")
         if not isinstance(body, dict):
             return {"ok": False, "adapter": self.config.service_name, "error": "Webhook 'payload' must be an object."}
         headers = {str(key): str(value) for key, value in (payload.get("headers") or {}).items()}
         timeout = float(payload.get("timeout_seconds") or self.config.timeout_seconds)
         if self._dry_run_enabled(payload):
+            try:
+                preview_url = validate_outbound_http_url_preview(url, allow_private=False)
+            except ValueError as exc:
+                return {"ok": False, "adapter": self.config.service_name, "error": str(exc)}
             return {
                 "ok": True,
                 "adapter": self.config.service_name,
                 "dry_run": True,
                 "request": {
-                    "url": pinned.url,
+                    "url": preview_url,
                     "payload": _redact_sensitive_values(body),
-                    "headers": _redact_headers({**pinned.headers, **headers}),
+                    "headers": _redact_headers(headers),
                     "timeout_seconds": timeout,
                 },
-                "diff_preview": [{"action": "post_webhook", "url": pinned.url}],
+                "diff_preview": [{"action": "post_webhook", "url": preview_url}],
             }
+        try:
+            pinned = pin_outbound_http_url(url, allow_private=False)
+        except ValueError as exc:
+            return {"ok": False, "adapter": self.config.service_name, "error": str(exc)}
         connected_error = self._ensure_connected()
         if connected_error is not None:
             return connected_error

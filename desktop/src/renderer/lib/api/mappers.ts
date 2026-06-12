@@ -138,7 +138,7 @@ export function mapRunCreateResponse(data: BackendRunCreateResponse | BackendSug
         title,
         description: `状态：${zhBackendTaskStatus(phase)}`,
         state: mapTaskState(phase),
-        agent: runEngineAgentName(engine, data.engine_capabilities),
+        agent: runEngineAgentName(engine, data.engine_capabilities ?? run?.engine_capabilities),
         createdAt: run?.created_at ?? new Date().toISOString(),
         updatedAt: run?.updated_at ?? run?.created_at ?? new Date().toISOString()
       }
@@ -1849,7 +1849,7 @@ export function mapSuggestionLaunchResponse(
             title: zhBackendText(message),
             description: `状态：${zhBackendTaskStatus(phase)}`,
             state: mapTaskState(phase),
-            agent: runEngineAgentName(engine, data.engine_capabilities),
+            agent: runEngineAgentName(engine, data.engine_capabilities ?? data.run?.engine_capabilities),
             createdAt,
             updatedAt
           }

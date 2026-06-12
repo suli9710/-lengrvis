@@ -181,6 +181,7 @@ export interface BackendSuggestionLaunchResponse {
   engine?: "auto" | "os" | "developer" | string;
   phase?: string;
   message?: string;
+  engine_capabilities?: BackendEngineCapabilities;
   run?: BackendRunState;
 }
 
