@@ -560,7 +560,7 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
     with TestClient(_test_app()) as client:
         created = client.post(
             "/api/runs",
-            json={"message": "delete approved file then inspect system", "mode": "efficiency", "engine": "os"},
+            json={"message": "delete approved file then read the remaining file", "mode": "efficiency", "engine": "os"},
         ).json()
         _wait_for_phase(client, created["run_id"], "awaiting_approval")
         approval = Approval.model_validate(db.fetch_many("approvals", limit=10)[0])
