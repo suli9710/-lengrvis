@@ -138,7 +138,7 @@ async function assertRenderedManifestBoundary() {
 
     const counters = { skillsRequests: 0 };
     await installApiMocks(page, counters);
-    await page.goto(`${previewUrl}/?view=skills`, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.goto(`${previewUrl}/?view=settings`, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
     const skillsPanel = page.locator(".panel--skills");
     await skillsPanel.waitFor({ timeout: 30_000 });

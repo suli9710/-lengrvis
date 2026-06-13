@@ -31,7 +31,6 @@ const viewKeys = new Set<ViewKey>([
   "browser",
   "memories",
   "safety",
-  "skills",
   "settings"
 ]);
 
