@@ -433,6 +433,21 @@ async function openDisposablePage() {
 async function gotoFirstLaunch(page, previewUrl) {
   await page.goto(previewUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
   await page.waitForSelector("#root > *", { timeout: 30_000 });
+  await revealHomeMoreDetails(page);
+}
+
+// The home inspector keeps the secondary status cards (trust, readiness,
+// task pilot, workspace, outcomes) inside a collapsed "更多状态与详情"
+// disclosure for progressive disclosure. Expand it so these assertions can
+// read the detail cards that used to be visible by default.
+async function revealHomeMoreDetails(page) {
+  const details = page.getByTestId("home-more");
+  await details.waitFor({ timeout: 15_000 });
+  await details.evaluate((element) => {
+    if (element instanceof HTMLDetailsElement) {
+      element.open = true;
+    }
+  });
 }
 
 async function assertComputerTemplateHomeEvidence(page, { hasRecentResult }) {
