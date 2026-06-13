@@ -9871,6 +9871,49 @@ select:focus-visible,
   font-size: 12px;
 }
 
+.approval-tech-details {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+
+.approval-tech-details[open] {
+  background: var(--surface);
+}
+
+.approval-tech-details__summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-soft);
+  user-select: none;
+}
+
+.approval-tech-details__summary::-webkit-details-marker {
+  display: none;
+}
+
+.approval-tech-details__summary::before {
+  content: "▸";
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+.approval-tech-details[open] .approval-tech-details__summary::before {
+  content: "▾";
+}
+
+.approval-tech-details[open] .approval-tech-details__summary {
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.approval-tech-details > .approval-boundary {
+  border: none;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+
 .approval-boundary {
   display: grid;
   gap: 12px;
