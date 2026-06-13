@@ -73,8 +73,9 @@ export function SchedulePanel({ api }: SchedulePanelProps) {
     <Panel title="定时任务" eyebrow="自动化" action={<Badge tone="info">{items.length} 项</Badge>}>
       <div className="schedule-form">
         <label className="field">
-          <span>Cron 表达式</span>
+          <span>运行周期</span>
           <input value={draftCron} onChange={(event) => setDraftCron(event.target.value)} placeholder="*/30 * * * *" />
+          <em className="field-hint">用 Cron 表达式，例如 */30 * * * * 表示每 30 分钟运行一次。</em>
         </label>
         <label className="field">
           <span>任务目标</span>
