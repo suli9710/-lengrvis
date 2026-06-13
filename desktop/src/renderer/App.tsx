@@ -1238,11 +1238,19 @@ export function App() {
         {activeView === "agents" ? (
           <section className="detail-grid">
             <AgentConversationPanel conversations={agentConversations} />
-            <SchedulePanel api={api} />
             <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
-            <ArtifactsPanel tasks={tasks} api={api} focusedTaskId={focusedTaskId} onRevealPath={revealPath} />
-            <MetricsPanel api={api} />
             <PlanViewer plan={plan} />
+            <details className="progress-more detail-grid__full" data-testid="progress-more">
+              <summary className="progress-more__summary">
+                <span>更多：定时任务、成果产物与本机指标</span>
+                <em>需要时再展开，默认聚焦当前进展</em>
+              </summary>
+              <div className="progress-more__panels">
+                <SchedulePanel api={api} />
+                <ArtifactsPanel tasks={tasks} api={api} focusedTaskId={focusedTaskId} onRevealPath={revealPath} />
+                <MetricsPanel api={api} />
+              </div>
+            </details>
           </section>
         ) : null}
 
