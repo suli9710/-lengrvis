@@ -353,12 +353,31 @@ async function assertRootRendered(page) {
       const rootText = await page.locator("#root").innerText();
       assert.ok(rootText.trim().length > 0, "root should not be blank");
       await assertButtonExists(page, /^(Refresh|刷新|鍒锋柊)$/);
+      await revealHomeMoreDetails(page);
       return;
     } catch (error) {
       if (attempt === 2) throw error;
       await page.reload({ waitUntil: "networkidle" });
     }
   }
+}
+
+// The home inspector keeps secondary status cards (trust, readiness, task
+// pilot, workspace, outcomes) inside a collapsed "更多状态与详情" disclosure.
+// Expand it so the assertions below can read those detail cards. Best-effort:
+// non-home routes simply won't have the element.
+async function revealHomeMoreDetails(page) {
+  const details = page.getByTestId("home-more");
+  try {
+    await details.waitFor({ timeout: 10_000 });
+  } catch {
+    return;
+  }
+  await details.evaluate((element) => {
+    if (element instanceof HTMLDetailsElement) {
+      element.open = true;
+    }
+  });
 }
 
 async function assertNoPlaceholderContent(page, label) {

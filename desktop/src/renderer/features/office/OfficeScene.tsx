@@ -450,7 +450,7 @@ export function OfficeScene({
 
   const currentTasks = getHomeCurrentTasks(recentTasks);
   const displayedTasks = getHomeVisibleTasks(recentTasks);
-  const setupSteps = buildHomeSetupSteps(readinessItems);
+  const statusChips = buildHomeStatusChips(readinessItems, trustItems, pendingApprovalCount, safetyAlert);
   const activeTaskLabel = currentTasks.length > 0 ? summarizeActiveTasks(currentTasks) : "当前没有正在处理的任务";
   const recentTaskLabel = displayedTasks.length > 0 ? `显示最近 ${displayedTasks.length} 项` : "还没有最近任务";
   const blockedTaskCount = currentTasks.filter((task) => task.state === "blocked").length;
@@ -691,145 +691,27 @@ export function OfficeScene({
           ) : null}
         </div>
 
-        <div className="inspector-card home-trust-card">
+        <div className="inspector-card home-status-strip" data-testid="home-status-strip">
           <div className="inspector-card__head">
-            <strong>隐私与权限</strong>
-            <span>当前策略</span>
-          </div>
-          <div className="home-trust-grid">
-            {trustItems.map((item) => (
-              <div key={item.id} className={`home-trust-item home-trust-item--${item.state}`}>
-                <span className="home-trust-item__icon" aria-hidden="true">
-                  {trustIcon(item)}
-                </span>
-                <div>
-                  <span>{item.label}</span>
-                  <strong>{item.value}</strong>
-                  <em>{item.detail}</em>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="inspector-card home-readiness-card">
-          <div className="inspector-card__head">
-            <strong>开箱检查</strong>
+            <strong>当前状态</strong>
             <span>{readinessSummary(readinessItems)}</span>
           </div>
-          <div className="home-readiness-list">
-            {readinessItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`home-readiness-item home-readiness-item--${item.state}`}
-                onClick={() => onReadinessAction(item)}
-              >
-                <span className="home-readiness-item__icon" aria-hidden="true">
-                  {readinessIcon(item)}
-                </span>
-                <span className="home-readiness-item__body">
-                  <strong>{item.label}</strong>
-                  <em>{item.detail}</em>
-                </span>
-                <span className="home-readiness-item__action">{item.actionLabel}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="inspector-card home-setup-card">
-          <div className="inspector-card__head">
-            <strong>下一步队列</strong>
-            <span>按顺序走即可</span>
-          </div>
-          <div className="home-setup-steps">
-            {setupSteps.map((step, index) => (
-              <button
-                key={step.item.id}
-                type="button"
-                className={`home-setup-step home-setup-step--${step.item.state}`}
-                onClick={() => onReadinessAction(step.item)}
-              >
-                <span className="home-setup-step__index">{index + 1}</span>
-                <span className="home-setup-step__copy">
-                  <strong>{step.title}</strong>
-                  <em>{step.detail}</em>
-                </span>
-                <span className="home-setup-step__state">{step.item.state === "ready" ? "就绪" : step.item.actionLabel}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className={`inspector-card task-pilot-card task-pilot-card--${taskPilot.tone}`}>
-          <div className="inspector-card__head">
-            <strong>任务驾驶舱</strong>
-            <span>{taskPilot.status}</span>
-          </div>
-          <div className="task-pilot-summary">
-            <strong>{taskPilot.title}</strong>
-            <p>{taskPilot.detail}</p>
-          </div>
-          <button
-            className="task-pilot-action"
-            type="button"
-            onClick={() => onTaskPilotAction?.(taskPilot.task, taskPilot.action)}
-          >
-            {taskPilot.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : taskPilot.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
-            {taskPilot.actionLabel}
-          </button>
-          <div className="task-pilot-steps" aria-label="任务执行阶段">
-            {taskPilot.steps.map((step) => {
-              const Icon = step.icon;
+          <div className="home-status-grid">
+            {statusChips.map((chip) => {
+              const Icon = chip.icon;
               return (
-                <div key={step.id} className={`task-pilot-step task-pilot-step--${step.state}`}>
-                  <span className="task-pilot-step__icon">
-                    <Icon size={13} aria-hidden="true" />
+                <div key={chip.id} className={`home-status-chip home-status-chip--${chip.tone}`}>
+                  <span className="home-status-chip__icon" aria-hidden="true">
+                    <Icon size={14} />
                   </span>
-                  <span className="task-pilot-step__copy">
-                    <strong>{step.label}</strong>
-                    <em>{step.detail}</em>
-                  </span>
+                  <div className="home-status-chip__body">
+                    <span>{chip.label}</span>
+                    <strong>{chip.value}</strong>
+                    <em>{chip.detail}</em>
+                  </div>
                 </div>
               );
             })}
-          </div>
-        </div>
-
-        <div className="inspector-card task-workspace-card" data-testid="task-workspace-card">
-          <div className="inspector-card__head">
-            <strong>任务工作区</strong>
-            <span>权限与接管</span>
-          </div>
-          <div className="task-workspace-grid" aria-label="任务工作空间">
-            {taskWorkspaceItems.map((item) => (
-              <div key={item.label} className={`task-workspace-item task-workspace-item--${item.tone}`} data-workspace-label={item.label}>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <em>{item.detail}</em>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="inspector-card home-outcomes-card" data-testid="home-outcomes-card">
-          <div className="inspector-card__head">
-            <strong>成果区</strong>
-            <span>最近任务产物</span>
-          </div>
-          <div className="home-outcome-list" aria-label="任务成果区">
-            {outcomeCards.map((card) => (
-              <article key={card.id} className={`home-outcome-card home-outcome-card--${card.tone}`} data-testid={`home-outcome-${card.id}`}>
-                <span className="home-outcome-card__meta">
-                  <span>{card.eyebrow}</span>
-                  <small>{card.statusLabel}</small>
-                </span>
-                <strong>{card.title}</strong>
-                <p>{card.detail}</p>
-                <em>{card.action}</em>
-              </article>
-            ))}
           </div>
         </div>
 
@@ -886,6 +768,132 @@ export function OfficeScene({
             ) : null}
           </div>
         </div>
+
+        <details className="inspector-card home-more" data-testid="home-more">
+          <summary className="home-more__summary">
+            <span>更多状态与详情</span>
+            <em>隐私与权限、开箱检查、任务驾驶舱、工作区与成果</em>
+          </summary>
+          <div className="home-more__cards">
+            <div className="inspector-card home-trust-card">
+              <div className="inspector-card__head">
+                <strong>隐私与权限</strong>
+                <span>当前策略</span>
+              </div>
+              <div className="home-trust-grid">
+                {trustItems.map((item) => (
+                  <div key={item.id} className={`home-trust-item home-trust-item--${item.state}`}>
+                    <span className="home-trust-item__icon" aria-hidden="true">
+                      {trustIcon(item)}
+                    </span>
+                    <div>
+                      <span>{item.label}</span>
+                      <strong>{item.value}</strong>
+                      <em>{item.detail}</em>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="inspector-card home-readiness-card">
+              <div className="inspector-card__head">
+                <strong>开箱检查</strong>
+                <span>{readinessSummary(readinessItems)}</span>
+              </div>
+              <div className="home-readiness-list">
+                {readinessItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`home-readiness-item home-readiness-item--${item.state}`}
+                    onClick={() => onReadinessAction(item)}
+                  >
+                    <span className="home-readiness-item__icon" aria-hidden="true">
+                      {readinessIcon(item)}
+                    </span>
+                    <span className="home-readiness-item__body">
+                      <strong>{item.label}</strong>
+                      <em>{item.detail}</em>
+                    </span>
+                    <span className="home-readiness-item__action">{item.actionLabel}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className={`inspector-card task-pilot-card task-pilot-card--${taskPilot.tone}`}>
+              <div className="inspector-card__head">
+                <strong>任务驾驶舱</strong>
+                <span>{taskPilot.status}</span>
+              </div>
+              <div className="task-pilot-summary">
+                <strong>{taskPilot.title}</strong>
+                <p>{taskPilot.detail}</p>
+              </div>
+              <button
+                className="task-pilot-action"
+                type="button"
+                onClick={() => onTaskPilotAction?.(taskPilot.task, taskPilot.action)}
+              >
+                {taskPilot.action === "approve" ? <ShieldCheck size={14} aria-hidden="true" /> : taskPilot.action === "open" ? <Radio size={14} aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+                {taskPilot.actionLabel}
+              </button>
+              <div className="task-pilot-steps" aria-label="任务执行阶段">
+                {taskPilot.steps.map((step) => {
+                  const Icon = step.icon;
+                  return (
+                    <div key={step.id} className={`task-pilot-step task-pilot-step--${step.state}`}>
+                      <span className="task-pilot-step__icon">
+                        <Icon size={13} aria-hidden="true" />
+                      </span>
+                      <span className="task-pilot-step__copy">
+                        <strong>{step.label}</strong>
+                        <em>{step.detail}</em>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="inspector-card task-workspace-card" data-testid="task-workspace-card">
+              <div className="inspector-card__head">
+                <strong>任务工作区</strong>
+                <span>权限与接管</span>
+              </div>
+              <div className="task-workspace-grid" aria-label="任务工作空间">
+                {taskWorkspaceItems.map((item) => (
+                  <div key={item.label} className={`task-workspace-item task-workspace-item--${item.tone}`} data-workspace-label={item.label}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                    <em>{item.detail}</em>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="inspector-card home-outcomes-card" data-testid="home-outcomes-card">
+              <div className="inspector-card__head">
+                <strong>成果区</strong>
+                <span>最近任务产物</span>
+              </div>
+              <div className="home-outcome-list" aria-label="任务成果区">
+                {outcomeCards.map((card) => (
+                  <article key={card.id} className={`home-outcome-card home-outcome-card--${card.tone}`} data-testid={`home-outcome-${card.id}`}>
+                    <span className="home-outcome-card__meta">
+                      <span>{card.eyebrow}</span>
+                      <small>{card.statusLabel}</small>
+                    </span>
+                    <strong>{card.title}</strong>
+                    <p>{card.detail}</p>
+                    <em>{card.action}</em>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </div>
+        </details>
       </aside>
     </div>
   );
@@ -1281,32 +1289,60 @@ function trustIcon(item: HomeTrustItem) {
   return <Radio size={14} />;
 }
 
-function buildHomeSetupSteps(items: HomeReadinessItem[]) {
-  const byId = new Map(items.map((item) => [item.id, item]));
-  const orderedIds: HomeReadinessItem["id"][] = ["connection", "scope", "document", "privacy"];
-  return orderedIds
-    .map((id) => byId.get(id))
-    .filter((item): item is HomeReadinessItem => Boolean(item))
-    .map((item) => ({
-      item,
-      title: setupStepTitle(item),
-      detail: setupStepDetail(item)
-    }));
+interface HomeStatusChip {
+  id: "connection" | "ai" | "files" | "approval";
+  label: string;
+  value: string;
+  detail: string;
+  tone: "ready" | "warning" | "blocked";
+  icon: LucideIcon;
 }
 
-function setupStepTitle(item: HomeReadinessItem): string {
-  if (item.id === "connection") return "确认 Lengrvis 可用";
-  if (item.id === "scope") return "选择文件范围";
-  if (item.id === "document") return "试一次文档操作";
-  return "准备隐私模式";
-}
+function buildHomeStatusChips(
+  readinessItems: HomeReadinessItem[],
+  trustItems: HomeTrustItem[],
+  pendingApprovalCount: number,
+  safetyAlert: boolean
+): HomeStatusChip[] {
+  const connection = readinessItems.find((item) => item.id === "connection");
+  const aiTrust = trustItems.find((item) => item.id === "ai");
+  const fileTrust = trustItems.find((item) => item.id === "files");
+  const hasApprovalWork = pendingApprovalCount > 0 || safetyAlert;
 
-function setupStepDetail(item: HomeReadinessItem): string {
-  if (item.state === "ready") return item.detail;
-  if (item.id === "connection") return "先恢复服务连接，后续任务才会进入执行流。";
-  if (item.id === "scope") return "给文件工具一个明确范围，搜索不会卡在加载里。";
-  if (item.id === "document") return "打开文档区后，可以读取、总结或继续提问。";
-  return "本地 AI 就绪后，敏感文档可优先留在本机处理。";
+  return [
+    {
+      id: "connection",
+      label: "连接",
+      value: connection?.state === "ready" ? "已连接" : connection?.state === "warning" ? "连接中" : "待恢复",
+      detail: connection?.detail ?? "服务状态会显示在这里",
+      tone: connection?.state === "ready" ? "ready" : connection?.state === "warning" ? "warning" : "blocked",
+      icon: Radio
+    },
+    {
+      id: "ai",
+      label: "AI 运行",
+      value: aiTrust?.value ?? "高效模式",
+      detail: aiTrust?.detail ?? "按当前模式执行",
+      tone: aiTrust?.state === "warning" ? "warning" : "ready",
+      icon: LockKeyhole
+    },
+    {
+      id: "files",
+      label: "文件范围",
+      value: fileTrust?.value ?? "未授权",
+      detail: fileTrust?.detail ?? "先选择桌面、下载或文件夹",
+      tone: fileTrust?.state === "ready" ? "ready" : "warning",
+      icon: FolderOpen
+    },
+    {
+      id: "approval",
+      label: "审批",
+      value: pendingApprovalCount > 0 ? `${pendingApprovalCount} 项待确认` : safetyAlert ? "需复核" : "无待办",
+      detail: hasApprovalWork ? "高风险动作会停下等待你确认" : "删除、移动、写入前会先确认",
+      tone: hasApprovalWork ? "blocked" : "ready",
+      icon: ShieldCheck
+    }
+  ];
 }
 
 function buildTaskWorkspaceItems(
