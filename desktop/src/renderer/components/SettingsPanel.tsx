@@ -752,8 +752,8 @@ export function SettingsPanel({
               <label className="field">
                 <span>接口类型</span>
                 <select value={draft.wireApi} onChange={(event) => setDraft((current) => ({ ...current, wireApi: event.target.value as AppSettings["wireApi"] }))}>
-                  <option value="chat_completions">chat_completions</option>
-                  <option value="responses">responses</option>
+                  <option value="chat_completions">对话补全接口（chat_completions）</option>
+                  <option value="responses">响应式接口（responses）</option>
                 </select>
               </label>
               <label className="field">
