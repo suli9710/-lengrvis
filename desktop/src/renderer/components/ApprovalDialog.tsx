@@ -136,12 +136,7 @@ export function ApprovalDialog({
             />
           ) : null}
           <ApprovalSafetyChecklist summary={buildSafetyChecklist(approval, cleanupPlan, cleanupGroups)} />
-          <details className="approval-tech-details">
-            <summary className="approval-tech-details__summary">
-              查看技术细节（工具、参数与运行时边界）
-            </summary>
-            <ApprovalEngineeringBoundary approval={approval} />
-          </details>
+          <ApprovalEngineeringBoundary approval={approval} />
           <dl className="detail-list">
             <div>
               <dt>任务</dt>
