@@ -41,6 +41,7 @@ export type ViewKey =
   | "browser"
   | "memories"
   | "safety"
+  | "skills"
   | "settings";
 export type ConnectionState = "online" | "checking" | "offline";
 

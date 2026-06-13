@@ -73,8 +73,7 @@ export function MetricsPanel({ api }: MetricsPanelProps) {
       {optInRequired ? (
         <p className="empty-state">
           <ShieldQuestion size={16} aria-hidden="true" /> 本机指标默认关闭。它只在这台电脑上统计计数（任务成功率、自动恢复占比等），
-          不会上传任何内容。在配置中开启 <code>local_metrics_enabled: true</code>（或设置环境变量
-          <code> LENGRVIS_LOCAL_METRICS_ENABLED=1</code>）后即可查看。
+          不会上传任何内容。在“本机指标”设置中开启后即可查看。
         </p>
       ) : null}
 
