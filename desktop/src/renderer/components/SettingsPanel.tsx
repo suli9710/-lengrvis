@@ -743,11 +743,11 @@ export function SettingsPanel({
               </label>
               <label className="field">
                 <span>模型</span>
-                <input value={draft.model} onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))} />
+                <input list="lengrvis-model-options" value={draft.model} onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))} placeholder="选择或输入模型名" />
               </label>
               <label className="field">
                 <span>审核模型</span>
-                <input value={draft.reviewModel} onChange={(event) => setDraft((current) => ({ ...current, reviewModel: event.target.value }))} />
+                <input list="lengrvis-model-options" value={draft.reviewModel} onChange={(event) => setDraft((current) => ({ ...current, reviewModel: event.target.value }))} placeholder="选择或输入模型名" />
               </label>
               <label className="field">
                 <span>接口类型</span>
@@ -758,8 +758,27 @@ export function SettingsPanel({
               </label>
               <label className="field">
                 <span>推理强度</span>
-                <input value={draft.modelReasoningEffort} onChange={(event) => setDraft((current) => ({ ...current, modelReasoningEffort: event.target.value }))} />
+                <select value={draft.modelReasoningEffort} onChange={(event) => setDraft((current) => ({ ...current, modelReasoningEffort: event.target.value }))}>
+                  <option value="">默认（跟随模型）</option>
+                  <option value="minimal">最小</option>
+                  <option value="low">低</option>
+                  <option value="medium">中</option>
+                  <option value="high">高</option>
+                  {["", "minimal", "low", "medium", "high"].includes(draft.modelReasoningEffort) ? null : (
+                    <option value={draft.modelReasoningEffort}>{draft.modelReasoningEffort}（自定义）</option>
+                  )}
+                </select>
               </label>
+              <datalist id="lengrvis-model-options">
+                <option value="gpt-4o-mini" />
+                <option value="gpt-4o" />
+                <option value="gpt-4.1-mini" />
+                <option value="gpt-4.1" />
+                <option value="o4-mini" />
+                <option value="qwen2.5:7b-instruct" />
+                <option value="qwen2.5:3b-instruct" />
+                <option value="llama3.1:8b" />
+              </datalist>
               <label className="field">
                 <span>服务商 Base URL</span>
                 <input value={draft.apiBaseUrl} onChange={(event) => setDraft((current) => ({ ...current, apiBaseUrl: event.target.value }))} />
