@@ -37,7 +37,11 @@ from app.services.run_service_background import (
     untrack_active_run as _bg_untrack_active_run,
 )
 from app.agents.delegation_metadata import merge_run_task_metadata
-from app.services.run_service_capabilities import engine_capabilities_for_run, engine_route_rule_for_run
+# Re-exported for `run_service.engine_*_for_run(...)` access in routes_runs and tests.
+from app.services.run_service_capabilities import (  # noqa: F401
+    engine_capabilities_for_run,
+    engine_route_rule_for_run,
+)
 from app.services.task_service import get_task, set_task_status
 
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import importlib.util
-import os
 import tempfile
 import threading
 from dataclasses import dataclass

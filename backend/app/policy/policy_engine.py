@@ -8,7 +8,7 @@ from pathlib import PureWindowsPath
 from typing import Any
 
 from app.config import AppSettings
-from app.core.schemas import AgentMessage, Plan, PlanStep, SafetyReview, ToolResult
+from app.core.schemas import AgentMessage, Plan, SafetyReview, ToolResult
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, settings_fingerprint, short_digest
 from app.policy.decision_cache import tool_decision_cache
 from app.policy.dynamic_risk import DynamicRiskAssessor

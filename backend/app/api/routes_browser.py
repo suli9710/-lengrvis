@@ -12,7 +12,7 @@ from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
-from app.policy.risk import RiskLevel, SafetyVerdict
+from app.policy.risk import SafetyVerdict
 from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.tools import browser_tools
 from app.tools.registry import register_all_tools, registry as tool_registry

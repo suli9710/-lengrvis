@@ -4,7 +4,6 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import threading
 from contextlib import suppress
 from collections import deque
@@ -17,7 +16,6 @@ from typing import Any
 from pydantic import Field
 
 from app.config import get_env
-from app.core.schemas import new_id, now_iso
 from app.indexer.file_watcher import DirectoryChangeWatcher, FileChangeCallback
 from app.core.schemas import MessageType
 from app.orchestration.agent_bus import GLOBAL_TASK_ID

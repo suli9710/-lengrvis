@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 import time
 from hashlib import sha256
 from pathlib import Path

@@ -7,7 +7,6 @@ support, or a configured embedding model is missing, callers receive
 
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol

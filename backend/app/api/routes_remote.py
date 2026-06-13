@@ -34,7 +34,6 @@ from app.security.mobile_jwt import (
 )
 from app.security.lan import is_secure_mobile_transport
 from app.services.approval_event_service import publish_approval_created
-from app.services import mobile_pairing_service
 from app.services.remote_desktop_service import (
     DEFAULT_CAPTURE_HEIGHT,
     DEFAULT_CAPTURE_WIDTH,

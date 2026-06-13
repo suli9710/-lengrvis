@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections import defaultdict
 from contextlib import suppress
 
 from app.core.schemas import Approval

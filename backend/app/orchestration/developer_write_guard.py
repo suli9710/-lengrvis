@@ -13,7 +13,6 @@ from app.tools.developer_tools import (
     _parse_test_command,
     _run_command,
     _run_test_foreground,
-    _safe_command_env,
     _truncate_text,
 )
 

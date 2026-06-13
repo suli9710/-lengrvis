@@ -92,7 +92,7 @@ PATH_SUFFIXES = (
     " 文件",
 )
 
-from app.agents.worker_agents import KNOWN_SUPERVISOR_WORKER_AGENTS, normalize_supervisor_agent_hint
+from app.agents.worker_agents import normalize_supervisor_agent_hint
 
 
 def supervisor_hint_allows_deterministic(agent_hint: str | None, owning_agent: str) -> bool:

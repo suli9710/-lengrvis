@@ -14,7 +14,7 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
-from app.core.schemas import new_id, now_iso
+from app.core.schemas import now_iso
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.perception.schemas import PerceptionEvent, ScreenState
 

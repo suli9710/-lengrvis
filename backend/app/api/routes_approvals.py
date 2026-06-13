@@ -12,7 +12,7 @@ from app.services.mobile_pairing_service import safe_approval_payload
 from app.services.mobile_pairing_service import list_pending_approvals
 from app.services.mobile_pairing_service import raise_if_mobile_claims_disallowed
 from app.services.mobile_pairing_service import reject_approval as reject_mobile_approval
-from app.policy.redaction import redact_public_text, redact_value
+from app.policy.redaction import redact_public_text
 from app.services.task_service import set_task_status
 
 

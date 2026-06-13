@@ -3,12 +3,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 

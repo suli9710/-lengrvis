@@ -41,7 +41,6 @@ from app.policy.approval_binding import (
     binding_preview,
     permission_policy_version,
     preview_hmac,
-    redacted_preview,
     settings_fingerprint,
 )
 from app.policy.execution_marker import mark_execution_approved
