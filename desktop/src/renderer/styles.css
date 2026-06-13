@@ -3967,6 +3967,71 @@ select:focus-visible,
   padding: 0 4px 8px;
 }
 
+.detail-grid__full {
+  grid-column: 1 / -1;
+}
+
+.progress-more {
+  align-self: start;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+}
+
+.progress-more[open] {
+  background: var(--surface);
+}
+
+.progress-more__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 16px;
+  user-select: none;
+}
+
+.progress-more__summary::-webkit-details-marker {
+  display: none;
+}
+
+.progress-more__summary > span {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.progress-more__summary > span::before {
+  content: "▸";
+  margin-right: 8px;
+  color: var(--muted);
+}
+
+.progress-more[open] .progress-more__summary > span::before {
+  content: "▾";
+}
+
+.progress-more__summary > em {
+  font-size: 11px;
+  font-style: normal;
+  color: var(--muted);
+}
+
+.progress-more__panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+  padding: 0 16px 16px;
+}
+
+@media (max-width: 900px) {
+  .progress-more__panels {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* 切换视图时卡片依次浮现 */
 .detail-grid > *,
 .conversation-view > * {
