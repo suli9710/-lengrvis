@@ -26,6 +26,13 @@ class SkillServiceError(AppError):
         super().__init__(code=code, message=message, status_code=status_code)
 
 
+# Zip-bomb guards for skill package import: bound the decompressed footprint and
+# member count so a small archive cannot fill the disk on extraction.
+SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+SKILL_ZIP_MAX_MEMBERS = 5000
+SKILL_ZIP_MAX_COMPRESSION_RATIO = 200
+
+
 def list_installed_skills(settings: AppSettings | None = None) -> dict[str, Any]:
     effective = settings or get_effective_settings()
     directories = skill_directories_from_settings(effective)
@@ -272,7 +279,11 @@ def _extract_zip_safely(source: Path, destination: Path) -> None:
         raise SkillServiceError("Skill zip file is invalid.") from exc
     with archive:
         destination_root = destination.resolve(strict=False)
-        for member in archive.infolist():
+        members = archive.infolist()
+        if len(members) > SKILL_ZIP_MAX_MEMBERS:
+            raise SkillServiceError("Skill zip contains too many files.")
+        total_uncompressed = 0
+        for member in members:
             member_path = Path(member.filename)
             if member_path.is_absolute() or ".." in member_path.parts:
                 raise SkillServiceError("Skill zip contains an unsafe path.")
@@ -281,4 +292,13 @@ def _extract_zip_safely(source: Path, destination: Path) -> None:
                 target.relative_to(destination_root)
             except ValueError as exc:
                 raise SkillServiceError("Skill zip contains an unsafe path.") from exc
+            # Zip-bomb guard: reject before writing anything to disk.
+            total_uncompressed += max(0, int(member.file_size))
+            if total_uncompressed > SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES:
+                raise SkillServiceError("Skill zip is too large when uncompressed.")
+            if (
+                member.compress_size > 0
+                and member.file_size // max(1, member.compress_size) > SKILL_ZIP_MAX_COMPRESSION_RATIO
+            ):
+                raise SkillServiceError("Skill zip has a suspicious compression ratio.")
         archive.extractall(destination_root)

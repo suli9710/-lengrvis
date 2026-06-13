@@ -3,12 +3,34 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core import db
 from app.main import create_app
+from app.services import skill_service
 from app.skills.loader import load_skill_package
 from app.tools.registry import registry as tool_registry
+
+
+def test_extract_zip_safely_rejects_zip_bomb(tmp_path: Path):
+    # SEC-007 regression: a tiny archive that expands to a huge / absurd ratio
+    # must be rejected before anything is written to disk.
+    bomb = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("skill.yaml", b"\0" * (8 * 1024 * 1024))
+    with pytest.raises(skill_service.SkillServiceError):
+        skill_service._extract_zip_safely(bomb, tmp_path / "out")
+    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+
+
+def test_extract_zip_safely_rejects_too_many_members(tmp_path: Path):
+    crowded = tmp_path / "crowded.zip"
+    with zipfile.ZipFile(crowded, "w") as archive:
+        for index in range(skill_service.SKILL_ZIP_MAX_MEMBERS + 1):
+            archive.writestr(f"f{index}.txt", b"x")
+    with pytest.raises(skill_service.SkillServiceError):
+        skill_service._extract_zip_safely(crowded, tmp_path / "out2")
 
 
 def _write_skill(root: Path, name: str = "route-demo") -> Path:

@@ -10,9 +10,16 @@ from app.services import mobile_pairing_service
 
 router = APIRouter()
 
+# Keep the request-schema length/pattern in sync with the generated code entropy.
+_PAIR_CODE_LENGTH = mobile_pairing_service.PAIR_CODE_HEX_LENGTH * 2
+
 
 class PairRedeemRequest(BaseModel):
-    code: str = Field(min_length=8, max_length=8, pattern=r"^[a-f0-9]{8}$")
+    code: str = Field(
+        min_length=_PAIR_CODE_LENGTH,
+        max_length=_PAIR_CODE_LENGTH,
+        pattern=rf"^[a-f0-9]{{{_PAIR_CODE_LENGTH}}}$",
+    )
     device_name: str = Field(default="Android device", max_length=80)
 
 
@@ -45,6 +52,13 @@ def list_paired_devices() -> dict:
 @router.delete("/pair/devices/{device_id}")
 def revoke_paired_device(device_id: str) -> dict:
     return mobile_pairing_service.revoke_mobile_device(device_id)
+
+
+@router.post("/pair/devices/{device_id}/revoke-sessions")
+def revoke_paired_device_sessions(device_id: str) -> dict:
+    # Desktop-gated: rotates the device session epoch so every previously issued
+    # token is rejected, without un-pairing the device.
+    return mobile_pairing_service.revoke_mobile_device_sessions(device_id)
 
 
 @router.post("/pair/devices/{device_id}/remote-input-grants")

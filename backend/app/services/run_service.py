@@ -23,7 +23,7 @@ from app.orchestration.execution_models import (
 )
 from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_event
 from app.orchestration.task_phase import TaskPhase
-from app.policy.redaction import redact_value
+from app.policy.redaction import redact_run_payload, redact_value
 from app.policy.risk import RiskLevel
 from app.services.run_service_background import (
     active_run_ids,
@@ -193,8 +193,8 @@ def get_timeline(run_id: str) -> dict[str, Any]:
     # Reconcile belongs on write paths (approval resume, task mutation), not on
     # every timeline read — it replays agent_messages for every run on the task.
     run = get_run(run_id)
-    events = [event.model_dump(mode="json") for event in list_run_events(run_id)]
-    return {"run": run.model_dump(mode="json"), "events": events, "count": len(events)}
+    events = [redact_run_payload(event.model_dump(mode="json")) for event in list_run_events(run_id)]
+    return {"run": redact_run_payload(run.model_dump(mode="json")), "events": events, "count": len(events)}
 
 
 def get_progress(run_id: str) -> dict[str, Any]:
@@ -207,8 +207,8 @@ def get_progress(run_id: str) -> dict[str, Any]:
         "task_id": run.task_id,
         "engine": run.engine.value,
         "phase": run.phase.value,
-        "latest_event": latest.model_dump(mode="json") if latest else None,
-        "progress": [event.model_dump(mode="json") for event in progress_events],
+        "latest_event": redact_run_payload(latest.model_dump(mode="json")) if latest else None,
+        "progress": [redact_run_payload(event.model_dump(mode="json")) for event in progress_events],
         "count": len(progress_events),
     }
 
