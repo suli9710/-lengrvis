@@ -16,7 +16,7 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.agents.safety_review_agent import SafetyReviewAgent
 from app.core import db
 from app.core.schemas import AgentMessage, MessageType
-from app.orchestration.agent_bus import AgentBus
+from app.orchestration.agent_bus import AgentBus, flush_agent_message_writes
 from app.policy.risk import SafetyVerdict
 
 
@@ -85,6 +85,15 @@ def test_orchestrator_denied_batch_cursor_does_not_skip_unreviewed_messages():
         message_type=MessageType.PROPOSAL,
     )
     trailing = _publish_observation(orchestrator.bus, task_id, "FileAgent", "trailing safe observation")
+
+    # Pin strictly increasing timestamps so the supervision order is deterministic.
+    # get_messages_after sorts by (created_at, id) and id is a random uuid, so
+    # same-microsecond publishes (common on coarse-grained clocks/CI) would
+    # otherwise let the deny sort ahead of the first message and flake.
+    flush_agent_message_writes()
+    for index, message in enumerate((first, bad, trailing)):
+        message.created_at = f"2026-01-01T00:00:0{index}+00:00"
+        db.upsert_model("agent_messages", message)
 
     assert orchestrator._supervise_new_agent_messages(task_id, "stage_deny") is False
     assert first.id in orchestrator._supervised[task_id]
