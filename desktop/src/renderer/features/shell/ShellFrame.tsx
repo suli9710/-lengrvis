@@ -1,20 +1,16 @@
 import {
   Bell,
   BookOpenText,
-  Brain,
   CheckCircle2,
   CircleDashed,
   FolderOpen,
-  Globe,
   Home,
   Image as ImageIcon,
   Laptop,
   Loader2,
   MessageSquarePlus,
-  Puzzle,
   RefreshCw,
   Settings,
-  ShieldCheck,
   Sparkles,
   TerminalSquare,
   TriangleAlert,
@@ -72,15 +68,6 @@ export const primaryNavGroups: NavGroup[] = [
       { icon: FolderOpen, label: "文件工具", view: "files" },
       { icon: Laptop, label: "此电脑", view: "computer" }
     ]
-  },
-  {
-    label: "更多",
-    items: [
-      { icon: Puzzle, label: "技能", view: "skills" },
-      { icon: ShieldCheck, label: "审批", view: "safety" },
-      { icon: Brain, label: "记忆", view: "memories" },
-      { icon: Globe, label: "浏览器", view: "browser" }
-    ]
   }
 ];
 
@@ -106,8 +93,7 @@ export const viewTitles: Record<ViewKey, ViewTitle> = {
   agents: { title: "进度", subtitle: "当前正在处理的工作" },
   memories: { title: "记忆", subtitle: "Lengrvis 后续可使用的本地信息" },
   safety: { title: "审批", subtitle: "等待你确认的项目" },
-  skills: { title: "技能", subtitle: "查看已安装的技能包及其权限边界" },
-  settings: { title: "设置", subtitle: "隐私模式、本地 AI、安全权限和运行配置" }
+  settings: { title: "设置", subtitle: "隐私模式、本地 AI、技能、安全权限和运行配置" }
 };
 
 export function ShellFrame({
