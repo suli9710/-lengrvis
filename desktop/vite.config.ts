@@ -16,6 +16,11 @@ export default defineConfig({
     outDir: "dist/renderer",
     emptyOutDir: true,
     sourcemap: false,
+    // The renderer only runs in the bundled Electron Chromium (and modern
+    // browsers in dev:web), so target a modern baseline instead of Vite's
+    // broad default. This also avoids an esbuild>=0.28 regression that errors
+    // when lowering object-rest destructuring for the wide default target.
+    target: "es2022",
     rollupOptions: {
       output: {
         manualChunks: {
