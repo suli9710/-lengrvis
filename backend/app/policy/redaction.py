@@ -104,6 +104,66 @@ def redact_payload(value: Any) -> Any:
     return _redact_value(value)
 
 
+def redact_audit_payload(value: Any) -> Any:
+    """Public-read redaction for audit payloads.
+
+    Same as :func:`redact_value` but additionally scrubs local absolute paths,
+    punctuated public file names, and prompt-injection text from string leaves
+    (via :func:`redact_public_text`) so the ``/api/audit`` surface cannot leak
+    them. Applied on read only; the hash-chained stored payload is untouched.
+    """
+    return _redact_value(value, scrub_local_paths=True)
+
+
+def redact_run_payload(value: Any) -> Any:
+    """Redaction for run-engine read surfaces (timeline / replay / progress / state).
+
+    The run timeline is a desktop-token-gated local surface whose structured
+    payloads are rendered by the desktop client, so unlike ``redact_value`` this
+    helper preserves the payload shape **and identifiers** (no generic 24+ token
+    collapse, which would destroy 32-hex run/task/step ids). It still:
+
+    - drops internal ``_``-prefixed keys (e.g. ``state._runtime.data_dir``, which
+      otherwise leaks an absolute local path onto the timeline), and
+    - redacts values under sensitive key names plus inline secret patterns
+      (api keys, bearer tokens, ``sk-`` keys, PEM blocks, cards, email, phone).
+    """
+    return _redact_run_value(value)
+
+
+def _redact_run_value(value: Any, *, key: str = "", in_form: bool = False) -> Any:
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for item_key, item in value.items():
+            text_key = str(item_key)
+            if text_key.startswith("_"):
+                continue
+            result[text_key] = _redact_run_keyed_value(text_key, item, in_form=in_form)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_redact_run_value(item, key=key, in_form=in_form) for item in value]
+    if isinstance(value, set):
+        return [_redact_run_value(item, key=key, in_form=in_form) for item in sorted(value, key=str)]
+    if isinstance(value, str):
+        if in_form or _is_form_value_key(key):
+            return REDACTED
+        # Keep generic tokens so identifiers (run/task/step ids) survive; inline
+        # secret patterns (api_key=, Bearer, sk-, PEM, card/email/phone) still apply.
+        return redact_text(value, redact_generic_tokens=False)
+    if in_form and value is not None:
+        return REDACTED
+    return value
+
+
+def _redact_run_keyed_value(key: str, value: Any, *, in_form: bool = False) -> Any:
+    if contains_sensitive_key(key):
+        if isinstance(value, (dict, list, tuple, set)):
+            return _redact_run_value(value)
+        return REDACTED
+    child_in_form = in_form or _is_form_container_key(key)
+    return _redact_run_value(value, key=key, in_form=child_in_form)
+
+
 def redact(value: Any) -> Any:
     return _redact_value(value)
 
@@ -112,22 +172,28 @@ def sanitize_text(text: str) -> str:
     return redact_text(text)
 
 
-def _redact_value(value: Any, *, key: str = "", in_form: bool = False) -> Any:
+def _redact_value(value: Any, *, key: str = "", in_form: bool = False, scrub_local_paths: bool = False) -> Any:
     if isinstance(value, dict):
         return {
-            str(item_key): _redact_keyed_value(str(item_key), item, in_form=in_form)
+            str(item_key): _redact_keyed_value(str(item_key), item, in_form=in_form, scrub_local_paths=scrub_local_paths)
             for item_key, item in value.items()
         }
     if isinstance(value, list):
-        return [_redact_value(item, key=key, in_form=in_form) for item in value]
+        return [_redact_value(item, key=key, in_form=in_form, scrub_local_paths=scrub_local_paths) for item in value]
     if isinstance(value, tuple):
-        return [_redact_value(item, key=key, in_form=in_form) for item in value]
+        return [_redact_value(item, key=key, in_form=in_form, scrub_local_paths=scrub_local_paths) for item in value]
     if isinstance(value, set):
-        return [_redact_value(item, key=key, in_form=in_form) for item in sorted(value, key=str)]
+        return [
+            _redact_value(item, key=key, in_form=in_form, scrub_local_paths=scrub_local_paths)
+            for item in sorted(value, key=str)
+        ]
     if isinstance(value, str):
         if in_form or _is_form_value_key(key):
             return REDACTED
-        return redact_text(value, redact_generic_tokens=not _is_path_value_key(key, value))
+        redact_generic_tokens = not _is_path_value_key(key, value)
+        if scrub_local_paths:
+            return redact_public_text(value, redact_generic_tokens=redact_generic_tokens)
+        return redact_text(value, redact_generic_tokens=redact_generic_tokens)
     if in_form and value is not None:
         return REDACTED
     return value
@@ -138,13 +204,13 @@ def contains_sensitive_key(key: str) -> bool:
     return any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS)
 
 
-def _redact_keyed_value(key: str, value: Any, *, in_form: bool = False) -> Any:
+def _redact_keyed_value(key: str, value: Any, *, in_form: bool = False, scrub_local_paths: bool = False) -> Any:
     if contains_sensitive_key(key):
         if isinstance(value, (dict, list, tuple, set)):
-            return _redact_value(value)
+            return _redact_value(value, scrub_local_paths=scrub_local_paths)
         return REDACTED
     child_in_form = in_form or _is_form_container_key(key)
-    return _redact_value(value, key=key, in_form=child_in_form)
+    return _redact_value(value, key=key, in_form=child_in_form, scrub_local_paths=scrub_local_paths)
 
 
 def _is_form_container_key(key: str) -> bool:

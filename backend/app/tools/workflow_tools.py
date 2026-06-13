@@ -4,11 +4,12 @@ import asyncio
 from typing import Any
 
 from app.orchestration.workflow import InMemoryClipboard, Workflow, WorkflowRuntime
+from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 
 
-def run_workflow(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+def run_workflow(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     workflow_data = args.get("workflow") or args
     try:
         workflow = Workflow.model_validate(workflow_data)
@@ -26,6 +27,9 @@ def run_workflow(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
     if not args.get("approved") or not args.get("approval_id"):
         return {"ok": False, "error": "Workflow execution requires an approved approval_id after dry-run preview."}
+    if not execution_is_marked_approved(context):
+        # SEC-002: live execution must run through the validated orchestrator/route gate.
+        return {"ok": False, "error": "Workflow execution must run through the validated approval gate."}
 
     runtime = WorkflowRuntime(clipboard=InMemoryClipboard())
     result = asyncio.run(runtime.run(workflow))

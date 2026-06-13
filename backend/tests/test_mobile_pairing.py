@@ -1021,10 +1021,10 @@ def test_pair_confirm_rate_limits_failed_attempts_by_client(monkeypatch, tmp_pat
     client = TestClient(app, client=("192.0.2.88", 50100), base_url="https://testserver")
 
     for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
-        response = client.post("/api/pair/confirm", json={"code": "ffffffff", "device_name": "Phone"})
+        response = client.post("/api/pair/confirm", json={"code": "f" * 16, "device_name": "Phone"})
         assert response.status_code == 401
 
-    limited = client.post("/api/pair/confirm", json={"code": "ffffffff", "device_name": "Phone"})
+    limited = client.post("/api/pair/confirm", json={"code": "f" * 16, "device_name": "Phone"})
 
     assert limited.status_code == 429
 
@@ -1035,8 +1035,9 @@ def test_pair_confirm_rejects_short_or_long_codes(monkeypatch, tmp_path):
     _clear_pairing_failures()
     client = TestClient(app)
 
+    expected_length = mobile_pairing_service.PAIR_CODE_HEX_LENGTH * 2
     short = client.post("/api/pair/confirm", json={"code": "abc123", "device_name": "Phone"})
-    long = client.post("/api/pair/confirm", json={"code": "a" * 12, "device_name": "Phone"})
+    long = client.post("/api/pair/confirm", json={"code": "a" * (expected_length + 4), "device_name": "Phone"})
 
     assert short.status_code == 422
     assert long.status_code == 422
@@ -1045,7 +1046,7 @@ def test_pair_confirm_rejects_short_or_long_codes(monkeypatch, tmp_path):
         messages = " ".join(str(item.get("msg", "")) for item in detail if isinstance(item, dict))
     else:
         messages = str(detail)
-    assert "8 characters" in messages
+    assert f"{expected_length} characters" in messages
 
 
 def test_pair_confirm_does_not_rate_limit_unrelated_hosts(monkeypatch, tmp_path):
@@ -1053,7 +1054,7 @@ def test_pair_confirm_does_not_rate_limit_unrelated_hosts(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     _clear_pairing_failures()
-    invalid_code = "deadbeef"
+    invalid_code = "deadbeefdeadbeef"
     blocked_host = ("198.51.100.88", 50100)
 
     for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
@@ -1086,7 +1087,7 @@ def test_pair_confirm_malformed_codes_do_not_count_toward_rate_limit(monkeypatch
         response = client.post("/api/pair/confirm", json={"code": "abc", "device_name": "Phone"})
         assert response.status_code == 422
 
-    still_allowed = client.post("/api/pair/confirm", json={"code": "ffffffff", "device_name": "Phone"})
+    still_allowed = client.post("/api/pair/confirm", json={"code": "f" * 16, "device_name": "Phone"})
     assert still_allowed.status_code == 401
 
 
@@ -1098,7 +1099,7 @@ def test_successful_pairing_clears_host_confirm_failure_bucket(monkeypatch, tmp_
     monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     _clear_pairing_failures()
-    invalid_code = "deadbeef"
+    invalid_code = "deadbeefdeadbeef"
     host = "203.0.113.250"
 
     for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT - 1):
@@ -1118,6 +1119,27 @@ def test_successful_pairing_clears_host_confirm_failure_bucket(monkeypatch, tmp_
     with pytest.raises(HTTPException) as exc:
         mobile_pairing_service.confirm_pairing(code=invalid_code, device_name="Phone", client_host=host)
     assert exc.value.status_code == 429
+
+
+def test_revoke_device_sessions_invalidates_existing_token(monkeypatch, tmp_path):
+    # SEC-005 regression: bumping the device session epoch must reject already
+    # issued tokens (without un-pairing the device).
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    client = TestClient(app)
+    token = _paired_token(client)
+    device_id = decode_mobile_token(token)["device_id"]
+
+    before = client.get("/api/mobile/approvals/pending", headers={"Authorization": f"Bearer {token}"})
+    assert before.status_code == 200
+
+    revoked = client.post(f"/api/pair/devices/{device_id}/revoke-sessions")
+    assert revoked.status_code == 200
+    assert revoked.json()["token_epoch"] == 1
+    assert revoked.json()["status"] == "active"
+
+    after = client.get("/api/mobile/approvals/pending", headers={"Authorization": f"Bearer {token}"})
+    assert after.status_code == 401
 
 
 def test_mobile_approval_routes_require_bearer_token(monkeypatch, tmp_path):
@@ -2136,6 +2158,37 @@ def test_mobile_device_can_claim_remote_input_grant_token(monkeypatch, tmp_path)
     assert payload["expires_in"] <= mobile_pairing_service.REMOTE_INPUT_GRANT_TTL_SECONDS
     assert "token" not in payload["grant"]
     assert "token_type" not in payload["grant"]
+
+
+def test_reclaiming_remote_input_grant_supersedes_prior_token(monkeypatch, tmp_path):
+    # SEC-006 regression: each grant binds to exactly one issued token. Claiming
+    # the grant again must rotate the binding so an earlier (possibly leaked)
+    # token is rejected, while the freshly claimed token stays valid.
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+
+    first = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    ).json()["token"]
+    second = client.post(
+        f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    ).json()["token"]
+
+    assert first != second
+    # The superseded first token is now rejected on validation.
+    with pytest.raises(HTTPException) as exc:
+        decode_mobile_token(first, allowed_scopes={REMOTE_INPUT_SCOPE})
+    assert exc.value.status_code == 401
+    # The most recently claimed token remains valid.
+    claims = decode_mobile_token(second, allowed_scopes={REMOTE_INPUT_SCOPE})
+    assert claims["grant_id"] == grant["grant_id"]
 
 
 def test_mobile_device_can_revoke_own_remote_input_grant(monkeypatch, tmp_path):

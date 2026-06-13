@@ -10,6 +10,7 @@ from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, SafetyReview, now_iso
 from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security.desktop_api import close_unauthorized_desktop_websocket
@@ -234,6 +235,7 @@ def act(payload: dict):
     approval_error = _claim_valid_browser_approval("browser.act", payload, context)
     if approval_error is not None:
         return _attach_review_to_approval_error(approval_error, blocked)
+    mark_execution_approved(context)
     return browser_tools.act(payload, context)
 
 
@@ -247,6 +249,7 @@ async def cua_run(payload: dict):
     approval_error = _claim_valid_browser_approval("browser.cua_run", payload, context)
     if approval_error is not None:
         return _attach_review_to_approval_error(approval_error, blocked)
+    mark_execution_approved(context)
     return await browser_tools.cua_run_async(payload, context)
 
 

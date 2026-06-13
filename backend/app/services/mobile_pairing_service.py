@@ -33,7 +33,10 @@ from app.security.mobile_jwt import (
 PAIR_CODE_TTL_SECONDS = 300
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 REMOTE_INPUT_GRANT_TTL_SECONDS = 5 * 60
-PAIR_CODE_HEX_LENGTH = 4
+# 64-bit pairing-code entropy (16 hex chars). The code lives for PAIR_CODE_TTL_SECONDS
+# and is single-use, so 2**64 makes online brute force over the LAN infeasible even
+# when a distributed attacker spreads guesses across many source IPs.
+PAIR_CODE_HEX_LENGTH = 8
 PAIR_CONFIRM_FAILURE_LIMIT = 8
 PAIR_CONFIRM_FAILURE_WINDOW_SECONDS = 60
 
@@ -301,43 +304,69 @@ def claim_remote_input_grant_token(grant_id: str, claims: dict[str, Any]) -> dic
     if not get_effective_settings().remote_desktop_enabled:
         raise HTTPException(status_code=403, detail="Remote desktop is disabled")
 
-    device = db.fetch_one("mobile_devices", device_id)
-    if not device or str(device.get("status") or "active").lower() != "active":
-        raise HTTPException(status_code=401, detail="Mobile device has been revoked")
+    token_id = secrets.token_hex(16)
+    grant, device_token_epoch = _bind_remote_input_grant_token_id(device_id, normalized_grant_id, token_id)
+    expires_at = _grant_expires_at(grant)
+    remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+    if remaining <= 0:
+        raise HTTPException(status_code=401, detail="Remote input grant expired")
+    token = issue_mobile_token(
+        device_id=device_id,
+        device_name=str(claims.get("device_name") or "Android device"),
+        expires_in_seconds=min(remaining, REMOTE_INPUT_GRANT_TTL_SECONDS),
+        scope=REMOTE_INPUT_SCOPE,
+        source="remote_input_grant",
+        grant_id=normalized_grant_id,
+        token_id=token_id,
+        token_epoch=device_token_epoch,
+    )
+    record(
+        "mobile.remote_input_grant.claimed",
+        "MobilePairingService",
+        {"device_id": device_id, "grant_id": normalized_grant_id, "expires_at": grant["expires_at"]},
+    )
+    return {
+        "token": token,
+        "token_type": "Bearer",
+        "grant_id": normalized_grant_id,
+        "device_id": device_id,
+        "expires_at": grant["expires_at"],
+        "expires_in": max(1, min(remaining, REMOTE_INPUT_GRANT_TTL_SECONDS)),
+        "grant": _safe_remote_input_grant(grant),
+    }
 
-    for grant in _normalized_remote_input_grants(device):
-        if grant["id"] != normalized_grant_id:
-            continue
-        if grant["status"] != "active":
+
+def _bind_remote_input_grant_token_id(device_id: str, grant_id: str, token_id: str) -> tuple[dict[str, Any], int]:
+    """Atomically bind ``token_id`` to the named grant, rotating any prior token.
+
+    Returns ``(normalized_grant, device_token_epoch)``. Raises the same HTTP
+    errors the inline claim path used to raise (missing/revoked device,
+    unknown/inactive grant).
+    """
+    timestamp = now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Mobile device has been revoked")
+        device = json.loads(row["data"])
+        if str(device.get("status") or "active").lower() != "active":
+            raise HTTPException(status_code=401, detail="Mobile device has been revoked")
+        grants = _normalized_remote_input_grants(device)
+        target = next((grant for grant in grants if grant["id"] == grant_id), None)
+        if target is None:
+            raise HTTPException(status_code=403, detail="Remote input grant is not available for this device")
+        if target["status"] != "active":
             raise HTTPException(status_code=401, detail="Remote input grant is not active")
-        expires_at = _grant_expires_at(grant)
-        remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
-        if remaining <= 0:
-            raise HTTPException(status_code=401, detail="Remote input grant expired")
-        token = issue_mobile_token(
-            device_id=device_id,
-            device_name=str(device.get("device_name") or claims.get("device_name") or "Android device"),
-            expires_in_seconds=min(remaining, REMOTE_INPUT_GRANT_TTL_SECONDS),
-            scope=REMOTE_INPUT_SCOPE,
-            source="remote_input_grant",
-            grant_id=normalized_grant_id,
+        target["token_id"] = token_id
+        device["remote_input_grants"] = grants
+        device["updated_at"] = timestamp
+        conn.execute(
+            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(device, ensure_ascii=False), timestamp, device_id),
         )
-        record(
-            "mobile.remote_input_grant.claimed",
-            "MobilePairingService",
-            {"device_id": device_id, "grant_id": normalized_grant_id, "expires_at": grant["expires_at"]},
-        )
-        return {
-            "token": token,
-            "token_type": "Bearer",
-            "grant_id": normalized_grant_id,
-            "device_id": device_id,
-            "expires_at": grant["expires_at"],
-            "expires_in": max(1, min(remaining, REMOTE_INPUT_GRANT_TTL_SECONDS)),
-            "grant": _safe_remote_input_grant(grant),
-        }
-
-    raise HTTPException(status_code=403, detail="Remote input grant is not available for this device")
+        token_epoch = int(device.get("token_epoch") or 0)
+    return target, token_epoch
 
 
 def revoke_remote_input_grant(device_id: str, grant_id: str) -> dict[str, Any]:
@@ -423,6 +452,44 @@ def revoke_mobile_device(device_id: str) -> dict[str, Any]:
     return payload
 
 
+def revoke_mobile_device_sessions(device_id: str) -> dict[str, Any]:
+    """Invalidate all tokens issued for a device without un-pairing it.
+
+    Bumps the device's ``token_epoch`` so every previously issued paired/grant
+    token fails validation, while the device stays active and can mint a fresh
+    token on the next claim/pair. Active remote-input grants are also revoked.
+    """
+    normalized_id = _text(device_id)
+    if not normalized_id:
+        raise HTTPException(status_code=422, detail="Missing mobile device id")
+    timestamp = now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT data FROM mobile_devices WHERE id = ?", (normalized_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Mobile device not found")
+        updated = json.loads(row["data"])
+        updated["token_epoch"] = int(updated.get("token_epoch") or 0) + 1
+        updated["remote_input_grants"] = _revoked_remote_input_grants(updated, timestamp)
+        updated["updated_at"] = timestamp
+        conn.execute(
+            "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(updated, ensure_ascii=False), timestamp, normalized_id),
+        )
+    record(
+        "mobile.device.sessions_revoked",
+        "MobilePairingService",
+        {"device_id": normalized_id, "token_epoch": updated["token_epoch"]},
+    )
+    return {
+        "device_id": normalized_id,
+        "status": str(updated.get("status") or "active").lower(),
+        "token_epoch": updated["token_epoch"],
+        "updated_at": timestamp,
+        "remote_input_grants": _safe_remote_input_grants(updated),
+    }
+
+
 def revoke_own_mobile_device(device_id: str, claims: dict[str, Any]) -> dict[str, Any]:
     normalized_id = _text(device_id)
     claim_device_id = _text(claims.get("device_id"))
@@ -506,6 +573,7 @@ def _upsert_mobile_device_locked(conn: Any, *, device_id: str, device_name: str,
         "status": "active",
         "revoked_at": "",
         "remote_input_grants": [],
+        "token_epoch": 0,
         "created_at": timestamp,
         "updated_at": timestamp,
     }
@@ -812,6 +880,8 @@ def _normalized_remote_input_grants(device: dict[str, Any]) -> list[dict[str, An
             "created_at": _text(raw.get("created_at")),
             "expires_at": _text(raw.get("expires_at")),
             "revoked_at": _text(raw.get("revoked_at")),
+            # Internal anti-replay binding; never surfaced in safe payloads.
+            "token_id": _text(raw.get("token_id")),
         }
         if not grant["id"]:
             continue

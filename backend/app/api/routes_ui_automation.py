@@ -21,6 +21,7 @@ from app.policy.approval_binding import (
     redacted_preview,
     settings_fingerprint,
 )
+from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
@@ -142,6 +143,7 @@ def action(payload: dict | None = None):
     approval_error = _claim_valid_gui_approval(tool_name, payload, context)
     if approval_error is not None:
         return approval_error
+    mark_execution_approved(context)
     return tool.execute(payload, context)
 
 

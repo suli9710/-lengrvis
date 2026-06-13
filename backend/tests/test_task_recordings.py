@@ -36,6 +36,26 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
 
 
+def test_recording_read_is_task_scoped_and_rejects_traversal():
+    # SEC-012 regression: recording fetch is bound to its task_id and rejects
+    # path separators, so a guessed/cross-task file name cannot read other bytes.
+    persist_recording_frame(
+        {"task_id": "task_a", "step_id": "s1", "phase": "before", "file_name": "s1-before-1.png"},
+        b"\x89PNG-a",
+    )
+    image, _ = read_recording_image("task_a", "s1-before-1.png")
+    assert image == b"\x89PNG-a"
+    # Same file name under a different task must not resolve to task_a's bytes.
+    with pytest.raises(FileNotFoundError):
+        read_recording_image("task_b", "s1-before-1.png")
+    # Path separators are rejected outright (no traversal / absolute reads).
+    for bad in ("../s1-before-1.png", "sub/s1-before-1.png", "/etc/passwd"):
+        with pytest.raises(ValueError):
+            read_recording_image("task_a", bad)
+        with pytest.raises(ValueError):
+            task_recording_service.resolve_recording_path("task_a", bad)
+
+
 @pytest.fixture
 def fake_capture(monkeypatch: pytest.MonkeyPatch):
     counter = 0

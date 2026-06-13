@@ -27,9 +27,14 @@ def issue_mobile_token(
     scope: str | Iterable[str] = TOKEN_SCOPE,
     source: str = "",
     grant_id: str = "",
+    token_id: str = "",
+    token_epoch: int = 0,
 ) -> str:
     now = datetime.now(timezone.utc)
     scopes = _scope_values(scope)
+    # Every token carries a unique id for traceability; grant tokens reuse the
+    # grant's rotating token id so re-claiming supersedes prior tokens.
+    jti = token_id or secrets.token_hex(16)
     payload = {
         "aud": TOKEN_AUDIENCE,
         "device_id": device_id,
@@ -37,8 +42,12 @@ def issue_mobile_token(
         "exp": now + timedelta(seconds=expires_in_seconds),
         "iat": now,
         "iss": TOKEN_ISSUER,
+        "jti": jti,
         "scope": " ".join(scopes),
         "sub": f"mobile:{device_id}",
+        # Session epoch: bumping the device's epoch revokes every token issued
+        # before the bump without deleting (un-pairing) the device.
+        "token_epoch": int(token_epoch),
     }
     if source:
         payload["source"] = source
@@ -62,7 +71,7 @@ def decode_mobile_token(
     if not payload.get("device_id"):
         raise HTTPException(status_code=401, detail="Invalid mobile token") from None
     if require_active_device:
-        _raise_if_device_inactive(str(payload.get("device_id") or ""))
+        _raise_if_device_inactive(str(payload.get("device_id") or ""), token_epoch=_token_epoch(payload))
         _raise_if_remote_input_grant_inactive(payload, scopes)
     payload["scopes"] = sorted(scopes)
     return payload
@@ -71,7 +80,7 @@ def decode_mobile_token(
 def validate_mobile_claims_active(claims: dict[str, Any]) -> None:
     scopes = mobile_token_scopes(claims)
     _raise_if_token_expired(claims)
-    _raise_if_device_inactive(str(claims.get("device_id") or ""))
+    _raise_if_device_inactive(str(claims.get("device_id") or ""), token_epoch=_token_epoch(claims))
     _raise_if_remote_input_grant_inactive(claims, scopes)
 
 
@@ -178,7 +187,7 @@ def _decode_mobile_token_payload(token: str) -> dict[str, Any]:
     raise HTTPException(status_code=401, detail="Invalid mobile token") from None
 
 
-def _raise_if_device_inactive(device_id: str) -> None:
+def _raise_if_device_inactive(device_id: str, *, token_epoch: int | None = None) -> None:
     if not device_id:
         raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
     device = db.fetch_one("mobile_devices", device_id)
@@ -186,6 +195,16 @@ def _raise_if_device_inactive(device_id: str) -> None:
         raise HTTPException(status_code=401, detail="Mobile device is not paired")
     if str(device.get("status") or "active").lower() != "active":
         raise HTTPException(status_code=401, detail="Mobile device has been revoked")
+    # Session revocation: tokens minted before the device's current epoch are dead.
+    if token_epoch is not None and int(device.get("token_epoch") or 0) != int(token_epoch):
+        raise HTTPException(status_code=401, detail="Mobile session has been revoked")
+
+
+def _token_epoch(payload: dict[str, Any]) -> int:
+    try:
+        return int(payload.get("token_epoch") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _raise_if_token_expired(payload: dict[str, Any]) -> None:
@@ -228,6 +247,11 @@ def _raise_if_remote_input_grant_inactive(payload: dict[str, Any], scopes: set[s
         expires_at = _remote_input_grant_expires_at(grant)
         if expires_at < now:
             raise HTTPException(status_code=401, detail="Remote input grant expired")
+        # Anti-replay: a grant binds to exactly one issued token. Re-claiming the
+        # grant rotates ``token_id``, so any previously minted token is rejected.
+        bound_token_id = str(grant.get("token_id") or "")
+        if bound_token_id and str(payload.get("jti") or "") != bound_token_id:
+            raise HTTPException(status_code=401, detail="Remote input grant token has been superseded")
         return
 
     raise HTTPException(status_code=401, detail="Remote input grant is not active")
