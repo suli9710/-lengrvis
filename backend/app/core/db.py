@@ -164,6 +164,10 @@ def connect() -> Iterator[sqlite3.Connection]:
     # "database is locked" errors under load.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
+    # synchronous=NORMAL is the recommended companion to WAL: it keeps crash
+    # safety (no corruption) while avoiding an fsync on every commit, which
+    # otherwise serializes the audit/run_event write hot path.
+    conn.execute("PRAGMA synchronous = NORMAL")
     try:
         yield conn
         conn.commit()
