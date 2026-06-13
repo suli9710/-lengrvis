@@ -189,7 +189,7 @@ def test_privacy_mode_offline_system_check_completes_with_local_diagnostics(monk
     final = _wait_for_run_phase(client, run["run_id"], "completed", "failed", "denied")
     assert final["phase"] == "completed"
 
-    plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (final["task_id"],), limit=1)[0])
+    plan = _wait_for_settled_plan(final["task_id"])
     assert [(step.agent_name, step.tool_name, step.status.value) for step in plan.steps] == [
         ("ComputerAgent", "system.diagnostics", "succeeded")
     ]
@@ -409,6 +409,29 @@ def _wait_for_task_status(task_id: str, *statuses: str) -> dict:
     raise AssertionError(f"Task {task_id} did not reach {statuses}")
 
 
+_TERMINAL_STEP_STATUSES = {"succeeded", "failed", "skipped", "denied"}
+
+
+def _wait_for_settled_plan(task_id: str) -> Plan:
+    """Return the task's plan once every step has reached a terminal status.
+
+    The task status flips to ``completed`` slightly before the persisted plan
+    row is rewritten with the final per-step statuses, so reading the plan the
+    instant the task settles can observe a stale ``pending`` step. Poll until
+    the persisted steps settle to avoid that read-after-write race.
+    """
+    plan: Plan | None = None
+    for _ in range(120):
+        plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
+        if plans:
+            plan = Plan.model_validate(plans[0])
+            if plan.steps and all(step.status.value in _TERMINAL_STEP_STATUSES for step in plan.steps):
+                return plan
+        time.sleep(0.05)
+    assert plan is not None, f"Plan for task {task_id} was never persisted"
+    return plan
+
+
 def _configure_offline_system_check(monkeypatch) -> None:
     monkeypatch.setenv("LENGRVIS_MODE", "privacy")
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "openai")
@@ -444,9 +467,7 @@ def _assert_read_only_system_diagnostics_task(task_id: str) -> None:
     task = db.fetch_one("tasks", task_id)
     assert task["status"] == "completed"
     assert task["execution_stage"] == "idle"
-    plans = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
-    assert plans
-    plan = Plan.model_validate(plans[0])
+    plan = _wait_for_settled_plan(task_id)
     assert plan.requires_user_approval is False
     assert plan.global_risk_level.value == "R0_READ_ONLY"
     assert [(step.agent_name, step.tool_name, step.status.value, step.risk_level.value) for step in plan.steps] == [
