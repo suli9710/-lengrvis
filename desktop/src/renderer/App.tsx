@@ -1285,6 +1285,14 @@ export function App() {
           </section>
         ) : null}
 
+        {activeView === "skills" ? (
+          <section className="detail-grid detail-grid--settings">
+            <Suspense fallback={<RouteLoading />}>
+              <SkillsView api={api} />
+            </Suspense>
+          </section>
+        ) : null}
+
         {activeView === "settings" ? (
           <section className="detail-grid detail-grid--settings">
             <Suspense fallback={<RouteLoading />}>
@@ -1303,19 +1311,6 @@ export function App() {
                 privacyIntentId={settingsIntent?.section === "privacy" ? settingsIntent.nonce : undefined}
               />
             </Suspense>
-            <Suspense fallback={<RouteLoading />}>
-              <SkillsView api={api} />
-            </Suspense>
-            <SystemInfoPanel
-              info={systemInfo}
-              backendStatus={backendStatus}
-              onRefresh={async () => {
-                await refreshSystemInfo();
-              }}
-              onExportDiagnostics={exportDiagnosticsPackage}
-              onRevealPath={revealPath}
-              onOpenSettings={openWindowsSettings}
-            />
           </section>
         ) : null}
 
