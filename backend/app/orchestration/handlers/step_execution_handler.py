@@ -238,6 +238,11 @@ class StepExecutionHandler:
         if step is None:
             raise KeyError(f"Step not found for approval: {approval.step_id}")
         if step.status == StepStatus.SUCCEEDED:
+            # The step already ran; don't leave an unconsumed APPROVED row behind
+            # (it would otherwise read as a still-pending grant and trap the
+            # approval-execution route in a retry/503 loop).
+            if not approval.consumed_at:
+                db.expire_approval_if_unconsumed(approval.id, now_iso(), "Step already succeeded.")
             return task
         if approval.consumed_at:
             return self._deny_approved_step(task, plan, step, approval, "Approval has already been consumed.")
