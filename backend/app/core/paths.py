@@ -21,6 +21,7 @@ SYSTEM_ROOTS = [
     Path("C:/Windows"),
     Path("C:/Program Files"),
     Path("C:/Program Files (x86)"),
+    Path("C:/ProgramData"),
 ]
 
 

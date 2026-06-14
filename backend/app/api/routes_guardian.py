@@ -15,7 +15,12 @@ from app.core import db
 from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.policy.redaction import redact_value
-from app.security.desktop_api import close_unauthorized_desktop_websocket, desktop_api_token_headers
+from app.security.desktop_api import (
+    DESKTOP_API_TOKEN_HEADER,
+    DESKTOP_API_WS_PROTOCOL_PREFIX,
+    close_unauthorized_desktop_websocket,
+    desktop_api_token_headers,
+)
 from app.security.lan import is_mobile_token_websocket_path, is_secure_mobile_transport
 from app.security.mobile_jwt import (
     TOKEN_SCOPE,
@@ -353,7 +358,18 @@ async def proxy_websocket(websocket: WebSocket, path: str):
     try:
         await runtime.ensure_full_backend(reason=f"ws_proxy:/{path}")
         target = _full_backend_ws_url(path, websocket.url.query)
-        async with websockets.connect(target) as upstream:
+        # Authenticate the upstream loopback hop the same way the HTTP proxy does
+        # (desktop_api_token_headers). Without this, the full backend's WS token
+        # guard rejects the proxied connection whenever the desktop token is
+        # required, breaking LAN/mobile WS proxying.
+        token_headers = desktop_api_token_headers()
+        upstream_token = token_headers.get(DESKTOP_API_TOKEN_HEADER, "")
+        connect_kwargs: dict[str, Any] = {}
+        if token_headers:
+            connect_kwargs["additional_headers"] = token_headers
+        if upstream_token:
+            connect_kwargs["subprotocols"] = [f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{upstream_token}"]
+        async with websockets.connect(target, **connect_kwargs) as upstream:
             await asyncio.gather(
                 _client_to_upstream(websocket, upstream),
                 _upstream_to_client(websocket, upstream),

@@ -165,12 +165,12 @@ def _is_test_environment() -> bool:
     # pytest sets this to the running test nodeid; any non-empty value counts.
     if str(get_env("PYTEST_CURRENT_TEST") or "").strip():
         return True
-    # Deployment-style env names must say "test"/"testing" exactly. Generic
-    # truthy values like APP_ENV=1 must not unlock token-optional mode.
-    return any(
-        str(get_env(name) or "").strip().lower() in {"test", "testing"}
-        for name in ("APP_ENV", "LENGRVIS_ENV")
-    )
+    # Intentionally do NOT honor generic deployment env names (APP_ENV /
+    # LENGRVIS_ENV == "testing") here: disabling the desktop API token guard is
+    # a test-only escape hatch, and a misconfigured staging box with
+    # APP_ENV=testing must never silently drop authentication on state-changing
+    # routes. Only the dedicated LENGRVIS_TEST / pytest signals unlock it.
+    return False
 
 
 def _desktop_api_header_tokens(request: Request) -> list[str]:
