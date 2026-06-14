@@ -14,7 +14,8 @@
     "smoke:token": "node scripts/mobile-token-smoke.cjs",
     "smoke:task-companion": "node scripts/mobile-task-companion-smoke.cjs",
     "smoke:remote-input-grant": "node scripts/remote-input-grant-smoke.cjs",
-    "smoke:wakeup-contract": "node scripts/wakeup-contract-smoke.cjs"
+    "smoke:wakeup-contract": "node scripts/wakeup-contract-smoke.cjs",
+    "smoke:android-back": "node scripts/android-back-navigation-smoke.cjs"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^3.1.0",

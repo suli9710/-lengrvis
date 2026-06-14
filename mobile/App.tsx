@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, BackHandler, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, View } from "react-native";
 
 import { clearRemoteInputGrantTokens, getApprovalDetail, type BackendApproval, type PairingSession, type RemoteInputGrant } from "./src/api/client";
+import { resolveAndroidBack } from "./src/androidBackNavigation";
 import { addApprovalNotificationResponseListener, getLastApprovalNotificationApprovalId } from "./src/notifications";
 import { ApprovalDetail } from "./src/screens/ApprovalDetail";
 import { ApprovalsScreen } from "./src/screens/ApprovalsScreen";
@@ -92,6 +93,29 @@ export default function App() {
     }, remainingMs);
     return () => clearTimeout(timeout);
   }, [remoteInputGrant]);
+
+  const handleAndroidBack = useCallback((): boolean => {
+    const action = resolveAndroidBack({
+      sessionActive: session !== null,
+      activeScreen,
+      hasSelectedApproval: selectedApproval !== null,
+    });
+    if (action === "return_to_approvals") {
+      setActiveScreen("approvals");
+      return true;
+    }
+    if (action === "close_approval_detail") {
+      setSelectedApproval(null);
+      return true;
+    }
+    return false;
+  }, [session, activeScreen, selectedApproval]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", handleAndroidBack);
+    return () => subscription.remove();
+  }, [handleAndroidBack]);
 
   const handleRemoteInputGrant = (grant: RemoteInputGrant) => {
     setRemoteInputGrant((current) => reduceRemoteInputGrant(current, { type: "received", grant }));
