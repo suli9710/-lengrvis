@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 from typing import Any, Coroutine
 
@@ -52,13 +53,17 @@ async def handle_chat(message: str, mode: str) -> ChatResponse:
 
     supervisor = SupervisorAgent()
     decision = await supervisor.decide(message, mode)
-    if not decision.delegate and _is_explicit_file_path_request(message):
+    # Deterministic safety overrides for explicit destructive intents. These run
+    # regardless of decision.delegate: an LLM that delegates an explicit
+    # "delete C:\\..." to the wrong worker (e.g. BrowserAgent) must still be
+    # corrected to FileAgent, not just rescued when it declined to delegate.
+    if _is_explicit_file_path_request(message) and decision.agent_hint != "FileAgent":
         decision = SupervisorDecision(
             delegate=True,
             reply=supervisor._delegation_reply("FileAgent", message.lower()),
             agent_hint="FileAgent",
         )
-    if not decision.delegate and _is_uninstall_request(message):
+    if _is_uninstall_request(message) and decision.agent_hint != "AppAgent":
         decision = SupervisorDecision(
             delegate=True,
             reply=supervisor._delegation_reply("AppAgent", message.lower()),
@@ -80,6 +85,16 @@ async def _delegate_system_diagnostics_run(message: str, mode: str) -> ChatRespo
     from app.services import run_service
 
     run = await run_service.create_run(message, mode, RunEngine.AUTO, agent_hint="ComputerAgent")
+    if not run.task_id:
+        # create_run failed or the backend is not accepting new runs: no task
+        # exists, so do not alias the run id as a task_id (clients would 404 on
+        # /api/tasks/{id}). Surface an honest non-delegated error instead.
+        fail_reply = "抱歉，系统诊断任务暂时无法启动，请稍后再试。"
+        db.upsert_model(
+            "chat_messages",
+            ChatMessage(role=OpenAIMessageRole.ASSISTANT, author="主管 Agent", content=fail_reply),
+        )
+        return ChatResponse(task_id=None, status=None, message=fail_reply, delegated=False, agent="ComputerAgent")
     reply = "好的，这个任务和电脑/系统有关，我将分配给电脑 Agent。"
     assistant_message = ChatMessage(
         role=OpenAIMessageRole.ASSISTANT,
@@ -88,7 +103,7 @@ async def _delegate_system_diagnostics_run(message: str, mode: str) -> ChatRespo
     )
     db.upsert_model("chat_messages", assistant_message)
     return ChatResponse(
-        task_id=run.task_id or run.id,
+        task_id=run.task_id,
         status=_task_phase_from_run_phase(run.phase),
         message=reply,
         delegated=True,
@@ -108,9 +123,16 @@ def _task_phase_from_run_phase(phase: RunPhase) -> TaskPhase:
     return TaskPhase.PLANNING
 
 
+# URLs like "https://host/path" contain a "s://..." substring that
+# WINDOWS_PATH_RE ("[A-Za-z]:[\\/]...") matches, which would misclassify a
+# browser request as an explicit local-file-path request. Strip URLs first.
+_URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://\S*", re.IGNORECASE)
+
+
 def _is_explicit_file_path_request(message: str) -> bool:
     normalized = message.lower()
-    return bool(WINDOWS_PATH_RE.search(message)) and contains_any(normalized, FILE_ACTION_TERMS)
+    without_urls = _URL_RE.sub(" ", message)
+    return bool(WINDOWS_PATH_RE.search(without_urls)) and contains_any(normalized, FILE_ACTION_TERMS)
 
 
 def _is_uninstall_request(message: str) -> bool:

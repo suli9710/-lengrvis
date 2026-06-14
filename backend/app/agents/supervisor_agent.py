@@ -99,7 +99,11 @@ class SupervisorAgent:
         if not agent_hint:
             agent_hint = fallback.agent_hint
         if not agent_hint:
-            return SupervisorDecision(False, decision.reply or self._chat_reply(message), "")
+            # The model wanted to delegate but produced no routable agent and the
+            # heuristic has none either. Fall back to a plain chat reply rather
+            # than echoing the model's delegation-flavored text, which would tell
+            # the user work was assigned while no task is ever created.
+            return SupervisorDecision(False, self._chat_reply(message), "")
         return SupervisorDecision(True, decision.reply, agent_hint)
 
     def proactive_suggestions(
