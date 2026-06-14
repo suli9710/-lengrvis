@@ -33,6 +33,7 @@ from app.services.run_service_background import (
     run_active as _bg_run_active,
     schedule_background as _bg_schedule_background,
     track_active_run as _bg_track_active_run,
+    track_active_run_if_idle as _bg_track_active_run_if_idle,
     unregister_resident_task as _bg_unregister_resident_task,
     untrack_active_run as _bg_untrack_active_run,
 )
@@ -61,6 +62,10 @@ def _schedule_background(coro, *, data_dir: str | None = None) -> concurrent.fut
 
 def _track_active_run(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> None:
     _bg_track_active_run(run_id, task)
+
+
+def _track_active_run_if_idle(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> bool:
+    return _bg_track_active_run_if_idle(run_id, task)
 
 
 def _untrack_active_run(run_id: str) -> None:
@@ -348,6 +353,9 @@ def resume_runs_for_task(task_id: str, *, include_approval_continuations: bool =
         if run.phase in TERMINAL_PHASES:
             resumed.append(run)
             continue
+        if _run_active(run.id):
+            resumed.append(run)
+            continue
         if run.phase in {RunPhase.AWAITING_APPROVAL, RunPhase.PAUSED} or (
             include_approval_continuations and _is_approval_continuation(run)
         ):
@@ -370,7 +378,10 @@ def _schedule_resume(run: Run) -> Run:
     _update_run(run, phase=RunPhase.RUNNING)
     run_event_bus.publish(run.id, "turn.started", {"reason": "resume_requested", "task_id": run.task_id})
     task = _schedule_background(_resume_engine_loop(run.id, router, state), data_dir=_run_data_dir(run))
-    _track_active_run(run.id, task)
+    # Atomically claim the slot; if a concurrent resume already owns an active
+    # loop for this run, cancel this duplicate before it can run side effects.
+    if not _track_active_run_if_idle(run.id, task):
+        task.cancel()
     return run
 
 
@@ -647,7 +658,10 @@ async def _bridge_task_messages(
     *,
     bus: AgentBus,
 ) -> None:
-    seen_message_ids: set[str] = set()
+    # Seed the dedupe set from events already persisted for this run so a
+    # resume (or bus rebind) does not re-publish the full agent_message history
+    # into the timeline. reconcile_task_runs already uses the same helper.
+    seen_message_ids: set[str] = _seen_task_message_ids(run_id)
     try:
         for raw in reversed(db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=1000)):
             message = _agent_message(raw)
@@ -872,7 +886,7 @@ def _update_run(run: Run, *, phase: RunPhase, task_id: str | None = None, error:
 
 
 def _sync_run_phase_from_task(run: Run) -> Run:
-    if not run.task_id or run.phase in TERMINAL_PHASES or run.phase == RunPhase.PAUSED:
+    if not run.task_id or run.phase in TERMINAL_PHASES:
         return run
     try:
         task = get_task(run.task_id)
@@ -881,6 +895,15 @@ def _sync_run_phase_from_task(run: Run) -> Run:
     phase = _phase_for_task(task)
     if phase == RunPhase.CANCELLED:
         phase = _phase_for_task_plan(task, _latest_plan_for_task(task.id))
+    if run.phase == RunPhase.PAUSED:
+        # A paused run is not auto-resumed for display, but it must still reflect
+        # a TERMINAL task outcome (completed/failed/cancelled/denied) reached via
+        # a divergent path (e.g. task cancel/resume while the run row is paused).
+        # Otherwise get_run/list_runs report a perpetual "paused" spinner.
+        if phase in TERMINAL_PHASES and phase != run.phase:
+            _sync_persisted_state_phase(run, phase, task.final_summary)
+            _update_run(run, phase=phase)
+        return run
     if _run_active(run.id) and run.phase == RunPhase.RUNNING and phase == RunPhase.PAUSED:
         return run
     if phase == RunPhase.RUNNING or phase == run.phase:

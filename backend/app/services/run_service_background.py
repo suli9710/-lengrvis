@@ -49,6 +49,22 @@ def track_active_run(run_id: str, task: asyncio.Future | concurrent.futures.Futu
         _ACTIVE_RUN_TASKS[run_id] = task
 
 
+def track_active_run_if_idle(run_id: str, task: asyncio.Future | concurrent.futures.Future) -> bool:
+    """Atomically claim the active-run slot for ``run_id``.
+
+    Returns False (without tracking) when another, still-running task already
+    owns the slot. This closes the resume race where two concurrent callers both
+    pass a separate ``run_active`` check and start duplicate engine loops for one
+    run, corrupting step state and the active-run tracking.
+    """
+    with _ACTIVE_RUN_TASKS_LOCK:
+        existing = _ACTIVE_RUN_TASKS.get(run_id)
+        if existing is not None and not existing.done():
+            return False
+        _ACTIVE_RUN_TASKS[run_id] = task
+        return True
+
+
 def untrack_active_run(run_id: str) -> None:
     with _ACTIVE_RUN_TASKS_LOCK:
         _ACTIVE_RUN_TASKS.pop(run_id, None)
