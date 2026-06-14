@@ -14,7 +14,9 @@ and the PowerShell helpers in `scripts/`. The PowerShell scripts only run on Win
 
 This environment is Linux; the repo's `.ps1`/`.cmd` launchers do not run here. Drive the underlying
 commands directly. The startup update script already creates a Python venv at `.venv` (from
-`requirements-dev.txt` + `ruff`) and runs `npm --prefix desktop ci`.
+`requirements-dev.txt` + `ruff`), installs the Playwright Chromium browser for both Python and desktop,
+and runs `npm --prefix desktop ci` + `npm --prefix mobile ci`. CI itself runs on `windows-latest`, so a
+clean local Linux run will show a small set of Windows-only failures (see backend/desktop notes below).
 
 ### Backend (required, the core product)
 - Run the full-featured app, not the thin guardian entrypoint:
@@ -41,7 +43,12 @@ commands directly. The startup update script already creates a Python venv at `.
 
 ### Desktop (UI)
 - Typecheck/tests/build all work: `npm --prefix desktop run typecheck`, `npm --prefix desktop test` (Vitest),
-  `npm --prefix desktop run build:renderer`, `npm --prefix desktop run smoke`.
+  `npm --prefix desktop run build:renderer`.
+- `npm --prefix desktop run smoke` runs 13 behavior smokes; on Linux 12 pass but `smoke:ipc` FAILS at the
+  `isTrustedRendererUrl(file://…)` assertion in `scripts/ipc-security-smoke.cjs`. This is a test-only Windows
+  path assumption (`file:///` + an absolute path yields `file:////…` on Linux, only `file:///C:/…` on Windows);
+  the product code uses `pathToFileURL` and is correct. CI runs on `windows-latest`, so this smoke is green there.
+  Run individual smokes to validate the rest, e.g. `npm --prefix desktop run smoke:desktop-token`.
 - The Vite dev server (`npm run dev` / `npm --prefix desktop run dev:web`) currently CRASHES during esbuild
   dependency pre-bundling: the pinned `esbuild` 0.28.x has an object-rest destructuring lowering regression, and
   only `build.target` (es2022) was patched in `vite.config.ts` — the dev dep optimizer still uses Vite's default
