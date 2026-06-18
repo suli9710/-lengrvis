@@ -17,6 +17,8 @@ const SESSION_KEY = "lengrvis.mobile.session";
 const TOKEN_KEY = "lengrvis.mobile.session.token";
 const LEGACY_ASYNC_STORAGE_KEYS = [TOKEN_KEY] as const;
 const SESSION_RECOVERY_ERROR_MESSAGE = "手机没有读到可用的本地会话。";
+const memoryAsyncStorage = new Map<string, string>();
+const memorySecureStore = new Map<string, string>();
 
 type StoredSessionMetadata = Partial<Omit<PairingSession, "token">> & {
   token?: string;
@@ -24,7 +26,7 @@ type StoredSessionMetadata = Partial<Omit<PairingSession, "token">> & {
 
 export async function loadSession(): Promise<PairingSession | null> {
   try {
-    const raw = await AsyncStorage.getItem(SESSION_KEY);
+    const raw = await asyncStorageGetItem(SESSION_KEY);
     if (!raw) {
       await clearStoredSessionStrict();
       return null;
@@ -49,7 +51,7 @@ export async function loadSession(): Promise<PairingSession | null> {
       token: "",
     };
 
-    let token = await SecureStore.getItemAsync(TOKEN_KEY);
+    let token = await secureStoreGetItem(TOKEN_KEY);
     const migratedLegacyEmbeddedToken = !token && Boolean(parsed.token);
     if (!token && parsed.token) {
       token = parsed.token;
@@ -100,8 +102,8 @@ export async function saveSession(session: PairingSession): Promise<void> {
     ...(baseUrlSecurity.backendSecurity ? { security: baseUrlSecurity.backendSecurity } : {}),
   };
   try {
-    await SecureStore.setItemAsync(TOKEN_KEY, safeSession.token);
-    await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(metadata));
+    await secureStoreSetItem(TOKEN_KEY, safeSession.token);
+    await asyncStorageSetItem(SESSION_KEY, JSON.stringify(metadata));
     await eraseLegacyAsyncStorageSecrets();
   } catch (error) {
     await clearSessionQuietly();
@@ -112,14 +114,89 @@ export async function saveSession(session: PairingSession): Promise<void> {
 export async function clearSession(): Promise<void> {
   clearRemoteInputGrantTokens();
   await Promise.all([
-    AsyncStorage.removeItem(SESSION_KEY),
-    SecureStore.deleteItemAsync(TOKEN_KEY),
-    ...LEGACY_ASYNC_STORAGE_KEYS.map((key) => AsyncStorage.removeItem(key)),
+    asyncStorageRemoveItem(SESSION_KEY),
+    secureStoreDeleteItem(TOKEN_KEY),
+    ...LEGACY_ASYNC_STORAGE_KEYS.map((key) => asyncStorageRemoveItem(key)),
   ]);
 }
 
 async function eraseLegacyAsyncStorageSecrets(): Promise<void> {
-  await Promise.all(LEGACY_ASYNC_STORAGE_KEYS.map((key) => AsyncStorage.removeItem(key)));
+  await Promise.all(LEGACY_ASYNC_STORAGE_KEYS.map((key) => asyncStorageRemoveItem(key)));
+}
+
+async function asyncStorageGetItem(key: string): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(key);
+  } catch (error) {
+    if (isStorageBackendUnavailable(error)) {
+      return memoryAsyncStorage.get(key) ?? null;
+    }
+    throw error;
+  }
+}
+
+async function asyncStorageSetItem(key: string, value: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(key, value);
+  } catch (error) {
+    if (isStorageBackendUnavailable(error)) {
+      memoryAsyncStorage.set(key, value);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function asyncStorageRemoveItem(key: string): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(key);
+  } catch (error) {
+    if (isStorageBackendUnavailable(error)) {
+      memoryAsyncStorage.delete(key);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function secureStoreGetItem(key: string): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch (error) {
+    if (isStorageBackendUnavailable(error)) {
+      return memorySecureStore.get(key) ?? null;
+    }
+    throw error;
+  }
+}
+
+async function secureStoreSetItem(key: string, value: string): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch (error) {
+    if (isStorageBackendUnavailable(error)) {
+      memorySecureStore.set(key, value);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function secureStoreDeleteItem(key: string): Promise<void> {
+  try {
+    await SecureStore.deleteItemAsync(key);
+  } catch (error) {
+    if (isStorageBackendUnavailable(error)) {
+      memorySecureStore.delete(key);
+      return;
+    }
+    throw error;
+  }
+}
+
+function isStorageBackendUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Native\s*module|NativeModule|NativeModuleError|RNCAsyncStorage|AsyncStorage.*null|Expo(?:nent)?SecureStore|SecureStore.*unavailable|Cannot find native module|TurboModuleRegistry.*not found|module.*not found|not available|not supported/i.test(message);
 }
 
 function restoredBaseUrlSecurity(parsed: StoredSessionMetadata) {

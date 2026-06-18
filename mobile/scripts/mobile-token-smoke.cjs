@@ -114,7 +114,7 @@ function assertPairScreenQrSourceAssertions() {
   assertSourceIncludes(
     source,
     'return value.replace(/[^a-z0-9]/gi, "").toLowerCase().slice(0, MAX_PAIRING_CODE_LENGTH);',
-    "Manual pairing code input must be normalized and capped to the 8-character backend contract",
+    "Manual pairing code input must be normalized and capped to the 16-character backend contract",
   );
   assert.doesNotMatch(
     source,
@@ -399,7 +399,7 @@ async function main() {
       assertJsonRequest(request, {
         method: "POST",
         path: "/api/pair/confirm",
-        body: { code: "abcd1234", device_name: "Phone" },
+        body: { code: "abcd1234ef567890", device_name: "Phone" },
       });
       assert.match(String(request.headers.accept), /application\/json/);
       assert.match(String(request.headers["content-type"]), /application\/json/);
@@ -440,19 +440,19 @@ async function main() {
   try {
     const parsedJsonPayload = pairingPayload.parsePairingPayload(
       JSON.stringify({
-        code: "ABCD-1234",
+        code: "ABCD-1234-EF56-7890",
         server: { scheme: "https", host: "lengrvis.local", port: 8443 },
         expires_at: "2026-06-01T00:05:00.000Z",
       }),
     );
     assert.deepEqual(plain(parsedJsonPayload), {
       baseUrl: "https://lengrvis.local:8443",
-      code: "abcd1234",
+      code: "abcd1234ef567890",
       expiresAt: "2026-06-01T00:05:00.000Z",
       source: "json",
     });
     const desktopGeneratedPayload = desktopPairingPayload.serializeMobilePairingPayload({
-      code: "ZX81-QP12",
+      code: "ZX81-QP12-LM34-RT56",
       expires_at: "2026-06-01T00:05:00.000Z",
       expires_in: 300,
       server: {
@@ -470,7 +470,7 @@ async function main() {
       type: "lengrvis.mobile_pairing",
       version: 1,
       base_url: "http://192.168.1.20:8000",
-      code: "ZX81-QP12",
+      code: "ZX81-QP12-LM34-RT56",
       expires_at: "2026-06-01T00:05:00.000Z",
       expires_in: 300,
       server: {
@@ -486,24 +486,24 @@ async function main() {
     });
     assert.deepEqual(plain(pairingPayload.parsePairingPayload(desktopGeneratedPayload)), {
       baseUrl: "http://192.168.1.20:8000",
-      code: "zx81qp12",
+      code: "zx81qp12lm34rt56",
       expiresAt: "2026-06-01T00:05:00.000Z",
       source: "json",
     });
     assert.deepEqual(
-      plain(pairingPayload.parsePairingPayload("lengrvis://pair?base_url=http%3A%2F%2F192.168.1.20%3A8000&code=def45678")),
+      plain(pairingPayload.parsePairingPayload("lengrvis://pair?base_url=http%3A%2F%2F192.168.1.20%3A8000&code=def45678abc90123")),
       {
         baseUrl: "http://192.168.1.20:8000",
-        code: "def45678",
+        code: "def45678abc90123",
         source: "url",
       },
     );
     const queryBearingQrPayload = pairingPayload.parsePairingPayload(
-      `lengrvis://pair?base_url=${encodeURIComponent("https://mobile-token:secret@example.test:8443/copied/path?token=secret-token#pair")}&code=ABCD1234&tls_enabled=true&websocket_scheme=wss`,
+      `lengrvis://pair?base_url=${encodeURIComponent("https://mobile-token:secret@example.test:8443/copied/path?token=secret-token#pair")}&code=ABCD1234EF567890&tls_enabled=true&websocket_scheme=wss`,
     );
     assert.deepEqual(plain(queryBearingQrPayload), {
       baseUrl: "https://example.test:8443",
-      code: "abcd1234",
+      code: "abcd1234ef567890",
       source: "url",
     });
     assert.doesNotMatch(queryBearingQrPayload.baseUrl, /mobile-token|secret-token|[?&]token=/);
@@ -511,7 +511,7 @@ async function main() {
     const metadataBlockedQrPayload = pairingPayload.parsePairingPayload(
       JSON.stringify({
         base_url: "https://mobile-token:secret@example.test:8443/copied/path?access_token=secret-token#pair",
-        code: "ABCD1234",
+        code: "ABCD1234EF567890",
         transport_security: { http_scheme: "https", websocket_scheme: "ws", tls_enabled: false },
       }),
     );
@@ -522,14 +522,14 @@ async function main() {
     assert.equal(metadataBlockedQrPayloadState.status, "requires_https_wss");
     assert.equal(metadataBlockedQrPayloadState.canPair, false);
 
-    assert.deepEqual(plain(pairingPayload.parsePairingPayload("电脑地址：http://192.168.1.20:8000 配对码：A1B2C3D4")), {
+    assert.deepEqual(plain(pairingPayload.parsePairingPayload("电脑地址：http://192.168.1.20:8000 配对码：A1B2C3D4E5F60718")), {
       baseUrl: "http://192.168.1.20:8000",
-      code: "a1b2c3d4",
+      code: "a1b2c3d4e5f60718",
       source: "text",
     });
-    assert.deepEqual(plain(pairingPayload.parsePairingPayload("\u0000电脑地址：https://example.test:8443/copied/path?token=secret-token\r\n配对码：A1B2C3D4\u007f")), {
+    assert.deepEqual(plain(pairingPayload.parsePairingPayload("\u0000电脑地址：https://example.test:8443/copied/path?token=secret-token\r\n配对码：A1B2C3D4E5F60718\u007f")), {
       baseUrl: "https://example.test:8443",
-      code: "a1b2c3d4",
+      code: "a1b2c3d4e5f60718",
       source: "text",
     });
     const httpsPayloadState = pairingPayload.classifyPairingPayloadSecurity({
@@ -583,7 +583,7 @@ async function main() {
     assert.equal(loopbackPayloadState.canPair, false);
 
     assert.throws(
-      () => pairingPayload.parsePairingPayload("配对码：abcd1234"),
+      () => pairingPayload.parsePairingPayload("配对码：abcd1234ef567890"),
       (error) => error.name === "PairingPayloadParseError" && error.code === "missing_address",
     );
     assert.throws(
@@ -674,11 +674,11 @@ async function main() {
     );
 
     await assert.rejects(
-      () => client.pairWithBackend("http://192.168.1.20:8000", "abcd1234", "Phone"),
+      () => client.pairWithBackend("http://192.168.1.20:8000", "abcd1234ef567890", "Phone"),
       assertInsecureLanError,
     );
     await assert.rejects(
-      () => client.pairWithBackend("http://192.168.1.20:8000", "abcd1234", "Phone", { allowInsecureLan: true }),
+      () => client.pairWithBackend("http://192.168.1.20:8000", "abcd1234ef567890", "Phone", { allowInsecureLan: true }),
       assertInsecureLanError,
     );
 
@@ -756,14 +756,14 @@ async function main() {
     assert.equal(unclearedOrphanStorage.secureMap.has("lengrvis.mobile.session.token"), true);
 
     expectedPairToken = "query-stripped-token";
-    const queryStrippedPaired = await client.pairWithBackend(`${server.origin}/copied/path?token=secret-token#pair`, "abcd1234", "Phone");
+    const queryStrippedPaired = await client.pairWithBackend(`${server.origin}/copied/path?token=secret-token#pair`, "abcd1234ef567890", "Phone");
     assert.equal(server.requests.length, 1, "query-bearing pasted addresses must still call only the pair-confirm endpoint");
     assert.equal(queryStrippedPaired.baseUrl, server.origin);
     assert.equal(queryStrippedPaired.token, "query-stripped-token");
     assert.doesNotMatch(queryStrippedPaired.baseUrl, /secret-token|[?&]token=/);
 
     expectedPairToken = "paired-token";
-    const paired = await client.pairWithBackend(`${server.origin}/`, "abcd1234", "Phone");
+    const paired = await client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone");
     assert.equal(server.requests.length, 2, "pairing must reach the local HTTP smoke service");
     assert.equal(paired.baseUrl, server.origin);
     assert.equal(paired.token, expectedPairToken);
@@ -824,7 +824,7 @@ async function main() {
     assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /legacy-token/);
 
     expectedPairToken = "stored-token";
-    const storedSession = await client.pairWithBackend(`${server.origin}/`, "abcd1234", "Phone");
+    const storedSession = await client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone");
     await migratedAuth.saveSession(storedSession);
     const storedMetadata = JSON.parse(migratedStorage.asyncMap.get("lengrvis.mobile.session"));
     assert.equal(storedMetadata.baseUrl, server.origin);
@@ -835,7 +835,7 @@ async function main() {
     expectedPairToken = "expired-pair-token";
     pairResponseOverrides = { expires_in: 0 };
     await assert.rejects(
-      () => client.pairWithBackend(`${server.origin}/`, "abcd1234", "Phone"),
+      () => client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone"),
       (error) => error.name === "AuthExpiredError",
     );
     assert.equal(server.requests.length, beforeExpiredPairRequests + 1);
@@ -843,7 +843,7 @@ async function main() {
     expectedPairToken = "invalid-pair-token";
     pairResponseOverrides = { token: "bad token" };
     await assert.rejects(
-      () => client.pairWithBackend(`${server.origin}/`, "abcd1234", "Phone"),
+      () => client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone"),
       (error) => error.name === "BackendHttpError" && error.code === "invalid_pairing_response",
     );
     assert.equal(server.requests.length, beforeExpiredPairRequests + 2);

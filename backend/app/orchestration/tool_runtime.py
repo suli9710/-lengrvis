@@ -1110,7 +1110,7 @@ class ToolRuntime:
         context: dict[str, Any],
         *,
         threaded: bool,
-        lock_keys: list[str] | tuple[str, ...],
+        lock_keys: list[str] | tuple[str, ...] = (),
     ) -> dict[str, Any]:
         current_state = capture_tool_resource_state(tool, args, context)
         if current_state:

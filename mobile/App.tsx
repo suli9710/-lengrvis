@@ -63,8 +63,11 @@ export default function App() {
         .catch(() => undefined);
     };
 
-    const lastApprovalId = getLastApprovalNotificationApprovalId();
-    if (lastApprovalId) openApprovalFromNotification(lastApprovalId);
+    void getLastApprovalNotificationApprovalId()
+      .then((lastApprovalId) => {
+        if (lastApprovalId && isActive) openApprovalFromNotification(lastApprovalId);
+      })
+      .catch(() => undefined);
 
     const subscription = addApprovalNotificationResponseListener(openApprovalFromNotification);
     return () => {

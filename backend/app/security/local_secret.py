@@ -15,6 +15,7 @@ import base64
 import logging
 import os
 import secrets
+import time
 from pathlib import Path
 
 LOCAL_SECRET_DPAPI_PREFIX = "dpapi:"
@@ -57,7 +58,15 @@ def _write_secret_file(path: Path, value: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(stored)
-        os.replace(tmp_path, path)
+        replace_attempts = 5 if os.name == "nt" else 1
+        for attempt in range(replace_attempts):
+            try:
+                os.replace(tmp_path, path)
+                break
+            except PermissionError:
+                if attempt == replace_attempts - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     except OSError:
         tmp_path.unlink(missing_ok=True)
         raise

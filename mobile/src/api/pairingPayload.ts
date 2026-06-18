@@ -6,7 +6,7 @@ import {
   type PairingSecurityMetadata,
 } from "./client";
 
-export const PAIRING_CODE_LENGTH = 8;
+export const PAIRING_CODE_LENGTH = 16;
 
 export type PairingPayloadSource = "json" | "url" | "text";
 
