@@ -2,21 +2,24 @@ from __future__ import annotations
 
 from urllib.parse import urlencode
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from tls_test_material import write_lan_tls_material
 
 from app.api import routes_settings
 from app.core import db
 from app.core.schemas import Run, RunEngine, RunPhase
-from app.main import app
 from app.guardian import create_guardian_app
+from app.main import app
 from app.security.desktop_api import (
     DESKTOP_API_TOKEN_FILE,
     DESKTOP_API_WS_PROTOCOL_PREFIX,
     desktop_api_token,
     signed_desktop_resource_query,
 )
+from app.security.local_secret import LOCAL_SECRET_DPAPI_PREFIX, dpapi_available
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
     REMOTE_VIEW_SCOPE,
@@ -26,9 +29,6 @@ from app.security.mobile_jwt import (
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import mobile_pairing_service
 from app.services.settings_service import update_settings
-from app.security.local_secret import LOCAL_SECRET_DPAPI_PREFIX, dpapi_available
-from tls_test_material import write_lan_tls_material
-
 
 DESKTOP_SECRET = "desktop-secret"
 
@@ -253,6 +253,15 @@ def test_remote_lan_client_with_desktop_token_can_reach_guardian_catch_all_webso
             "/ws/custom/full-backend",
             subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}desktop-secret"],
         ):
+            raise AssertionError("Remote LAN catch-all WebSocket should require WSS")
+    except WebSocketDisconnect as exc:
+        assert exc.code == 1008
+
+    try:
+        with client.websocket_connect(
+            "wss://testserver/ws/custom/full-backend",
+            subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}desktop-secret"],
+        ):
             pass
     except WebSocketDisconnect as exc:
         assert exc.code == 1011
@@ -316,6 +325,35 @@ def test_guardian_http_proxy_rejects_mobile_and_remote_namespaces(monkeypatch, t
     ):
         response = client.get(path)
         assert response.status_code in {401, 403, 404}
+
+
+def test_guardian_lan_desktop_proxy_requires_https_with_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    db.init_db()
+
+    import app.api.routes_guardian as routes_guardian
+
+    proxied: list[str] = []
+
+    async def fake_proxy(method, path, **kwargs):  # noqa: ANN001, ANN202, ANN003
+        proxied.append(f"{method} {path}")
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(routes_guardian.runtime, "proxy", fake_proxy)
+    app_under_test = create_guardian_app()
+    remote = TestClient(app_under_test, client=("192.168.1.22", 50100))
+    secure_remote = TestClient(app_under_test, client=("192.168.1.22", 50100), base_url="https://testserver")
+
+    assert remote.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": DESKTOP_SECRET}).status_code == 403
+    assert secure_remote.get("/api/tasks").status_code == 401
+    allowed = secure_remote.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": DESKTOP_SECRET})
+
+    assert allowed.status_code == 200
+    assert allowed.json() == {"ok": True}
+    assert proxied == ["GET /api/tasks"]
 
 
 def test_remote_lan_client_cannot_trigger_local_model_install_websocket(monkeypatch, tmp_path):
@@ -383,6 +421,7 @@ def test_loopback_desktop_websockets_require_subprotocol_token_in_production_con
 def test_browser_host_websocket_requires_desktop_authorization(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", DESKTOP_SECRET)
+    monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
     db.init_db()
     remote = TestClient(app, client=("192.168.1.22", 50100))
 
@@ -392,8 +431,25 @@ def test_browser_host_websocket_requires_desktop_authorization(monkeypatch, tmp_
     except WebSocketDisconnect as exc:
         assert exc.code == 1008
 
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with remote.websocket_connect(
+            "/api/ws/browser-host",
+            headers={"Sec-WebSocket-Protocol": f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"},
+        ):
+            raise AssertionError("Remote browser host websocket should require LAN desktop API opt-in")
+    assert exc_info.value.code == 1008
+
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with remote.websocket_connect(
+            "/api/ws/browser-host",
+            headers={"Sec-WebSocket-Protocol": f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"},
+        ):
+            raise AssertionError("Remote browser host websocket should require WSS")
+    assert exc_info.value.code == 1008
+
     with remote.websocket_connect(
-        "/api/ws/browser-host",
+        "wss://testserver/api/ws/browser-host",
         headers={"Sec-WebSocket-Protocol": f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"},
     ) as websocket:
         assert websocket.receive_json()["type"] == "connected"
@@ -418,12 +474,17 @@ def test_desktop_get_requires_desktop_token_when_enabled(monkeypatch, tmp_path):
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
     db.init_db()
     remote = TestClient(app, client=("192.168.1.22", 50100))
+    secure_remote = TestClient(app, client=("192.168.1.22", 50100), base_url="https://testserver")
     loopback = TestClient(app, client=("127.0.0.1", 50100))
 
     blocked = remote.get("/api/tasks")
-    allowed = remote.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"})
+    insecure_token = remote.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"})
+    secure_missing_token = secure_remote.get("/api/tasks")
+    allowed = secure_remote.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"})
 
     assert blocked.status_code == 401
+    assert insecure_token.status_code == 403
+    assert secure_missing_token.status_code == 401
     assert allowed.status_code == 200
     assert loopback.get("/api/tasks").status_code == 401
     assert loopback.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"}).status_code == 200
@@ -453,7 +514,8 @@ def test_remote_input_grant_creation_requires_desktop_token(monkeypatch, tmp_pat
     db.init_db()
     import app.services.mobile_pairing_service as pairing_module
 
-    monkeypatch.setattr(pairing_module, "get_effective_settings", lambda: type("Settings", (), {"remote_desktop_enabled": True})())
+    settings = type("Settings", (), {"remote_desktop_enabled": True})()
+    monkeypatch.setattr(pairing_module, "get_effective_settings", lambda: settings)
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_input_guard", device_name="Guarded Phone")
     client = TestClient(app, client=("127.0.0.1", 50100))
 

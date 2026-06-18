@@ -187,10 +187,16 @@ def test_pair_confirm_valid_code(monkeypatch, tmp_path):
     response = client.post("/api/pair/confirm", json={"code": code, "device_name": "Pixel"})
 
     assert response.status_code == 200
-    token = response.json()["token"]
+    payload = response.json()
+    assert payload["expires_in"] == mobile_pairing_service.TOKEN_TTL_SECONDS
+    assert payload["expires_in"] <= 60 * 60 * 24 * 7
+    token = payload["token"]
     claims = decode_mobile_token(token)
+    issued_at = datetime.fromtimestamp(float(claims["iat"]), timezone.utc)
+    expires_at = datetime.fromtimestamp(float(claims["exp"]), timezone.utc)
     assert claims["device_id"]
     assert claims["device_name"] == "Pixel"
+    assert expires_at - issued_at <= timedelta(seconds=mobile_pairing_service.TOKEN_TTL_SECONDS)
 
 
 def test_pair_confirm_expired_code(monkeypatch, tmp_path):

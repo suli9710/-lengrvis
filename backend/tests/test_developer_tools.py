@@ -217,6 +217,8 @@ def test_validate_test_command_allows_controlled_test_commands(command: str) -> 
     [
         "python script.py",
         "pytest --junitxml report.xml",
+        "pytest --override-ini=cache_dir=..\\outside-cache",
+        "pytest -ocache_dir=..\\outside-cache",
         "pytest --watch",
         "npm run build",
         "pytest tests > out.txt",

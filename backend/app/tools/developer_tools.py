@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import ast
 import fnmatch
-import time
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,6 @@ from app.orchestration.background_tasks import background_task_status, start_bac
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_catalog import tool_description, tool_search_hint
-
 
 READONLY_SHELL_COMMANDS = {
     "dir",
@@ -476,11 +475,26 @@ def _test_flag_error(lowered: list[str]) -> str:
         flag = token.split("=", 1)[0]
         if flag in PYTEST_WRITE_FLAGS:
             return f"pytest option {flag} writes files and is not allowed through dev.test_run."
+        if _pytest_override_writes(token):
+            return "pytest override writes files and is not allowed through dev.test_run."
         if token in {"-o", "--override-ini"} and index + 1 < len(lowered):
             value = lowered[index + 1]
-            if any(item in value for item in ("cache_dir=", "junit", "log_file")):
+            if _pytest_override_value_writes(value):
                 return "pytest override writes files and is not allowed through dev.test_run."
     return ""
+
+
+def _pytest_override_writes(token: str) -> bool:
+    for prefix in ("--override-ini=", "-o="):
+        if token.startswith(prefix):
+            return _pytest_override_value_writes(token[len(prefix) :])
+    if token.startswith("-o") and len(token) > 2:
+        return _pytest_override_value_writes(token[2:])
+    return False
+
+
+def _pytest_override_value_writes(value: str) -> bool:
+    return any(item in value for item in ("cache_dir=", "junit", "log_file"))
 
 
 def _strip_matching_quotes(token: str) -> str:

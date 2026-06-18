@@ -219,10 +219,10 @@ npm run qa:gate                  # 上述 + desktop 全量 smoke（14 项）
 npm run golden:gate              # golden tasks 报告（≥95% 通过率）
 ```
 
-主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket smoke、mobile task companion smoke 和 mobile remote-input grant smoke。
-这些 mobile smoke 都是本地行为桩/客户端契约证据，避免发布门禁漏掉移动任务监督和远程输入授权边界；它们不等同于真机 LAN/WSS 或证书信任路径验收。
+主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract 和 Android back navigation smokes。
+这些 mobile smoke 都是本地行为桩/客户端契约证据，避免发布门禁漏掉移动任务监督、远程输入授权、唤醒合同和返回导航边界；它们不等同于真机 LAN/WSS 或证书信任路径验收。
 
-**CI 与本地差异：** `.github/workflows/ci.yml` 在 push/PR 上跑 hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck 和 mobile smokes；**不包含** desktop Playwright smoke 与 `release:check`。完整发布前请本地跑 `npm run qa:gate`。每周 SCA 见 `.github/workflows/security-audit.yml`。
+**CI 与本地差异：** `.github/workflows/ci.yml` 在 push/PR 上跑 hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes 和 mobile smokes；**不包含** `release:check`、portable GUI smoke、clean-machine/真实设备人工验收。完整发布前请本地跑 `npm run release:check`，需要 GUI/portable 证据时另跑 `npm run smoke:portable-first-screen`。每周 SCA 见 `.github/workflows/security-audit.yml`。
 
 ### 最近一次全量验证（2026-06-11，本机 Windows）
 

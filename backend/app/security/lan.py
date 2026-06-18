@@ -6,7 +6,12 @@ from app.config import env_flag
 
 LAN_PUBLIC_HTTP_PATHS = {"/health", "/api/health"}
 MOBILE_TOKEN_HTTP_PATHS = {"/api/pair", "/api/pair/confirm"}
-MOBILE_SECURE_TRANSPORT_ERROR = "Remote mobile pairing and mobile APIs require HTTPS/WSS unless the client is on this computer."
+MOBILE_SECURE_TRANSPORT_ERROR = (
+    "Remote mobile pairing and mobile APIs require HTTPS/WSS unless the client is on this computer."
+)
+DESKTOP_SECURE_TRANSPORT_ERROR = (
+    "Remote desktop API access requires HTTPS/WSS unless the client is on this computer."
+)
 
 
 def is_loopback_host(host: str | None) -> bool:
@@ -28,6 +33,10 @@ def is_loopback_host(host: str | None) -> bool:
 
 def allow_lan_desktop_api() -> bool:
     return env_flag("LENGRVIS_ALLOW_LAN_DESKTOP_API")
+
+
+def allow_remote_lan_desktop_api(client_host: str | None, scheme: str | None) -> bool:
+    return allow_lan_desktop_api() and not is_loopback_host(client_host) and is_secure_transport_scheme(scheme)
 
 
 def is_mobile_lan_http_path(path: str) -> bool:

@@ -17,13 +17,14 @@ TOKEN_SCOPE = "mobile:approval"
 REMOTE_VIEW_SCOPE = "remote:view"
 REMOTE_INPUT_SCOPE = "remote:input"
 MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token."
+MOBILE_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7
 
 
 def issue_mobile_token(
     *,
     device_id: str,
     device_name: str,
-    expires_in_seconds: int = 60 * 60 * 24 * 30,
+    expires_in_seconds: int = MOBILE_TOKEN_TTL_SECONDS,
     scope: str | Iterable[str] = TOKEN_SCOPE,
     source: str = "",
     grant_id: str = "",

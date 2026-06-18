@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 import time
+from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
-from typing import Mapping
 
 from fastapi import Request, WebSocket, WebSocketException, status
 
 from app.config import env_flag, get_base_settings, get_env
-from app.security.lan import is_loopback_host
+from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_secure_transport_scheme
 from app.security.local_secret import load_or_create_local_secret
-
 
 DESKTOP_API_TOKEN_HEADER = "x-lengrvis-desktop-token"
 DESKTOP_API_TOKEN_FILE = "desktop_api.secret"
@@ -66,6 +64,8 @@ def has_valid_desktop_websocket_token(websocket: WebSocket) -> bool:
 def is_authorized_desktop_websocket(websocket: WebSocket) -> bool:
     client_host = websocket.client.host if websocket.client else ""
     if not is_loopback_host(client_host):
+        if not allow_lan_desktop_api() or not is_secure_transport_scheme(websocket.url.scheme):
+            return False
         return has_valid_desktop_websocket_token(websocket)
     if _desktop_api_token_optional():
         return True
@@ -136,7 +136,7 @@ def _desktop_resource_signature(resource_path: str, payload: str, expires_at: st
     secret = desktop_api_token()
     if not secret:
         return ""
-    body = f"{_normalize_http_method(method)}\n{resource_path}\n{payload}\n{expires_at}".encode("utf-8")
+    body = f"{_normalize_http_method(method)}\n{resource_path}\n{payload}\n{expires_at}".encode()
     return hmac.new(secret.encode("utf-8"), body, sha256).hexdigest()
 
 

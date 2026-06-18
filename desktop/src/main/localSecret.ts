@@ -10,16 +10,16 @@ export function protectLocalSecret(value: string): string {
   if (!dpapiAvailable()) {
     return value;
   }
-  const plainB64 = Buffer.from(value, "utf-8").toString("base64");
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `[Reflection.Assembly]::LoadWithPartialName('System.Security') | Out-Null`,
-    `$plain = [Convert]::FromBase64String('${plainB64}')`,
+    "$plain = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())",
     `$protected = [Security.Cryptography.ProtectedData]::Protect($plain, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)`,
     "[Convert]::ToBase64String($protected)"
   ].join("; ");
   const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf-8"
+    encoding: "utf-8",
+    input: Buffer.from(value, "utf-8").toString("base64")
   });
   if (result.status !== 0) {
     throw new Error(result.stderr?.trim() || "Failed to encrypt local secret with Windows DPAPI.");
@@ -42,12 +42,13 @@ export function unprotectLocalSecret(stored: string): string {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `[Reflection.Assembly]::LoadWithPartialName('System.Security') | Out-Null`,
-    `$protected = [Convert]::FromBase64String('${encryptedB64}')`,
+    "$protected = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())",
     `$plain = [Security.Cryptography.ProtectedData]::Unprotect($protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)`,
     "[Text.Encoding]::UTF8.GetString($plain)"
   ].join("; ");
   const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf-8"
+    encoding: "utf-8",
+    input: encryptedB64
   });
   if (result.status !== 0) {
     throw new Error(result.stderr?.trim() || "Failed to decrypt local secret with Windows DPAPI.");

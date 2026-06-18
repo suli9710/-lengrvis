@@ -24,13 +24,13 @@ from app.api import (
     routes_mcp,
     routes_memories,
     routes_metrics,
-    routes_schedules,
     routes_mobile,
     routes_pair,
     routes_perception,
     routes_remote,
     routes_runs,
     routes_runtime,
+    routes_schedules,
     routes_settings,
     routes_skills,
     routes_system,
@@ -42,25 +42,27 @@ from app.core import db
 from app.core.audit import record
 from app.core.errors import AppError, unified_error_body
 from app.core.session_context import get_session_context_store
+from app.indexer.file_watcher import get_file_watcher
 from app.llm.local_provider import health_snapshot
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
+from app.orchestration.agent_bus import AgentBus
+from app.orchestration.dispatcher import EventDispatcher
+from app.perception.environment_stream import get_environment_stream
+from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.lan import (
+    DESKTOP_SECURE_TRANSPORT_ERROR,
     LAN_PUBLIC_HTTP_PATHS,
     MOBILE_SECURE_TRANSPORT_ERROR,
     allow_lan_desktop_api,
+    allow_remote_lan_desktop_api,
     is_loopback_host,
     is_mobile_token_http_path,
     is_secure_mobile_transport,
 )
-from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token
 from app.services.scheduler_service import get_scheduler
 from app.tools.registry import register_all_tools
-from app.indexer.file_watcher import get_file_watcher
-from app.orchestration.agent_bus import AgentBus
-from app.orchestration.dispatcher import EventDispatcher
-from app.perception.environment_stream import get_environment_stream
 
 
 def _dev_api_enabled(settings: AppSettings) -> bool:
@@ -168,8 +170,12 @@ def create_app() -> FastAPI:
             if is_secure_mobile_transport(client_host, request.url.scheme):
                 return await call_next(request)
             return JSONResponse(status_code=403, content=unified_error_body(MOBILE_SECURE_TRANSPORT_ERROR))
-        if path in LAN_PUBLIC_HTTP_PATHS or allow_lan_desktop_api():
+        if path in LAN_PUBLIC_HTTP_PATHS:
             return await call_next(request)
+        if allow_lan_desktop_api():
+            if allow_remote_lan_desktop_api(client_host, request.url.scheme):
+                return await call_next(request)
+            return JSONResponse(status_code=403, content=unified_error_body(DESKTOP_SECURE_TRANSPORT_ERROR))
         return JSONResponse(
             status_code=403,
             content=unified_error_body(

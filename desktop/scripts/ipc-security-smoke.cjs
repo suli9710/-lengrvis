@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const originalLoad = Module._load;
 const ipcHandlers = new Map();
+let mockIsPackaged = false;
 let dialogOpenResult = { canceled: false, filePaths: ["C:\\Users\\Suli\\Documents\\picked-report.pdf"] };
 let messageBoxCalls = [];
 let messageBoxResponses = [];
@@ -43,6 +44,9 @@ Module._load = function patchedLoad(request, parent, isMain) {
 
     return {
       app: {
+        get isPackaged() {
+          return mockIsPackaged;
+        },
         getPath: (name) => {
           if (name === "userData") return path.resolve(__dirname, "../.tmp/ipc-user-data");
           return path.resolve(__dirname, "../.tmp");
@@ -103,6 +107,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 }
 
 (async () => {
+  process.env.VITE_DEV_SERVER_URL = "http://127.0.0.1:5173";
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/index.html"), true);
   assert.equal(isTrustedRendererUrl("http://localhost:5173/index.html"), true);
   assert.equal(isTrustedRendererUrl("app://local/index.html"), true);
@@ -111,6 +116,12 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 
   const rendererRoot = path.resolve(__dirname, "../dist/renderer/index.html");
   assert.equal(isTrustedRendererUrl(new URL(`file:///${rendererRoot.replace(/\\/g, "/")}`).toString()), true);
+  mockIsPackaged = true;
+  assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/index.html"), false);
+  assert.equal(isTrustedRendererUrl("http://localhost:5173/index.html"), false);
+  assert.equal(isTrustedRendererUrl("app://local/index.html"), true);
+  assert.equal(isTrustedRendererUrl(new URL(`file:///${rendererRoot.replace(/\\/g, "/")}`).toString()), true);
+  mockIsPackaged = false;
   assert.doesNotThrow(() => assertTrustedRenderer(eventFor("http://127.0.0.1:5173/index.html")));
   assert.throws(
     () => assertTrustedRenderer(eventFor("http://127.0.0.1:5173/index.html", false)),

@@ -1727,9 +1727,13 @@ export function isTrustedRendererUrl(url: string): boolean {
     if (parsed.protocol === "app:" && parsed.hostname === "local") {
       return true;
     }
-    const trustedOrigins = new Set(["http://127.0.0.1:5173", "http://localhost:5173"]);
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-    if (devServerUrl) {
+    const trustedOrigins = new Set<string>();
+    if (!app.isPackaged) {
+      trustedOrigins.add("http://127.0.0.1:5173");
+      trustedOrigins.add("http://localhost:5173");
+    }
+    const devServerUrl = app.isPackaged ? "" : process.env.VITE_DEV_SERVER_URL;
+    if (!app.isPackaged && devServerUrl) {
       trustedOrigins.add(new URL(devServerUrl).origin);
     }
     return trustedOrigins.has(parsed.origin);

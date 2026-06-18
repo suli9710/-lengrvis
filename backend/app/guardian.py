@@ -10,15 +10,17 @@ from app.api.routes_guardian import proxy_router, router, ws_router
 from app.api.routes_pair import router as pair_router
 from app.core import db
 from app.core.errors import AppError
+from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.lan import (
+    DESKTOP_SECURE_TRANSPORT_ERROR,
     LAN_PUBLIC_HTTP_PATHS,
     MOBILE_SECURE_TRANSPORT_ERROR,
     allow_lan_desktop_api,
+    allow_remote_lan_desktop_api,
     is_loopback_host,
     is_mobile_token_http_path,
     is_secure_mobile_transport,
 )
-from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE, TOKEN_SCOPE, decode_mobile_token
 from app.services.guardian_runtime import runtime
 from app.services.guardian_scheduler import get_guardian_scheduler
@@ -57,8 +59,12 @@ def create_guardian_app() -> FastAPI:
             if is_secure_mobile_transport(client_host, request.url.scheme):
                 return await call_next(request)
             return JSONResponse(status_code=403, content={"detail": MOBILE_SECURE_TRANSPORT_ERROR})
-        if path in LAN_PUBLIC_HTTP_PATHS or allow_lan_desktop_api():
+        if path in LAN_PUBLIC_HTTP_PATHS:
             return await call_next(request)
+        if allow_lan_desktop_api():
+            if allow_remote_lan_desktop_api(client_host, request.url.scheme):
+                return await call_next(request)
+            return JSONResponse(status_code=403, content={"detail": DESKTOP_SECURE_TRANSPORT_ERROR})
         return JSONResponse(
             status_code=403,
             content={

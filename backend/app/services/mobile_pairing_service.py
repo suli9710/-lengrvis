@@ -21,6 +21,7 @@ from app.orchestration.execution_stage import ExecutionStage
 from app.policy.approval_binding import redacted_preview, remote_input_binding_ref
 from app.policy.redaction import contains_sensitive_key, redact_public_text, redact_value
 from app.security.mobile_jwt import (
+    MOBILE_TOKEN_TTL_SECONDS,
     REMOTE_INPUT_SCOPE,
     REMOTE_VIEW_SCOPE,
     TOKEN_SCOPE,
@@ -31,7 +32,7 @@ from app.security.mobile_jwt import (
 )
 
 PAIR_CODE_TTL_SECONDS = 300
-TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
+TOKEN_TTL_SECONDS = MOBILE_TOKEN_TTL_SECONDS
 REMOTE_INPUT_GRANT_TTL_SECONDS = 5 * 60
 # 64-bit pairing-code entropy (16 hex chars). The code lives for PAIR_CODE_TTL_SECONDS
 # and is single-use, so 2**64 makes online brute force over the LAN infeasible even

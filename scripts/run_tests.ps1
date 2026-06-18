@@ -106,4 +106,10 @@ if (Test-Path "mobile\package.json") {
 
     npm --prefix mobile run smoke:remote-input-grant
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:wakeup-contract
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix mobile run smoke:android-back
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }

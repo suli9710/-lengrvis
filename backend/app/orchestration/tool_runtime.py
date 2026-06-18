@@ -91,6 +91,9 @@ class RuntimeExecutionResult:
 
 
 _SHARED_PATH_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
+_SHARED_PENDING_TOOL_COMPLETIONS: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Future[Any]]] = (
+    WeakKeyDictionary()
+)
 AUTHORIZED_PATH_ARG_KEYS = {
     "path",
     "paths",
@@ -1049,14 +1052,19 @@ class ToolRuntime:
         self._ensure_authorized_paths(tool, args, context)
         lock_keys = self._write_lock_keys(tool, args)
         if not lock_keys:
-            if threaded:
-                output = await self._execute_tool_body(tool, args, context, threaded=True)
-            else:
-                output = await self._execute_tool_body(tool, args, context, threaded=False)
+            output = await self._execute_tool_body(tool, args, context, threaded=threaded, lock_keys=())
             return self._normalize_tool_output(tool, args, context, output)
+        await self._await_pending_tool_completions(lock_keys, tool=tool)
         path_locks = self._locks_for_current_loop()
         locks = [path_locks.setdefault(key, asyncio.Lock()) for key in lock_keys]
-        output = await self._execute_tool_under_locks(tool, args, context, locks, threaded=threaded)
+        output = await self._execute_tool_under_locks(
+            tool,
+            args,
+            context,
+            locks,
+            lock_keys=lock_keys,
+            threaded=threaded,
+        )
         return self._normalize_tool_output(tool, args, context, output)
 
     def _normalize_tool_output(
@@ -1079,12 +1087,21 @@ class ToolRuntime:
         context: dict[str, Any],
         locks: list[asyncio.Lock],
         *,
+        lock_keys: list[str],
         threaded: bool = False,
     ) -> dict[str, Any]:
         if not locks:
-            return await self._execute_tool_body(tool, args, context, threaded=threaded)
+            await self._await_pending_tool_completions(lock_keys, tool=tool)
+            return await self._execute_tool_body(tool, args, context, threaded=threaded, lock_keys=lock_keys)
         async with locks[0]:
-            return await self._execute_tool_under_locks(tool, args, context, locks[1:], threaded=threaded)
+            return await self._execute_tool_under_locks(
+                tool,
+                args,
+                context,
+                locks[1:],
+                lock_keys=lock_keys,
+                threaded=threaded,
+            )
 
     async def _execute_tool_body(
         self,
@@ -1093,6 +1110,7 @@ class ToolRuntime:
         context: dict[str, Any],
         *,
         threaded: bool,
+        lock_keys: list[str] | tuple[str, ...],
     ) -> dict[str, Any]:
         current_state = capture_tool_resource_state(tool, args, context)
         if current_state:
@@ -1108,13 +1126,71 @@ class ToolRuntime:
         # subprocess, HTTP). Always run them off the event loop thread so a
         # slow tool cannot freeze every concurrent request and WebSocket.
         timeout = self._tool_execution_timeout(context)
+        worker = asyncio.create_task(
+            asyncio.to_thread(tool.execute, args, context),
+            name=f"tool-{tool.name}",
+        )
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(tool.execute, args, context),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
+            return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
+        except TimeoutError:
+            self._remember_pending_tool_completion(lock_keys, worker, tool=tool, reason="timeout")
             return {"error": f"{tool.name} timed out after {timeout:.0f}s"}
+        except asyncio.CancelledError:
+            self._remember_pending_tool_completion(lock_keys, worker, tool=tool, reason="cancelled")
+            raise
+
+    async def _await_pending_tool_completions(
+        self,
+        lock_keys: list[str] | tuple[str, ...],
+        *,
+        tool: ToolDefinition,
+    ) -> None:
+        while True:
+            pending = self._pending_tool_completions_for_current_loop()
+            waits = {
+                future
+                for key in lock_keys
+                if (future := pending.get(key)) is not None and not future.done()
+            }
+            if not waits:
+                return
+            record(
+                "tool.waiting_for_pending_completion",
+                "ToolRuntime",
+                {"tool": tool.name, "lock_keys": lock_keys, "pending": len(waits)},
+            )
+            await asyncio.gather(*(asyncio.shield(future) for future in waits), return_exceptions=True)
+
+    def _remember_pending_tool_completion(
+        self,
+        lock_keys: list[str] | tuple[str, ...],
+        worker: asyncio.Future[Any],
+        *,
+        tool: ToolDefinition,
+        reason: str,
+    ) -> None:
+        if not lock_keys or worker.done():
+            return
+        pending = self._pending_tool_completions_for_current_loop()
+        keys = tuple(lock_keys)
+        for key in keys:
+            pending[key] = worker
+        record(
+            "tool.pending_completion_registered",
+            "ToolRuntime",
+            {"tool": tool.name, "reason": reason, "lock_keys": list(keys)},
+        )
+
+        def release_completion(done: asyncio.Future[Any]) -> None:
+            try:
+                done.result()
+            except BaseException as exc:  # noqa: BLE001
+                logger.debug("timed-out tool %s finished with %s", tool.name, type(exc).__name__, exc_info=True)
+            for key in keys:
+                if pending.get(key) is done:
+                    pending.pop(key, None)
+
+        worker.add_done_callback(release_completion)
 
     def _tool_execution_timeout(self, context: dict[str, Any]) -> float:
         settings = context.get("settings")
@@ -1142,6 +1218,8 @@ class ToolRuntime:
             parent = str(Path(path).parent)
             if parent and parent != path:
                 keys.add(parent)
+        if not keys and self._is_write_tool(tool):
+            keys.add(f"tool:{tool.name.casefold()}")
         return sorted(keys)
 
     def _is_write_tool(self, tool: ToolDefinition) -> bool:
@@ -1193,3 +1271,11 @@ class ToolRuntime:
             locks = {}
             _SHARED_PATH_LOCKS[loop] = locks
         return locks
+
+    def _pending_tool_completions_for_current_loop(self) -> dict[str, asyncio.Future[Any]]:
+        loop = asyncio.get_running_loop()
+        pending = _SHARED_PENDING_TOOL_COMPLETIONS.get(loop)
+        if pending is None:
+            pending = {}
+            _SHARED_PENDING_TOOL_COMPLETIONS[loop] = pending
+        return pending
