@@ -47,6 +47,18 @@ Golden-task results are machine self-verified regression evidence only; they are
 
 Use the top-level npm evidence helpers below as the newcomer-friendly entrypoints. They wrap the PowerShell helpers and only produce evidence/template/preflight artifacts; they are not clean-machine passes, real-device passes, public-safe/signoff, RC signoff, release signoff, or completed task-result signoff. The raw PowerShell equivalents are listed for CI logs, parameterized handoffs, and reviewers who need to trace the exact helper script.
 
+CI also writes the single current release evidence summary at `docs/release/current-release-evidence.md` in the final `release-evidence` job and uploads it as the `current-release-evidence` artifact. That file records the commit SHA, UTC date, executed commands, runner environment, all CI gate results, failed items, waivers, manual acceptance items, owner signature field, and artifact links. Treat it as the current evidence index for the CI run; it is still not release sign-off, not RC sign-off, and not a pass until the manual acceptance items, waivers/residual risks, and release-owner signature are complete.
+
+```powershell
+npm run evidence:current-release
+```
+
+Raw PowerShell equivalent:
+
+```powershell
+.\scripts\generate_current_release_evidence.ps1
+```
+
 When release-bound changes touch mobile pairing, LAN transport, remote WSS, TLS certificates, QR payload generation, or docs that claim Android/WSS readiness, also run the no-phone prerequisite preflight:
 
 ```powershell
@@ -343,6 +355,7 @@ Preflight gate:
 - mobile remote-input grant smoke:
 - desktop smoke:
 - git diff --check:
+- current release evidence (`docs/release/current-release-evidence.md`):
 - dependency lock verification:
 - release evidence packet summary:
 - release evidence packet RC handoff requirements (`manual_rc_handoff_required` is not sign-off):

@@ -37,6 +37,22 @@ def _release_evidence_packet_text(project_root: Path) -> str:
     return (project_root / "scripts" / "collect_release_evidence_packet.ps1").read_text(encoding="utf-8")
 
 
+def _current_release_evidence_script_text(project_root: Path) -> str:
+    return (
+        project_root / "scripts" / "generate_current_release_evidence.ps1"
+    ).read_text(encoding="utf-8")
+
+
+def _current_release_evidence_doc_text(project_root: Path) -> str:
+    return (
+        project_root / "docs" / "release" / "current-release-evidence.md"
+    ).read_text(encoding="utf-8")
+
+
+def _ci_workflow_text(project_root: Path) -> str:
+    return (project_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+
 def _diagnostics_external_review_packet_text(project_root: Path) -> str:
     return (
         project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"
@@ -614,6 +630,7 @@ def test_root_evidence_scripts_are_discoverable_and_non_signoff(project_root: Pa
     assert isinstance(scripts, dict)
 
     expected_helpers = {
+        "evidence:current-release": "generate_current_release_evidence.ps1",
         "evidence:release": "collect_release_evidence_packet.ps1",
         "evidence:rc-handoff": "collect_rc_handoff_template.ps1",
         "evidence:result-quality-review": "collect_result_quality_review_packet.ps1",
@@ -637,6 +654,66 @@ def test_root_evidence_scripts_are_discoverable_and_non_signoff(project_root: Pa
         assert "public_safe=true" not in command
 
 
+def test_current_release_evidence_is_single_ci_generated_summary(project_root: Path) -> None:
+    package_json = _package_json(project_root)
+    ci = _ci_workflow_text(project_root)
+    script = _current_release_evidence_script_text(project_root)
+    evidence = _current_release_evidence_doc_text(project_root)
+    release_gate = _release_gate_text(project_root)
+
+    scripts = package_json["scripts"]
+    assert scripts["evidence:current-release"] == (
+        "powershell -ExecutionPolicy Bypass -File ./scripts/generate_current_release_evidence.ps1"
+    )
+
+    assert "release-evidence:" in ci
+    assert "needs: [hygiene, backend, desktop, mobile]" in ci
+    assert "if: always()" in ci
+    assert "RELEASE_EVIDENCE_NEEDS_JSON: ${{ toJson(needs) }}" in ci
+    assert "npm run evidence:current-release" in ci
+    assert "name: current-release-evidence" in ci
+    assert "path: docs/release/current-release-evidence.md" in ci
+
+    for marker in (
+        'docs\\release\\current-release-evidence.md',
+        "Commit SHA:",
+        "Date (UTC):",
+        "## Machine Environment",
+        "## Execution Commands",
+        "## All Test Results",
+        "Failed Items",
+        "Exemptions",
+        "Manual Acceptance Items",
+        "Artifact Links",
+        "## Owner Signature",
+        "RELEASE_EVIDENCE_WAIVERS",
+        "RELEASE_EVIDENCE_MANUAL_ACCEPTANCE",
+        "RELEASE_OWNER_SIGNATURE",
+        "PENDING_RELEASE_OWNER_SIGNATURE",
+    ):
+        assert marker in script
+
+    for marker in (
+        "# Current Release Evidence",
+        "Commit SHA:",
+        "Date (UTC):",
+        "## Machine Environment",
+        "## Execution Commands",
+        "## All Test Results",
+        "## Failed Items",
+        "## Exemptions",
+        "## Manual Acceptance Items",
+        "## Artifact Links",
+        "## Owner Signature",
+    ):
+        assert marker in evidence
+
+    assert "CI also writes the single current release evidence summary" in release_gate
+    assert "`docs/release/current-release-evidence.md`" in release_gate
+    assert r".\scripts\generate_current_release_evidence.ps1" in release_gate
+    assert "it is still not release sign-off, not RC sign-off, and not a pass" in release_gate
+
+
 def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
     project_root: Path,
 ) -> None:
@@ -644,6 +721,7 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
     release_gate = _release_gate_text(project_root)
 
     aliases = (
+        "npm run evidence:current-release",
         "npm run evidence:release",
         "npm run evidence:rc-handoff",
         "npm run evidence:result-quality-review",
@@ -656,6 +734,7 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
         assert alias in release_gate
 
     raw_helpers = (
+        r".\scripts\generate_current_release_evidence.ps1",
         r".\scripts\collect_release_evidence_packet.ps1",
         r".\scripts\collect_rc_handoff_template.ps1",
         r".\scripts\collect_result_quality_review_packet.ps1",
@@ -1029,20 +1108,26 @@ def test_mobile_remote_release_docs_keep_counts_command_bound(project_root: Path
         assert "52 passed" not in text, doc_path
         assert "123 passed" not in text, doc_path
         assert "131 passed" not in text, doc_path
-        assert "132 passed" in text, doc_path
+        if doc_path == "README.md":
+            assert "132 passed" not in text, doc_path
+            assert "README 不再维护手写的“最近一次测试结果”" in text
+            assert "docs/release/current-release-evidence.md" in text
+        else:
+            assert "132 passed" in text, doc_path
         for phrase in stale_scheduler_count_phrases:
             assert phrase not in text, doc_path
         if "`9 passed`" in text:
             assert any(warning in text for warning in unbound_count_warnings), doc_path
 
     local_model_docs = {
-        "README.md": docs["README.md"],
         "PRODUCTIZATION_ISSUES.md": docs["PRODUCTIZATION_ISSUES.md"],
         "docs/LENGRVIS_PARITY.md": docs["docs/LENGRVIS_PARITY.md"],
         "docs/qa/release-gate.md": docs["docs/qa/release-gate.md"],
         "docs/qa/e2e-acceptance-matrix.md": docs["docs/qa/e2e-acceptance-matrix.md"],
         "docs/qa/agentic-product-evals.md": docs["docs/qa/agentic-product-evals.md"],
     }
+    assert "53 passed" not in docs["README.md"]
+    assert "Ollama 后端测试结果以 current release evidence" in docs["README.md"]
     for doc_path, text in local_model_docs.items():
         assert "53 passed" in text, doc_path
 
@@ -1051,6 +1136,7 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
     package = _package_json(project_root)
     scripts = package["scripts"]
     expected_aliases = {
+        "evidence:current-release",
         "evidence:release",
         "evidence:release-packet",
         "evidence:rc-handoff",

@@ -20,6 +20,7 @@
     "release:gate": "npm run release:check",
     "evidence:release": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_release_evidence_packet.ps1",
     "evidence:release-packet": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_release_evidence_packet.ps1",
+    "evidence:current-release": "powershell -ExecutionPolicy Bypass -File ./scripts/generate_current_release_evidence.ps1",
     "evidence:rc-handoff": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_rc_handoff_template.ps1",
     "evidence:rc-handoff-template": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_rc_handoff_template.ps1",
     "evidence:result-quality-review": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_result_quality_review_packet.ps1",

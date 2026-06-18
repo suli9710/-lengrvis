@@ -15,7 +15,7 @@ Lengrvis 是一款 Windows 优先的本地 OS Agent（电脑助手）。用户�
 
 | 平台 | 状态 | 当前交付 | 已知限制 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包已有 portable 首屏 smoke：packaged renderer 已观察到 `/api/system/diagnostics`，NL 命令 dock 已观察到 `/api/runs` 和后端只读系统诊断任务证据；这不是任务结果完成签收，仍需 clean-machine、真实设备和候选版本人工验收。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包 portable 首屏、命令 dock 和后端只读任务证据以 CI/current release evidence 与 release gate handoff 为准；这不是任务结果完成签收，仍需 clean-machine、真实设备和候选版本人工验收。 |
 | Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 移动审批和远程 WS 脱敏已有后端目标证据；真机 LAN/WSS、证书信任路径和完整应用商店分发未完成。 |
 | macOS 桌面 | Preview | macOS 后端构建脚本与 DMG 脚本存在 | 不作为 0-90 天主线，需在 macOS 主机验证。 |
 | iOS Companion | Planned | 暂不交付 | 等 Android companion 闭环稳定后再排期。 |
@@ -222,49 +222,19 @@ npm run golden:gate              # golden tasks 报告（≥95% 通过率）
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract 和 Android back navigation smokes。
 这些 mobile smoke 都是本地行为桩/客户端契约证据，避免发布门禁漏掉移动任务监督、远程输入授权、唤醒合同和返回导航边界；它们不等同于真机 LAN/WSS 或证书信任路径验收。
 
-**CI 与本地差异：** `.github/workflows/ci.yml` 在 push/PR 上跑 hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes 和 mobile smokes；**不包含** `release:check`、portable GUI smoke、clean-machine/真实设备人工验收。完整发布前请本地跑 `npm run release:check`，需要 GUI/portable 证据时另跑 `npm run smoke:portable-first-screen`。每周 SCA 见 `.github/workflows/security-audit.yml`。
+**CI 与本地差异：** `.github/workflows/ci.yml` 在 push/PR 上跑 hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes 和 mobile smokes；末尾的 `release-evidence` job 会自动生成并上传唯一当前证据文件 `docs/release/current-release-evidence.md`，汇总 commit、日期、命令、机器环境、测试结果、失败项、豁免项、手工验收项、负责人签名和 artifact 链接。CI **不包含** `release:check`、portable GUI smoke、clean-machine/真实设备人工验收。完整发布前请本地跑 `npm run release:check`，需要 GUI/portable 证据时另跑 `npm run smoke:portable-first-screen`。每周 SCA 见 `.github/workflows/security-audit.yml`。
 
-### 最近一次全量验证（2026-06-11，本机 Windows）
+### 测试结果来源
 
-| 门禁 | 结果 |
-| --- | --- |
-| `npm run hygiene` + `deps:verify` | 通过 |
-| `npm --prefix desktop run typecheck` | 通过 |
-| `npm --prefix mobile run typecheck` + 3 smokes | 通过 |
-| `npm run golden:gate` | **35/35（100%）** |
-| `python -m pytest backend/tests -q --maxfail=1` | **137 passed 后 1 failed**（见下） |
-| `npm --prefix desktop run smoke` | **12/13 通过**（`browser-activity` 超时） |
+README 不再维护手写的“最近一次测试结果”、pass 数、失败用例名或本轮目标结果。当前自动化结果的唯一来源是 CI 末尾 `release-evidence` job 生成并上传的 `current-release-evidence` artifact；仓库内同结构文件是 `docs/release/current-release-evidence.md`。
 
-已知失败（修复中/需跟进）：
-
-- `backend/tests/test_browser_writes.py::test_browser_act_is_classified_by_nested_action_kind` — nested `browser.act` observe 动作的风险分级与 PolicyEngine 预期不一致。
-- `desktop/scripts/browser-activity-smoke.cjs` — 等待 `Task Workspace` 可见超时（导航/时序，非 CSS 回归）。
-
-此前完整 qa:gate 记录（2026-06-10）供对照：
-
-```text
-backend: 1569 passed, 1 skipped
-desktop typecheck passed
-mobile typecheck + smokes passed
-desktop smoke passed（全 14 项）
-```
-
-诊断和产品化边界的针对性证据：
+本地或候选版本需要刷新同结构摘要时，运行下面的命令；它只更新 evidence 摘要，不是 release sign-off，也 not a pass：
 
 ```powershell
-python -m pytest backend\tests\test_system_diagnostics.py -q
-python -m pytest backend\tests\test_remote_desktop.py -q
-python -m pytest backend\tests\test_mobile_pairing.py -q
-npm --prefix desktop run smoke:system-diagnostics-ui
-npm --prefix desktop run smoke:settings-local-model
-npm --prefix desktop run smoke:first-launch
-npm run smoke:portable-first-screen
-git diff --check
+npm run evidence:current-release
 ```
 
-本轮目标结果包括 desktop/mobile typecheck、desktop mobile-pairing QR 和 remote-input grant smokes、mobile token/task-companion/remote-input smokes、backend mobile+remote targeted combined run `132 passed`，以及当前集成中的 desktop/mobile targeted smokes/typechecks 通过。scheduler/preflight 定向检查只有在附上 exact command/log 时才可引用；不要把未绑定命令的 `9 passed` 作为可复用证据计数。`git diff --check` exit 0，只有 LF-to-CRLF working-copy conversion warnings。backend mobile+remote targeted 结果覆盖移动审批脱敏、token scope、设备绑定、LAN TLS metadata、companion task 边界、远程屏幕/输入 WebSocket 泛化错误、grant revoke/expiry/disable 行为、文字/按键远控输入审批契约；active-grant guard 还需要结合 mobile/desktop remote-input smoke/source contract 来说明 remote-input approval 必须匹配当前手机 active grant。共享证据用 HMAC `binding_ref` 或 redacted active-grant label 说明匹配结果，raw `deviceId`/`grantId` 只保留在本地复现记录。Ollama 结果覆盖后端 status/setup-plan/install/start/pull/install-local-model 契约，但不代表真实机器已经完成本地模型安装、启动或拉取。上述证据还覆盖诊断 payload/export 脱敏、Vite 预览中的版本与本机刷新 UI、first-screen read-only 模板，以及 packaged portable 的只读诊断/命令 dock 证据；它们不等同于完整 crash/update pipeline、在线自动更新、真机 LAN/WSS 验收、clean-machine RC sign-off、completed task-result sign-off、自然语言结果质量/Task Workspace 签收或外发诊断包人工安全复核。诊断包 helper、pytest、typecheck、source/client smoke、UI smoke 和 `git diff --check` 只能证明契约字段、脱敏种子、handoff 模板或格式卫生；外发人工复核仍不是 public-safe/sign-off，source/smoke 证据也不能替代真实设备 LAN/WSS、证书信任路径、弱网/锁屏/后台和截图日志复核证据。
-
-跳过项是当前 Windows shell 没有创建符号链接权限。
+定向验证、历史对照和人工验收材料必须附 exact command/log，并记录到 release evidence artifact、`docs/qa/release-gate.md` 的 handoff、或对应 `.tmp` evidence 输出中；不要把测试结果复制回 README。
 
 端到端 QA 和发布门禁见：
 
@@ -300,6 +270,7 @@ npm run release:check
 证据 helper 新手入口（只整理材料，不产生签收）：
 
 ```powershell
+npm run evidence:current-release # CI/local current summary; not a pass
 npm run evidence:release # template only; not a pass
 npm run evidence:rc-handoff -- -CandidateCommit "<commit SHA>" -BuildId "<build id>" -Platform "<platform>" -ArtifactLabel "<redacted artifact label>" -GateCommand "<exact command>" -GateExit "<exit code/status>" -StrictStateSource "<strict state source>" -ManualP1Check "<check/status/artifact label>" -Waiver "<none or owner/reason/expiry/follow-up>" -ResidualRisk "<risk/owner/follow-up>" # template only; not a pass
 npm run evidence:result-quality-review -- -TaskArtifactLabel "<task/run/status-log label>" -ResultArtifactLabel "<user-visible result/artifact label>" -UserVisibleResultReview "<review notes>" -SourceArtifactCheck "<source/artifact check>" -NextStepActionabilityCheck "<next-step/actionability check>" -Reviewer "<reviewer label>" -ReviewedAtUtc "<UTC timestamp>" -BlockedReason "none" # template only; not a pass
@@ -311,12 +282,13 @@ npm run evidence:local-model-template -- -EvidenceMode clean-machine -Runtime "<
 npm run evidence:diagnostics-review # template only; not public-safe/signoff
 ```
 
-这组顶层 npm 命令只是包装现有 helper：`evidence:release` 生成 release evidence packet 索引，`evidence:rc-handoff` 只整理候选 commit/build、platform、artifact label、gate command/exit、strict state source、manual P1、waiver 和 residual risk 的 handoff 模板字段，`evidence:result-quality-review` 只整理自然语言结果质量 review checklist，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`android:release-gate -PreflightOnly` 只检查 Android source/build 配置，`evidence:android-real-device-template` 只生成 fail-closed 真机证据模板，严格 `android:release-gate` 需要真实 APK 和已复核的手机/模拟器远控证据，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态。输出只能作为 evidence/template/preflight 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、result-quality signoff、RC signoff、发布签收或 completed task-result signoff；即使模板字段都填完，也必须附上完整 gate 日志、人工 P1 证据、waiver/risk 处理记录，并由 release owner 明确人工批准后，才可以进入 RC 或发布签收。
+这组顶层 npm 命令只是包装现有 helper：`evidence:current-release` 写入唯一当前证据文件 `docs/release/current-release-evidence.md`，CI 会把它作为 `current-release-evidence` artifact 上传；`evidence:release` 生成 release evidence packet 索引，`evidence:rc-handoff` 只整理候选 commit/build、platform、artifact label、gate command/exit、strict state source、manual P1、waiver 和 residual risk 的 handoff 模板字段，`evidence:result-quality-review` 只整理自然语言结果质量 review checklist，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`android:release-gate -PreflightOnly` 只检查 Android source/build 配置，`evidence:android-real-device-template` 只生成 fail-closed 真机证据模板，严格 `android:release-gate` 需要真实 APK 和已复核的手机/模拟器远控证据，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态。输出只能作为 evidence/template/preflight 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、result-quality signoff、RC signoff、发布签收或 completed task-result signoff；即使模板字段都填完，也必须附上完整 gate 日志、人工 P1 证据、waiver/risk 处理记录，并由 release owner 明确人工批准后，才可以进入 RC 或发布签收。
 
 新手只看这张缺口表即可，不需要额外流程：
 
 | 看到的 helper/preflight 输出 | 不能称为 | 下一步真实证据 |
 | --- | --- | --- |
+| `npm run evidence:current-release` 或 CI artifact `current-release-evidence` | release signoff、RC signoff、人工验收完成 | 用它核对本次 CI 的 commit、命令、机器环境、测试结果和失败项；再补齐手工验收、waiver/residual risk 和 release owner 签名。 |
 | `npm run android:release-gate -- -PreflightOnly` | Android release pass、APK install pass、real-device pass | 生成 QA APK，安装到目标 Android/模拟器，附上已复核的 camera QR、HTTPS/WSS、证书信任、远程屏幕/输入、revoke/expiry 和 artifact redaction evidence，再跑严格 `android:release-gate`。 |
 | `npm run evidence:android-real-device-template` | Android real-device pass、remote-control pass | 把它当成 `android-real-device-evidence.redacted.json` 的 fail-closed 起点；template only, not real-device pass；只有真实 APK 安装、真机/模拟器 WSS、证书信任、输入审批和脱敏复核都完成后，才能把对应字段改成 passed/true。 |
 | `npm run evidence:mobile-lan-wss` | real-device LAN/WSS pass | 按 `real-device-evidence-checklist.redacted.md` 在真实手机/模拟器上补 camera QR、approval WSS、remote screen WSS、remote input WSS、设备证书信任和截图/日志复核。 |
@@ -400,7 +372,7 @@ npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidenc
 .\scripts\build_all.ps1 -VerifyOnly
 ```
 
-默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。Settings 已提供本地模型健康检查、Ollama 安装/启动/拉取推荐模型的产品入口；Ollama 后端测试当前记录为 `53 passed`，覆盖产品入口和服务契约，但真实安装、启动和模型拉取仍按真实机器环境单独验收。隐私模式不可用时会明确失败，不会静默切到云端。
+默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。Settings 已提供本地模型健康检查、Ollama 安装/启动/拉取推荐模型的产品入口；Ollama 后端测试结果以 current release evidence 或对应 CI/test artifact 为准。真实安装、启动和模型拉取仍按真实机器环境单独验收。隐私模式不可用时会明确失败，不会静默切到云端。
 
 ```powershell
 .\scripts\build_all.ps1
@@ -468,11 +440,11 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 
 - 真正的本地推理（Ollama / LM Studio / llama.cpp-compatible server）需用户自行安装并启动；隐私模式探测不到本地后端时会明确失败。
 - 桌面端当前只展示本机版本、后端版本、本地发布说明和“刷新本机状态”；完整在线自动更新、自动下载/安装更新、crash/update pipeline 和 clean-machine RC sign-off 尚未完成。
-- 打包 portable smoke 已证明自然语言命令 dock 的 `/api/runs` submission 与后端只读系统诊断任务证据；这还不是用户可读结果质量、Task Workspace 成果物、completed task-result 或 RC sign-off。
+- 打包 portable smoke 的自然语言命令 dock、`/api/runs` submission 和后端只读系统诊断任务证据以 current release evidence 或 release gate handoff 为准；这还不是用户可读结果质量、Task Workspace 成果物、completed task-result 或 RC sign-off。
 - 任务录屏/截图默认 opt-in，公开 timeline/replay 只提供脱敏摘要；真实 Electron replay UX、手机端任务证据 UX、真实设备录屏/截图证据和外发诊断包安全复核仍需候选版本验证。诊断包外发人工复核仍不是 public-safe/sign-off，不能替代 clean-machine、RC 或发布签收。
 - 硬件加速配置已接入桌面端 Settings：可设置 `onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference`，并通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 做可用性检查。
 - Windows GUI automation is implemented through UIAutomation COM, screenshots, window focus, semantic element lookup, and mouse/keyboard fallback input. Mutating GUI actions still require dry-run + user approval, and policy blocks credential, payment, one-time-code, and token text entry.
-- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的点击、文字和常用按键输入，并支持缩放/平移/横屏查看；批准 remote-input approval 前必须匹配当前手机 active grant，公开给手机和截图材料的是 HMAC 派生的 `binding_ref`/红acted active-grant label，raw `deviceId`/`grantId` 只可留在本地复现记录里；不完整/不匹配授权会被阻断。本轮 backend mobile+remote targeted combined run 为 `132 passed`，覆盖 auth/scope、query-token rejection、remote view/input 交叉 scope rejection、revoke/expiry/disable close behavior、invalid control、screen capture failure、unsupported input、policy/tool rejection、文字/按键输入审批契约、remote input unexpected exception redaction 和移动审批脱敏；active-grant approval guard 另由 mobile/desktop remote-input smoke/source contract 与后端字段断言共同支撑。scheduler/preflight 计数只有在附 exact command/log 时才可引用。这些仍是真实设备前的契约证据，真实手机/WSS 弱网、锁屏、后台、错误态截图、证书信任路径、键盘弹出/横竖屏可用性和 artifact redaction review 仍需补证据。
+- 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的点击、文字和常用按键输入，并支持缩放/平移/横屏查看；批准 remote-input approval 前必须匹配当前手机 active grant，公开给手机和截图材料的是 HMAC 派生的 `binding_ref`/redacted active-grant label，raw `deviceId`/`grantId` 只可留在本地复现记录里；不完整/不匹配授权会被阻断。mobile/desktop remote-input smoke、source contract 与后端字段断言共同支撑真实设备前的契约证据，具体结果以 current release evidence 或对应 CI/test artifact 为准。真实手机/WSS 弱网、锁屏、后台、错误态截图、证书信任路径、键盘弹出/横竖屏可用性和 artifact redaction review 仍需补证据。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
 
 ## Phase 5 AI OS Loop

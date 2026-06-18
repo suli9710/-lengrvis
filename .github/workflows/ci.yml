@@ -117,3 +117,24 @@ jobs:
         run: npm --prefix mobile run smoke:wakeup-contract
       - name: Mobile Android back navigation smoke
         run: npm --prefix mobile run smoke:android-back
+
+  release-evidence:
+    name: Current release evidence
+    runs-on: windows-latest
+    needs: [hygiene, backend, desktop, mobile]
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Generate current release evidence
+        env:
+          RELEASE_EVIDENCE_NEEDS_JSON: ${{ toJson(needs) }}
+          RELEASE_OWNER: ${{ github.actor }}
+        run: npm run evidence:current-release
+      - name: Upload current release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: current-release-evidence
+          path: docs/release/current-release-evidence.md
+          if-no-files-found: error
