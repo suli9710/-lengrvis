@@ -19,6 +19,8 @@ Beginner evidence map:
 | Android gate | `npm run android:release-gate -- -PreflightOnly` proves source/config readiness only; `npm run evidence:android-real-device-template` creates a fail-closed evidence JSON starting point only. | Installable QA APK plus reviewed Android/emulator evidence JSON; strict `android:release-gate` must see APK install, camera QR or documented emulator scan, HTTPS/WSS, certificate trust, approval WSS, remote screen, remote input, revoke/expiry, input approval checks, and artifact redaction. |
 | Real-device/WSS | `npm run evidence:mobile-lan-wss` proves only no-phone prerequisite/config readiness. | Real phone/emulator artifacts for camera QR, approval WSS, remote screen WSS, remote input WSS, explicit Android/emulator certificate trust, revoke/expiry behavior, and screenshot/log review. |
 | Local model | `npm run evidence:local-model-template` is a clean-machine handoff template. | Fresh machine/profile artifact/build/profile plus runtime/model/version/status and install/start/pull/task-smoke outcome, or a precise blocked reason. |
+| IPC / Skill / MCP / settings security | `npm run security:extensions` runs IPC policy/openExternal smoke plus targeted Skill/MCP/settings security tests, including trusted-key Ed25519 Skill signature verification and sensitive Settings API server-side enforcement, and writes an evidence artifact. | Candidate profile audit-chain review for `skills.imported` and MCP blocked-call events, at least one real signed Skill package with the release key configured through `LENGRVIS_SKILL_TRUSTED_PUBLIC_KEYS`, owner-approved third-party MCP permission policy evidence, and candidate-profile audit evidence for sensitive settings confirmations. |
+| Distribution install/upgrade | `npm run evidence:distribution-template` creates a fail-closed handoff template only. | Clean Windows machine/profile install, signed installer verification, installer hash, upgrade from previous version, rollback to previous version, real-device evidence if claimed, reviewer, timestamp, and attached logs. |
 | Diagnostics | `npm run evidence:diagnostics-review` is an external-review checklist template. | Human review of the actual exported diagnostics package contents with package label, reviewed logs/path labels/task traces/model traces/device identifiers, reviewer, timestamp, decision, and blocked reason; keep `public_safe=false` unless a separate approval process explicitly changes it. |
 | RC handoff | `npm run evidence:release` and `npm run evidence:rc-handoff` organize missing evidence and handoff fields. | Candidate commit/build/platform, packaged artifact labels, exact gate commands and full exits, strict-state source, manual P1 evidence, waiver/residual-risk review, and release-owner approval. |
 
@@ -47,7 +49,7 @@ Golden-task results are machine self-verified regression evidence only; they are
 
 Use the top-level npm evidence helpers below as the newcomer-friendly entrypoints. They wrap the PowerShell helpers and only produce evidence/template/preflight artifacts; they are not clean-machine passes, real-device passes, public-safe/signoff, RC signoff, release signoff, or completed task-result signoff. The raw PowerShell equivalents are listed for CI logs, parameterized handoffs, and reviewers who need to trace the exact helper script.
 
-CI also writes the single current release evidence summary at `docs/release/current-release-evidence.md` in the final `release-evidence` job and uploads it as the `current-release-evidence` artifact. That file records the commit SHA, UTC date, executed commands, runner environment, all CI gate results, failed items, waivers, manual acceptance items, owner signature field, and artifact links. Treat it as the current evidence index for the CI run; it is still not release sign-off, not RC sign-off, and not a pass until the manual acceptance items, waivers/residual risks, and release-owner signature are complete.
+CI also writes the single current release evidence summary at `docs/release/current-release-evidence.md` in the final `release-evidence` job and uploads it as the `current-release-evidence` artifact. CI also uploads the CycloneDX SBOM as `current-sbom` and the IPC/Skill/MCP/settings gate output as `extension-security-gate`. That file records the commit SHA, UTC date, executed commands, runner environment, all CI gate results, failed items, waivers, manual acceptance items, owner signature field, and artifact links. Treat it as the current evidence index for the CI run; it is still not release sign-off, not RC sign-off, and not a pass until the manual acceptance items, waivers/residual risks, and release-owner signature are complete.
 
 ```powershell
 npm run evidence:current-release
@@ -175,6 +177,20 @@ Raw PowerShell equivalent:
 
 Record the emitted `.tmp\diagnostics-external-review\...\diagnostics-external-review.redacted.json` and `.tmp\diagnostics-external-review\...\diagnostics-external-review.redacted.md` files as a diagnostics review template only. The helper can organize redacted checklist fields and keep `public_safe=false`, `external_sharing_allowed=false`, and `claim_allowed=false`, but it does not review the actual exported package contents and is not public-safe/signoff, clean-machine validation, RC signoff, release signoff, or permission to publish the package. Even when the helper exits 0, `review_scope.automated_redaction_template=true`, `review_scope.actual_package_content_review_completed=false`, `summary.review_fields_complete=false`, `summary.external_sharing_blocked=true`, `summary.separate_human_content_review_required=true`, `claim_controls.public_safe_approval_created=false`, and the checklist must still carry the actual exported package path label, reviewed logs, path labels, task traces, model traces, device identifiers, reviewer/timestamp fields, and blocked reason before any separate human content-review artifact can be considered.
 
+When distribution readiness is claimed or blocked for an installer/portable candidate, scaffold the signed installer and clean Windows handoff fields with:
+
+```powershell
+npm run evidence:distribution-template -- -InstallerArtifactLabel "<redacted installer label>" -InstallerSha256 "<sha256>" -SigningSubject "<cert subject>" -SigningThumbprint "<thumbprint>" -CleanWindowsMachineLabel "<clean Windows label>" -UpgradeFromVersion "<version>" -UpgradeToVersion "<version>" -UpgradeOutcome "<outcome>" -RollbackOutcome "<outcome>" -RealDeviceEvidenceLabel "<evidence label>" -Reviewer "<reviewer>" -BlockedReason "<redacted blocked reason if any required field is unavailable>" # template only; not a pass
+```
+
+Raw PowerShell equivalent:
+
+```powershell
+.\scripts\collect_distribution_release_evidence_template.ps1 -InstallerArtifactLabel "<redacted installer label>" -InstallerSha256 "<sha256>" -SigningSubject "<cert subject>" -SigningThumbprint "<thumbprint>" -CleanWindowsMachineLabel "<clean Windows label>" -UpgradeFromVersion "<version>" -UpgradeToVersion "<version>" -UpgradeOutcome "<outcome>" -RollbackOutcome "<outcome>" -RealDeviceEvidenceLabel "<evidence label>" -Reviewer "<reviewer>" -BlockedReason "<redacted blocked reason if any required field is unavailable>"
+```
+
+Record the emitted `.tmp\distribution-release-evidence-template\...\distribution-release-evidence.redacted.template.json` and `.tmp\distribution-release-evidence-template\...\distribution-release-evidence.redacted.template.md` files as a fail-closed handoff template only. The helper records candidate commit/build, installer label/hash, signing subject/thumbprint metadata, clean Windows machine/profile label, upgrade and rollback outcomes, real-device evidence label, reviewer, timestamp, and blocked reason fields. It always keeps `summary.claim_allowed=false`, `summary.release_signoff=false`, `summary.clean_windows_pass=false`, `summary.signed_installer_pass=false`, `summary.upgrade_pass=false`, `summary.rollback_pass=false`, and `summary.real_device_pass=false`; metadata recorded by the helper is not signed-installer pass, clean Windows pass, upgrade pass, rollback pass, real-device pass, RC signoff, release signoff, or permission to publish.
+
 Equivalent expanded commands:
 
 ```powershell
@@ -198,7 +214,7 @@ Pass criteria:
 - Remote WS client-error privacy remains green: targeted backend tests for all screen/input auth, close behavior, and generic error branches pass before any remote UX claim is made.
 - Desktop token-bearing bridges remain loopback-only, and preload API requests reject non-plain or prototype-polluting data before IPC.
 - Mobile smoke commands exit 0, including token subprotocol, task Companion list/start/follow-up/pause/resume/cancel, and remote-input grant lifecycle checks.
-- Dependency lock verification passes when run with `npm run deps:verify`: backend direct requirements have pinned `==` entries in `backend/requirements-lock.txt`, and desktop/mobile npm lockfiles exist with matching root package name and version. This is a direct-dependency lock gate only; upgrade to uv or pip-tools for a full resolved Python lock when that workflow is adopted.
+- Dependency lock verification passes when run with `npm run deps:verify`: `backend/requirements-lock.txt` is a fully resolved transitive Python lock with pinned `==` entries and resolver provenance, every direct backend requirement is present in that lock, and desktop/mobile npm lockfiles exist with matching root package name and version. SBOM generation passes when `npm run sbom:generate` writes CycloneDX JSON to `.tmp/sbom/lengrvis-sbom.cdx.json`; this is inventory evidence, not vulnerability, license, provenance, RC, or release sign-off.
 - Mobile LAN/WSS prerequisite preflight, when applicable, exits 0 only for an HTTPS/WSS-ready advertised origin with LAN TLS env, cert/key material, and certificate host coverage that can be validated without starting the backend. It writes a redacted evidence summary path and still requires separate real phone/emulator camera/QR, WSS, and certificate trust evidence before any Android/WSS pass claim.
 - Diagnostics export tests, packet helpers, and evidence templates are contract/template evidence only. Before any diagnostics package is shared externally, a human must review the actual package contents, record the actual exported package path label plus logs/path labels/task traces/model traces/device identifiers, reviewer/timestamp, decision status, and blocked reason, and keep `public_safe=false`, `external_sharing_allowed=false`, and `claim_allowed=false` until that separate human artifact exists. That external content review is still not public-safe approval, clean-machine validation, RC sign-off, or release sign-off.
 - Any skipped backend tests are expected platform skips and are recorded.
@@ -245,7 +261,7 @@ Run the independent portable launcher/backend diagnostics smoke when Windows por
 npm run smoke:portable-first-screen
 ```
 
-`release:check`, `release:gate`, `release:smoke`, and `release:quick` all include `release:safety`. Enable the strict state machine through `config.yaml` or the shell environment before running them:
+`release:check`, `release:gate`, `release:smoke`, and `release:quick` all include `release:safety`. `release:check`, `release:gate`, and `release:smoke` also include `supply-chain:verify` and `security:extensions` so the formal local gate matches the CI supply-chain and IPC/Skill/MCP/settings security gates. Enable the strict state machine through `config.yaml` or the shell environment before running them:
 
 ```powershell
 $env:LENGRVIS_STRICT_STATE_MACHINE = "true"
@@ -258,6 +274,8 @@ Equivalent expanded command:
 
 ```powershell
 npm run qa:gate
+npm run supply-chain:verify
+npm run security:extensions
 .\scripts\verify_release_safety.ps1
 .\scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45
 ```
@@ -265,8 +283,10 @@ npm run qa:gate
 Pass criteria:
 
 - The preflight gate passes on the same candidate.
+- Supply-chain verification passes: `npm run supply-chain:verify` completes dependency lock verification and CycloneDX SBOM generation.
+- Extension security verification passes: `npm run security:extensions` completes the IPC policy/openExternal smoke plus targeted Skill/MCP/settings security tests and records or references the `extension-security-gate` evidence artifact.
 - Release safety verification passes: `LENGRVIS_ALLOW_MOCK_FALLBACK` resolves to false, and `strict_state_machine` resolves to true through `LENGRVIS_STRICT_STATE_MACHINE=true` or `privacy.strict_state_machine: true` in `config.yaml`.
-- `release:check` is the default formal release gate. It runs `qa:gate`, `scripts\verify_release_safety.ps1`, and `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`, so packaged backend executables must start and answer `/health`.
+- `release:check` is the default formal release gate. It runs `qa:gate`, `supply-chain:verify`, `security:extensions`, `scripts\verify_release_safety.ps1`, and `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`, so packaged backend executables must start and answer `/health`.
 - `release:gate` and `release:smoke` are aliases for `release:check`, preserving the explicit gate/smoke command names without allowing a structural-only release pass.
 - `release:quick` is the structural-only artifact check. Use it for fast artifact validation, not for release-candidate sign-off.
 - The structural packaging verification performed by `scripts\verify_packaging.ps1` requires `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-<version>-x64-self-extracting.exe` (version sourced from `desktop\package.json`) unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
@@ -286,7 +306,7 @@ Pass criteria:
 
 Evidence discipline:
 
-- Record `release:check` as passing only when the whole command exits 0. If `qa:gate`, `release:safety`, structural checks, or runnable backend smoke pass before a later failure, record those as partial sub-gate evidence and keep the artifact gate failed.
+- Record `release:check` as passing only when the whole command exits 0. If `qa:gate`, `supply-chain:verify`, `security:extensions`, `release:safety`, structural checks, or runnable backend smoke pass before a later failure, record those as partial sub-gate evidence and keep the artifact gate failed.
 - Dirty-worktree release checks may guide development, but a release-candidate handoff must include the commit or build id, platform, exact command, strict-state-machine source, and full exit status.
 - Current workspace note, 2026-06-08/2026-06-09: strict `npm run release:check` completed with exit 0 earlier in this workspace. After later product-hardening tests were added, an earlier `npm run qa:gate` also completed with exit 0 and reported `1337 passed, 1 skipped` plus desktop/mobile typecheck, mobile behavior smoke, and desktop smoke. Latest targeted development integration in this dirty workspace now records desktop typecheck, mobile typecheck, `npm --prefix desktop run smoke:mobile-pairing-qr`, `npm --prefix desktop run smoke:remote-input-grant`, `npm --prefix mobile run smoke:token`, `npm --prefix mobile run smoke:task-companion`, `npm --prefix mobile run smoke:remote-input-grant`, and backend mobile+remote targeted combined run `132 passed`; those cover mobile approval redaction, token scope, device binding, companion task boundaries, LAN TLS metadata, remote screen/input auth and redacted error branches, revoke/expiry/disable behavior, text/key remote-input approval contracts, and active remote-input approval matching through phone-facing HMAC `binding_ref`/redacted active-grant labels rather than raw ids in shareable evidence. Scheduler/preflight targeted checks are support-only development notes unless their exact command and run log are attached; do not cite an unbound `9 passed` count from this gate. The prior P1/P2 review findings plus public task text bare-filename/hidden-prompt leakage, realtime raw malformed-message sampling, mobile QR transport metadata bypass, and remote-input active-grant mismatch findings are closed at contract/source-smoke level. `git diff --check` exited 0 and emitted only LF-to-CRLF working-copy conversion warnings. Treat these as current dirty-worktree development/formatting evidence, not release-candidate sign-off. The strict `release:check` run additionally covered `release:safety`, structural packaging checks, portable directory/zip source-map checks, and backend/portable backend `/health` smoke. A later `npm run smoke:portable-first-screen` run exited 0 with evidence in `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259\portable.status.log`: the packaged renderer clicked "检查电脑状态", observed `/api/system/diagnostics` plus read-only diagnostics copy, allowed only scoped known read-only GET calls, and reported `tasks=0`, `runs=0`, `chat messages=0`, and `diagnostic-packages=0` after the read-only click. The same run then filled `帮我检查这台电脑`, observed a packaged renderer `POST /api/runs`, and recorded backend read-only/system diagnostics task evidence `task_99963aecac4841d2af25feb2f675c2ad` with `tasks=1`, `runs=1`, `chat messages=0`, and `diagnostic-packages=0`. Record this as packaged natural-language command-dock submission plus read-only/system diagnostics task evidence, not as clean-machine validation, real-device validation, full release-candidate sign-off, completed task-result sign-off, true local model install/start/pull evidence, or external diagnostics public-safety review. The portable smoke records explain `completion_evidence.level` and `result_verified`; only `completed_result` with `result_verified=true` may be labeled completed-result evidence, and that still is not result quality review, Task Workspace sign-off, RC sign-off, or release sign-off. Diagnostics helpers, source/client smokes, typechecks, and automated tests only prove the export/redaction contract, client/backend contracts, and handoff fields; they do not review exported package contents and cannot replace real-device LAN/WSS artifacts or turn a later human content review into public-safe approval/sign-off.
 
@@ -357,6 +377,8 @@ Preflight gate:
 - git diff --check:
 - current release evidence (`docs/release/current-release-evidence.md`):
 - dependency lock verification:
+- SBOM generation / `current-sbom` artifact:
+- extension security gate / `extension-security-gate` artifact:
 - release evidence packet summary:
 - release evidence packet RC handoff requirements (`manual_rc_handoff_required` is not sign-off):
 
@@ -390,6 +412,8 @@ Demo-before-release gate:
 - LAN TLS readiness, if mobile/LAN included:
 
 Artifact gate:
+- supply-chain:verify:
+- security:extensions:
 - release safety verification:
 - release:quick / build_all -VerifyOnly, if run:
 - release:check / build_all -VerifyOnly -RunExecutableSmoke:

@@ -4,8 +4,8 @@
 
 ## Summary
 
-- Commit SHA: 11cbd0d51f75c3c968d6459f5671cd83dbd896a4
-- Date (UTC): 2026-06-18T16:39:32.8114313Z
+- Commit SHA: 7b761067d7862de892bfe20870303be3217b31ea
+- Date (UTC): 2026-06-19T11:20:02.3069742Z
 - CI status: ci_results_unavailable
 - Manual sign-off status: manual_signoff_pending
 - Release owner: Suli
@@ -54,6 +54,9 @@
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:remote-input-grant` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:wakeup-contract` |
 | Mobile typecheck + behavior smokes | `npm --prefix mobile run smoke:android-back` |
+| Supply chain lock + SBOM | `npm run deps:verify` |
+| Supply chain lock + SBOM | `npm run sbom:generate` |
+| IPC + Skill/MCP + settings security gate | `npm run security:extensions` |
 
 ## All Test Results
 
@@ -63,6 +66,8 @@
 | Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | not_reported |
 | Desktop typecheck + audit + behavior smokes | Desktop audit, TypeScript typecheck, Vitest, and behavior smokes | not_reported |
 | Mobile typecheck + behavior smokes | Mobile audit, TypeScript typecheck, and behavior smokes | not_reported |
+| Supply chain lock + SBOM | Backend transitive Python lock, npm lockfiles, and CycloneDX SBOM generation | not_reported |
+| IPC + Skill/MCP + settings security gate | IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, MCP schema/SSRF tests, and sensitive settings server-side enforcement | not_reported |
 
 ## Failed Items
 
@@ -88,6 +93,8 @@
 ## Artifact Links
 
 - Current release evidence artifact: current-release-evidence
+- Current SBOM artifact: current-sbom
+- Extension security gate artifact: extension-security-gate
 
 ## Owner Signature
 

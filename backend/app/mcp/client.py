@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from app.core.audit import record
 from app.core.outbound_url import pin_outbound_http_url
 
 
@@ -39,15 +40,23 @@ class MCPClient:
         self.config = config
         self.timeout = timeout
         self._tools_cache: list[dict[str, Any]] | None = None
+        self._tools_cache_error = ""
         self._lock = asyncio.Lock()
 
     async def list_tools(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
         unsupported = self._unsupported_transport_error()
         if unsupported:
+            self._tools_cache_error = unsupported
+            self._tools_cache = []
+            return []
+        if self._auth_required():
+            self._tools_cache_error = "authentication required"
+            self._tools_cache = []
             return []
         if self._tools_cache is not None and not force_refresh:
             return self._tools_cache
         async with self._lock:
+            self._tools_cache_error = ""
             payload = {
                 "jsonrpc": JSONRPC_VERSION,
                 "id": "tools-list",
@@ -55,14 +64,20 @@ class MCPClient:
                 "params": {},
             }
             data = await self._post(payload)
+            if "error" in data:
+                self._tools_cache_error = str(data["error"].get("message") or "MCP tools/list failed")
+                return []
             tools = data.get("result", {}).get("tools", []) or []
             normalized: list[dict[str, Any]] = []
             for entry in tools:
                 if not isinstance(entry, dict):
                     continue
+                name = str(entry.get("name") or entry.get("id") or "")
+                if not name:
+                    continue
                 normalized.append(
                     {
-                        "name": str(entry.get("name") or entry.get("id") or ""),
+                        "name": name,
                         "description": str(entry.get("description") or ""),
                         "input_schema": entry.get("inputSchema") or entry.get("input_schema") or {},
                     }
@@ -74,13 +89,32 @@ class MCPClient:
         unsupported = self._unsupported_transport_error()
         if unsupported:
             return {"ok": False, "error": unsupported, "server": self.config.name}
+        if self._auth_required():
+            return {"ok": False, "error": "authentication required", "server": self.config.name}
+        schema, schema_error = await self._input_schema_for_tool(tool_name)
+        if schema_error:
+            record(
+                "mcp.tool_call_blocked",
+                "MCPClient",
+                {"server": self.config.name, "tool": tool_name, "reason": schema_error},
+            )
+            return {"ok": False, "error": schema_error, "server": self.config.name}
+        args = {} if arguments is None else arguments
+        validation_error = _validate_tool_arguments(args, schema or {})
+        if validation_error:
+            record(
+                "mcp.tool_call_blocked",
+                "MCPClient",
+                {"server": self.config.name, "tool": tool_name, "reason": validation_error},
+            )
+            return {"ok": False, "error": validation_error, "server": self.config.name}
         payload = {
             "jsonrpc": JSONRPC_VERSION,
             "id": f"call-{tool_name}",
             "method": "tools/call",
             "params": {
                 "name": tool_name,
-                "arguments": arguments or {},
+                "arguments": args,
             },
         }
         data = await self._post(payload)
@@ -111,6 +145,18 @@ class MCPClient:
                 return {"error": {"message": f"transport error: {exc}", "type": "transport"}}
             except json.JSONDecodeError as exc:
                 return {"error": {"message": f"invalid response: {exc}", "type": "decode"}}
+
+    async def _input_schema_for_tool(self, tool_name: str) -> tuple[dict[str, Any] | None, str]:
+        tools = await self.list_tools()
+        if self._tools_cache_error:
+            return None, f"MCP tool schema discovery failed: {self._tools_cache_error}"
+        for tool in tools:
+            if tool.get("name") == tool_name:
+                schema = tool.get("input_schema") or {}
+                if not isinstance(schema, dict):
+                    return None, f"MCP tool '{tool_name}' has an invalid input_schema"
+                return schema, ""
+        return None, f"unknown MCP tool '{tool_name}' was not advertised by server '{self.config.name}'"
 
     def status(self) -> dict[str, Any]:
         unsupported = self._unsupported_transport_error()
@@ -156,3 +202,70 @@ class MCPClient:
     def _auth_required(self) -> bool:
         auth = self.config.auth or {}
         return bool(auth.get("required")) and not auth.get("token")
+
+
+def _validate_tool_arguments(arguments: Any, schema: dict[str, Any]) -> str:
+    if not isinstance(arguments, dict):
+        return "MCP tool arguments must be a JSON object"
+    if not schema:
+        return ""
+    if not isinstance(schema, dict):
+        return "MCP tool input_schema must be a JSON schema object"
+    try:
+        from jsonschema import Draft202012Validator
+        from jsonschema.exceptions import SchemaError, ValidationError
+    except Exception:  # pragma: no cover - exercised only when jsonschema is absent.
+        return _validate_tool_arguments_lightweight(arguments, schema)
+    try:
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(arguments)
+    except SchemaError as exc:
+        return f"MCP tool input_schema is invalid: {exc.message}"
+    except ValidationError as exc:
+        return f"MCP tool arguments did not match input_schema: {exc.message}"
+    return ""
+
+
+def _validate_tool_arguments_lightweight(arguments: dict[str, Any], schema: dict[str, Any]) -> str:
+    expected_type = schema.get("type")
+    if expected_type and not _matches_json_schema_type(arguments, expected_type):
+        return "MCP tool arguments did not match input_schema: arguments must be an object"
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    required = schema.get("required") if isinstance(schema.get("required"), list) else []
+    for field in required:
+        if isinstance(field, str) and field not in arguments:
+            return f"MCP tool arguments did not match input_schema: {field!r} is required"
+    if schema.get("additionalProperties") is False:
+        extra = sorted(set(arguments) - set(properties))
+        if extra:
+            return f"MCP tool arguments did not match input_schema: unexpected fields: {', '.join(extra)}"
+    for field, field_schema in properties.items():
+        if field not in arguments or not isinstance(field_schema, dict):
+            continue
+        field_type = field_schema.get("type")
+        if field_type and not _matches_json_schema_type(arguments[field], field_type):
+            return f"MCP tool arguments did not match input_schema: {field!r} has the wrong type"
+        enum = field_schema.get("enum")
+        if isinstance(enum, list) and arguments[field] not in enum:
+            return f"MCP tool arguments did not match input_schema: {field!r} is not an allowed value"
+    return ""
+
+
+def _matches_json_schema_type(value: Any, expected_type: Any) -> bool:
+    if isinstance(expected_type, list):
+        return any(_matches_json_schema_type(value, item) for item in expected_type)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return True

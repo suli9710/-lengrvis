@@ -11,6 +11,7 @@ from app.core.audit import record
 from app.core.errors import AppError, SecurityError
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
+from app.policy.risk import RISK_ORDER
 from app.skills.loader import (
     LoadedSkillPackage,
     SKILL_MANIFEST_NAMES,
@@ -57,7 +58,7 @@ def list_installed_skills(settings: AppSettings | None = None) -> dict[str, Any]
             )
             continue
         for root in _iter_skill_roots(directory):
-            skills.append(_skill_summary(root))
+            skills.append(_skill_summary(root, effective))
     return {
         "skills": skills,
         "count": len(skills),
@@ -76,10 +77,17 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
     install_dir.mkdir(parents=True, exist_ok=True)
 
     if source.is_dir():
-        package = _load_or_service_error(source)
+        package = _load_or_service_error(source, effective)
         destination = _destination_for(install_dir, package)
+        previous_package = _load_existing_package(destination, effective)
         _copy_skill_directory(source, destination)
-        return await _finalize_import(destination, package, source)
+        return await _finalize_import(
+            destination,
+            package,
+            source,
+            previous_package=previous_package,
+            trusted_public_keys=effective.skill_trusted_public_keys,
+        )
 
     if source.is_file() and source.suffix.lower() == ".zip":
         with tempfile.TemporaryDirectory(prefix="lengrvis-skill-") as temp_dir:
@@ -87,17 +95,24 @@ async def import_skill(source_path: str, settings: AppSettings | None = None) ->
             extracted_root.mkdir()
             _extract_zip_safely(source, extracted_root)
             package_root = _single_skill_root(extracted_root)
-            package = _load_or_service_error(package_root)
+            package = _load_or_service_error(package_root, effective)
             destination = _destination_for(install_dir, package)
+            previous_package = _load_existing_package(destination, effective)
             _copy_skill_directory(package_root, destination)
-            return await _finalize_import(destination, package, source)
+            return await _finalize_import(
+                destination,
+                package,
+                source,
+                previous_package=previous_package,
+                trusted_public_keys=effective.skill_trusted_public_keys,
+            )
 
     raise SkillServiceError("Skill source must be a directory or .zip file.")
 
 
-def _load_or_service_error(path: Path) -> LoadedSkillPackage:
+def _load_or_service_error(path: Path, settings: AppSettings) -> LoadedSkillPackage:
     try:
-        return load_skill_package(path)
+        return load_skill_package(path, trusted_public_keys=settings.skill_trusted_public_keys)
     except SkillLoadError as exc:
         raise SkillServiceError(str(exc), code="skill_validation_error") from exc
 
@@ -119,9 +134,9 @@ async def refresh_runtime_registry(settings: AppSettings | None = None) -> dict[
     }
 
 
-def _skill_summary(root: Path) -> dict[str, Any]:
+def _skill_summary(root: Path, settings: AppSettings) -> dict[str, Any]:
     try:
-        package = load_skill_package(root)
+        package = load_skill_package(root, trusted_public_keys=settings.skill_trusted_public_keys)
     except SkillLoadError as exc:
         manifest = _manifest_path(root)
         return {
@@ -146,6 +161,7 @@ def _package_summary(package: LoadedSkillPackage, *, status: str) -> dict[str, A
         "version": definition.version,
         "agent_owner": definition.agent_owner,
         "risk": definition.risk.value,
+        "signature": _public_signature_summary(definition, package.signature_report),
         "root": str(package.root),
         "manifest_path": str(package.manifest_path),
         "status": status,
@@ -183,7 +199,40 @@ def _public_smoke_test_summary(smoke_test: Any) -> dict[str, Any]:
     }
 
 
-async def _finalize_import(destination: Path, package: LoadedSkillPackage, source: Path) -> dict[str, Any]:
+def _public_signature_summary(definition: Any, signature_report: dict[str, Any] | None = None) -> dict[str, Any]:
+    signature = getattr(definition, "signature", None)
+    if signature is None:
+        return {
+            "status": "unsigned",
+            "key_id": "",
+            "algorithm": "",
+            "manifest_digest_present": False,
+            "signed_at": "",
+            "message": str((signature_report or {}).get("message") or ""),
+        }
+    status = "signed_metadata_present"
+    message = ""
+    if isinstance(signature_report, dict):
+        status = str(signature_report.get("status") or status)
+        message = str(signature_report.get("message") or "")
+    return {
+        "status": status,
+        "key_id": signature.key_id,
+        "algorithm": signature.algorithm,
+        "manifest_digest_present": bool(signature.manifest_digest),
+        "signed_at": signature.signed_at,
+        "message": message,
+    }
+
+
+async def _finalize_import(
+    destination: Path,
+    package: LoadedSkillPackage,
+    source: Path,
+    *,
+    previous_package: LoadedSkillPackage | None,
+    trusted_public_keys: dict[str, str],
+) -> dict[str, Any]:
     try:
         refresh = await refresh_runtime_registry()
     except Exception as exc:
@@ -194,7 +243,8 @@ async def _finalize_import(destination: Path, package: LoadedSkillPackage, sourc
             pass
         raise SkillServiceError(f"Skill failed registry refresh and was not installed: {exc}") from exc
 
-    installed = load_skill_package(destination)
+    installed = load_skill_package(destination, trusted_public_keys=trusted_public_keys)
+    upgrade_diff = _package_upgrade_diff(previous_package, installed)
     record(
         "skills.imported",
         "SkillService",
@@ -202,10 +252,75 @@ async def _finalize_import(destination: Path, package: LoadedSkillPackage, sourc
             "source": str(source),
             "destination": str(destination),
             "skill": installed.definition.name,
+            "version": installed.definition.version,
+            "signature": _public_signature_summary(installed.definition, installed.signature_report),
+            "upgrade_diff": upgrade_diff,
             "tools": [tool.name for tool in installed.tool_definitions],
         },
     )
-    return {"skill": _package_summary(installed, status="ready"), "refresh": refresh}
+    return {"skill": _package_summary(installed, status="ready"), "refresh": refresh, "upgrade_diff": upgrade_diff}
+
+
+def _load_existing_package(destination: Path, settings: AppSettings) -> LoadedSkillPackage | None:
+    if not destination.exists():
+        return None
+    try:
+        return load_skill_package(destination, trusted_public_keys=settings.skill_trusted_public_keys)
+    except SkillLoadError:
+        return None
+
+
+def _package_upgrade_diff(previous: LoadedSkillPackage | None, current: LoadedSkillPackage) -> dict[str, Any]:
+    if previous is None:
+        return {
+            "kind": "new_install",
+            "previous_version": "",
+            "current_version": current.definition.version,
+            "added_tools": sorted(tool.name for tool in current.definition.tools),
+            "removed_tools": [],
+            "changed_tools": [],
+            "risk_increases": [],
+            "permission_changes": [],
+            "signature_status": _public_signature_summary(current.definition, current.signature_report)["status"],
+        }
+
+    previous_tools = {tool.name: tool for tool in previous.definition.tools}
+    current_tools = {tool.name: tool for tool in current.definition.tools}
+    changed_tools: list[str] = []
+    risk_increases: list[dict[str, str]] = []
+    permission_changes: list[dict[str, Any]] = []
+    for name, tool in current_tools.items():
+        old_tool = previous_tools.get(name)
+        if old_tool is None:
+            continue
+        old_risk = previous.definition.effective_risk(old_tool)
+        new_risk = current.definition.effective_risk(tool)
+        old_permissions = previous.definition.effective_permissions(old_tool)
+        new_permissions = current.definition.effective_permissions(tool)
+        if old_risk != new_risk or old_permissions != new_permissions:
+            changed_tools.append(name)
+        if RISK_ORDER[new_risk] > RISK_ORDER[old_risk]:
+            risk_increases.append({"tool": name, "from": old_risk.value, "to": new_risk.value})
+        if old_permissions != new_permissions:
+            permission_changes.append(
+                {
+                    "tool": name,
+                    "from": old_permissions,
+                    "to": new_permissions,
+                }
+            )
+
+    return {
+        "kind": "upgrade_or_replace",
+        "previous_version": previous.definition.version,
+        "current_version": current.definition.version,
+        "added_tools": sorted(set(current_tools) - set(previous_tools)),
+        "removed_tools": sorted(set(previous_tools) - set(current_tools)),
+        "changed_tools": sorted(set(changed_tools)),
+        "risk_increases": risk_increases,
+        "permission_changes": permission_changes,
+        "signature_status": _public_signature_summary(current.definition, current.signature_report)["status"],
+    }
 
 
 def _install_directory(settings: AppSettings) -> Path:

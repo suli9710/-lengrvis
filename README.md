@@ -9,7 +9,7 @@ Lengrvis 是一款 Windows 优先的本地 OS Agent（电脑助手）。用户�
 | 桌面端 | Electron · React · TypeScript · Vite · Zustand |
 | 后端 | Python 3.12 · FastAPI · SQLite · Playwright |
 | 移动伴侣 | Expo · React Native（Android Preview） |
-| CI | GitHub Actions（hygiene · pytest · golden gate · typecheck） |
+| CI | GitHub Actions（hygiene · deps/SBOM · pytest · golden gate · typecheck · smokes · IPC/Skill/MCP/settings security） |
 
 ## 平台支持矩阵
 
@@ -119,6 +119,7 @@ mavris/
 
 ### 扩展性
 - **Skill 包系统**：声明式 `skill.yaml` 格式 + 安全审查（R4 阻断 / 路径逃逸 / 敏感 header 检测）+ Python / Shell 沙盒执行 + 动态工具注册。
+- **Skill 签名边界**：`skill.yaml` 可声明 Ed25519 签名；当 `LENGRVIS_SKILL_TRUSTED_PUBLIC_KEYS` 配置了对应 `key_id` 的公钥时，manifest digest 或签名不匹配会 fail-closed，未签名或未信任 key 只作为审计/发布证据状态记录。
 - **定时调度器**：croniter + async tick + 真实任务执行。
 - **长期记忆**：MemoryAgent（embed + cosine + DB + TTL + tags）。
 - **WebSocket 实时推送**：`/ws/tasks/{task_id}` 实时 Agent 消息流。
@@ -222,7 +223,7 @@ npm run golden:gate              # golden tasks 报告（≥95% 通过率）
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract 和 Android back navigation smokes。
 这些 mobile smoke 都是本地行为桩/客户端契约证据，避免发布门禁漏掉移动任务监督、远程输入授权、唤醒合同和返回导航边界；它们不等同于真机 LAN/WSS 或证书信任路径验收。
 
-**CI 与本地差异：** `.github/workflows/ci.yml` 在 push/PR 上跑 hygiene、deps:verify、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes 和 mobile smokes；末尾的 `release-evidence` job 会自动生成并上传唯一当前证据文件 `docs/release/current-release-evidence.md`，汇总 commit、日期、命令、机器环境、测试结果、失败项、豁免项、手工验收项、负责人签名和 artifact 链接。CI **不包含** `release:check`、portable GUI smoke、clean-machine/真实设备人工验收。完整发布前请本地跑 `npm run release:check`，需要 GUI/portable 证据时另跑 `npm run smoke:portable-first-screen`。每周 SCA 见 `.github/workflows/security-audit.yml`。
+**CI 与本地差异：** `.github/workflows/ci.yml` 在 push/PR 上跑 hygiene、deps:verify、SBOM 生成、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions` IPC/Skill/MCP/settings 门禁；末尾的 `release-evidence` job 会自动生成并上传唯一当前证据文件 `docs/release/current-release-evidence.md`，汇总 commit、日期、命令、机器环境、测试结果、失败项、豁免项、手工验收项、负责人签名和 artifact 链接。CI 还会上传 `current-sbom` 和 `extension-security-gate` artifacts。CI **不包含** `release:check`、portable GUI smoke、clean-machine/真实设备人工验收。完整发布前请本地跑 `npm run release:check`，需要 GUI/portable 证据时另跑 `npm run smoke:portable-first-screen`。每周 SCA 见 `.github/workflows/security-audit.yml`。
 
 ### 测试结果来源
 
@@ -261,6 +262,13 @@ npm run golden:gate
 npm run audit:deps
 ```
 
+依赖锁与 SBOM（Python transitive lock + desktop/mobile npm lock + CycloneDX JSON）：
+
+```powershell
+npm run deps:verify
+npm run sbom:generate
+```
+
 已有 Windows 发布产物时再跑产物门禁：
 
 ```powershell
@@ -271,6 +279,7 @@ npm run release:check
 
 ```powershell
 npm run evidence:current-release # CI/local current summary; not a pass
+npm run security:extensions # IPC + Skill/MCP + settings gate; not release signoff
 npm run evidence:release # template only; not a pass
 npm run evidence:rc-handoff -- -CandidateCommit "<commit SHA>" -BuildId "<build id>" -Platform "<platform>" -ArtifactLabel "<redacted artifact label>" -GateCommand "<exact command>" -GateExit "<exit code/status>" -StrictStateSource "<strict state source>" -ManualP1Check "<check/status/artifact label>" -Waiver "<none or owner/reason/expiry/follow-up>" -ResidualRisk "<risk/owner/follow-up>" # template only; not a pass
 npm run evidence:result-quality-review -- -TaskArtifactLabel "<task/run/status-log label>" -ResultArtifactLabel "<user-visible result/artifact label>" -UserVisibleResultReview "<review notes>" -SourceArtifactCheck "<source/artifact check>" -NextStepActionabilityCheck "<next-step/actionability check>" -Reviewer "<reviewer label>" -ReviewedAtUtc "<UTC timestamp>" -BlockedReason "none" # template only; not a pass
@@ -280,25 +289,29 @@ npm run evidence:android-real-device-template -- -ArtifactLabel "<redacted apk l
 npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>" # strict gate; requires APK + real-device evidence
 npm run evidence:local-model-template -- -EvidenceMode clean-machine -Runtime "<runtime>" -RuntimeVersion "<version>" -Model "<model>" -ModelVersion "<version>" -BlockedReason "<redacted blocked reason>" # template only; not a pass
 npm run evidence:diagnostics-review # template only; not public-safe/signoff
+npm run evidence:distribution-template -- -InstallerArtifactLabel "<redacted installer label>" -InstallerSha256 "<sha256>" -SigningSubject "<cert subject>" -SigningThumbprint "<thumbprint>" -CleanWindowsMachineLabel "<clean Windows label>" -UpgradeFromVersion "<version>" -UpgradeToVersion "<version>" -UpgradeOutcome "<outcome>" -RollbackOutcome "<outcome>" -RealDeviceEvidenceLabel "<evidence label>" -Reviewer "<reviewer>" # template only; not a pass
 ```
 
-这组顶层 npm 命令只是包装现有 helper：`evidence:current-release` 写入唯一当前证据文件 `docs/release/current-release-evidence.md`，CI 会把它作为 `current-release-evidence` artifact 上传；`evidence:release` 生成 release evidence packet 索引，`evidence:rc-handoff` 只整理候选 commit/build、platform、artifact label、gate command/exit、strict state source、manual P1、waiver 和 residual risk 的 handoff 模板字段，`evidence:result-quality-review` 只整理自然语言结果质量 review checklist，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`android:release-gate -PreflightOnly` 只检查 Android source/build 配置，`evidence:android-real-device-template` 只生成 fail-closed 真机证据模板，严格 `android:release-gate` 需要真实 APK 和已复核的手机/模拟器远控证据，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态。输出只能作为 evidence/template/preflight 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、result-quality signoff、RC signoff、发布签收或 completed task-result signoff；即使模板字段都填完，也必须附上完整 gate 日志、人工 P1 证据、waiver/risk 处理记录，并由 release owner 明确人工批准后，才可以进入 RC 或发布签收。
+这组顶层 npm 命令只是包装现有 helper：`evidence:current-release` 写入唯一当前证据文件 `docs/release/current-release-evidence.md`，CI 会把它作为 `current-release-evidence` artifact 上传；`sbom:generate` 生成 CycloneDX SBOM，CI 会把它作为 `current-sbom` artifact 上传；`security:extensions` 跑 IPC policy/openExternal smoke、Skill Ed25519 签名验证/权限/升级 diff 测试、MCP schema/SSRF 测试和敏感设置 server-side enforcement 测试，CI 会把输出作为 `extension-security-gate` artifact 上传；`evidence:release` 生成 release evidence packet 索引，`evidence:rc-handoff` 只整理候选 commit/build、platform、artifact label、gate command/exit、strict state source、manual P1、waiver 和 residual risk 的 handoff 模板字段，`evidence:result-quality-review` 只整理自然语言结果质量 review checklist，`evidence:mobile-lan-wss` 是无手机/无真 WSS 的 prerequisite preflight，`android:release-gate -PreflightOnly` 只检查 Android source/build 配置，`evidence:android-real-device-template` 只生成 fail-closed 真机证据模板，严格 `android:release-gate` 需要真实 APK 和已复核的手机/模拟器远控证据，`evidence:local-model-template` 只填 clean-machine handoff 模板字段，`evidence:diagnostics-review` 只整理诊断包外发复核模板/状态，`evidence:distribution-template` 只整理 clean Windows、签名安装包、升级、回滚、真实设备和 reviewer 字段。输出只能作为 evidence/template/preflight/inventory 记录，不是 clean-machine pass、real-device pass、signed-installer pass、upgrade/rollback pass、`public_safe=true`、public-safe/signoff、result-quality signoff、RC signoff、发布签收或 completed task-result signoff；即使模板字段都填完，也必须附上完整 gate 日志、人工 P1 证据、waiver/risk 处理记录，并由 release owner 明确人工批准后，才可以进入 RC 或发布签收。
 
 新手只看这张缺口表即可，不需要额外流程：
 
 | 看到的 helper/preflight 输出 | 不能称为 | 下一步真实证据 |
 | --- | --- | --- |
 | `npm run evidence:current-release` 或 CI artifact `current-release-evidence` | release signoff、RC signoff、人工验收完成 | 用它核对本次 CI 的 commit、命令、机器环境、测试结果和失败项；再补齐手工验收、waiver/residual risk 和 release owner 签名。 |
+| `npm run sbom:generate` 或 CI artifact `current-sbom` | vulnerability pass、license approval、package provenance/signature proof | 用它核对候选 commit 的 Python/npm component inventory；漏洞、license、provenance 和 release owner review 仍需单独证据。 |
+| `npm run security:extensions` 或 CI artifact `extension-security-gate` | release signoff、真实第三方 Skill/MCP 审批完成、签名包发布通过 | 用它核对 IPC policy/openExternal、Skill Ed25519 签名验证/权限/升级 diff/audit、MCP schema/SSRF 和敏感设置 server-side enforcement 的机器门禁；真实 release signing key、第三方 MCP owner policy 和候选 profile 审计链仍需单独证据。 |
 | `npm run android:release-gate -- -PreflightOnly` | Android release pass、APK install pass、real-device pass | 生成 QA APK，安装到目标 Android/模拟器，附上已复核的 camera QR、HTTPS/WSS、证书信任、远程屏幕/输入、revoke/expiry 和 artifact redaction evidence，再跑严格 `android:release-gate`。 |
 | `npm run evidence:android-real-device-template` | Android real-device pass、remote-control pass | 把它当成 `android-real-device-evidence.redacted.json` 的 fail-closed 起点；template only, not real-device pass；只有真实 APK 安装、真机/模拟器 WSS、证书信任、输入审批和脱敏复核都完成后，才能把对应字段改成 passed/true。 |
 | `npm run evidence:mobile-lan-wss` | real-device LAN/WSS pass | 按 `real-device-evidence-checklist.redacted.md` 在真实手机/模拟器上补 camera QR、approval WSS、remote screen WSS、remote input WSS、设备证书信任和截图/日志复核。 |
 | `npm run evidence:local-model-template` | clean-machine local model pass | 在干净机器或干净 profile 上记录 artifact/build/profile、runtime/model/version、install/start/pull/task-smoke outcome，或记录明确 blocked reason。 |
 | `npm run evidence:diagnostics-review` | `public_safe=true`、可外发诊断包、发布签收 | 对实际导出的诊断包做人工内容复核，记录包路径 label、日志/路径/task/model/device 检查、reviewer、timestamp、decision 和 blocked reason。 |
+| `npm run evidence:distribution-template` | clean Windows pass、signed installer pass、upgrade pass、rollback pass、real-device pass、release signoff | 在干净 Windows、签名安装包、升级/回滚和真实设备实际跑完后，把 artifact label、hash、证书、版本、outcome、reviewer 和日志链接填进模板；模板本身保持 fail-closed。 |
 | `npm run evidence:rc-handoff` 或 `npm run evidence:release` | RC signoff、release signoff | 命令输出 not a pass/signoff；补齐 candidate commit/build/platform、完整 gate 日志、manual P1、waiver/residual risk 处理，并由 release owner 单独批准。 |
 
 生成 release packet 后，先打开 `.tmp\release-evidence-packet\...\release-evidence-packet.redacted.md` 给新人看缺口，再逐项处理 `release_readiness_blockers`：clean-machine local model、真实设备 LAN/WSS、自然语言结果质量、诊断包实际内容复核和 RC handoff。所有 blocker 都有对应证据并完成 release owner 人审签收前，不要打 tag、发布、公告或对外共享诊断包。
 
-发布候选若需要收集打包 GUI 首屏和只读任务入口证据，再跑 `npm run smoke:portable-first-screen`。最新开发工作区证据目录为 `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259`：只读入口观察到 packaged renderer `/api/system/diagnostics`；自然语言 dock 观察到 `/api/runs` 与后端 read-only/system diagnostics task evidence。该证据只覆盖 packaged command-dock 提交和只读任务证据，不能替代 clean-machine、真实设备、人工 RC sign-off 或 completed task-result sign-off。诊断包外发前的人工内容复核也只是实际包内容检查，不是 `public_safe` 批准、clean-machine/RC sign-off 或发布签收；相关 helper/自动测试只能作为模板或契约证据。移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
+发布候选若需要收集打包 GUI 首屏和只读任务入口证据，再跑 `npm run smoke:portable-first-screen`，并把该次命令、退出码和输出目录记录到 current release evidence、RC handoff 或对应 QA packet；README 不记录某次本地运行目录或通过结果。该证据只覆盖 packaged command-dock 提交和只读任务证据，不能替代 clean-machine、真实设备、人工 RC sign-off 或 completed task-result sign-off。诊断包外发前的人工内容复核也只是实际包内容检查，不是 `public_safe` 批准、clean-machine/RC sign-off 或发布签收；相关 helper/自动测试只能作为模板或契约证据。移动/LAN 演示的 TLS 仅按显式设备信任路径记录，不代表系统级证书链已完成。
 
 ## 打包
 
@@ -342,7 +355,7 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 
 代码签名与自动更新（公开发布通道）：
 
-- **签名**：本地 `npm --prefix desktop run dist` 不签名（仅内部分发）。持 OV/EV PFX 证书时设置 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` 环境变量后照常构建即可；走 Azure Trusted Signing 时用 `npm --prefix desktop run dist:signed`（配置见 `desktop/electron-builder.signed.yml`，需 `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`）。随包的 `backend.exe` 需在打包前单独用 signtool 签名。
+- **签名**：本地 `npm --prefix desktop run dist` 不签名（仅内部分发）。持 OV/EV PFX 证书时设置 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` 环境变量后照常构建即可；走 Azure Trusted Signing 时用 `npm --prefix desktop run dist:signed`（配置见 `desktop/electron-builder.signed.js`，需 `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`、`AZURE_TRUSTED_SIGNING_ENDPOINT`、`AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`、`AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`、`AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`）。`dist:signed` / `dist:publish` 会先运行 `verify:signed-build-config` 拒绝空值或 `REPLACE_*` 占位，再校验随包的 `backend.exe` 已在打包前单独用 signtool 或 Azure Trusted Signing 签名。
 - **自动更新**：通过 electron-updater + GitHub Releases。`npm --prefix desktop run dist:publish`（需 `GH_TOKEN`）构建并上传 Release 资产；安装版应用启动时静默检查更新，托盘菜单提供「检查更新」，下载完成后提示重启安装；后端 exe 在安装包 resources 内随更新整体替换。
 
 macOS DMG：

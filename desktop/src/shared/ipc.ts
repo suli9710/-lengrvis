@@ -60,6 +60,81 @@ export const IPC_CHANNELS = {
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
 
+export type IpcChannelSecurityPolicy = {
+  schema: "none" | "string" | "object" | "apiRequest" | "typedRequest" | "dialogResult" | "event";
+  capability:
+    | "trusted-renderer"
+    | "backend-token"
+    | "native-confirmation"
+    | "file-picker-grant"
+    | "safe-external-url"
+    | "permission-nonce"
+    | "mobile-device-grant"
+    | "browser-host-approval"
+    | "desktop-ws-session";
+  risk: "read" | "write" | "sensitive" | "external-navigation" | "event";
+};
+
+export const IPC_CHANNEL_SECURITY_POLICIES = {
+  apiRequest: { schema: "apiRequest", capability: "backend-token", risk: "write" },
+  apiAbortInflight: { schema: "string", capability: "trusted-renderer", risk: "write" },
+  backendStatus: { schema: "none", capability: "trusted-renderer", risk: "read" },
+  backendStart: { schema: "none", capability: "trusted-renderer", risk: "sensitive" },
+  backendStop: { schema: "none", capability: "trusted-renderer", risk: "sensitive" },
+  backendForeground: { schema: "none", capability: "trusted-renderer", risk: "write" },
+  backendBackground: { schema: "none", capability: "trusted-renderer", risk: "write" },
+  commandsExecute: { schema: "object", capability: "backend-token", risk: "sensitive" },
+  taskRollback: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
+  cleanupExecute: { schema: "object", capability: "backend-token", risk: "sensitive" },
+  cleanupRollback: { schema: "object", capability: "backend-token", risk: "sensitive" },
+  skillsImport: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
+  skillsRefresh: { schema: "none", capability: "backend-token", risk: "write" },
+  localModelInstall: { schema: "object", capability: "backend-token", risk: "sensitive" },
+  ollamaInstall: { schema: "none", capability: "backend-token", risk: "sensitive" },
+  ollamaPull: { schema: "object", capability: "backend-token", risk: "sensitive" },
+  ollamaStart: { schema: "none", capability: "backend-token", risk: "sensitive" },
+  runsStart: { schema: "typedRequest", capability: "backend-token", risk: "write" },
+  systemDiagnosticsExport: { schema: "none", capability: "backend-token", risk: "sensitive" },
+  documentsParse: { schema: "typedRequest", capability: "file-picker-grant", risk: "sensitive" },
+  documentsAsk: { schema: "typedRequest", capability: "file-picker-grant", risk: "sensitive" },
+  documentsCompare: { schema: "typedRequest", capability: "file-picker-grant", risk: "sensitive" },
+  settingsConfirmSensitiveChange: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
+  settingsSave: { schema: "object", capability: "permission-nonce", risk: "sensitive" },
+  permissionPolicyConfirmRelaxation: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
+  permissionPolicyUpsertRule: { schema: "typedRequest", capability: "permission-nonce", risk: "sensitive" },
+  permissionPolicyDeleteRule: { schema: "typedRequest", capability: "permission-nonce", risk: "sensitive" },
+  mobilePairingCreateCode: { schema: "none", capability: "backend-token", risk: "sensitive" },
+  mobilePairingListDevices: { schema: "none", capability: "backend-token", risk: "read" },
+  mobilePairingRevokeDevice: { schema: "string", capability: "mobile-device-grant", risk: "sensitive" },
+  mobilePairingCreateRemoteInputGrant: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
+  mobilePairingRevokeRemoteInputGrant: { schema: "typedRequest", capability: "mobile-device-grant", risk: "sensitive" },
+  openExternal: { schema: "string", capability: "safe-external-url", risk: "external-navigation" },
+  getFileIcon: { schema: "string", capability: "file-picker-grant", risk: "read" },
+  showItemInFolder: { schema: "string", capability: "file-picker-grant", risk: "write" },
+  chooseDirectory: { schema: "dialogResult", capability: "trusted-renderer", risk: "read" },
+  chooseDocument: { schema: "dialogResult", capability: "file-picker-grant", risk: "read" },
+  knownFolders: { schema: "none", capability: "trusted-renderer", risk: "read" },
+  chooseSkillDirectory: { schema: "dialogResult", capability: "trusted-renderer", risk: "read" },
+  chooseSkillZip: { schema: "dialogResult", capability: "trusted-renderer", risk: "read" },
+  browserHostSnapshot: { schema: "none", capability: "trusted-renderer", risk: "read" },
+  browserHostSnapshotChanged: { schema: "event", capability: "trusted-renderer", risk: "event" },
+  browserHostOpen: { schema: "typedRequest", capability: "backend-token", risk: "sensitive" },
+  browserHostShow: { schema: "string", capability: "trusted-renderer", risk: "write" },
+  browserHostHide: { schema: "none", capability: "trusted-renderer", risk: "write" },
+  browserHostSetBounds: { schema: "typedRequest", capability: "trusted-renderer", risk: "write" },
+  browserHostPause: { schema: "string", capability: "trusted-renderer", risk: "write" },
+  browserHostResume: { schema: "string", capability: "trusted-renderer", risk: "write" },
+  browserHostTakeover: { schema: "string", capability: "browser-host-approval", risk: "sensitive" },
+  browserHostRelease: { schema: "string", capability: "browser-host-approval", risk: "sensitive" },
+  browserHostStop: { schema: "string", capability: "trusted-renderer", risk: "write" },
+  browserHostAction: { schema: "typedRequest", capability: "browser-host-approval", risk: "sensitive" },
+  desktopWebSocketOpen: { schema: "typedRequest", capability: "desktop-ws-session", risk: "sensitive" },
+  desktopWebSocketClose: { schema: "string", capability: "desktop-ws-session", risk: "write" },
+  desktopWebSocketEvent: { schema: "event", capability: "desktop-ws-session", risk: "event" },
+  showNotification: { schema: "typedRequest", capability: "trusted-renderer", risk: "write" },
+  openTaskFromNotification: { schema: "event", capability: "trusted-renderer", risk: "event" }
+} as const satisfies Record<keyof typeof IPC_CHANNELS, IpcChannelSecurityPolicy>;
+
 export const API_REQUEST_SECURITY_LIMITS = {
   maxEndpointChars: 2048,
   maxQueryParams: 40,

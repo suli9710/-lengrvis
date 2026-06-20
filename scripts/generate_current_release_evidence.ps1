@@ -188,6 +188,8 @@ if (-not [string]::IsNullOrWhiteSpace($runUrl)) {
     $artifactLinks.Add("CI artifacts page: $runUrl#artifacts")
 }
 $artifactLinks.Add("Current release evidence artifact: current-release-evidence")
+$artifactLinks.Add("Current SBOM artifact: current-sbom")
+$artifactLinks.Add("Extension security gate artifact: extension-security-gate")
 
 $waivers = New-Object System.Collections.Generic.List[string]
 foreach ($item in $Waiver) {
@@ -266,6 +268,23 @@ $gates = @(
             "npm --prefix mobile run smoke:remote-input-grant",
             "npm --prefix mobile run smoke:wakeup-contract",
             "npm --prefix mobile run smoke:android-back"
+        )
+    },
+    [ordered]@{
+        id = "supply-chain"
+        job = "Supply chain lock + SBOM"
+        scope = "Backend transitive Python lock, npm lockfiles, and CycloneDX SBOM generation"
+        commands = @(
+            "npm run deps:verify",
+            "npm run sbom:generate"
+        )
+    },
+    [ordered]@{
+        id = "extension-security"
+        job = "IPC + Skill/MCP + settings security gate"
+        scope = "IPC security policy/openExternal smoke, Skill Ed25519 signature/permission/upgrade-diff tests, MCP schema/SSRF tests, and sensitive settings server-side enforcement"
+        commands = @(
+            "npm run security:extensions"
         )
     }
 )

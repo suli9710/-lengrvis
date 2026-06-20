@@ -180,6 +180,28 @@ class SkillSmokeTestSpec(BaseModel):
         return text
 
 
+class SkillSignatureSpec(BaseModel):
+    """Optional signature metadata for release-grade skill packages."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    key_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("key_id", "keyId"))
+    algorithm: str = Field(default="ed25519", min_length=1, max_length=64)
+    signature: str = Field(min_length=1, max_length=8192)
+    manifest_digest: str = Field(default="", max_length=256, validation_alias=AliasChoices("manifest_digest", "manifestDigest"))
+    signed_at: str = Field(default="", max_length=64, validation_alias=AliasChoices("signed_at", "signedAt"))
+
+    @field_validator("key_id", "algorithm", "signature", "manifest_digest", "signed_at", mode="before")
+    @classmethod
+    def strip_signature_text(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if any(char in text for char in ("\x00", "\n", "\r")):
+            raise ValueError("signature metadata must not contain control characters")
+        return text
+
+
 class SkillToolSpec(BaseModel):
     """Tool declaration inside skill.yaml."""
 
@@ -281,6 +303,7 @@ class SkillDefinition(BaseModel):
     agent_owner: str = Field(pattern=AGENT_OWNER_PATTERN, validation_alias=AliasChoices("agent_owner", "agentOwner"))
     risk: RiskLevel = RiskLevel.R0_READ_ONLY
     permissions: list[str] = Field(default_factory=lambda: [LEGACY_PERMISSION])
+    signature: SkillSignatureSpec | None = None
     tools: list[SkillToolSpec] = Field(min_length=1)
 
     @field_validator("version", mode="before")

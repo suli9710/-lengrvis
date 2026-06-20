@@ -85,8 +85,14 @@ Module._load = function patchedLoad(request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 
-const { IPC_CHANNELS } = require("../dist/shared/ipc.js");
-const { assertTrustedRenderer, buildRequestUrl, isTrustedRendererUrl, registerIpcHandlers } = require("../dist/main/ipc.js");
+const { IPC_CHANNELS, IPC_CHANNEL_SECURITY_POLICIES } = require("../dist/shared/ipc.js");
+const {
+  assertTrustedRenderer,
+  buildRequestUrl,
+  isSafeExternalUrl,
+  isTrustedRendererUrl,
+  registerIpcHandlers
+} = require("../dist/main/ipc.js");
 const { BrowserHostWebSocketBridge, registerBrowserHostIpcHandlers } = require("../dist/main/browserHost.js");
 const { NotificationBridge } = require("../dist/main/notifications.js");
 
@@ -108,11 +114,39 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 
 (async () => {
   process.env.VITE_DEV_SERVER_URL = "http://127.0.0.1:5173";
+  assert.deepEqual(
+    Object.keys(IPC_CHANNEL_SECURITY_POLICIES).sort(),
+    Object.keys(IPC_CHANNELS).sort(),
+    "every IPC channel must have an explicit security policy entry"
+  );
+  for (const [name, policy] of Object.entries(IPC_CHANNEL_SECURITY_POLICIES)) {
+    assert.ok(policy.schema, `${name} must declare its input schema class`);
+    assert.ok(policy.capability, `${name} must declare its capability boundary`);
+    assert.ok(policy.risk, `${name} must declare its risk class`);
+  }
+  assert.equal(
+    IPC_CHANNEL_SECURITY_POLICIES.openExternal.capability,
+    "safe-external-url",
+    "external navigation must stay behind the URL policy gate"
+  );
   assert.equal(isTrustedRendererUrl("http://127.0.0.1:5173/index.html"), true);
   assert.equal(isTrustedRendererUrl("http://localhost:5173/index.html"), true);
   assert.equal(isTrustedRendererUrl("app://local/index.html"), true);
   assert.equal(isTrustedRendererUrl("app://evil/index.html"), false);
   assert.equal(isTrustedRendererUrl("https://evil.example/index.html"), false);
+  assert.equal(isSafeExternalUrl("https://example.com/docs"), true);
+  assert.equal(isSafeExternalUrl("https://example.com:443/docs?from=app"), true);
+  assert.equal(isSafeExternalUrl("mailto:support@example.com?subject=Lengrvis"), true);
+  assert.equal(isSafeExternalUrl("http://example.com/docs"), false);
+  assert.equal(isSafeExternalUrl("https://user:pass@example.com/docs"), false);
+  assert.equal(isSafeExternalUrl("https://127.0.0.1:8000/docs"), false);
+  assert.equal(isSafeExternalUrl("https://192.168.1.20/docs"), false);
+  assert.equal(isSafeExternalUrl("https://169.254.169.254/latest/meta-data/"), false);
+  assert.equal(isSafeExternalUrl("https://[::ffff:7f00:1]:8000/docs"), false);
+  assert.equal(isSafeExternalUrl("https://[::ffff:c0a8:114]/docs"), false);
+  assert.equal(isSafeExternalUrl("https://[fd00::1]/docs"), false);
+  assert.equal(isSafeExternalUrl("mailto:support@example.com?body=secret"), false);
+  assert.equal(isSafeExternalUrl("mailto:support@example.com?subject=Hi%0D%0ABcc:evil@example.com"), false);
 
   const rendererRoot = path.resolve(__dirname, "../dist/renderer/index.html");
   assert.equal(isTrustedRendererUrl(new URL(`file:///${rendererRoot.replace(/\\/g, "/")}`).toString()), true);

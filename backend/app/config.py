@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import base64
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -268,6 +269,7 @@ class AppSettings:
     allowed_directories: list[str] = field(default_factory=list)
     data_dir: str = str(DEFAULT_DATA_DIR)
     skill_directories: list[str] = field(default_factory=list)
+    skill_trusted_public_keys: dict[str, str] = field(default_factory=dict)
     mcp_servers: list[dict] = field(default_factory=list)
     allow_mock_fallback: bool = False
     # Non-strict (default): invalid transitions are audited but not persisted.
@@ -596,6 +598,9 @@ class AppSettings:
             allowed_directories=allowed_dirs,
             data_dir=data_dir,
             skill_directories=skill_dirs,
+            skill_trusted_public_keys=_normalize_skill_trusted_public_keys(
+                value("LENGRVIS_SKILL_TRUSTED_PUBLIC_KEYS", "skill_trusted_public_keys", {})
+            ),
             mcp_servers=_normalize_mcp_servers(value("LENGRVIS_MCP_SERVERS", "mcp_servers", [])),
             allow_mock_fallback=flag("LENGRVIS_ALLOW_MOCK_FALLBACK", "allow_mock_fallback", False),
             strict_state_machine=flag("LENGRVIS_STRICT_STATE_MACHINE", "strict_state_machine", False),
@@ -740,6 +745,42 @@ def _normalize_mcp_servers(value: Any) -> list[dict]:
                 )
         return result
     return []
+
+
+def _normalize_skill_trusted_public_keys(value: Any) -> dict[str, str]:
+    if value is None or value == "":
+        return {}
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            result: dict[str, str] = {}
+            for entry in text.split(";"):
+                if "=" not in entry:
+                    continue
+                key_id, public_key = entry.split("=", 1)
+                key_id = key_id.strip()
+                public_key = public_key.strip()
+                if key_id and public_key:
+                    result[key_id] = public_key
+            return result
+        return _normalize_skill_trusted_public_keys(parsed)
+    if isinstance(value, dict):
+        return {str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()}
+    if isinstance(value, list):
+        result: dict[str, str] = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            key_id = str(item.get("key_id") or item.get("keyId") or item.get("id") or "").strip()
+            public_key = str(item.get("public_key") or item.get("publicKey") or item.get("key") or "").strip()
+            if key_id and public_key:
+                result[key_id] = public_key
+        return result
+    return {}
 
 
 _SECRET_FIELD_TOKENS = ("auth", "authorization", "api_key", "token", "password", "secret", "credential")

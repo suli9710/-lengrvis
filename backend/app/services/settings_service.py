@@ -241,6 +241,7 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "strict_state_machine",
         "remote_desktop_enabled",
         "lan_tls_enabled",
+        "allow_unsafe_local_skill_execution",
         "allow_mock_fallback",
         "onnx_enabled",
         "onnx_warm_on_startup",
@@ -249,6 +250,8 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
         "context_micro_compact_enabled",
         "context_history_snip_enabled",
         "context_session_memory_enabled",
+        "developer_writes_enabled",
+        "developer_writes_require_verification",
     }:
         if isinstance(value, bool):
             return value
