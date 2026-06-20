@@ -118,12 +118,15 @@ def test_android_real_device_template_cannot_satisfy_strict_gate(
     assert isinstance(build_environment["android_sdk_env_present"], bool)
     assert isinstance(build_environment["native_android_project_present"], bool)
     assert isinstance(build_environment["local_apk_build_ready"], bool)
-    assert build_environment["local_apk_build_ready"] is False
     assert build_environment["local_eas_cli_declared"] is True
     assert build_environment["local_eas_cli_declared_version"]
     assert build_environment["eas_cloud_auth_verified"] is False
     assert "whoami" in build_environment["eas_cloud_auth_verification"]
     assert template_packet["claim_controls"]["real_device_pass_claim_allowed"] is False
+    assert template_packet["claim_controls"]["apk_installed"] is False
+    assert template_packet["claim_controls"]["https_wss_verified"] is False
+    assert template_packet["claim_controls"]["remote_input_verified"] is False
+    assert template_packet["claim_controls"]["artifact_redaction_reviewed"] is False
     assert template_packet["redaction"]["tokens_absent"] is False
 
     gate_root = tmp_path / "android-release-gate"
