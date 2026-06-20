@@ -77,9 +77,37 @@ def test_skill_routes_list_import_and_refresh(monkeypatch, tmp_path: Path):
     assert import_response.status_code == 200
     payload = import_response.json()
     assert payload["skill"]["name"] == "route-demo"
+    assert payload["skill"]["signature"]["status"] == "unsigned"
+    assert payload["upgrade_diff"]["kind"] == "new_install"
+    assert payload["upgrade_diff"]["signature_status"] == "unsigned"
     assert payload["refresh"]["tool_count"] > 0
     execution_result = tool_registry.get("skill.route_demo.echo").execute({"text": "ok"}, {})
     assert execution_result["policy"] == "local_skill_execution_disabled"
+
+    (source / "skill.yaml").write_text(
+        """
+name: route-demo
+version: "1.0.0"
+agent_owner: FileAgent
+risk: R0_READ_ONLY
+permissions:
+  - filesystem.read
+tools:
+  - name: skill.route_demo.echo
+    description: Echo text from route demo.
+    execution:
+      type: python
+      entry: echo.py
+""".strip(),
+        encoding="utf-8",
+    )
+    reimport_response = client.post("/api/skills/import", json={"path": str(source)})
+    assert reimport_response.status_code == 200
+    reimport_payload = reimport_response.json()
+    assert reimport_payload["upgrade_diff"]["kind"] == "upgrade_or_replace"
+    assert reimport_payload["upgrade_diff"]["permission_changes"] == [
+        {"tool": "skill.route_demo.echo", "from": ["legacy.unspecified"], "to": ["filesystem.read"]}
+    ]
 
     list_response = client.get("/api/skills")
     assert list_response.status_code == 200

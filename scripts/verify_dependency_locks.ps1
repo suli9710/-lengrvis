@@ -129,8 +129,30 @@ function Test-BackendPythonLocks {
         }
     }
 
+    if ($selectedLockLabel -eq "backend/requirements-lock.txt") {
+        $lockText = Get-Content -Raw -LiteralPath $selectedLockPath
+        $directRequirementNames = @{}
+        foreach ($name in $requirements) {
+            $directRequirementNames[(Normalize-PythonPackageName -Name $name)] = $true
+        }
+        $transitivePackageCount = $lockResult.Entries.Count - $directRequirementNames.Count
+
+        if ($lockResult.Entries.Count -le $directRequirementNames.Count -or $transitivePackageCount -lt 1) {
+            $Issues.Add("$selectedLockLabel does not appear to be a fully resolved transitive Python lock: $($lockResult.Entries.Count) pinned packages for $($directRequirementNames.Count) direct requirements")
+        }
+        if ($lockText -notmatch "(?im)^#\s*Fully resolved dependency lock") {
+            $Issues.Add("$selectedLockLabel is missing the fully resolved dependency lock header.")
+        }
+        if ($lockText -notmatch "(?im)^\s+#\s+via") {
+            $Issues.Add("$selectedLockLabel is missing resolver provenance comments (`# via ...`) expected from the transitive lock workflow.")
+        }
+    }
+    else {
+        $Issues.Add("$selectedLockLabel is a fallback constraints file; backend/requirements-lock.txt is required for the full Python transitive lock gate.")
+    }
+
     if ($lockResult.Unpinned.Count -eq 0) {
-        Write-Host "Verified backend direct dependency pins in $selectedLockLabel ($($requirements.Count) requirements)."
+        Write-Host "Verified backend transitive dependency lock in $selectedLockLabel ($($lockResult.Entries.Count) pinned packages; $($requirements.Count) direct requirements)."
     }
 }
 

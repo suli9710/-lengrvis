@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlparse
 
 try:
@@ -54,6 +57,7 @@ class LoadedSkillPackage:
     root: Path
     manifest_path: Path
     definition: SkillDefinition
+    signature_report: dict[str, Any]
     safety_report: SkillSafetyReport
     tool_definitions: list[ToolDefinition]
 
@@ -69,6 +73,7 @@ def scan_skill_directories(
     skill_directories: Iterable[str | Path],
     *,
     allow_unsafe_local_skill_execution: bool | None = None,
+    trusted_public_keys: Mapping[str, str] | None = None,
 ) -> list[LoadedSkillPackage]:
     packages: list[LoadedSkillPackage] = []
     for raw_directory in skill_directories:
@@ -83,6 +88,7 @@ def scan_skill_directories(
                 load_skill_package(
                     manifest.parent,
                     allow_unsafe_local_skill_execution=allow_unsafe_local_skill_execution,
+                    trusted_public_keys=trusted_public_keys,
                 )
             )
     return packages
@@ -92,6 +98,7 @@ def load_skill_package(
     skill_root: str | Path,
     *,
     allow_unsafe_local_skill_execution: bool | None = None,
+    trusted_public_keys: Mapping[str, str] | None = None,
 ) -> LoadedSkillPackage:
     root = Path(skill_root).expanduser().resolve(strict=True)
     if not root.is_dir():
@@ -103,6 +110,10 @@ def load_skill_package(
         definition = SkillDefinition.model_validate(raw)
     except ValidationError as exc:
         raise SkillLoadError(f"Invalid skill.yaml: {exc}", path=manifest) from exc
+
+    signature_report = verify_skill_signature(raw, definition, trusted_public_keys or {})
+    if signature_report["severity"] == "error":
+        raise SkillLoadError(f"Invalid skill signature: {signature_report['message']}", path=manifest)
 
     safety_report = review_skill_definition(definition, root)
     if not safety_report.ok:
@@ -117,6 +128,7 @@ def load_skill_package(
         root=root,
         manifest_path=manifest,
         definition=definition,
+        signature_report=signature_report,
         safety_report=safety_report,
         tool_definitions=tool_definitions,
     )
@@ -134,6 +146,7 @@ def register_skills(
         allow_unsafe_local_skill_execution=(
             getattr(settings, "allow_unsafe_local_skill_execution", None) if settings is not None else None
         ),
+        trusted_public_keys=(getattr(settings, "skill_trusted_public_keys", {}) if settings is not None else {}),
     )
     existing_names = {tool.name for tool in registry.list()}
     for package in packages:
@@ -152,6 +165,112 @@ def register_skills(
             },
         )
     return packages
+
+
+def canonical_skill_signature_payload(raw_manifest: Mapping[str, Any]) -> bytes:
+    """Return the deterministic manifest bytes that Skill signatures cover."""
+
+    unsigned = {
+        str(key): _canonicalize_json_value(item)
+        for key, item in raw_manifest.items()
+        if str(key) != "signature"
+    }
+    return json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def verify_skill_signature(
+    raw_manifest: Mapping[str, Any],
+    definition: SkillDefinition,
+    trusted_public_keys: Mapping[str, str],
+) -> dict[str, Any]:
+    payload = canonical_skill_signature_payload(raw_manifest)
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    signature = definition.signature
+    if signature is None:
+        return {
+            "status": "unsigned",
+            "severity": "info",
+            "message": "Skill manifest does not declare signature metadata.",
+            "key_id": "",
+            "algorithm": "",
+            "manifest_digest": digest,
+            "signed_at": "",
+        }
+
+    report = {
+        "status": "signed_untrusted_key",
+        "severity": "warning",
+        "message": "Skill signature metadata is present, but no trusted public key is configured for this key id.",
+        "key_id": signature.key_id,
+        "algorithm": signature.algorithm,
+        "manifest_digest": digest,
+        "declared_manifest_digest": signature.manifest_digest,
+        "signed_at": signature.signed_at,
+    }
+    if signature.manifest_digest and signature.manifest_digest.casefold() != digest.casefold():
+        return {
+            **report,
+            "status": "invalid_manifest_digest",
+            "severity": "error" if signature.key_id in trusted_public_keys else "warning",
+            "message": "Skill signature manifest_digest does not match the canonical manifest payload.",
+        }
+    if signature.algorithm.casefold() != "ed25519":
+        return {
+            **report,
+            "status": "unsupported_algorithm",
+            "severity": "error" if signature.key_id in trusted_public_keys else "warning",
+            "message": f"Unsupported Skill signature algorithm: {signature.algorithm}",
+        }
+    public_key = trusted_public_keys.get(signature.key_id)
+    if not public_key:
+        return report
+    try:
+        _verify_ed25519_signature(public_key, signature.signature, payload)
+    except ValueError as exc:
+        return {
+            **report,
+            "status": "invalid_signature",
+            "severity": "error",
+            "message": str(exc),
+        }
+    return {
+        **report,
+        "status": "verified",
+        "severity": "info",
+        "message": "Skill manifest signature verified with a trusted Ed25519 public key.",
+    }
+
+
+def _canonicalize_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _canonicalize_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonicalize_json_value(item) for item in value]
+    return value
+
+
+def _verify_ed25519_signature(public_key_text: str, signature_text: str, payload: bytes) -> None:
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except Exception as exc:  # pragma: no cover - dependency is locked in production/test envs.
+        raise ValueError("cryptography is required to verify Skill signatures.") from exc
+
+    try:
+        public_key_bytes = _decode_signature_bytes(public_key_text.removeprefix("ed25519:"))
+        signature_bytes = _decode_signature_bytes(signature_text)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Skill signature or trusted public key is not valid base64.") from exc
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key_bytes).verify(signature_bytes, payload)
+    except InvalidSignature as exc:
+        raise ValueError("Skill signature verification failed.") from exc
+    except ValueError as exc:
+        raise ValueError(f"Skill trusted public key is invalid: {exc}") from exc
+
+
+def _decode_signature_bytes(value: str) -> bytes:
+    return base64.b64decode(value.strip(), validate=True)
 
 
 def adapt_skill_to_tool_definitions(

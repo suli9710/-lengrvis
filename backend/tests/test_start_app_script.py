@@ -77,6 +77,51 @@ def _package_json(project_root: Path) -> dict[str, object]:
     return json.loads((project_root / "package.json").read_text(encoding="utf-8"))
 
 
+def _powershell_executable() -> str:
+    executable = shutil.which("powershell") or shutil.which("pwsh")
+    if executable is None:
+        pytest.skip("PowerShell is required for release helper contract tests")
+    return executable
+
+
+def _run_release_safety(
+    project_root: Path,
+    tmp_path: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    for key in (
+        "LENGRVIS_ALLOW_MOCK_FALLBACK",
+        "LENGRVIS_CONFIG_FILE",
+        "LENGRVIS_ENV_FILE",
+        "LENGRVIS_STRICT_STATE_MACHINE",
+    ):
+        env.pop(key, None)
+    missing_config_root = tmp_path / "missing-runtime-config"
+    env["LENGRVIS_CONFIG_FILE"] = str(missing_config_root / "config.yaml")
+    env["LENGRVIS_ENV_FILE"] = str(missing_config_root / ".env")
+    if extra_env:
+        env.update(extra_env)
+
+    return subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "verify_release_safety.ps1"),
+            "-Root",
+            str(project_root),
+        ],
+        cwd=project_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _real_device_mobile_matrix_text(project_root: Path) -> str:
     return (project_root / "docs" / "qa" / "real-device-mobile-matrix.md").read_text(encoding="utf-8")
 
@@ -637,6 +682,7 @@ def test_root_evidence_scripts_are_discoverable_and_non_signoff(project_root: Pa
         "evidence:mobile-lan-wss": "verify_mobile_lan_wss_preflight.ps1",
         "evidence:local-model-template": "collect_local_model_clean_machine_evidence_template.ps1",
         "evidence:diagnostics-review": "collect_diagnostics_external_review_packet.ps1",
+        "evidence:distribution-template": "collect_distribution_release_evidence_template.ps1",
     }
 
     for script_name, helper_name in expected_helpers.items():
@@ -667,7 +713,7 @@ def test_current_release_evidence_is_single_ci_generated_summary(project_root: P
     )
 
     assert "release-evidence:" in ci
-    assert "needs: [hygiene, backend, desktop, mobile]" in ci
+    assert "needs: [hygiene, backend, desktop, mobile, supply-chain, extension-security]" in ci
     assert "if: always()" in ci
     assert "RELEASE_EVIDENCE_NEEDS_JSON: ${{ toJson(needs) }}" in ci
     assert "npm run evidence:current-release" in ci
@@ -714,6 +760,213 @@ def test_current_release_evidence_is_single_ci_generated_summary(project_root: P
     assert "it is still not release sign-off, not RC sign-off, and not a pass" in release_gate
 
 
+def test_current_release_evidence_ci_success_still_requires_manual_signature(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    needs = {
+        gate: {"result": "success"}
+        for gate in (
+            "hygiene",
+            "backend",
+            "desktop",
+            "mobile",
+            "supply-chain",
+            "extension-security",
+        )
+    }
+    output_path = tmp_path / "current-release-evidence.md"
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(project_root),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "abc123",
+            "-GeneratedAtUtc",
+            "2026-06-20T00:00:00.0000000Z",
+            "-NeedsJson",
+            json.dumps(needs),
+            "-ReleaseOwner",
+            "release-owner",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- CI status: machine_gates_passed" in text
+    assert "- Manual sign-off status: manual_signoff_pending" in text
+    assert "- Owner signature: PENDING_RELEASE_OWNER_SIGNATURE" in text
+    assert "It is not release sign-off" in text
+    assert "| Supply chain lock + SBOM |" in text
+    assert "| IPC + Skill/MCP + settings security gate |" in text
+
+
+def test_release_safety_fails_closed_without_strict_state_machine(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(project_root, tmp_path)
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Release safety verification failed:" in output
+    assert "strict_state_machine=true" in output
+    assert "source: default" in output
+    assert "Release safety verification passed" not in output
+
+
+def test_release_safety_passes_when_strict_enabled_and_mock_fallback_disabled(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {"LENGRVIS_STRICT_STATE_MACHINE": "true"},
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "Release safety verification passed: allow_mock_fallback=false and strict_state_machine=true." in output
+
+
+def test_release_safety_blocks_mock_fallback_even_with_strict_state_machine(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_ALLOW_MOCK_FALLBACK": "true",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Release/production builds must not enable LENGRVIS_ALLOW_MOCK_FALLBACK=true" in output
+    assert "source: env:LENGRVIS_ALLOW_MOCK_FALLBACK" in output
+    assert "strict_state_machine=true" not in output
+
+
+def test_release_safety_default_strict_state_machine_is_documented_as_fail_closed(
+    project_root: Path,
+) -> None:
+    config_py = (project_root / "backend" / "app" / "config.py").read_text(encoding="utf-8")
+    example_config = (project_root / "config.example.yaml").read_text(encoding="utf-8")
+    release_gate = _release_gate_text(project_root)
+
+    assert "strict_state_machine: bool = False" in config_py
+    assert "strict_state_machine: false" in example_config
+    assert "release:safety` is expected to fail" in release_gate
+    assert "Treat that as the release gate doing its job" in release_gate
+
+
+def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root: Path) -> None:
+    desktop_package = json.loads((project_root / "desktop" / "package.json").read_text(encoding="utf-8"))
+    scripts = desktop_package["scripts"]
+    signed_config_path = project_root / "desktop" / "electron-builder.signed.js"
+    signed_config = signed_config_path.read_text(encoding="utf-8")
+    unsigned_config = (project_root / "desktop" / "electron-builder.yml").read_text(encoding="utf-8")
+    verify_script = (
+        project_root / "desktop" / "scripts" / "verify-signed-build-config.cjs"
+    ).read_text(encoding="utf-8")
+
+    assert scripts["verify:signed-build-config"] == "node scripts/verify-signed-build-config.cjs"
+    assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:signed"]
+    assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:publish"]
+    assert "electron-builder.signed.js" in scripts["dist:signed"]
+    assert "electron-builder.signed.js --publish always" in scripts["dist:publish"]
+    assert "verify:signed-build-config" not in scripts["dist"]
+    assert "electron-builder.yml" in scripts["dist"]
+    assert not (project_root / "desktop" / "electron-builder.signed.yml").exists()
+
+    assert "REPLACE_" not in signed_config
+    assert "endpoint: process.env.AZURE_TRUSTED_SIGNING_ENDPOINT" in signed_config
+    assert "codeSigningAccountName: process.env.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME" in signed_config
+    assert "certificateProfileName: process.env.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME" in signed_config
+    assert "azureSignOptions" in signed_config
+    assert "publisherName" in signed_config
+    assert "publisherName: [publisherName]" in signed_config
+    assert "verifyUpdateCodeSignature: true" in signed_config
+    assert "REPLACE_" not in unsigned_config
+    assert "未设置时跳过签名" in unsigned_config
+    assert "仅限内部分发" in unsigned_config
+    assert "electron-builder.signed.js" in unsigned_config
+
+    for env_name in (
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_TRUSTED_SIGNING_ENDPOINT",
+        "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+        "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+        "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
+    ):
+        assert env_name in signed_config
+        assert env_name in verify_script
+    assert "REPLACE_" in verify_script
+    assert "Signed Windows distribution configuration is incomplete" in verify_script
+    assert "verify the backend binary signature before packaging" in verify_script
+    assert "win.azureSignOptions.publisherName" in verify_script
+    assert "win.publisherName[0]" in verify_script
+
+
+def test_windows_signed_build_config_gate_rejects_missing_release_env(
+    project_root: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for desktop signed build config checks")
+
+    env = os.environ.copy()
+    for env_name in (
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_TRUSTED_SIGNING_ENDPOINT",
+        "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+        "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+        "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
+    ):
+        env.pop(env_name, None)
+
+    result = subprocess.run(
+        [
+            node,
+            str(project_root / "desktop" / "scripts" / "verify-signed-build-config.cjs"),
+        ],
+        cwd=project_root / "desktop",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Signed Windows distribution configuration is incomplete:" in output
+    assert "Missing non-placeholder environment variable: AZURE_TRUSTED_SIGNING_ENDPOINT" in output
+    assert "Missing non-placeholder environment variable: AZURE_TRUSTED_SIGNING_PUBLISHER_NAME" in output
+    assert "Unsigned local builds must use `npm --prefix desktop run dist`" in output
+    assert "Signed Windows distribution configuration verified" not in output
+
+
 def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
     project_root: Path,
 ) -> None:
@@ -728,6 +981,7 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
         "npm run evidence:mobile-lan-wss",
         "npm run evidence:local-model-template",
         "npm run evidence:diagnostics-review",
+        "npm run evidence:distribution-template",
     )
     for alias in aliases:
         assert alias in readme
@@ -741,16 +995,19 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
         r".\scripts\verify_mobile_lan_wss_preflight.ps1",
         r".\scripts\collect_local_model_clean_machine_evidence_template.ps1",
         r".\scripts\collect_diagnostics_external_review_packet.ps1",
+        r".\scripts\collect_distribution_release_evidence_template.ps1",
     )
     for helper in raw_helpers:
         assert helper in release_gate
 
     assert "证据 helper 新手入口" in readme
-    assert "输出只能作为 evidence/template/preflight 记录" in readme
+    assert "输出只能作为 evidence/template/preflight/inventory 记录" in readme
     assert "不是 clean-machine pass" in readme
     assert "real-device pass" in readme
     assert "`public_safe=true`" in readme
     assert "completed task-result signoff" in readme
+    assert "signed-installer pass" in readme
+    assert "upgrade/rollback pass" in readme
 
     assert "newcomer-friendly entrypoints" in release_gate
     assert "only produce evidence/template/preflight artifacts" in release_gate
@@ -763,6 +1020,9 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
     assert "not release-candidate sign-off" in release_gate
     assert "public_safe=false" in release_gate
     assert "not as a pass" in release_gate
+    assert "signed-installer pass" in release_gate
+    assert "upgrade pass" in release_gate
+    assert "rollback pass" in release_gate
 
 
 def test_desktop_copy_exposes_settings_and_diagnostics_as_user_entrypoints(project_root: Path) -> None:
@@ -1146,6 +1406,7 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:android-real-device-template",
         "evidence:local-model-template",
         "evidence:diagnostics-review",
+        "evidence:distribution-template",
     }
     forbidden_name_pattern = re.compile(
         r"pass|passed|signoff|sign-off|signed-off|approved|approval|public-safe|ready",

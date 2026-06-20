@@ -64,8 +64,8 @@
   - 验收：自动门禁继续使用既有 `qa:gate` / `release:check`；未自动化的平台卖点必须进入人工 gate、waiver 或 residual risk。
 
 - [x] **补齐依赖锁验证入口与验收口径。**
-  - 证据：根目录 `deps:verify` 入口验证 `desktop/package-lock.json`、`mobile/package-lock.json` 与后端 direct lock；`docs/qa/release-gate.md` 已把 `npm run deps:verify` 列为依赖变更时必须记录的 preflight evidence。
-  - 剩余风险：`backend/requirements-lock.txt` 只锁直接依赖，不是完整解析后的 Python 传递依赖锁；后续仍应迁移到 uv/pip-tools 等完整 lock workflow。
+  - 证据：根目录 `deps:verify` 入口验证 `desktop/package-lock.json`、`mobile/package-lock.json` 与后端 `backend/requirements-lock.txt`；后端锁现在要求完整解析后的 Python transitive lock（`uv pip compile` 生成、全量 pinned、带 `# via` resolver provenance），`docs/qa/release-gate.md` 已把 `npm run deps:verify` 列为依赖变更时必须记录的 preflight evidence。
+  - 剩余风险：当前 Python lock 固定版本和传递依赖，但不包含 hash pins、包签名或 registry provenance；这些仍需作为供应链 residual risk 或单独审计证据。
   - 验收：依赖清单、lockfile 或后端 requirements 变更时，QA handoff 必须记录 `npm run deps:verify` 的命令、日期、提交和结果。
 
 - [x] **补齐 LAN TLS readiness 的证据口径。**
@@ -96,8 +96,8 @@
 
 - [x] **停止在正式启动脚本里现场安装依赖。**
   - 证据：`scripts/start_app.ps1` 不再执行 `pip install` / `npm install`；旧 `-InstallMissingDependencies` 参数会明确拒绝并指向 `scripts/setup_dev.ps1`；README 已拆分“正式包直接启动”和“源码开发先 setup”。
-  - 已补闭环：开发依赖安装迁到 `scripts/setup_dev.ps1` / `scripts/dev.ps1 -InstallMissingDependencies`；依赖锁验证已有 `deps:verify` 入口和 direct backend lock 证据，可在发布前阻断明显 drift。
-  - 剩余风险：`backend/requirements-lock.txt` 仍只是直接依赖锁，不是完整解析后的 Python 传递依赖锁；后续仍应迁移到 uv/pip-tools 等完整 lock workflow。
+  - 已补闭环：开发依赖安装迁到 `scripts/setup_dev.ps1` / `scripts/dev.ps1 -InstallMissingDependencies`；依赖锁验证已有 `deps:verify` 入口和后端 transitive lock 证据，可在发布前阻断明显 drift。
+  - 剩余风险：Python lock 已完整解析传递依赖并固定版本，但尚未强制 hash pins、包签名或 registry provenance。
   - 影响：用户第一次启动时网络、registry、依赖新版本都可能把体验炸掉。
   - 验收：正式启动脚本只启动已锁定产物；开发环境安装迁到 `setup` 脚本；依赖使用 lock/constraints 固定。
 

@@ -106,6 +106,76 @@ def test_mcp_client_calls_tool(mcp_server):
     assert result["result"]["sum"] == 5
 
 
+def test_mcp_client_retries_tools_list_after_transient_error(monkeypatch):
+    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp")
+    client = MCPClient(config)
+    tools_list_calls = 0
+
+    async def fake_post(payload):
+        nonlocal tools_list_calls
+        assert payload["method"] == "tools/list"
+        tools_list_calls += 1
+        if tools_list_calls == 1:
+            return {"error": {"message": "temporary outage"}}
+        return {
+            "jsonrpc": "2.0",
+            "id": payload.get("id"),
+            "result": {"tools": _MOCK_TOOLS},
+        }
+
+    monkeypatch.setattr(client, "_post", fake_post)
+
+    assert asyncio.run(client.list_tools()) == []
+    tools = asyncio.run(client.list_tools())
+
+    assert [tool["name"] for tool in tools] == ["echo", "add"]
+    assert tools_list_calls == 2
+
+
+def test_mcp_client_rejects_arguments_that_do_not_match_discovered_schema():
+    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp")
+    client = MCPClient(config)
+    client._tools_cache = [  # noqa: SLF001 - cache priming keeps the test network-free.
+        {
+            "name": "add",
+            "description": "Sum two integers",
+            "input_schema": {
+                "type": "object",
+                "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                "required": ["a", "b"],
+                "additionalProperties": False,
+            },
+        }
+    ]
+
+    result = asyncio.run(client.call_tool("add", {"a": "2", "b": 3}))
+
+    assert result["ok"] is False
+    assert "input_schema" in result["error"]
+
+
+def test_mcp_client_rejects_falsy_non_object_arguments_without_coercion(monkeypatch):
+    config = MCPServerConfig(name="demo", url="https://api.example.com/mcp")
+    client = MCPClient(config)
+    client._tools_cache = [  # noqa: SLF001 - cache priming keeps the test network-free.
+        {
+            "name": "echo",
+            "description": "Echo the provided text back",
+            "input_schema": {"type": "object"},
+        }
+    ]
+
+    async def fail_if_called(_payload):
+        raise AssertionError("call_tool should reject invalid arguments before transport")
+
+    monkeypatch.setattr(client, "_post", fail_if_called)
+
+    result = asyncio.run(client.call_tool("echo", ""))  # type: ignore[arg-type]
+
+    assert result["ok"] is False
+    assert "must be a JSON object" in result["error"]
+
+
 def test_mcp_client_handles_unknown_tool(mcp_server):
     config = MCPServerConfig(name="demo", url=mcp_server)
     client = MCPClient(config)

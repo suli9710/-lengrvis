@@ -220,3 +220,40 @@ def test_settings_endpoint_rejects_invalid_numeric_fields(monkeypatch, tmp_path:
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_numeric_setting"
+
+
+def test_settings_endpoint_requires_confirmation_for_permission_mode_relaxation(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    client = TestClient(create_app())
+
+    rejected = client.post("/api/settings", json={"permission_mode": "dontask"})
+
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "sensitive_confirmation_required"
+
+    confirmation = client.post("/api/settings/confirm-sensitive-change", json={"permission_mode": "dontask"})
+    assert confirmation.status_code == 200
+    confirmation_body = confirmation.json()
+    assert confirmation_body["required"] is True
+    assert confirmation_body["changes"][0]["kind"] == "settings_permission_mode_relaxation"
+    assert confirmation_body["changes"][0]["to"] == "dont_ask"
+
+    accepted = client.post(
+        "/api/settings",
+        json={"permission_mode": "dontask", "confirmation_nonce": confirmation_body["nonce"]},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["permission_mode"] == "dont_ask"
+
+
+def test_settings_endpoint_rejects_secret_settings(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    client = TestClient(create_app())
+
+    response = client.post("/api/settings", json={"api_key": "sk-test-secret"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "secret_settings_must_use_external_config"

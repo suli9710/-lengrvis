@@ -43,13 +43,13 @@ win:
   # 代码签名（按持有凭证类型二选一，均通过环境变量注入，本文件无需为无签名的本地构建改动）：
   # 1) OV/EV PFX 证书：设置 WIN_CSC_LINK（pfx 路径或 base64）与 WIN_CSC_KEY_PASSWORD，
   #    electron-builder 会自动签名所有 exe/dll；未设置时跳过签名（SmartScreen 会拦截，仅限内部分发）。
-  # 2) Azure Trusted Signing：使用 electron-builder.signed.yml（azureSignOptions），
+  # 2) Azure Trusted Signing：使用 electron-builder.signed.js（azureSignOptions），
   #    需要 AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET 凭证。
   # 注意：随包分发的 backend.exe 属于 extraResources，electron-builder 不会自动签它，
   #   发布前需在 CI 中先对 dist/backend.exe 单独 signtool 签名再打包。
   #   dist:signed / dist:publish 会通过 scripts/verify-backend-signature.cjs
   #   强制校验 backend 二进制的 Authenticode/codesign 签名，未签名直接失败。
-  # 签名上线后启用更新包签名校验；未签名本地 dist 构建请使用 electron-builder.signed.yml。
+  # 签名上线后启用更新包签名校验；未签名本地 dist 构建请使用 electron-builder.yml。
   verifyUpdateCodeSignature: true
   extraResources:
     - from: ../dist/backend.exe

@@ -18,11 +18,21 @@ CONFIRMATION_FIELD = "confirmation_nonce"
 CONFIRMATION_TTL_SECONDS = 120
 SENSITIVE_ENABLE_SETTINGS = {
     "allow_browser_network",
-    "remote_desktop_enabled",
     "allow_cloud_context",
     "allow_file_content_upload",
+    "allow_mock_fallback",
+    "allow_unsafe_local_skill_execution",
+    "developer_writes_enabled",
+    "remote_desktop_enabled",
 }
 LLM_EGRESS_SETTINGS = {"base_url", "provider_name", "wire_api"}
+PERMISSION_MODE_RELAXATION_ORDER = {
+    "plan": 0,
+    "default": 1,
+    "trusted_edits": 2,
+    "auto_review": 3,
+    "dont_ask": 4,
+}
 _TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS sensitive_confirmations (
     nonce TEXT PRIMARY KEY,
@@ -66,6 +76,35 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         new_value = _truthy(payload.get("requires_openai_auth"))
         if old_value and not new_value:
             changes.append({"kind": "settings_disable_auth", "key": "requires_openai_auth", "from": old_value, "to": new_value})
+    if "developer_writes_require_verification" in payload:
+        old_value = bool(getattr(settings, "developer_writes_require_verification", True))
+        new_value = _truthy(payload.get("developer_writes_require_verification"))
+        if old_value and not new_value:
+            changes.append(
+                {
+                    "kind": "settings_disable_developer_write_verification",
+                    "key": "developer_writes_require_verification",
+                    "from": old_value,
+                    "to": new_value,
+                }
+            )
+    if "strict_state_machine" in payload:
+        old_value = bool(getattr(settings, "strict_state_machine", False))
+        new_value = _truthy(payload.get("strict_state_machine"))
+        if old_value and not new_value:
+            changes.append(
+                {
+                    "kind": "settings_disable_strict_state_machine",
+                    "key": "strict_state_machine",
+                    "from": old_value,
+                    "to": new_value,
+                }
+            )
+    if "permission_mode" in payload:
+        old_mode = _normalized_setting_value("permission_mode", getattr(settings, "permission_mode", "default"))
+        new_mode = _normalized_setting_value("permission_mode", payload.get("permission_mode"))
+        if _permission_mode_rank(new_mode) > _permission_mode_rank(old_mode):
+            changes.append({"kind": "settings_permission_mode_relaxation", "key": "permission_mode", "from": old_mode, "to": new_mode})
     for key in sorted(LLM_EGRESS_SETTINGS):
         if key not in payload:
             continue
@@ -162,9 +201,22 @@ def _create_confirmation(scope: str, changes: list[dict[str, Any]]) -> dict[str,
 
 def _normalized_setting_value(key: str, value: Any) -> str:
     text = str(value or "").strip()
+    if key == "permission_mode":
+        aliases = {
+            "accept_edits": "trusted_edits",
+            "trusted": "trusted_edits",
+            "auto": "auto_review",
+            "dontask": "dont_ask",
+            "deny": "dont_ask",
+        }
+        return aliases.get(text.lower(), text.lower())
     if key in {"mode", "provider_name", "wire_api"}:
         return text.lower()
     return text
+
+
+def _permission_mode_rank(value: str) -> int:
+    return PERMISSION_MODE_RELAXATION_ORDER.get(value, PERMISSION_MODE_RELAXATION_ORDER["default"])
 
 
 def _consume_confirmation(nonce: str, scope: str, changes: list[dict[str, Any]]) -> None:

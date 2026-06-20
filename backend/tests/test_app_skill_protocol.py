@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 from pathlib import Path
 
 import pytest
+import yaml
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from app.policy.risk import RiskLevel
 
-from app.skills.loader import load_skill_package, review_skill_definition, scan_skill_directories
+from app.skills.loader import canonical_skill_signature_payload, load_skill_package, review_skill_definition, scan_skill_directories
 from app.skills.schemas import LEGACY_PERMISSION, SkillDefinition, SkillLoadError
 from app.tools.registry import register_all_tools
 
@@ -67,6 +72,12 @@ risk:
   default: R2_REVERSIBLE_MODIFY
 permissions:
   - messaging.read
+signature:
+  key_id: test-signer
+  algorithm: ed25519
+  manifest_digest: sha256:test
+  signature: test-signature
+  signed_at: "2026-06-19T00:00:00Z"
 tools:
   - name: skill.product.send_message
     description: Send a message through a product manifest fixture.
@@ -97,6 +108,10 @@ tools:
 
     assert package.safety_report.ok is True
     assert package.safety_report.issues == []
+    assert package.definition.signature is not None
+    assert package.definition.signature.key_id == "test-signer"
+    assert package.signature_report["status"] == "invalid_manifest_digest"
+    assert package.signature_report["severity"] == "warning"
     assert package.definition.risk == RiskLevel.R2_REVERSIBLE_MODIFY
     assert package.definition.effective_permissions(tool) == ["messaging.send"]
     assert tool.entrypoint == "handlers/send.py"
@@ -106,6 +121,162 @@ tools:
     assert package.tool_definitions[0].capabilities == ["messaging.send"]
     assert "send" in package.tool_definitions[0].effects
     assert "message" in package.tool_definitions[0].resource_kinds
+
+
+@pytest.mark.parametrize("field_name", ["key_id", "signature"])
+def test_signature_required_fields_reject_whitespace_only_values(field_name: str):
+    signature = {
+        "key_id": "test-signer",
+        "algorithm": "ed25519",
+        "manifest_digest": "sha256:test",
+        "signature": "test-signature",
+        "signed_at": "2026-06-19T00:00:00Z",
+    }
+    signature[field_name] = "   "
+
+    with pytest.raises(ValueError, match=field_name):
+        SkillDefinition.model_validate(
+            {
+                "name": "bad-signature-skill",
+                "version": "1.0",
+                "agent_owner": "AppAgent",
+                "signature": signature,
+                "tools": [
+                    {
+                        "name": "skill.bad.signature",
+                        "execution": {"type": "python", "entry": "handler.py"},
+                    }
+                ],
+            }
+        )
+
+
+def test_skill_signature_verifies_with_trusted_ed25519_key(tmp_path: Path):
+    manifest = {
+        "name": "signed-skill",
+        "version": "1.0",
+        "agent_owner": "FileAgent",
+        "permissions": ["filesystem.read"],
+        "tools": [
+            {
+                "name": "skill.signed.read",
+                "execution": {"type": "python", "entry": "handler.py"},
+            }
+        ],
+    }
+    private_key = Ed25519PrivateKey.generate()
+    payload = canonical_skill_signature_payload(manifest)
+    public_key = base64.b64encode(
+        private_key.public_key().public_bytes(encoding=Encoding.Raw, format=PublicFormat.Raw)
+    ).decode("ascii")
+    manifest["signature"] = {
+        "key_id": "release-test",
+        "algorithm": "ed25519",
+        "manifest_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+        "signature": base64.b64encode(private_key.sign(payload)).decode("ascii"),
+        "signed_at": "2026-06-19T00:00:00Z",
+    }
+    skill_root = tmp_path / "signed_skill"
+    skill_root.mkdir()
+    (skill_root / "handler.py").write_text("print('{\"ok\": true}')\n", encoding="utf-8")
+    (skill_root / "skill.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+
+    package = load_skill_package(skill_root, trusted_public_keys={"release-test": public_key})
+
+    assert package.signature_report["status"] == "verified"
+    assert package.signature_report["severity"] == "info"
+
+
+def test_skill_signature_rejects_tampered_manifest_when_key_is_trusted(tmp_path: Path):
+    manifest = {
+        "name": "signed-skill",
+        "version": "1.0",
+        "agent_owner": "FileAgent",
+        "permissions": ["filesystem.read"],
+        "tools": [
+            {
+                "name": "skill.signed.read",
+                "execution": {"type": "python", "entry": "handler.py"},
+            }
+        ],
+    }
+    private_key = Ed25519PrivateKey.generate()
+    payload = canonical_skill_signature_payload(manifest)
+    public_key = base64.b64encode(
+        private_key.public_key().public_bytes(encoding=Encoding.Raw, format=PublicFormat.Raw)
+    ).decode("ascii")
+    tampered_manifest = {
+        **manifest,
+        "permissions": ["filesystem.delete"],
+        "signature": {
+            "key_id": "release-test",
+            "algorithm": "ed25519",
+            "manifest_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "signature": base64.b64encode(private_key.sign(payload)).decode("ascii"),
+            "signed_at": "2026-06-19T00:00:00Z",
+        },
+    }
+    skill_root = tmp_path / "tampered_skill"
+    skill_root.mkdir()
+    (skill_root / "handler.py").write_text("print('{\"ok\": true}')\n", encoding="utf-8")
+    (skill_root / "skill.yaml").write_text(yaml.safe_dump(tampered_manifest, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(SkillLoadError, match="manifest_digest"):
+        load_skill_package(skill_root, trusted_public_keys={"release-test": public_key})
+
+
+def test_skill_signature_payload_covers_nested_signature_named_fields(tmp_path: Path):
+    manifest = {
+        "name": "signed-schema-skill",
+        "version": "1.0",
+        "agent_owner": "FileAgent",
+        "permissions": ["filesystem.read"],
+        "tools": [
+            {
+                "name": "skill.signed_schema.read",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "signature": {"type": "string", "maxLength": 64},
+                    },
+                },
+                "execution": {"type": "python", "entry": "handler.py"},
+            }
+        ],
+    }
+    private_key = Ed25519PrivateKey.generate()
+    payload = canonical_skill_signature_payload(manifest)
+    public_key = base64.b64encode(
+        private_key.public_key().public_bytes(encoding=Encoding.Raw, format=PublicFormat.Raw)
+    ).decode("ascii")
+    tampered_manifest = {
+        **manifest,
+        "tools": [
+            {
+                **manifest["tools"][0],
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "signature": {"type": "string", "maxLength": 4096},
+                    },
+                },
+            }
+        ],
+        "signature": {
+            "key_id": "release-test",
+            "algorithm": "ed25519",
+            "manifest_digest": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "signature": base64.b64encode(private_key.sign(payload)).decode("ascii"),
+            "signed_at": "2026-06-19T00:00:00Z",
+        },
+    }
+    skill_root = tmp_path / "tampered_nested_signature_skill"
+    skill_root.mkdir()
+    (skill_root / "handler.py").write_text("print('{\"ok\": true}')\n", encoding="utf-8")
+    (skill_root / "skill.yaml").write_text(yaml.safe_dump(tampered_manifest, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(SkillLoadError, match="manifest_digest"):
+        load_skill_package(skill_root, trusted_public_keys={"release-test": public_key})
 
 
 def test_legacy_manifest_missing_permissions_loads_with_warning(tmp_path: Path):
