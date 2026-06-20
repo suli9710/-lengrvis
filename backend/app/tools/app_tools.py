@@ -14,6 +14,7 @@ from typing import Any
 
 from app.core.audit import record
 from app.core.paths import resolve_authorized
+from app.core.subprocess_output import decode_process_output
 from app.llm.registry import get_effective_settings
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -269,13 +270,13 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
                 "Get-AppxPackage | Select-Object Name,PackageFullName,Publisher,Version,InstallLocation | ConvertTo-Json -Compress",
             ],
             capture_output=True,
-            text=True,
             timeout=UNINSTALL_SCAN_TIMEOUT_SECONDS,
             check=False,
         )
-        if completed.returncode != 0 or not completed.stdout.strip():
+        stdout = decode_process_output(completed.stdout)
+        if completed.returncode != 0 or not stdout.strip():
             return []
-        payload = json.loads(completed.stdout)
+        payload = json.loads(stdout)
         rows = payload if isinstance(payload, list) else [payload]
         apps: list[dict[str, Any]] = []
         for row in rows:
@@ -316,13 +317,13 @@ def _scan_winget_packages() -> list[dict[str, Any]]:
                 "--disable-interactivity",
             ],
             capture_output=True,
-            text=True,
             timeout=UNINSTALL_SCAN_TIMEOUT_SECONDS,
             check=False,
         )
-        if completed.returncode != 0 or not completed.stdout.strip():
+        stdout = decode_process_output(completed.stdout)
+        if completed.returncode != 0 or not stdout.strip():
             return []
-        payload = json.loads(completed.stdout)
+        payload = json.loads(stdout)
         rows = payload.get("Packages") if isinstance(payload, dict) else payload
         if not isinstance(rows, list):
             return []
@@ -508,14 +509,13 @@ def _run_uninstall_command(command_args: list[str], *, timeout: int = UNINSTALL_
             command_args,
             shell=False,
             capture_output=True,
-            text=True,
             timeout=timeout,
             check=False,
         )
         return {
             "returncode": completed.returncode,
-            "stdout": _truncate_process_output(completed.stdout),
-            "stderr": _truncate_process_output(completed.stderr),
+            "stdout": _truncate_process_output(decode_process_output(completed.stdout)),
+            "stderr": _truncate_process_output(decode_process_output(completed.stderr)),
             "timed_out": False,
         }
     except subprocess.TimeoutExpired:

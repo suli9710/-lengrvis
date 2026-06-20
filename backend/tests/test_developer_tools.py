@@ -5,6 +5,9 @@ from typing import Any
 
 import pytest
 
+from app.core.subprocess_output import decode_process_output
+from app.policy.policy_engine import PolicyEngine
+from app.policy.risk import SafetyVerdict
 from app.tools import developer_tools
 from app.tools.registry import ToolRegistry
 
@@ -264,6 +267,43 @@ def test_run_command_marks_truncated_stdout_and_stderr(monkeypatch: pytest.Monke
     assert result["stderr_truncated"] is True
 
 
+def test_run_command_decodes_non_utf8_windows_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class Completed:
+        returncode = 0
+        stdout = "你好".encode("gbk")
+        stderr = "错误".encode("gbk")
+
+    monkeypatch.setattr(developer_tools.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    result = developer_tools._run_command(["where", "python"], cwd=tmp_path)
+
+    assert result["stdout"] == "你好"
+    assert result["stderr"] == "错误"
+
+
+def test_decode_process_output_detects_utf16_without_bom() -> None:
+    text = '{"Name":"App"}'
+
+    assert decode_process_output(text.encode("utf-16le")) == text
+    assert decode_process_output(text.encode("utf-16be")) == text
+
+
+def test_dev_test_run_dry_run_does_not_execute(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[Any] = []
+    monkeypatch.setattr(developer_tools.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    result = developer_tools.test_run(
+        {"cwd": str(tmp_path), "command": "pytest backend/tests", "timeout_seconds": 7, "dry_run": True},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is True
+    assert result["dry_run"] is True
+    assert result["would_execute"] is True
+    assert result["timeout_seconds"] == 7
+    assert calls == []
+
+
 def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class Timeout:
         stdout = "partial stdout"
@@ -424,7 +464,27 @@ def test_registered_developer_tools_are_public_readonly_fast_path_tools() -> Non
     assert inventory["effects"] == ["read", "inspect"]
     assert inventory["requires_authorized_path"] is True
     assert worktree["requires_authorized_path"] is True
-    assert test_run["risk_level"] == "R1_OPEN_ONLY"
+    assert test_run["risk_level"] == "R2_REVERSIBLE_MODIFY"
+    assert test_run["permission_mode"] == "ask_on_write"
     assert test_run["read_only"] is False
+    assert test_run["supports_dry_run"] is True
     assert test_run["fast_path_eligible"] is False
     assert "execute_test" in test_run["effects"]
+
+
+def test_dev_test_run_requires_approval_as_local_code_execution() -> None:
+    registry = ToolRegistry()
+    developer_tools.register(registry)
+    tool = registry.get("dev.test_run")
+
+    review = PolicyEngine().review_tool_call(
+        "task_tests",
+        "step_tests",
+        tool.name,
+        {"command": "pytest backend/tests"},
+        tool.risk_level,
+        tool_definition=tool,
+    )
+
+    assert review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
+    assert review.risk_level == tool.risk_level

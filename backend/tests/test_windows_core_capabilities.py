@@ -67,6 +67,42 @@ def test_uninstall_app_rejects_direct_uninstall_command(monkeypatch, tmp_path):
     assert "Direct uninstall commands" in result["error"]
 
 
+def test_appx_scan_decodes_utf16_json_without_bom(monkeypatch):
+    monkeypatch.setattr(app_tools.platform, "system", lambda: "Windows")
+
+    class Completed:
+        returncode = 0
+        stdout = (
+            '[{"Name":"Sample.App","PackageFullName":"Sample.App_1.0.0.0_x64__abc",'
+            '"Publisher":"CN=Vendor","Version":"1.0.0.0","InstallLocation":"C:\\\\Sample"}]'
+        ).encode("utf-16le")
+
+    monkeypatch.setattr(app_tools.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    apps = app_tools._scan_appx_packages()
+
+    assert apps[0]["id"] == "sample.app"
+    assert apps[0]["package_full_name"] == "Sample.App_1.0.0.0_x64__abc"
+    assert apps[0]["source"] == "appx"
+
+
+def test_winget_scan_decodes_utf16_json_without_bom(monkeypatch):
+    class Completed:
+        returncode = 0
+        stdout = (
+            '{"Packages":[{"Id":"Vendor.Sample","Name":"Sample App",'
+            '"Publisher":"Vendor","Version":"2.0","Source":"winget"}]}'
+        ).encode("utf-16be")
+
+    monkeypatch.setattr(app_tools.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    apps = app_tools._scan_winget_packages()
+
+    assert apps[0]["id"] == "vendor.sample"
+    assert apps[0]["name"] == "Sample App"
+    assert apps[0]["source"] == "winget"
+
+
 def _registry_product_apps():
     return [
         {

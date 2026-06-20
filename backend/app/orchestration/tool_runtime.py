@@ -1134,7 +1134,19 @@ class ToolRuntime:
             return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
         except TimeoutError:
             self._remember_pending_tool_completion(lock_keys, worker, tool=tool, reason="timeout")
-            return {"error": f"{tool.name} timed out after {timeout:.0f}s"}
+            pending_completion = bool(lock_keys and not worker.done())
+            error = f"{tool.name} timed out after {timeout:.0f}s"
+            if pending_completion:
+                error = (
+                    f"{error}; execution is still finishing in the background and follow-up "
+                    "calls for the same resource/tool will wait before running."
+                )
+            return {
+                "error": error,
+                "timed_out": True,
+                "pending_completion": pending_completion,
+                "retry_after_pending_completion": pending_completion,
+            }
         except asyncio.CancelledError:
             self._remember_pending_tool_completion(lock_keys, worker, tool=tool, reason="cancelled")
             raise
@@ -1204,7 +1216,7 @@ class ToolRuntime:
         return _DEFAULT_TOOL_TIMEOUT_SECONDS
 
     def _write_lock_keys(self, tool: ToolDefinition, args: dict[str, Any]) -> list[str]:
-        if not self._is_write_tool(tool) and not tool.concurrency_key:
+        if not self._needs_completion_barrier(tool, args):
             return []
 
         keys: set[str] = set()
@@ -1220,7 +1232,14 @@ class ToolRuntime:
                 keys.add(parent)
         if not keys and self._is_write_tool(tool):
             keys.add(f"tool:{tool.name.casefold()}")
+        if not keys:
+            keys.add(f"tool:{tool.name.casefold()}")
         return sorted(keys)
+
+    def _needs_completion_barrier(self, tool: ToolDefinition, args: dict[str, Any]) -> bool:
+        if tool.concurrency_key or self._is_write_tool(tool):
+            return True
+        return not tool.is_concurrency_safe(args)
 
     def _is_write_tool(self, tool: ToolDefinition) -> bool:
         risk = getattr(tool, "risk_level", None)

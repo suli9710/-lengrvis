@@ -4,8 +4,8 @@
 
 ## Summary
 
-- Commit SHA: 7b761067d7862de892bfe20870303be3217b31ea
-- Date (UTC): 2026-06-19T11:20:02.3069742Z
+- Commit SHA: 8e4f3f6f9edc85ae560728c432564acd4cbaa8cc
+- Date (UTC): 2026-06-20T09:29:43.340Z
 - CI status: ci_results_unavailable
 - Manual sign-off status: manual_signoff_pending
 - Release owner: Suli
@@ -72,6 +72,7 @@
 ## Failed Items
 
 - CI job results were not supplied; this file was generated outside the CI summary job or without RELEASE_EVIDENCE_NEEDS_JSON.
+- Local regeneration from this Codex session was blocked by filesystem permissions while writing this evidence file; keep all gate results as not_reported until CI or a writable local release gate reruns them.
 
 ## Exemptions
 
