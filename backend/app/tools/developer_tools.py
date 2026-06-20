@@ -11,6 +11,7 @@ from typing import Any
 from app.config import DEFAULT_DATA_DIR
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
+from app.core.subprocess_output import decode_process_output
 from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -277,6 +278,8 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
     timeout_seconds = _bounded_timeout(args.get("timeout_seconds"), background=bool(args.get("background", False)))
     output_dir = _test_output_dir(context)
+    if args.get("dry_run", False):
+        return _test_run_dry_run_preview(tokens, cwd=root, command_text=command, timeout_seconds=timeout_seconds)
     if args.get("background", False):
         try:
             task = start_background_process(
@@ -549,7 +552,6 @@ def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) ->
             shell=shell,
             env=_safe_command_env(),
             capture_output=True,
-            text=True,
             timeout=15,
             check=False,
         )
@@ -561,8 +563,8 @@ def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) ->
             "stdout_truncated": False,
             "stderr_truncated": False,
         }
-    stdout, stdout_truncated = _truncate_text(completed.stdout, COMMAND_STDOUT_LIMIT)
-    stderr, stderr_truncated = _truncate_text(completed.stderr, COMMAND_STDERR_LIMIT)
+    stdout, stdout_truncated = _truncate_text(decode_process_output(completed.stdout), COMMAND_STDOUT_LIMIT)
+    stderr, stderr_truncated = _truncate_text(decode_process_output(completed.stderr), COMMAND_STDERR_LIMIT)
     return {
         "returncode": completed.returncode,
         "stdout": stdout,
@@ -589,12 +591,11 @@ def _run_test_foreground(
             shell=False,
             env=_safe_command_env(),
             capture_output=True,
-            text=True,
             timeout=min(timeout_seconds, TEST_FOREGROUND_TIMEOUT_MAX_SECONDS),
             check=False,
         )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
+        stdout = decode_process_output(completed.stdout)
+        stderr = decode_process_output(completed.stderr)
         returncode = completed.returncode
         timed_out = False
         error = ""
@@ -646,7 +647,9 @@ def _safe_command_env() -> dict[str, str]:
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_PAGER": "cat",
             "PAGER": "cat",
+            "PYTHONIOENCODING": "utf-8",
             "PYTHONUNBUFFERED": "1",
+            "PYTHONUTF8": "1",
         }
     )
     return env
@@ -670,11 +673,28 @@ def _persist_test_output(output_dir: Path, stdout: str, stderr: str) -> tuple[Pa
 
 
 def _decode_timeout_output(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return str(value)
+    return decode_process_output(value)
+
+
+def _test_run_dry_run_preview(
+    command: list[str],
+    *,
+    cwd: Path,
+    command_text: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "controlled": True,
+        "background": False,
+        "dry_run": True,
+        "cwd": str(cwd),
+        "command": command,
+        "command_text": command_text,
+        "timeout_seconds": timeout_seconds,
+        "would_execute": True,
+        "summary": f"Dry-run preview: controlled test command would run for up to {timeout_seconds}s.",
+    }
 
 
 def _bounded_timeout(value: Any, *, background: bool) -> int:
@@ -821,6 +841,7 @@ def _schema(name: str) -> dict[str, Any]:
                 "timeout_seconds": {"type": "integer"},
                 "background": {"type": "boolean"},
                 "max_output_chars": {"type": "integer"},
+                "dry_run": {"type": "boolean"},
             },
             "required": ["command"],
             "additionalProperties": False,
@@ -848,7 +869,7 @@ def register(registry) -> None:
         ("dev.test_status", test_status, ["tests", "developer_execution"], ["read", "inspect"]),
     ]
     for name, execute, capabilities, effects in defs:
-        risk_level = RiskLevel.R1_OPEN_ONLY if name == "dev.test_run" else RiskLevel.R0_READ_ONLY
+        risk_level = RiskLevel.R2_REVERSIBLE_MODIFY if name == "dev.test_run" else RiskLevel.R0_READ_ONLY
         read_only = name != "dev.test_run"
         registry.register(
             ToolDefinition(
@@ -859,10 +880,10 @@ def register(registry) -> None:
                 output_schema={"type": "object"},
                 risk_level=risk_level,
                 agent_owner="ComputerAgent",
-                supports_dry_run=False,
+                supports_dry_run=name == "dev.test_run",
                 requires_authorized_path=name not in {"dev.git_status", "dev.diff_preview", "dev.shell_readonly"},
                 execute=execute,
-                permission_mode="auto_readonly",
+                permission_mode="ask_on_write" if name == "dev.test_run" else "auto_readonly",
                 read_only=read_only,
                 concurrency_safe=read_only,
                 result_summary=_result_summary,

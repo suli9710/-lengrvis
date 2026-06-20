@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.core.subprocess_output import decode_process_output
+
 
 @dataclass(slots=True)
 class BackgroundTask:
@@ -88,7 +90,6 @@ def start_background_process(
             env=env,
             stdout=stdout_file,
             stderr=stderr_file,
-            text=True,
             shell=False,
         )
     finally:
@@ -184,4 +185,4 @@ def _tail_preview(path: Path, limit: int) -> tuple[str, int]:
         if size > limit:
             fh.seek(max(0, size - limit))
         data = fh.read(limit)
-    return data.decode("utf-8", errors="replace"), size
+    return decode_process_output(data), size

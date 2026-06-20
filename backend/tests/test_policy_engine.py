@@ -172,6 +172,39 @@ def test_permission_mode_trusted_edits_allows_trusted_reversible_tool_call():
     assert "trusted_edits" in " ".join(review.reasons)
 
 
+def test_permission_mode_trusted_edits_does_not_auto_allow_local_test_execution():
+    tool = ToolDefinition(
+        name="dev.test_run",
+        description="Run controlled local tests.",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="ComputerAgent",
+        supports_dry_run=True,
+        requires_authorized_path=True,
+        execute=lambda _args, _context: {},
+        read_only=False,
+        concurrency_safe=False,
+        destructive=False,
+        effects=["read", "inspect", "execute_test"],
+        resource_kinds=["workspace", "repository"],
+        trust_tier="builtin",
+    )
+
+    review = PolicyEngine(settings=AppSettings(permission_mode="trusted_edits")).review_tool_call(
+        task_id="task_modes",
+        step_id="step_tests",
+        tool_name=tool.name,
+        args={"command": "pytest backend/tests", "dry_run": False},
+        risk_level=tool.risk_level,
+        context={"settings": AppSettings(permission_mode="trusted_edits")},
+        tool_definition=tool,
+    )
+
+    assert review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
+    assert "approval" in " ".join(review.reasons).lower()
+
+
 def test_permission_mode_default_still_requires_approval_for_write():
     tool = _trusted_reversible_tool()
     review = PolicyEngine(settings=AppSettings(permission_mode="default")).review_tool_call(

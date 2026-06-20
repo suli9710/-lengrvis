@@ -724,7 +724,74 @@ async def test_timed_out_write_tool_blocks_followup_until_worker_finishes(tmp_pa
     first_result = await runtime.execute_tool_with_locks(tool, step_a, step_a.args, first_context, threaded=True)
 
     assert first_started.is_set()
-    assert first_result["error"] == "test.timeout_write_lock timed out after 0s"
+    assert first_result["error"].startswith("test.timeout_write_lock timed out after 0s")
+    assert first_result["pending_completion"] is True
+    assert events == ["A:start"]
+
+    second_context = {
+        **orchestrator.step_execution_handler._runtime_context(task_b).tool_context(),
+        "test_timeout_seconds": 2,
+    }
+    second_task = asyncio.create_task(
+        runtime.execute_tool_with_locks(tool, step_b, step_b.args, second_context, threaded=True)
+    )
+    await asyncio.sleep(0.1)
+
+    assert not second_task.done()
+    assert events == ["A:start"]
+
+    release_first.set()
+    second_result = await asyncio.wait_for(second_task, timeout=2)
+
+    assert second_result["ok"] is True
+    assert events == ["A:start", "A:end", "B:start", "B:end"]
+
+
+@pytest.mark.asyncio
+async def test_timed_out_open_only_side_effect_blocks_followup_until_worker_finishes(monkeypatch):
+    events: list[str] = []
+    release_first = threading.Event()
+    first_started = threading.Event()
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        label = str(args["label"])
+        events.append(f"{label}:start")
+        if label == "A":
+            first_started.set()
+            release_first.wait(timeout=5)
+        events.append(f"{label}:end")
+        return {"ok": True}
+
+    tool = ToolDefinition(
+        name="test.timeout_open_side_effect",
+        description="timeout open side effect",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R1_OPEN_ONLY,
+        agent_owner="FileAgent",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=execute,
+        read_only=False,
+        concurrency_safe=False,
+        trust_tier="builtin",
+        effects=["launch"],
+        resource_kinds=["application"],
+    )
+    orchestrator = OrchestratorAgent()
+    runtime = ToolRuntime(orchestrator)
+    monkeypatch.setattr(runtime, "_tool_execution_timeout", lambda context: float(context["test_timeout_seconds"]))
+    task_a, _plan_a, step_a = _task_plan_step("test.timeout_open_side_effect", {"label": "A"})
+    task_b, _plan_b, step_b = _task_plan_step("test.timeout_open_side_effect", {"label": "B"})
+    first_context = {
+        **orchestrator.step_execution_handler._runtime_context(task_a).tool_context(),
+        "test_timeout_seconds": 0.05,
+    }
+
+    first_result = await runtime.execute_tool_with_locks(tool, step_a, step_a.args, first_context, threaded=True)
+
+    assert first_started.is_set()
+    assert first_result["pending_completion"] is True
     assert events == ["A:start"]
 
     second_context = {

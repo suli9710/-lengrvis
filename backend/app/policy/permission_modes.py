@@ -14,6 +14,8 @@ AUTO_EDIT_FORBIDDEN_EFFECTS = {
     "submit",
     "external_post",
     "credential",
+    "execute_local_code",
+    "execute_test",
     "system",
     "browser_write",
 }
