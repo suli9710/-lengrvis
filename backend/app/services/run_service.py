@@ -43,6 +43,13 @@ from app.services.task_service import get_task, set_task_status
 
 
 TERMINAL_PHASES = {RunPhase(phase.value) for phase in TERMINAL_RUN_PHASES}
+TASK_SYNC_EVENT_PHASES = {
+    RunPhase.AWAITING_APPROVAL,
+    RunPhase.COMPLETED,
+    RunPhase.FAILED,
+    RunPhase.DENIED,
+    RunPhase.CANCELLED,
+}
 ENGINE_TERMINAL_PHASES = {
     EngineRunPhase.AWAITING_APPROVAL,
     EngineRunPhase.COMPLETED,
@@ -470,20 +477,7 @@ def reconcile_task_runs(task_id: str) -> list[Run]:
         _update_run(run, phase=phase)
         if phase != previous_phase:
             run_event_bus.publish(run.id, "turn.completed", {"task_id": task.id, "task_status": task.status.value})
-            event_name = phase.event_name
-            if event_name in {"run.completed", "run.failed", "run.denied", "run.cancelled", "run.waiting_approval"}:
-                run_event_bus.publish(
-                    run.id,
-                    event_name,
-                    {
-                        "task_id": task.id,
-                        "task_status": task.status.value,
-                        "execution_stage": task.execution_stage.value,
-                        "final_summary": task.final_summary,
-                        "phase": phase.value,
-                        "reason": "task_reconciled",
-                    },
-                )
+            _publish_task_phase_event_once(run, phase, task, reason="task_reconciled")
         updated_runs.append(run)
     return updated_runs
 
@@ -716,6 +710,30 @@ def _seen_task_message_ids(run_id: str) -> set[str]:
     return seen
 
 
+def _has_run_event(run_id: str, name: str) -> bool:
+    return any(str(event.get("name")) == name for event in db.fetch_run_events(run_id, limit=5000))
+
+
+def _publish_task_phase_event_once(run: Run, phase: RunPhase, task: Any, *, reason: str) -> None:
+    if phase not in TASK_SYNC_EVENT_PHASES:
+        return
+    event_name = phase.event_name
+    if _has_run_event(run.id, event_name):
+        return
+    run_event_bus.publish(
+        run.id,
+        event_name,
+        {
+            "task_id": task.id,
+            "task_status": task.status.value,
+            "execution_stage": task.execution_stage.value,
+            "final_summary": task.final_summary,
+            "phase": phase.value,
+            "reason": reason,
+        },
+    )
+
+
 def _agent_message(raw: dict[str, Any]) -> Any | None:
     try:
         from app.core.schemas import AgentMessage
@@ -903,6 +921,7 @@ def _sync_run_phase_from_task(run: Run) -> Run:
         if phase in TERMINAL_PHASES and phase != run.phase:
             _sync_persisted_state_phase(run, phase, task.final_summary)
             _update_run(run, phase=phase)
+            _publish_task_phase_event_once(run, phase, task, reason="task_status_sync")
         return run
     if _run_active(run.id) and run.phase == RunPhase.RUNNING and phase == RunPhase.PAUSED:
         return run
@@ -910,6 +929,7 @@ def _sync_run_phase_from_task(run: Run) -> Run:
         return run
     _sync_persisted_state_phase(run, phase, task.final_summary)
     _update_run(run, phase=phase)
+    _publish_task_phase_event_once(run, phase, task, reason="task_status_sync")
     return run
 
 

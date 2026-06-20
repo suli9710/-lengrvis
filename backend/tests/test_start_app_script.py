@@ -815,6 +815,60 @@ def test_current_release_evidence_ci_success_still_requires_manual_signature(
     assert "| IPC + Skill/MCP + settings security gate |" in text
 
 
+def test_current_release_evidence_requires_every_ci_gate_success(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    needs = {
+        gate: {"result": "success"}
+        for gate in (
+            "hygiene",
+            "backend",
+            "desktop",
+            "mobile",
+            "supply-chain",
+            "extension-security",
+        )
+    }
+    needs["backend"] = {"result": "failure"}
+    output_path = tmp_path / "current-release-evidence.md"
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(project_root),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "abc123",
+            "-GeneratedAtUtc",
+            "2026-06-20T00:00:00.0000000Z",
+            "-NeedsJson",
+            json.dumps(needs),
+            "-ReleaseOwner",
+            "release-owner",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- CI status: machine_gates_failed_or_incomplete" in text
+    assert "- Backend pytest + golden task gate: failure" in text
+    assert "machine_gates_passed" not in text
+    assert "| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | failure |" in text
+
+
 def test_release_safety_fails_closed_without_strict_state_machine(
     project_root: Path,
     tmp_path: Path,

@@ -776,6 +776,46 @@ def test_get_run_syncs_waiting_approval_from_task_state(monkeypatch, tmp_path):
     assert synced.state["phase"] == "awaiting_approval"
 
 
+def test_get_run_syncs_cancelled_task_with_cancelled_event(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    task = Task(
+        user_goal="cancel from task state",
+        mode="efficiency",
+        status=TaskPhase.CANCELLED,
+        final_summary="cancelled by user",
+    )
+    db.upsert_model("tasks", task)
+    run = run_service.Run(
+        id="osrun_stale_cancelled_read",
+        message=task.user_goal,
+        mode=task.mode,
+        requested_engine=run_service.RunEngine.OS,
+        engine=run_service.RunEngine.OS,
+        phase=run_service.RunPhase.RUNNING,
+        task_id=task.id,
+        state={
+            "run_id": "osrun_stale_cancelled_read",
+            "engine": "os",
+            "phase": "running",
+            "goal": task.user_goal,
+            "mode": task.mode,
+            "task_id": task.id,
+        },
+    )
+    db.upsert_model("runs", run)
+
+    synced = run_service.get_run(run.id)
+    run_service.get_run(run.id)
+
+    events = run_service.list_run_events(run.id)
+    cancelled_events = [event for event in events if event.name == "run.cancelled"]
+    assert synced.phase == run_service.RunPhase.CANCELLED
+    assert synced.state["phase"] == "cancelled"
+    assert len(cancelled_events) == 1
+    assert cancelled_events[0].payload["reason"] == "task_status_sync"
+
+
 def test_pause_run_expires_pending_approval_and_denies_waiting_step(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     db.init_db()
