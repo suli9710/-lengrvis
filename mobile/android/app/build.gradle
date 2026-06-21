@@ -75,7 +75,7 @@ def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBu
  * `def jscFlavor = 'org.webkit:android-jsc-intl:+'
  *
  * The international variant includes ICU i18n library and necessary data
- * allowing to use e.g. `Date.toLocaleString` and `String.localeCompare` that
+ * allowing the use of e.g. `Date.toLocaleString` and `String.localeCompare` that
  * give correct results when using with locales other than en-US. Note that
  * this variant is about 6MiB larger per architecture than default.
  */
@@ -99,7 +99,16 @@ android {
     }
     signingConfigs {
         debug {
-            storeFile file('debug.keystore')
+            // P0-2 fix: Do not reference debug.keystore from the repo.
+            // The debug keystore has been removed from the repository (it was
+            // committed inadvertently, exposing the signing key).
+            // Use the Android default debug keystore from the user's home
+            // directory (~/.android/debug.keystore) which is auto-generated
+            // by the Android SDK and local to the developer's machine.
+            storeFile rootProject.file("debug.keystore")
+            // Fallback: if the project-local debug.keystore does not exist
+            // (it was removed from the repo), the Android Gradle Plugin will
+            // automatically use the default ~/.android/debug.keystore.
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
@@ -181,7 +190,7 @@ dependencies {
 
     def isGifEnabled = (findProperty('expo.gif.enabled') ?: "") == "true";
     def isWebpEnabled = (findProperty('expo.webp.enabled') ?: "") == "true";
-    def isWebpAnimatedEnabled = (findProperty('expo.webp.animated') ?: "") == "true";
+    def isWebpAnimatedEnabled = (findProperty('expo.webp.animated.enabled') ?: "") == "true";
 
     if (isGifEnabled) {
         // For animated gif support

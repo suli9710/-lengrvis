@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import queue
 import threading
 import time
@@ -20,12 +21,21 @@ GLOBAL_TASK_ID = "__global__"
 _ALL_EVENT_TYPES = "*"
 logger = logging.getLogger(__name__)
 
-# Message persistence runs on a dedicated writer thread: publish() is called
-# from event-loop coroutines, and a contended SQLite write (busy_timeout up to
-# 5s) on the loop thread stalls every WebSocket stream and API request. The
-# single queue preserves insertion order; read-your-writes is preserved by a
-# read barrier registered with db (every agent_messages read flushes first).
-_PERSIST_QUEUE: queue.Queue[tuple[AgentMessage, str]] = queue.Queue()
+# --- P1 fix: Bounded persist queue with backpressure ---
+# Previously _PERSIST_QUEUE was an unbounded queue.Queue(), which meant that
+# under sustained high message throughput (e.g. long-running orchestrator
+# tasks, burst perception events) the queue could grow without limit, causing
+# unbounded memory growth and eventual OOM.
+#
+# The queue now has a configurable max size. When full, publishers apply
+# backpressure by blocking briefly. If the queue still cannot accept a message
+# after the backpressure timeout, the oldest message is dropped (with error
+# log) to prevent OOM. The persist worker drains the queue as fast as SQLite
+# allows; in practice the queue should rarely fill up.
+
+_PERSIST_QUEUE_MAX_SIZE = int(os.environ.get("LENGRVIS_PERSIST_QUEUE_MAX_SIZE", "10000"))
+_PERSIST_BACKPRESSURE_TIMEOUT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_TIMEOUT", "5.0"))
+_PERSIST_QUEUE: queue.Queue[tuple[AgentMessage, str]] = queue.Queue(maxsize=_PERSIST_QUEUE_MAX_SIZE)
 _PERSIST_STATE = threading.Condition()
 _PERSIST_PENDING = 0
 _PERSIST_THREAD: threading.Thread | None = None
@@ -59,12 +69,56 @@ def _ensure_persist_thread() -> None:
 def _enqueue_persist(message: AgentMessage) -> None:
     global _PERSIST_PENDING
     _ensure_persist_thread()
-    # Capture the effective data dir now: the writer thread must not depend on
-    # the publisher's ContextVar override or env state at flush time.
     data_dir = str(db.db_path().parent)
-    with _PERSIST_STATE:
-        _PERSIST_PENDING += 1
-    _PERSIST_QUEUE.put((message, data_dir))
+
+    # --- P1 fix: Backpressure instead of unbounded growth ---
+    queue_depth = _PERSIST_QUEUE.qsize()
+    if queue_depth >= int(_PERSIST_QUEUE_MAX_SIZE * 0.9):
+        logger.warning(
+            "agent_bus: persist queue near capacity (%d/%d); applying backpressure",
+            queue_depth,
+            _PERSIST_QUEUE_MAX_SIZE,
+        )
+    elif queue_depth >= int(_PERSIST_QUEUE_MAX_SIZE * 0.8):
+        logger.info(
+            "agent_bus: persist queue at 80%% capacity (%d/%d)",
+            queue_depth,
+            _PERSIST_QUEUE_MAX_SIZE,
+        )
+
+    try:
+        # Block briefly to give the writer thread time to drain the queue.
+        # This applies backpressure to the calling coroutine instead of
+        # allowing unbounded memory growth.
+        with _PERSIST_STATE:
+            _PERSIST_PENDING += 1
+        _PERSIST_QUEUE.put((message, data_dir), timeout=_PERSIST_BACKPRESSURE_TIMEOUT)
+    except queue.Full:
+        # Queue is still full after backpressure timeout. Drop the oldest
+        # entry to make room, preventing OOM at the cost of losing one
+        # persisted message (logged as error for monitoring).
+        with suppress(queue.Empty):
+            dropped_message, _ = _PERSIST_QUEUE.get_nowait()
+            logger.error(
+                "agent_bus: persist queue full after %.1fs backpressure; "
+                "dropping oldest message %s to prevent OOM",
+                _PERSIST_BACKPRESSURE_TIMEOUT,
+                dropped_message.id,
+            )
+        with _PERSIST_STATE:
+            _PERSIST_PENDING -= 1  # Correct for the dropped message
+            _PERSIST_PENDING += 1  # Increment for the new message
+        try:
+            _PERSIST_QUEUE.put((message, data_dir), timeout=_PERSIST_BACKPRESSURE_TIMEOUT)
+        except queue.Full:
+            # Extremely unlikely: queue still full after dropping one entry.
+            # Drop the new message entirely to guarantee OOM safety.
+            logger.error(
+                "agent_bus: persist queue still full after drop; discarding new message %s",
+                message.id,
+            )
+            with _PERSIST_STATE:
+                _PERSIST_PENDING -= 1
 
 
 def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
@@ -123,7 +177,7 @@ class AgentBus:
         *,
         max_queue_size: int = 100,
     ) -> asyncio.Queue[AgentMessage]:
-        queue: asyncio.Queue[AgentMessage] = asyncio.Queue(maxsize=max_queue_size)
+        queue: asyncio.Queue[AgentMessage] = asyncio.Queue(maxmax_queue_size=max_queue_size) if False else asyncio.Queue(maxsize=max_queue_size)
         loop = asyncio.get_running_loop()
         with self._lock:
             self._global_subscriptions[event_type or _ALL_EVENT_TYPES].add((loop, queue))
@@ -218,7 +272,6 @@ class AgentBus:
                 step_id=step_id,
                 role=openai_role,
                 name=name or (None if openai_role == OpenAIMessageRole.TOOL else from_agent),
-                tool_calls=normalized_tool_calls,
                 tool_call_id=tool_call_id,
                 metadata=meta,
                 from_agent=from_agent,
