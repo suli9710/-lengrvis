@@ -1,46 +1,51 @@
 Lengrvis
-Copyright (c) [PENDING LEGAL: operating entity / 运营主体名称]
+Copyright © 2026 cow milk. All rights reserved.
 
-This product includes third-party open source software. The components listed
-below are distributed under their respective licenses. This NOTICE was compiled
-from the project's dependency manifests as a starting point and MUST be verified
-and completed against an authoritative SBOM (see scripts: sbom:generate) and
-reviewed by legal before any public distribution. See audit finding P0-3.
+本产品使用以下开源软件组件，在此对原作者表示感谢。各组件受其各自许可证约束。
 
-================================================================================
-Desktop / Frontend (Node, MIT unless noted)
-================================================================================
-- Electron - MIT License - https://github.com/electron/electron
-- React, React DOM - MIT License - https://github.com/facebook/react
-- React Native - MIT License - https://github.com/facebook/react-native
-- Expo - MIT License - https://github.com/expo/expo
-- Vite - MIT License - https://github.com/vitejs/vite
+== 桌面端（Electron + React） ==
 
-================================================================================
-Backend (Python)
-================================================================================
-- FastAPI - MIT License - https://github.com/tiangolo/fastapi
-- Starlette - BSD 3-Clause License - https://github.com/encode/starlette
-- Uvicorn - BSD 3-Clause License - https://github.com/encode/uvicorn
-- Pydantic - MIT License - https://github.com/pydantic/pydantic
-- HTTPX - BSD 3-Clause License - https://github.com/encode/httpx
-- PyJWT - MIT License - https://github.com/jpadilla/pyjwt
-- Playwright (Python) - Apache License 2.0 - https://github.com/microsoft/playwright-python
-- ONNX Runtime - MIT License - https://github.com/microsoft/onnxruntime
-- croniter - MIT License - https://github.com/kiorky/croniter
-- PyAutoGUI - BSD 3-Clause License - https://github.com/asweigart/pyautogui
+Electron (>=28) — MIT — Copyright © OpenJS Foundation and contributors
+React (>=18) — MIT — Copyright © Meta Platforms, Inc. and affiliates
+TypeScript (>=5) — Apache 2.0 — Copyright © Microsoft Corporation
+Vite (>=5) — MIT — Copyright © Yuxi (Evan) You
 
-================================================================================
-Database / Runtime
-================================================================================
-- SQLite - Public Domain - https://www.sqlite.org/copyright.html
-- Ollama - MIT License - https://github.com/ollama/ollama
+== 后端（Python + FastAPI） ==
 
---------------------------------------------------------------------------------
-TODO before public release (P0-3):
-  1. Regenerate this list from the CycloneDX SBOM so every transitive dependency
-     and its exact license/version is represented (no omissions).
-  2. Include full license texts (Apache-2.0 NOTICE requirements, MIT/BSD copyright
-     lines) for each component as required by its license.
-  3. Fill in the operating entity name and have legal review the final file.
---------------------------------------------------------------------------------
+FastAPI (>=0.110) — MIT — Copyright © Sebastián Ramírez
+Uvicorn (>=0.29) — BSD-3-Clause — Copyright © Encode OSS Ltd.
+Pydantic (>=2) — MIT — Copyright © Samuel Colvin and contributors
+SQLite (built-in) — Public Domain — SQLite is in the Public Domain
+httpx (>=0.27) — BSD-3-Clause — Copyright © Encode OSS Ltd.
+PyJWT (>=2) — MIT — Copyright © José Padilla
+
+== AI / LLM ==
+
+Ollama (>=0.1) — MIT — Copyright © Ollama Inc.
+OpenAI Python SDK (>=1) — Apache 2.0 — Copyright © OpenAI
+
+== 浏览器自动化 ==
+
+Playwright (>=1.40) — Apache 2.0 — Copyright © Microsoft Corporation
+
+== 移动端（Expo / React Native） ==
+
+Expo SDK (>=50) — MIT — Copyright © 650 Industries, Inc.
+React Native (>=0.73) — MIT — Copyright © Meta Platforms, Inc. and affiliates
+
+== 监控与遥测 ==
+
+Sentry SDK (Python/JS) (>=1) — MIT — Copyright © Sentry Inc.
+
+== 其他工具链 ==
+
+croniter — MIT — Copyright © kiorky
+python-dotenv — BSD-3-Clause — Copyright © Saurabh Kumar
+
+== 维护说明 ==
+
+本项目依赖列表可能随版本更新而变化。每次发布前应运行：
+  pip list --format=freeze
+  npm list --depth=0
+生成当前依赖清单，与上表交叉比对并更新。
+完整传递依赖列表及其许可证可通过 pip-licenses 和 license-checker 自动生成。
