@@ -1,0 +1,46 @@
+Lengrvis
+Copyright (c) [PENDING LEGAL: operating entity / 运营主体名称]
+
+This product includes third-party open source software. The components listed
+below are distributed under their respective licenses. This NOTICE was compiled
+from the project's dependency manifests as a starting point and MUST be verified
+and completed against an authoritative SBOM (see scripts: sbom:generate) and
+reviewed by legal before any public distribution. See audit finding P0-3.
+
+================================================================================
+Desktop / Frontend (Node, MIT unless noted)
+================================================================================
+- Electron - MIT License - https://github.com/electron/electron
+- React, React DOM - MIT License - https://github.com/facebook/react
+- React Native - MIT License - https://github.com/facebook/react-native
+- Expo - MIT License - https://github.com/expo/expo
+- Vite - MIT License - https://github.com/vitejs/vite
+
+================================================================================
+Backend (Python)
+================================================================================
+- FastAPI - MIT License - https://github.com/tiangolo/fastapi
+- Starlette - BSD 3-Clause License - https://github.com/encode/starlette
+- Uvicorn - BSD 3-Clause License - https://github.com/encode/uvicorn
+- Pydantic - MIT License - https://github.com/pydantic/pydantic
+- HTTPX - BSD 3-Clause License - https://github.com/encode/httpx
+- PyJWT - MIT License - https://github.com/jpadilla/pyjwt
+- Playwright (Python) - Apache License 2.0 - https://github.com/microsoft/playwright-python
+- ONNX Runtime - MIT License - https://github.com/microsoft/onnxruntime
+- croniter - MIT License - https://github.com/kiorky/croniter
+- PyAutoGUI - BSD 3-Clause License - https://github.com/asweigart/pyautogui
+
+================================================================================
+Database / Runtime
+================================================================================
+- SQLite - Public Domain - https://www.sqlite.org/copyright.html
+- Ollama - MIT License - https://github.com/ollama/ollama
+
+--------------------------------------------------------------------------------
+TODO before public release (P0-3):
+  1. Regenerate this list from the CycloneDX SBOM so every transitive dependency
+     and its exact license/version is represented (no omissions).
+  2. Include full license texts (Apache-2.0 NOTICE requirements, MIT/BSD copyright
+     lines) for each component as required by its license.
+  3. Fill in the operating entity name and have legal review the final file.
+--------------------------------------------------------------------------------
