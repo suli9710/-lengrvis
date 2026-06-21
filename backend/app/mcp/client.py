@@ -53,9 +53,13 @@ class MCPClient:
             self._tools_cache_error = "authentication required"
             self._tools_cache = []
             return []
-        if self._tools_cache is not None and not force_refresh:
-            return self._tools_cache
+        # P1-12 fix: Move cache check inside the lock to prevent race conditions.
+        # The old code checked self._tools_cache outside self._lock, allowing
+        # multiple concurrent callers to bypass the cache and make duplicate
+        # HTTP requests (and IP lock失效).
         async with self._lock:
+            if self._tools_cache is not None and not force_refresh:
+                return self._tools_cache
             self._tools_cache_error = ""
             payload = {
                 "jsonrpc": JSONRPC_VERSION,

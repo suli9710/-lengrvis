@@ -152,12 +152,14 @@ def create_app() -> FastAPI:
     db.init_db()
     settings = get_effective_settings()
     app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.0", lifespan=lifespan)
+    # P1-7 fix: CORS configuration hardened - restrict methods and headers
+    # instead of wildcard allow_methods=["*"] + allow_headers=["*"].
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "app://local"],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Lengrvis-Desktop-Token"],
     )
 
     @app.middleware("http")
