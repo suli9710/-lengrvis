@@ -17,3 +17,7 @@ app/src/main/java/inline/
 
 # Bundle artifacts
 *.jsbundle
+
+# Signing keys — never commit keystores (use ~/.android/debug.keystore or a local one)
+*.keystore
+*.jks
