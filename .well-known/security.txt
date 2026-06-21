@@ -1,0 +1,9 @@
+# Lengrvis security.txt (RFC 9116)
+# 漏洞报告政策见 SECURITY.md。请遵循协同披露，勿在公开渠道暴露细节或 PoC。
+
+Contact: mailto:mcow04717@gmail.com
+Contact: https://github.com/suli9710/-lengrvis/security/advisories/new
+Expires: 2027-06-30T23:59:59Z
+Preferred-Languages: zh, en
+Canonical: https://github.com/suli9710/-lengrvis/blob/main/.well-known/security.txt
+Policy: https://github.com/suli9710/-lengrvis/blob/main/SECURITY.md
