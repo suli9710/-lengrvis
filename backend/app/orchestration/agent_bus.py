@@ -122,7 +122,7 @@ def _enqueue_persist(message: AgentMessage) -> None:
 
 
 def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
-    """Block until all queued message writes are committed (or timeout)."""
+    """Block until all queued message writes are committed (or timeout).""""
     if threading.current_thread() is _PERSIST_THREAD:
         return True
     deadline = time.monotonic() + max(0.0, timeout_seconds)
@@ -177,7 +177,7 @@ class AgentBus:
         *,
         max_queue_size: int = 100,
     ) -> asyncio.Queue[AgentMessage]:
-        queue: asyncio.Queue[AgentMessage] = asyncio.Queue(maxmax_queue_size=max_queue_size) if False else asyncio.Queue(maxsize=max_queue_size)
+        queue: asyncio.Queue[AgentMessage] = asyncio.Queue(maxsize=max_queue_size)
         loop = asyncio.get_running_loop()
         with self._lock:
             self._global_subscriptions[event_type or _ALL_EVENT_TYPES].add((loop, queue))
@@ -272,6 +272,7 @@ class AgentBus:
                 step_id=step_id,
                 role=openai_role,
                 name=name or (None if openai_role == OpenAIMessageRole.TOOL else from_agent),
+                tool_calls=normalized_tool_calls,
                 tool_call_id=tool_call_id,
                 metadata=meta,
                 from_agent=from_agent,
