@@ -23,9 +23,10 @@ import type {
 } from "../shared/types";
 import type {
   AcceptConsentRequest,
-  ConsentStatusResult
+  ConsentRecord,
+  ConsentStatusResult,
+  LegalDocId
 } from "../shared/consent";
-import type { LegalDocId } from "../shared/consent";
 import { sanitizeApiAbortGroup, sanitizeApiBridgeRequest } from "./apiBridgeSanitizer";
 import { subscribeDesktopWebSocket } from "./desktopWebSocketBridge";
 
@@ -119,11 +120,12 @@ const bridge: LengrvisDesktopBridge = {
       ipcRenderer.invoke(IPC_CHANNELS.mobilePairingRevokeRemoteInputGrant, request)
   },
   consent: {
-    getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.consentStatus) as Promise<ConsentStatusResult>,
-    accept: (request: AcceptConsentRequest) =>
-      ipcRenderer.invoke(IPC_CHANNELS.consentAccept, request) as Promise<ConsentRecord>,
-    readDoc: (docId: LegalDocId) =>
-      ipcRenderer.invoke(IPC_CHANNELS.consentReadDoc, docId) as Promise<{ content: string; docId: LegalDocId }>
+    getStatus: (): Promise<ConsentStatusResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.consentStatus),
+    accept: (request: AcceptConsentRequest): Promise<ConsentRecord> =>
+      ipcRenderer.invoke(IPC_CHANNELS.consentAccept, request),
+    readDoc: (docId: LegalDocId): Promise<{ content: string; docId: LegalDocId }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.consentReadDoc, docId)
   },
   backendBaseUrl: envValue("LENGRVIS_BACKEND_URL", "http://127.0.0.1:8000"),
   dialog: {
