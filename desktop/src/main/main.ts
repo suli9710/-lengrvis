@@ -7,6 +7,7 @@ import type { BackendStatus } from "../shared/types";
 import { checkForUpdatesInteractive, describeUpdaterForTray, setupAutoUpdater } from "./autoUpdater";
 import { BackendProcessManager } from "./backendProcess";
 import { BrowserHost, BrowserHostWebSocketBridge } from "./browserHost";
+import { registerConsentIpcHandlers } from "./consentManager";
 import { registerDesktopWebSocketIpcHandlers } from "./desktopWebSocket";
 import { isSafeExternalUrl, registerIpcHandlers } from "./ipc";
 import { NotificationBridge } from "./notifications";
@@ -322,6 +323,7 @@ if (!gotSingleInstanceLock) {
     Menu.setApplicationMenu(null);
     registerIpcHandlers(backend);
     registerDesktopWebSocketIpcHandlers(backend);
+    registerConsentIpcHandlers();
     browserHost.registerIpcHandlers();
     notifications.registerIpcHandlers();
     mainWindow = createMainWindow();
