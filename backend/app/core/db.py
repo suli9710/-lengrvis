@@ -134,7 +134,7 @@ WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
 # We validate the column name and definition against strict whitelists instead.
 _SAFE_COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_COLUMN_DEFINITION_RE = re.compile(
-    r'''^[A-Za-z_][A-Za-z0-9_]*(\s+NOT\s+NULL)?(\s+DEFAULT\s+('' '|''.+?'|[0-9.-]+|NULL))?(\s+NOT\s+NULL)?$''',
+    r"^[A-Za-z_][A-Za-z0-9_]*(\s+NOT\s+NULL)?(\s+DEFAULT\s+('(?:[^']|'')*'|[0-9.+-]+|NULL))?(\s+NOT\s+NULL)?$",
     re.IGNORECASE,
 )
 
@@ -173,10 +173,10 @@ def connect() -> Iterator[sqlite3.Connection]:
     # "database is locked" errors under load.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
-    # P1-6 fix: Set isolation_level=None for explicit transaction control.
-    # Without this, Python's sqlite3 auto-begins transactions on DML and
-    # the BEGIN IMMEDIATE in claim_scheduled_task_run etc. can deadlock.
-    conn.execute("PRAGMA busy_timeout = 5000")
+    # Keep sqlite3's default deferred isolation: multi-statement helpers (e.g.
+    # erase_local_user_data) rely on the implicit transaction to stay atomic,
+    # while hot writers that must take the write lock up front issue their own
+    # explicit BEGIN IMMEDIATE (claim_scheduled_task_run, audit/run_event inserts).
     try:
         yield conn
         conn.commit()
