@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { ConsentStatusResult, LegalDocId } from "../../../../shared/consent";
+import type { ConsentStatusResult, LegalDocId } from "../../../shared/consent";
 
 type ConsentStatus = ConsentStatusResult;
 
