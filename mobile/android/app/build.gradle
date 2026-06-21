@@ -11,7 +11,7 @@ def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 react {
     entryFile = file(["node", "-e", "require('expo/scripts/resolveAppEntry')", projectRoot, "android", "absolute"].execute(null, rootDir).text.trim())
     reactNativeDir = new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
-    hermesCommand = new File(["node", "--print", "require.resolve('hermes-compiler/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim()).getParentFile().getAbsolutePath() + "/hermesc/%OS-BIN%/hermesc"
+    hermesCommand = new File(["node", "--print", "require.resolve('hermes-compiler/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile().getAbsolutePath() + "/hermesc/%OS-BIN%/hermesc"
     codegenDir = new File(["node", "--print", "require.resolve('@react-native/codegen/package.json', { paths: [require.resolve('react-native/package.json')] })"].execute(null, rootDir).text.trim()).getParentFile().getAbsoluteFile()
 
     enableBundleCompression = (findProperty('android.enableBundleCompression') ?: false).toBoolean()
@@ -72,7 +72,7 @@ def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBu
  * The preferred build flavor of JavaScriptCore (JSC)
  *
  * For example, to use the international variant, you can use:
- * `def jscFlavor = 'org.webkit:android-jsc-intl:+'`
+ * `def jscFlavor = 'org.webkit:android-jsc-intl:+'
  *
  * The international variant includes ICU i18n library and necessary data
  * allowing to use e.g. `Date.toLocaleString` and `String.localeCompare` that
@@ -104,6 +104,28 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // P0-2 fix: Add dedicated release signing config.
+        // The old code used signingConfigs.debug for the release build type,
+        // which means production APKs were signed with the well-known debug
+        // keystore (storePassword='android', keyPassword='android').
+        // In production, populate these from environment variables or a
+        // secrets file that is NOT committed to the repository.
+        release {
+            if (System.getenv('LENGRVIS_ANDROID_KEYSTORE_FILE')) {
+                storeFile file(System.getenv('LENGRVIS_ANDROID_KEYSTORE_FILE'))
+                storePassword System.getenv('LENGRVIS_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('LENGRVIS_ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('LENGRVIS_ANDROID_KEY_PASSWORD')
+            } else {
+                // Fallback: no release signing possible without env vars.
+                // This will cause the release build to produce an unsigned APK
+                // rather than silently using the debug keystore.
+                storeFile file('release.keystore')
+                storePassword ''
+                keyAlias ''
+                keyPassword ''
+            }
+        }
     }
     buildTypes {
         debug {
@@ -112,7 +134,8 @@ android {
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // P0-2 fix: Use release signing config instead of debug.
+            signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
