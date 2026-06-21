@@ -112,8 +112,16 @@ def load_skill_package(
         raise SkillLoadError(f"Invalid skill.yaml: {exc}", path=manifest) from exc
 
     signature_report = verify_skill_signature(raw, definition, trusted_public_keys or {})
-    if signature_report["severity"] == "error":
-        raise SkillLoadError(f"Invalid skill signature: {signature_report['message']}", path=manifest)
+    # P0-5 fix: Reject unsigned and untrusted-key skills.
+    # The old code only raised on severity == "error", but unsigned skills
+    # had severity "info" and untrusted-key skills had severity "warning",
+    # allowing them to load silently. Now both are treated as errors.
+    severity = signature_report.get("severity", "")
+    if severity in ("error", "warning"):
+        raise SkillLoadError(
+            f"Skill signature verification failed: {signature_report.get('message', 'untrusted or unsigned skill')}",
+            path=manifest,
+        )
 
     safety_report = review_skill_definition(definition, root)
     if not safety_report.ok:
@@ -186,20 +194,24 @@ def verify_skill_signature(
     payload = canonical_skill_signature_payload(raw_manifest)
     digest = "sha256:" + hashlib.sha256(payload).hexdigest()
     signature = definition.signature
+    # P0-5 fix: Unsigned skills are now severity "error" instead of "info".
+    # Skills without signatures must be explicitly trusted-by-key before
+    # they can be loaded and executed.
     if signature is None:
         return {
             "status": "unsigned",
-            "severity": "info",
-            "message": "Skill manifest does not declare signature metadata.",
+            "severity": "error",
+            "message": "Skill manifest does not declare a signature; unsigned skills cannot be loaded.",
             "key_id": "",
             "algorithm": "",
             "manifest_digest": digest,
             "signed_at": "",
         }
 
+    # P0-5 fix: signed but with an untrusted key is now "error" instead of "warning".
     report = {
         "status": "signed_untrusted_key",
-        "severity": "warning",
+        "severity": "error",
         "message": "Skill signature metadata is present, but no trusted public key is configured for this key id.",
         "key_id": signature.key_id,
         "algorithm": signature.algorithm,
@@ -211,14 +223,14 @@ def verify_skill_signature(
         return {
             **report,
             "status": "invalid_manifest_digest",
-            "severity": "error" if signature.key_id in trusted_public_keys else "warning",
+            "severity": "error",
             "message": "Skill signature manifest_digest does not match the canonical manifest payload.",
         }
     if signature.algorithm.casefold() != "ed25519":
         return {
             **report,
             "status": "unsupported_algorithm",
-            "severity": "error" if signature.key_id in trusted_public_keys else "warning",
+            "severity": "error",
             "message": f"Unsupported Skill signature algorithm: {signature.algorithm}",
         }
     public_key = trusted_public_keys.get(signature.key_id)

@@ -63,6 +63,11 @@ def resolve_authorized(path: str | Path, allowed_directories: list[str]) -> Path
         base = normalize_path(raw_base)
         try:
             if candidate == base or candidate.is_relative_to(base):
+                # P1 fix: Check for symlinks even when the candidate doesn't exist
+                # yet (e.g. a file about to be created). Walk the path's existing
+                # ancestors to detect symlinks that could escape the authorized
+                # directory before the final path is materialized.
+                _check_no_symlink_escape(candidate, base)
                 if candidate.exists() and os.path.islink(candidate):
                     target = candidate.resolve(strict=True)
                     if not (target == base or target.is_relative_to(base)):
@@ -73,12 +78,23 @@ def resolve_authorized(path: str | Path, allowed_directories: list[str]) -> Path
     raise SecurityError("Path is outside authorized directories.")
 
 
+def _check_no_symlink_escape(candidate: Path, base: Path) -> None:
+    """Walk existing ancestor directories of candidate to detect symlinks
+    that resolve outside the authorized base."""
+    current = candidate.parent
+    while current != base and current != current.parent:
+        if current.exists() and os.path.islink(current):
+            target = current.resolve(strict=True)
+            if not (target == base or target.is_relative_to(base)):
+                raise SecurityError("Symbolic link in path escapes the authorized directory.")
+        current = current.parent
+
+
 def _has_windows_alternate_data_stream(path: str | Path) -> bool:
     parsed = Path(path)
     parts = parsed.parts
     if not parts:
         return False
-    # The first part may be a drive or UNC anchor such as "C:\". Colons in
+    # The first part may be a drive or UNC anchor such as "C:\\". Colons in
     # later components indicate NTFS stream syntax like "safe.txt:stream".
     return any(":" in part for part in parts[1:])
-
