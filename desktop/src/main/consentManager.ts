@@ -7,7 +7,7 @@ import { app } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { LEGAL_VERSIONS, needsEulaReconsent, needsPrivacyReconsent, type ConsentRecord, type LegalDocId } from "../shared/consent";
+import { LEGAL_VERSIONS, needsEulaReconsent, needsPrivacyReconsent, type AcceptConsentRequest, type ConsentRecord, type ConsentStatusResult, type LegalDocId } from "../shared/consent";
 import { IPC_CHANNELS } from "../shared/ipc";
 import type { IpcMainInvokeEvent } from "electron";
 import { ipcMain } from "electron";
@@ -91,17 +91,6 @@ export function readLegalDocContent(docId: LegalDocId): string {
     throw new Error(`Legal document not found: ${docId}`);
   }
   return readFileSync(filePath, "utf-8");
-}
-export interface ConsentStatusResult {
-  consent: ConsentRecord | null;
-  needsEulaConsent: boolean;
-  needsPrivacyConsent: boolean;
-  currentVersions: typeof LEGAL_VERSIONS;
-}
-export interface AcceptConsentRequest {
-  acceptEula?: boolean;
-  acceptPrivacy?: boolean;
-  installerVersion?: string;
 }
 /** Register all consent-related IPC handlers. Call once during app setup. */
 export function registerConsentIpcHandlers(): void {

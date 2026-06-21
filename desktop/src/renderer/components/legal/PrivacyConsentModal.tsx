@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { LegalDocId, ConsentStatusResult } from "../../../../shared/consent";
+import type { LegalDocId, ConsentStatusResult } from "../../../shared/consent";
 
 /**
  * First-launch privacy policy modal.

@@ -24,6 +24,21 @@ export interface ConsentRecord {
   platform: string | null;
 }
 
+/** Request payload for accepting legal consent (EULA and/or privacy policy). */
+export interface AcceptConsentRequest {
+  acceptEula?: boolean;
+  acceptPrivacy?: boolean;
+  installerVersion?: string;
+}
+
+/** Result of checking whether the user needs to (re-)accept legal documents. */
+export interface ConsentStatusResult {
+  consent: ConsentRecord | null;
+  needsEulaConsent: boolean;
+  needsPrivacyConsent: boolean;
+  currentVersions: typeof LEGAL_VERSIONS;
+}
+
 /**
  * Determine whether the user needs to re-accept the privacy policy.
  *
