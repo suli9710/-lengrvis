@@ -64,3 +64,12 @@ tmp-agent-*.png
 Thumbs.db
 .idea/
 .vscode/
+
+# JVM / HotSpot crash + replay dumps (P2-23) - never commit these
+hs_err_pid*
+replay_pid*
+*.dmp
+*.hprof
+# Signing keystores must never be committed
+*.keystore
+*.jks
