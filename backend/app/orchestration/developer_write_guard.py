@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -115,7 +116,7 @@ def infer_verification_command(goal: str, changed_paths: list[str]) -> str | Non
         return None
     test_paths = [path for path in changed_paths if _looks_like_test_path(path)]
     if test_paths:
-        quoted = " ".join(_quote_shell_path(path) for path in test_paths[:3])
+        quoted = " ".join(shlex.quote(path) for path in test_paths[:3])
         return f"python -m pytest -q {quoted}"
     backend_tests = [path for path in changed_paths if path.replace("\\", "/").startswith("backend/")]
     if backend_tests:
@@ -179,11 +180,9 @@ def run_write_verification(
 
 
 def _quote_shell_path(path: str) -> str:
-    if not path or path.startswith('"') and path.endswith('"'):
-        return path
-    if any(char in path for char in (' ', '"', "'", "&", "|", "<", ">")):
-        return '"' + path.replace('"', '\\"') + '"'
-    return path
+    # P0-7 fix: Use shlex.quote() for robust shell escaping instead of manual
+    # quote/escape logic that missed dangerous characters like $, `, \n, !, etc.
+    return shlex.quote(path)
 
 
 def _verification_summary(
