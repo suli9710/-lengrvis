@@ -129,6 +129,12 @@ WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
     "wakeups": frozenset({"id", "source", "source_id", "status", "due_at", "created_at", "updated_at"}),
 }
 
+# P1-6 fix: Validate column names in _ensure_columns to prevent SQL injection.
+# ALTER TABLE ... ADD COLUMN does not support parameterized identifiers in SQLite.
+# We validate the column name and definition against strict whitelists instead.
+_SAFE_COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_COLUMN_DEFINITION_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\s+NOT\s+NULL)?(\s+DEFAULT\s+('' '|'".+?'|[0-9.-]+|NULL))?(\s+NOT\s+NULL)?$", re.IGNORECASE)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -163,6 +169,10 @@ def connect() -> Iterator[sqlite3.Connection]:
     # concurrent connections; without these, writers race into
     # "database is locked" errors under load.
     conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    # P1-6 fix: Set isolation_level=None for explicit transaction control.
+    # Without this, Python's sqlite3 auto-begins transactions on DML and
+    # the BEGIN IMMEDIATE in claim_scheduled_task_run etc. can deadlock.
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn
@@ -831,6 +841,13 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
     existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     for name, definition in columns.items():
         if name not in existing:
+            # P1-6 fix: Validate column name before using it in ALTER TABLE.
+            # SQLite does not support parameterized identifiers in DDL, so we
+            # validate against a strict regex to prevent SQL injection.
+            if not _SAFE_COLUMN_NAME_RE.fullmatch(name):
+                raise ValueError(f"Invalid column name for ALTER TABLE: {name!r}")
+            if not _SAFE_COLUMN_DEFINITION_RE.fullmatch(definition):
+                raise ValueError(f"Invalid column definition for ALTER TABLE: {definition!r}")
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
