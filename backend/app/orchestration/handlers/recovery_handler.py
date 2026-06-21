@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+import logging
+import threading
 from typing import TYPE_CHECKING
 
 from app.core.audit import record
@@ -16,6 +17,20 @@ if TYPE_CHECKING:
 
 
 DEFAULT_RECOVERY_MAX_RETRIES = 3
+logger = logging.getLogger(__name__)
+
+# --- P1 fix: Bounded retry tracking ---
+# Previously _retry_counts was a plain dict that grew indefinitely as new
+# (task_id, chain_id) pairs accumulated across long-running sessions. This
+# caused unbounded memory growth because completed task retry entries were
+# never cleaned up.
+#
+# The dict is now guarded by a lock and capped at _MAX_RETRY_ENTRIES. When the
+# cap is exceeded, the oldest entries are evicted (FIFO). Additionally, a
+# cleanup method is provided for callers to explicitly remove entries for
+# completed tasks.
+
+_MAX_RETRY_ENTRIES = 5000
 
 
 class RecoveryHandler:
@@ -25,6 +40,7 @@ class RecoveryHandler:
         self.orchestrator = orchestrator
         self.max_retries = max_retries
         self._retry_counts: dict[tuple[str, str], int] = {}
+        self._retry_lock = threading.Lock()
 
     def register(self, _dispatcher: EventDispatcher) -> None:
         """Compatibility no-op.
@@ -33,6 +49,46 @@ class RecoveryHandler:
         notification and audit, but recovery itself is called directly.
         """
         return None
+
+    def _get_retry_count(self, key: tuple[str, str]) -> int:
+        with self._retry_lock:
+            return self._retry_counts.get(key, 0)
+
+    def _increment_retry_count(self, key: tuple[str, str]) -> int:
+        with self._retry_lock:
+            # P1 fix: Evict oldest entries when the dict exceeds the cap to
+            # prevent unbounded memory growth in long-running sessions.
+            if len(self._retry_counts) >= _MAX_RETRY_ENTRIES:
+                # Evict ~10% of oldest entries (dict preserves insertion order)
+                evict_count = max(1, _MAX_RETRY_ENTRIES // 10)
+                for _ in range(evict_count):
+                    if self._retry_counts:
+                        oldest_key = next(iter(self._retry_counts))
+                        del self._retry_counts[oldest_key]
+                logger.info(
+                    "recovery_handler: evicted %d stale retry entries (cap=%d)",
+                    evict_count,
+                    _MAX_RETRY_ENTRIES,
+                )
+            self._retry_counts[key] = self._retry_counts.get(key, 0) + 1
+            return self._retry_counts[key]
+
+    def cleanup_task(self, task_id: str) -> None:
+        """Remove all retry tracking entries for a completed or cancelled task.
+
+        Call this when a task reaches a terminal state to prevent the
+        retry_counts dict from growing without bound across sessions.
+        """
+        with self._retry_lock:
+            keys_to_remove = [k for k in self._retry_counts if k[0] == task_id]
+            for k in keys_to_remove:
+                del self._retry_counts[k]
+            if keys_to_remove:
+                logger.debug(
+                    "recovery_handler: cleaned up %d retry entries for task %s",
+                    len(keys_to_remove),
+                    task_id,
+                )
 
     async def recover_failed_step(
         self,
@@ -57,14 +113,14 @@ class RecoveryHandler:
                 step_id=step.id,
                 tool_name=step.tool_name,
                 error=error,
-                retry_count=self._retry_counts.get(key, 0),
+                retry_count=self._get_retry_count(key),
             )
         )
 
-        retry_count = self._retry_counts.get(key, 0)
+        retry_count = self._get_retry_count(key)
         if retry_count >= self.max_retries:
             return await self.rollback_and_fail(task, plan, step, result, reason="retry_limit")
-        self._retry_counts[key] = retry_count + 1
+        self._increment_retry_count(key)
 
         recovery_observation = self._recovery_observation(step, result, observation)
         action = await orchestrator._consult_subagent(task, step, observation=recovery_observation)
@@ -83,7 +139,7 @@ class RecoveryHandler:
             structured_payload={
                 "failed_step_id": step.id,
                 "recovery_step": recovery_step.model_dump(),
-                "retry": self._retry_counts[key],
+                "retry": self._get_retry_count(key),
             },
         )
         record(
