@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import json
 import os
+import re
 import shlex
 import shutil
 from contextlib import suppress
@@ -46,6 +47,37 @@ OPENAI_MODEL_ENV_KEYS: tuple[str, ...] = (
     "OPENAI_DEFAULT_HAIKU_MODEL",
     "OPENAI_SMALL_FAST_MODEL",
 )
+# P1-11 fix: Whitelist of environment variable keys allowed in the subprocess env.
+# Only Lengrvis-specific and standard system vars are passed to the child process.
+# This prevents leaking sensitive environment variables (e.g. cloud credentials,
+# database passwords) from the parent process into the Lengrvis Code subprocess.
+_ALLOWED_ENV_PREFIXES: tuple[str, ...] = (
+    "LENGRVIS_",
+    "OPENAI_",
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "COMPUTERNAME",
+    "USERNAME",
+)
+_SENSITIVE_ENV_KEY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"PASSWORD", re.IGNORECASE),
+    re.compile(r"SECRET", re.IGNORECASE),
+    re.compile(r"TOKEN", re.IGNORECASE),
+    re.compile(r"CREDENTIAL", re.IGNORECASE),
+    re.compile(r"API_KEY", re.IGNORECASE),
+    re.compile(r"PRIVATE_KEY", re.IGNORECASE),
+)
+
 ERROR_LAUNCH_FAILURE = "launch_failure"
 ERROR_BAD_NDJSON = "bad_ndjson"
 ERROR_NON_ZERO_EXIT = "non_zero_exit"
@@ -64,8 +96,6 @@ TERMINAL_ERROR_TYPES: tuple[str, ...] = (
 
 @dataclass(slots=True)
 class LengrvisCodeRuntime:
-    """Resolved Lengrvis Code runtime command and source root."""
-
     source_root: Path = VENDORED_LENGRVIS_CODE_ROOT
     command: tuple[str, ...] = ()
     reason: str = ""
@@ -77,8 +107,6 @@ class LengrvisCodeRuntime:
 
 @dataclass(slots=True)
 class LengrvisCodeRuntimeHealth:
-    """Runtime/build diagnostic for Lengrvis Code's supported headless boundary."""
-
     ok: bool
     available: bool
     configured_command: bool
@@ -115,8 +143,6 @@ class LengrvisCodeRuntimeHealth:
 
 @dataclass(slots=True)
 class LengrvisCodeConfig:
-    """Configuration for one Lengrvis Code headless run."""
-
     command: tuple[str, ...] = ()
     executable: str = ""
     executable_args: tuple[str, ...] = ()
@@ -414,10 +440,44 @@ def _build_hint(root: Path) -> str:
     )
 
 
+def _is_sensitive_env_key(key: str) -> bool:
+    """P1-11 fix: Check if an environment variable key looks sensitive."""
+    upper = key.upper()
+    for pattern in _SENSITIVE_ENV_KEY_PATTERNS:
+        if pattern.search(upper):
+            return True
+    return False
+
+
+def _sanitize_subprocess_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """P1-11 fix: Build a sanitized env dict with only whitelisted keys.
+
+    Only keys matching _ALLOWED_ENV_PREFIXES are passed through, and
+    sensitive-key patterns (PASSWORD, SECRET, TOKEN, etc.) are always
+    stripped even if they match an allowed prefix. Explicitly set
+    BLOCKED_ENV_KEYS (Anthropic credentials) are always removed.
+    """
+    raw_env = dict(os.environ if base_env is None else base_env)
+    sanitized: dict[str, str] = {}
+    for key, value in raw_env.items():
+        # Always strip blocked keys.
+        if key in BLOCKED_ENV_KEYS:
+            continue
+        # Always strip sensitive-looking keys.
+        if _is_sensitive_env_key(key):
+            continue
+        # Only allow whitelisted prefixes.
+        upper_key = key.upper()
+        if any(upper_key.startswith(prefix) for prefix in _ALLOWED_ENV_PREFIXES):
+            sanitized[key] = value
+    return sanitized
+
+
 def build_lengrvis_code_env(settings: AppSettings, *, base_env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Map Lengrvis OpenAI-compatible settings into Lengrvis Code's OpenAI provider env."""
 
-    env = dict(os.environ if base_env is None else base_env)
+    # P1-11 fix: Start from a sanitized env instead of blindly passing all parent env vars.
+    env = _sanitize_subprocess_env(base_env)
     for key in BLOCKED_ENV_KEYS:
         env.pop(key, None)
     model = str(settings.model or "").strip()
@@ -550,6 +610,7 @@ async def run_lengrvis_code(
     registry: LengrvisCodeProcessRegistry = lengrvis_code_process_registry,
 ) -> LengrvisCodeStreamSummary:
     active = config or LengrvisCodeConfig(max_turns=settings.agent_loop_max_turns)
+    # P1-11 fix: build_lengrvis_code_env now starts from a sanitized env whitelist.
     env = build_lengrvis_code_env(settings, base_env={**os.environ, **active.env})
     launch_config = LengrvisCodeConfig(
         command=active.command,
@@ -565,7 +626,7 @@ async def run_lengrvis_code(
     try:
         command = build_lengrvis_code_command(prompt, cwd=cwd, settings=settings, config=launch_config)
         assert_safe_lengrvis_code_invocation(command, build_env=env)
-    except Exception as exc:  # noqa: BLE001 - launch diagnostics are surfaced as structured run output.
+    except Exception as exc:
         return LengrvisCodeStreamSummary(
             launch_error=str(exc),
             runtime_health=runtime_health.as_payload(),
@@ -579,7 +640,7 @@ async def run_lengrvis_code(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-    except Exception as exc:  # noqa: BLE001 - missing executable and spawn errors are launch failures.
+    except Exception as exc:
         return LengrvisCodeStreamSummary(
             command=_redacted_command(command),
             launch_error=str(exc),
@@ -737,6 +798,10 @@ def _command_safety_error(command: Sequence[str], *, build_env: Mapping[str, Any
         leaked = [key for key in BLOCKED_ENV_KEYS if build_env.get(key)]
         if leaked:
             return f"{LENGRVIS_CODE_DISPLAY_NAME} env must not include Anthropic credentials: {', '.join(leaked)}"
+        # P1-11 fix: Also check for sensitive env keys that slipped through.
+        sensitive_leaked = [key for key in build_env if _is_sensitive_env_key(key) and key not in BLOCKED_ENV_KEYS]
+        if sensitive_leaked:
+            return f"{LENGRVIS_CODE_DISPLAY_NAME} env must not include sensitive keys: {', '.join(sensitive_leaked[:5])}"
     return ""
 
 
@@ -978,7 +1043,7 @@ def _event_summary(event: Mapping[str, Any]) -> str:
         if subtype == "init":
             tools = event.get("tools") if isinstance(event.get("tools"), list) else []
             return f"{LENGRVIS_CODE_DISPLAY_NAME} initialized with {len(tools)} tools."
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} system event: {subtype or 'unknown'}."
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} system event: {subtype or 'unknown'.}"
     if event_type == "assistant":
         texts = _assistant_text(event)
         if texts:
@@ -992,7 +1057,7 @@ def _event_summary(event: Mapping[str, Any]) -> str:
             return str(event["result"])[:500]
         if isinstance(event.get("errors"), list) and event["errors"]:
             return "; ".join(str(item) for item in event["errors"])[:500]
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {event.get('subtype') or 'unknown'}."
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {event.get('subtype') or 'unknown'.}"
     if event_type in {"streamlined_text", "text"} and isinstance(event.get("text"), str):
         return str(event["text"]).strip()[:500]
     if event_type in {"streamlined_tool_use_summary", "tool_use_summary"}:
