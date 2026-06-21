@@ -12,7 +12,6 @@ type ConsentBridge = {
 
 interface ConsentGateProps {
   children: React.ReactNode;
-  appVersion: string;
 }
 
 /**
