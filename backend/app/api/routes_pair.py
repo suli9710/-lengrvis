@@ -15,10 +15,12 @@ _PAIR_CODE_LENGTH = mobile_pairing_service.PAIR_CODE_HEX_LENGTH * 2
 
 
 class PairRedeemRequest(BaseModel):
+    # Length is enforced by min/max_length (single source of truth via
+    # _PAIR_CODE_LENGTH); the pattern only validates the hex charset.
     code: str = Field(
         min_length=_PAIR_CODE_LENGTH,
         max_length=_PAIR_CODE_LENGTH,
-        pattern=rf"^[a-f0-9]{_PAIR_CODE_LENGTH}$",
+        pattern=r"^[a-f0-9]+$",
     )
     device_name: str = Field(default="Android device", max_length=80)
 
