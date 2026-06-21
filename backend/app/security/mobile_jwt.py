@@ -18,6 +18,15 @@ REMOTE_VIEW_SCOPE = "remote:view"
 REMOTE_INPUT_SCOPE = "remote:input"
 MOBILE_AUTH_WS_PROTOCOL_PREFIX = "lengrvis.mobile.token."
 MOBILE_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7
+# P1-5 fix: Pin the algorithm explicitly in both encode and decode.
+# The old code used "HS256" as a bare string, making algorithm confusion
+# attacks possible if a future change accidentally broadened the decode list.
+# We also pass algorithms as an explicit list to jwt.decode to prevent
+# alg=none bypass attacks.  To migrate to EdDSA (Ed25519) in the future:
+#   1. Add "EdDSA" to the algorithms list during a transition period.
+#   2. Issue new tokens with EdDSA while still accepting HS256.
+#   3. After all HS256 tokens expire (7-day TTL), remove "HS256".
+MOBILE_JWT_ALGORITHM = "HS256"
 
 
 def issue_mobile_token(
@@ -33,8 +42,6 @@ def issue_mobile_token(
 ) -> str:
     now = datetime.now(timezone.utc)
     scopes = _scope_values(scope)
-    # Every token carries a unique id for traceability; grant tokens reuse the
-    # grant's rotating token id so re-claiming supersedes prior tokens.
     jti = token_id or secrets.token_hex(16)
     payload = {
         "aud": TOKEN_AUDIENCE,
@@ -46,15 +53,13 @@ def issue_mobile_token(
         "jti": jti,
         "scope": " ".join(scopes),
         "sub": f"mobile:{device_id}",
-        # Session epoch: bumping the device's epoch revokes every token issued
-        # before the bump without deleting (un-pairing) the device.
         "token_epoch": int(token_epoch),
     }
     if source:
         payload["source"] = source
     if grant_id:
         payload["grant_id"] = grant_id
-    return jwt.encode(payload, _secret(), algorithm="HS256")
+    return jwt.encode(payload, _secret(), algorithm=MOBILE_JWT_ALGORITHM)
 
 
 def decode_mobile_token(
@@ -174,11 +179,11 @@ def _decode_mobile_token_payload(token: str) -> dict[str, Any]:
         return jwt.decode(
             token,
             _secret(),
-            algorithms=["HS256"],
+            # P1-5 fix: Pin algorithm list to ONLY the expected algorithm.
+            # This prevents algorithm confusion attacks (e.g. alg=none bypass).
+            algorithms=[MOBILE_JWT_ALGORITHM],
             audience=TOKEN_AUDIENCE,
             issuer=TOKEN_ISSUER,
-            # PyJWT only verifies exp/aud/iss when the claim is present;
-            # require them so a forged claimless token cannot skip checks.
             options={"require": ["exp", "iat", "aud", "iss"]},
         )
     except jwt.ExpiredSignatureError:
@@ -196,7 +201,6 @@ def _raise_if_device_inactive(device_id: str, *, token_epoch: int | None = None)
         raise HTTPException(status_code=401, detail="Mobile device is not paired")
     if str(device.get("status") or "active").lower() != "active":
         raise HTTPException(status_code=401, detail="Mobile device has been revoked")
-    # Session revocation: tokens minted before the device's current epoch are dead.
     if token_epoch is not None and int(device.get("token_epoch") or 0) != int(token_epoch):
         raise HTTPException(status_code=401, detail="Mobile session has been revoked")
 
@@ -248,8 +252,6 @@ def _raise_if_remote_input_grant_inactive(payload: dict[str, Any], scopes: set[s
         expires_at = _remote_input_grant_expires_at(grant)
         if expires_at < now:
             raise HTTPException(status_code=401, detail="Remote input grant expired")
-        # Anti-replay: a grant binds to exactly one issued token. Re-claiming the
-        # grant rotates ``token_id``, so any previously minted token is rejected.
         bound_token_id = str(grant.get("token_id") or "")
         if bound_token_id and str(payload.get("jti") or "") != bound_token_id:
             raise HTTPException(status_code=401, detail="Remote input grant token has been superseded")
