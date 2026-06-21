@@ -166,11 +166,38 @@ class PermissionStore:
         return model
 
     def add_rule(self, rule: PermissionRule | dict[str, Any]) -> PermissionPolicy:
+        # P1-4 fix: perform the read-modify-write inside a single BEGIN IMMEDIATE
+        # transaction so concurrent add_rule/upsert_rule calls cannot clobber each
+        # other (lost update). The previous implementation read via get_policy()
+        # and wrote via save_policy() across two separate connections, leaving a
+        # race window where a concurrent writer's rule could be silently dropped.
         model = PermissionRule.model_validate(rule)
-        policy = self.get_policy()
-        policy.rules = [existing for existing in policy.rules if existing.id != model.id]
-        policy.rules.append(model)
-        return self.save_policy(policy)
+        self._ensure_schema()
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)
+            ).fetchone()
+            if row:
+                try:
+                    policy = PermissionPolicy.model_validate(json.loads(row["data"]))
+                except Exception:
+                    policy = PermissionPolicy(id=self.policy_id)
+            else:
+                policy = PermissionPolicy(id=self.policy_id)
+            policy.id = self.policy_id
+            policy.rules = [existing for existing in policy.rules if existing.id != model.id]
+            policy.rules.append(model)
+            policy.updated_at = now_iso()
+            conn.execute(
+                """
+                INSERT INTO permission_policies (id, data, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
+                """,
+                (self.policy_id, policy.model_dump_json(), policy.updated_at),
+            )
+        return policy
 
     def upsert_rule(self, rule: PermissionRule | dict[str, Any]) -> PermissionPolicy:
         return self.add_rule(rule)

@@ -100,7 +100,16 @@ def _preview(action: str, detail: dict[str, Any]) -> dict[str, Any]:
 
 def _remote_enabled(context: dict[str, Any]) -> bool:
     settings = context.get("settings") or get_effective_settings()
-    return bool(getattr(settings, "remote_desktop_enabled", False))
+    if not bool(getattr(settings, "remote_desktop_enabled", False)):
+        return False
+    # P0-11 fix: gate remote desktop control behind a paid entitlement so free-tier
+    # users cannot invoke remote input even when the feature flag is enabled. The
+    # entitlement is resolved from the request context and fails closed to "free"
+    # when callers have not populated it.
+    entitlement = str(context.get("user_entitlement") or "free").strip().lower()
+    if entitlement not in ("pro", "team"):
+        return False
+    return True
 
 
 def _has_approval(args: dict[str, Any], tool_name: str) -> bool:
