@@ -55,7 +55,10 @@ export const IPC_CHANNELS = {
   desktopWebSocketClose: "lengrvis:desktop-ws:close",
   desktopWebSocketEvent: "lengrvis:desktop-ws:event",
   showNotification: "lengrvis:show-notification",
-  openTaskFromNotification: "lengrvis:notification:open-task"
+  openTaskFromNotification: "lengrvis:notification:open-task",
+  consentStatus: "lengrvis:consent:status",
+  consentAccept: "lengrvis:consent:accept",
+  consentReadDoc: "lengrvis:consent:read-doc"
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
@@ -132,7 +135,10 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   desktopWebSocketClose: { schema: "string", capability: "desktop-ws-session", risk: "write" },
   desktopWebSocketEvent: { schema: "event", capability: "desktop-ws-session", risk: "event" },
   showNotification: { schema: "typedRequest", capability: "trusted-renderer", risk: "write" },
-  openTaskFromNotification: { schema: "event", capability: "trusted-renderer", risk: "event" }
+  openTaskFromNotification: { schema: "event", capability: "trusted-renderer", risk: "event" },
+  consentStatus: { schema: "none", capability: "trusted-renderer", risk: "read" },
+  consentAccept: { schema: "object", capability: "trusted-renderer", risk: "write" },
+  consentReadDoc: { schema: "string", capability: "trusted-renderer", risk: "read" }
 } as const satisfies Record<keyof typeof IPC_CHANNELS, IpcChannelSecurityPolicy>;
 
 export const API_REQUEST_SECURITY_LIMITS = {
