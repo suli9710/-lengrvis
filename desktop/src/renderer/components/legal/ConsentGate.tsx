@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ConsentStatusResult } from "../../../shared/consent";
 import { PrivacyConsentModal } from "./PrivacyConsentModal";
 
-type Bridge = {
+type ConsentBridge = {
   consent?: {
     getStatus: () => Promise<ConsentStatusResult>;
     accept: (request: { acceptPrivacy?: boolean; acceptEula?: boolean; installerVersion?: string }) => Promise<unknown>;
@@ -18,16 +18,16 @@ interface ConsentGateProps {
 /**
  * Wrap the entire app. On mount, check consent status.
  * If privacy consent is missing, show the modal gate.
- * Once accepted, render children. If declined, Quit via electron.
+ * Once accepted, render children. If declined, close the window.
  */
-export function ConsentGate({ children, appVersion }: ConsentGateProps) {
-  const [consentStatus, setConsentStatus] = useState<ConsentStatusResult | null>(null);
+export function ConsentGate({ children }: ConsentGateProps) {
+  const [, setConsentStatus] = useState<ConsentStatusResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
 
   useEffect(() => {
     let isActive = true;
-    const bridge = (window as unknown as { lengrvis?: Bridge }).lengrvis;
+    const bridge = (window as unknown as { lengrvis?: ConsentBridge }).lengrvis;
     if (!bridge?.consent?.getStatus) {
       setLoading(false);
       return;
@@ -47,7 +47,7 @@ export function ConsentGate({ children, appVersion }: ConsentGateProps) {
   }, []);
 
   const handleAgree = useCallback(async () => {
-    const bridge = (window as unknown as { lengrvis?: Bridge }).lengrvis;
+    const bridge = (window as unknown as { lengrvis?: ConsentBridge }).lengrvis;
     if (!bridge?.consent?.accept) return;
     try {
       await bridge.consent.accept({ acceptPrivacy: true });
@@ -59,8 +59,6 @@ export function ConsentGate({ children, appVersion }: ConsentGateProps) {
   }, []);
 
   const handleDecline = useCallback(() => {
-    // Sending an empty query to the backend to trigger graceful shutdown.
-    // Alternatively, close the window.
     window.close();
   }, []);
 
@@ -74,10 +72,3 @@ export function ConsentGate({ children, appVersion }: ConsentGateProps) {
 
   return <>{children}</>;
 }
-
-type Bridge = {
-  consent?: {
-    getStatus: () => Promise<ConsentStatusResult>;
-    accept: (request: { acceptPrivacy?: boolean; acceptEula?: boolean; installerVersion?: string }) => Promise<unknown>;
-  };
-};

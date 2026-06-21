@@ -7,9 +7,18 @@
  */
 
 import { useCallback, useRef, useState } from "react";
-import { Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from "react-native";
+import {
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
-import { acceptConsent, type ConsentState } from "../store/consent";
+import { acceptConsent } from "../store/consent";
 
 interface ConsentScreenProps {
   onConsented: () => void;
@@ -76,7 +85,7 @@ export function ConsentScreen({ onConsented }: ConsentScreenProps) {
         <Text style={styles.sectionTitle}>{"\u6700\u7ec8\u7528\u6237\u8bb8\u53ef\u534f\u8bae\uff08EULA\uff09\u6458\u8981"}</Text>
         {EULA_SUMMARY.map((item, i) => (
           <View key={`eula-${i}`} style={styles.summaryItem}>
-            <Text style={styles.summaryItemTitle}>\u2022 {item.title}</Text>
+            <Text style={styles.summaryItemTitle}>{"\u2022 "}{item.title}</Text>
             <Text style={styles.summaryItemDetail}>{item.detail}</Text>
           </View>
         ))}
@@ -84,7 +93,7 @@ export function ConsentScreen({ onConsented }: ConsentScreenProps) {
         <Text style={styles.sectionTitle}>{"\u9690\u79c1\u653f\u7b56\u6458\u8981"}</Text>
         {PRIVACY_SUMMARY.map((item, i) => (
           <View key={`privacy-${i}`} style={styles.summaryItem}>
-            <Text style={styles.summaryItemTitle}>\u2022 {item.title}</Text>
+            <Text style={styles.summaryItemTitle}>{"\u2022 "}{item.title}</Text>
             <Text style={styles.summaryItemDetail}>{item.detail}</Text>
           </View>
         ))}
@@ -114,8 +123,6 @@ export function ConsentScreen({ onConsented }: ConsentScreenProps) {
     </SafeAreaView>
   );
 }
-
-const SafeAreaView = require("react-native").SafeAreaView;
 
 const styles = StyleSheet.create({
   safeArea: {

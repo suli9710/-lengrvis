@@ -7,37 +7,39 @@
 # This file is included by the main .nsi script via:
 #   !include "installer-eula.nsh"
 #
-# After including, call: ShowEulaPage
+# After including, call: ShowEulaPage in the page flow.
 # It pushes a custom EULA page between the welcome page and the directory page.
 # ============================================================================
 
-# --- Page order: insert before the directory page ---
-!define EULA_FILE "${PROJECT_ROOT}\docs\legal\eula.md"
+# --- Path to bundled EULA (set PROJECT_ROOT before including this file) ---
+!ifdef PROJECT_ROOT
+  !define EULA_FILE "${PROJECT_ROOT}\docs\legal\eula.md"
+!else
+  !define EULA_FILE "docs\legal\eula.md"
+!endif
 
-# --- Custom page for EULA ---
+# --- Custom page variables ---
 Var EulaAccepted
 Var EulaDialog
 Var EulaText
 Var EulaCheckbox
-Var EulaNextBtn
-Var EulaBackBtn
 
 Function ShowEulaPage
   ; Check if EULA file exists; if not, skip this page
   IfFileExists "${EULA_FILE}" +3 0
-    MessageBox MB_OK|MB_ICONEXCLATION "EULA file not found. Installation will continue without license agreement."
+    MessageBox MB_OK|MB_ICONEXCLAMATION "EULA file not found. Installation will continue without license agreement."
     Goto SkipEulaPage
 
-  ; Read EULA content into a variable
+  ; Create custom dialog
   nsDialogs::Create 1018
   Pop $EulaDialog
 
-  ; Title
+  ; Title label
   ${NSD_CreateLabel} 0 0 100% 20u "\u6700\u7ec8\u7528\u6237\u8bb8\u53ef\u534f\u8bae"
   Pop $0
   SetCtlColors $0 "" "ffffff"
 
-  ; Scrollable text area for EULA (fixed height 300px = ~150u)
+  ; Scrollable text area for EULA (fixed height ~150u = ~300px)
   ${NSD_CreateText} 0 25u 100% 150u ""
   Pop $EulaText
   SetCtlColors $EulaText "" "ffffff"
@@ -65,8 +67,7 @@ Function ShowEulaPage
   StrCpy $EulaAccepted 0
   ${NSD_OnClick} $EulaCheckbox EulaCheckboxClick
 
-  ; Show the page
-  ShowDialog $EulaDialog
+  ; Show the dialog
   nsDialogs::Show
 
   SkipEulaPage:
@@ -90,7 +91,7 @@ Function ValidateEulaPage
   ${EndIf}
 FunctionEnd
 
- ; --- Write consent.json after installation completes ---
+# --- Write consent.json after installation completes ---
 Function WriteConsentRecord
   ; Resolve data directory
   ReadEnvStr $0 "LENGRVIS_DATA_DIR"
@@ -102,25 +103,30 @@ Function WriteConsentRecord
     CreateDirectory $0
     IfFileExists $0 0 Done
 
-  ; Write consent.json
-  FileOpen $1 "$0\consent.json" w
+  ; Write consent.json line by line to avoid escaping issues
+  FileOpen $2 "$0\consent.json" w
   IfErrors Done
-  FileWrite $1 '{$
-  "eula_version": "v1.0",
-  "eula_accepted_at": "$ {__DATE__}T$ {__TIME__}",
-  "privacy_version": "v1.0",
-  "privacy_accepted_at": null,
-  "installer_version": "$ {VERSION}",
-  "platform": "windows"
-}'
-  FileClose $1
+  FileWrite $2 '{$\r\n'
+  FileWrite $2 '  "eula_version": "v1.0",$\r\n'
+  FileWrite $2 '  "eula_accepted_at": "__installer__",$\r\n'
+  FileWrite $2 '  "privacy_version": "v1.0",$\r\n'
+  FileWrite $2 '  "privacy_accepted_at": null,$\r\n'
+  FileWrite $2 '  "installer_version": "${VERSION}",$\r\n'
+  FileWrite $2 '  "platform": "windows"$\r\n'
+  FileWrite $2 '}'
+  FileClose $2
 
   Done:
 FunctionEnd
 
- ; --- Register the EULA page in the installer page flow ---
- ; In the main .nsi, add these lines in the page sections:
- ;   Page custom ShowEulaPage ValidateEulaPage
- ;   ; ... existing pages ...
- ;   ; In the -InstallFiles or .onInstSuccess section:
- ;   ;   Call WriteConsentRecord
+# --- Integration instructions for the main .nsi script: ---
+# In the page sections, add:
+#   Page custom ShowEulaPage ValidateEulaPage
+#   ; ... existing pages ...
+#
+# In the .onInstSuccess section (or after -InstallFiles):
+#   Call WriteConsentRecord
+#
+# The desktop app's consentManager.readConsentRecord() will pick up the
+# eula_accepted_at = "__installer__" and replace it with a real timestamp
+# on first launch with a precise value.
