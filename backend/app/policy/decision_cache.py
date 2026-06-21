@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -9,6 +10,12 @@ from hashlib import sha256
 from typing import Any
 
 from app.policy.risk import RiskLevel, SafetyVerdict
+
+
+# P1-1 fix: Use a process-level random marker instead of a caller-supplied
+# string. The old code checked context.get("cache_scope") == "deterministic_fast_path"
+# which could be injected by any caller to poison the cache.
+_INTERNAL_CACHE_SCOPE_MARKER = secrets.token_hex(16)
 
 
 @dataclass(slots=True)
@@ -134,7 +141,8 @@ class ToolDecisionCache:
         normalized_verdict = verdict if isinstance(verdict, SafetyVerdict) else SafetyVerdict(str(verdict))
         normalized_risk = risk_level if isinstance(risk_level, RiskLevel) else RiskLevel(str(risk_level))
         context = context or {}
-        if context.get("cache_scope") != "deterministic_fast_path":
+        # P1-1 fix: Use internal process-level marker instead of caller-supplied string.
+        if context.get("_internal_cache_scope") != _INTERNAL_CACHE_SCOPE_MARKER:
             return False
         if normalized_verdict != SafetyVerdict.ALLOW:
             return False

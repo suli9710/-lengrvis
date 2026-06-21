@@ -34,8 +34,16 @@ TASK_TERMINAL_EVENT_NAMES = {"run.completed", "run.failed", "run.denied", "run.c
 
 
 class RunEventBus:
-    _lock = threading.RLock()
-    _subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[RunEvent]]]] = defaultdict(set)
+    """Event bus for run events.
+
+    P0-6 fix: _subscriptions and _lock are now instance variables (not class
+    variables) so each RunEventBus instance has its own subscriber set.
+    Previously they were class variables, causing cross-task event leakage.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[RunEvent]]]] = defaultdict(set)
 
     def publish(
         self,

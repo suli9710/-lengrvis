@@ -104,6 +104,12 @@ def _remote_enabled(context: dict[str, Any]) -> bool:
 
 
 def _has_approval(args: dict[str, Any], tool_name: str) -> bool:
+    """Check that a valid, unconsumed approval exists for this remote input call.
+
+    P0-4 fix: The original logic required consumed_at to be NON-empty,
+    meaning only already-consumed approvals would pass — the exact opposite
+    of anti-replay. Now we correctly require consumed_at to be EMPTY.
+    """
     if args.get("approved") is not True:
         return False
     approval_id = str(args.get("approval_id") or "").strip()
@@ -112,8 +118,12 @@ def _has_approval(args: dict[str, Any], tool_name: str) -> bool:
     approval = db.fetch_one("approvals", approval_id)
     if not approval:
         return False
-    if str(approval.get("status") or "") != "approved" or not bool(str(approval.get("consumed_at") or "").strip()):
+    if str(approval.get("status") or "") != "approved":
         return False
+    # P0-4 fix: consumed_at must be EMPTY (not yet consumed) to proceed.
+    # The old code used `not bool(...)` which inverted the check.
+    if bool(str(approval.get("consumed_at") or "").strip()):
+        return False  # Already consumed — reject replay.
     return _approval_matches_remote_input(approval, tool_name, args) and _approval_remote_input_grant_active(approval)
 
 
