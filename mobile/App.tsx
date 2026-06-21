@@ -6,14 +6,17 @@ import { resolveAndroidBack } from "./src/androidBackNavigation";
 import { addApprovalNotificationResponseListener, getLastApprovalNotificationApprovalId } from "./src/notifications";
 import { ApprovalDetail } from "./src/screens/ApprovalDetail";
 import { ApprovalsScreen } from "./src/screens/ApprovalsScreen";
+import { ConsentScreen } from "./src/screens/ConsentScreen";
 import { PairScreen } from "./src/screens/PairScreen";
 import { RemoteScreen } from "./src/screens/RemoteScreen";
 import { WakeupsScreen } from "./src/screens/WakeupsScreen";
 import { isRemoteInputGrantUsable, reduceRemoteInputGrant, remoteInputGrantExpiryDelayMs } from "./src/remoteInputGrant";
 import { clearSession, loadSession } from "./src/store/auth";
+import { loadConsentState } from "./src/store/consent";
 
 type ActiveScreen = "approvals" | "remote" | "wakeups";
 type SessionLoadState = "loading" | "ready" | "failed";
+type ConsentGateState = "checking" | "needed" | "done";
 
 export default function App() {
   const [session, setSession] = useState<PairingSession | null>(null);
@@ -22,8 +25,30 @@ export default function App() {
   const [selectedApproval, setSelectedApproval] = useState<BackendApproval | null>(null);
   const [activeScreen, setActiveScreen] = useState<ActiveScreen>("approvals");
   const [remoteInputGrant, setRemoteInputGrant] = useState<RemoteInputGrant | null>(null);
+  const [consentGate, setConsentGate] = useState<ConsentGateState>("checking");
+
+  // --- Consent gate: check before anything else ---
+  useEffect(() => {
+    let isActive = true;
+    void loadConsentState()
+      .then((state) => {
+        if (!isActive) return;
+        setConsentGate(state.needsConsent ? "needed" : "done");
+      })
+      .catch(() => {
+        if (!isActive) return;
+        // If consent check fails, err on the side of showing the consent screen.
+        setConsentGate("needed");
+      });
+    return () => { isActive = false; };
+  }, []);
+
+  const handleConsented = useCallback(() => {
+    setConsentGate("done");
+  }, []);
 
   useEffect(() => {
+    if (consentGate !== "done") return undefined;
     let isActive = true;
     setSessionLoadState("loading");
     void loadSession()
@@ -48,7 +73,7 @@ export default function App() {
     return () => {
       isActive = false;
     };
-  }, [sessionLoadAttempt]);
+  }, [sessionLoadAttempt, consentGate]);
 
   useEffect(() => {
     if (!session) return undefined;
@@ -162,6 +187,22 @@ export default function App() {
   const handleStartFreshPairing = () => {
     clearLocalSessionOrShowRecovery();
   };
+
+  // --- Consent gate takes priority over everything else ---
+  if (consentGate === "checking") {
+    return (
+      <SafeAreaView style={styles.safeArea} testID="app-consent-checking">
+        <StatusBar barStyle="dark-content" backgroundColor="#f7f9fb" />
+        <View style={styles.consentCheckingContent}>
+          <ActivityIndicator accessibilityLabel="正在检查使用条款状态" color="#0e5f76" size="large" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (consentGate === "needed") {
+    return <ConsentScreen onConsented={handleConsented} />;
+  }
 
   if (sessionLoadState === "loading") {
     return <SessionLoadScreen state="loading" onPairFresh={handleStartFreshPairing} onRetry={() => setSessionLoadAttempt((attempt) => attempt + 1)} />;
@@ -291,6 +332,11 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#f7f9fb",
+  },
+  consentCheckingContent: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
   },
   sessionLoadContent: {
     flex: 1,
