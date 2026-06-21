@@ -13,14 +13,41 @@ from app.tools.schemas import ToolDefinition
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolDefinition] = {}
+        # P0-9 fix: Track tool names case-insensitively to detect and reject
+        # case-confusing MCP tool names that could impersonate builtin tools.
+        self._name_index: dict[str, str] = {}
 
     def register(self, definition: ToolDefinition) -> None:
-        self._tools[definition.name] = definition
+        name = definition.name
+        lower = name.casefold()
+        # P0-9 fix: Reject registration if a tool with the same case-insensitive
+        # name already exists (prevents MCP tools from shadowing builtin tools
+        # via case variations like "Browser.Navigate" vs "browser.navigate").
+        if lower in self._name_index and self._name_index[lower] != name:
+            raise ValueError(
+                f"Tool name '{name}' conflicts with already registered '{self._name_index[lower]}' "
+                f"(case-insensitive collision)"
+            )
+        self._tools[name] = definition
+        self._name_index[lower] = name
 
     def get(self, name: str) -> ToolDefinition:
-        if name not in self._tools:
-            raise KeyError(f"Tool not registered: {name}")
-        return self._tools[name]
+        # P0-9 fix: Use case-sensitive lookup for the actual tool, but also
+        # check the case-insensitive index to detect and block case-based
+        # impersonation attempts.
+        if name in self._tools:
+            return self._tools[name]
+        # If the name doesn't match exactly but matches case-insensitively,
+        # reject to prevent case-based bypass of permission checks.
+        lower = name.casefold()
+        if lower in self._name_index:
+            registered = self._name_index[lower]
+            if registered != name:
+                raise KeyError(
+                    f"Tool '{name}' not found. Did you mean '{registered}'? "
+                    f"Tool name matching is case-sensitive."
+                )
+        raise KeyError(f"Tool not registered: {name}")
 
     def list(self) -> list[ToolDefinition]:
         return list(self._tools.values())
@@ -164,6 +191,7 @@ def register_all_tools(
 
     reg = target if target is not None else registry
     reg._tools.clear()
+    reg._name_index.clear()
     file_tools.register(reg)
     developer_tools.register(reg)
     document_tools.register(reg)
