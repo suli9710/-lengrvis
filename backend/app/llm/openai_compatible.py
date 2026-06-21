@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import timezone
@@ -26,6 +27,15 @@ class LLMApiCircuitOpen(RuntimeError):
 
 class LLMApiResponseError(RuntimeError):
     """Raised when a provider returns a syntactically successful but invalid body."""
+
+
+# P1-10 fix: Redact API keys from error messages before surfacing to callers.
+_API_KEY_PATTERN = re.compile(r'(sk-[A-Za-z0-9]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})', re.IGNORECASE)
+
+
+def _sanitize_error_message(message: str) -> str:
+    """Remove API keys or bearer tokens from error messages to prevent credential leakage."""
+    return _API_KEY_PATTERN.sub('[REDACTED]', str(message))
 
 
 @dataclass
@@ -151,7 +161,7 @@ class OpenAICompatibleProvider(LLMProvider):
             self._ensure_circuit_allows_request(circuit_key)
         except Exception as exc:
             trace["error_type"] = exc.__class__.__name__
-            trace["error"] = str(exc)
+            trace["error"] = _sanitize_error_message(str(exc))
             trace["circuit_open"] = isinstance(exc, LLMApiCircuitOpen)
             self._last_transport_metadata = trace
             raise
@@ -201,7 +211,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 if not self._should_retry(exc) or attempt == attempts - 1:
                     self._record_failure(circuit_key, exc)
                     trace["error_type"] = exc.__class__.__name__
-                    trace["error"] = str(exc)
+                    # P1-10 fix: Sanitize error message to prevent API key leakage.
+                    trace["error"] = _sanitize_error_message(str(exc))
                     trace["circuit_after"] = circuit_snapshot(self.settings)
                     self._last_transport_metadata = trace
                     raise
@@ -216,7 +227,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 self._last_transport_metadata = trace
                 await self._sleep_before_retry(attempt, last_error)
 
-        trace["error"] = str(last_error or RuntimeError("LLM API request failed."))
+        trace["error"] = _sanitize_error_message(str(last_error or RuntimeError("LLM API request failed.")))
         self._last_transport_metadata = trace
         raise last_error or RuntimeError("LLM API request failed.")
 
@@ -423,7 +434,8 @@ class OpenAICompatibleProvider(LLMProvider):
                 message = error.get("message") or error.get("type") or "provider error"
             else:
                 message = str(error)
-            raise LLMApiResponseError(f"LLM provider returned an error payload: {message}")
+            # P1-10 fix: Sanitize embedded error messages to prevent API key leakage.
+            raise LLMApiResponseError(_sanitize_error_message(f"LLM provider returned an error payload: {message}"))
 
     def _usage_from_chat_completions(
         self,
@@ -486,15 +498,36 @@ class OpenAICompatibleProvider(LLMProvider):
         )
         return [item["embedding"] for item in data["data"]]
 
+    # P0-8 fix: Whitelisted image extensions and path traversal validation for vision().
+    _ALLOWED_IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"})
+    _MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+
     async def vision(self, image_path: str, prompt: str, model: str | None = None) -> str:
         import base64
         from pathlib import Path
 
         path = Path(image_path)
+        # P0-8 fix: Validate the image path before reading to prevent path traversal
+        # and reading arbitrary files as base64 (which could exfiltrate secrets).
         if not path.exists():
             return f"[vision] file not found: {image_path}"
+        # Reject paths with directory traversal components.
+        if ".." in path.parts:
+            return "[vision] invalid image path: directory traversal not allowed"
+        # Validate file extension against a strict whitelist.
+        suffix = path.suffix.lstrip(".").lower()
+        if suffix not in self._ALLOWED_IMAGE_EXTENSIONS:
+            return f"[vision] unsupported image format: .{suffix or 'unknown'}"
+        # Validate file size to prevent excessive memory usage.
+        try:
+            file_size = path.stat().st_size
+        except OSError:
+            return f"[vision] cannot stat file: {image_path}"
+        if file_size > self._MAX_IMAGE_SIZE_BYTES:
+            return f"[vision] image file too large ({file_size} bytes; max {self._MAX_IMAGE_SIZE_BYTES})"
+        if file_size == 0:
+            return "[vision] image file is empty"
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        suffix = path.suffix.lstrip(".").lower() or "png"
         mime = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
         data_url = f"data:{mime};base64,{encoded}"
         target_model = model or self.settings.vision_model or self.settings.model
