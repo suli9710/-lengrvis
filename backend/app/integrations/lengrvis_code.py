@@ -1043,7 +1043,7 @@ def _event_summary(event: Mapping[str, Any]) -> str:
         if subtype == "init":
             tools = event.get("tools") if isinstance(event.get("tools"), list) else []
             return f"{LENGRVIS_CODE_DISPLAY_NAME} initialized with {len(tools)} tools."
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} system event: {subtype or 'unknown'.}"
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} system event: {subtype or 'unknown'}."
     if event_type == "assistant":
         texts = _assistant_text(event)
         if texts:
@@ -1057,7 +1057,7 @@ def _event_summary(event: Mapping[str, Any]) -> str:
             return str(event["result"])[:500]
         if isinstance(event.get("errors"), list) and event["errors"]:
             return "; ".join(str(item) for item in event["errors"])[:500]
-        return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {event.get('subtype') or 'unknown'.}"
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} result: {event.get('subtype') or 'unknown'}."
     if event_type in {"streamlined_text", "text"} and isinstance(event.get("text"), str):
         return str(event["text"]).strip()[:500]
     if event_type in {"streamlined_tool_use_summary", "tool_use_summary"}:
