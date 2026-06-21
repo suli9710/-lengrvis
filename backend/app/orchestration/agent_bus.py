@@ -122,7 +122,7 @@ def _enqueue_persist(message: AgentMessage) -> None:
 
 
 def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
-    """Block until all queued message writes are committed (or timeout).""""
+    """Block until all queued message writes are committed (or timeout)."""
     if threading.current_thread() is _PERSIST_THREAD:
         return True
     deadline = time.monotonic() + max(0.0, timeout_seconds)
