@@ -21,6 +21,7 @@ from app.policy.permissions import PermissionPolicy, PermissionStore
 from app.policy.privacy import can_use_browser_writes
 from app.policy.risk import RiskLevel, SafetyVerdict, max_risk
 from app.policy.sensitive_values import looks_sensitive_value
+from app.policy.decision_cache import _INTERNAL_CACHE_SCOPE_MARKER
 
 
 FORBIDDEN_TERMS = {
@@ -223,6 +224,9 @@ SYSTEM_PATH_PREFIXES = (
     "/library",
 )
 
+# P1-3 fix: MCP tool prefix matching should be case-insensitive.
+_MCP_PREFIXES = ("mcp.", "mcp_", "mcp-", "mcp:")
+
 
 class PolicyEngine:
     def __init__(
@@ -389,7 +393,27 @@ class PolicyEngine:
             tool_decision_cache.put_review(tool_name, args, review, context=cache_context)
             return review
         if effective_risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}:
-            if not args.get("dry_run", True):
+            # P1-2 fix: dry_run should be explicitly checked, not defaulted to True.
+            # The old code used args.get("dry_run", True) which meant any call
+            # that forgot to include dry_run was silently treated as a dry-run.
+            dry_run = args.get("dry_run")
+            if dry_run is None:
+                # dry_run not specified - require explicit dry-run first.
+                review = SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type="tool_call",
+                    verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
+                    risk_level=effective_risk,
+                    reasons=[
+                        *dynamic_reasons,
+                        "Modifying tools require dry_run=True preview before non-dry-run execution; dry_run was not specified.",
+                    ],
+                    user_confirmation_message=f"Run {tool_name} with dry_run=True first to generate a preview.",
+                )
+                tool_decision_cache.put_review(tool_name, args, review, context=cache_context)
+                return review
+            if dry_run is False:
                 review = SafetyReview(
                     task_id=task_id,
                     step_id=step_id,
@@ -571,7 +595,9 @@ class PolicyEngine:
             return None
 
     def _legacy_classify_tool_call(self, tool_name: str, args: dict[str, Any]) -> RiskLevel:
-        if tool_name.startswith("mcp."):
+        # P1-3 fix: case-insensitive MCP prefix matching.
+        lowered = tool_name.casefold()
+        if any(lowered.startswith(p) for p in _MCP_PREFIXES) or lowered == "mcp":
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if any(term in tool_name for term in ["password", "cookie", "token", "shell"]):
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
@@ -759,7 +785,8 @@ class PolicyEngine:
         if dynamic.risk_level != static_risk:
             return None
         cache_key = self._fast_path_cache_key(tool_name, args, static_risk, context, tool_definition)
-        fast_cache_context = {"cache_scope": "deterministic_fast_path"}
+        # P1-1 fix: use internal cache scope marker instead of caller-supplied string.
+        fast_cache_context = {"_internal_cache_scope": _INTERNAL_CACHE_SCOPE_MARKER}
         cached = tool_decision_cache.get("fast_path", {"cache_key": cache_key}, context=fast_cache_context)
         cache_id = short_digest(cache_key)
         if cached is not None:
@@ -995,7 +1022,8 @@ class PolicyEngine:
         if tool_name not in CLEANUP_WRITE_TOOLS:
             return None
         if tool_name == "file.cleanup_rollback":
-            if args.get("dry_run", True):
+            dry_run = args.get("dry_run")
+            if dry_run is not False and dry_run is not None:
                 return SafetyReview(
                     task_id=task_id,
                     step_id=step_id,
