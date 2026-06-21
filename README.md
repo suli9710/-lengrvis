@@ -54,7 +54,7 @@ Lengrvis 是一款 Windows 优先的本地 OS Agent（电脑助手）原型。�
 ## 架构
 
 ```text
-mavris/
+lengrvis/
 ├── backend/app/         FastAPI 后端、Agent、策略、工具、索引、服务
 ├── backend/tests/       pytest 契约测试（~135 文件）与 golden tasks
 ├── desktop/src/         Electron main/preload + React 渲染层
@@ -328,8 +328,8 @@ macOS 后端 binary 需要在 macOS 主机上构建，PyInstaller 不支持从 W
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -r requirements-dev.txt
+python3 -m pip install -U pip
+python3 -m pip install -r requirements-dev.txt
 bash scripts/build_backend_mac.sh arm64
 ```
 

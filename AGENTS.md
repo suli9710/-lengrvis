@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Lengrvis (internal name `mavris`) is a Windows-first local "OS Agent" assistant. It is a pnpm/npm
+Lengrvis is a Windows-first local "OS Agent" assistant. It is a pnpm/npm
 monorepo with three parts:
 
 - `backend/` — FastAPI engine (agents, policy, tools, SQLite index, LLM routing, mobile pairing). The core product.

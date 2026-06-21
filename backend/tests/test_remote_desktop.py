@@ -379,7 +379,7 @@ def test_remote_screen_invalid_control_sends_generic_error(monkeypatch: pytest.M
     raw_control = (
         r'{"type": "frame_ack", "sequence": token=secretCONTROL123456 '
         r"selector=#admin hostname=screen-control.internal.local "
-        r"C:\Users\Suli\Desktop\secrets\control.txt"
+        r"C:\\Users\\Suli\\Desktop\\secrets\\control.txt"
     )
 
     with client.websocket_connect(
@@ -400,7 +400,7 @@ def test_remote_screen_invalid_control_sends_generic_error(monkeypatch: pytest.M
     _assert_no_sensitive_details(
         error,
         [
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "secretCONTROL123456",
             "#admin",
             "screen-control.internal.local",
@@ -413,10 +413,10 @@ def test_remote_screen_invalid_control_sends_generic_error(monkeypatch: pytest.M
 def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     raw_error = (
-        r"capture failed at C:\Users\Suli\Desktop\secrets\screen.txt "
+        r"capture failed at C:\\Users\\Suli\\Desktop\\secrets\\screen.txt "
         "token=secretREMOTE123456 selector=#password-field "
         "hostname=screen-host.internal.local "
-        r'Traceback (most recent call last): File "C:\Users\Suli\Desktop\mavris\backend\app\api\routes_remote.py", line 117, in capture'
+        r'Traceback (most recent call last): File "C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\api\\routes_remote.py", line 117, in capture'
     )
 
     def fail_capture(**kwargs):
@@ -441,7 +441,7 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
     _assert_no_sensitive_details(
         error,
         [
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "secretREMOTE123456",
             "#password-field",
             "screen-host.internal.local",
@@ -461,7 +461,7 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
     _assert_no_sensitive_details(
         failure["payload"],
         [
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "secretREMOTE123456",
             "#password-field",
             "screen-host.internal.local",
@@ -581,7 +581,7 @@ def test_input_events_audited(monkeypatch: pytest.MonkeyPatch):
 
 def test_remote_key_input_audit_redacts_unsafe_key_payload(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
-    raw_key = r"token=abc123 selector=#password C:\Users\Suli\secret.txt"
+    raw_key = r"token=abc123 selector=#password C:\\Users\\Suli\\secret.txt"
     registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
     monkeypatch.setattr(routes_remote, "register_all_tools", lambda settings=None: registry)
     monkeypatch.setattr(
@@ -603,7 +603,7 @@ def test_remote_key_input_audit_redacts_unsafe_key_payload(monkeypatch: pytest.M
         [
             "token=abc123",
             "#password",
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "mobile_key_audit",
             "rig_key_audit",
             "Key Phone",
@@ -681,7 +681,7 @@ def test_remote_input_approval_exposes_safe_mobile_metadata_without_sensitive_pr
         "ok": True,
         "dry_run": True,
         "message": (
-            r"Remote preview at C:\Users\Suli\Desktop\secrets\remote-input.txt "
+            r"Remote preview at C:\\Users\\Suli\\Desktop\\secrets\\remote-input.txt "
             "token=secretPREVIEW123456 selector=#password hostname=metadata.internal.local"
         ),
         "diff_preview": [
@@ -692,7 +692,7 @@ def test_remote_input_approval_exposes_safe_mobile_metadata_without_sensitive_pr
                 "selector": "#password",
                 "token": "secretPREVIEW123456",
                 "host": "metadata.internal.local",
-                "path": r"C:\Users\Suli\Desktop\secrets\remote-input.txt",
+                "path": r"C:\\Users\\Suli\\Desktop\\secrets\\remote-input.txt",
                 "device_id": device_id,
                 "grant_id": grant_id,
             }
@@ -776,7 +776,7 @@ def test_remote_input_approval_exposes_safe_mobile_metadata_without_sensitive_pr
         mobile_metadata,
         [
             private_text,
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "secretPREVIEW123456",
             "#password",
             "metadata.internal.local",
@@ -793,7 +793,7 @@ def test_remote_input_unverified_dry_run_does_not_create_mobile_approval(monkeyp
         "ok": False,
         "dry_run": False,
         "error": (
-            r"preview failed at C:\Users\Suli\Desktop\secrets\dry-run.txt "
+            r"preview failed at C:\\Users\\Suli\\Desktop\\secrets\\dry-run.txt "
             "token=secretDRYRUN123456 selector=#dry-run hostname=dry-run.internal.local"
         ),
         "diff_preview": [{"action": "click", "x": 100, "y": 200, "selector": "#dry-run"}],
@@ -822,7 +822,7 @@ def test_remote_input_unverified_dry_run_does_not_create_mobile_approval(monkeyp
     _assert_no_sensitive_details(
         error,
         [
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "secretDRYRUN123456",
             "#dry-run",
             "dry-run.internal.local",
@@ -891,7 +891,7 @@ def test_remote_input_tool_without_dry_run_metadata_fails_closed(monkeypatch: py
 def test_remote_input_policy_deny_uses_generic_client_and_summarized_audit():
     _enable_remote_desktop()
     raw_reason = (
-        r"deny remote input at C:\Users\Suli\Desktop\secrets\deny.txt "
+        r"deny remote input at C:\\Users\\Suli\\Desktop\\secrets\\deny.txt "
         "token=secretDENYREASON123456 selector=#deny-secret "
         "hostname=deny-policy.internal.local"
     )
@@ -928,7 +928,7 @@ def test_remote_input_policy_deny_uses_generic_client_and_summarized_audit():
     assert "reasons" not in denial
 
     sensitive_fragments = [
-        r"C:\Users\Suli",
+        r"C:\\Users\\Suli",
         "secretDENYREASON123456",
         "#deny-secret",
         "deny-policy.internal.local",
@@ -1018,10 +1018,10 @@ def test_remote_input_policy_failure_sends_generic_rejection_and_redacted_audit(
     device_id = "mobile_input_policy_secret_device"
     token, grant_id = _remote_input_grant_token(device_id, "Policy Host")
     raw_error = (
-        rf"policy failed at C:\Users\Suli\Desktop\secrets\policy.txt "
+        rf"policy failed at C:\\Users\\Suli\\Desktop\\secrets\\policy.txt "
         rf"token=secretPOLICY123456 selector=#policy-secret hostname=policy.internal.local "
         rf"device_id={device_id} grant_id={grant_id} "
-        r'Traceback (most recent call last): File "C:\Users\Suli\Desktop\mavris\backend\app\policy\policy_engine.py", line 201, in review'
+        r'Traceback (most recent call last): File "C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\policy\\policy_engine.py", line 201, in review'
     )
 
     def fail_policy(event, *, claims=None):
@@ -1045,7 +1045,7 @@ def test_remote_input_policy_failure_sends_generic_rejection_and_redacted_audit(
         "status_code": 403,
     }
     client_sensitive_fragments = [
-        r"C:\Users\Suli",
+        r"C:\\Users\\Suli",
         "secretPOLICY123456",
         "#policy-secret",
         "policy.internal.local",
@@ -1075,10 +1075,10 @@ def test_remote_input_policy_failure_sends_generic_rejection_and_redacted_audit(
 def test_remote_input_unexpected_exception_sends_generic_error(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     raw_error = (
-        r"input crashed at C:\Users\Suli\Desktop\secrets\input.txt "
+        r"input crashed at C:\\Users\\Suli\\Desktop\\secrets\\input.txt "
         "token=secretINPUT123456 selector=#api-key "
         "hostname=input-host.internal.local "
-        r'Traceback (most recent call last): File "C:\Users\Suli\Desktop\mavris\backend\app\api\routes_remote.py", line 201, in input'
+        r'Traceback (most recent call last): File "C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\api\\routes_remote.py", line 201, in input'
     )
 
     def fail_input(event, *, claims=None):
@@ -1110,7 +1110,7 @@ def test_remote_input_unexpected_exception_sends_generic_error(monkeypatch: pyte
     _assert_no_sensitive_details(
         error,
         [
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "secretINPUT123456",
             "#api-key",
             "input-host.internal.local",
@@ -1130,7 +1130,7 @@ def test_remote_input_unexpected_exception_sends_generic_error(monkeypatch: pyte
     _assert_no_sensitive_details(
         failure["payload"],
         [
-            r"C:\Users\Suli",
+            r"C:\\Users\\Suli",
             "secretINPUT123456",
             "#api-key",
             "input-host.internal.local",
