@@ -25,6 +25,7 @@ from app.api import (
     routes_memories,
     routes_metrics,
     routes_mobile,
+    routes_observability,
     routes_pair,
     routes_perception,
     routes_remote,
@@ -46,6 +47,11 @@ from app.indexer.file_watcher import get_file_watcher
 from app.llm.local_provider import health_snapshot
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
+from app.observability import (
+    configure_logging,
+    install_crash_handlers,
+    register_observability_middleware,
+)
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.dispatcher import EventDispatcher
 from app.perception.environment_stream import get_environment_stream
@@ -149,6 +155,8 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    configure_logging()
+    install_crash_handlers()
     db.init_db()
     settings = get_effective_settings()
     app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.0", lifespan=lifespan)
@@ -265,6 +273,7 @@ def create_app() -> FastAPI:
         routes_schedules.router,
         routes_memories.router,
         routes_metrics.router,
+        routes_observability.router,
         routes_mcp.router,
         routes_commands.router,
         routes_context.router,
@@ -288,6 +297,8 @@ def create_app() -> FastAPI:
     app.include_router(routes_runs.ws_router, prefix="/api")
     app.include_router(routes_settings.ws_router)
     app.include_router(routes_settings.ws_router, prefix="/api")
+
+    register_observability_middleware(app)
 
     return app
 
