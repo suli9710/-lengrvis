@@ -1,4 +1,6 @@
-import { app, dialog } from "electron";
+import { app, dialog, shell } from "electron";
+
+import { isVersionQuarantined, noteUpdateDownloaded } from "./updateHealthStore";
 
 /**
  * electron-updater 集成（GitHub Releases 通道，feed 来自打包时生成的 app-update.yml）。
@@ -7,6 +9,7 @@ import { app, dialog } from "electron";
  * - 仅在打包后的应用里激活；dev 模式没有 app-update.yml，直接进入 unsupported 状态。
  * - electron-updater 通过 require 延迟加载，依赖缺失时优雅降级而不是让主进程崩溃。
  * - 后端 backend.exe 位于安装包 resources 内，随安装包整体替换，更新即同时更新后端。
+ * - 更新后的健康校验与回滚保护由 updateHealthStore 驱动（见 main.ts 启动流程）。
  */
 
 export type UpdaterState =
@@ -25,6 +28,8 @@ interface UpdaterStatus {
   error: string | null;
 }
 
+const RELEASES_URL = "https://github.com/suli9710/-lengrvis/releases";
+
 const status: UpdaterStatus = { state: "idle", version: null, error: null };
 
 let cachedUpdater: ElectronAppUpdater | null = null;
@@ -36,6 +41,7 @@ let downloadPromptShown = false;
 interface ElectronAppUpdater {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  allowDowngrade: boolean;
   on(event: string, listener: (...args: unknown[]) => void): void;
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(): Promise<unknown>;
@@ -68,16 +74,25 @@ function loadUpdater(): ElectronAppUpdater | null {
     // 未签名本地 dist 不会通过签名校验，因此不静默下载安装。
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.allowDowngrade = false;
 
     autoUpdater.on("checking-for-update", () => setState("checking"));
     autoUpdater.on("update-available", (...args: unknown[]) => {
       const info = args[0] as { version?: string } | undefined;
-      setState("available", { version: info?.version ?? null });
-      void promptDownload(info?.version ?? null);
+      const version = info?.version ?? null;
+      // 已知崩溃版本：在更新版本超越它之前不再提示下载。
+      if (isVersionQuarantined(version)) {
+        setState("up-to-date", { version });
+        return;
+      }
+      setState("available", { version });
+      void promptDownload(version);
     });
     autoUpdater.on("update-not-available", () => setState("up-to-date"));
     autoUpdater.on("update-downloaded", (...args: unknown[]) => {
       const info = args[0] as { version?: string } | undefined;
+      // 记录待安装版本，下次启动据此做健康校验与回滚保护。
+      noteUpdateDownloaded(info?.version);
       setState("ready", { version: info?.version ?? null });
       void promptRestart(info?.version ?? null);
     });
@@ -179,6 +194,50 @@ export function checkForUpdatesInteractive(): void {
   void updater.checkForUpdates().catch((error: unknown) => {
     console.warn("Manual update check failed:", error);
   });
+}
+
+/**
+ * 进入回滚保护模式：检测到更新后连续启动失败时调用。
+ *
+ * 说明：electron-updater 无法静默重装一个更旧的构建（GitHub feed 仍指向最新、
+ * 现已被隔离的发行版），因此真正的「自动降级」在客户端不可行。我们采取可行且
+ * 诚实的做法——停止自动安装问题版本、放开 allowDowngrade 以便用户手动恢复，
+ * 并引导用户回到上一个稳定版本，从而保证可用性而不是反复崩溃。
+ */
+export async function enterUpdateRollbackMode(
+  quarantinedVersion: string | null,
+  lastGoodVersion: string | null
+): Promise<void> {
+  const updater = loadUpdater();
+  if (updater) {
+    updater.autoInstallOnAppQuit = false;
+    updater.allowDowngrade = true;
+  }
+  setState("error", {
+    error: quarantinedVersion
+      ? `版本 ${quarantinedVersion} 启动异常，已暂停自动安装`
+      : "更新启动异常，已暂停自动安装"
+  });
+  const detailLines = [
+    quarantinedVersion
+      ? `版本 ${quarantinedVersion} 连续启动失败，已自动停用该更新以保护可用性。`
+      : "最近一次更新连续启动失败，已自动停用。",
+    lastGoodVersion
+      ? `建议恢复到上一个稳定版本 ${lastGoodVersion}。`
+      : "建议从历史版本页面重新安装稳定版本。"
+  ];
+  const result = await dialog.showMessageBox({
+    type: "warning",
+    title: "更新已回滚",
+    message: "检测到更新后启动异常，已自动回滚保护。",
+    detail: detailLines.join("\n"),
+    buttons: ["查看历史版本", "稍后"],
+    defaultId: 0,
+    cancelId: 1
+  });
+  if (result.response === 0) {
+    void shell.openExternal(RELEASES_URL);
+  }
 }
 
 export function getUpdaterStatus(): UpdaterStatus {
