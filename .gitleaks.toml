@@ -1,0 +1,48 @@
+# Gitleaks configuration for Lengrvis
+# Extends default rules with project-specific patterns.
+
+[extend]
+useDefault = true
+
+# --- Custom rules ---
+
+[[rules]]
+id = "android-keystore"
+description = "Android debug/release keystore file"
+regex = '''(?i)(debug|release)\.keystore'''
+path = '''\.(keystore|jks)$'''
+tags = ["keystore", "android"]
+
+[[rules]]
+id = "jks-files"
+description = "Java KeyStore file"
+path = '''\.jks$'''
+tags = ["keystore", "java"]
+
+[[rules]]
+id = "lengrvis-audit-secret"
+description = "Lengrvis HMAC audit secret"
+regex = '''LENGRVIS_AUDIT_HMAC_SECRET\s*=\s*["']([^"']+)['"]'''
+tags = ["lengrvis", "secret"]
+
+[[rules]]
+id = "lengrvis-keystore-env"
+description = "Lengrvis Android keystore env var with value"
+regex = '''LENGRVIS_ANDROID_KEYSTORE_(?:FILE|PASSWORD|ALIAS|KEY_PASSWORD)\s*=\s*["']([^"']{8,})['"]'''
+tags = ["lengrvis", "android", "secret"]
+
+# --- Allowlist ---
+
+[allowlist]
+description = "Allowed false positives"
+paths = [
+  '''node_modules/''',
+  '''\.git/''',
+  '''vendor/''',
+  '''desktop/node_modules/''',
+  '''mobile/node_modules/''',
+]
+# CI test secret is not a real secret
+regexes = [
+  '''ci-audit-hmac-secret''',
+]
