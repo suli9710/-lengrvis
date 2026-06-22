@@ -1,0 +1,40 @@
+name: Release Readiness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-readiness:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate release readiness dashboard (non-strict)
+        run: |
+          python scripts/check_release_readiness_dashboard.py \
+            --dashboard docs/release/release-readiness-dashboard.md
+
+      - name: Show delivery pipeline plan
+        run: |
+          python scripts/delivery_pipeline.py --plan-only
+
+      - name: Strict release readiness (informational until RC)
+        # Strict mode fails while any P0 blocker is still open. This is expected
+        # before RC, so it is reported but does not fail the build yet. Flip
+        # continue-on-error to false when cutting a real release candidate.
+        continue-on-error: true
+        run: |
+          python scripts/check_release_readiness_dashboard.py \
+            --dashboard docs/release/release-readiness-dashboard.md \
+            --strict
