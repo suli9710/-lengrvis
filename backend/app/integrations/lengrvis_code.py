@@ -478,11 +478,29 @@ def _sanitize_subprocess_env(base_env: Mapping[str, str] | None = None) -> dict[
     return sanitized
 
 
-def build_lengrvis_code_env(settings: AppSettings, *, base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+def build_lengrvis_code_env(
+    settings: AppSettings,
+    *,
+    base_env: Mapping[str, str] | None = None,
+    passthrough_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Map Lengrvis OpenAI-compatible settings into Lengrvis Code's OpenAI provider env."""
 
     # P1-11 fix: Start from a sanitized env instead of blindly passing all parent env vars.
     env = _sanitize_subprocess_env(base_env)
+    # P1-11 follow-up fix: Caller-provided config env (LengrvisCodeConfig.env) is
+    # explicit, trusted intent (e.g. adapter-specific vars, test record paths) and
+    # must bypass the parent-env prefix allowlist that _sanitize_subprocess_env
+    # applies. Blocked credentials and sensitive-looking keys are still stripped so a
+    # misconfigured caller cannot leak secrets, and the adapter-injected OpenAI keys
+    # below always take precedence.
+    if passthrough_env:
+        for passthrough_key, passthrough_value in passthrough_env.items():
+            if passthrough_key in BLOCKED_ENV_KEYS:
+                continue
+            if _is_sensitive_env_key(passthrough_key):
+                continue
+            env[passthrough_key] = passthrough_value
     for key in BLOCKED_ENV_KEYS:
         env.pop(key, None)
     model = str(settings.model or "").strip()
@@ -615,8 +633,10 @@ async def run_lengrvis_code(
     registry: LengrvisCodeProcessRegistry = lengrvis_code_process_registry,
 ) -> LengrvisCodeStreamSummary:
     active = config or LengrvisCodeConfig(max_turns=settings.agent_loop_max_turns)
-    # P1-11 fix: build_lengrvis_code_env now starts from a sanitized env whitelist.
-    env = build_lengrvis_code_env(settings, base_env={**os.environ, **active.env})
+    # P1-11 fix: build_lengrvis_code_env starts from a sanitized parent-env
+    # whitelist; caller-provided config env is passed through separately so it is
+    # not dropped by the prefix allowlist (P1-11 follow-up fix).
+    env = build_lengrvis_code_env(settings, base_env=os.environ, passthrough_env=active.env)
     launch_config = LengrvisCodeConfig(
         command=active.command,
         executable=active.executable,
