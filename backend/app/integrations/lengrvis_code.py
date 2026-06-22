@@ -40,6 +40,11 @@ MAX_ADAPTER_EVENTS = 500
 FORBIDDEN_ALLOWED_TOOLS: tuple[str, ...] = ("Bash", "Bash(*)", "Edit", "Write", "Agent")
 WRITE_CAPABLE_ALLOWED_TOOLS: tuple[str, ...] = ("Write", "Edit")
 BLOCKED_ENV_KEYS: tuple[str, ...] = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+# P1-11 fix: Keys the adapter intentionally injects for the OpenAI-compatible
+# provider. These match sensitive-key patterns (e.g. API_KEY) but are required
+# for the subprocess to authenticate, so the safety scan must not treat them as
+# leaked parent credentials.
+ADAPTER_INJECTED_ENV_KEYS: tuple[str, ...] = ("OPENAI_API_KEY",)
 FORBIDDEN_CLI_FLAGS: tuple[str, ...] = ("--dangerously-skip-permissions", "--allow-dangerously-skip-permissions")
 OPENAI_MODEL_ENV_KEYS: tuple[str, ...] = (
     "OPENAI_DEFAULT_SONNET_MODEL",
@@ -799,7 +804,16 @@ def _command_safety_error(command: Sequence[str], *, build_env: Mapping[str, Any
         if leaked:
             return f"{LENGRVIS_CODE_DISPLAY_NAME} env must not include Anthropic credentials: {', '.join(leaked)}"
         # P1-11 fix: Also check for sensitive env keys that slipped through.
-        sensitive_leaked = [key for key in build_env if _is_sensitive_env_key(key) and key not in BLOCKED_ENV_KEYS]
+        # Keys the adapter intentionally injects for the OpenAI-compatible provider
+        # (e.g. OPENAI_API_KEY) are required for authentication and must not be
+        # treated as leaked parent credentials.
+        sensitive_leaked = [
+            key
+            for key in build_env
+            if _is_sensitive_env_key(key)
+            and key not in BLOCKED_ENV_KEYS
+            and key not in ADAPTER_INJECTED_ENV_KEYS
+        ]
         if sensitive_leaked:
             return f"{LENGRVIS_CODE_DISPLAY_NAME} env must not include sensitive keys: {', '.join(sensitive_leaked[:5])}"
     return ""
