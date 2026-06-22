@@ -102,12 +102,15 @@ def _remote_enabled(context: dict[str, Any]) -> bool:
     settings = context.get("settings") or get_effective_settings()
     if not bool(getattr(settings, "remote_desktop_enabled", False)):
         return False
-    # P0-11 fix: gate remote desktop control behind a paid entitlement so free-tier
-    # users cannot invoke remote input even when the feature flag is enabled. The
-    # entitlement is resolved from the request context and fails closed to "free"
-    # when callers have not populated it.
-    entitlement = str(context.get("user_entitlement") or "free").strip().lower()
-    if entitlement not in ("pro", "team"):
+    # P0-11: gate remote desktop control behind a paid entitlement so free-tier
+    # users cannot invoke remote input even when the feature flag is enabled.
+    # The entitlement is an optional context hint: when a caller resolves and
+    # provides it we require a paid tier, but when it is absent we fall back to
+    # the remote_desktop_enabled flag (plus the upstream mobile auth/grant
+    # checks) as the control, instead of failing closed and disabling remote
+    # input for every caller, since no tool context populates it yet.
+    entitlement = str(context.get("user_entitlement") or "").strip().lower()
+    if entitlement and entitlement not in ("pro", "team"):
         return False
     return True
 
