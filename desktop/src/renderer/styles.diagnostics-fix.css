@@ -1,0 +1,21 @@
+/*
+ * Narrow-viewport hardening for the system diagnostics panel.
+ *
+ * At <=1180px the computer view collapses to a single column. The diagnostics
+ * content can slightly exceed the panel width, and because an ancestor clips
+ * or auto-scrolls (.panel is overflow:hidden, .panel__body / .detail-grid are
+ * overflow:auto), a programmatic scrollIntoView() triggered by clicking the
+ * refresh / export buttons can scroll that ancestor horizontally and push the
+ * diagnostics cards off the left edge of the viewport.
+ *
+ * overflow-x: clip (unlike overflow-x: hidden) does NOT create a scroll
+ * container, so the affected ancestors can no longer be scrolled horizontally
+ * by scrollIntoView()/focus, while vertical scrolling is preserved.
+ */
+@media (max-width: 1180px) {
+  .detail-grid:has(.system-support-flow),
+  .panel:has(.system-support-flow),
+  .panel:has(.system-support-flow) .panel__body {
+    overflow-x: clip;
+  }
+}
