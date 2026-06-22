@@ -908,6 +908,7 @@ class PolicyEngine:
         settings = context.get("settings") or self.settings
         allowed_directories = list(context.get("allowed_directories") or getattr(settings, "allowed_directories", []) or [])
         return {
+            "_internal_cache_scope": _INTERNAL_CACHE_SCOPE_MARKER,
             "policy": permission_policy_version(self.permission_store.updated_at()),
             "permission_mode": permission_mode_from_context(context, settings),
             "settings": settings_fingerprint(settings, allowed_directories=allowed_directories),
