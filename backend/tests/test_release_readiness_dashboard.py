@@ -7,6 +7,7 @@ by file path with importlib.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,11 @@ def _load_module():
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Register before exec_module: on Python 3.13 dataclasses resolves the
+    # frozen dataclass's (stringized) annotations via
+    # sys.modules.get(cls.__module__).__dict__, which is None for a module
+    # loaded by file path that was never inserted into sys.modules.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
