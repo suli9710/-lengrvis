@@ -134,7 +134,7 @@ WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
 # We validate the column name and definition against strict whitelists instead.
 _SAFE_COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_COLUMN_DEFINITION_RE = re.compile(
-    r'''^[A-Za-z_][A-Za-z0-9_]*(\s+NOT\s+NULL)?(\s+DEFAULT\s+('' '|''.+?'|[0-9.-]+|NULL))?(\s+NOT\s+NULL)?$''',
+    r"^[A-Za-z_][A-Za-z0-9_]*(\s+NOT\s+NULL)?(\s+DEFAULT\s+('(?:[^']|'')*'|[0-9.-]+|NULL))?(\s+NOT\s+NULL)?$",
     re.IGNORECASE,
 )
 
