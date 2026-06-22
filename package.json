@@ -16,6 +16,8 @@
     "sbom:generate": "powershell -ExecutionPolicy Bypass -File ./scripts/generate_sbom.ps1",
     "supply-chain:verify": "npm run deps:verify && npm run sbom:generate",
     "security:extensions": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_extension_security_gate.ps1",
+    "release:readiness": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md",
+    "release:readiness:strict": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --strict",
     "release:safety": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_release_safety.ps1",
     "release:quick": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
     "release:check": "npm run qa:gate && npm run supply-chain:verify && npm run security:extensions && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45",
