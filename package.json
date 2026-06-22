@@ -36,7 +36,10 @@
     "evidence:diagnostics-review": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_diagnostics_external_review_packet.ps1",
     "evidence:distribution-template": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_distribution_release_evidence_template.ps1",
     "smoke:desktop-first-launch": "npm --prefix desktop run smoke:first-launch",
-    "smoke:portable-first-screen": "powershell -ExecutionPolicy Bypass -File ./scripts/portable_first_screen_smoke.ps1"
+    "smoke:portable-first-screen": "powershell -ExecutionPolicy Bypass -File ./scripts/portable_first_screen_smoke.ps1",
+    "delivery:plan": "python scripts/delivery_pipeline.py --plan-only",
+    "delivery:run": "python scripts/delivery_pipeline.py --output build/delivery-verdict.json",
+    "delivery:rc": "python scripts/delivery_pipeline.py --strict --output build/delivery-verdict.json"
   },
   "engines": {
     "node": ">=20"
