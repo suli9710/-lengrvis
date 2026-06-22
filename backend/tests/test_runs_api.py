@@ -322,7 +322,7 @@ parser.add_argument("--allowedTools")
 parser.add_argument("prompt")
 args = parser.parse_args()
 
-record_path = os.environ.get("FAKE_LENGRVIS_RECORD")
+record_path = os.environ.get("LENGRVIS_FAKE_RECORD")
 if record_path:
     with open(record_path, "w", encoding="utf-8") as fh:
         json.dump({"argv": sys.argv[1:], "prompt": args.prompt}, fh)
@@ -343,7 +343,7 @@ print(json.dumps({
         encoding="utf-8",
     )
     monkeypatch.setenv("LENGRVIS_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
-    monkeypatch.setenv("FAKE_LENGRVIS_RECORD", str(record_path))
+    monkeypatch.setenv("LENGRVIS_FAKE_RECORD", str(record_path))
     monkeypatch.setenv("LENGRVIS_API_KEY", "test-api-key")
     monkeypatch.setenv("LENGRVIS_MODEL", "openai/gpt-5")
     db.init_db()
@@ -1432,7 +1432,7 @@ parser.add_argument("--allowedTools")
 parser.add_argument("prompt")
 args = parser.parse_args()
 
-Path(os.environ["FAKE_LENGRVIS_RECORD"]).write_text(json.dumps({"argv": sys.argv[1:]}), encoding="utf-8")
+Path(os.environ["LENGRVIS_FAKE_RECORD"]).write_text(json.dumps({"argv": sys.argv[1:]}), encoding="utf-8")
 print(json.dumps({"type": "system", "subtype": "init", "tools": args.allowedTools.split(",")}), flush=True)
 
 def handle_signal(signum, frame):
@@ -1444,7 +1444,7 @@ time.sleep(30)
 """.lstrip(),
         encoding="utf-8",
     )
-    monkeypatch.setenv("FAKE_LENGRVIS_RECORD", str(record_path))
+    monkeypatch.setenv("LENGRVIS_FAKE_RECORD", str(record_path))
     monkeypatch.setenv("LENGRVIS_CODE_COMMAND", f'"{sys.executable}" -u "{fake_cli}"')
     db.init_db()
 
