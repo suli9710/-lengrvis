@@ -7,6 +7,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
+from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.config import ENV_PREFIX, AppSettings, get_base_settings
 from app.core.outbound_url import validate_outbound_http_url
 from app.context_management import ContextAwareProvider
@@ -67,12 +68,28 @@ def get_effective_settings() -> AppSettings:
     base = get_base_settings()
     persisted = base.merged(db.get_settings_overrides())
     effective = persisted.merged(_explicit_process_env_overrides(base))
+    effective = _enforce_plan_entitlements(effective)
 
     with _SETTINGS_CACHE_LOCK:
         _settings_cache_value = effective
         _settings_cache_key = fingerprint
         _settings_cache_expires_at = time.monotonic() + _SETTINGS_CACHE_TTL_SECONDS
     return effective
+
+
+def _enforce_plan_entitlements(settings: AppSettings) -> AppSettings:
+    """Bind high-risk paid-tier capabilities to the active commercialization plan.
+
+    Remote desktop control (手机远控) is a Pro/Team capability. When the active
+    plan is not entitled to it we force ``remote_desktop_enabled`` off at this
+    settings chokepoint, which deactivates every downstream remote-control gate
+    (WebSocket authorization, input handling, session keepalive) without
+    weakening the per-action strong-approval flow that still governs entitled
+    plans.
+    """
+    if settings.remote_desktop_enabled and not has_feature(active_plan(settings), Feature.REMOTE_CONTROL):
+        return dataclasses.replace(settings, remote_desktop_enabled=False)
+    return settings
 
 
 def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
