@@ -10,11 +10,19 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import os
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+# test_start_app_script.py exercises Windows-only PowerShell launch behavior and
+# only passes on Windows runners. Skip collecting it on non-Windows platforms.
+collect_ignore_glob: list[str] = []
+if os.name != "nt":
+    collect_ignore_glob.append("test_start_app_script.py")
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
