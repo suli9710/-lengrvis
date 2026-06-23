@@ -65,7 +65,7 @@ Lengrvis（以下简称"本软件"）是一款以本地处理为核心的桌面 
 
 ## 4. 数据存储与安全
 
-- 所有本地数据存储于用户个人目录下的加密数据库中（Windows 使用 DPAPI，macOS 使用 Keychain 保护密钥）
+- 所有本地数据存储于用户个人目录下；本地 secret 由 Windows DPAPI 或 macOS/Linux 系统 keyring 保护，系统密钥库不可用时默认拒绝自动明文落盘
 - 本地数据库文件权限设置为仅限当前用户访问（Unix 0600 / Windows ACL）
 - 审计日志采用 HMAC 哈希链防篡改机制
 - 桌面端 API 通信限定在环回地址（127.0.0.1 / localhost），不接受外部网络请求

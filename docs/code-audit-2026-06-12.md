@@ -15,7 +15,7 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 - **审批不可伪造**：`model_boundary.py` 以 `extra="forbid"` 信封递归拦截模型注入的 `approved`/`approval_id`/`*_hmac` 等控制字段；真实审批走 DB 记录 + HMAC 绑定（task/step/tool/canonical args）+ 原子消费（`step_execution_handler.py` + `db.claim_approval_for_execution`），并对 settings/permission policy 做指纹绑定以防 TOCTOU。
 - **R4 硬拒绝**：`dynamic_risk.py` 不会下调 R4，`policy_engine.py` 对未知/低信任工具与 MCP 工具 fail-closed。
 - **移动通道作用域隔离扎实**：`mobile:approval` / `remote:view` / `remote:input` 三类 scope 在 decode 与路由层双重隔离；远程输入授权在每条 WS 消息上实时校验（`validate_mobile_claims_active`），撤销/过期即关闭连接。
-- **Electron 三件套全开**：`contextIsolation/sandbox` 开启、`nodeIntegration` 关闭、严格 CSP、IPC `assertTrustedRenderer` 白名单、桌面 token 不下发渲染层、后端 token 文件 `0600` 原子写 + Windows DPAPI 加密。
+- **Electron 三件套全开**：`contextIsolation/sandbox` 开启、`nodeIntegration` 关闭、严格 CSP、IPC `assertTrustedRenderer` 白名单、桌面 token 不下发渲染层、secret 文件原子写，实际 secret 由 Windows DPAPI、Electron safeStorage 或系统 keyring 保护。
 - **MCP/浏览器 SSRF 防护**：连接期 IP 钉死 + 禁止重定向 + 私网/元数据 DNS fail-closed。
 
 主要问题集中在**纵深防御一致性**与**受限场景下的真实风险**，没有发现默认配置下的越权执行或审批绕过。下面按严重程度列出。
@@ -105,8 +105,8 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 
 - **位置**：`desktop/src/main/desktopApiToken.ts:142-187`、`desktop/src/main/ipc.ts:382-388`（`skillsImport` 接受渲染层任意路径、无 picker 授权）、`341-379`（`cleanupExecute`/`cleanupRollback`/`commandsExecute` 无原生确认）、`534-542`（带 nonce 时策略改写无二次原生确认）、`815-833`（`showItemInFolder`/`getFileIcon` 默认根目录无 picker 授权）
 - **问题**：桌面 token 在非 Windows 平台明文存储；多个敏感 IPC 动作缺少原生确认。均非远程未认证 RCE，而是**渲染层被 XSS 攻陷后的放大面**。
-- **状态**：**部分修复**（2026-06-12）。`skillsImport`（任意路径、最高风险、用户主动且低频）现在在导入前 `confirmNativeDesktopAction` 显示路径并要求确认；desktop typecheck 通过。`cleanupExecute`/`cleanupRollback`（后端已有审批门）与 `commandsExecute`（命令 dock 高频，强制弹窗会破坏核心 UX）的原生确认、非 Windows token 加密，需结合桌面 Playwright/e2e 在真实 Electron 运行时验证后再加，本环境无法运行桌面 smoke，故未盲改。
-- **建议**：危险动作统一加原生确认；`skillsImport` 走文件选择器授权；非 Windows 平台对 token 文件加密或限制 ACL。
+- **状态**：**部分修复**。`skillsImport`（任意路径、最高风险、用户主动且低频）已在导入前 `confirmNativeDesktopAction` 显示路径并要求确认。非 Windows token 明文落盘已关闭：桌面端改用 Electron `safeStorage`，拒绝 `basic_text` 后端并只允许显式开发/测试明文豁免；后端本地 secret 在 macOS/Linux 改用系统 keyring，文件仅保存 `keyring:` 查找句柄。`cleanupExecute`/`cleanupRollback`（后端已有审批门）与 `commandsExecute`（命令 dock 高频，强制弹窗会破坏核心 UX）的原生确认仍需结合真实 Electron UX 单独评估。
+- **建议**：危险动作统一加原生确认；`skillsImport` 走文件选择器授权；保持 token/secret 通过 DPAPI、safeStorage 或系统 keyring 存储，禁止生产路径静默明文降级。
 
 ### SEC-011 — 移动端 Android 信任用户安装的 CA（LAN MITM）
 
@@ -162,7 +162,7 @@ Lengrvis 的**安全设计基线显著高于同类原型**，本轮审计未发�
 | WS 鉴权用 subprotocol、拒绝 query token、accept 前鉴权 | `security/mobile_jwt.py:101-110`、`api/routes_mobile.py:302-308` |
 | MCP/浏览器 SSRF：IP 钉死 + 禁重定向 + 元数据阻断 | `core/outbound_url.py:75-167`、`mcp/client.py:96-107` |
 | Electron 三件套 + 严格 CSP + IPC 白名单 + token 不下发渲染层 | `desktop/src/main/main.ts:54-90`、`desktop/index.html:5-8`、`desktop/src/main/ipc.ts:1704-1729` |
-| 本机密钥 DPAPI 加密 + 原子写 + `0600` | `security/local_secret.py:35-63` |
+| 本机密钥 DPAPI / 系统 keyring 存储 + 原子写 | `security/local_secret.py` |
 | 配对单次使用原子化 + TTL + LAN 强制 HTTPS | `services/mobile_pairing_service.py:124-171`、`security/lan.py:66-67` |
 | 任务 timeline/replay/explain 公开脱敏 | `api/routes_tasks.py` `_public_*` 系列 |
 | 诊断导出分层脱敏 + fail-closed `public_safe=false` | `api/routes_system.py:398-687` |

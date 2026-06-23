@@ -11,12 +11,12 @@
 
 | 维度 | 评分 | 等级 | 一句话依据 |
 | --- | --- | --- | --- |
-| 安全 (Security) | 8.5 | A- | HMAC 审批绑定 + R0–R4 + model boundary + DPAPI + 审计哈希链 + SSRF IP 钉死 + 移动 scope 隔离；本轮 SEC-001~012 进一步加固；仍属发布前、未经外部渗透。 |
-| 正确性/可靠性 | 7.0 | B | 1,562 后端测试 + 黄金任务门禁 + 状态机；但同步阻塞事件循环、崩溃/更新管线未闭环、若干 open follow-up（ORCH-002/003）。 |
+| 安全 (Security) | 8.5 | A- | HMAC 审批绑定 + R0–R4 + model boundary + DPAPI/keyring secret 存储 + 审计哈希链 + SSRF IP 钉死 + 移动 scope 隔离；本轮 SEC-001~012 进一步加固；仍属发布前、未经外部渗透。 |
+| 正确性/可靠性 | 7.0 | B | 历史后端测试证据 + 黄金任务门禁 + 状态机；但同步阻塞事件循环、崩溃/更新管线未闭环、若干 open follow-up（ORCH-002/003）。 |
 | 性能/可伸缩性 | 5.5 | C+ | **最大短板**：工具执行 / SQLite / ONNX / OCR 在 async 事件循环线程内同步阻塞；SQLite 每操作建连、无 WAL、`init_db()` 热路径重复执行。 |
 | 架构/可维护性 | 7.0 | B | 分层清晰、38 个外置 prompt、能力解耦良好；但存在巨型文件（`db.py` 1919、`context_management.py` 1780、`SettingsPanel.tsx` 3362、`App.tsx` 1835）。 |
 | 代码卫生 (Quality) | 6.0 | C+ | 无 mypy；ruff 未做强制门禁，存量 **1,024** 项（790 E501、383 BLE001、54 F401 未用导入）、158 处 `noqa`。 |
-| 测试 (Testing) | 8.0 | A- | 后端 1,562 用例 + 黄金任务 + desktop Vitest/Playwright + mobile smokes + CI 矩阵；缺真机/clean-machine/性能测试与覆盖率门禁。 |
+| 测试 (Testing) | 8.0 | A- | 后端历史测试证据 + 黄金任务 + desktop Vitest/Playwright + mobile smokes + CI 矩阵；缺真机/clean-machine/性能测试与覆盖率门禁。 |
 | 供应链/依赖 | 7.5 | B+ | `requirements-lock.txt` 锁定 + CI `npm audit --audit-level=high` 阻断 + 每周 `security-audit.yml` + pip-audit；`requirements.txt` 用 `>=`（由 lock 收敛）。 |
 | 文档/工程化 | 7.5 | B+ | README/SECURITY/QA 矩阵/证据 helper/合规清单非常详尽；但仅 Windows 开发路径，非 Windows（如本审计环境）大量用例因平台能力失败。 |
 | 前端 (Desktop/Mobile) | 7.0 | B | Electron 三件套 + 严格 CSP + IPC 白名单一流；但渲染层巨型组件、轮询+推送双通道残留。 |
@@ -30,12 +30,12 @@
 ## 各维度详评（含证据）
 
 ### 1. 安全 8.5 / A-
-- **强项**：`policy/model_boundary` 递归拦截注入控制字段；`approval_binding` HMAC 绑定 (task/step/tool/args) + 原子 claim；`dynamic_risk` 不下调 R4；`outbound_url.pin_outbound_http_url` IP 钉死防 DNS 重绑定；`mobile_jwt` 三 scope 隔离 + 每消息实时校验；`security/local_secret` DPAPI 加密；审计哈希链。
+- **强项**：`policy/model_boundary` 递归拦截注入控制字段；`approval_binding` HMAC 绑定 (task/step/tool/args) + 原子 claim；`dynamic_risk` 不下调 R4；`outbound_url.pin_outbound_http_url` IP 钉死防 DNS 重绑定；`mobile_jwt` 三 scope 隔离 + 每消息实时校验；`security/local_secret` DPAPI / 系统 keyring 存储；审计哈希链。
 - **本轮加固**：SEC-001（run 时间线脱敏）、SEC-002（执行标记下沉）、SEC-003（审计路径脱敏）、SEC-004（配对码 64 位）、SEC-005（会话 epoch 吊销）、SEC-006（grant 防重放）、SEC-007（zip 炸弹）、SEC-008（httpx SSRF 钉死）、SEC-009（敏感字段语义判定）、SEC-012（录屏访问控制回归）。
 - **扣分**：发布前、无外部渗透测试；残留 SEC-008（Playwright 主路径 DNS 钉死）、SEC-011（Android user-CA / 应用层 pinning）需运行时方案；SEC-010 桌面 IPC 确认仅部分落地。
 
 ### 2. 正确性/可靠性 7.0 / B
-- **强项**：1,562 后端测试、黄金任务回归（≥95% 门禁）、严格/审计两态状态机、崩溃恢复 `recover_interrupted_runs`、审批原子消费防重放。
+- **强项**：后端历史测试证据、黄金任务回归（≥95% 门禁）、严格/审计两态状态机、崩溃恢复 `recover_interrupted_runs`、审批原子消费防重放。
 - **扣分**：`AGENT_REVIEW_ISSUES.md` 中 ORCH-002（时间线事件回填，已接受）、ORCH-003（同步 resume 线程无法被 `Future.cancel` 中断）、UI-001 仍 open；崩溃/在线更新管线未闭环（README 自述）；异步用例存在 full-suite 计时抖动。
 
 ### 3. 性能/可伸缩性 5.5 / C+（最高优先修复）
@@ -54,7 +54,7 @@
 - 存量 **1,024** 项 ruff 违规：790 `E501`（行长，cosmetic）、**383 `BLE001`（blind `except Exception` 会吞错误，可能掩盖真实 bug）**、244 `I001`、**54 `F401`（未使用导入）**、130 `UP038`、74 `B008`、`S112/S603`（安全相关：try-except-continue / subprocess）。158 处 `noqa`（部分为死注释）。
 
 ### 6. 测试 8.0 / A-
-- 后端 1,562 用例 + 黄金任务 + `desktop` Vitest/14 项 Playwright smoke + mobile token/companion/remote-input/wakeup smoke；CI 三端矩阵 + 每周 SCA。
+- 后端历史测试证据 + 黄金任务 + `desktop` Vitest/Playwright smoke + mobile token/companion/remote-input/wakeup smoke；CI 三端矩阵 + 每周 SCA。
 - 缺：覆盖率门禁（无 `--cov-fail-under`）、性能/负载测试、真机 LAN/WSS 与 clean-machine 验收（已知 open）。
 
 ### 7. 供应链/依赖 7.5 / B+
@@ -121,6 +121,6 @@
 
 - 安全：SEC-001~009 + SEC-012 已修复并带后端回归；SEC-010 部分（桌面 `skillsImport` 原生确认）；SEC-011/SEC-008-Playwright 据实标注待运行时验证。详见 `docs/code-audit-2026-06-12.md`。
 - 文档：README 产品概述语气专业化。
-- 验证：全量 `pytest backend/tests` = **1757 passed / 68 skipped**，12 项失败经 `origin/main` 对照确认均为既有 Linux 环境限制；`desktop typecheck` 通过。
+- 验证：历史全量 `pytest backend/tests` 结果见当次日志；失败项经 `origin/main` 对照确认均为既有 Linux 环境限制；`desktop typecheck` 通过。不要把本段历史数字当作当前 release evidence。
 
 > 本评分卡为只读审计产物。除已在 PR #1 落地的 SEC 修复与 README 改动外，本文件不含进一步代码改动；上述路线图为可执行的后续整改建议，建议按 P0→P1→P2 分批落地并补回归。

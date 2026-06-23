@@ -243,7 +243,7 @@ auto-compact 摘要、history-snip 占位、reactive 压缩的文案分别在 `b
 - **R1/C5**:显式 `LENGRVIS_RECOVERY_MAX_RETRIES=3`;`LLM_API_MAX_RETRIES=3`、退避 1.0s(公网抗抖动)。
 - **C4**:纯云端确认 `LENGRVIS_MODE=efficiency`,无需 hybrid。
 - **测试隔离加固**:`backend/tests/conftest.py` 新增 autouse fixture `isolate_local_runtime_config`——此前套件依赖".env 是死前缀"的偶然事实,真实配置生效即打破 2 个测试;现在契约测试不读开发者真实 config.yaml/.env。
-- 验证:全量 1569 通过;golden:gate 34/34。注意:迁移前启动的后端进程需重启才读到新 `.env`。
+- 验证:历史全量回归通过;golden:gate 34/34。注意:迁移前启动的后端进程需重启才读到新 `.env`。
 
 ### 2026-06-10 第三轮(P1:T1 + P2 + C3)
 
@@ -258,7 +258,7 @@ auto-compact 摘要、history-snip 占位、reactive 压缩的文案分别在 `b
 - **T2**:审查 125 个工具发现 13 个 `document.*` 工具 `fast_path_eligible=True` 但 `input_schema={}`,每次执行多一次 LLM hop;已全部补显式 object schema(`required` 只含函数硬取键)。fast-path schema gap 13 → 0,并加 `test_fast_path_eligible_tools_declare_explicit_object_schema` 回归门禁防止新工具再引入。
 - **T4**:`document.compare`(两路径必填,原缺路径报裸 `TypeError`)、`document.qa`/`document.ask_with_citations`(question 非空)补 `validate_input` 回调,坏参数前置为 `fatal_failed`+清晰文案+`tool.validation_failed` 审计,不烧重试预算。
 - **P3**:新增 `_deterministic_open_app_plan`(打开应用,R1 免审批,中文名别名映射)与 `_deterministic_search_plan`(按文件名搜索,R0,冒号/动词剥离两种查询提取),`create_plan` 分发重构为模板循环,旧意图优先;守卫覆盖路径/网页/文件夹/删除/清理/卸载/重复文件冲突。黄金任务 33 → 34(`gt-run-open-app-missing-fails-closed`),`gt-run-search-name` 强化为断言确定性提取真实命中 fixture(此前 Mock 整句查询零命中)。
-- 验证:`test_planner_deterministic.py` 新增 27 项;执行引擎/韧性/工具协议/文档/子代理推理/规划相关定向套件全绿;`npm run golden:gate` 35/35(报告已归档 `.tmp/qa-evidence/golden-tasks/`);全量 backend pytest `1615 passed, 1 skipped`(较上轮 +44 项)。
+- 验证:`test_planner_deterministic.py` 新增 27 项;执行引擎/韧性/工具协议/文档/子代理推理/规划相关定向套件全绿;`npm run golden:gate` 35/35(报告已归档 `.tmp/qa-evidence/golden-tasks/`);全量 backend pytest 结果为历史 dirty-worktree 证据，不作为当前 release evidence。
 - 已知 flake(非本轮引入):`test_cleanup_planner.py` 的 hash 稳定性与 trash 审批两测在高 IO 负载下偶发——`CleanupItem` 哈希含 `mtime_ns`,NTFS 延迟时间戳刷新会使同一文件两次 stat 返回不同值;隔离与复跑均稳定通过。后续可考虑把哈希里的 `mtime_ns` 降精度到毫秒。
 
 ### 2026-06-11 第五轮(P3 批次:R4 + T3 + P4 + P5,附 Computer Use 视觉 grounding)

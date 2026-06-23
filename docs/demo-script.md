@@ -63,7 +63,7 @@ Data: use the prepared document set, large dummy files, and one non-private Skil
 
 Expected story: Lengrvis wins by local execution, inspectable permissions, mobile supervision, and extensible app skills. It does not claim to beat OS vendors on distribution or frontier labs on model quality.
 
-Fallback: if `npm run qa:gate` is too slow or blocked by artifacts, present the latest recorded command output for backend mobile tests, desktop/mobile typecheck, mobile smoke, and desktop browser activity smoke; mark the missing full gate as a demo risk instead of calling it passed.
+Fallback: if `npm run qa:gate` is too slow or blocked by artifacts, present the most recent dated command output for backend mobile tests, desktop/mobile typecheck, mobile smoke, and desktop browser activity smoke; mark the missing full gate as a demo risk instead of calling it passed.
 
 Stop conditions:
 

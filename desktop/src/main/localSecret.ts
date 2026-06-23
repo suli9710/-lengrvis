@@ -1,15 +1,51 @@
 import { spawnSync } from "node:child_process";
 
+import { safeStorage } from "electron";
+
 export const LOCAL_SECRET_DPAPI_PREFIX = "dpapi:";
+export const LOCAL_SECRET_SAFE_STORAGE_PREFIX = "safe:";
+export const ALLOW_INSECURE_LOCAL_SECRETS_ENV = "LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS";
 
 export function dpapiAvailable(): boolean {
   return process.platform === "win32";
 }
 
+export function safeStorageAvailable(): boolean {
+  try {
+    if (!safeStorage?.isEncryptionAvailable()) {
+      return false;
+    }
+    const backend = typeof safeStorage.getSelectedStorageBackend === "function"
+      ? safeStorage.getSelectedStorageBackend()
+      : "";
+    return backend !== "basic_text";
+  } catch {
+    return false;
+  }
+}
+
+function insecurePlaintextAllowed(): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    String(process.env[ALLOW_INSECURE_LOCAL_SECRETS_ENV] ?? "").trim().toLowerCase()
+  );
+}
+
 export function protectLocalSecret(value: string): string {
-  if (!dpapiAvailable()) {
+  if (dpapiAvailable()) {
+    return protectWithDpapi(value);
+  }
+  if (safeStorageAvailable()) {
+    return `${LOCAL_SECRET_SAFE_STORAGE_PREFIX}${safeStorage.encryptString(value).toString("base64")}`;
+  }
+  if (insecurePlaintextAllowed()) {
     return value;
   }
+  throw new Error(
+    `Secure local secret storage is unavailable. Configure the OS keyring or set ${ALLOW_INSECURE_LOCAL_SECRETS_ENV}=1 for local development/tests only.`
+  );
+}
+
+function protectWithDpapi(value: string): string {
   const script = [
     "$ErrorActionPreference = 'Stop'",
     `[Reflection.Assembly]::LoadWithPartialName('System.Security') | Out-Null`,
@@ -32,9 +68,22 @@ export function protectLocalSecret(value: string): string {
 }
 
 export function unprotectLocalSecret(stored: string): string {
-  if (!stored.startsWith(LOCAL_SECRET_DPAPI_PREFIX)) {
+  if (stored.startsWith(LOCAL_SECRET_SAFE_STORAGE_PREFIX)) {
+    if (!safeStorageAvailable()) {
+      throw new Error("Encrypted local secret requires OS safe storage on this platform.");
+    }
+    return safeStorage.decryptString(Buffer.from(stored.slice(LOCAL_SECRET_SAFE_STORAGE_PREFIX.length), "base64"));
+  }
+  if (stored.startsWith(LOCAL_SECRET_DPAPI_PREFIX)) {
+    return unprotectWithDpapi(stored);
+  }
+  if (insecurePlaintextAllowed()) {
     return stored;
   }
+  throw new Error("Refusing to read plaintext local secret without explicit insecure development/test opt-in.");
+}
+
+function unprotectWithDpapi(stored: string): string {
   if (!dpapiAvailable()) {
     throw new Error("Encrypted local secret requires Windows DPAPI on this platform.");
   }

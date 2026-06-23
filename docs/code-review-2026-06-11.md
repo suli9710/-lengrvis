@@ -8,7 +8,7 @@
 
 ## 总体结论
 
-项目的**安全设计基线明显高于同类原型**（Electron 安全三件套全开、IPC 纵深防御、HMAC 审批绑定广泛使用 `hmac.compare_digest`、DPAPI 密钥加密、审计哈希链、审批原子消费），但存在四个**系统性短板**：
+项目的**安全设计基线明显高于同类原型**（Electron 安全三件套全开、IPC 纵深防御、HMAC 审批绑定广泛使用 `hmac.compare_digest`、DPAPI/keyring/safeStorage 本地 secret 保护、审计哈希链、审批原子消费），但存在四个**系统性短板**：
 
 1. **同步阻塞遍布 async 事件循环**——工具执行、SQLite、ONNX 推理、OCR 都在事件循环线程同步执行，这是全局性能问题的根源
 2. **SQLite 使用方式原始**——每操作新建连接、无 WAL、`init_db()` 在 18 处热路径被反复全量执行、关键索引缺失
@@ -223,7 +223,7 @@ except Exception:
 | 3-M4 | vision/Excel/browser 工具 `input_schema` 空缺，统一参数校验形同虚设 | 各工具注册处 | 按 `tools/schemas.py` 模式补全 JSON Schema |
 | 3-M5 | Excel COM 缺线程级 `pythoncom.CoInitialize`；`_quit_excel` 失败仅 debug 日志（EXCEL.EXE 僵尸无人发现） | `app_excel.py:127-130, 295-299` | 操作入口 CoInitialize/CoUninitialize 配对；Quit 失败升级 warning + 记录 PID 可选 taskkill 兜底。（现有 try/finally、DisplayAlerts=False、AutomationSecurity=3 禁宏均正确） |
 | 3-M6 | mobile JWT 未强制要求 `exp` 声明（PyJWT 默认只在 exp 存在时才校验过期） | `security/mobile_jwt.py` | `jwt.decode(..., options={"require": ["exp","aud","iss"]})`。算法固定 HS256、aud/iss 校验、secrets 生成密钥均已正确 |
-| 3-M7 | local_secret 回退路径先写明文再 chmod（窗口期），且 Windows 上 chmod 无效 | `security/local_secret.py` | `os.open(path, O_CREAT\|O_WRONLY\|O_EXCL, 0o600)` 原子创建；Windows 配 `icacls` 收紧 ACL。（DPAPI 加密主路径是亮点） |
+| 3-M7 | local_secret 回退路径先写明文再 chmod（窗口期），且 Windows 上 chmod 无效 | `security/local_secret.py` | 已改为原子创建；Windows 使用 DPAPI，macOS/Linux 使用系统 keyring，系统密钥库不可用时默认 fail-closed。 |
 
 ### 🟢 低严重度
 
@@ -270,11 +270,11 @@ except Exception:
 - **位置**：`App.tsx:325-448`（`useCallback` 依赖 `[activeBrowserSessionId, api, mode]` + `useEffect(..., [refreshWorkspace])`）
 - **修复**：`mode`、`activeBrowserSessionId` 改 `useRef`/`getState()` 即时读取，让回调身份稳定；启动加载改 `useEffect(..., [])` 一次性触发。
 
-#### 4-H5. desktop API token 明文落盘，Windows 上 chmod 无效
+#### 4-H5. desktop API token 明文落盘，Windows 上 chmod 无效 ✅ 已解决
 
 - **位置**：`desktop/src/main/desktopApiToken.ts:99-133`
 - **问题**：同机任意进程可读 `desktop_api.secret` 后调用全部受保护后端 API（含文件清理、命令执行）。
-- **修复**：Electron `safeStorage.encryptString()`（Windows 走 DPAPI）；或 `icacls` 收紧 ACL 并移出项目目录；确保 `.lengrvis_data/*.secret` 在 `.gitignore`。
+- **修复**：桌面端写入统一走 `protectLocalSecret`：Windows 使用 DPAPI，非 Windows 使用 Electron `safeStorage`，拒绝 `basic_text` 后端；仅显式 `LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS=1` 的开发/测试路径允许明文。后端本地 secret 同步改为 Windows DPAPI / macOS-Linux 系统 keyring，系统密钥库不可用时默认 fail-closed。
 
 ### 🟡 中严重度
 
@@ -343,7 +343,7 @@ except Exception:
 
 ### ✅ 亮点（保持现状）
 
-- `local_secret.py` DPAPI 加密 + 明文迁移设计
+- `local_secret.py` DPAPI / 系统 keyring 加密 + 明文迁移设计
 - `build_backend.py` capability manifest 设计
 - `isolate_local_runtime_config` autouse fixture 防本地配置泄入测试
 - uv 生成的依赖锁、PyInstaller 版本固定

@@ -5,7 +5,7 @@ import { cwd as getCwd } from "node:process";
 
 import { app } from "electron";
 
-import { dpapiAvailable, protectLocalSecret, unprotectLocalSecret } from "./localSecret";
+import { protectLocalSecret, unprotectLocalSecret } from "./localSecret";
 
 export const DESKTOP_API_TOKEN_FILE = "desktop_api.secret";
 
@@ -140,7 +140,7 @@ function persistTokenIfAbsent(
 }
 
 function writeTokenFile(tokenPath: string, token: string): void {
-  const stored = dpapiAvailable() ? protectLocalSecret(token) : token;
+  const stored = protectLocalSecret(token);
   writeSecretFileAtomic(tokenPath, stored);
 }
 

@@ -28,8 +28,9 @@ As of the 2026-06-08 development handoff, a focused core backend combo recorded
 the latest mobile/remote-input gate and not as a replacement for full backend
 sign-off or a release-candidate `qa:gate`/`release:check` run.
 
-As of the latest 2026-06-09 mobile/remote-input integration, the focused
-backend mobile+remote combined run recorded `132 passed`. Scheduler/preflight
+As of the 2026-06-09 mobile/remote-input integration handoff, the focused
+backend mobile+remote combined run recorded `132 passed` as historical targeted
+dirty-worktree evidence. Scheduler/preflight
 targeted checks are support-only development notes unless their exact command
 and run log are attached; do not cite an unbound `9 passed` count from this
 file. The `132 passed` count supports the mobile/remote contract evidence

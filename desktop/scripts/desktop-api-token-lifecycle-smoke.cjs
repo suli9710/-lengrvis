@@ -6,14 +6,22 @@ const path = require("node:path");
 
 const originalLoad = Module._load;
 const originalCwd = process.cwd();
+const originalInsecureSecretOptIn = process.env.LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS;
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lengrvis-desktop-token-"));
+const safeStorageMock = {
+  isEncryptionAvailable: () => true,
+  getSelectedStorageBackend: () => "mock_keychain",
+  encryptString: (value) => Buffer.from(value, "utf8"),
+  decryptString: (buffer) => Buffer.from(buffer).toString("utf8")
+};
 
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "electron") {
     return {
       app: {
         getAppPath: () => tmpRoot
-      }
+      },
+      safeStorage: safeStorageMock
     };
   }
   return originalLoad.call(this, request, parent, isMain);
@@ -42,11 +50,17 @@ try {
   mkdirp(serviceDataDir);
   fs.writeFileSync(path.join(serviceDataDir, DESKTOP_API_TOKEN_FILE), "service-secret\n");
 
+  process.env.LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS = "1";
   const existing = resolveDesktopApiToken({
     configDir: serviceRoot,
     env: { LENGRVIS_DESKTOP_API_TOKEN: "wrong-env-secret" },
     generateToken: () => "wrong-generated-secret"
   });
+  if (originalInsecureSecretOptIn === undefined) {
+    delete process.env.LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS;
+  } else {
+    process.env.LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS = originalInsecureSecretOptIn;
+  }
 
   assert.equal(existing.source, "file");
   assert.equal(existing.token, "service-secret");
@@ -66,6 +80,8 @@ try {
   assert.equal(envBacked.source, "env");
   assert.equal(envBacked.token, "env-secret");
   assert.equal(envBacked.dataDir, envDataDir);
+  assert.match(readSecret(envDataDir), /^(dpapi|safe):/);
+  assert.equal(readSecret(envDataDir).includes("env-secret"), false);
   const envReread = resolveDesktopApiToken({
     configDir: envRoot,
     env: { LENGRVIS_DATA_DIR: "relative-data" },
@@ -88,6 +104,7 @@ try {
 
   assert.equal(created.source, "created");
   assert.equal(created.token, "created-secret");
+  assert.match(readSecret(resolveBackendDataDir({ configDir: createdRoot, env: {} })), /^(dpapi|safe):/);
   assert.equal(reused.source, "file");
   assert.equal(reused.token, "created-secret");
   const createdReread = resolveDesktopApiToken({
@@ -132,5 +149,10 @@ try {
 } finally {
   Module._load = originalLoad;
   process.chdir(originalCwd);
+  if (originalInsecureSecretOptIn === undefined) {
+    delete process.env.LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS;
+  } else {
+    process.env.LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS = originalInsecureSecretOptIn;
+  }
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 }

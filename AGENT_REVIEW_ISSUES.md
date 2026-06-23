@@ -1,14 +1,16 @@
 # Agent Review Issues
 
-Repository: `C:\Users\Suli\Desktop\mavris`
+Repository: `suli9710/-lengrvis` (local checkout path intentionally omitted)
 Started: 2026-06-11 (8-agent cross review)
 Cadence: Single review round with dual-coverage matrix.
 
 ## Phase 1 Regression Baseline
 
+Historical local run for this review only. Do not treat these counts as current release evidence; see `docs/qa/test-evidence-policy.md` and `docs/release/current-release-evidence.md`.
+
 | Gate | Result |
 | --- | --- |
-| `python -m pytest backend/tests -q` | **1691 passed, 1 skipped** (319.48s) |
+| `python -m pytest backend/tests -q` | Historical 2026-06-11 local run; exact count is preserved in `.tmp/full-test-8agent-regression.log` |
 | `npm --prefix desktop run typecheck` | PASS |
 | `npm --prefix mobile run typecheck` + smokes | PASS |
 | `npm --prefix desktop run smoke:desktop-token` | PASS |
@@ -110,9 +112,9 @@ Log: `.tmp/full-test-8agent-regression.log`
 
 ## Re-check Log
 
-- 2026-06-11 Phase 1 regression all green (1691 passed, 1 skipped).
+- 2026-06-11 Phase 1 regression all green in `.tmp/full-test-8agent-regression.log` (historical local review evidence).
 - 2026-06-11 Phase 2 eight agents completed in parallel; dual-coverage matrix satisfied for D1–D8.
 - 2026-06-11 Phase 3 triage: 2 High + 4 Medium fixed; 2 Medium + 1 Low deferred as follow-up.
 - 2026-06-11 Phase 4 fixes applied: main.ts quit guard, os_execution_engine step cancel, fts_index CJK LIKE fallback, db settings cache invalidation on set/erase, doc L59 drift.
 - 2026-06-11 Post-fix targeted tests: settings_cache 6 passed, fts_trigram 1 passed/2 skipped (batch-3 db WIP), execution_engines passed, desktop typecheck PASS.
-- Note: `test_runs_api_system_diagnostics_stays_os_local_only` fails in isolation (pre-existing progress assertion); passed in initial full-suite run (1691).
+- Note: `test_runs_api_system_diagnostics_stays_os_local_only` fails in isolation (pre-existing progress assertion); it passed in the historical Phase 1 full-suite run.

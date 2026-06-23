@@ -17,7 +17,7 @@ Lengrvis 是本机优先的 OS Agent，可读取文件、执行系统诊断、�
 
 ## 3. 凭据与密钥保护
 
-- 密钥保护：Windows 使用 DPAPI，macOS 使用 Keychain。
+- 密钥保护：Windows 使用 DPAPI；macOS/Linux 使用系统 keyring（如 Keychain/Secret Service）保存实际 secret，文件中只保留查找句柄。系统密钥库不可用时默认 fail-closed；明文仅允许显式开发/测试豁免。
 - 本地数据库文件权限限定为当前用户（Unix 0600 / Windows ACL）。
 
 ## 4. 网络边界

@@ -54,5 +54,5 @@ LENGRVIS_PLAN=free   # free | pro | team
 
 - 将 `plan` 正式纳入 `AppSettings` 与设置 API（当前仅经环境变量读取）。
 - 用量配额（云端额度 `cloud_quota` 的计量与限流）。
-- 许可证密钥（license key）校验与到期管理。
+- 许可证密钥：离线 Ed25519 公钥验签已落地；在线激活、吊销同步与完整到期管理仍待实现。
 - 审计导出与策略管控（Team 档）的具体落地。

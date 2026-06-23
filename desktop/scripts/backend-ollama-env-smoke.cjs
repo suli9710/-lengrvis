@@ -25,6 +25,7 @@ fs.mkdirSync(modelsDir, { recursive: true });
 fs.writeFileSync(backendExe, "fake backend");
 fs.writeFileSync(manifestPath, "{}");
 process.env.LENGRVIS_BACKEND_SERVICE_DISABLED = "1";
+process.env.LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS = "1";
 process.env.LENGRVIS_CONFIG_DIR = tmpRoot;
 process.env.LENGRVIS_DATA_DIR = path.join(tmpRoot, "data");
 Object.defineProperty(process, "resourcesPath", {
