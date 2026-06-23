@@ -33,19 +33,10 @@ import type {
   SystemInfo,
   TaskEvent
 } from "../shared/types";
-import { AgentConversationPanel } from "./components/AgentConversationPanel";
 import { ApprovalDialog } from "./components/ApprovalDialog";
-import { ArtifactsPanel } from "./components/ArtifactsPanel";
-import { AuditLogPanel } from "./components/AuditLogPanel";
-import { MetricsPanel } from "./components/MetricsPanel";
 import { ChatPanel } from "./components/ChatPanel";
 import type { DocumentIntentAction, FileToolTab } from "./components/FileSearchPanel";
-import { MemoryPanel } from "./components/MemoryPanel";
 import { PlanViewer } from "./components/PlanViewer";
-import { SafetyReviewPanel } from "./components/SafetyReviewPanel";
-import { SchedulePanel } from "./components/SchedulePanel";
-import { SystemInfoPanel } from "./components/SystemInfoPanel";
-import { TaskTimeline } from "./components/TaskTimeline";
 import { localLibraryViewKeys, sectionForView } from "./views/localLibrarySections";
 import {
   latestStreamableTaskId as latestStreamableTaskIdFromEvents,
@@ -150,6 +141,15 @@ const BrowserActivityPanel = lazy(() => import("./components/BrowserActivityPane
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
 const SkillsView = lazy(() => import("./views/SkillsView").then((module) => ({ default: module.SkillsView })));
 const LocalLibraryView = lazy(() => import("./views/LocalLibraryView").then((module) => ({ default: module.LocalLibraryView })));
+const AgentConversationPanel = lazy(() => import("./components/AgentConversationPanel").then((module) => ({ default: module.AgentConversationPanel })));
+const ArtifactsPanel = lazy(() => import("./components/ArtifactsPanel").then((module) => ({ default: module.ArtifactsPanel })));
+const AuditLogPanel = lazy(() => import("./components/AuditLogPanel").then((module) => ({ default: module.AuditLogPanel })));
+const MetricsPanel = lazy(() => import("./components/MetricsPanel").then((module) => ({ default: module.MetricsPanel })));
+const MemoryPanel = lazy(() => import("./components/MemoryPanel").then((module) => ({ default: module.MemoryPanel })));
+const SafetyReviewPanel = lazy(() => import("./components/SafetyReviewPanel").then((module) => ({ default: module.SafetyReviewPanel })));
+const SchedulePanel = lazy(() => import("./components/SchedulePanel").then((module) => ({ default: module.SchedulePanel })));
+const SystemInfoPanel = lazy(() => import("./components/SystemInfoPanel").then((module) => ({ default: module.SystemInfoPanel })));
+const TaskTimeline = lazy(() => import("./components/TaskTimeline").then((module) => ({ default: module.TaskTimeline })));
 
 const TASK_SUBMIT_BACKEND_READY_TIMEOUT_MS = 5_000;
 
@@ -1172,7 +1172,9 @@ export function App() {
             />
             <div className="conversation-side">
               <PlanViewer plan={plan} />
-              <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
+              <Suspense fallback={<RouteLoading />}>
+                <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
+              </Suspense>
             </div>
           </section>
         ) : null}
@@ -1215,30 +1217,34 @@ export function App() {
 
         {activeView === "computer" ? (
           <section className="detail-grid">
-            <SystemInfoPanel
-              info={systemInfo}
-              backendStatus={backendStatus}
-              isRefreshing={isCheckingComputer}
-              onRefresh={async () => {
-                setIsCheckingComputer(true);
-                try {
-                  await refreshSystemInfo();
-                } finally {
-                  setIsCheckingComputer(false);
-                }
-              }}
-              onExportDiagnostics={exportDiagnosticsPackage}
-              onRevealPath={revealPath}
-              onOpenSettings={openWindowsSettings}
-            />
+            <Suspense fallback={<RouteLoading />}>
+              <SystemInfoPanel
+                info={systemInfo}
+                backendStatus={backendStatus}
+                isRefreshing={isCheckingComputer}
+                onRefresh={async () => {
+                  setIsCheckingComputer(true);
+                  try {
+                    await refreshSystemInfo();
+                  } finally {
+                    setIsCheckingComputer(false);
+                  }
+                }}
+                onExportDiagnostics={exportDiagnosticsPackage}
+                onRevealPath={revealPath}
+                onOpenSettings={openWindowsSettings}
+              />
+            </Suspense>
             <PlanViewer plan={plan} />
           </section>
         ) : null}
 
         {activeView === "agents" ? (
           <section className="detail-grid">
-            <AgentConversationPanel conversations={agentConversations} />
-            <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
+            <Suspense fallback={<RouteLoading />}>
+              <AgentConversationPanel conversations={agentConversations} />
+              <TaskTimeline tasks={tasks} api={api} focusedTaskId={focusedTaskId} />
+            </Suspense>
             <PlanViewer plan={plan} />
             <details className="progress-more detail-grid__full" data-testid="progress-more">
               <summary className="progress-more__summary">
@@ -1246,9 +1252,11 @@ export function App() {
                 <em>需要时再展开，默认聚焦当前进展</em>
               </summary>
               <div className="progress-more__panels">
-                <SchedulePanel api={api} />
-                <ArtifactsPanel tasks={tasks} api={api} focusedTaskId={focusedTaskId} onRevealPath={revealPath} />
-                <MetricsPanel api={api} />
+                <Suspense fallback={<RouteLoading />}>
+                  <SchedulePanel api={api} />
+                  <ArtifactsPanel tasks={tasks} api={api} focusedTaskId={focusedTaskId} onRevealPath={revealPath} />
+                  <MetricsPanel api={api} />
+                </Suspense>
               </div>
             </details>
           </section>
@@ -1276,20 +1284,24 @@ export function App() {
 
         {activeView === "memories" ? (
           <section className="detail-grid">
-            <MemoryPanel api={api} />
+            <Suspense fallback={<RouteLoading />}>
+              <MemoryPanel api={api} />
+            </Suspense>
           </section>
         ) : null}
 
         {activeView === "safety" ? (
           <section className="detail-grid">
-            <SafetyReviewPanel
-              review={safetyReview}
-              onOpenApproval={() => {
-                setApprovalSelectionContext("task");
-                setIsApprovalOpen(true);
-              }}
-            />
-            <AuditLogPanel entries={auditEntries} />
+            <Suspense fallback={<RouteLoading />}>
+              <SafetyReviewPanel
+                review={safetyReview}
+                onOpenApproval={() => {
+                  setApprovalSelectionContext("task");
+                  setIsApprovalOpen(true);
+                }}
+              />
+              <AuditLogPanel entries={auditEntries} />
+            </Suspense>
           </section>
         ) : null}
 

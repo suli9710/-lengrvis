@@ -1,12 +1,9 @@
-import { AlertCircle, CheckCircle2, Copy, Download, KeyRound, Loader2, MousePointer2, Play, Plus, QrCode, Save, ShieldCheck, Square, Trash2, XCircle } from "lucide-react";
-import QRCode from "qrcode";
+import { AlertCircle, CheckCircle2, Copy, Download, KeyRound, Loader2, MousePointer2, Play, Plus, Save, ShieldCheck, Square, Trash2, XCircle } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   AppSettings,
-  ApiMethod,
-  ApiResponse,
   BackendStatus,
   LLMCostSummary,
   LLMHealthStatus,
@@ -20,7 +17,6 @@ import type {
 import { buildMobilePairingQrContent, formatMobilePairingBaseUrl } from "../../shared/mobilePairingPayload";
 import type { MobilePairingQrContent } from "../../shared/mobilePairingPayload";
 import {
-  buildRendererLoopbackBackendApiUrl,
   buildRendererLoopbackBackendWebSocketUrl,
   type LengrvisApiClient,
   type MobileDevice,
@@ -170,6 +166,13 @@ interface SettingsPanelProps {
   api: LengrvisApiClient;
   privacyIntentId?: number;
 }
+
+const PairingVisualCode = lazy(() =>
+  import("./settings/PairingVisualCode").then((module) => ({ default: module.PairingVisualCode }))
+);
+const HardwareAccelerationCard = lazy(() =>
+  import("./settings/HardwareAccelerationCard").then((module) => ({ default: module.HardwareAccelerationCard }))
+);
 
 export function SettingsPanel({
   settings,
@@ -1018,24 +1021,26 @@ export function SettingsPanel({
                 />
               </label>
             </div>
-            <HardwareAccelerationCard
-              api={api}
-              settings={draft}
-              status={hardwareStatus}
-              loading={isCheckingHardware}
-              error={hardwareStatusError}
-              smokeStatus={hardwareSmokeStatus}
-              smoke={hardwareSmoke}
-              runtime={hardwareRuntime}
-              onRuntimeChange={(value) =>
-                setDraft((current) => ({
-                  ...current,
-                  onnxExecutionProvider: runtimeToProvider(value)
-                }))
-              }
-              onSmokeStatusChange={setHardwareSmokeStatus}
-              onSmokeChange={setHardwareSmoke}
-            />
+            <Suspense fallback={<div className="hardware-acceleration">正在加载硬件加速设置...</div>}>
+              <HardwareAccelerationCard
+                api={api}
+                settings={draft}
+                status={hardwareStatus}
+                loading={isCheckingHardware}
+                error={hardwareStatusError}
+                smokeStatus={hardwareSmokeStatus}
+                smoke={hardwareSmoke}
+                runtime={hardwareRuntime}
+                onRuntimeChange={(value) =>
+                  setDraft((current) => ({
+                    ...current,
+                    onnxExecutionProvider: runtimeToProvider(value)
+                  }))
+                }
+                onSmokeStatusChange={setHardwareSmokeStatus}
+                onSmokeChange={setHardwareSmoke}
+              />
+            </Suspense>
           </fieldset>
 
           <fieldset className="mcp-servers">
@@ -1245,7 +1250,9 @@ export function SettingsPanel({
               </small>
               {pairingError ? <small className="mobile-pairing__error">{pairingError}</small> : null}
             </div>
-            <PairingVisualCode code={pairing?.code} qrContent={pairingQrContent} />
+            <Suspense fallback={<PairingVisualCodeFallback code={pairing?.code} />}>
+              <PairingVisualCode code={pairing?.code} qrContent={pairingQrContent} />
+            </Suspense>
             <button className="button button--secondary" onClick={() => void createPairingCode()} disabled={isPairing} type="button">
               {isPairing ? <Loader2 className="settings-spinner" size={16} aria-hidden="true" /> : <KeyRound size={16} aria-hidden="true" />}
               生成配对码
@@ -2314,80 +2321,11 @@ function isLoopbackHostname(hostname: string): boolean {
   return normalized === "localhost" || normalized === "::1" || normalized.startsWith("127.");
 }
 
-function PairingVisualCode({ code, qrContent }: { code?: string; qrContent?: MobilePairingQrContent | null }) {
-  const normalized = code ?? "------";
-  const [qrImage, setQrImage] = useState<string | null>(null);
-  const [qrError, setQrError] = useState("");
-  const bits = Array.from({ length: 36 }, (_, index) => {
-    const charCode = normalized.charCodeAt(index % normalized.length) || 45;
-    return (charCode + index * 7) % 3 !== 0;
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    setQrError("");
-    if (!qrContent?.value) {
-      setQrImage(null);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    void QRCode.toDataURL(qrContent.value, {
-      errorCorrectionLevel: "M",
-      margin: 2,
-      width: 148,
-      color: {
-        dark: "#0f172a",
-        light: "#ffffff"
-      }
-    }).then((value) => {
-      if (!cancelled) setQrImage(value);
-    }).catch(() => {
-      if (!cancelled) {
-        setQrImage(null);
-        setQrError("二维码暂时无法生成，可复制配对信息。");
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [qrContent?.value]);
-
+function PairingVisualCodeFallback({ code }: { code?: string }) {
   return (
-    <div className="mobile-pairing__visual" aria-label={code ? `配对码 ${code}` : "尚未生成配对码"}>
-      <div className="mobile-pairing__code">{normalized}</div>
-      {qrContent ? (
-        <div
-          className="mobile-pairing__qr-ready"
-          data-mobile-pairing-qr="ready"
-          data-qr-encoding={qrContent.encoding}
-          data-qr-length={qrContent.length}
-          data-qr-mime-type={qrContent.mime_type}
-        >
-          <div className="mobile-pairing__qr-head">
-            <QrCode size={16} aria-hidden="true" />
-            <span>打开手机 App 扫码</span>
-          </div>
-          {qrImage ? (
-            <img className="mobile-pairing__qr-image" src={qrImage} alt="打开手机 App 扫描的配对二维码" />
-          ) : (
-            <div className="mobile-pairing__matrix" aria-hidden="true">
-              {bits.map((active, index) => (
-                <span key={index} className={active ? "mobile-pairing__cell mobile-pairing__cell--active" : "mobile-pairing__cell"} />
-              ))}
-            </div>
-          )}
-          {qrError ? <small className="mobile-pairing__qr-error">{qrError}</small> : null}
-        </div>
-      ) : (
-        <div className="mobile-pairing__matrix" aria-hidden="true">
-          {bits.map((active, index) => (
-            <span key={index} className={active ? "mobile-pairing__cell mobile-pairing__cell--active" : "mobile-pairing__cell"} />
-          ))}
-        </div>
-      )}
+    <div className="mobile-pairing__visual" aria-label="正在生成手机配对二维码">
+      <div className="mobile-pairing__code">{code ?? "------"}</div>
+      <div className="mobile-pairing__matrix" aria-hidden="true" />
     </div>
   );
 }
@@ -2611,456 +2549,6 @@ function localModelRepairAction(setupPlan: LocalModelSetupPlan | null, health: L
   if (setupPlan?.nextAction === "download_model") return "失败修复：下一步下载推荐模型";
   if (setupPlan?.ready || health?.available) return "失败修复：重新检查本地 AI 或切换模型";
   return "失败修复：按下一步准备本地 AI";
-}
-
-interface OllamaStatus {
-  installed: boolean;
-  running: boolean;
-  models: string[];
-  recommended_model?: string;
-  has_recommended?: boolean;
-}
-
-interface OllamaActionResult {
-  ok: boolean;
-  model?: string;
-  message?: string;
-  error?: string;
-}
-
-interface OllamaSetupRequest<TBody = unknown> {
-  endpoint: string;
-  method?: ApiMethod;
-  body?: TBody;
-}
-
-async function requestOllamaSetup<TResponse, TBody = unknown>(
-  request: OllamaSetupRequest<TBody>
-): Promise<ApiResponse<TResponse>> {
-  if (window.lengrvis) {
-    return window.lengrvis.api.request<TResponse, TBody>({
-      endpoint: request.endpoint,
-      method: request.method,
-      body: request.body
-    });
-  }
-  return requestOllamaSetupDirect<TResponse, TBody>(request);
-}
-
-async function requestOllamaSetupDirect<TResponse, TBody = unknown>(
-  request: OllamaSetupRequest<TBody>
-): Promise<ApiResponse<TResponse>> {
-  const receivedAt = new Date().toISOString();
-  const url = buildRendererLoopbackBackendApiUrl(undefined, request.endpoint);
-  if (!url) {
-    return {
-      ok: false,
-      status: 0,
-      error: { message: "Web 调试后端仅允许连接本机 HTTP(S) 地址。" },
-      receivedAt
-    };
-  }
-
-  try {
-    const response = await fetch(url, {
-      method: request.method ?? "GET",
-      headers: request.body ? { "Content-Type": "application/json" } : {},
-      body: request.body ? JSON.stringify(request.body) : undefined
-    });
-    const data = await parseOllamaSetupResponse(response);
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        error: { message: ollamaSetupErrorMessage(data, response.statusText || `HTTP ${response.status}`), details: data },
-        receivedAt
-      };
-    }
-    return { ok: true, status: response.status, data: data as TResponse, receivedAt };
-  } catch (error) {
-    return {
-      ok: false,
-      status: 0,
-      error: { message: error instanceof Error ? error.message : "本地 AI 请求失败" },
-      receivedAt
-    };
-  }
-}
-
-async function parseOllamaSetupResponse(response: Response): Promise<unknown> {
-  const text = await response.text();
-  if (!text) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { message: text };
-  }
-}
-
-function ollamaSetupErrorMessage(data: unknown, fallback: string): string {
-  if (data && typeof data === "object") {
-    const direct = (data as { message?: unknown }).message;
-    if (typeof direct === "string") return direct;
-    const error = (data as { error?: unknown }).error;
-    if (typeof error === "string") return error;
-  }
-  return fallback;
-}
-
-interface HardwareAccelerationCardProps {
-  api: LengrvisApiClient;
-  settings: AppSettings;
-  status: HardwareAccelerationStatusPayload | null;
-  loading: boolean;
-  error: string;
-  smokeStatus: string;
-  smoke: HardwareAccelerationSmokePayload | null;
-  runtime: string;
-  onRuntimeChange: (runtime: HardwareRuntime) => void;
-  onSmokeStatusChange: Dispatch<SetStateAction<string>>;
-  onSmokeChange: Dispatch<SetStateAction<HardwareAccelerationSmokePayload | null>>;
-}
-
-function HardwareAccelerationCard({
-  api,
-  settings,
-  status,
-  loading,
-  error,
-  smokeStatus,
-  smoke,
-  runtime,
-  onRuntimeChange,
-  onSmokeStatusChange,
-  onSmokeChange
-}: HardwareAccelerationCardProps) {
-  const [runningOperation, setRunningOperation] = useState<HardwareAccelerationSmokePayload["operation"] | "">("");
-  const [smokeError, setSmokeError] = useState("");
-
-  const runSmoke = useCallback(async (operation: HardwareAccelerationSmokePayload["operation"]) => {
-    setRunningOperation(operation);
-    setSmokeError("");
-    onSmokeStatusChange(`正在运行 ${hardwareSmokeLabel(operation)}...`);
-    const response = await api.runHardwareAccelerationSmoke({
-      operation,
-      prompt: "用中文说一句来自 Lengrvis 硬件加速的问候。",
-      maxTokens: 16,
-      texts: ["Lengrvis 本地向量模型冒烟测试。"],
-      modelPath: status?.modelPath
-    });
-    if (response.ok && response.data) {
-      onSmokeChange(response.data);
-      onSmokeStatusChange(response.data.ok ? `${hardwareSmokeLabel(operation)} 就绪。` : response.data.error ?? "冒烟测试不可用。");
-      if (response.data.error) {
-        setSmokeError(response.data.error);
-      }
-    } else {
-      const message = response.error?.message ?? "硬件冒烟测试失败。";
-      setSmokeError(message);
-      onSmokeStatusChange(message);
-    }
-    setRunningOperation("");
-  }, [api, onSmokeChange, onSmokeStatusChange, status?.modelPath]);
-
-  const checks = buildHardwareChecks(settings, status, error);
-  const statusTone = status?.available ? "success" : error ? "danger" : "warning";
-
-  return (
-    <div className="hardware-acceleration">
-      <div className="hardware-acceleration__head">
-        <div className="hardware-acceleration__copy">
-          <strong>硬件加速</strong>
-          <span>WinML、DirectML、OpenVINO、OCR、向量模型和 ONNX GenAI 状态。</span>
-        </div>
-        <Badge tone={statusTone}>{status?.available ? "就绪" : error ? "错误" : loading ? "检查中" : "缺失"}</Badge>
-      </div>
-      <div className="settings-grid settings-grid--balanced">
-        <label className="field">
-          <span>运行时选择</span>
-          <select
-            value={runtime}
-            onChange={(event) => onRuntimeChange(providerToRuntime(event.target.value))}
-          >
-            <option value="auto">自动</option>
-            <option value="winml">WinML</option>
-            <option value="directml">DirectML</option>
-            <option value="openvino">OpenVINO</option>
-            <option value="cpu">CPU</option>
-          </select>
-        </label>
-        <label className="field">
-          <span>已配置提供方</span>
-          <input value={status?.configuredProvider ?? status?.executionProvider ?? ""} readOnly />
-        </label>
-        <label className="field">
-          <span>模型路径</span>
-          <input value={status?.modelPath ?? ""} readOnly />
-        </label>
-        <label className="field">
-          <span>运行时包</span>
-          <input value={status?.runtimePackage ?? status?.generationRuntime ?? ""} readOnly />
-        </label>
-      </div>
-      <div className="hardware-acceleration__checks">
-        {checks.map((check) => (
-          <span key={check.key} className={`hardware-check hardware-check--${check.status}`}>
-            <strong>{check.label}</strong>
-            <small>{check.details ?? check.actual ?? check.required ?? "不可用"}</small>
-          </span>
-        ))}
-      </div>
-      {status?.errors?.length || smokeError || smokeStatus ? (
-        <div className="settings-status-grid">
-          {status?.errors?.length ? <p className="muted">状态：{status.errors.join(" | ")}</p> : null}
-          {smokeStatus ? <p className="muted">冒烟测试：{smokeStatus}</p> : null}
-          {smoke?.dim ? <p className="muted">向量维度：{smoke.dim}</p> : null}
-          {smokeError ? <p className="muted settings-status--error">{smokeError}</p> : null}
-        </div>
-      ) : null}
-      <div className="button-row">
-        {(["warmup", "test_generate", "test_embedding", "test_ocr", "test_image_embedding"] as const).map((operation) => (
-          <button
-            key={operation}
-            type="button"
-            className="button button--secondary"
-            onClick={() => void runSmoke(operation)}
-            disabled={Boolean(runningOperation)}
-          >
-            {runningOperation === operation ? <Loader2 className="settings-spinner" size={14} /> : <Download size={14} />}
-            {hardwareSmokeLabel(operation)}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function buildHardwareChecks(
-  settings: AppSettings,
-  status: HardwareAccelerationStatusPayload | null,
-  error: string
-): Array<{ key: string; label: string; status: "ready" | "missing" | "error"; details?: string; actual?: string; required?: string }> {
-  const baseStatus: "ready" | "missing" | "error" = status?.available ? "ready" : error ? "error" : "missing";
-  const provider = status?.executionProvider || status?.selectedProvider || "";
-  const textEmbeddingStatus = componentStatus(status?.textEmbedding, Boolean(settings.onnxEmbeddingModelPath));
-  const imageEmbeddingStatus = componentStatus(status?.imageEmbedding, Boolean(settings.onnxImageEmbeddingModelPath));
-  const ocrStatus = componentStatus(status?.ocr, Boolean(settings.ocrOpenvinoModelDir));
-  return [
-    {
-      key: "winml",
-      label: "WinML",
-      status: status?.winml?.available ? "ready" : status?.available ? "missing" : "missing",
-      details: status?.winml?.providerAvailable ? "提供方可用" : "提供方缺失",
-      actual: status?.winml?.packages?.join(", "),
-      required: "onnxruntime_genai_winml"
-    },
-    {
-      key: "llm",
-      label: "LLM",
-      status: baseStatus,
-      details: provider ? `${status?.kind ?? "onnx"} / ${provider}` : "未就绪",
-      actual: provider,
-      required: status?.configuredProvider ?? "自动"
-    },
-    {
-      key: "text-embedding",
-      label: "文本向量",
-      status: textEmbeddingStatus,
-      details: status?.textEmbedding?.selectedProvider || status?.textEmbedding?.error || settings.onnxEmbeddingModelId
-    },
-    {
-      key: "image-embedding",
-      label: "图像向量",
-      status: imageEmbeddingStatus,
-      details: status?.imageEmbedding?.selectedProvider || status?.imageEmbedding?.error || settings.onnxImageEmbeddingModelId
-    },
-    {
-      key: "ocr",
-      label: "OCR",
-      status: status?.ocr?.error ? ocrStatus : status?.errors?.length ? "error" : ocrStatus,
-      details: status?.ocr?.selectedProvider || status?.ocr?.error || error || settings.ocrLang || "未检查"
-    }
-  ];
-}
-
-function componentStatus(
-  component: HardwareAccelerationStatusPayload["textEmbedding"] | undefined,
-  configured: boolean
-): "ready" | "missing" | "error" {
-  if (component?.available) return "ready";
-  if (component?.error && configured) return "error";
-  return "missing";
-}
-
-function hardwareSmokeLabel(operation: HardwareAccelerationSmokePayload["operation"]): string {
-  if (operation === "test_generate") return "测试 LLM";
-  if (operation === "test_embedding") return "测试文本";
-  if (operation === "test_ocr") return "测试 OCR";
-  if (operation === "test_image_embedding") return "测试图像";
-  return "预热";
-}
-
-function OllamaSetup() {
-  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
-  const [installing, setInstalling] = useState(false);
-  const [pulling, setPulling] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchStatus = useCallback(async () => {
-    try {
-      const resp = await requestOllamaSetup<OllamaStatus>({ endpoint: "/api/settings/ollama/status" });
-      if (resp.ok && resp.data) {
-        setOllamaStatus(resp.data);
-        setError(null);
-      }
-    } catch {
-      // Status check failed silently — keep previous state
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
-
-  const handleInstall = async () => {
-    setInstalling(true);
-    setError(null);
-    try {
-      const resp = window.lengrvis?.ollama
-        ? await window.lengrvis.ollama.install() as ApiResponse<OllamaActionResult>
-        : await requestOllamaSetup<OllamaActionResult>({ endpoint: "/api/settings/ollama/install", method: "POST" });
-      if (resp.ok && resp.data) {
-        if (!resp.data.ok) {
-          setError(resp.data.error || "安装失败");
-        }
-      }
-      await fetchStatus();
-    } catch {
-      setError("安装请求失败，请确认 Lengrvis 正在运行。");
-    } finally {
-      setInstalling(false);
-    }
-  };
-
-  const handlePull = async () => {
-    setPulling(true);
-    setError(null);
-    try {
-      const resp = window.lengrvis?.ollama
-        ? await window.lengrvis.ollama.pull({}) as ApiResponse<OllamaActionResult>
-        : await requestOllamaSetup<OllamaActionResult>({ endpoint: "/api/settings/ollama/pull", method: "POST", body: {} });
-      if (resp.ok && resp.data) {
-        if (!resp.data.ok) {
-          setError(localModelUserMessage(resp.data.error, "模型下载失败"));
-        }
-      }
-      await fetchStatus();
-    } catch {
-      setError("模型下载失败，请确认 Lengrvis 正在运行。");
-    } finally {
-      setPulling(false);
-    }
-  };
-
-  if (!ollamaStatus) {
-    return (
-      <div className="ollama-setup ollama-setup--checking">
-        <Loader2 className="settings-spinner" size={14} />
-        <span>正在检查本地 AI 应用状态...</span>
-      </div>
-    );
-  }
-
-  // State 1: Not installed
-  if (!ollamaStatus.installed) {
-    return (
-      <div className="ollama-setup">
-        <div className="ollama-setup__head">
-          <AlertCircle className="ollama-setup__icon ollama-setup__icon--warning" size={14} />
-          <strong>本地 AI 应用未安装</strong>
-        </div>
-        <p>
-          隐私模式需要本地 AI 应用。可使用下方按钮自动安装。
-        </p>
-        {error ? <p className="ollama-setup__error">{error}</p> : null}
-        <button
-          type="button"
-          className="button button--secondary ollama-setup__button"
-          disabled={installing}
-          onClick={() => void handleInstall()}
-        >
-          {installing ? <Loader2 className="settings-spinner" size={14} /> : <Download size={14} />}
-          {installing ? "正在安装..." : "一键安装本地 AI 应用"}
-        </button>
-      </div>
-    );
-  }
-
-  // State 2: Installed but not running
-  if (!ollamaStatus.running) {
-    return (
-      <div className="ollama-setup">
-        <div className="ollama-setup__head">
-          <AlertCircle className="ollama-setup__icon ollama-setup__icon--warning" size={14} />
-          <strong>本地 AI 服务未运行</strong>
-        </div>
-        <p>
-          本地 AI 应用已安装但服务未启动。请从开始菜单打开本地 AI 应用，等待托盘图标出现后点击刷新。
-        </p>
-        <button
-          type="button"
-          className="button button--secondary ollama-setup__button"
-          onClick={() => void fetchStatus()}
-        >
-          <Loader2 size={14} />
-          刷新状态
-        </button>
-      </div>
-    );
-  }
-
-  // State 3: Running but recommended model not pulled
-  if (!ollamaStatus.has_recommended) {
-    return (
-      <div className="ollama-setup">
-        <div className="ollama-setup__head">
-          <AlertCircle className="ollama-setup__icon ollama-setup__icon--warning" size={14} />
-          <strong>推荐模型未安装</strong>
-        </div>
-        <p>
-          本地 AI 服务运行中，但推荐模型尚未下载。点击下方按钮下载模型。
-        </p>
-        {ollamaStatus.models.length > 0 ? (
-          <p className="ollama-setup__meta">
-            已安装模型：{ollamaStatus.models.join("、")}
-          </p>
-        ) : null}
-        {error ? <p className="ollama-setup__error">{error}</p> : null}
-        <button
-          type="button"
-          className="button button--secondary ollama-setup__button"
-          disabled={pulling}
-          onClick={() => void handlePull()}
-        >
-          {pulling ? <Loader2 className="settings-spinner" size={14} /> : <Download size={14} />}
-          {pulling ? "正在下载..." : `下载 ${ollamaStatus.recommended_model ?? "qwen2.5:3b-instruct"}`}
-        </button>
-      </div>
-    );
-  }
-
-  // State 4: Everything ready
-  return (
-    <div className="ollama-setup ollama-setup--ready">
-      <div className="ollama-setup__head">
-        <CheckCircle2 className="ollama-setup__icon ollama-setup__icon--success" size={14} />
-        <strong>本地 AI 已就绪</strong>
-      </div>
-      <p className="ollama-setup__meta">
-        已安装模型：{ollamaStatus.models.join("、")}
-      </p>
-    </div>
-  );
 }
 
 function splitSettingList(value: string) {
