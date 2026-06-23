@@ -6,7 +6,8 @@ import threading
 from typing import Any, Coroutine
 
 from app.agents.delegation_metadata import build_task_delegation_metadata
-from app.agents.delegation_rules import FILE_ACTION_TERMS, UNINSTALL_TERMS, WINDOWS_PATH_RE, contains_any
+from app.agents.delegation_rules import FILE_ACTION_TERMS, UNINSTALL_TERMS, contains_any
+from app.agents.path_detection import find_explicit_path
 from app.agents.supervisor_agent import SupervisorAgent, SupervisorDecision
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
@@ -132,7 +133,7 @@ _URL_RE = re.compile(r"[a-z][a-z0-9+.-]*://\S*", re.IGNORECASE)
 def _is_explicit_file_path_request(message: str) -> bool:
     normalized = message.lower()
     without_urls = _URL_RE.sub(" ", message)
-    return bool(WINDOWS_PATH_RE.search(without_urls)) and contains_any(normalized, FILE_ACTION_TERMS)
+    return find_explicit_path(without_urls) is not None and contains_any(normalized, FILE_ACTION_TERMS)
 
 
 def _is_uninstall_request(message: str) -> bool:

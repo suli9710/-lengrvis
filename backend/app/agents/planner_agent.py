@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agents.base import BaseAgent
+from app.agents.path_detection import find_explicit_path
 from app.core.schemas import MessageType, Plan, PlanStep
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.mock_provider import MockProvider
@@ -416,7 +417,7 @@ class PlannerAgent(BaseAgent):
         return Plan(
             task_id=task_id,
             goal=goal,
-            assumptions=["检测到明确的删除意图和 Windows 路径，因此使用确定性的文件删除计划。"],
+            assumptions=["检测到明确的删除意图和路径，因此使用确定性的文件删除计划。"],
             steps=[step],
             global_risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
             requires_user_approval=True,
@@ -706,10 +707,10 @@ class PlannerAgent(BaseAgent):
         if quoted:
             return self._clean_path_candidate(quoted.group("path"))
 
-        match = re.search(r"(?P<path>[A-Za-z]:[\\/][^\r\n\"<>|?*]+)", goal)
+        match = find_explicit_path(goal)
         if not match:
             return None
-        return self._clean_path_candidate(match.group("path"))
+        return self._clean_path_candidate(match)
 
     def _clean_path_candidate(self, value: str) -> str:
         candidate = value.strip().strip("`'\"“”‘’")

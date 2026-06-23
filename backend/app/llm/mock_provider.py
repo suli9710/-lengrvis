@@ -9,6 +9,7 @@ from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
 
 from app.agents.delegation_rules import contains_any
+from app.agents.path_detection import find_explicit_path
 
 
 class MockProvider(LLMProvider):
@@ -107,7 +108,7 @@ class MockProvider(LLMProvider):
                     "agent_name": agent,
                     "tool_name": tool,
                     "description": description,
-                    "args": self._args_for_tool(tool, user),
+                    "args": self._args_for_tool(tool, user, raw_user),
                     "expected_observation": "Structured observation recorded in the task timeline.",
                     "risk_level": risk,
                     "requires_approval": risk.startswith("R2") or risk.startswith("R3"),
@@ -117,19 +118,20 @@ class MockProvider(LLMProvider):
             ],
         }
 
-    def _args_for_tool(self, tool: str, user: str) -> dict[str, Any]:
+    def _args_for_tool(self, tool: str, user: str, raw_user: str | None = None) -> dict[str, Any]:
         if tool == "file.trash":
-            path = self._extract_windows_path(user)
-            return {"path": path or user, "dry_run": True}
+            source = raw_user if raw_user is not None else user
+            path = self._extract_windows_path(source)
+            return {"path": path or source, "dry_run": True}
         if tool == "file.cleanup_plan":
             return {"threshold_mb": 50, "older_than_days": 30}
         return {"query": user, "dry_run": True}
 
     def _extract_windows_path(self, user: str) -> str | None:
-        match = re.search(r"(?P<path>[a-zA-Z]:[\\/][^\r\n\"<>|?*]+)", user)
+        match = find_explicit_path(user)
         if not match:
             return None
-        candidate = match.group("path").strip().rstrip("。.,，;；、)]}）")
+        candidate = match.strip().rstrip("。.,，;；、)]}）")
         if Path(candidate).exists():
             return str(Path(candidate).resolve(strict=False))
         return candidate
@@ -252,150 +254,4 @@ class MockProvider(LLMProvider):
         )
 
         if contains_any(user, COMPUTER_ACTION_TERMS) and contains_any(user, COMPUTER_DOMAIN_TERMS):
-            return {
-                "delegate": True,
-                "reply": "收到，我会把这个执行请求交给电脑 Agent，后台处理并持续反馈进展。",
-                "agent_hint": "ComputerAgent",
-            }
-        if contains_any(user, CLEANUP_TERMS) and contains_any(user, FILE_TARGET_TERMS + ("盘",)):
-            return {
-                "delegate": True,
-                "reply": "收到，我会先生成清理预览，不会直接删除文件；需要执行清理时会再请你审批。",
-                "agent_hint": "FileAgent",
-            }
-        if contains_any(user, FILE_ACTION_TERMS) and contains_any(user, FILE_DOMAIN_TERMS):
-            return {
-                "delegate": True,
-                "reply": "收到，我会把这个执行请求交给文件 Agent，后台处理并持续反馈进展。",
-                "agent_hint": "FileAgent",
-            }
-        if any(term in user for term in ["网页", "浏览器", "网址", "链接", "http", "www."]) or "example.com" in user:
-            return {
-                "delegate": True,
-                "reply": "收到，我会把这个网页读取请求交给浏览器 Agent，后台处理并持续反馈进展。",
-                "agent_hint": "BrowserAgent",
-            }
-        if contains_any(user, SEARCH_HINT_TERMS) and not contains_any(user, FILE_TARGET_TERMS):
-            return {
-                "delegate": True,
-                "reply": "收到，我会把这个联网搜索请求交给搜索 Agent，后台处理并持续反馈进展。",
-                "agent_hint": "SearchAgent",
-            }
-        return {
-            "delegate": False,
-            "reply": self._natural_chat_reply(user),
-            "agent_hint": "",
-        }
-
-    def _extract_supervisor_routing_hint(self, raw_user: str) -> str:
-        match = re.search(r"Supervisor routing hint:\s*([A-Za-z]+Agent)", raw_user)
-        if match:
-            return match.group(1)
-        return ""
-
-    def _extract_planner_revision_feedback(self, raw_user: str) -> str:
-        match = re.search(r"Planner revision feedback:\n(.*?)(?:\n\nMode:|\Z)", raw_user, re.DOTALL)
-        if not match:
-            return ""
-        return match.group(1).strip()
-
-    def _plan_from_supervisor_hint(self, hint: str, user: str, *, force_hint: bool = False) -> dict[str, Any] | None:
-        normalized = hint.strip()
-        if not normalized:
-            return None
-        lowered = normalized.casefold()
-        user_lower = user.lower()
-        if not force_hint:
-            goal_plan = self._build_goal_plan(user)
-            step_agent = str(goal_plan["steps"][0]["agent_name"]).casefold()
-            if step_agent == lowered:
-                return goal_plan
-        if lowered == "browseragent":
-            url_match = re.search(r"https?://[^\s]+", user)
-            return self._mock_plan_payload(
-                user_lower,
-                tool="browser.read_page",
-                agent="BrowserAgent",
-                description="Read the requested web page without submitting forms.",
-                args={"url": url_match.group(0) if url_match else "https://example.com", "dry_run": True},
-            )
-        if lowered == "searchagent":
-            return self._mock_plan_payload(
-                user_lower,
-                tool="search.query",
-                agent="SearchAgent",
-                description="Query the configured web search provider and return sourced results.",
-                args={"query": user.strip() or "latest news", "dry_run": True},
-            )
-        if lowered == "documentagent":
-            return self._mock_plan_payload(
-                user_lower,
-                tool="document.summarize",
-                agent="DocumentAgent",
-                description="Summarize the requested document.",
-                args={"dry_run": True},
-            )
-        if lowered == "computeragent":
-            return self._mock_plan_payload(
-                user_lower,
-                tool="system.get_info",
-                agent="ComputerAgent",
-                description="Read basic local system information.",
-                args={},
-            )
-        if lowered == "appagent":
-            return self._mock_plan_payload(
-                user_lower,
-                tool="app.list_installed",
-                agent="AppAgent",
-                description="Inspect installed applications relevant to the request.",
-                args={},
-            )
-        if lowered == "fileagent":
-            return self._mock_plan_payload(
-                user_lower,
-                tool="file.search_by_name",
-                agent="FileAgent",
-                description="Search authorized files by name.",
-                args={"query": user.strip() or "search", "dry_run": True},
-            )
-        return None
-
-    def _mock_plan_payload(
-        self,
-        user: str,
-        *,
-        tool: str,
-        agent: str,
-        description: str,
-        args: dict[str, Any],
-        risk: str = "R0_READ_ONLY",
-    ) -> dict[str, Any]:
-        return {
-            "goal": user or "mock task",
-            "assumptions": [f"Generated by MockProvider for supervisor hint {agent}."],
-            "steps": [
-                {
-                    "id": "step_1",
-                    "agent_name": agent,
-                    "tool_name": tool,
-                    "description": description,
-                    "args": args,
-                    "expected_observation": "Structured observation recorded in the task timeline.",
-                    "risk_level": risk,
-                    "requires_approval": risk.startswith("R2") or risk.startswith("R3"),
-                    "depends_on": [],
-                    "rollback_strategy": "No changes during dry-run; modifying execution must return rollback_info.",
-                }
-            ],
-        }
-
-    def _natural_chat_reply(self, user: str) -> str:
-        if not user:
-            return "我在，直接说就行。"
-        if "笨" in user or "卡" in user or "不自然" in user:
-            return (
-                "你说得对，这里应该像正常聊天一样先理解你，而不是一上来抛模板。"
-                "后面我会先用主管 Agent 和你对话，判断真的需要执行时再调对应 Agent。"
-            )
-        return "我在，咱们可以正常聊。你直接说想法或问题；需要实际处理电脑、文件、网页或文档时，我会再安排对应 Agent。"
+            
