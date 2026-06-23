@@ -3,13 +3,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes_guardian import proxy_router, router, ws_router
 from app.api.routes_pair import router as pair_router
 from app.core import db
 from app.core.errors import AppError
+from app.security.cors import configure_cors
 from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.lan import (
     DESKTOP_SECURE_TRANSPORT_ERROR,
@@ -41,13 +41,9 @@ async def lifespan(app: FastAPI):
 
 def create_guardian_app() -> FastAPI:
     app = FastAPI(title="Lengrvis Guardian Backend", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "app://local"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Hardened CORS shared with the full backend (app/main.py) via
+    # app.security.cors.configure_cors so the two apps can never drift.
+    configure_cors(app)
 
     @app.middleware("http")
     async def lan_api_guard(request: Request, call_next):
