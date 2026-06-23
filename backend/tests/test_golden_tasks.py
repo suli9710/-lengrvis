@@ -9,6 +9,7 @@
 质量（成功率 / 可读性 / 返工率）的评分签收；真人评审流程见
 ``docs/qa/golden-tasks.md`` 与 ``npm run evidence:result-quality-review``。
 """
+
 from __future__ import annotations
 
 import json
