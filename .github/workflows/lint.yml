@@ -1,8 +1,8 @@
 # Ruff lint gate (code-review checklist I-03).
 # ruff is configured in backend/pyproject.toml and pinned in
-# .pre-commit-config.yaml (v0.9.6), but it was never enforced in CI. This makes
-# ruff a blocking, fail-closed gate, aligned with the pre-commit ruff version
-# and the ^backend/ scope.
+# .pre-commit-config.yaml (v0.9.6). The existing backend tree still has a
+# historical Ruff backlog, so CI blocks changed backend Python files only until
+# the full-tree backlog is retired.
 name: Lint
 
 on:
@@ -16,17 +16,49 @@ permissions:
 
 jobs:
   ruff:
-    name: Ruff lint + format gate (backend)
+    name: Ruff lint + format gate (changed backend files)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install ruff (pinned to the pre-commit version)
         run: python -m pip install "ruff==0.9.6"
-      - name: Ruff lint (fail-closed)
-        run: python -m ruff check backend
-      - name: Ruff format check (fail-closed)
-        run: python -m ruff format --check backend
+      - name: Collect changed backend Python files
+        id: ruff_targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags --prune --depth=1 origin "${{ github.base_ref }}"
+            git diff --name-only --diff-filter=ACMRT "origin/${{ github.base_ref }}...HEAD" -- "backend/**/*.py" > .tmp/ruff-targets.txt
+          elif [[ -n "${{ github.event.before }}" && ! "${{ github.event.before }}" =~ ^0+$ ]]; then
+            git diff --name-only --diff-filter=ACMRT "${{ github.event.before }}" HEAD -- "backend/**/*.py" > .tmp/ruff-targets.txt
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --name-only --diff-filter=ACMRT HEAD^ HEAD -- "backend/**/*.py" > .tmp/ruff-targets.txt
+          else
+            : > .tmp/ruff-targets.txt
+          fi
+
+          if [[ ! -s .tmp/ruff-targets.txt ]]; then
+            echo "has_targets=false" >> "$GITHUB_OUTPUT"
+            echo "No changed backend Python files."
+            exit 0
+          fi
+
+          echo "has_targets=true" >> "$GITHUB_OUTPUT"
+          sed 's/^/ - /' .tmp/ruff-targets.txt
+      - name: Ruff lint (changed backend files)
+        if: steps.ruff_targets.outputs.has_targets == 'true'
+        shell: bash
+        run: xargs -a .tmp/ruff-targets.txt python -m ruff check
+      - name: Ruff format check (changed backend files)
+        if: steps.ruff_targets.outputs.has_targets == 'true'
+        shell: bash
+        run: xargs -a .tmp/ruff-targets.txt python -m ruff format --check

@@ -47,9 +47,11 @@ if (-not $SkipPython) {
         $failures += "pip-audit is not installed. Install with: python -m pip install pip-audit (or rerun with -SkipPython to record a waiver)."
     }
     else {
+        $pipAuditCacheDir = Join-Path $root ".tmp\pip-audit-cache"
+        New-Item -ItemType Directory -Path $pipAuditCacheDir -Force | Out-Null
         Push-Location $root
         try {
-            python -m pip_audit -r backend/requirements-lock.txt --disable-pip
+            python -m pip_audit -r backend/requirements-lock.txt --disable-pip --no-deps --cache-dir $pipAuditCacheDir
             if ($LASTEXITCODE -ne 0) {
                 $failures += "pip-audit reported vulnerabilities in backend/requirements-lock.txt"
             }
