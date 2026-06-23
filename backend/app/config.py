@@ -252,6 +252,7 @@ class AppSettings:
     llm_api_circuit_failure_threshold: int = 5
     llm_api_circuit_cooldown_seconds: float = 30.0
     mode: str = "efficiency"
+    plan: str = "free"
     permission_mode: str = "default"
     allow_cloud_context: bool = False
     allow_file_content_upload: bool = False
@@ -565,6 +566,7 @@ class AppSettings:
                 30.0,
             ),
             mode=str(value("LENGRVIS_MODE", "mode", "efficiency")),
+            plan=str(value("LENGRVIS_PLAN", "plan", "free")).strip().lower() or "free",
             permission_mode=_normalize_permission_mode(value("LENGRVIS_PERMISSION_MODE", "permission_mode", "default")),
             allow_cloud_context=flag("LENGRVIS_ALLOW_CLOUD_CONTEXT", "allow_cloud_context", False),
             allow_file_content_upload=flag("LENGRVIS_ALLOW_FILE_CONTENT_UPLOAD", "allow_file_content_upload", False),
