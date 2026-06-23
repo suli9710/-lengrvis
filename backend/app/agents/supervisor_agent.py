@@ -10,9 +10,9 @@ from app.agents.delegation_rules import (
     DELEGATION_RULES,
     FILE_ACTION_TERMS,
     UNINSTALL_TERMS as APP_ACTION_TERMS,
-    WINDOWS_PATH_RE,
     contains_any,
 )
+from app.agents.path_detection import has_explicit_path
 from app.agents.worker_agents import KNOWN_SUPERVISOR_WORKER_AGENTS, normalize_supervisor_agent_hint
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt, render_prompt
@@ -188,7 +188,7 @@ class SupervisorAgent:
 
     def _sanitize_reply(self, reply: str) -> str:
         normalized = re.sub(r"[\s，。；：,.!！?？]+", "", reply)
-        mojibake_template = "ä¸»ç®¡Agentå·²æ¶å°"
+        mojibake_template = "ä¸»ç®¡Agentå·²æ¶å°"
         if "主管Agent已收到" in normalized or "确认意图" in normalized or mojibake_template in normalized:
             return self._chat_reply("")
         return reply
@@ -215,7 +215,7 @@ class SupervisorAgent:
         if any(hint in normalized for hint in CHAT_ONLY_HINTS):
             return SupervisorDecision(False, self._chat_reply(text))
 
-        if WINDOWS_PATH_RE.search(text) and contains_any(normalized, FILE_ACTION_TERMS):
+        if has_explicit_path(text) and contains_any(normalized, FILE_ACTION_TERMS):
             return SupervisorDecision(
                 delegate=True,
                 reply=self._delegation_reply("FileAgent", normalized),

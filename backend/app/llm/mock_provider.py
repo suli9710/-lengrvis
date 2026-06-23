@@ -9,6 +9,7 @@ from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
 
 from app.agents.delegation_rules import contains_any
+from app.agents.path_detection import find_explicit_path
 
 
 class MockProvider(LLMProvider):
@@ -107,7 +108,7 @@ class MockProvider(LLMProvider):
                     "agent_name": agent,
                     "tool_name": tool,
                     "description": description,
-                    "args": self._args_for_tool(tool, user),
+                    "args": self._args_for_tool(tool, user, raw_user),
                     "expected_observation": "Structured observation recorded in the task timeline.",
                     "risk_level": risk,
                     "requires_approval": risk.startswith("R2") or risk.startswith("R3"),
@@ -117,19 +118,20 @@ class MockProvider(LLMProvider):
             ],
         }
 
-    def _args_for_tool(self, tool: str, user: str) -> dict[str, Any]:
+    def _args_for_tool(self, tool: str, user: str, raw_user: str | None = None) -> dict[str, Any]:
         if tool == "file.trash":
-            path = self._extract_windows_path(user)
-            return {"path": path or user, "dry_run": True}
+            source = raw_user if raw_user is not None else user
+            path = self._extract_windows_path(source)
+            return {"path": path or source, "dry_run": True}
         if tool == "file.cleanup_plan":
             return {"threshold_mb": 50, "older_than_days": 30}
         return {"query": user, "dry_run": True}
 
     def _extract_windows_path(self, user: str) -> str | None:
-        match = re.search(r"(?P<path>[a-zA-Z]:[\\/][^\r\n\"<>|?*]+)", user)
+        match = find_explicit_path(user)
         if not match:
             return None
-        candidate = match.group("path").strip().rstrip("。.,，;；、)]}）")
+        candidate = match.strip().rstrip("。.,，;；、)]}）")
         if Path(candidate).exists():
             return str(Path(candidate).resolve(strict=False))
         return candidate
