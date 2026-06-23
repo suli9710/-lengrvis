@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -55,6 +54,7 @@ from app.observability import (
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.dispatcher import EventDispatcher
 from app.perception.environment_stream import get_environment_stream
+from app.security.cors import configure_cors
 from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.lan import (
     DESKTOP_SECURE_TRANSPORT_ERROR,
@@ -160,15 +160,9 @@ def create_app() -> FastAPI:
     db.init_db()
     settings = get_effective_settings()
     app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.0", lifespan=lifespan)
-    # P1-7 fix: CORS configuration hardened - restrict methods and headers
-    # instead of wildcard allow_methods=["*"] + allow_headers=["*"].
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "app://local"],
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-Lengrvis-Desktop-Token"],
-    )
+    # Hardened CORS shared with the guardian backend (app/guardian.py) via
+    # app.security.cors.configure_cors so the two apps can never drift.
+    configure_cors(app)
 
     @app.middleware("http")
     async def lan_api_guard(request: Request, call_next):
