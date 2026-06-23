@@ -49,9 +49,11 @@ def capture_screen_frame(
     max_height: int = DEFAULT_CAPTURE_HEIGHT,
     quality: int = DEFAULT_JPEG_QUALITY,
 ) -> ScreenFrame:
-    if sys.platform != "win32":
-        raise RuntimeError("Remote desktop screen capture is only supported on Windows.")
-
+    # Platform capability is enforced by _grab_screen() (PIL ImageGrab), which
+    # raises on environments without a usable display. Callers such as the
+    # remote-screen WebSocket loop catch that and surface a graceful
+    # capture-failed error, so we must not hard-block non-Windows here: doing so
+    # broke cross-platform CI once the screen WebSocket could actually connect.
     image = _grab_screen()
     screen_origin_x, screen_origin_y = _screen_origin_from_grabbed_image(image)
     original_width, original_height = image.size
