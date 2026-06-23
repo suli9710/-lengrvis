@@ -13,9 +13,10 @@
 name: Backend cross-platform (informational)
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # Keep this informational matrix available for manual investigation, but do
+  # not publish macOS/Ubuntu backend pytest checks on every push/PR until the
+  # cross-platform dependency window is pinned and platform-only tests are
+  # explicitly gated.
   workflow_dispatch:
 
 permissions:
