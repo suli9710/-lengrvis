@@ -7,6 +7,7 @@ it by file path with importlib and exercise the pure policy helpers.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +18,9 @@ def _load_module():
     spec = importlib.util.spec_from_file_location("delivery_pipeline", SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Register before exec_module: on Python 3.12/3.13 dataclasses resolves a
+    # frozen dataclass's (stringized) annotations via sys.modules[cls.__module__].
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
