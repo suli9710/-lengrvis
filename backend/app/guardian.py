@@ -41,12 +41,16 @@ async def lifespan(app: FastAPI):
 
 def create_guardian_app() -> FastAPI:
     app = FastAPI(title="Lengrvis Guardian Backend", version="0.1.0", lifespan=lifespan)
+    # P1-7 fix: CORS configuration hardened - restrict methods and headers
+    # instead of wildcard allow_methods=["*"] + allow_headers=["*"]. Kept in
+    # sync with the full backend (app/main.py) so the default guardian
+    # entrypoint does not regress to a permissive CORS policy.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "app://local"],
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Lengrvis-Desktop-Token"],
     )
 
     @app.middleware("http")
