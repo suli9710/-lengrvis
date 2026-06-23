@@ -8,6 +8,8 @@ import time
 from urllib.parse import urlparse
 
 from app.commerce.entitlements import Feature, active_plan, has_feature
+from app.commerce.licensing import apply_licensed_plan
+from app.commerce.usage import enforce_cloud_quota
 from app.config import ENV_PREFIX, AppSettings, get_base_settings
 from app.core.outbound_url import validate_outbound_http_url
 from app.context_management import ContextAwareProvider
@@ -68,6 +70,7 @@ def get_effective_settings() -> AppSettings:
     base = get_base_settings()
     persisted = base.merged(db.get_settings_overrides())
     effective = persisted.merged(_explicit_process_env_overrides(base))
+    effective = apply_licensed_plan(effective)
     effective = _enforce_plan_entitlements(effective)
 
     with _SETTINGS_CACHE_LOCK:
@@ -96,6 +99,7 @@ def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
     overrides: dict[str, object] = {}
     env_to_field = {
         "LENGRVIS_MODE": "mode",
+        "LENGRVIS_PLAN": "plan",
         "LENGRVIS_PROVIDER_NAME": "provider_name",
         "LENGRVIS_BASE_URL": "base_url",
         "LENGRVIS_API_KEY": "api_key",
@@ -226,6 +230,7 @@ def _is_local_base_url(base_url: str) -> bool:
 
 
 def _build_cloud_provider(settings: AppSettings) -> LLMProvider:
+    enforce_cloud_quota(settings)
     name = settings.provider_name.lower()
     if name in CLOUD_PROVIDERS:
         if not settings.api_key:
