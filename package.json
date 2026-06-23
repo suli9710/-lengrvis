@@ -20,7 +20,7 @@
     "release:readiness:strict": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --strict",
     "release:safety": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_release_safety.ps1",
     "release:quick": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
-    "release:check": "npm run qa:gate && npm run supply-chain:verify && npm run security:extensions && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45",
+    "release:check": "npm run qa:gate && npm run supply-chain:verify && npm run security:extensions && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45 && npm run release:readiness:strict",
     "release:smoke": "npm run release:check",
     "release:gate": "npm run release:check",
     "evidence:release": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_release_evidence_packet.ps1",

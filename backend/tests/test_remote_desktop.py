@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -13,12 +13,13 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.api import routes_remote
 from app.core import db
+from app.core.schemas import Approval
 from app.llm.registry import get_effective_settings
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
 from app.policy.risk import RiskLevel
 from app.security import mobile_jwt
-from app.security.sensitive_confirmation import create_settings_confirmation
 from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_VIEW_SCOPE, TOKEN_SCOPE, issue_mobile_token
+from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import mobile_pairing_service, remote_desktop_service
 from app.services.settings_service import update_settings
 from app.tools.registry import register_all_tools
@@ -90,12 +91,12 @@ def _expire_remote_input_grant(device_id: str, grant_id: str) -> None:
     for grant in device.get("remote_input_grants") or []:
         if grant.get("id") == grant_id:
             matched = True
-            grant["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+            grant["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     assert matched is True
     with db.connect() as conn:
         conn.execute(
             "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(device, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), device_id),
+            (json.dumps(device, ensure_ascii=False), datetime.now(UTC).isoformat(), device_id),
         )
 
 
@@ -416,7 +417,8 @@ def test_remote_screen_capture_failure_sends_generic_error(monkeypatch: pytest.M
         r"capture failed at C:\\Users\\Suli\\Desktop\\secrets\\screen.txt "
         "token=secretREMOTE123456 selector=#password-field "
         "hostname=screen-host.internal.local "
-        r'Traceback (most recent call last): File "C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\api\\routes_remote.py", line 117, in capture'
+        "Traceback (most recent call last): File "
+        r'"C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\api\\routes_remote.py", line 117, in capture'
     )
 
     def fail_capture(**kwargs):
@@ -596,7 +598,9 @@ def test_remote_key_input_audit_redacts_unsafe_key_payload(monkeypatch: pytest.M
     )
 
     assert result["type"] == "approval_required"
-    received = next(event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.received")
+    received = next(
+        event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.received"
+    )
     assert received["payload"]["args"]["key"] == "***"
     _assert_no_sensitive_details(
         received["payload"],
@@ -670,6 +674,90 @@ def test_remote_input_websocket_accepts_text_and_key_events(
         "message": "Remote desktop input preview. User approval is required before execution.",
         "diff_preview": preview["diff_preview"],
     }
+
+
+def test_remote_input_websocket_rate_limits_event_burst(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_MAX_EVENTS_PER_WINDOW", 1)
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS", 60.0)
+    calls: list[dict[str, object]] = []
+
+    def fake_handle(event: dict[str, object], *, claims: dict[str, object] | None = None) -> dict[str, object]:
+        calls.append({"event": event, "claims": claims or {}})
+        return {"type": "accepted"}
+
+    monkeypatch.setattr(routes_remote, "handle_remote_input_event", fake_handle)
+    token, _grant_id = _remote_input_grant_token("mobile_input_rate_limit", "Rate Limit Host")
+    client = TestClient(_test_app())
+
+    with client.websocket_connect(
+        "/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        websocket.send_json({"type": "click", "x": 100, "y": 200})
+        assert websocket.receive_json() == {"type": "accepted"}
+        websocket.send_json({"type": "click", "x": 101, "y": 201})
+        assert websocket.receive_json() == {
+            "type": "error",
+            "code": "remote_input.rate_limited",
+            "message": "Remote input rate limit exceeded.",
+            "status_code": 429,
+        }
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_json()
+
+    assert len(calls) == 1
+    assert any(event["event_type"] == "remote.input.rate_limited" for event in db.fetch_many("audit_events", limit=20))
+
+
+def test_remote_input_websocket_pending_approval_limit_fails_closed(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    device_id = "mobile_input_pending_limit"
+    token, grant_id = _remote_input_grant_token(device_id, "Pending Limit Host")
+    db.upsert_model(
+        "approvals",
+        Approval(
+            task_id="task_remote_pending_limit",
+            step_id="step_1",
+            approval_type="remote_input",
+            message="Existing pending remote input",
+            source="remote_input",
+            source_device_id=device_id,
+            source_grant_id=grant_id,
+        ),
+    )
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_PENDING_APPROVAL_LIMIT", 1)
+    calls: list[dict[str, object]] = []
+
+    def fake_handle(event: dict[str, object], *, claims: dict[str, object] | None = None) -> dict[str, object]:
+        calls.append({"event": event, "claims": claims or {}})
+        return {"type": "accepted"}
+
+    monkeypatch.setattr(routes_remote, "handle_remote_input_event", fake_handle)
+    client = TestClient(_test_app())
+
+    with client.websocket_connect(
+        "/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        websocket.send_json({"type": "click", "x": 100, "y": 200})
+        assert websocket.receive_json() == {
+            "type": "error",
+            "code": "remote_input.rate_limited",
+            "message": "Remote input rate limit exceeded.",
+            "status_code": 429,
+        }
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_json()
+
+    assert calls == []
+    rate_limited = [
+        event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.rate_limited"
+    ]
+    assert rate_limited
+    assert rate_limited[0]["payload"]["reason"] == "pending_approvals"
 
 
 def test_remote_input_approval_exposes_safe_mobile_metadata_without_sensitive_preview(monkeypatch: pytest.MonkeyPatch):
@@ -995,9 +1083,7 @@ def test_remote_input_unsupported_event_sends_generic_rejection_and_redacted_aud
         ],
     )
     failure = next(
-        event
-        for event in db.fetch_many("audit_events", limit=20)
-        if event["event_type"] == "remote.input.rejected"
+        event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.rejected"
     )
     _assert_no_sensitive_details(
         failure["payload"],
@@ -1021,7 +1107,8 @@ def test_remote_input_policy_failure_sends_generic_rejection_and_redacted_audit(
         rf"policy failed at C:\\Users\\Suli\\Desktop\\secrets\\policy.txt "
         rf"token=secretPOLICY123456 selector=#policy-secret hostname=policy.internal.local "
         rf"device_id={device_id} grant_id={grant_id} "
-        r'Traceback (most recent call last): File "C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\policy\\policy_engine.py", line 201, in review'
+        "Traceback (most recent call last): File "
+        r'"C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\policy\\policy_engine.py", line 201, in review'
     )
 
     def fail_policy(event, *, claims=None):
@@ -1058,15 +1145,11 @@ def test_remote_input_policy_failure_sends_generic_rejection_and_redacted_audit(
         "line 201",
     ]
     audit_sensitive_fragments = [
-        fragment
-        for fragment in client_sensitive_fragments
-        if fragment not in {"policy failed", "HTTPException"}
+        fragment for fragment in client_sensitive_fragments if fragment not in {"policy failed", "HTTPException"}
     ]
     _assert_no_sensitive_details(error, client_sensitive_fragments)
     failure = next(
-        event
-        for event in db.fetch_many("audit_events", limit=20)
-        if event["event_type"] == "remote.input.rejected"
+        event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.rejected"
     )
     _assert_no_sensitive_details(failure["payload"], audit_sensitive_fragments)
     assert "[REDACTED" in json.dumps(failure["payload"], ensure_ascii=False)
@@ -1078,7 +1161,8 @@ def test_remote_input_unexpected_exception_sends_generic_error(monkeypatch: pyte
         r"input crashed at C:\\Users\\Suli\\Desktop\\secrets\\input.txt "
         "token=secretINPUT123456 selector=#api-key "
         "hostname=input-host.internal.local "
-        r'Traceback (most recent call last): File "C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\api\\routes_remote.py", line 201, in input'
+        "Traceback (most recent call last): File "
+        r'"C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\api\\routes_remote.py", line 201, in input'
     )
 
     def fail_input(event, *, claims=None):
@@ -1123,9 +1207,7 @@ def test_remote_input_unexpected_exception_sends_generic_error(monkeypatch: pyte
         ],
     )
     failure = next(
-        event
-        for event in db.fetch_many("audit_events", limit=20)
-        if event["event_type"] == "remote.input.failed"
+        event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.failed"
     )
     _assert_no_sensitive_details(
         failure["payload"],
@@ -1170,9 +1252,7 @@ def test_remote_exception_audit_redacts_short_token_hints(monkeypatch: pytest.Mo
 
     assert error["message"] == "Remote input event could not be handled."
     failure = next(
-        event
-        for event in db.fetch_many("audit_events", limit=20)
-        if event["event_type"] == "remote.input.failed"
+        event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.failed"
     )
     error_text = json.dumps(failure["payload"], ensure_ascii=False)
     assert "token=abc123" not in error_text
@@ -1303,7 +1383,9 @@ def test_idle_remote_input_closes_after_token_expires(monkeypatch: pytest.Monkey
     registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
     monkeypatch.setattr(routes_remote, "register_all_tools", lambda settings=None: registry)
     monkeypatch.setattr(registry.get("remote.click"), "execute", lambda args, context: preview)
-    mobile_pairing_service._upsert_mobile_device(device_id="mobile_input_idle_token_expiring", device_name="Input Phone")
+    mobile_pairing_service._upsert_mobile_device(
+        device_id="mobile_input_idle_token_expiring", device_name="Input Phone"
+    )
     grant = mobile_pairing_service.create_remote_input_grant("mobile_input_idle_token_expiring")
     token = issue_mobile_token(
         device_id="mobile_input_idle_token_expiring",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 # Browser origins allowed to call the backend: the local Vite dev server
@@ -25,4 +25,12 @@ def configure_cors(app: FastAPI) -> None:
         allow_credentials=True,
         allow_methods=CORS_ALLOW_METHODS,
         allow_headers=CORS_ALLOW_HEADERS,
+    )
+
+
+def is_cors_preflight(request: Request) -> bool:
+    return (
+        request.method.upper() == "OPTIONS"
+        and bool(request.headers.get("origin"))
+        and bool(request.headers.get("access-control-request-method"))
     )

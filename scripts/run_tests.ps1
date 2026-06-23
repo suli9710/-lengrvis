@@ -92,6 +92,9 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if (Test-Path "desktop\package.json") {
     npm --prefix desktop run typecheck
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    npm --prefix desktop test
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
 if (Test-Path "mobile\package.json") {

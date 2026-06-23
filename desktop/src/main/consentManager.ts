@@ -3,14 +3,21 @@
  * legal document file paths, and exposes them through IPC handlers.
  */
 
-import { app } from "electron";
+import { app, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { LEGAL_VERSIONS, needsEulaReconsent, needsPrivacyReconsent, type AcceptConsentRequest, type ConsentRecord, type ConsentStatusResult, type LegalDocId } from "../shared/consent";
+import { assertTrustedRenderer } from "./ipc";
+import {
+  LEGAL_VERSIONS,
+  needsEulaReconsent,
+  needsPrivacyReconsent,
+  type AcceptConsentRequest,
+  type ConsentRecord,
+  type ConsentStatusResult,
+  type LegalDocId,
+} from "../shared/consent";
 import { IPC_CHANNELS } from "../shared/ipc";
-import type { IpcMainInvokeEvent } from "electron";
-import { ipcMain } from "electron";
 
 const CONSENT_FILENAME = "consent.json";
 
@@ -104,8 +111,9 @@ export function registerConsentIpcHandlers(): void {
       currentVersions: LEGAL_VERSIONS,
     };
   });
-  ipcMain.handle(IPC_CHANNELS.consentAccept, (event: IpcMainInvokeEvent, request: AcceptConsentRequest): ConsentRecord => {
+  ipcMain.handle(IPC_CHANNELS.consentAccept, (event: IpcMainInvokeEvent, rawRequest: unknown): ConsentRecord => {
     assertTrustedRenderer(event);
+    const request = normalizeAcceptConsentRequest(rawRequest);
     const patch: Partial<ConsentRecord> = {};
     if (request?.acceptEula) {
       patch.eula_version = LEGAL_VERSIONS.eula;
@@ -132,9 +140,15 @@ export function registerConsentIpcHandlers(): void {
 function isLegalDocId(value: unknown): value is LegalDocId {
   return value === "privacy-policy" || value === "eula" || value === "notice";
 }
-function assertTrustedRenderer(event: IpcMainInvokeEvent): void {
-  // The renderer is sandboxed with contextIsolation; it can only reach us
-  // through the preload bridge. No additional validation needed here since
-  // Electron guarantees the sender is our own webContents.
-  void event;
+function normalizeAcceptConsentRequest(value: unknown): AcceptConsentRequest {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const request = value as Record<string, unknown>;
+  const installerVersion = typeof request.installerVersion === "string" ? request.installerVersion.trim() : "";
+  return {
+    acceptEula: request.acceptEula === true,
+    acceptPrivacy: request.acceptPrivacy === true,
+    ...(installerVersion ? { installerVersion: installerVersion.slice(0, 128) } : {}),
+  };
 }

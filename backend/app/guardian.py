@@ -9,7 +9,7 @@ from app.api.routes_guardian import proxy_router, router, ws_router
 from app.api.routes_pair import router as pair_router
 from app.core import db
 from app.core.errors import AppError
-from app.security.cors import configure_cors
+from app.security.cors import configure_cors, is_cors_preflight
 from app.security.desktop_api import has_valid_desktop_api_token, should_require_desktop_api_token
 from app.security.lan import (
     DESKTOP_SECURE_TRANSPORT_ERROR,
@@ -47,6 +47,8 @@ def create_guardian_app() -> FastAPI:
 
     @app.middleware("http")
     async def lan_api_guard(request: Request, call_next):
+        if is_cors_preflight(request):
+            return await call_next(request)
         client_host = request.client.host if request.client else ""
         path = request.url.path
         if is_loopback_host(client_host):
@@ -73,6 +75,8 @@ def create_guardian_app() -> FastAPI:
 
     @app.middleware("http")
     async def mobile_jwt_guard(request: Request, call_next):
+        if is_cors_preflight(request):
+            return await call_next(request)
         if not request.url.path.startswith("/api/mobile/"):
             return await call_next(request)
         client_host = request.client.host if request.client else ""
@@ -92,6 +96,8 @@ def create_guardian_app() -> FastAPI:
 
     @app.middleware("http")
     async def desktop_api_token_guard(request: Request, call_next):
+        if is_cors_preflight(request):
+            return await call_next(request)
         if should_require_desktop_api_token(request) and not has_valid_desktop_api_token(request):
             return JSONResponse(status_code=401, content={"detail": "Missing desktop API token"})
         return await call_next(request)

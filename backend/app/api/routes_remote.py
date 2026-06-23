@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+from collections import deque
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -25,6 +26,7 @@ from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.redaction import redact_public_text
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.security.lan import is_secure_mobile_transport
 from app.security.mobile_jwt import (
     REMOTE_INPUT_SCOPE,
     REMOTE_VIEW_SCOPE,
@@ -32,9 +34,7 @@ from app.security.mobile_jwt import (
     mobile_token_from_websocket,
     validate_mobile_claims_active,
 )
-from app.security.lan import is_secure_mobile_transport
 from app.services.approval_event_service import publish_approval_created
-from app.services import mobile_pairing_service
 from app.services.remote_desktop_service import (
     DEFAULT_CAPTURE_HEIGHT,
     DEFAULT_CAPTURE_WIDTH,
@@ -47,7 +47,6 @@ from app.services.remote_desktop_service import (
 )
 from app.tools.registry import register_all_tools
 
-
 ws_router = APIRouter()
 
 _REMOTE_ACTOR = "RemoteDesktop"
@@ -58,18 +57,19 @@ _INPUT_ACTIVE_POLL_SECONDS = 0.2
 _REMOTE_SCREEN_CONTROL_ERROR_CODE = "remote_screen.invalid_control"
 _REMOTE_SCREEN_CAPTURE_ERROR_CODE = "remote_screen.capture_failed"
 _REMOTE_INPUT_DENIED_ERROR_CODE = "remote_input.denied"
+_REMOTE_INPUT_RATE_LIMIT_ERROR_CODE = "remote_input.rate_limited"
 _REMOTE_INPUT_REJECTED_ERROR_CODE = "remote_input.rejected"
 _REMOTE_INPUT_UNEXPECTED_ERROR_CODE = "remote_input.failed"
+_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS = 10.0
+_REMOTE_INPUT_MAX_EVENTS_PER_WINDOW = 20
+_REMOTE_INPUT_PENDING_APPROVAL_LIMIT = 5
+_REMOTE_INPUT_PENDING_APPROVAL_SCAN_LIMIT = 1000
 _REMOTE_REVIEW_REASON_AUDIT_LIMIT = 3
 _REMOTE_WEBSOCKET_RETRY_CLOSE_CODE = 1012
 _REMOTE_WEBSOCKET_AUTH_CLOSE_CODE = 4401
 _REMOTE_WEBSOCKET_GRANT_CLOSE_CODE = 4403
-_REMOTE_ERROR_SELECTOR_PATTERN = re.compile(
-    r"(?i)\b(selector|locator)\s*[:=]\s*['\"]?([^\s,'\"<>]+)"
-)
-_REMOTE_ERROR_HOST_PATTERN = re.compile(
-    r"(?i)\b(host|hostname)\s*[:=]\s*['\"]?([^\s,'\"<>]+)"
-)
+_REMOTE_ERROR_SELECTOR_PATTERN = re.compile(r"(?i)\b(selector|locator)\s*[:=]\s*['\"]?([^\s,'\"<>]+)")
+_REMOTE_ERROR_HOST_PATTERN = re.compile(r"(?i)\b(host|hostname)\s*[:=]\s*['\"]?([^\s,'\"<>]+)")
 _REMOTE_ERROR_HOSTNAME_VALUE_PATTERN = re.compile(
     r"(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:internal|local|lan|corp|home|test|example|com|net|org)\b"
 )
@@ -101,6 +101,22 @@ _REMOTE_INPUT_SAFE_KEYS = {
 }
 
 
+class _RemoteInputRateLimiter:
+    def __init__(self) -> None:
+        self._event_times: deque[float] = deque()
+
+    def allow(self, now: float) -> bool:
+        window_seconds = max(0.1, float(_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS))
+        max_events = max(1, int(_REMOTE_INPUT_MAX_EVENTS_PER_WINDOW))
+        cutoff = now - window_seconds
+        while self._event_times and self._event_times[0] <= cutoff:
+            self._event_times.popleft()
+        if len(self._event_times) >= max_events:
+            return False
+        self._event_times.append(now)
+        return True
+
+
 @ws_router.websocket("/ws/remote/screen")
 async def remote_screen_stream(websocket: WebSocket, token: str = ""):
     claims = await _authorize_remote_websocket(websocket, token)
@@ -118,11 +134,11 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
             try:
                 message = await asyncio.wait_for(websocket.receive_json(), timeout=0.01)
                 fps, quality = _apply_stream_controls(message, fps=fps, quality=quality)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 message = None
             except WebSocketDisconnect:
                 break
-            except Exception:
+            except Exception:  # noqa: BLE001
                 await websocket.send_json(
                     _remote_client_error(
                         code=_REMOTE_SCREEN_CONTROL_ERROR_CODE,
@@ -201,19 +217,28 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
         return
 
     await websocket.accept()
+    limiter = _RemoteInputRateLimiter()
     record("remote.input.connected", _REMOTE_ACTOR, _claim_payload(claims))
     try:
         await websocket.send_json({"type": "connected"})
         while True:
             try:
                 event = await asyncio.wait_for(websocket.receive_json(), timeout=_INPUT_ACTIVE_POLL_SECONDS)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if await _close_remote_websocket_if_inactive(websocket, claims):
                     break
                 continue
             except WebSocketDisconnect:
                 break
             if await _close_remote_websocket_if_inactive(websocket, claims):
+                break
+            limit_error = _remote_input_limit_error(claims, limiter, now=asyncio.get_running_loop().time())
+            if limit_error is not None:
+                await websocket.send_json(limit_error)
+                await websocket.close(
+                    code=_REMOTE_WEBSOCKET_GRANT_CLOSE_CODE,
+                    reason="Remote input rate limit exceeded.",
+                )
                 break
             try:
                 result = handle_remote_input_event(event, claims=claims)
@@ -288,7 +313,9 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     )
     db.upsert_model("plans", plan)
 
-    review = PolicyEngine(settings).review_tool_call(task.id, step.id, tool_name, args, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM)
+    review = PolicyEngine(settings).review_tool_call(
+        task.id, step.id, tool_name, args, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+    )
     db.upsert_model("safety_reviews", review)
     if review.verdict == SafetyVerdict.DENY:
         record(
@@ -303,7 +330,9 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     tool = registry.get(tool_name)
     if not bool(getattr(tool, "supports_dry_run", False)):
         raise HTTPException(status_code=409, detail="Remote input dry-run preview is unavailable.")
-    preview = tool.execute({**args, "dry_run": True}, {"settings": settings, "allowed_directories": settings.allowed_directories})
+    preview = tool.execute(
+        {**args, "dry_run": True}, {"settings": settings, "allowed_directories": settings.allowed_directories}
+    )
     safe_preview = _remote_input_binding_preview(tool_name, preview)
     if not _remote_input_safe_preview_verified(safe_preview):
         raise HTTPException(status_code=409, detail="Remote input dry-run preview is unavailable.")
@@ -365,10 +394,68 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     }
 
 
+def _remote_input_limit_error(
+    claims: dict[str, Any],
+    limiter: _RemoteInputRateLimiter,
+    *,
+    now: float,
+) -> dict[str, Any] | None:
+    reason = ""
+    if not limiter.allow(now):
+        reason = "event_window"
+    elif _remote_input_pending_approval_count(claims) >= max(0, int(_REMOTE_INPUT_PENDING_APPROVAL_LIMIT)):
+        reason = "pending_approvals"
+
+    if not reason:
+        return None
+
+    record(
+        "remote.input.rate_limited",
+        _REMOTE_ACTOR,
+        {
+            **_claim_payload(claims),
+            "code": _REMOTE_INPUT_RATE_LIMIT_ERROR_CODE,
+            "reason": reason,
+            "window_seconds": _REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS,
+            "max_events": _REMOTE_INPUT_MAX_EVENTS_PER_WINDOW,
+            "pending_approval_limit": _REMOTE_INPUT_PENDING_APPROVAL_LIMIT,
+        },
+    )
+    return _remote_client_error(
+        code=_REMOTE_INPUT_RATE_LIMIT_ERROR_CODE,
+        message="Remote input rate limit exceeded.",
+        status_code=429,
+    )
+
+
+def _remote_input_pending_approval_count(claims: dict[str, Any]) -> int:
+    grant_id = str(claims.get("grant_id") or "")
+    device_id = str(claims.get("device_id") or "")
+    if not grant_id or not device_id:
+        return 0
+
+    count = 0
+    for approval in db.fetch_many(
+        "approvals",
+        "status = ?",
+        ("pending",),
+        limit=max(1, int(_REMOTE_INPUT_PENDING_APPROVAL_SCAN_LIMIT)),
+    ):
+        if (
+            approval.get("source") == "remote_input"
+            and approval.get("source_grant_id") == grant_id
+            and approval.get("source_device_id") == device_id
+        ):
+            count += 1
+    return count
+
+
 async def _authorize_remote_websocket(websocket: WebSocket, token: str) -> dict[str, Any] | None:
     client_host = websocket.client.host if websocket.client else ""
     if not is_secure_mobile_transport(client_host, websocket.url.scheme):
-        await websocket.close(code=1008, reason="Remote mobile WebSockets require WSS unless the client is on this computer.")
+        await websocket.close(
+            code=1008, reason="Remote mobile WebSockets require WSS unless the client is on this computer."
+        )
         return None
     if not get_effective_settings().remote_desktop_enabled:
         await websocket.close(code=_REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, reason="Remote desktop is disabled.")
@@ -414,11 +501,11 @@ async def _wait_for_frame_ack_or_timeout(
                 websocket.receive_json(),
                 timeout=min(_FRAME_ACK_POLL_SECONDS, remaining),
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
         except WebSocketDisconnect:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001
             await websocket.send_json(
                 _remote_client_error(
                     code=_REMOTE_SCREEN_CONTROL_ERROR_CODE,
@@ -526,9 +613,12 @@ def _remote_input_dry_run_summary(safe_preview: dict[str, Any]) -> str:
     detail = _remote_input_first_preview_item(safe_preview)
     action = str(detail.get("action") or "")
     if action == "click":
-        return f"Remote desktop dry-run: click screen position ({_safe_int(detail.get('x'))}, {_safe_int(detail.get('y'))})."
+        x = _safe_int(detail.get("x"))
+        y = _safe_int(detail.get("y"))
+        return f"Remote desktop dry-run: click screen position ({x}, {y})."
     if action == "type_text":
-        return f"Remote desktop dry-run: type {_safe_nonnegative_int(detail.get('characters'))} character(s) into the focused control."
+        characters = _safe_nonnegative_int(detail.get("characters"))
+        return f"Remote desktop dry-run: type {characters} character(s) into the focused control."
     if action == "key_press":
         key = _safe_remote_input_key_label(detail.get("key"))
         if key:
@@ -660,7 +750,7 @@ def _unique_strings(*groups: list[Any]) -> list[str]:
 def _metadata_strings(value: Any) -> list[Any]:
     if isinstance(value, str):
         return [value]
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return list(value)
     return []
 
@@ -693,7 +783,9 @@ def _remote_denied_audit_metadata(review: Any) -> dict[str, Any]:
         "reason_count": len(reasons),
         "required_change_count": len(getattr(review, "required_changes", None) or []),
         "safe_alternative_present": bool(getattr(review, "safe_alternative", "") or ""),
-        "reason_summaries": [_remote_review_reason_summary(reason) for reason in reasons[:_REMOTE_REVIEW_REASON_AUDIT_LIMIT]],
+        "reason_summaries": [
+            _remote_review_reason_summary(reason) for reason in reasons[:_REMOTE_REVIEW_REASON_AUDIT_LIMIT]
+        ],
     }
 
 

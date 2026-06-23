@@ -11,12 +11,14 @@ import concurrent.futures
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 import app.agents.supervisor_agent as supervisor_module
 from app.agents.supervisor_agent import SupervisorAgent
 from app.core import db
 from app.core.paths import SYSTEM_ROOTS
 from app.core.schemas import RunEngine, Task
+from app.main import create_app
 from app.orchestration.task_phase import TaskPhase
 from app.security.desktop_api import desktop_api_token_optional_for_test
 from app.services import run_service, run_service_background
@@ -69,6 +71,25 @@ def test_desktop_token_optional_still_honored_for_lengrvis_test(monkeypatch):
     monkeypatch.setenv("LENGRVIS_TEST", "1")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     assert desktop_api_token_optional_for_test() is True
+
+
+def test_desktop_token_guard_allows_cors_preflight_without_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    db.init_db()
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+
+    response = client.options(
+        "/api/chat",
+        headers={
+            "origin": "http://localhost:5173",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "X-Lengrvis-Desktop-Token, Content-Type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
 # --- LIFECYCLE: duplicate engine loop guard -------------------------------
@@ -150,9 +171,7 @@ def test_paused_run_stays_paused_when_task_not_terminal(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_supervisor_downgrade_without_hint_returns_chat_reply(monkeypatch):
-    provider = _StubProvider(
-        {"delegate": True, "reply": "我会把这件事交给文件 Agent 处理。", "agent_hint": ""}
-    )
+    provider = _StubProvider({"delegate": True, "reply": "我会把这件事交给文件 Agent 处理。", "agent_hint": ""})
     monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
 
     decision = await SupervisorAgent().decide("你是什么模型", "efficiency")
@@ -172,9 +191,7 @@ async def test_explicit_path_delete_overrides_wrong_agent_hint(monkeypatch, tmp_
     db.init_db()
     # The model delegates the explicit file deletion to the WRONG (but valid)
     # worker; the deterministic safety override must redirect to FileAgent.
-    provider = _StubProvider(
-        {"delegate": True, "reply": "交给电脑 Agent", "agent_hint": "ComputerAgent"}
-    )
+    provider = _StubProvider({"delegate": True, "reply": "交给电脑 Agent", "agent_hint": "ComputerAgent"})
     monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
 
     response = await handle_chat(r"删除 C:\Temp\old.txt", "efficiency")
