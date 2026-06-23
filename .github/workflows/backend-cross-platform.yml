@@ -1,0 +1,52 @@
+# Cross-platform backend test matrix (code-review checklist I-03).
+# The blocking backend gate in ci.yml runs on windows-latest only; these
+# Linux/macOS legs add the missing cross-platform signal.
+#
+# These legs are INFORMATIONAL (continue-on-error) until a cross-platform
+# dependency lock and platform-guarded imports are finalized:
+# backend/requirements-lock.txt is resolved on win32 and pins Windows-only
+# pywin32/comtypes (without markers) plus win32-resolved ML wheels, so it cannot
+# install on Linux/macOS. These legs therefore install from the marker-aware
+# source requirements (backend/requirements.txt), which correctly skips the
+# Windows-only dependencies. This mirrors the existing "informational until RC"
+# continue-on-error pattern in release-readiness.yml.
+name: Backend cross-platform (informational)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-cross-platform:
+    name: Backend pytest ($ matrix.os )
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: $ matrix.os 
+    continue-on-error: true
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            requirements-dev.txt
+      - name: Install backend dependencies (marker-aware source; skips Windows-only)
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r backend/requirements.txt -r requirements-dev.txt
+      - name: Install Playwright Chromium (browser tool tests)
+        run: python -m playwright install chromium
+      - name: Backend test suite
+        env:
+          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+        run: python -m pytest backend/tests -q
