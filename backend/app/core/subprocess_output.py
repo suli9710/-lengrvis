@@ -29,16 +29,14 @@ def decode_process_output(value: Any, *, fallback_encoding: str = "utf-8") -> st
             pass
 
     # Order matters. Try strict codecs that *raise* on mismatching input before
-    # any single-byte code page: UTF-8 first, then (on Windows) the legacy
-    # Chinese multi-byte code page, and only then the single-byte ANSI/locale
-    # code pages. Single-byte code pages (cp1252/latin-1/mbcs and, on an
+    # any single-byte code page: UTF-8 first, then the legacy Chinese multi-byte
+    # code page that Windows commands commonly emit, and only then the
+    # single-byte ANSI/locale code pages. Single-byte code pages (cp1252/latin-1/mbcs and, on an
     # English Windows runner, locale.getpreferredencoding()) decode *any* byte
     # sequence without raising, so consulting them first would mask the correct
     # decoding -- e.g. GBK-encoded CJK output would be returned as cp1252
     # mojibake.
-    candidates = ["utf-8-sig", fallback_encoding]
-    if os.name == "nt":
-        candidates.append("gbk")
+    candidates = ["utf-8-sig", fallback_encoding, "gbk"]
     candidates.append(locale.getpreferredencoding(False))
     if os.name == "nt":
         candidates.extend(["mbcs", "cp65001"])

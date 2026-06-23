@@ -6,9 +6,10 @@ routines work on already-computed embeddings or on tag/keyword vectors.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
-from typing import Iterable
+from collections.abc import Iterable
 
 
 def _normalize(vector: list[float]) -> list[float]:
@@ -27,7 +28,7 @@ def kmeans(vectors: list[list[float]], k: int, *, max_iter: int = 25, seed: int 
     if not vectors:
         return []
     k = max(1, min(k, len(vectors)))
-    rng = random.Random(seed)
+    rng = random.Random(seed)  # noqa: S311 - deterministic clustering seed, not security-sensitive randomness.
     centroids = [_normalize(list(vectors[rng.randrange(len(vectors))])) for _ in range(k)]
     assignments = [0] * len(vectors)
     normalized = [_normalize(list(v)) for v in vectors]
@@ -57,10 +58,15 @@ def hashing_vectorize(texts: Iterable[str], *, dim: int = 64) -> list[list[float
     for text in texts:
         vector = [0.0] * dim
         for token in (text or "").lower().split():
-            idx = hash(token) % dim
+            idx = _stable_token_index(token, dim)
             vector[idx] += 1.0
         result.append(vector)
     return result
+
+
+def _stable_token_index(token: str, dim: int) -> int:
+    digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % dim
 
 
 def cluster_texts(texts: list[str], *, k: int | None = None) -> dict[int, list[int]]:

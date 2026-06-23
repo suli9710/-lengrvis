@@ -9,7 +9,6 @@ from app.core.schemas import SafetyReview
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.cleanup_planner_service import is_direct_delete_allowed
 
-
 CLEANUP_TOOLS = {"file.cleanup_execute", "file.cleanup_rollback"}
 SENSITIVE_PATH_TERMS = {
     ".ssh",
@@ -26,11 +25,19 @@ SENSITIVE_PATH_TERMS = {
     "secret",
     "token",
 }
+WINDOWS_SYSTEM_PATH_MARKERS = (
+    "c:/windows",
+    "c:/program files",
+    "c:/program files (x86)",
+    "c:/programdata",
+)
 
 
 class CleanupReviewAgent(BaseAgent):
     name = "CleanupReviewAgent"
-    domain_summary = "Deterministically reviews cleanup plans and executions for direct-delete, approval, and sensitive path safety."
+    domain_summary = (
+        "Deterministically reviews cleanup plans and executions for direct-delete, approval, and sensitive path safety."
+    )
     prompt_file = "safety_review_agent.md"
 
     def review_tool_call(
@@ -57,7 +64,10 @@ class CleanupReviewAgent(BaseAgent):
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
                 reasons=reasons,
-                safe_alternative="Regenerate the cleanup plan and execute only whitelisted direct-delete items or approved recycle-bin items.",
+                safe_alternative=(
+                    "Regenerate the cleanup plan and execute only whitelisted direct-delete items or "
+                    "approved recycle-bin items."
+                ),
             )
 
         live = args.get("dry_run") is False
@@ -69,7 +79,9 @@ class CleanupReviewAgent(BaseAgent):
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
                 reasons=["Recycle-bin cleanup execution cannot bypass approved=true and approval_id."],
-                safe_alternative="Request user approval for the exact cleanup plan before executing recycle-bin actions.",
+                safe_alternative=(
+                    "Request user approval for the exact cleanup plan before executing recycle-bin actions."
+                ),
             )
         if live and _has_trash_action_hint(args):
             return self._approval_review(task_id, step_id, "cleanup_execute", risk_level)
@@ -96,7 +108,9 @@ class CleanupReviewAgent(BaseAgent):
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
                 reasons=reasons,
-                safe_alternative="Revise cleanup steps to use file.cleanup_plan followed by approved file.cleanup_execute.",
+                safe_alternative=(
+                    "Revise cleanup steps to use file.cleanup_plan followed by approved file.cleanup_execute."
+                ),
             )
         return SafetyReview(
             task_id=task_id,
@@ -174,19 +188,19 @@ def _all_path_hints(value: Any) -> list[str]:
             normalized = str(key).casefold()
             if normalized in {"path", "paths", "root", "roots", "target", "targets"} or "path" in normalized:
                 paths.extend(_string_values(item))
-            elif isinstance(item, (dict, list, tuple, set)):
+            elif isinstance(item, dict | list | tuple | set):
                 paths.extend(_all_path_hints(item))
         return paths
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         for item in value:
             paths.extend(_all_path_hints(item))
     return paths
 
 
 def _string_values(value: Any) -> list[str]:
-    if isinstance(value, (str, Path)) and str(value).strip():
+    if isinstance(value, str | Path) and str(value).strip():
         return [str(value)]
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         result: list[str] = []
         for item in value:
             result.extend(_string_values(item))
@@ -196,5 +210,9 @@ def _string_values(value: Any) -> list[str]:
 
 def _sensitive_or_system(path: Path) -> bool:
     normalized = str(path).replace("\\", "/").casefold()
-    return is_system_path(path) or is_sensitive_path(path) or any(term in normalized for term in SENSITIVE_PATH_TERMS)
-
+    return (
+        is_system_path(path)
+        or is_sensitive_path(path)
+        or any(marker in normalized for marker in WINDOWS_SYSTEM_PATH_MARKERS)
+        or any(term in normalized for term in SENSITIVE_PATH_TERMS)
+    )
