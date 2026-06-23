@@ -25,6 +25,24 @@ if os.name != "nt":
     collect_ignore_glob.append("test_start_app_script.py")
 
 
+# Remote desktop control (手机远控) is a Pro+ entitlement. The commercialization
+# gate app.llm.registry._enforce_plan_entitlements() (applied inside
+# get_effective_settings()) force-disables remote_desktop_enabled on the default
+# FREE plan, and test_entitlements.py asserts that FREE -> disabled behavior.
+# Test helpers in these modules enable remote desktop without selecting an
+# entitled plan, so without this fixture the flag is silently reverted to False
+# and the remote-input grant/JWT paths raise 403 "Remote desktop is disabled".
+# Running these modules on a Pro plan keeps the enabled flag honored; it does NOT
+# auto-enable remote desktop, so disabled-by-default assertions still hold.
+REMOTE_DESKTOP_ENTITLED_TEST_MODULES = {
+    "test_remote_desktop",
+    "test_mobile_pairing",
+    "test_lan_api_guard",
+    "test_guardian_backend",
+    "test_llm_settings_api",
+}
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATA = PROJECT_ROOT / "test_data"
 SLOW_TEST_NODEID_SUFFIXES = {
@@ -83,6 +101,22 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 def desktop_api_token_optional_for_testclient(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LENGRVIS_TEST", "1")
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
+
+
+@pytest.fixture(autouse=True)
+def entitle_remote_desktop_plan_for_remote_modules(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run remote-desktop modules on a Pro plan so the entitlement gate keeps
+    remote_desktop_enabled honored (see REMOTE_DESKTOP_ENTITLED_TEST_MODULES).
+
+    This only selects an entitled plan; it never enables remote desktop itself,
+    so tests asserting the disabled-by-default behavior are unaffected.
+    """
+    module = getattr(request, "module", None)
+    module_name = (getattr(module, "__name__", "") or "").rsplit(".", 1)[-1]
+    if module_name in REMOTE_DESKTOP_ENTITLED_TEST_MODULES:
+        monkeypatch.setenv("LENGRVIS_PLAN", "pro")
 
 
 @pytest.fixture(autouse=True)
