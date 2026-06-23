@@ -82,7 +82,8 @@ function Get-DisplayPath([string]$PathValue) {
 
     $rootPrefix = $resolvedRoot.TrimEnd([char[]]@("\", "/")) + [System.IO.Path]::DirectorySeparatorChar
     if ($fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-        return (Redact-DisplayLabel ($fullPath.Substring($rootPrefix.Length)))
+        $relativePath = $fullPath.Substring($rootPrefix.Length).Replace("/", "\")
+        return (Redact-DisplayLabel $relativePath)
     }
 
     return (Redact-DisplayLabel (Split-Path -Leaf $fullPath))

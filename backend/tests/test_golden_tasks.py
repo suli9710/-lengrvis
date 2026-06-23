@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,6 @@ from app.core import db
 from app.core.errors import SecurityError
 from app.services import run_service
 from app.tools.registry import register_all_tools, registry
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_DATASET_PATH = PROJECT_ROOT / "test_data" / "golden_tasks" / "golden_tasks.json"
@@ -50,6 +50,15 @@ def test_golden_dataset_integrity():
     for task in GOLDEN_TASKS:
         assert task.get("entry") in {"runs", "chat", "files_api", "tool"}, task["id"]
         assert task.get("expect"), task["id"]
+
+
+def test_golden_path_placeholders_use_native_separators(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside-secret.txt"
+
+    assert _sub("$WS\\old-report.txt", workspace, outside) == str(workspace / "old-report.txt")
+    assert _sub("$WS/old-report.txt", workspace, outside) == str(workspace / "old-report.txt")
+    assert _sub({"path": "$OUTSIDE"}, workspace, outside) == {"path": str(outside)}
 
 
 @pytest.mark.parametrize("task", GOLDEN_TASKS, ids=[t["id"] for t in GOLDEN_TASKS])
@@ -109,12 +118,19 @@ def _golden_env(monkeypatch, tmp_path, task: dict[str, Any]):
 
 def _sub(value: Any, workspace: Path, outside: Path) -> Any:
     if isinstance(value, str):
-        return value.replace("$WS", str(workspace)).replace("$OUTSIDE", str(outside))
+        return _replace_path_placeholder(_replace_path_placeholder(value, "$WS", workspace), "$OUTSIDE", outside)
     if isinstance(value, dict):
         return {key: _sub(item, workspace, outside) for key, item in value.items()}
     if isinstance(value, list):
         return [_sub(item, workspace, outside) for item in value]
     return value
+
+
+def _replace_path_placeholder(value: str, placeholder: str, path: Path) -> str:
+    text = value
+    for separator in ("\\", "/"):
+        text = text.replace(f"{placeholder}{separator}", str(path) + os.sep)
+    return text.replace(placeholder, str(path))
 
 
 def _register_golden_deferred_tools(task: dict[str, Any]) -> None:
@@ -293,7 +309,11 @@ def _assert_run_expectations(
         assert plans, "expected a stored plan"
         assert plans[0]["global_risk_level"] == expect["global_risk"], plans[0]["global_risk_level"]
     if "pending_approvals" in expect:
-        pending = [a for a in db.fetch_many("approvals", "task_id = ?", (task_id,), limit=20) if a["status"] == "pending"]
+        pending = [
+            approval
+            for approval in db.fetch_many("approvals", "task_id = ?", (task_id,), limit=20)
+            if approval["status"] == "pending"
+        ]
         assert len(pending) == expect["pending_approvals"], f"pending approvals: {len(pending)}"
     if expect.get("no_tool_results"):
         calls = db.fetch_many("tool_calls", "task_id = ?", (task_id,), limit=20)
