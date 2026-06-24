@@ -987,6 +987,48 @@ export interface BackendSettings {
   }>;
 }
 
+export interface BackendCommercePlanStatus {
+  plan: "free" | "pro" | "team";
+  remote_desktop_enabled: boolean;
+  features: Record<string, boolean>;
+  high_risk_features: string[];
+}
+
+export interface BackendCommerceLicenseStatus {
+  state: "absent" | "active" | "expired" | "invalid" | "verifier_unconfigured";
+  present: boolean;
+  active: boolean;
+  expired: boolean;
+  verifier_configured: boolean;
+  managed_by?: "environment" | "file" | null;
+  plan?: "free" | "pro" | "team";
+  subject?: string;
+  seats?: number;
+  issued_at?: string | null;
+  expires_at?: string | null;
+  error_code?: string;
+}
+
+export interface BackendCommerceQuotaStatus {
+  plan: "free" | "pro" | "team";
+  enforced: boolean;
+  unlimited: boolean;
+  window_hours: number;
+  limits: {
+    total_tokens: number | null;
+    calls: number | null;
+    total_cost_usd: number | null;
+  };
+  usage?: {
+    calls: number;
+    total_tokens: number;
+    total_cost_usd: number;
+    window_hours: number;
+    last_event_at?: string;
+  } | null;
+  exceeded: string[];
+}
+
 export interface SensitiveChangeConfirmation {
   required?: boolean;
   nonce?: string;
@@ -1720,4 +1762,3 @@ export interface BackendCommandExecutionResult {
   error?: string;
   next_action?: string;
 }
-

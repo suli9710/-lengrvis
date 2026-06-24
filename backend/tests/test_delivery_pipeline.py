@@ -36,6 +36,7 @@ def test_default_stages_order_and_membership():
     stages = mod.default_stages(strict=False)
     names = [s.name for s in stages]
     assert names[0] == "qa-gate"
+    assert "market-readiness" in names
     assert "readiness" in names
     assert names[-1] == "evidence"
     # Evidence is the only optional stage by default.
@@ -46,11 +47,15 @@ def test_default_stages_order_and_membership():
 def test_strict_adds_strict_flag_to_readiness():
     readiness = next(s for s in mod.default_stages(strict=True) if s.name == "readiness")
     assert "--strict" in readiness.command
+    market = next(s for s in mod.default_stages(strict=True) if s.name == "market-readiness")
+    assert "--strict" in market.command
 
 
 def test_non_strict_readiness_has_no_strict_flag():
     readiness = next(s for s in mod.default_stages(strict=False) if s.name == "readiness")
     assert "--strict" not in readiness.command
+    market = next(s for s in mod.default_stages(strict=False) if s.name == "market-readiness")
+    assert "--strict" not in market.command
 
 
 def test_build_plan_shape():

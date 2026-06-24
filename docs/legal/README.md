@@ -19,9 +19,13 @@
 | PIPL/GDPR 自查清单 | `docs/compliance/pipl-gdpr-checklist.md` | 内部 | 维护中 | n/a |
 | 认证路线（SOC 2 / ISO 27001） | `docs/compliance/certification-roadmap.md` | 内部/采购方 | 规划 | n/a |
 
-**运营主体**：cow milk（个人开发者，后续注册公司将自动继承）  
-**联系邮箱**：mcow04717@gmail.com  
+**候选运营主体**：cow milk（个人开发者；不是已确认的商业签约主体）
+
+**候选联系邮箱**：mcow04717@gmail.com（商业发布前需替换或确认独立的法律、隐私与支持渠道）
+
 **适用法域**：中华人民共和国（PIPL）、欧盟（GDPR）、美国加州（CCPA/CPRA）
+
+商业收款与公开付费发布还必须通过 `docs/business/market-readiness.md`；工程发布门禁、法务草案和商业运营门禁缺一不可。
 
 ## 2. 法务发布门禁（Release Gate）
 

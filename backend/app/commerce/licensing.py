@@ -22,8 +22,10 @@ import binascii
 import json
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -39,6 +41,7 @@ LICENSE_KEY_ENV_VAR = "LENGRVIS_LICENSE_KEY"
 LICENSE_PUBLIC_KEY_ENV_VAR = "LENGRVIS_LICENSE_PUBLIC_KEY"
 LICENSE_SIGNING_KEY_ENV_VAR = "LENGRVIS_LICENSE_SIGNING_KEY"  # Deprecated HMAC-era name; ignored by runtime load.
 LICENSE_FILE_NAME = "license.key"
+MAX_LICENSE_TOKEN_BYTES = 64 * 1024
 
 
 class LicenseError(AppError):
@@ -65,6 +68,26 @@ class License:
 
     def is_active(self, *, now: datetime | None = None) -> bool:
         return not self.is_expired(now=now)
+
+
+def _license_file_path(settings: Any | None) -> Path | None:
+    data_dir = getattr(settings, "data_dir", "") if settings is not None else ""
+    if not data_dir:
+        return None
+    return Path(str(data_dir)).expanduser().resolve() / LICENSE_FILE_NAME
+
+
+def _license_token_with_source(settings: Any | None) -> tuple[str, str | None]:
+    env_token = os.getenv(LICENSE_KEY_ENV_VAR)
+    if env_token and env_token.strip():
+        return env_token.strip(), "environment"
+    path = _license_file_path(settings)
+    if path is None:
+        return "", None
+    try:
+        return path.read_text(encoding="utf-8").strip(), "file"
+    except OSError:
+        return "", None
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -187,22 +210,88 @@ def verify_license(token: str, public_key: str, *, now: datetime | None = None) 
 
 
 def _read_license_token(settings: Any | None) -> str:
-    env_token = os.getenv(LICENSE_KEY_ENV_VAR)
-    if env_token and env_token.strip():
-        return env_token.strip()
-    data_dir = getattr(settings, "data_dir", "") if settings is not None else ""
-    if data_dir:
-        path = os.path.join(str(data_dir), LICENSE_FILE_NAME)
-        try:
-            with open(path, encoding="utf-8") as handle:
-                return handle.read().strip()
-        except OSError:
-            return ""
-    return ""
+    return _license_token_with_source(settings)[0]
 
 
 def _read_public_key() -> str:
     return (os.getenv(LICENSE_PUBLIC_KEY_ENV_VAR) or "").strip()
+
+
+def license_status(settings: Any | None = None, *, now: datetime | None = None) -> dict[str, Any]:
+    """Return a renderer-safe diagnosis without exposing the token or verifier."""
+    token, source = _license_token_with_source(settings)
+    public_key = _read_public_key()
+    base: dict[str, Any] = {
+        "state": "absent",
+        "present": bool(token),
+        "active": False,
+        "expired": False,
+        "verifier_configured": bool(public_key),
+        "managed_by": source,
+    }
+    if not token:
+        return base
+    if not public_key:
+        return {**base, "state": "verifier_unconfigured", "error_code": "license_public_key_missing"}
+    try:
+        license_ = parse_license(token, public_key)
+    except LicenseError as exc:
+        return {**base, "state": "invalid", "error_code": exc.code}
+    expired = license_.is_expired(now=now)
+    return {
+        **base,
+        "state": "expired" if expired else "active",
+        "active": not expired,
+        "expired": expired,
+        "plan": license_.plan.value,
+        "subject": license_.subject,
+        "seats": license_.seats,
+        "issued_at": license_.issued_at.isoformat() if license_.issued_at else None,
+        "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
+    }
+
+
+def install_license(token: str, settings: Any, *, now: datetime | None = None) -> License:
+    """Verify and atomically persist a locally imported offline license."""
+    if os.getenv(LICENSE_KEY_ENV_VAR, "").strip():
+        raise LicenseError(
+            "The active license is managed by deployment configuration and cannot be replaced in the app.",
+            code="license_managed_externally",
+            status_code=409,
+        )
+    normalized = str(token or "").strip()
+    if not normalized:
+        raise LicenseError("License token is empty")
+    if len(normalized.encode("utf-8")) > MAX_LICENSE_TOKEN_BYTES:
+        raise LicenseError("License token is too large", code="license_token_too_large", status_code=413)
+    license_ = verify_license(normalized, _read_public_key(), now=now)
+    path = _license_file_path(settings)
+    if path is None:
+        raise LicenseError(
+            "License storage directory is unavailable", code="license_storage_unavailable", status_code=503
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: str | None = None
+    try:
+        descriptor, temp_path = tempfile.mkstemp(prefix=f".{LICENSE_FILE_NAME}.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(normalized)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+            temp_path = None
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+    except OSError as exc:
+        raise LicenseError("Unable to store the license", code="license_storage_failed", status_code=503) from exc
+    return license_
 
 
 def load_license(settings: Any | None = None, *, now: datetime | None = None) -> License | None:

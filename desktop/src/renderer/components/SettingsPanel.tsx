@@ -173,6 +173,9 @@ const PairingVisualCode = lazy(() =>
 const HardwareAccelerationCard = lazy(() =>
   import("./settings/HardwareAccelerationCard").then((module) => ({ default: module.HardwareAccelerationCard }))
 );
+const CommercePanel = lazy(() =>
+  import("./settings/CommercePanel").then((module) => ({ default: module.CommercePanel }))
+);
 
 export function SettingsPanel({
   settings,
@@ -699,6 +702,9 @@ export function SettingsPanel({
             ) : null}
           </div>
         </fieldset>
+        <Suspense fallback={<div className="commerce-settings commerce-settings--loading settings-grid__full">正在读取套餐与授权...</div>}>
+          <CommercePanel api={api} />
+        </Suspense>
         {draft.mode === "privacy" || draft.mode === "hybrid" ? (
           <div
             ref={privacyEntryRef}

@@ -5,7 +5,7 @@ Runs the real delivery chain in order and emits a single machine-readable
 verdict that other tooling and the release owner can trust:
 
     qa-gate -> supply-chain -> security-extensions -> release-safety
-             -> readiness -> evidence
+             -> market-readiness -> readiness -> evidence
 
 Design notes:
 - Pure helpers (default_stages, build_plan, aggregate_verdict) carry the policy
@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import List, Optional
 
 DASHBOARD = "docs/release/release-readiness-dashboard.md"
+MARKET_DASHBOARD = "docs/business/market-readiness.md"
 
 
 @dataclass(frozen=True)
@@ -63,13 +64,21 @@ def default_stages(*, strict: bool) -> List[Stage]:
         "--dashboard",
         DASHBOARD,
     ]
+    market_readiness_cmd = [
+        sys.executable,
+        "scripts/check_market_readiness.py",
+        "--dashboard",
+        MARKET_DASHBOARD,
+    ]
     if strict:
         readiness_cmd.append("--strict")
+        market_readiness_cmd.append("--strict")
     return [
         Stage("qa-gate", ["npm", "run", "qa:gate"], True, "Tests, typecheck, desktop smoke"),
         Stage("supply-chain", ["npm", "run", "supply-chain:verify"], True, "Dependency locks + SBOM"),
         Stage("security-extensions", ["npm", "run", "security:extensions"], True, "Extension/skill security gate"),
         Stage("release-safety", ["npm", "run", "release:safety"], True, "Release safety checks"),
+        Stage("market-readiness", market_readiness_cmd, True, "Commercial launch dashboard validation"),
         Stage("readiness", readiness_cmd, True, "Release readiness dashboard validation"),
         Stage("evidence", ["npm", "run", "evidence:release"], False, "Collect release evidence packet"),
     ]

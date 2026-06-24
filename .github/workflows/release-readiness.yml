@@ -25,6 +25,11 @@ jobs:
           python scripts/check_release_readiness_dashboard.py \
             --dashboard docs/release/release-readiness-dashboard.md
 
+      - name: Validate market readiness dashboard (non-strict)
+        run: |
+          python scripts/check_market_readiness.py \
+            --dashboard docs/business/market-readiness.md
+
       - name: Show delivery pipeline plan
         run: |
           python scripts/delivery_pipeline.py --plan-only
@@ -37,4 +42,11 @@ jobs:
         run: |
           python scripts/check_release_readiness_dashboard.py \
             --dashboard docs/release/release-readiness-dashboard.md \
+            --strict
+
+      - name: Strict market readiness (informational until RC)
+        continue-on-error: true
+        run: |
+          python scripts/check_market_readiness.py \
+            --dashboard docs/business/market-readiness.md \
             --strict

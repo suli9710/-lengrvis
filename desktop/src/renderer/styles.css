@@ -11091,3 +11091,133 @@ select:focus-visible,
     flex-direction: column-reverse;
   }
 }
+
+.commerce-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.commerce-settings--loading {
+  min-height: 96px;
+  place-items: center;
+  color: var(--muted);
+}
+
+.commerce-settings__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.commerce-settings__header > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.commerce-settings__header strong {
+  font-size: 18px;
+}
+
+.commerce-settings__header small,
+.commerce-settings__eyebrow {
+  color: var(--muted);
+}
+
+.commerce-settings__eyebrow {
+  font-size: 12px;
+}
+
+.commerce-settings__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.commerce-settings__file {
+  display: none;
+}
+
+.commerce-settings__features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.commerce-settings__features > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  font-size: 12px;
+}
+
+.commerce-settings__features svg {
+  color: var(--green);
+}
+
+.commerce-settings__features em {
+  color: var(--amber);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.commerce-settings__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.commerce-settings__facts > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.commerce-settings__facts > span + span {
+  border-left: 1px solid var(--line);
+}
+
+.commerce-settings__facts small {
+  color: var(--muted);
+}
+
+.commerce-settings__facts strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.commerce-settings__warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  color: var(--amber);
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .commerce-settings__header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .commerce-settings__actions {
+    justify-content: flex-start;
+  }
+
+  .commerce-settings__facts {
+    grid-template-columns: 1fr;
+  }
+
+  .commerce-settings__facts > span + span {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+}

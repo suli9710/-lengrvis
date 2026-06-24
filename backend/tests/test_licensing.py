@@ -10,10 +10,13 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from app.api import routes_commerce
 from app.commerce.entitlements import Plan
 from app.commerce.licensing import (
     LicenseError,
     apply_licensed_plan,
+    install_license,
+    license_status,
     load_license,
     parse_license,
     resolve_licensed_plan,
@@ -140,3 +143,98 @@ def test_apply_plan_noop_without_license(monkeypatch: pytest.MonkeyPatch) -> Non
 
     settings = _S()
     assert apply_licensed_plan(settings) is settings
+
+
+def test_install_license_verifies_and_persists_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    token = _make_token(plan="pro", seats=1)
+    installed = install_license(token, _S())
+
+    assert installed.plan is Plan.PRO
+    assert (tmp_path / "license.key").read_text(encoding="utf-8").strip() == token
+    status = license_status(_S())
+    assert status["state"] == "active"
+    assert status["managed_by"] == "file"
+    assert status["plan"] == "pro"
+    assert status["seats"] == 1
+
+
+def test_install_license_rejects_invalid_token_without_overwriting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    existing = tmp_path / "license.key"
+    existing.write_text(_make_token(plan="pro"), encoding="utf-8")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    with pytest.raises(LicenseError):
+        install_license("invalid.token", _S())
+
+    assert license_status(_S())["state"] == "active"
+    assert existing.read_text(encoding="utf-8").strip() != "invalid.token"
+
+
+def test_install_license_refuses_environment_managed_license(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_LICENSE_KEY", _make_token(plan="team"))
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(_make_token(plan="pro"), _S())
+
+    assert excinfo.value.code == "license_managed_externally"
+    assert license_status(_S())["managed_by"] == "environment"
+
+
+def test_commerce_api_import_records_audit_and_returns_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+
+    class _S:
+        data_dir = str(tmp_path)
+        plan = "free"
+
+    audit_events: list[tuple[str, str, dict[str, object]]] = []
+    invalidations: list[bool] = []
+    monkeypatch.setattr(routes_commerce, "get_effective_settings", lambda: _S())
+    monkeypatch.setattr(
+        routes_commerce.audit_core,
+        "record",
+        lambda event_type, actor, payload: audit_events.append((event_type, actor, payload)),
+    )
+    monkeypatch.setattr(routes_commerce, "invalidate_settings_cache", lambda: invalidations.append(True))
+
+    response = routes_commerce.commerce_license_install(
+        routes_commerce.LicenseInstallRequest(token=_make_token(plan="pro", seats=1))
+    )
+
+    assert response["state"] == "active"
+    assert response["plan"] == "pro"
+    assert audit_events == [
+        (
+            "commerce.license.installed",
+            "desktop",
+            {"plan": "pro", "subject": "ACME", "seats": 1, "expires_at": None},
+        )
+    ]
+    assert invalidations == [True]

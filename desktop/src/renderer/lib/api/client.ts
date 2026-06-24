@@ -29,6 +29,10 @@ import type {
   CleanupPlanRequest,
   CleanupRollbackRequest,
   CleanupScanRequest,
+  CommerceFeature,
+  CommerceLicenseStatus,
+  CommercePlanStatus,
+  CommerceQuotaStatus,
   ContextUsage,
   DesktopWebSocketSubscribeRequest,
   DiagnosticExportResult,
@@ -97,7 +101,7 @@ import {
 } from "../zh";
 import { FALLBACK_BACKEND_URL, emitRendererApiRequestEvent, getBackendBaseUrl, mapResponse, rendererBatchControllers, requestBackendDirect, subscribeJsonRealtime } from "./transport";
 import type { JsonRealtimeHandlers, LocalModelInstallRequest, LocalModelInstallResponse, OllamaActionResponse } from "./transport";
-import type { BackendAgentMessage, BackendApproval, BackendAppsResponse, BackendAuditEvent, BackendBrowserActivityEnvelope, BackendBrowserEvents, BackendBrowserLinks, BackendBrowserPage, BackendBrowserReplayExport, BackendBrowserSessionStreamEvent, BackendBrowserSessions, BackendChatMessage, BackendChatRequest, BackendChatResponse, BackendCleanupExecuteRequest, BackendCleanupExecutionResult, BackendCleanupPlan, BackendCleanupPlanRequest, BackendCleanupRollbackRequest, BackendCleanupScanRequest, BackendClusterRequest, BackendClusterResponse, BackendCommandExecutionResult, BackendCommandsResponse, BackendContextUsage, BackendDiagnosticExportResult, BackendDocumentAskRequest, BackendDocumentAskResponse, BackendDocumentCompareRequest, BackendDocumentCompareResponse, BackendDocumentIR, BackendDocumentParseRequest, BackendFileRevealResult, BackendFileSearchResponse, BackendHardwareAccelerationSmoke, BackendHardwareAccelerationStatus, BackendIntentSuggestion, BackendLlmCostSummary, BackendLlmHealth, BackendLlmProfileResponse, BackendLocalLibraryResponse, BackendLocalLlmHealth, BackendLocalMetrics, BackendLocalModelSetupPlan, BackendMemory, BackendPermissionPolicy, BackendPermissionRule, BackendPlan, BackendProcessesResponse, BackendRunCreateRequest, BackendRunCreateResponse, BackendRunState, BackendRunStreamEvent, BackendRunTimeline, BackendSafetyReview, BackendScheduledTask, BackendSettings, BackendSkillImportResult, BackendSkillRefresh, BackendSkillsCatalog, BackendStartupResponse, BackendSuggestionLaunchRequest, BackendSuggestionLaunchResponse, BackendSystemDiagnostics, BackendSystemInfo, BackendTask, BackendTaskArtifacts, BackendTaskExplain, BackendTaskStreamEvent, BackendTimeline, BrowserReplayExport, FileClusterOptions, HardwareAccelerationSmokeRequest, HardwareAccelerationSmokeRequestBody, MobileDevice, MobileDeviceList, MobilePairingCode, RemoteInputGrant, RemoteInputGrantIssueResult, SensitiveChangeConfirmation } from "./backendTypes";
+import type { BackendAgentMessage, BackendApproval, BackendAppsResponse, BackendAuditEvent, BackendBrowserActivityEnvelope, BackendBrowserEvents, BackendBrowserLinks, BackendBrowserPage, BackendBrowserReplayExport, BackendBrowserSessionStreamEvent, BackendBrowserSessions, BackendChatMessage, BackendChatRequest, BackendChatResponse, BackendCleanupExecuteRequest, BackendCleanupExecutionResult, BackendCleanupPlan, BackendCleanupPlanRequest, BackendCleanupRollbackRequest, BackendCleanupScanRequest, BackendClusterRequest, BackendClusterResponse, BackendCommandExecutionResult, BackendCommandsResponse, BackendCommerceLicenseStatus, BackendCommercePlanStatus, BackendCommerceQuotaStatus, BackendContextUsage, BackendDiagnosticExportResult, BackendDocumentAskRequest, BackendDocumentAskResponse, BackendDocumentCompareRequest, BackendDocumentCompareResponse, BackendDocumentIR, BackendDocumentParseRequest, BackendFileRevealResult, BackendFileSearchResponse, BackendHardwareAccelerationSmoke, BackendHardwareAccelerationStatus, BackendIntentSuggestion, BackendLlmCostSummary, BackendLlmHealth, BackendLlmProfileResponse, BackendLocalLibraryResponse, BackendLocalLlmHealth, BackendLocalMetrics, BackendLocalModelSetupPlan, BackendMemory, BackendPermissionPolicy, BackendPermissionRule, BackendPlan, BackendProcessesResponse, BackendRunCreateRequest, BackendRunCreateResponse, BackendRunState, BackendRunStreamEvent, BackendRunTimeline, BackendSafetyReview, BackendScheduledTask, BackendSettings, BackendSkillImportResult, BackendSkillRefresh, BackendSkillsCatalog, BackendStartupResponse, BackendSuggestionLaunchRequest, BackendSuggestionLaunchResponse, BackendSystemDiagnostics, BackendSystemInfo, BackendTask, BackendTaskArtifacts, BackendTaskExplain, BackendTaskStreamEvent, BackendTimeline, BrowserReplayExport, FileClusterOptions, HardwareAccelerationSmokeRequest, HardwareAccelerationSmokeRequestBody, MobileDevice, MobileDeviceList, MobilePairingCode, RemoteInputGrant, RemoteInputGrantIssueResult, SensitiveChangeConfirmation } from "./backendTypes";
 import { agentNameFor, cleanupPlanFromTimeline, cleanupScanRequestFor, compactLocalModelRequest, emptyBrowserHostSnapshot, emptyPlan, emptySafetyReview, hasRunTimelineEvents, latestRunState, mapAgentKind, mapApproval, mapBoundaryEvents, mapBrowserActivityEnvelope, mapBrowserActivityEvent, mapBrowserLink, mapBrowserPage, mapBrowserReplayExport, mapBrowserSession, mapChatMessage, mapCleanupExecutionResult, mapCleanupPlan, mapCommandExecutionResult, mapCommandInfo, mapContextUsage, mapDiagnostic, mapDiagnosticExportResult, mapDocumentAskResponse, mapDocumentCompareResponse, mapDocumentIR, mapFileRevealResult, mapHardwareAccelerationSmoke, mapHardwareAccelerationStatus, mapIndexStatus, mapInstalledApp, mapIntentSuggestion, mapLlmCostSummary, mapLlmHealth, mapLlmProfile, mapLocalLibraryResponse, mapLocalLlmHealth, mapLocalModelSetupPlan, mapProcess, mapRiskSeverity, mapRunConversation, mapRunPlan, mapRunTaskEvent, mapSettings, mapSkillImportResult, mapSkillsCatalog, mapStartupItem, mapSuggestionLaunchResponse, mapTaskEvent, mapTaskExplain, mapTaskRecordings, mapTaskState, mergeBrowserSessionArrays, mergeDesktopOnlySettings, metadataPayloadFor, numberOrZero, runEngineAgentName, settingsPatchFor } from "./mappers";
 
 export class LengrvisApiClient {
@@ -153,6 +157,32 @@ export class LengrvisApiClient {
       };
     }
     return window.lengrvis.backend.getStatus();
+  }
+
+  async getCommercePlan(): Promise<ApiResponse<CommercePlanStatus>> {
+    return this.request<BackendCommercePlanStatus>({ endpoint: "/api/commerce/plan" }).then((response) =>
+      mapResponse(response, mapCommercePlanStatus)
+    );
+  }
+
+  async getCommerceLicense(): Promise<ApiResponse<CommerceLicenseStatus>> {
+    return this.request<BackendCommerceLicenseStatus>({ endpoint: "/api/commerce/license" }).then((response) =>
+      mapResponse(response, mapCommerceLicenseStatus)
+    );
+  }
+
+  async getCommerceQuota(): Promise<ApiResponse<CommerceQuotaStatus>> {
+    return this.request<BackendCommerceQuotaStatus>({ endpoint: "/api/commerce/usage/quota" }).then((response) =>
+      mapResponse(response, mapCommerceQuotaStatus)
+    );
+  }
+
+  async installCommerceLicense(token: string): Promise<ApiResponse<CommerceLicenseStatus>> {
+    return this.request<BackendCommerceLicenseStatus, { token: string }>({
+      endpoint: "/api/commerce/license/install",
+      method: "POST",
+      body: { token }
+    }).then((response) => mapResponse(response, mapCommerceLicenseStatus));
   }
 
   async probeBackendHealth(baseUrl?: string): Promise<BackendStatus | null> {
@@ -1598,4 +1628,54 @@ export class LengrvisApiClient {
       }))
     );
   }
+}
+
+function mapCommercePlanStatus(data: BackendCommercePlanStatus): CommercePlanStatus {
+  return {
+    plan: data.plan,
+    remoteDesktopEnabled: Boolean(data.remote_desktop_enabled),
+    features: data.features as Record<CommerceFeature, boolean>,
+    highRiskFeatures: data.high_risk_features as CommerceFeature[]
+  };
+}
+
+function mapCommerceLicenseStatus(data: BackendCommerceLicenseStatus): CommerceLicenseStatus {
+  return {
+    state: data.state,
+    present: Boolean(data.present),
+    active: Boolean(data.active),
+    expired: Boolean(data.expired),
+    verifierConfigured: Boolean(data.verifier_configured),
+    managedBy: data.managed_by ?? undefined,
+    plan: data.plan,
+    subject: data.subject || undefined,
+    seats: data.seats,
+    issuedAt: data.issued_at ?? undefined,
+    expiresAt: data.expires_at ?? undefined,
+    errorCode: data.error_code
+  };
+}
+
+function mapCommerceQuotaStatus(data: BackendCommerceQuotaStatus): CommerceQuotaStatus {
+  return {
+    plan: data.plan,
+    enforced: Boolean(data.enforced),
+    unlimited: Boolean(data.unlimited),
+    windowHours: Number(data.window_hours || 0),
+    limits: {
+      totalTokens: data.limits.total_tokens,
+      calls: data.limits.calls,
+      totalCostUsd: data.limits.total_cost_usd
+    },
+    usage: data.usage
+      ? {
+          calls: Number(data.usage.calls || 0),
+          totalTokens: Number(data.usage.total_tokens || 0),
+          totalCostUsd: Number(data.usage.total_cost_usd || 0),
+          windowHours: Number(data.usage.window_hours || data.window_hours || 0),
+          lastEventAt: data.usage.last_event_at || undefined
+        }
+      : undefined,
+    exceeded: Array.isArray(data.exceeded) ? data.exceeded.map(String) : []
+  };
 }

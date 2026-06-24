@@ -2,6 +2,7 @@
 
 > 本文档定义 lengrvis 的商业化套餐分层、各档能力边界，以及高风险能力（手机远控）与付费层 + 强审批的绑定关系。
 > 套餐通过环境变量 `LENGRVIS_PLAN`（`free` / `pro` / `team`）选择，后端以 feature gating 落地（见 `backend/app/commerce/entitlements.py`）。
+> 状态：内部产品与技术基线，不构成公开报价或购买要约。价格、税务、支付渠道和合同条款在 `docs/business/market-readiness.md` 清零前不得对外承诺。
 
 ## 1. 套餐总览
 
@@ -47,12 +48,15 @@ LENGRVIS_PLAN=free   # free | pro | team
 - 套餐属于部署 / 授权属性，来源以环境变量 `LENGRVIS_PLAN` 为准。
 - 取值大小写不敏感，并接受常见别名（如 `professional`→pro、`team-self-hosted` / `enterprise`→team）；无法识别时回退到 `free`。
 - 在代码中通过 `app.commerce.entitlements` 判定：`has_feature(plan, feature)` 做布尔判定，`require_feature(plan, feature)` 在未准入时抛出 `EntitlementError`（HTTP 402）。
+- 桌面“设置 → 套餐与授权”会显示当前套餐、已启用能力、云端额度、授权主体和到期时间。
+- 官方签发的 Ed25519 离线许可证可从该入口导入；导入前会验签和校验有效期，成功后原子写入本机数据目录。组织通过环境变量管理的许可证不能被桌面覆盖。
 
 ## 5. 后续路线 (Roadmap)
 
 以下为本次未实现、建议后续迭代的能力：
 
-- 将 `plan` 正式纳入 `AppSettings` 与设置 API（当前仅经环境变量读取）。
-- 用量配额（云端额度 `cloud_quota` 的计量与限流）。
-- 许可证密钥：离线 Ed25519 公钥验签已落地；在线激活、吊销同步与完整到期管理仍待实现。
+- 套餐与许可证状态 API、桌面可见入口和离线 Ed25519 导入已落地。
+- 云端用量计量与可选强制限流已落地；正式套餐额度仍需与真实托管成本和支付账单对齐。
+- 在线激活、设备迁移、吊销同步、退款后自动降级和完整订阅生命周期仍待实现。
+- 支付、税务、发票、订单、续费通知和客服工单尚未接入。
 - 审计导出与策略管控（Team 档）的具体落地。

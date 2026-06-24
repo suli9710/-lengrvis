@@ -148,6 +148,64 @@ export interface BackendStatus {
   };
 }
 
+export type CommercePlan = "free" | "pro" | "team";
+
+export type CommerceFeature =
+  | "local_read_only"
+  | "basic_tasks"
+  | "cloud_quota"
+  | "document_ai"
+  | "scheduling"
+  | "remote_view"
+  | "remote_control"
+  | "audit_export"
+  | "policy_management"
+  | "private_deployment";
+
+export interface CommercePlanStatus {
+  plan: CommercePlan;
+  remoteDesktopEnabled: boolean;
+  features: Record<CommerceFeature, boolean>;
+  highRiskFeatures: CommerceFeature[];
+}
+
+export type CommerceLicenseState = "absent" | "active" | "expired" | "invalid" | "verifier_unconfigured";
+
+export interface CommerceLicenseStatus {
+  state: CommerceLicenseState;
+  present: boolean;
+  active: boolean;
+  expired: boolean;
+  verifierConfigured: boolean;
+  managedBy?: "environment" | "file";
+  plan?: CommercePlan;
+  subject?: string;
+  seats?: number;
+  issuedAt?: string;
+  expiresAt?: string;
+  errorCode?: string;
+}
+
+export interface CommerceQuotaStatus {
+  plan: CommercePlan;
+  enforced: boolean;
+  unlimited: boolean;
+  windowHours: number;
+  limits: {
+    totalTokens: number | null;
+    calls: number | null;
+    totalCostUsd: number | null;
+  };
+  usage?: {
+    calls: number;
+    totalTokens: number;
+    totalCostUsd: number;
+    windowHours: number;
+    lastEventAt?: string;
+  };
+  exceeded: string[];
+}
+
 export interface LocalLLMBackend {
   kind: string;
   baseUrl: string;

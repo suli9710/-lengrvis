@@ -4,6 +4,8 @@ This dashboard is the single fail-closed view for deciding whether a Lengrvis ca
 
 It intentionally distinguishes **machine evidence**, **manual evidence**, **waivers**, and **release-owner sign-off**. A helper or template output is not a pass until the matching evidence row is marked `passed` with an artifact label and owner.
 
+This dashboard covers engineering delivery. A paid or publicly advertised commercial launch must also pass `docs/business/market-readiness.md`; neither dashboard substitutes for the other.
+
 ## Current candidate
 
 | Field | Value |
@@ -48,6 +50,8 @@ npm run qa:gate
 npm run release:check
 npm run release:readiness
 npm run release:readiness:strict
+npm run market:readiness
+npm run market:readiness:strict
 ```
 
 Strict readiness is expected to fail until every P0 blocker is `passed` or has an explicit release-owner-approved `waived` row.

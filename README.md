@@ -32,6 +32,7 @@ Lengrvis 是一款 Windows 优先的本地 OS Agent（电脑助手）。用户�
 ## 普通用户配置与诊断入口
 
 - 配置 AI、隐私模式、本地模型、硬件加速和手机配对时，优先打开桌面窗口里的“设置”。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
+- “设置 → 套餐与授权”会展示当前 Free / Pro / Team 能力、云端额度、许可证主体与到期时间；官方离线许可证可直接导入并在本机验签。在线购买、订阅、退款自动降级和吊销同步尚未上线。
 - 删除本机个人数据：当前提供 API 入口 `POST /api/system/privacy/erase-local-data`（需显式确认词），会删除任务、对话、录屏、配对、索引与已导出诊断包，保留防篡改审计链并记录删除事件；桌面设置页按钮入口尚未提供。数据清单与合规自查见 `docs/compliance/pipl-gdpr-checklist.md`（法务定稿未完成，不得对外宣称合规）。
 - 应用能打开但任务异常时，打开“系统信息”。这里会显示桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明入口。
 - “刷新本机状态”只刷新当前安装版本、后端状态和诊断快照；当前没有完整在线自动更新、下载更新或自动安装更新通道。
@@ -264,6 +265,15 @@ npm run golden:gate
 npm run audit:deps
 ```
 
+市场化发布状态（非严格模式只校验结构并报告阻塞；严格模式在主体、支付、法务、授权运营或售后未闭环时失败）：
+
+```powershell
+npm run market:readiness
+npm run market:readiness:strict
+```
+
+商业套餐能力的唯一矩阵见 `docs/pricing.md`，付费上线阻塞项见 `docs/business/market-readiness.md`。工程 RC 通过不等于可以收款或公开承诺付费服务。
+
 依赖锁与 SBOM（Python transitive lock + desktop/mobile npm lock + CycloneDX JSON）：
 
 ```powershell
@@ -434,6 +444,10 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 - `GET /api/settings`、`POST /api/settings`
 - `POST /api/settings/test-llm-provider`、`GET /api/settings/local-llm/health`、`GET /api/settings/llm/health`
 
+套餐与授权：
+- `GET /api/commerce/plan`、`GET /api/commerce/license`、`GET /api/commerce/usage/quota`
+- `POST /api/commerce/license/install` — 验签并原子保存官方离线许可证；不会覆盖由部署环境管理的许可证
+
 扩展：
 - `GET /api/audit` — 审计日志
 - CRUD `/api/schedules` — 定时任务
@@ -462,6 +476,7 @@ Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` �
 - Windows GUI automation is implemented through UIAutomation COM, screenshots, window focus, semantic element lookup, and mouse/keyboard fallback input. Mutating GUI actions still require dry-run + user approval, and policy blocks credential, payment, one-time-code, and token text entry.
 - 手机端默认只读远程屏幕；远程屏幕令牌通过 WebSocket 子协议传递，并按 `remote:view` scope 校验。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的点击、文字和常用按键输入，并支持缩放/平移/横屏查看；批准 remote-input approval 前必须匹配当前手机 active grant，公开给手机和截图材料的是 HMAC 派生的 `binding_ref`/redacted active-grant label，raw `deviceId`/`grantId` 只可留在本地复现记录里；不完整/不匹配授权会被阻断。mobile/desktop remote-input smoke、source contract 与后端字段断言共同支撑真实设备前的契约证据，具体结果以 current release evidence 或对应 CI/test artifact 为准。真实手机/WSS 弱网、锁屏、后台、错误态截图、证书信任路径、键盘弹出/横竖屏可用性和 artifact redaction review 仍需补证据。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
+- 付费商业闭环尚未完成：没有在线 checkout、订单/税务/发票、订阅续费、退款后自动降级、许可证吊销同步或正式客服工单系统；在 `market:readiness:strict` 通过前不得对外收款或宣称付费套餐已正式可用。
 
 ## Phase 5 AI OS Loop
 

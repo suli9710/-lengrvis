@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Query
+from pydantic import BaseModel, Field
 
 from app.commerce.entitlements import (
     Feature,
@@ -22,10 +23,11 @@ from app.commerce.entitlements import (
     is_high_risk,
     require_feature,
 )
-from app.commerce.licensing import load_license
+from app.commerce.licensing import install_license, license_status
 from app.commerce.usage import quota_status
+from app.core import audit as audit_core
 from app.core import db
-from app.llm.registry import get_effective_settings
+from app.llm.registry import get_effective_settings, invalidate_settings_cache
 from app.policy.permissions import PermissionPolicy, PermissionStore
 from app.policy.redaction import redact_audit_payload
 from app.security.sensitive_confirmation import (
@@ -33,8 +35,11 @@ from app.security.sensitive_confirmation import (
     require_permission_policy_confirmation,
 )
 
-
 router = APIRouter()
+
+
+class LicenseInstallRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=65536)
 
 
 @router.get("/commerce/plan")
@@ -51,19 +56,25 @@ def commerce_plan() -> dict[str, Any]:
 
 @router.get("/commerce/license")
 def commerce_license() -> dict[str, Any]:
-    license_ = load_license(get_effective_settings())
-    if license_ is None:
-        return {"present": False, "active": False}
-    return {
-        "present": True,
-        "active": license_.is_active(),
-        "expired": license_.is_expired(),
-        "plan": license_.plan.value,
-        "subject": license_.subject,
-        "seats": license_.seats,
-        "issued_at": license_.issued_at.isoformat() if license_.issued_at else None,
-        "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
-    }
+    return license_status(get_effective_settings())
+
+
+@router.post("/commerce/license/install")
+def commerce_license_install(payload: LicenseInstallRequest) -> dict[str, Any]:
+    settings = get_effective_settings()
+    license_ = install_license(payload.token, settings)
+    audit_core.record(
+        "commerce.license.installed",
+        "desktop",
+        {
+            "plan": license_.plan.value,
+            "subject": license_.subject,
+            "seats": license_.seats,
+            "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
+        },
+    )
+    invalidate_settings_cache()
+    return license_status(settings)
 
 
 @router.get("/commerce/usage/quota")

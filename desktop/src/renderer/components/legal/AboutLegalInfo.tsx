@@ -51,7 +51,7 @@ export function AboutLegalInfo({ appVersion }: AboutLegalProps) {
       setDocContent(content);
       setActiveDoc(docId);
     } catch {
-      setError(`\u65e0\u6cd5\u52a0\u8f7d$ {LEGAL_DOC_LABELS[docId]}`);
+      setError(`\u65e0\u6cd5\u52a0\u8f7d ${LEGAL_DOC_LABELS[docId]}`);
     } finally {
       setLoadingDoc(null);
     }
