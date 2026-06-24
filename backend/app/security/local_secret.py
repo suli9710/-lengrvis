@@ -200,6 +200,11 @@ def load_or_create_local_secret(path: Path, *, unavailable_message: str) -> str:
                     return _dpapi_unprotect(stored)
                 except Exception as exc:  # noqa: BLE001
                     raise RuntimeError(unavailable_message) from exc
+            if stored.startswith(LOCAL_SECRET_KEYRING_PREFIX):
+                try:
+                    return _keyring_read(stored)
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(unavailable_message) from exc
             if stored:
                 if _secure_storage_available():
                     try:

@@ -19,7 +19,12 @@ from app.security.desktop_api import (
     desktop_api_token,
     signed_desktop_resource_query,
 )
-from app.security.local_secret import LOCAL_SECRET_DPAPI_PREFIX, dpapi_available
+from app.security.local_secret import (
+    LOCAL_SECRET_DPAPI_PREFIX,
+    LOCAL_SECRET_KEYRING_PREFIX,
+    dpapi_available,
+    keyring_available,
+)
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
     REMOTE_VIEW_SCOPE,
@@ -30,7 +35,7 @@ from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import mobile_pairing_service
 from app.services.settings_service import update_settings
 
-DESKTOP_SECRET = "desktop-secret"
+DESKTOP_SECRET = "desktop-secret"  # noqa: S105 - deterministic test credential.
 
 
 def _enable_lan_tls(monkeypatch, tmp_path) -> None:
@@ -534,7 +539,7 @@ def test_remote_input_grant_creation_requires_desktop_token(monkeypatch, tmp_pat
     assert "token_type" not in payload
 
 
-def test_desktop_api_token_is_persisted_with_dpapi_when_available(monkeypatch, tmp_path):
+def test_desktop_api_token_is_persisted_with_secure_backend_when_available(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN", raising=False)
 
@@ -545,6 +550,9 @@ def test_desktop_api_token_is_persisted_with_dpapi_when_available(monkeypatch, t
     assert len(token) >= 32
     if dpapi_available():
         assert stored.startswith(LOCAL_SECRET_DPAPI_PREFIX)
+        assert token not in stored
+    elif keyring_available():
+        assert stored.startswith(LOCAL_SECRET_KEYRING_PREFIX)
         assert token not in stored
     else:
         assert stored == token

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core import db
 from app.core.audit import record
@@ -162,6 +162,9 @@ def test_audit_hmac_secret_is_generated_and_reused(monkeypatch, tmp_path):
     assert len(decrypted_secret) == 64
     if local_secret.dpapi_available():
         assert stored_secret.startswith(local_secret.LOCAL_SECRET_DPAPI_PREFIX)
+    elif local_secret.keyring_available():
+        assert stored_secret.startswith(local_secret.LOCAL_SECRET_KEYRING_PREFIX)
+        assert decrypted_secret not in stored_secret
     else:
         assert stored_secret == decrypted_secret
     assert first.hmac

@@ -52,6 +52,30 @@ def test_generated_secret_is_not_stored_in_plaintext_when_secure_backend_availab
     assert read_local_secret(secret_path) == value
 
 
+def test_keyring_reference_reloads_original_secret(monkeypatch, tmp_path: Path):
+    secret_path = tmp_path / "unit.secret"
+    keyring_values: dict[str, str] = {}
+
+    monkeypatch.setattr(local_secret, "dpapi_available", lambda: False)
+    monkeypatch.setattr(local_secret, "keyring_available", lambda: True)
+
+    def fake_store(path: Path, value: str) -> str:
+        account = f"fake:{path.name}"
+        keyring_values[account] = value
+        return LOCAL_SECRET_KEYRING_PREFIX + account
+
+    monkeypatch.setattr(local_secret, "_keyring_store", fake_store)
+    monkeypatch.setattr(local_secret, "_keyring_read", lambda stored: keyring_values[stored.split(":", 1)[1]])
+
+    first = load_or_create_local_secret(secret_path, unavailable_message="unavailable")
+    stored = secret_path.read_text(encoding="utf-8").strip()
+    second = load_or_create_local_secret(secret_path, unavailable_message="unavailable")
+
+    assert first == second
+    assert stored == LOCAL_SECRET_KEYRING_PREFIX + "fake:unit.secret"
+    assert secret_path.read_text(encoding="utf-8").strip() == stored
+
+
 def test_non_windows_without_keyring_fails_closed_outside_test(monkeypatch, tmp_path: Path):
     if dpapi_available():
         pytest.skip("DPAPI is the secure backend on Windows")
