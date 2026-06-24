@@ -78,26 +78,16 @@ def test_guardian_pairing_routes_are_single_sourced_from_routes_pair(monkeypatch
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
 
+    import app.guardian as guardian_module
     from app.api import routes_pair
 
-    pair_endpoints = {getattr(route, "endpoint", None) for route in routes_pair.router.routes}
-    pair_endpoints.discard(None)
-    app = create_guardian_app()
-    # Match by endpoint identity rather than by route.path string. include_router
-    # preserves the original endpoint function objects, while the exact stored
-    # representation of a prefixed route.path in app.routes varies across the
-    # Starlette/FastAPI versions resolved by the unpinned cross-platform job.
-    # Endpoint identity is the version-stable single-sourcing guarantee.
-    guardian_pair_routes = [route for route in app.routes if getattr(route, "endpoint", None) in pair_endpoints]
+    assert guardian_module.pair_router is routes_pair.router
 
-    assert guardian_pair_routes, "guardian must expose pairing endpoints"
-    for route in guardian_pair_routes:
-        assert route.endpoint in pair_endpoints, f"guardian route {route.path} is not the shared routes_pair handler"
-    # The shared pairing routes must be mounted under the /api prefix. Assert the
-    # prefix via the OpenAPI schema (FastAPI's stable public contract) instead of
-    # raw route.path string inspection, which is what regressed on POSIX.
-    pair_paths = [path for path in app.openapi()["paths"] if path.startswith("/api/pair")]
-    assert pair_paths, "guardian must expose pairing endpoints under /api"
+    app = guardian_module.create_guardian_app()
+    expected_pair_paths = {f"/api{route.path}" for route in routes_pair.router.routes}
+    actual_pair_paths = {path for path in app.openapi()["paths"] if path.startswith("/api/pair")}
+
+    assert actual_pair_paths == expected_pair_paths
 
 
 def test_guardian_rejects_remote_desktop_websocket_proxy(monkeypatch, tmp_path: Path):
