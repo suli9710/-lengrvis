@@ -68,10 +68,6 @@ def compact_boundary_view(messages: list[dict[str, Any]]) -> list[dict[str, Any]
     return [*protected_head, boundary, *tail_from_metadata, *tail_after_boundary]
 
 
-def _protected_head_end_unused() -> None:
-    return None
-
-
 def _latest_compact_boundary_index(messages: list[dict[str, Any]]) -> int | None:
     for index in range(len(messages) - 1, -1, -1):
         if _is_compact_boundary(messages[index]):
