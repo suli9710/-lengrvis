@@ -195,10 +195,7 @@ def require_attr(module: Any, attr_names: Iterable[str]) -> Any:
     for name in attr_names:
         if hasattr(module, name):
             return getattr(module, name)
-    pytest.skip(
-        f"{module.__name__} is present but none of these APIs exist: "
-        f"{', '.join(attr_names)}"
-    )
+    pytest.skip(f"{module.__name__} is present but none of these APIs exist: {', '.join(attr_names)}")
 
 
 def call_with_supported_kwargs(func: Callable[..., Any], **kwargs: Any) -> Any:
@@ -213,9 +210,7 @@ def call_with_supported_kwargs(func: Callable[..., Any], **kwargs: Any) -> Any:
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
         return func(**kwargs)
 
-    accepted = {
-        name: value for name, value in kwargs.items() if name in signature.parameters
-    }
+    accepted = {name: value for name, value in kwargs.items() if name in signature.parameters}
     return func(**accepted)
 
 
