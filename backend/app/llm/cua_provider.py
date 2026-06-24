@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
@@ -8,7 +8,6 @@ import httpx
 from app.config import AppSettings
 from app.llm.openai_compatible import normalize_openai_base_url
 from app.policy.redaction import redact_value
-
 
 DEFAULT_CUA_MODEL = "computer-use-preview"
 
@@ -18,8 +17,7 @@ class CUAUnavailable(RuntimeError):
 
 
 class _AsyncPostClient(Protocol):
-    async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> httpx.Response:
-        ...
+    async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> httpx.Response: ...
 
 
 @dataclass(slots=True)
@@ -50,7 +48,9 @@ class CUAProvider:
                 "model": self.model,
             }
         if not self.settings.api_key:
-            return _unavailable_result("CUA provider is unavailable because no API key is configured.", self.source, self.model)
+            return _unavailable_result(
+                "CUA provider is unavailable because no API key is configured.", self.source, self.model
+            )
         payload = self._payload(
             instruction=instruction,
             screenshot=screenshot,
@@ -101,7 +101,9 @@ class CUAProvider:
                 "reason": "CUA returned pending safety checks; user approval is required before continuing.",
             }
         if data.get("error"):
-            return _unavailable_result(f"CUA provider returned an error: {_error_message(data['error'])}", self.source, self.model)
+            return _unavailable_result(
+                f"CUA provider returned an error: {_error_message(data['error'])}", self.source, self.model
+            )
         status = str(data.get("status") or "")
         if status in {"failed", "cancelled", "incomplete"}:
             detail = data.get("incomplete_details") or data.get("error") or status
@@ -162,7 +164,10 @@ async def probe_cua_provider(provider: CUAProvider) -> dict[str, Any]:
         async with provider.client_factory(timeout=provider.settings.timeout) as client:
             response = await client.post(provider._responses_endpoint(), headers=provider._headers(), json=payload)
             if response.status_code in {400, 404, 422}:
-                return {"available": False, "reason": "Responses computer-use preview is not supported by this endpoint."}
+                return {
+                    "available": False,
+                    "reason": "Responses computer-use preview is not supported by this endpoint.",
+                }
             response.raise_for_status()
             data = response.json()
     except Exception as exc:  # noqa: BLE001
@@ -187,18 +192,19 @@ def _candidate_settings(settings: AppSettings, mode: str) -> list[tuple[str, App
 
 
 def _responses_settings(settings: AppSettings) -> AppSettings:
-    return replace(settings, wire_api="responses")
+    return settings.model_copy(update={"wire_api": "responses"})
 
 
 def _official_openai_settings(settings: AppSettings) -> AppSettings | None:
     if not settings.api_key:
         return None
-    return replace(
-        settings,
-        provider_name="openai",
-        base_url="https://api.openai.com/v1",
-        wire_api="responses",
-        requires_openai_auth=True,
+    return settings.model_copy(
+        update={
+            "provider_name": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "wire_api": "responses",
+            "requires_openai_auth": True,
+        }
     )
 
 

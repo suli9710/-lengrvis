@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import inspect
 import re
 from pathlib import Path
@@ -10,6 +9,7 @@ from pydantic import ValidationError
 
 from app.agents.base import BaseAgent
 from app.agents.path_detection import find_explicit_path
+from app.agents.worker_agents import normalize_supervisor_agent_hint
 from app.core.schemas import MessageType, Plan, PlanStep
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.mock_provider import MockProvider
@@ -17,7 +17,6 @@ from app.llm.prompts import load_prompt, render_prompt
 from app.llm.registry import get_effective_settings, get_provider
 from app.perception.storage import is_sensitive_context
 from app.policy.risk import RiskLevel, max_risk
-
 
 PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -93,8 +92,6 @@ PATH_SUFFIXES = (
     " 文件",
 )
 
-from app.agents.worker_agents import KNOWN_SUPERVISOR_WORKER_AGENTS, normalize_supervisor_agent_hint
-
 
 def supervisor_hint_allows_deterministic(agent_hint: str | None, owning_agent: str) -> bool:
     hint = normalize_supervisor_agent_hint(agent_hint)
@@ -119,6 +116,7 @@ def format_planner_revision_feedback_block(feedback: str | None) -> str:
     if not text:
         return ""
     return f"Planner revision feedback:\n{text}\n\n"
+
 
 # Context block truncation budgets (characters). Generous on purpose: the
 # planner runs against large-window models (C1 calibrated 128k+) and starved
@@ -282,7 +280,7 @@ class PlannerAgent(BaseAgent):
         return plan
 
     def _settings_for_mode(self, mode: str):
-        return dataclasses.replace(get_effective_settings(), mode=mode or "efficiency")
+        return get_effective_settings().model_copy(update={"mode": mode or "efficiency"})
 
     def _provider_for_settings(self, settings):
         try:
@@ -374,7 +372,9 @@ class PlannerAgent(BaseAgent):
             title = str(_context_value(app_context, "active_window_title") or "").strip()
             process = str(_context_value(app_context, "process_name") or "").strip()
             focused = _context_value(app_context, "focus_control", None)
-            focus_name = str(_context_value(focused, "name") or _context_value(focused, "text") or "").strip() if focused else ""
+            focus_name = (
+                str(_context_value(focused, "name") or _context_value(focused, "text") or "").strip() if focused else ""
+            )
             if title or process:
                 lines.append(f"- Active app: {process or 'unknown'} / {title or 'untitled'}")
             if focus_name:
@@ -391,7 +391,9 @@ class PlannerAgent(BaseAgent):
             structured_payload=plan.model_dump(),
         )
 
-    def _deterministic_file_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+    def _deterministic_file_plan(
+        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
+    ) -> Plan | None:
         if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
             return None
         if "file.trash" not in tools or not self._has_delete_intent(goal):
@@ -423,7 +425,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=True,
         )
 
-    def _deterministic_cleanup_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+    def _deterministic_cleanup_plan(
+        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
+    ) -> Plan | None:
         if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
             return None
         if "file.cleanup_plan" not in tools or not self._has_cleanup_intent(goal):
@@ -477,7 +481,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=False,
         )
 
-    def _deterministic_uninstall_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+    def _deterministic_uninstall_plan(
+        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
+    ) -> Plan | None:
         if not supervisor_hint_allows_deterministic(agent_hint, "AppAgent"):
             return None
         if "app.uninstall_app" not in tools or not self._has_uninstall_intent(goal):
@@ -509,7 +515,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=True,
         )
 
-    def _deterministic_system_check_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+    def _deterministic_system_check_plan(
+        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
+    ) -> Plan | None:
         if not supervisor_hint_allows_deterministic(agent_hint, "ComputerAgent"):
             return None
         if "system.diagnostics" not in tools or not self._has_system_check_intent(goal):
@@ -537,7 +545,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=False,
         )
 
-    def _deterministic_open_app_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+    def _deterministic_open_app_plan(
+        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
+    ) -> Plan | None:
         if not supervisor_hint_allows_deterministic(agent_hint, "AppAgent"):
             return None
         if "app.launch_installed" not in tools or not self._has_open_app_intent(goal):
@@ -573,7 +583,9 @@ class PlannerAgent(BaseAgent):
             requires_user_approval=False,
         )
 
-    def _deterministic_search_plan(self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None) -> Plan | None:
+    def _deterministic_search_plan(
+        self, task_id: str, goal: str, tools: list[str], *, agent_hint: str | None = None
+    ) -> Plan | None:
         if not supervisor_hint_allows_deterministic(agent_hint, "FileAgent"):
             return None
         if "file.search_by_name" not in tools or not self._has_file_search_intent(goal):
@@ -626,9 +638,7 @@ class PlannerAgent(BaseAgent):
         if drive:
             normalized_drive = drive.casefold().rstrip("\\/")
             matching_roots = [
-                root
-                for root in settings_roots
-                if str(Path(root).drive).casefold().rstrip("\\/") == normalized_drive
+                root for root in settings_roots if str(Path(root).drive).casefold().rstrip("\\/") == normalized_drive
             ]
             return matching_roots or settings_roots
         return settings_roots
@@ -679,10 +689,11 @@ class PlannerAgent(BaseAgent):
                 candidate = candidate.replace(term, "")
             for term in ("查找", "搜索", "找到", "寻找", "搜", "找"):
                 candidate = candidate.replace(term, "")
-            candidate = re.sub(r"\b(find|search( for)?|locate|named|called|files?|the)\b", "", candidate, flags=re.IGNORECASE)
+            candidate = re.sub(
+                r"\b(find|search( for)?|locate|named|called|files?|the)\b", "", candidate, flags=re.IGNORECASE
+            )
             candidate = candidate.replace("文件名", "").replace("文件", "")
         return candidate.strip(" ：:，,。.\"'“”‘’")
-
 
     def _has_system_check_intent(self, goal: str) -> bool:
         normalized = goal.casefold()

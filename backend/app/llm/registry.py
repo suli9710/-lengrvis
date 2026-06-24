@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import ipaddress
 import os
 import threading
@@ -11,16 +10,15 @@ from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.commerce.licensing import apply_licensed_plan
 from app.commerce.usage import enforce_cloud_quota
 from app.config import ENV_PREFIX, AppSettings, get_base_settings
-from app.core.outbound_url import validate_outbound_http_url
-from app.context_management import ContextAwareProvider
+from app.context.management import ContextAwareProvider
 from app.core import db
-from app.llm.profiles import profile_for_provider
+from app.core.outbound_url import validate_outbound_http_url
 from app.llm.base import LLMProvider
 from app.llm.local_provider import LocalBackendUnavailable, detect_local_backend, unavailable_message
 from app.llm.mock_provider import MockProvider
 from app.llm.onnx_provider import OnnxProvider, detect_onnx_backend
 from app.llm.openai_compatible import OpenAICompatibleProvider
-
+from app.llm.profiles import profile_for_provider
 
 CLOUD_PROVIDERS = {"openai", "openai_compatible", "deepseek", "azure_openai", "hunyuan", "custom_http"}
 LOCAL_PROVIDERS = {"ollama", "lmstudio", "llamacpp", "llama.cpp", "vllm_local", "local", "onnx"}
@@ -91,7 +89,7 @@ def _enforce_plan_entitlements(settings: AppSettings) -> AppSettings:
     plans.
     """
     if settings.remote_desktop_enabled and not has_feature(active_plan(settings), Feature.REMOTE_CONTROL):
-        return dataclasses.replace(settings, remote_desktop_enabled=False)
+        return settings.model_copy(update={"remote_desktop_enabled": False})
     return settings
 
 
@@ -248,7 +246,11 @@ def _build_local_provider(settings: AppSettings) -> LLMProvider:
     if onnx_backend is not None:
         return OnnxProvider(settings, onnx_backend)
     # Honour explicitly-configured local providers first.
-    if settings.provider_name.lower() in LOCAL_PROVIDERS and settings.base_url and _is_local_base_url(settings.base_url):
+    if (
+        settings.provider_name.lower() in LOCAL_PROVIDERS
+        and settings.base_url
+        and _is_local_base_url(settings.base_url)
+    ):
         return OpenAICompatibleProvider(_local_settings(settings))
     if settings.provider_name.lower() in LOCAL_PROVIDERS and settings.base_url:
         raise LocalBackendUnavailable(
@@ -259,23 +261,25 @@ def _build_local_provider(settings: AppSettings) -> LLMProvider:
     # Auto-detect Ollama / LM Studio / llama.cpp on the local machine.
     backend = detect_local_backend()
     if backend is not None:
-        overrides = dataclasses.replace(
-            settings,
-            provider_name=backend.kind,
-            base_url=backend.base_url,
-            model=settings.model or (backend.models[0] if backend.models else "qwen2.5:3b-instruct"),
-            api_key=settings.api_key or "local",
-            requires_openai_auth=False,
+        overrides = settings.model_copy(
+            update={
+                "provider_name": backend.kind,
+                "base_url": backend.base_url,
+                "model": settings.model or (backend.models[0] if backend.models else "qwen2.5:3b-instruct"),
+                "api_key": settings.api_key or "local",
+                "requires_openai_auth": False,
+            }
         )
         return OpenAICompatibleProvider(overrides)
     raise LocalBackendUnavailable(unavailable_message())
 
 
 def _local_settings(settings: AppSettings) -> AppSettings:
-    return dataclasses.replace(
-        settings,
-        api_key=settings.api_key or "local",
-        requires_openai_auth=False,
+    return settings.model_copy(
+        update={
+            "api_key": settings.api_key or "local",
+            "requires_openai_auth": False,
+        }
     )
 
 

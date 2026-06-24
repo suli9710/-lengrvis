@@ -12,10 +12,9 @@ from contextlib import suppress
 from typing import Any
 
 from app.config import AppSettings
-from app.context_management import project_ledger_for_llm
+from app.context.management import project_ledger_for_llm
 from app.core import db
 from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole
-
 
 GLOBAL_TASK_ID = "__global__"
 _ALL_EVENT_TYPES = "*"
@@ -100,8 +99,7 @@ def _enqueue_persist(message: AgentMessage) -> None:
         with suppress(queue.Empty):
             dropped_message, _ = _PERSIST_QUEUE.get_nowait()
             logger.error(
-                "agent_bus: persist queue full after %.1fs backpressure; "
-                "dropping oldest message %s to prevent OOM",
+                "agent_bus: persist queue full after %.1fs backpressure; dropping oldest message %s to prevent OOM",
                 _PERSIST_BACKPRESSURE_TIMEOUT,
                 dropped_message.id,
             )
@@ -145,9 +143,7 @@ def _flush_agent_messages_for_read() -> None:
     if flush_agent_message_writes(timeout_seconds=30.0):
         return
     logger.error("agent_messages write flush timed out; refusing stale read")
-    raise AgentMessageReadConsistencyError(
-        "agent_messages write flush timed out; read refused to avoid stale timeline"
-    )
+    raise AgentMessageReadConsistencyError("agent_messages write flush timed out; read refused to avoid stale timeline")
 
 
 db.register_read_barrier("agent_messages", _flush_agent_messages_for_read)
@@ -156,8 +152,12 @@ db.register_read_barrier("agent_messages", _flush_agent_messages_for_read)
 class AgentBus:
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = defaultdict(set)
-        self._global_subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = defaultdict(set)
+        self._subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = (
+            defaultdict(set)
+        )
+        self._global_subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]]] = (
+            defaultdict(set)
+        )
 
     def publish(self, message: AgentMessage) -> AgentMessage:
         _enqueue_persist(message)
@@ -211,16 +211,16 @@ class AgentBus:
         with self._lock:
             subscribers = list(self._subscriptions.get(message.task_id, set()))
             global_subscribers = self._matching_global_subscribers(message)
-        for loop, queue in subscribers:
+        for loop, subscriber_queue in subscribers:
             if loop.is_closed():
-                self.unsubscribe(message.task_id, queue)
+                self.unsubscribe(message.task_id, subscriber_queue)
                 continue
-            loop.call_soon_threadsafe(self._enqueue_message, queue, message)
-        for event_type, loop, queue in global_subscribers:
+            loop.call_soon_threadsafe(self._enqueue_message, subscriber_queue, message)
+        for event_type, loop, subscriber_queue in global_subscribers:
             if loop.is_closed():
-                self.unsubscribe_global(queue, event_type)
+                self.unsubscribe_global(subscriber_queue, event_type)
                 continue
-            loop.call_soon_threadsafe(self._enqueue_message, queue, message)
+            loop.call_soon_threadsafe(self._enqueue_message, subscriber_queue, message)
 
     @staticmethod
     def _enqueue_message(queue: asyncio.Queue[AgentMessage], message: AgentMessage) -> None:
@@ -245,8 +245,10 @@ class AgentBus:
         tool_call_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> AgentMessage:
-        openai_role = OpenAIMessageRole(role) if role else (
-            OpenAIMessageRole.USER if from_agent.lower() in {"user", "human"} else OpenAIMessageRole.ASSISTANT
+        openai_role = (
+            OpenAIMessageRole(role)
+            if role
+            else (OpenAIMessageRole.USER if from_agent.lower() in {"user", "human"} else OpenAIMessageRole.ASSISTANT)
         )
         meta = dict(metadata or {})
         meta.setdefault("from_agent", from_agent)
@@ -312,7 +314,9 @@ class AgentBus:
         )
 
     def get_messages(self, task_id: str) -> list[AgentMessage]:
-        return [AgentMessage.model_validate(item) for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,))]
+        return [
+            AgentMessage.model_validate(item) for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,))
+        ]
 
     def get_messages_after(self, task_id: str, created_after: str | None, *, limit: int = 500) -> list[AgentMessage]:
         if not created_after:
@@ -359,8 +363,8 @@ class AgentBus:
         event_type = self._message_event_type(message)
         matches: list[tuple[str, asyncio.AbstractEventLoop, asyncio.Queue[AgentMessage]]] = []
         for key in {_ALL_EVENT_TYPES, event_type} - {""}:
-            for loop, queue in self._global_subscriptions.get(key, set()):
-                matches.append((key, loop, queue))
+            for loop, subscriber_queue in self._global_subscriptions.get(key, set()):
+                matches.append((key, loop, subscriber_queue))
         return matches
 
     def _message_event_type(self, message: AgentMessage) -> str:

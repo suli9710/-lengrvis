@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import fields
 from typing import Any
 
-from app.core.errors import AppError
 from app.core import db
+from app.core.errors import AppError
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.openai_compatible import circuit_snapshot
 from app.llm.profiles import profile_for_provider, profile_for_settings
 from app.llm.prompts import load_prompt
 from app.llm.registry import _is_local_base_url, get_effective_settings, get_provider, get_provider_for_mode
+from app.llm.usage import list_usage_events, usage_summary
 from app.policy.redaction import redact_text
 from app.security.sensitive_confirmation import CONFIRMATION_FIELD, require_settings_confirmation
-from app.llm.usage import list_usage_events, usage_summary
-
 
 SENSITIVE_SETTINGS = {"api_key", "jwt_secret"}
 
@@ -31,7 +29,7 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
             f"Sensitive settings ({names}) must be configured through environment variables or external config.",
             status_code=400,
         )
-    allowed = {field.name for field in fields(get_effective_settings())}
+    allowed = set(type(get_effective_settings()).model_fields)
     coerced: dict[str, Any] = {}
     for key, value in payload.items():
         if key in allowed:
@@ -303,7 +301,7 @@ async def test_llm_provider() -> dict[str, Any]:
         return {"ok": not degraded, "provider": provider.name, "message": text, "degraded": degraded}
     except LocalBackendUnavailable as exc:
         return {"ok": False, "provider": "local", "error": _safe_error(exc)}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - provider probes surface user-facing diagnostics.
         return {"ok": False, "provider": getattr(provider, "name", "unknown"), "error": _safe_error(exc)}
 
 

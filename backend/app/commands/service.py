@@ -5,17 +5,22 @@ from typing import Any
 from app.agents.code_review_agent import CodeReviewAgent
 from app.commands.registry import normalize_command_name, register_builtin_commands, registry
 from app.commands.schemas import CommandExecuteRequest, CommandResult
-from app.context_compaction import (
+from app.context.compaction import (
     compact_session_context,
     compact_task_context,
     load_task_messages,
     manual_compact_messages,
     manual_compact_result_to_dict,
 )
-from app.context_management import summarize_messages
+from app.context.management import summarize_messages
 from app.core import db
 from app.core.errors import AppError
-from app.core.session_context import DEFAULT_SESSION_ID, SessionContext, SessionContextStore, lineage_diagnostics_from_metadata
+from app.core.session_context import (
+    DEFAULT_SESSION_ID,
+    SessionContext,
+    SessionContextStore,
+    lineage_diagnostics_from_metadata,
+)
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
 from app.perception.voice_input import DeterministicFallbackTranscriber
@@ -82,7 +87,10 @@ def _permissions(args: dict[str, Any]) -> CommandResult:  # noqa: ARG001
                 "delete_rule": "DELETE /api/settings/permission-policy/rules/{rule_id}",
             },
         },
-        diagnostics=["Command execution is read-only; it does not add, delete, allow, deny, create approvals, or consume approvals."],
+        diagnostics=[
+            "Command execution is read-only; it does not add, delete, allow, deny, create approvals, "
+            "or consume approvals."
+        ],
         next_action="Use the existing settings permission-policy endpoints to change rules.",
         delegated_to="PermissionStore",
     )
@@ -181,9 +189,13 @@ def _resume(args: dict[str, Any]) -> CommandResult:
         session_id = str(args.get("session_id") or "").strip()
         boundary_id = str(args.get("boundary_id") or args.get("resumed_from_boundary_id") or "").strip()
         if session_id or boundary_id or _bool_arg(args, "include_compacted_context", False):
-            context, diagnostics = _resolve_session_context(session_id=session_id or None, boundary_id=boundary_id or None)
+            context, diagnostics = _resolve_session_context(
+                session_id=session_id or None, boundary_id=boundary_id or None
+            )
             if context is None:
-                return _session_context_not_found_result("/resume", session_id=session_id, boundary_id=boundary_id, diagnostics=diagnostics)
+                return _session_context_not_found_result(
+                    "/resume", session_id=session_id, boundary_id=boundary_id, diagnostics=diagnostics
+                )
             compacted_context = _compacted_context_payload(context)
             return CommandResult(
                 command="/resume",
@@ -204,7 +216,9 @@ def _resume(args: dict[str, Any]) -> CommandResult:
                 delegated_to="SessionContextStore",
             )
         tasks = db.fetch_many("tasks", limit=20)
-        resumable = [task for task in tasks if str(task.get("status") or task.get("phase") or "") in {"paused", "execution"}]
+        resumable = [
+            task for task in tasks if str(task.get("status") or task.get("phase") or "") in {"paused", "execution"}
+        ]
         return CommandResult(
             command="/resume",
             result={"resumable_tasks": resumable, "count": len(resumable)},
@@ -252,10 +266,14 @@ def _summary(args: dict[str, Any]) -> CommandResult:
     messages = args.get("messages")
     context, diagnostics = _resolve_session_context(session_id=session_id or None, boundary_id=boundary_id or None)
     if context is None:
-        return _session_context_not_found_result("/summary", session_id=session_id, boundary_id=boundary_id, diagnostics=diagnostics)
+        return _session_context_not_found_result(
+            "/summary", session_id=session_id, boundary_id=boundary_id, diagnostics=diagnostics
+        )
     updated = False
     if task_id or isinstance(messages, list):
-        raw_messages = load_task_messages(task_id) if task_id else [item for item in messages or [] if isinstance(item, dict)]
+        raw_messages = (
+            load_task_messages(task_id) if task_id else [item for item in messages or [] if isinstance(item, dict)]
+        )
         summary_messages = _messages_after_summary_anchor(raw_messages, context.last_summarized_message_id)
         if summary_messages and not _has_unclosed_tool_call(summary_messages):
             settings = get_effective_settings()
@@ -398,7 +416,10 @@ def _voice(args: dict[str, Any]) -> CommandResult:
             "auto_submit_route": "POST /api/chat",
         },
         diagnostics=["No binary audio endpoint exists in the command layer yet."],
-        next_action="Use the perception voice input pipeline for real audio capture; command execution currently reports capability.",
+        next_action=(
+            "Use the perception voice input pipeline for real audio capture; command execution currently reports "
+            "capability."
+        ),
         delegated_to="VoiceInput",
     )
 
@@ -435,12 +456,17 @@ def _load_session_context(session_id: str | None = None):
     return SessionContextStore(session_id=session_id or DEFAULT_SESSION_ID).load()
 
 
-def _resolve_session_context(*, session_id: str | None = None, boundary_id: str | None = None) -> tuple[SessionContext | None, list[str]]:
+def _resolve_session_context(
+    *, session_id: str | None = None, boundary_id: str | None = None
+) -> tuple[SessionContext | None, list[str]]:
     diagnostics: list[str] = []
     if session_id:
         context = SessionContextStore(session_id=session_id).load()
         if boundary_id and not context.matches_boundary_id(boundary_id):
-            diagnostics.append(f"Requested boundary_id {boundary_id} was not found on session {context.id}; no global session fallback was used.")
+            diagnostics.append(
+                f"Requested boundary_id {boundary_id} was not found on session {context.id}; "
+                "no global session fallback was used."
+            )
             return None, diagnostics
         diagnostics.append(f"Loaded session context by explicit session_id {context.id}.")
         return context, diagnostics
@@ -450,14 +476,19 @@ def _resolve_session_context(*, session_id: str | None = None, boundary_id: str 
         if context:
             diagnostics.append(f"Loaded session context by explicit boundary_id {boundary_id}.")
             return context, diagnostics
-        diagnostics.append(f"Requested boundary_id {boundary_id} was not found; no session context was loaded and no global latest fallback was used.")
+        diagnostics.append(
+            f"Requested boundary_id {boundary_id} was not found; no session context was loaded "
+            "and no global latest fallback was used."
+        )
         return None, diagnostics
     context = _load_session_context(None)
     diagnostics.append(f"Loaded default session context {context.id}; global latest session was not used.")
     return context, diagnostics
 
 
-def _session_context_not_found_result(command: str, *, session_id: str, boundary_id: str, diagnostics: list[str]) -> CommandResult:
+def _session_context_not_found_result(
+    command: str, *, session_id: str, boundary_id: str, diagnostics: list[str]
+) -> CommandResult:
     return CommandResult(
         ok=False,
         command=command,
@@ -569,7 +600,9 @@ def _preserved_segment_messages(compact_metadata: dict[str, Any]) -> list[dict[s
     preserved_segment = compact_metadata.get("preserved_segment") or compact_metadata.get("preservedSegment")
     if isinstance(preserved_segment, dict):
         messages = preserved_segment.get("messages")
-        return [dict(message) for message in messages if isinstance(message, dict)] if isinstance(messages, list) else []
+        return (
+            [dict(message) for message in messages if isinstance(message, dict)] if isinstance(messages, list) else []
+        )
     if isinstance(preserved_segment, list):
         return [dict(message) for message in preserved_segment if isinstance(message, dict)]
     return []

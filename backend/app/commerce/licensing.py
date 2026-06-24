@@ -484,9 +484,10 @@ def apply_licensed_plan(settings: Any, *, now: datetime | None = None):
         return settings
     resolved_plan = plan.value if plan is not None else Plan.FREE.value
     try:
-        import dataclasses
-
-        return dataclasses.replace(settings, plan=resolved_plan)
+        if hasattr(settings, "model_copy"):
+            return settings.model_copy(update={"plan": resolved_plan})
+        settings.plan = resolved_plan
+        return settings
     except Exception:  # noqa: BLE001 - never let licensing break settings resolution
         try:
             settings.plan = resolved_plan

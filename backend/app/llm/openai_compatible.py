@@ -5,7 +5,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import UTC
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -13,8 +13,8 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from app.config import AppSettings
+from app.context.management import PromptTooLongError, is_prompt_too_long_error, prompt_too_long_error_from_exception
 from app.core.outbound_url import is_local_base_url, pin_outbound_http_url, validate_outbound_http_url
-from app.context_management import PromptTooLongError, is_prompt_too_long_error, prompt_too_long_error_from_exception
 from app.llm.base import LLMProvider
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.types import LLMResponse, LLMUsage
@@ -30,12 +30,12 @@ class LLMApiResponseError(RuntimeError):
 
 
 # P1-10 fix: Redact API keys from error messages before surfacing to callers.
-_API_KEY_PATTERN = re.compile(r'(sk-[A-Za-z0-9]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})', re.IGNORECASE)
+_API_KEY_PATTERN = re.compile(r"(sk-[A-Za-z0-9]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})", re.IGNORECASE)
 
 
 def _sanitize_error_message(message: str) -> str:
     """Remove API keys or bearer tokens from error messages to prevent credential leakage."""
-    return _API_KEY_PATTERN.sub('[REDACTED]', str(message))
+    return _API_KEY_PATTERN.sub("[REDACTED]", str(message))
 
 
 @dataclass
@@ -142,7 +142,9 @@ class OpenAICompatibleProvider(LLMProvider):
             model,
         )
 
-    async def _post_json(self, endpoint: str, payload: dict[str, Any], *, endpoint_kind: str, model: str) -> dict[str, Any]:
+    async def _post_json(
+        self, endpoint: str, payload: dict[str, Any], *, endpoint_kind: str, model: str
+    ) -> dict[str, Any]:
         circuit_key = self._circuit_key(endpoint_kind, model)
         attempts = max(0, self.settings.llm_api_max_retries) + 1
         last_error: Exception | None = None
@@ -260,7 +262,7 @@ class OpenAICompatibleProvider(LLMProvider):
             return False
         if isinstance(exc, PromptTooLongError) or is_prompt_too_long_error(exc):
             return False
-        if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        if isinstance(exc, httpx.TimeoutException | httpx.NetworkError | httpx.RemoteProtocolError):
             return True
         if isinstance(exc, httpx.HTTPStatusError):
             status_code = exc.response.status_code
@@ -278,7 +280,7 @@ class OpenAICompatibleProvider(LLMProvider):
         delay = self._retry_after_seconds(exc)
         if delay is None:
             base_delay = self.settings.llm_api_retry_backoff_seconds * (2**attempt)
-            jitter = random.uniform(0, base_delay * 0.1) if base_delay > 0 else 0
+            jitter = random.uniform(0, base_delay * 0.1) if base_delay > 0 else 0  # noqa: S311
             delay = base_delay + jitter
         if delay <= 0:
             return
@@ -300,7 +302,7 @@ class OpenAICompatibleProvider(LLMProvider):
             except (TypeError, ValueError):
                 return None
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             return max(0.0, parsed.timestamp() - time.time())
 
     async def chat(
@@ -624,7 +626,7 @@ def _validate_structured_payload(payload: Any, output_schema: dict[str, Any]) ->
     try:
         from jsonschema import Draft202012Validator
         from jsonschema.exceptions import SchemaError, ValidationError
-    except Exception:
+    except Exception:  # noqa: BLE001 - jsonschema is optional; use lightweight validation if unavailable.
         _validate_structured_payload_lightweight(payload, output_schema)
         return
 
@@ -659,8 +661,10 @@ def _validate_structured_payload_lightweight(payload: Any, schema: dict[str, Any
 
 def _should_validate_object_keywords(payload: Any, schema: dict[str, Any]) -> bool:
     schema_type = schema.get("type")
-    return schema_type == "object" or isinstance(payload, dict) and any(
-        key in schema for key in ("required", "properties", "additionalProperties")
+    return (
+        schema_type == "object"
+        or isinstance(payload, dict)
+        and any(key in schema for key in ("required", "properties", "additionalProperties"))
     )
 
 
@@ -725,7 +729,7 @@ def _matches_json_schema_type(value: Any, expected_type: Any) -> bool:
     if expected_type == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if expected_type == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return isinstance(value, int | float) and not isinstance(value, bool)
     if expected_type == "boolean":
         return isinstance(value, bool)
     if expected_type == "null":

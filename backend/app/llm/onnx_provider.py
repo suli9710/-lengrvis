@@ -7,21 +7,19 @@ continue to use the existing local HTTP backends from `local_provider.py`.
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import dataclasses
 import importlib
+import json
 import threading
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from app.config import PROJECT_ROOT, AppSettings, get_env
 from app.llm.base import LLMProvider
 from app.llm.prompts import render_prompt
 from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
-
 
 _PREFERRED_EXECUTION_PROVIDERS = [
     ("onnx-winml", "WindowsMLExecutionProvider"),
@@ -428,7 +426,7 @@ async def test_generate(
     if backend is None:
         return _smoke_unavailable("test_generate", snapshot)
 
-    smoke_settings = dataclasses.replace(settings, max_tokens=max(1, min(int(max_tokens or 1), 64)))
+    smoke_settings = settings.model_copy(update={"max_tokens": max(1, min(int(max_tokens or 1), 64))})
     provider = OnnxProvider(smoke_settings, backend)
     try:
         text = await provider.chat([{"role": "user", "content": prompt or "Say hello from ONNX."}])
@@ -665,11 +663,7 @@ def _iter_files(root: Path, *, max_depth: int) -> Iterable[Path]:
 def _model_dir_sort_key(path: Path) -> tuple[int, int, int, str]:
     lowered = str(path).lower()
     preferred_rank = next(
-        (
-            index
-            for index, name in enumerate(_PREFERRED_MODEL_DIR_NAMES)
-            if name.lower() in lowered
-        ),
+        (index for index, name in enumerate(_PREFERRED_MODEL_DIR_NAMES) if name.lower() in lowered),
         len(_PREFERRED_MODEL_DIR_NAMES),
     )
     if "qwen2.5" in lowered and "3b" in lowered:
@@ -749,10 +743,9 @@ def _import_genai_runtime(settings: AppSettings | None = None) -> Any:
             return importlib.import_module(module_name)
         except ImportError as exc:
             errors.append(f"{module_name}: {exc}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - optional native package probe.
             errors.append(f"{module_name}: {exc}")
     raise ImportError("; ".join(errors) or "No ONNX Runtime GenAI package is importable.")
-
 
 
 def _is_genai_runtime_available(settings: AppSettings | None = None) -> bool:
@@ -760,7 +753,7 @@ def _is_genai_runtime_available(settings: AppSettings | None = None) -> bool:
         _import_genai_runtime(settings)
     except ImportError:
         return False
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional native package probe.
         return False
     return True
 
@@ -812,7 +805,7 @@ def _runtime_package_snapshot(module_name: str) -> dict[str, Any]:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         return {"available": False, "module": module_name, "error": str(exc)}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional native package probe.
         return {"available": False, "module": module_name, "error": str(exc)}
     version = str(getattr(module, "__version__", "") or "")
     return {"available": True, "module": module_name, "version": version, "error": ""}
@@ -840,11 +833,11 @@ def _available_execution_providers() -> list[str]:
         import onnxruntime as ort
     except ImportError:
         return []
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional native package probe.
         return []
     try:
         return [str(item) for item in ort.get_available_providers()]
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional native package probe.
         return []
 
 
@@ -855,27 +848,24 @@ def _genai_reports_provider_available(kind: str) -> bool:
         og = _import_genai_runtime()
     except ImportError:
         return False
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional native package probe.
         return False
     if kind == "onnx-directml" and hasattr(og, "is_dml_available"):
         try:
             return bool(og.is_dml_available())
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional native package probe.
             return False
     if kind == "onnx-openvino" and hasattr(og, "is_openvino_available"):
         try:
             return bool(og.is_openvino_available())
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional native package probe.
             return False
     return False
 
 
 def _winml_runtime_available() -> bool:
     packages = _runtime_packages_snapshot()
-    return any(
-        packages.get(name, {}).get("available")
-        for name in ("onnxruntime_genai_winml", "onnxruntime_windowsml")
-    )
+    return any(packages.get(name, {}).get("available") for name in ("onnxruntime_genai_winml", "onnxruntime_windowsml"))
 
 
 def _unavailable_reason(

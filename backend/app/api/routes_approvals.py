@@ -5,16 +5,17 @@ from fastapi import APIRouter, HTTPException
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, Plan, StepStatus, Task, TaskStatus
-from app.orchestration.step_phase import set_step_status
 from app.orchestration.state_machine import safe_transition
+from app.orchestration.step_phase import set_step_status
+from app.policy.redaction import redact_public_text
 from app.services.mobile_pairing_service import approve_approval as approve_mobile_approval
-from app.services.mobile_pairing_service import safe_approval_payload
-from app.services.mobile_pairing_service import list_pending_approvals
-from app.services.mobile_pairing_service import raise_if_mobile_claims_disallowed
+from app.services.mobile_pairing_service import (
+    list_pending_approvals,
+    raise_if_mobile_claims_disallowed,
+    safe_approval_payload,
+)
 from app.services.mobile_pairing_service import reject_approval as reject_mobile_approval
-from app.policy.redaction import redact_public_text, redact_value
 from app.services.task_service import set_task_status
-
 
 router = APIRouter()
 
@@ -167,7 +168,7 @@ def _reconcile_runs(task_id: str) -> None:
         from app.services.run_service import reconcile_task_runs
 
         reconcile_task_runs(task_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - run reconciliation is best-effort after approval changes.
         return
 
 
@@ -179,10 +180,21 @@ def _deny_rejected_step(approval: Approval) -> None:
     plans = db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=1)
     if plans:
         plan = Plan.model_validate(plans[0])
+        target_step = None
         for step in plan.steps:
             if step.id == approval.step_id:
-                step.status = StepStatus.DENIED
+                target_step = step
                 break
+        if target_step is None:
+            waiting_steps = [
+                step
+                for step in plan.steps
+                if step.status == StepStatus.WAITING_USER_APPROVAL and step.requires_approval
+            ]
+            if len(waiting_steps) == 1:
+                target_step = waiting_steps[0]
+        if target_step is not None:
+            set_step_status(target_step, StepStatus.DENIED, actor="routes_approvals.reject")
         db.upsert_model("plans", plan)
     task.final_summary = "Approval was rejected by the user."
     db.upsert_model("tasks", task)
@@ -207,5 +219,5 @@ def _resume_runs_after_approval(task_id: str) -> None:
         if not any(step.status == StepStatus.PENDING for step in plan.steps):
             return
         resume_runs_for_task(task_id, include_approval_continuations=True)
-    except Exception:
+    except Exception:  # noqa: BLE001 - approval response should not fail if resume scheduling fails.
         return

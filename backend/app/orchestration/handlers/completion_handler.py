@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.context.management import summarize_messages
 from app.core.audit import record
 from app.core.schemas import Plan, Task, TaskStatus
-from app.context_management import summarize_messages
 from app.llm.registry import get_effective_settings
 from app.policy.risk import SafetyVerdict
 
@@ -45,7 +45,7 @@ class CompletionHandler:
                 source=orchestrator.name,
             )
             await self.extract_lessons(task, plan)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - memory consolidation is best-effort.
             record("memory.consolidate_failed", orchestrator.name, {"task_id": task.id, "error": str(exc)})
 
     async def extract_lessons(self, task: Task, plan: Plan) -> None:
@@ -69,7 +69,9 @@ class CompletionHandler:
             )
             learned += 1
         if learned:
-            record("memory.lessons_extracted", orchestrator.name, {"task_id": task.id, "count": learned}, task_id=task.id)
+            record(
+                "memory.lessons_extracted", orchestrator.name, {"task_id": task.id, "count": learned}, task_id=task.id
+            )
 
     def _args_pattern(self, args: dict) -> dict:
         pattern: dict = {}
@@ -88,8 +90,13 @@ class CompletionHandler:
             active = goal_stack.peek()
             if active and task.id in active.related_task_ids:
                 goal_stack.pop()
-        except Exception as exc:
-            record("goal_stack.complete_failed", self.orchestrator.name, {"task_id": task.id, "error": str(exc)}, task_id=task.id)
+        except Exception as exc:  # noqa: BLE001 - goal-stack completion should not fail task completion.
+            record(
+                "goal_stack.complete_failed",
+                self.orchestrator.name,
+                {"task_id": task.id, "error": str(exc)},
+                task_id=task.id,
+            )
 
     def _mark_session_task_complete(self, task: Task) -> None:
         store = getattr(self.orchestrator, "session_context_store", None)
@@ -98,8 +105,13 @@ class CompletionHandler:
         try:
             self._update_session_summary(task)
             store.complete_task(task.id)
-        except Exception as exc:
-            record("session_context.complete_failed", self.orchestrator.name, {"task_id": task.id, "error": str(exc)}, task_id=task.id)
+        except Exception as exc:  # noqa: BLE001 - session completion should not fail task completion.
+            record(
+                "session_context.complete_failed",
+                self.orchestrator.name,
+                {"task_id": task.id, "error": str(exc)},
+                task_id=task.id,
+            )
 
     def _update_session_summary(self, task: Task) -> None:
         store = getattr(self.orchestrator, "session_context_store", None)

@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-import os
-import sys
 import base64
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 try:
     import yaml
-except Exception:  # pragma: no cover - optional dependency guard
+except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
     yaml = None
 
 
@@ -22,7 +24,7 @@ CONFIG_PARENT_SEARCH_DEPTH = 5
 DPAPI_PREFIX = "dpapi:"
 ENV_PREFIX = "LENGRVIS"
 MOBILE_JWT_SECRET_ENV_KEYS = ("LENGRVIS_JWT_SECRET",)
-MOBILE_JWT_SECRET_FILE = "mobile_jwt.secret"
+MOBILE_JWT_SECRET_FILE = "mobile_jwt.secret"  # noqa: S105
 logger = logging.getLogger(__name__)
 
 
@@ -187,8 +189,14 @@ def _preferred_data_dir(parent: Path) -> Path:
     return parent / ".lengrvis_data"
 
 
-@dataclass(slots=True)
-class AppSettings:
+class AppSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="LENGRVIS_",
+        extra="ignore",
+        protected_namespaces=(),
+        validate_assignment=True,
+    )
+
     provider_name: str = "openai_compatible"
     base_url: str = "https://api.openai.com/v1"
     api_key: str = ""
@@ -263,15 +271,15 @@ class AppSettings:
     lan_tls_cert_file: str = ""
     lan_tls_key_file: str = ""
     lan_public_base_url: str = ""
-    app_allowlist: list[str] = field(default_factory=list)
+    app_allowlist: list[str] = Field(default_factory=list)
     browser_max_page_bytes: int = 250000
     document_max_chars_to_llm: int = 30000
     browser_screenshot_dir: str = str(DEFAULT_DATA_DIR / "browser_screenshots")
-    allowed_directories: list[str] = field(default_factory=list)
+    allowed_directories: list[str] = Field(default_factory=list)
     data_dir: str = str(DEFAULT_DATA_DIR)
-    skill_directories: list[str] = field(default_factory=list)
-    skill_trusted_public_keys: dict[str, str] = field(default_factory=dict)
-    mcp_servers: list[dict] = field(default_factory=list)
+    skill_directories: list[str] = Field(default_factory=list)
+    skill_trusted_public_keys: dict[str, str] = Field(default_factory=dict)
+    mcp_servers: list[dict] = Field(default_factory=list)
     allow_mock_fallback: bool = False
     # Non-strict (default): invalid transitions are audited but not persisted.
     # Strict: StateTransitionError on illegal phase/stage changes.
@@ -297,19 +305,30 @@ class AppSettings:
     perception_store_screenshots: bool = False
     perception_local_ocr_enabled: bool = False
     perception_frame_diff_threshold: float = 0.001
-    perception_sensitive_window_patterns: list[str] = field(default_factory=list)
-    perception_sensitive_field_names: list[str] = field(default_factory=list)
+    perception_sensitive_window_patterns: list[str] = Field(default_factory=list)
+    perception_sensitive_field_names: list[str] = Field(default_factory=list)
     environment_app_context_interval_seconds: float = 2.0
     environment_store_screenshots: bool = False
     environment_event_retention_days: int = 7
-    environment_rules: list[dict[str, Any]] = field(default_factory=list)
+    environment_rules: list[dict[str, Any]] = Field(default_factory=list)
     # Opt-in, local-only metrics aggregation (task success / recovery / ask_user /
     # LLM anomaly rates). Never leaves the machine; disabled by default.
     local_metrics_enabled: bool = False
     jwt_secret: str = ""
 
     @classmethod
-    def from_sources(cls) -> "AppSettings":
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (init_settings,)
+
+    @classmethod
+    def from_sources(cls) -> AppSettings:
         config_path = _find_config_file("config.yaml", "LENGRVIS_CONFIG_FILE")
         env_path = _find_config_file(".env", "LENGRVIS_ENV_FILE")
         config = _load_yaml(config_path) if config_path else {}
@@ -476,9 +495,7 @@ class AppSettings:
             context_recent_message_limit=int_value(
                 "LENGRVIS_CONTEXT_RECENT_MESSAGE_LIMIT", "context_recent_message_limit", 24, minimum=1
             ),
-            context_micro_compact_age=int_value(
-                "LENGRVIS_CONTEXT_MICRO_COMPACT_AGE", "context_micro_compact_age", 8
-            ),
+            context_micro_compact_age=int_value("LENGRVIS_CONTEXT_MICRO_COMPACT_AGE", "context_micro_compact_age", 8),
             context_micro_compact_tool_result_chars=int_value(
                 "LENGRVIS_CONTEXT_MICRO_COMPACT_TOOL_RESULT_CHARS", "context_micro_compact_tool_result_chars", 1200
             ),
@@ -500,17 +517,13 @@ class AppSettings:
             onnx_provider_preference=str(
                 value("LENGRVIS_ONNX_PROVIDER_PREFERENCE", "onnx_provider_preference", "winml,directml,openvino,cpu")
             ),
-            onnx_directml_device_id=str(
-                value("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "onnx_directml_device_id", "")
-            ),
+            onnx_directml_device_id=str(value("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "onnx_directml_device_id", "")),
             onnx_openvino_device=str(value("LENGRVIS_ONNX_OPENVINO_DEVICE", "onnx_openvino_device", "AUTO")),
             onnx_openvino_cache_dir=str(value("LENGRVIS_ONNX_OPENVINO_CACHE_DIR", "onnx_openvino_cache_dir", "")),
             onnx_warm_on_startup=flag("LENGRVIS_ONNX_WARM_ON_STARTUP", "onnx_warm_on_startup", False),
             onnx_model_family=str(value("LENGRVIS_ONNX_MODEL_FAMILY", "onnx_model_family", "")),
             embedding_backend=str(value("LENGRVIS_EMBEDDING_BACKEND", "embedding_backend", "auto")),
-            onnx_embedding_model_path=str(
-                value("LENGRVIS_ONNX_EMBEDDING_MODEL_PATH", "onnx_embedding_model_path", "")
-            ),
+            onnx_embedding_model_path=str(value("LENGRVIS_ONNX_EMBEDDING_MODEL_PATH", "onnx_embedding_model_path", "")),
             onnx_embedding_execution_provider=str(
                 value("LENGRVIS_ONNX_EMBEDDING_EXECUTION_PROVIDER", "onnx_embedding_execution_provider", "")
             ),
@@ -531,7 +544,11 @@ class AppSettings:
                 value("LENGRVIS_ONNX_IMAGE_EMBEDDING_EXECUTION_PROVIDER", "onnx_image_embedding_execution_provider", "")
             ),
             onnx_image_embedding_model_id=str(
-                value("LENGRVIS_ONNX_IMAGE_EMBEDDING_MODEL_ID", "onnx_image_embedding_model_id", "openai/clip-vit-base-patch32")
+                value(
+                    "LENGRVIS_ONNX_IMAGE_EMBEDDING_MODEL_ID",
+                    "onnx_image_embedding_model_id",
+                    "openai/clip-vit-base-patch32",
+                )
             ),
             onnx_image_embedding_max_batch_size=int_value(
                 "LENGRVIS_ONNX_IMAGE_EMBEDDING_MAX_BATCH_SIZE",
@@ -595,7 +612,11 @@ class AppSettings:
                 minimum=1,
             ),
             browser_screenshot_dir=str(
-                value("LENGRVIS_BROWSER_SCREENSHOT_DIR", "browser_screenshot_dir", default_data_dir / "browser_screenshots")
+                value(
+                    "LENGRVIS_BROWSER_SCREENSHOT_DIR",
+                    "browser_screenshot_dir",
+                    default_data_dir / "browser_screenshots",
+                )
             ),
             allowed_directories=allowed_dirs,
             data_dir=data_dir,
@@ -613,9 +634,7 @@ class AppSettings:
                 minimum=1.0,
             ),
             recovery_max_retries=int_value("LENGRVIS_RECOVERY_MAX_RETRIES", "recovery_max_retries", 3),
-            os_reflection_max_per_run=int_value(
-                "LENGRVIS_OS_REFLECTION_MAX_PER_RUN", "os_reflection_max_per_run", 2
-            ),
+            os_reflection_max_per_run=int_value("LENGRVIS_OS_REFLECTION_MAX_PER_RUN", "os_reflection_max_per_run", 2),
             os_reflection_max_per_step=int_value(
                 "LENGRVIS_OS_REFLECTION_MAX_PER_STEP", "os_reflection_max_per_step", 1
             ),
@@ -668,7 +687,9 @@ class AppSettings:
                 "app_context_interval_seconds",
                 2.0,
             ),
-            environment_store_screenshots=flag("LENGRVIS_ENVIRONMENT_STORE_SCREENSHOTS", "environment_store_screenshots", False),
+            environment_store_screenshots=flag(
+                "LENGRVIS_ENVIRONMENT_STORE_SCREENSHOTS", "environment_store_screenshots", False
+            ),
             environment_event_retention_days=int_value(
                 "LENGRVIS_ENVIRONMENT_EVENT_RETENTION_DAYS",
                 "environment_event_retention_days",
@@ -681,17 +702,17 @@ class AppSettings:
         )
 
     def public_dict(self) -> dict[str, Any]:
-        data = asdict(self)
+        data = self.model_dump(mode="python")
         data["api_key"] = "***" if self.api_key else ""
         data["jwt_secret"] = "***" if self.jwt_secret else ""
         data["mcp_servers"] = _redact_secret_fields(data.get("mcp_servers"))
         data = _redact_secret_fields(data)
         return data
 
-    def merged(self, overrides: dict[str, Any] | None) -> "AppSettings":
+    def merged(self, overrides: dict[str, Any] | None) -> AppSettings:
         if not overrides:
             return self
-        data = asdict(self)
+        data = self.model_dump(mode="python")
         for key, value in overrides.items():
             if hasattr(self, key) and value is not None:
                 data[key] = value
@@ -771,7 +792,9 @@ def _normalize_skill_trusted_public_keys(value: Any) -> dict[str, str]:
             return result
         return _normalize_skill_trusted_public_keys(parsed)
     if isinstance(value, dict):
-        return {str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()}
+        return {
+            str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()
+        }
     if isinstance(value, list):
         result: dict[str, str] = {}
         for item in value:
@@ -803,6 +826,10 @@ def _redact_secret_fields(value: Any) -> Any:
             if key_text in _SECRET_CONTAINER_KEYS:
                 redacted[key] = _redact_secret_fields(item)
             else:
-                redacted[key] = "***" if item and any(token in key_text for token in _SECRET_FIELD_TOKENS) else _redact_secret_fields(item)
+                redacted[key] = (
+                    "***"
+                    if item and any(token in key_text for token in _SECRET_FIELD_TOKENS)
+                    else _redact_secret_fields(item)
+                )
         return redacted
     return value

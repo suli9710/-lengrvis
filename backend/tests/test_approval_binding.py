@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -10,15 +9,22 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from app.config import AppSettings
 from app.agents.orchestrator_agent import OrchestratorAgent
-from app.api import routes_approvals
-from app.api import routes_runtime
+from app.api import routes_approvals, routes_runtime
+from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentAction, Approval, ApprovalStatus, Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.runtime_context import TaskRuntimeContext
-from app.policy.approval_binding import approval_secret, args_binding_hmac, binding_preview, permission_policy_version, preview_hmac, redacted_preview, settings_fingerprint
+from app.policy.approval_binding import (
+    approval_secret,
+    args_binding_hmac,
+    binding_preview,
+    permission_policy_version,
+    preview_hmac,
+    redacted_preview,
+    settings_fingerprint,
+)
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
@@ -101,7 +107,9 @@ def _setup_bound_approval(
     )
     plan = Plan(task_id=task.id, goal=task.user_goal, steps=[step])
     db.upsert_model("plans", plan)
-    runtime = TaskRuntimeContext.from_task(task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus)
+    runtime = TaskRuntimeContext.from_task(
+        task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus
+    )
     preview = preview or {"ok": True, "diff_preview": [{"action": "write", "path": "a.txt"}]}
     approval = Approval(
         task_id=task.id,
@@ -224,7 +232,10 @@ def test_consumed_approval_cannot_execute_twice():
     [
         (AgentAction(kind="done", rationale="Already done."), "already done"),
         (AgentAction(kind="request_revision", follow_up_question="Revise this."), "plan revision"),
-        (AgentAction(kind="propose_tool", tool_name="test.bound_write", args={"path": "changed.txt"}), "different tool call"),
+        (
+            AgentAction(kind="propose_tool", tool_name="test.bound_write", args={"path": "changed.txt"}),
+            "different tool call",
+        ),
     ],
 )
 def test_preexecution_subagent_stop_expires_approved_approval(action, reason_fragment):
@@ -491,8 +502,7 @@ def test_approval_tool_version_mismatch_blocks_execution():
     assert calls == []
     events = db.fetch_many("audit_events", "task_id = ?", (task.id,), limit=10)
     assert any(
-        event["event_type"] == "approval.binding_mismatch"
-        and "tool version" in event["payload"].get("reason", "")
+        event["event_type"] == "approval.binding_mismatch" and "tool version" in event["payload"].get("reason", "")
         for event in events
     )
 
@@ -507,8 +517,7 @@ def test_approval_settings_mismatch_blocks_execution():
     assert calls == []
     events = db.fetch_many("audit_events", "task_id = ?", (task.id,), limit=10)
     assert any(
-        event["event_type"] == "approval.binding_mismatch"
-        and "settings changed" in event["payload"].get("reason", "")
+        event["event_type"] == "approval.binding_mismatch" and "settings changed" in event["payload"].get("reason", "")
         for event in events
     )
 
@@ -569,7 +578,7 @@ def test_tool_call_agent_message_redacts_sensitive_args():
 
     asyncio.run(orchestrator.step_execution_handler.tool_runtime.execute_allowed(task, step, tool, runtime))
 
-    assert calls and calls[0]["custom_secret"] == "super-secret-value"
+    assert calls and calls[0]["custom_secret"] == "super-secret-value"  # noqa: S105
     messages = db.fetch_many("agent_messages", "task_id = ?", (task.id,), limit=20)
     serialized = json.dumps(messages, ensure_ascii=False)
     assert "super-secret-value" not in serialized
@@ -594,10 +603,10 @@ def test_settings_fingerprint_binds_safety_settings(tmp_path: Path):
         remote_desktop_enabled=False,
     )
 
-    assert settings_fingerprint(base) != settings_fingerprint(replace(base, permission_mode="dont_ask"))
-    assert settings_fingerprint(base) != settings_fingerprint(replace(base, allow_browser_network=True))
-    assert settings_fingerprint(base) != settings_fingerprint(replace(base, remote_desktop_enabled=True))
-    assert settings_fingerprint(base) != settings_fingerprint(replace(base, app_allowlist=["calc"]))
+    assert settings_fingerprint(base) != settings_fingerprint(base.model_copy(update={"permission_mode": "dont_ask"}))
+    assert settings_fingerprint(base) != settings_fingerprint(base.model_copy(update={"allow_browser_network": True}))
+    assert settings_fingerprint(base) != settings_fingerprint(base.model_copy(update={"remote_desktop_enabled": True}))
+    assert settings_fingerprint(base) != settings_fingerprint(base.model_copy(update={"app_allowlist": ["calc"]}))
 
 
 def test_settings_fingerprint_preserves_explicit_empty_allowed_directories(tmp_path: Path):
@@ -627,7 +636,12 @@ def test_approval_resource_state_mismatch_blocks_execution():
 
     def execute(tool_args, context):  # noqa: ANN001, ANN202, ARG001
         if tool_args.get("dry_run", True):
-            return {"ok": True, "dry_run": True, "diff_preview": [{"action": "write"}], "_resource_state": [dict(state)]}
+            return {
+                "ok": True,
+                "dry_run": True,
+                "diff_preview": [{"action": "write"}],
+                "_resource_state": [dict(state)],
+            }
         calls.append(dict(tool_args))
         return {"ok": True}
 
