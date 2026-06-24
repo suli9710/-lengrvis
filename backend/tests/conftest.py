@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-
 # Secure local secret storage (app.security.local_secret) fails closed when no
 # DPAPI/keyring backend is available. The autouse fixtures below set
 # LENGRVIS_TEST=1, and pytest sets PYTEST_CURRENT_TEST, but only at test *setup*
