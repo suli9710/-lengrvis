@@ -1,96 +1,98 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { LegalDocId, ConsentStatusResult } from "../../../shared/consent";
-
-/**
- * First-launch privacy policy modal.
- *
- * Shows 5 key-point takeaways with a link to read the full policy.
- * "Agree and start" records consent; "Decline and exit" quits the app.
- */
+import type { LegalDocId } from "../../../shared/consent";
 
 interface PrivacyModalProps {
-  /** Called after the user agrees to the privacy policy. */
+  needsEulaConsent: boolean;
+  needsPrivacyConsent: boolean;
+  submissionError?: string;
   onAgree: () => void;
-  /** Called when the user declines — typically ends the session. */
   onDecline: () => void;
 }
 
-const PRIVACY_SUMMARY: Array<{ title: string; detail: string }> = [
+type ConsentDocId = Extract<LegalDocId, "privacy-policy" | "eula">;
+
+const LEGAL_DOC_LABELS: Record<ConsentDocId, string> = {
+  "privacy-policy": "隐私政策",
+  eula: "最终用户许可协议"
+};
+
+const CONSENT_SUMMARY: Array<{ title: string; detail: string }> = [
   {
-    title: "\u60a8\u7684\u6570\u636e\u7559\u5728\u672c\u5730",
-    detail: "\u5bf9\u8bdd\u3001\u4efb\u52a1\u3001\u5ba1\u8ba1\u65e5\u5fd7\u5747\u5b58\u50a8\u5728\u60a8\u7684\u8bbe\u5907\u4e0a\uff0c\u4e0d\u4e0a\u4f20\u81f3\u4efb\u4f55\u670d\u52a1\u5668"
+    title: "本地数据边界",
+    detail: "对话、任务和审计记录保存在本机；只有你主动配置云端模型时，所选内容才会发送给对应服务商。"
   },
   {
-    title: "\u533f\u540d\u9065\u6d4b\u9ed8\u8ba4\u5173\u95ed",
-    detail: "\u5d29\u6e83\u62a5\u544a\u548c\u4f7f\u7528\u7edf\u8ba1\u4ec5\u5728\u60a8\u4e3b\u52a8\u5f00\u542f\u65f6\u624d\u53d1\u9001\uff0c\u4e14\u5b8c\u5168\u533f\u540d"
+    title: "遥测默认关闭",
+    detail: "当前版本不默认发送崩溃报告或使用统计；诊断包只在你手动点击导出时生成，也不会自动发送。"
   },
   {
-    title: "\u4e91\u7aef\u6a21\u578b\u53ef\u9009",
-    detail: "\u4ec5\u5f53\u60a8\u9009\u62e9\u4e91\u7aef LLM \u65f6\uff0c\u5bf9\u8bdd\u5185\u5bb9\u624d\u53d1\u9001\u81f3\u5bf9\u5e94\u670d\u52a1\u5546"
+    title: "高风险操作需确认",
+    detail: "文件修改、远程控制和其他敏感操作受审批、权限策略与桌面原生确认保护。"
   },
   {
-    title: "\u8fdc\u7a0b\u63a7\u5236\u9700\u5ba1\u6279",
-    detail: "\u79fb\u52a8\u7aef\u8fdc\u7a0b\u64cd\u4f5c\u987b\u7ecf\u684c\u9762\u7aef\u660e\u786e\u6279\u51c6\uff0c\u5168\u90e8\u8bb0\u5f55\u5728\u5ba1\u8ba1\u65e5\u5fd7\u4e2d"
-  },
-  {
-    title: "\u968f\u65f6\u53ef\u5220\u9664",
-    detail: "\u60a8\u53ef\u968f\u65f6\u5728\u8bbe\u7f6e\u4e2d\u4e00\u952e\u6e05\u9664\u6240\u6709\u672c\u5730\u6570\u636e"
+    title: "法律文件分别记录",
+    detail: "EULA 与隐私政策按各自版本记录同意时间；任一文档更新后都可能要求重新确认。"
   }
 ];
 
-export function PrivacyConsentModal({ onAgree, onDecline }: PrivacyModalProps) {
-  const [showFullDoc, setShowFullDoc] = useState(false);
+export function PrivacyConsentModal({
+  needsEulaConsent,
+  needsPrivacyConsent,
+  submissionError,
+  onAgree,
+  onDecline
+}: PrivacyModalProps) {
+  const [activeDoc, setActiveDoc] = useState<ConsentDocId | null>(null);
   const [fullDocContent, setFullDocContent] = useState<string | null>(null);
-  const [loadingDoc, setLoadingDoc] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadingDoc, setLoadingDoc] = useState<ConsentDocId | null>(null);
+  const [documentError, setDocumentError] = useState<string | null>(null);
+  const [eulaAccepted, setEulaAccepted] = useState(!needsEulaConsent);
+  const [privacyAccepted, setPrivacyAccepted] = useState(!needsPrivacyConsent);
   const bridge = useMemo(() => {
-    return (window as unknown as { lengrvis?: { consent?: { readDoc: (docId: LegalDocId) => Promise<{ content: string; docId: LegalDocId }> } } }).lengrvis;
+    return (window as unknown as {
+      lengrvis?: {
+        consent?: {
+          readDoc: (docId: LegalDocId) => Promise<{ content: string; docId: LegalDocId }>;
+        };
+      };
+    }).lengrvis;
   }, []);
 
-  const handleViewFull = useCallback(async () => {
+  const handleViewFull = useCallback(async (docId: ConsentDocId) => {
     if (loadingDoc || !bridge?.consent?.readDoc) return;
-    setLoadingDoc(true);
-    setError(null);
+    setLoadingDoc(docId);
+    setDocumentError(null);
     try {
-      const { content } = await bridge.consent.readDoc("privacy-policy");
+      const { content } = await bridge.consent.readDoc(docId);
       setFullDocContent(content);
-      setShowFullDoc(true);
+      setActiveDoc(docId);
     } catch {
-      setError("\u65e0\u6cd5\u52a0\u8f7d\u9690\u79c1\u653f\u7b56\u6587\u4ef6\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002");
+      setDocumentError(`无法加载${LEGAL_DOC_LABELS[docId]}，请稍后重试。`);
     } finally {
-      setLoadingDoc(false);
+      setLoadingDoc(null);
     }
   }, [bridge, loadingDoc]);
 
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !showFullDoc) {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !activeDoc) {
         onDecline();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onDecline, showFullDoc]);
+  }, [activeDoc, onDecline]);
 
-  if (showFullDoc) {
+  if (activeDoc) {
     return (
       <div className="privacy-consent-overlay">
-        <div className="privacy-consent-modal privacy-consent-full-doc">
-          <h2 className="privacy-consent-full-title">\u9690\u79c1\u653f\u7b56\uff08\u5b8c\u6574\uff09</h2>
+        <div className="privacy-consent-modal privacy-consent-full-doc" role="dialog" aria-modal="true">
+          <h2 className="privacy-consent-full-title">{LEGAL_DOC_LABELS[activeDoc]}（完整）</h2>
           <pre className="privacy-consent-full-body">{fullDocContent ?? ""}</pre>
           <div className="privacy-consent-actions">
-            <button className="btn btn-secondary" onClick={() => setShowFullDoc(false)}>
-              \u8fd4\u56de\u6458\u8981
-            </button>
-            <button
-              className="btn btn-primary"
-              onClick={() => {
-                setShowFullDoc(false);
-                onAgree();
-              }}
-            >
-              \u540c\u610f\u5e76\u5f00\u59cb
+            <button className="btn btn-secondary" onClick={() => setActiveDoc(null)}>
+              返回同意页面
             </button>
           </div>
         </div>
@@ -98,37 +100,69 @@ export function PrivacyConsentModal({ onAgree, onDecline }: PrivacyModalProps) {
     );
   }
 
+  const canAgree = eulaAccepted && privacyAccepted;
+
   return (
     <div className="privacy-consent-overlay">
       <div className="privacy-consent-modal" role="dialog" aria-modal="true" aria-labelledby="privacy-consent-title">
         <div className="privacy-consent-header">
-          <span className="privacy-consent-icon" aria-hidden="true">\U0001F512</span>
-          <h2 id="privacy-consent-title" className="privacy-consent-title">\u9690\u79c1\u653f\u7b56</h2>
+          <h2 id="privacy-consent-title" className="privacy-consent-title">使用条款与隐私说明</h2>
         </div>
         <div className="privacy-consent-body">
           <ul className="privacy-consent-summary-list">
-            {PRIVACY_SUMMARY.map((item, index) => (
-              <li key={index} className="privacy-consent-summary-item">
-                <strong>{item.title}</strong> — {item.detail}
+            {CONSENT_SUMMARY.map((item) => (
+              <li key={item.title} className="privacy-consent-summary-item">
+                <strong>{item.title}</strong>：{item.detail}
               </li>
             ))}
           </ul>
-          <button
-            className="privacy-consent-full-link"
-            onClick={handleViewFull}
-            disabled={loadingDoc}
-            aria-label="\u67e5\u770b\u5b8c\u6574\u9690\u79c1\u653f\u7b56"
-          >
-            {loadingDoc ? "\u52a0\u8f7d\u4e2d..." : "\u67e5\u770b\u5b8c\u6574\u9690\u79c1\u653f\u7b56"}
-          </button>
-          {error && <p className="privacy-consent-error">{error}</p>}
+          <div className="privacy-consent-document-links">
+            <button
+              className="privacy-consent-full-link"
+              onClick={() => void handleViewFull("eula")}
+              disabled={Boolean(loadingDoc)}
+            >
+              {loadingDoc === "eula" ? "加载中..." : "查看完整最终用户许可协议"}
+            </button>
+            <button
+              className="privacy-consent-full-link"
+              onClick={() => void handleViewFull("privacy-policy")}
+              disabled={Boolean(loadingDoc)}
+            >
+              {loadingDoc === "privacy-policy" ? "加载中..." : "查看完整隐私政策"}
+            </button>
+          </div>
+          <div className="privacy-consent-checkboxes">
+            {needsEulaConsent ? (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={eulaAccepted}
+                  onChange={(event) => setEulaAccepted(event.target.checked)}
+                />
+                <span>我已阅读并同意最终用户许可协议</span>
+              </label>
+            ) : null}
+            {needsPrivacyConsent ? (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={privacyAccepted}
+                  onChange={(event) => setPrivacyAccepted(event.target.checked)}
+                />
+                <span>我已阅读并同意隐私政策</span>
+              </label>
+            ) : null}
+          </div>
+          {documentError ? <p className="privacy-consent-error">{documentError}</p> : null}
+          {submissionError ? <p className="privacy-consent-error">{submissionError}</p> : null}
         </div>
         <div className="privacy-consent-actions">
-          <button className="privacy-consent-decline" onClick={onDecline} aria-label="\u62d2\u7edd\u5e76\u9000\u51fa">
-            \u62d2\u7edd\u5e76\u9000\u51fa
+          <button className="privacy-consent-decline" onClick={onDecline}>
+            拒绝并退出
           </button>
-          <button className="btn btn-primary" onClick={onAgree} aria-label="\u540c\u610f\u5e76\u5f00\u59cb">
-            \u540c\u610f\u5e76\u5f00\u59cb
+          <button className="btn btn-primary" onClick={onAgree} disabled={!canAgree}>
+            同意并开始
           </button>
         </div>
       </div>

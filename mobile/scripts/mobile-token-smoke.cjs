@@ -279,6 +279,14 @@ function assertExpoCameraNativeConfig() {
   const androidPermissions = expo.android?.permissions ?? [];
   assert.ok(Array.isArray(androidPermissions), "app.json expo.android.permissions must be an array");
   assert.ok(androidPermissions.includes("CAMERA"), "app.json must declare Android CAMERA permission for QR pairing");
+  const blockedPermissions = expo.android?.blockedPermissions ?? [];
+  for (const permission of [
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.SYSTEM_ALERT_WINDOW",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+  ]) {
+    assert.ok(blockedPermissions.includes(permission), `app.json must block unused Android permission ${permission}`);
+  }
   assert.equal(
     expo.android?.usesCleartextTraffic,
     false,
@@ -302,8 +310,8 @@ const plugins = expo.plugins ?? [];
   for (const requiredFragment of [
     "network_security_config",
     'certificates src="system"',
-    'certificates src="user"',
     'cleartextTrafficPermitted="false"',
+    "AndroidConfig.Permissions.removePermissions",
     "android:networkSecurityConfig",
     "android:usesCleartextTraffic",
     "WindowManager.LayoutParams.FLAG_SECURE",
@@ -313,6 +321,29 @@ const plugins = expo.plugins ?? [];
       `Android hardening plugin must include ${requiredFragment}`,
     );
   }
+  assert.equal(
+    /<certificates\s+src="user"/.test(hardeningPluginSource),
+    false,
+    "Android hardening must not trust user-installed CAs by default",
+  );
+
+  const gradleSource = fs.readFileSync(mobilePath("android", "app", "build.gradle"), "utf8");
+  for (const requiredFragment of [
+    "releaseSigningConfigured",
+    "releaseTaskRequested",
+    "throw new GradleException",
+    "signingConfig signingConfigs.release",
+  ]) {
+    assert.ok(
+      gradleSource.includes(requiredFragment),
+      `Android release signing must include ${requiredFragment}`,
+    );
+  }
+  assert.equal(
+    gradleSource.includes("release.keystore"),
+    false,
+    "Android release signing must not fall back to a placeholder keystore",
+  );
 
   const cameraPlugin = plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === "expo-camera");
   assert.ok(cameraPlugin, "app.json must configure the expo-camera config plugin");

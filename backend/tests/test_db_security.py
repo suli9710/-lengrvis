@@ -6,6 +6,18 @@ from app.core import db
 from app.core.schemas import Task, ToolResult
 
 
+def test_connect_uses_explicit_transaction_control(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+
+    with db.connect() as conn:
+        assert conn.isolation_level is None
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+        conn.execute("BEGIN IMMEDIATE")
+        assert conn.in_transaction is True
+        conn.rollback()
+        assert conn.in_transaction is False
+
+
 def test_fetch_helpers_reject_unsupported_table(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()

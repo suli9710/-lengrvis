@@ -198,12 +198,22 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     assertTrustedRenderer(event);
     return backend.getStatus();
   });
-  ipcMain.handle(IPC_CHANNELS.backendStart, (event) => {
+  ipcMain.handle(IPC_CHANNELS.backendStart, async (event) => {
     assertTrustedRenderer(event);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm backend start",
+      message: "Start the Lengrvis backend service?",
+      detail: "This starts the local agent service and makes configured tools available to the desktop app."
+    });
     return backend.start();
   });
-  ipcMain.handle(IPC_CHANNELS.backendStop, (event) => {
+  ipcMain.handle(IPC_CHANNELS.backendStop, async (event) => {
     assertTrustedRenderer(event);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm backend stop",
+      message: "Stop the Lengrvis backend service?",
+      detail: "Active tasks and desktop integrations may be interrupted."
+    });
     return backend.stop();
   });
   ipcMain.handle(IPC_CHANNELS.backendForeground, (event) => {
@@ -344,10 +354,16 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.commandsExecute, async (event, request: unknown) => {
     assertTrustedRenderer(event);
+    const body = validateCommandExecuteRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm command",
+      message: "Run this desktop command?",
+      detail: `Command: ${body.name}\n\nCommands may change settings or invoke local agent capabilities.`
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/commands/execute",
       method: "POST",
-      body: validateCommandExecuteRequest(request)
+      body
     });
   });
 
@@ -367,19 +383,31 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.cleanupExecute, async (event, body: unknown) => {
     assertTrustedRenderer(event);
+    const safeBody = validatePlainBridgeBody(body, "cleanup execute request");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm cleanup execution",
+      message: "Run the cleanup plan?",
+      detail: "This may move files to the recycle bin or apply other approved cleanup actions. Review the cleanup preview before continuing."
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/files/cleanup/execute",
       method: "POST",
-      body: validatePlainBridgeBody(body, "cleanup execute request")
+      body: safeBody
     });
   });
 
   ipcMain.handle(IPC_CHANNELS.cleanupRollback, async (event, body: unknown) => {
     assertTrustedRenderer(event);
+    const safeBody = validatePlainBridgeBody(body, "cleanup rollback request");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm cleanup rollback",
+      message: "Roll back this cleanup execution?",
+      detail: "Rollback may move recovered files and replace current filesystem entries inside authorized directories."
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/files/cleanup/rollback",
       method: "POST",
-      body: validatePlainBridgeBody(body, "cleanup rollback request")
+      body: safeBody
     });
   });
 
@@ -411,15 +439,26 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.localModelInstall, async (event, request: unknown) => {
     assertTrustedRenderer(event);
+    const body = validateOptionalModelRequest(request, "local model install request");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm local model installation",
+      message: "Install the local AI model?",
+      detail: `Model: ${body.model ?? "recommended default"}\n\nThis may download a large package and use significant disk space.`
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/settings/install-local-model",
       method: "POST",
-      body: validateOptionalModelRequest(request, "local model install request")
+      body
     });
   });
 
   ipcMain.handle(IPC_CHANNELS.ollamaInstall, async (event) => {
     assertTrustedRenderer(event);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm Ollama installation",
+      message: "Install the local AI runtime?",
+      detail: "This may download and install Ollama on this computer."
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/settings/ollama/install",
       method: "POST"
@@ -428,15 +467,26 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.ollamaPull, async (event, request: unknown) => {
     assertTrustedRenderer(event);
+    const body = validateOptionalModelRequest(request ?? {}, "Ollama pull request");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm model download",
+      message: "Download this Ollama model?",
+      detail: `Model: ${body.model ?? "recommended default"}\n\nModel downloads can use substantial network bandwidth and disk space.`
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/settings/ollama/pull",
       method: "POST",
-      body: validateOptionalModelRequest(request ?? {}, "Ollama pull request")
+      body
     });
   });
 
   ipcMain.handle(IPC_CHANNELS.ollamaStart, async (event) => {
     assertTrustedRenderer(event);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm local AI start",
+      message: "Start the Ollama service?",
+      detail: "This starts a local background process that can load AI models and use system resources."
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/settings/ollama/start",
       method: "POST"
@@ -458,6 +508,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.systemDiagnosticsExport, async (event) => {
     assertTrustedRenderer(event);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm diagnostics export",
+      message: "Create a local diagnostics package?",
+      detail: "The package is saved locally and is not sent automatically. Review it before sharing because it may contain device and environment metadata."
+    });
     const response = await proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/system/diagnostics/export",
       method: "POST"
@@ -567,6 +622,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.mobilePairingCreateCode, async (event) => {
     assertTrustedRenderer(event);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm mobile pairing",
+      message: "Create a new mobile pairing code?",
+      detail: "Anyone who can see the temporary code may attempt to pair a device until it expires."
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/pair/request",
       method: "POST"
@@ -737,7 +797,7 @@ async function ensureDocumentReadGrant(
   }
 }
 
-async function confirmNativeDesktopAction(
+export async function confirmNativeDesktopAction(
   event: IpcMainInvokeEvent,
   options: { title: string; message: string; detail: string }
 ): Promise<void> {

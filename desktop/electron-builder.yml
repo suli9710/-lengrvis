@@ -52,6 +52,15 @@ win:
   # 签名上线后启用更新包签名校验；未签名本地 dist 构建请使用 electron-builder.yml。
   verifyUpdateCodeSignature: true
   extraResources:
+    - from: ../docs/legal
+      to: docs/legal
+      filter:
+        - eula.md
+        - privacy-policy.md
+    - from: ../LICENSE
+      to: LICENSE
+    - from: ../NOTICE
+      to: NOTICE
     - from: ../dist/backend.exe
       to: backend/backend.exe
     - from: ../dist/backend-capabilities.json
@@ -63,6 +72,15 @@ mac:
   category: public.app-category.productivity
   artifactName: ${productName}-${version}-${arch}.${ext}
   extraResources:
+    - from: ../docs/legal
+      to: docs/legal
+      filter:
+        - eula.md
+        - privacy-policy.md
+    - from: ../LICENSE
+      to: LICENSE
+    - from: ../NOTICE
+      to: NOTICE
     - from: ../dist/backend
       to: backend/backend
     - from: ../dist/backend-capabilities.json
@@ -74,6 +92,15 @@ linux:
   category: Utility
   artifactName: ${productName}-${version}-${arch}.${ext}
   extraResources:
+    - from: ../docs/legal
+      to: docs/legal
+      filter:
+        - eula.md
+        - privacy-policy.md
+    - from: ../LICENSE
+      to: LICENSE
+    - from: ../NOTICE
+      to: NOTICE
     - from: ../dist/backend
       to: backend/backend
     - from: ../dist/backend-capabilities.json

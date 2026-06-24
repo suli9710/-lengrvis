@@ -1426,8 +1426,10 @@ def test_mobile_remote_release_docs_keep_counts_command_bound(project_root: Path
             assert "132 passed" not in text, doc_path
             assert "README 不再维护手写的“最近一次测试结果”" in text
             assert "docs/release/current-release-evidence.md" in text
-        else:
-            assert "132 passed" in text, doc_path
+        elif "132 passed" in text:
+            assert "2026-06-09" in text, doc_path
+            assert "backend" in text.casefold(), doc_path
+            assert "targeted" in text.casefold(), doc_path
         for phrase in stale_scheduler_count_phrases:
             assert phrase not in text, doc_path
         if "`9 passed`" in text:

@@ -1,28 +1,26 @@
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 
-import type { ConsentStatusResult } from "../../../shared/consent";
+import type { ConsentRecord, ConsentStatusResult } from "../../../shared/consent";
 import { PrivacyConsentModal } from "./PrivacyConsentModal";
 
 type ConsentBridge = {
   consent?: {
     getStatus: () => Promise<ConsentStatusResult>;
-    accept: (request: { acceptPrivacy?: boolean; acceptEula?: boolean; installerVersion?: string }) => Promise<unknown>;
+    accept: (request: { acceptPrivacy?: boolean; acceptEula?: boolean; installerVersion?: string }) => Promise<ConsentRecord>;
   };
 };
 
 interface ConsentGateProps {
-  children: React.ReactNode;
+  children: ReactNode;
 }
 
-/**
- * Wrap the entire app. On mount, check consent status.
- * If privacy consent is missing, show the modal gate.
- * Once accepted, render children. If declined, close the window.
- */
 export function ConsentGate({ children }: ConsentGateProps) {
-  const [, setConsentStatus] = useState<ConsentStatusResult | null>(null);
+  const [consentStatus, setConsentStatus] = useState<ConsentStatusResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [submissionError, setSubmissionError] = useState("");
+  const [statusError, setStatusError] = useState("");
 
   useEffect(() => {
     let isActive = true;
@@ -35,27 +33,39 @@ export function ConsentGate({ children }: ConsentGateProps) {
       .then((status) => {
         if (!isActive) return;
         setConsentStatus(status);
-        setShowModal(status.needsPrivacyConsent);
+        setShowModal(status.needsEulaConsent || status.needsPrivacyConsent);
         setLoading(false);
       })
       .catch(() => {
         if (!isActive) return;
+        setStatusError("无法读取本机同意记录。应用不会在法律状态未知时继续，请重试或退出。");
         setLoading(false);
       });
-    return () => { isActive = false; };
+    return () => {
+      isActive = false;
+    };
   }, []);
 
   const handleAgree = useCallback(async () => {
     const bridge = (window as unknown as { lengrvis?: ConsentBridge }).lengrvis;
-    if (!bridge?.consent?.accept) return;
+    if (!bridge?.consent?.accept || !consentStatus) return;
+    setSubmissionError("");
     try {
-      await bridge.consent.accept({ acceptPrivacy: true });
+      const record = await bridge.consent.accept({
+        acceptEula: consentStatus.needsEulaConsent,
+        acceptPrivacy: consentStatus.needsPrivacyConsent
+      });
+      if (
+        (consentStatus.needsEulaConsent && !record.eula_accepted_at)
+        || (consentStatus.needsPrivacyConsent && !record.privacy_accepted_at)
+      ) {
+        throw new Error("Consent record was not persisted");
+      }
       setShowModal(false);
     } catch {
-      // If consent write fails, still proceed — user explicitly agreed.
-      setShowModal(false);
+      setSubmissionError("无法保存同意记录。为保护你的选择，应用将保持在此页面，请重试或退出。");
     }
-  }, []);
+  }, [consentStatus]);
 
   const handleDecline = useCallback(() => {
     window.close();
@@ -65,8 +75,39 @@ export function ConsentGate({ children }: ConsentGateProps) {
     return null;
   }
 
+  if (statusError) {
+    return (
+      <div className="privacy-consent-overlay">
+        <div className="privacy-consent-modal" role="alertdialog" aria-modal="true">
+          <div className="privacy-consent-header">
+            <h2 className="privacy-consent-title">无法验证使用条款</h2>
+          </div>
+          <div className="privacy-consent-body">
+            <p className="privacy-consent-error">{statusError}</p>
+          </div>
+          <div className="privacy-consent-actions">
+            <button className="privacy-consent-decline" onClick={handleDecline}>
+              退出
+            </button>
+            <button className="btn btn-primary" onClick={() => window.location.reload()}>
+              重试
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (showModal) {
-    return <PrivacyConsentModal onAgree={handleAgree} onDecline={handleDecline} />;
+    return (
+      <PrivacyConsentModal
+        needsEulaConsent={Boolean(consentStatus?.needsEulaConsent)}
+        needsPrivacyConsent={Boolean(consentStatus?.needsPrivacyConsent)}
+        submissionError={submissionError}
+        onAgree={handleAgree}
+        onDecline={handleDecline}
+      />
+    );
   }
 
   return <>{children}</>;

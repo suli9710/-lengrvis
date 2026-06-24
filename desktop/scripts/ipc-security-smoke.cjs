@@ -123,6 +123,10 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     assert.ok(policy.schema, `${name} must declare its input schema class`);
     assert.ok(policy.capability, `${name} must declare its capability boundary`);
     assert.ok(policy.risk, `${name} must declare its risk class`);
+    if (policy.risk === "sensitive") {
+      assert.notEqual(policy.capability, "backend-token", `${name} sensitive IPC must have a second-factor capability`);
+      assert.notEqual(policy.capability, "trusted-renderer", `${name} sensitive IPC must not rely on renderer trust alone`);
+    }
   }
   assert.equal(
     IPC_CHANNEL_SECURITY_POLICIES.openExternal.capability,
@@ -192,8 +196,18 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   const backendStartHandler = ipcHandlers.get(IPC_CHANNELS.backendStart);
   assert.ok(backendStartHandler, "backend start handler must be registered");
   backendCalls = 0;
+  messageBoxCalls = [];
   await Promise.resolve(backendStartHandler(eventFor("http://127.0.0.1:5173/settings")));
   assert.equal(backendCalls, 1, "trusted renderer should reach backend lifecycle handler");
+  assert.equal(messageBoxCalls.length, 1, "backend start should require native confirmation");
+  backendCalls = 0;
+  messageBoxCalls = [];
+  messageBoxResponses = [1];
+  await assert.rejects(
+    async () => backendStartHandler(eventFor("http://127.0.0.1:5173/settings")),
+    /not confirmed/
+  );
+  assert.equal(backendCalls, 0, "denied backend start confirmation must not reach lifecycle handler");
   backendCalls = 0;
   await assert.rejects(
     async () => backendStartHandler(eventFor("https://evil.example/app")),
@@ -625,9 +639,19 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     for (const testCase of explicitBridgeRequests) {
       const handler = ipcHandlers.get(testCase.channel);
       assert.ok(handler, `${testCase.name} explicit bridge handler must be registered`);
+      const policyName = Object.entries(IPC_CHANNELS).find(([, channel]) => channel === testCase.channel)?.[0];
+      const requiresNativeConfirmation = policyName
+        ? IPC_CHANNEL_SECURITY_POLICIES[policyName].capability === "native-confirmation"
+        : false;
+      messageBoxCalls = [];
       fetchCalls = [];
       const response = await Promise.resolve(handler(eventFor("http://127.0.0.1:5173/settings"), ...testCase.args));
       assert.equal(response.ok, true, `${testCase.name} explicit bridge should call backend`);
+      assert.equal(
+        messageBoxCalls.length,
+        requiresNativeConfirmation ? 1 : 0,
+        `${testCase.name} native confirmation policy must match handler behavior`
+      );
       assert.equal(fetchCalls.length, 1, `${testCase.name} explicit bridge should use fetch once`);
       assert.equal(fetchCalls[0].url, testCase.expectedUrl);
       assert.equal(fetchCalls[0].init.method, testCase.expectedMethod);
@@ -637,6 +661,24 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         /untrusted renderer/,
         `${testCase.name} explicit bridge should reject untrusted renderers`
       );
+    }
+
+    for (const testCase of explicitBridgeRequests) {
+      const policyName = Object.entries(IPC_CHANNELS).find(([, channel]) => channel === testCase.channel)?.[0];
+      if (!policyName || IPC_CHANNEL_SECURITY_POLICIES[policyName].capability !== "native-confirmation") {
+        continue;
+      }
+      const handler = ipcHandlers.get(testCase.channel);
+      messageBoxCalls = [];
+      messageBoxResponses = [1];
+      fetchCalls = [];
+      await assert.rejects(
+        async () => handler(eventFor("http://127.0.0.1:5173/settings"), ...testCase.args),
+        /not confirmed/,
+        `${testCase.name} should stop when native confirmation is denied`
+      );
+      assert.equal(messageBoxCalls.length, 1, `${testCase.name} denied path should ask exactly once`);
+      assert.equal(fetchCalls.length, 0, `${testCase.name} denied path must not call backend`);
     }
 
     const chooseDocumentHandler = ipcHandlers.get(IPC_CHANNELS.chooseDocument);
@@ -814,9 +856,11 @@ async function assertRejectsUntrusted(listener, hostCalls) {
 
     const mobilePairingCreateCodeHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingCreateCode);
     assert.ok(mobilePairingCreateCodeHandler, "mobile pairing create-code handler must be registered");
+    messageBoxCalls = [];
     fetchCalls = [];
     const pairingResponse = await Promise.resolve(mobilePairingCreateCodeHandler(eventFor("http://127.0.0.1:5173/settings")));
     assert.equal(pairingResponse.ok, true, "explicit mobile pairing bridge should call backend");
+    assert.equal(messageBoxCalls.length, 1, "mobile pairing code creation should require native confirmation");
     assert.equal(fetchCalls.length, 1, "explicit mobile pairing bridge should use fetch once");
     assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/pair/request");
     assert.equal(fetchCalls[0].init.method, "POST");
@@ -825,6 +869,16 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       async () => mobilePairingCreateCodeHandler(eventFor("https://evil.example/app")),
       /untrusted renderer/
     );
+
+    messageBoxCalls = [];
+    messageBoxResponses = [1];
+    fetchCalls = [];
+    await assert.rejects(
+      async () => mobilePairingCreateCodeHandler(eventFor("http://127.0.0.1:5173/settings")),
+      /not confirmed/
+    );
+    assert.equal(fetchCalls.length, 0, "denied mobile pairing confirmation must not call backend");
+    assert.equal(messageBoxCalls.length, 1, "denied mobile pairing should ask exactly once");
 
     const mobilePairingGrantHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingCreateRemoteInputGrant);
     assert.ok(mobilePairingGrantHandler, "mobile pairing remote-input grant handler must be registered");
@@ -1015,13 +1069,25 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   const openHandler = handlers.get(IPC_CHANNELS.browserHostOpen);
   assert.ok(openHandler, "browser host open handler must be registered");
   calls = 0;
+  messageBoxCalls = [];
   const openResult = await Promise.resolve(openHandler(eventFor("http://127.0.0.1:5173/browser"), { url: "https://example.test/?token=secret" }));
   assert.equal(calls, 1, "trusted open request should reach BrowserHost");
+  assert.equal(messageBoxCalls.length, 1, "browser host open should require native confirmation");
   assert.equal(
     openResult.error,
     "Navigation failed for https://example.test/#/callback?access_token=[redacted]&client_secret=[redacted]"
   );
   assert.equal(JSON.stringify(openResult).includes("secret-token"), false, "browser host action results must redact tokens in error URLs");
+
+  calls = 0;
+  messageBoxCalls = [];
+  messageBoxResponses = [1];
+  await assert.rejects(
+    async () => openHandler(eventFor("http://127.0.0.1:5173/browser"), { url: "https://example.test/" }),
+    /not confirmed/
+  );
+  assert.equal(calls, 0, "denied browser host confirmation must not reach BrowserHost");
+  assert.equal(messageBoxCalls.length, 1, "denied browser host open should ask exactly once");
 
   const takeoverHandler = handlers.get(IPC_CHANNELS.browserHostTakeover);
   const actionHandler = handlers.get(IPC_CHANNELS.browserHostAction);

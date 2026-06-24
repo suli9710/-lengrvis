@@ -165,17 +165,13 @@ def using_data_dir(data_dir: str | Path | None) -> Iterator[None]:
 
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(db_path())
+    conn = sqlite3.connect(db_path(), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL + busy_timeout: watcher/scheduler threads and async handlers open
     # concurrent connections; without these, writers race into
     # "database is locked" errors under load.
     conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    # P1-6 fix: Set isolation_level=None for explicit transaction control.
-    # Without this, Python's sqlite3 auto-begins transactions on DML and
-    # the BEGIN IMMEDIATE in claim_scheduled_task_run etc. can deadlock.
     conn.execute("PRAGMA busy_timeout = 5000")
     try:
         yield conn

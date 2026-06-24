@@ -3,6 +3,25 @@ apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
+def releaseSigningValues = [
+    keystoreFile: System.getenv('LENGRVIS_ANDROID_KEYSTORE_FILE'),
+    keystorePassword: System.getenv('LENGRVIS_ANDROID_KEYSTORE_PASSWORD'),
+    keyAlias: System.getenv('LENGRVIS_ANDROID_KEY_ALIAS'),
+    keyPassword: System.getenv('LENGRVIS_ANDROID_KEY_PASSWORD')
+]
+def releaseSigningConfigured = releaseSigningValues.values().every { it != null && !it.trim().isEmpty() }
+def releaseSigningPartiallyConfigured = releaseSigningValues.values().any { it != null && !it.trim().isEmpty() } && !releaseSigningConfigured
+def releaseTaskRequested = gradle.startParameter.taskNames.any {
+    def taskName = it.toLowerCase()
+    taskName.contains("release")
+}
+
+if (releaseSigningPartiallyConfigured) {
+    throw new GradleException("Android release signing variables are partially configured. Set all LENGRVIS_ANDROID_* signing variables.")
+}
+if (releaseTaskRequested && !releaseSigningConfigured) {
+    throw new GradleException("Android release builds require all LENGRVIS_ANDROID_* signing variables.")
+}
 
 /**
  * This is the configuration block to customize your React Native Android app.
@@ -120,19 +139,11 @@ android {
         // In production, populate these from environment variables or a
         // secrets file that is NOT committed to the repository.
         release {
-            if (System.getenv('LENGRVIS_ANDROID_KEYSTORE_FILE')) {
-                storeFile file(System.getenv('LENGRVIS_ANDROID_KEYSTORE_FILE'))
-                storePassword System.getenv('LENGRVIS_ANDROID_KEYSTORE_PASSWORD')
-                keyAlias System.getenv('LENGRVIS_ANDROID_KEY_ALIAS')
-                keyPassword System.getenv('LENGRVIS_ANDROID_KEY_PASSWORD')
-            } else {
-                // Fallback: no release signing possible without env vars.
-                // This will cause the release build to produce an unsigned APK
-                // rather than silently using the debug keystore.
-                storeFile file('release.keystore')
-                storePassword ''
-                keyAlias ''
-                keyPassword ''
+            if (releaseSigningConfigured) {
+                storeFile file(releaseSigningValues.keystoreFile)
+                storePassword releaseSigningValues.keystorePassword
+                keyAlias releaseSigningValues.keyAlias
+                keyPassword releaseSigningValues.keyPassword
             }
         }
     }
@@ -141,9 +152,9 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            // P0-2 fix: Use release signing config instead of debug.
+            // Release tasks fail during configuration unless all signing
+            // variables are present, so no unsigned or debug-signed artifact
+            // can be mistaken for a publishable build.
             signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()

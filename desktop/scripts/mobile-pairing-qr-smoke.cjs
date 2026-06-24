@@ -130,8 +130,14 @@ async function main() {
     path.join(__dirname, "..", "src", "renderer", "components", "SettingsPanel.tsx"),
     "utf8",
   );
-  assert.match(settingsSource, /QRCode\.toDataURL\(qrContent\.value/);
-  assert.match(settingsSource, /<img className="mobile-pairing__qr-image" src=\{qrImage\}/);
+  const visualCodeSource = fs.readFileSync(
+    path.join(__dirname, "..", "src", "renderer", "components", "settings", "PairingVisualCode.tsx"),
+    "utf8",
+  );
+  assert.match(settingsSource, /lazy\(\(\) =>\s*import\("\.\/settings\/PairingVisualCode"\)/);
+  assert.match(settingsSource, /<Suspense[\s\S]*<PairingVisualCode/);
+  assert.match(visualCodeSource, /QRCode\.toDataURL\(qrContent\.value/);
+  assert.match(visualCodeSource, /<img className="mobile-pairing__qr-image" src=\{qrImage\}/);
   assert.match(settingsSource, /手机扫码配对/);
   assert.match(settingsSource, /打开手机 App 的扫码入口扫二维码/);
   assert.match(settingsSource, /打开手机 App 扫码/);
@@ -153,6 +159,7 @@ async function main() {
     /<code[^>]*>\s*\{qrContent\.value\}/,
   ].forEach((pattern) => {
     assert.doesNotMatch(settingsSource, pattern);
+    assert.doesNotMatch(visualCodeSource, pattern);
   });
   console.log("desktop mobile pairing QR smoke passed");
 }

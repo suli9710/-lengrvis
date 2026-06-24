@@ -21,7 +21,7 @@ import type {
   BrowserSession
 } from "../shared/types";
 import { buildBackendWebSocketUrl, createDesktopWebSocket } from "./desktopWebSocket";
-import { isTrustedRendererUrl } from "./ipc";
+import { confirmNativeDesktopAction, isTrustedRendererUrl } from "./ipc";
 
 type BrowserContainer =
   | {
@@ -616,6 +616,11 @@ export function registerBrowserHostIpcHandlers({
   });
   handle(IPC_CHANNELS.browserHostOpen, async (event, request) => {
     assertBrowserHostRenderer(event);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm browser session",
+      message: "Open a managed browser session?",
+      detail: "The session may navigate to external websites using the app's configured browser-network permissions."
+    });
     return sanitizeActionResultForRenderer(await host.open(request as BrowserHostOpenRequest));
   });
   handle(IPC_CHANNELS.browserHostShow, (event, sessionId) => {

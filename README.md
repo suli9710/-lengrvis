@@ -160,6 +160,8 @@ Copy-Item .env.example .env
 notepad .env
 ```
 
+`.env.example` 使用发布安全默认值，不会自动启用 MockProvider。仅做本地开发演示且没有真实 LLM 时，可把 `.env.development.example` 中的覆盖项追加到本机未提交的 `.env`；不要将这些开发覆盖用于打包或发布。
+
 设置：
 
 ```text
@@ -184,7 +186,7 @@ LENGRVIS_WIRE_API=responses
 
 `LENGRVIS_API_KEY`、`LENGRVIS_JWT_SECRET` 等敏感值应通过 `.env`、环境变量或外部配置提供，不要提交到仓库，也不要通过 Settings API 持久化。
 
-不配置 `LENGRVIS_API_KEY` 时，效率/混合模式可按 `LENGRVIS_ALLOW_MOCK_FALLBACK` 使用 `MockProvider` 做开发演示。隐私模式始终需要真实本地 LLM 后端。
+不配置 `LENGRVIS_API_KEY` 时，效率/混合模式只有在开发者显式设置 `LENGRVIS_ALLOW_MOCK_FALLBACK=true` 后才会使用 `MockProvider` 做演示。隐私模式始终需要真实本地 LLM 后端。
 
 ## 运行
 

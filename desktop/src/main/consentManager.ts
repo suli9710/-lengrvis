@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { assertTrustedRenderer } from "./ipc";
 import {
   LEGAL_VERSIONS,
+  mergeConsentRecord,
   needsEulaReconsent,
   needsPrivacyReconsent,
   type AcceptConsentRequest,
@@ -57,14 +58,7 @@ export function readConsentRecord(): ConsentRecord | null {
 /** Atomically write (or merge) the consent record. */
 export function writeConsentRecord(patch: Partial<ConsentRecord>): ConsentRecord {
   const existing = readConsentRecord();
-  const next: ConsentRecord = {
-    eula_version: patch.eula_version ?? existing?.eula_version ?? LEGAL_VERSIONS.eula,
-    eula_accepted_at: patch.eula_accepted_at ?? existing?.eula_accepted_at ?? new Date().toISOString(),
-    privacy_version: patch.privacy_version ?? existing?.privacy_version ?? LEGAL_VERSIONS.privacy,
-    privacy_accepted_at: patch.privacy_accepted_at ?? existing?.privacy_accepted_at ?? null,
-    installer_version: patch.installer_version ?? existing?.installer_version ?? null,
-    platform: patch.platform ?? existing?.platform ?? process.platform,
-  };
+  const next = mergeConsentRecord(existing, patch, process.platform);
   const filePath = getConsentFilePath();
   const dir = join(filePath, "..");
   if (!existsSync(dir)) {
@@ -77,7 +71,7 @@ export function writeConsentRecord(patch: Partial<ConsentRecord>): ConsentRecord
 export function resolveLegalDocPath(docId: LegalDocId): string {
   const appRoot = app.isPackaged
     ? process.resourcesPath
-    : join(app.getAppPath(), "..", "..", "..");
+    : join(app.getAppPath(), "..");
   switch (docId) {
     case "privacy-policy":
       return join(appRoot, "docs", "legal", "privacy-policy.md");
@@ -114,14 +108,18 @@ export function registerConsentIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.consentAccept, (event: IpcMainInvokeEvent, rawRequest: unknown): ConsentRecord => {
     assertTrustedRenderer(event);
     const request = normalizeAcceptConsentRequest(rawRequest);
+    if (!request.acceptEula && !request.acceptPrivacy) {
+      throw new Error("At least one legal document must be explicitly accepted");
+    }
     const patch: Partial<ConsentRecord> = {};
+    const acceptedAt = new Date().toISOString();
     if (request?.acceptEula) {
       patch.eula_version = LEGAL_VERSIONS.eula;
-      patch.eula_accepted_at = new Date().toISOString();
+      patch.eula_accepted_at = acceptedAt;
     }
     if (request?.acceptPrivacy) {
       patch.privacy_version = LEGAL_VERSIONS.privacy;
-      patch.privacy_accepted_at = new Date().toISOString();
+      patch.privacy_accepted_at = acceptedAt;
     }
     if (request?.installerVersion) {
       patch.installer_version = request.installerVersion;

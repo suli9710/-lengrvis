@@ -452,12 +452,28 @@ $strictEvidenceContract = [ordered]@{
 $appJsonPath = Join-Path $mobileRoot "app.json"
 $easJsonPath = Join-Path $mobileRoot "eas.json"
 $mobilePackagePath = Join-Path $mobileRoot "package.json"
+$androidGradlePath = Join-Path $mobileRoot "android\app\build.gradle"
 $rootPackagePath = Join-Path $resolvedRoot "package.json"
 
 $appJson = Read-JsonFile $appJsonPath "mobile_app_json" $sourceIssues
 $easJson = Read-JsonFile $easJsonPath "mobile_eas_json" $sourceIssues
 $mobilePackage = Read-JsonFile $mobilePackagePath "mobile_package_json" $sourceIssues
+$androidGradleSource = Read-TextFile $androidGradlePath "android_app_build_gradle" $sourceIssues
 $rootPackage = Read-JsonFile $rootPackagePath "root_package_json" $sourceIssues
+
+foreach ($fragment in @(
+    "releaseSigningConfigured",
+    "releaseTaskRequested",
+    "throw new GradleException",
+    "signingConfig signingConfigs.release"
+)) {
+    if ($androidGradleSource.IndexOf($fragment, [System.StringComparison]::Ordinal) -lt 0) {
+        Add-Issue $sourceIssues "android_release_signing_not_fail_closed" "mobile/android/app/build.gradle must include '$fragment' in its fail-closed release signing path."
+    }
+}
+if ($androidGradleSource.IndexOf("release.keystore", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    Add-Issue $sourceIssues "android_placeholder_release_keystore" "Android release signing must not fall back to a placeholder release.keystore."
+}
 
 if ($null -ne $appJson) {
     $expo = Get-PropertyValue $appJson "expo"
@@ -505,6 +521,16 @@ if ($null -ne $appJson) {
             Add-Issue $sourceIssues "missing_android_permission" "expo.android.permissions must include $permission."
         }
     }
+    $blockedPermissions = @(Get-PropertyValue $android "blockedPermissions")
+    foreach ($permission in @(
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+    )) {
+        if ($blockedPermissions -notcontains $permission) {
+            Add-Issue $sourceIssues "android_permission_not_blocked" "expo.android.blockedPermissions must include $permission."
+        }
+    }
 
     $cameraPlugin = $null
     $hardeningPluginFound = $false
@@ -534,9 +560,9 @@ if ($null -ne $appJson) {
     foreach ($fragment in @(
         "network_security_config",
         'certificates src="system"',
-        'certificates src="user"',
         'cleartextTrafficPermitted="false"',
         'mainApplication.$["android:allowBackup"] = "false"',
+        "AndroidConfig.Permissions.removePermissions",
         "android:networkSecurityConfig",
         "android:usesCleartextTraffic",
         "WindowManager.LayoutParams.FLAG_SECURE"
@@ -544,6 +570,9 @@ if ($null -ne $appJson) {
         if ($hardeningPluginSource.IndexOf($fragment, [System.StringComparison]::Ordinal) -lt 0) {
             Add-Issue $sourceIssues "android_hardening_plugin_contract_mismatch" "Android hardening plugin must include '$fragment' for LAN TLS trust and remote-screen screenshot protection."
         }
+    }
+    if ($hardeningPluginSource -match '<certificates\s+src="user"') {
+        Add-Issue $sourceIssues "android_user_ca_trust_enabled" "Android release network security must not trust user-installed CAs by default."
     }
 }
 
@@ -596,6 +625,15 @@ if ($null -ne $mobilePackage) {
     }
     if ([string]::IsNullOrWhiteSpace((Get-PropertyValue $devDependencies "eas-cli"))) {
         Add-Issue $sourceIssues "missing_mobile_eas_cli_dev_dependency" "mobile/package.json must include devDependency eas-cli so APK builds do not rely on a global EAS CLI install."
+    }
+    foreach ($dependencyGroupName in @("dependencies", "devDependencies")) {
+        $dependencyGroup = Get-PropertyValue $mobilePackage $dependencyGroupName
+        foreach ($dependency in @($dependencyGroup.PSObject.Properties)) {
+            $version = [string]$dependency.Value
+            if ($version -match '^[\^~<>=*]') {
+                Add-Issue $sourceIssues "mobile_dependency_not_exact" "mobile/package.json $dependencyGroupName.$($dependency.Name) must use an exact version for reproducible release builds."
+            }
+        }
     }
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "preflight:android-release" @("verify_android_release_gate.ps1", "-PreflightOnly")
     Add-RequiredScriptFragmentIssue $sourceIssues $scripts "build:android:preview" @("preflight:android-release", "eas build", "--platform android", "--profile preview", "--non-interactive")

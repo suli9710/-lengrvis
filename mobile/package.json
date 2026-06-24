@@ -18,28 +18,31 @@
     "smoke:android-back": "node scripts/android-back-navigation-smoke.cjs"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "^3.1.0",
-    "expo": "^56.0.5",
-    "expo-camera": "~56.0.7",
-    "expo-device": "^56.0.4",
-    "expo-notifications": "^56.0.13",
-    "expo-secure-store": "~56.0.4",
-    "lucide-react-native": "^1.16.0",
-    "react": "^19.2.6",
-    "react-native": "^0.85.3"
+    "@react-native-async-storage/async-storage": "3.1.0",
+    "expo": "56.0.5",
+    "expo-camera": "56.0.7",
+    "expo-device": "56.0.4",
+    "expo-notifications": "56.0.13",
+    "expo-secure-store": "56.0.4",
+    "lucide-react-native": "1.16.0",
+    "react": "19.2.6",
+    "react-native": "0.85.3"
   },
   "devDependencies": {
-    "@types/react": "^19.2.15",
-    "eas-cli": "^20.1.0",
-    "typescript": "~5.9.3"
+    "@types/react": "19.2.15",
+    "eas-cli": "20.3.0",
+    "typescript": "5.9.3"
   },
   "overrides": {
     "@xmldom/xmldom": "0.8.13",
     "ajv": "8.18.0",
     "diff": "8.0.3",
+    "joi": "17.13.4",
+    "js-yaml": "4.2.0",
     "minimatch": "10.2.5",
     "node-forge": "1.4.0",
-    "tar": "7.5.11",
+    "tar": "7.5.16",
+    "ts-deepmerge": "8.0.0",
     "uuid": "11.1.1",
     "yaml": "2.8.3"
   }

@@ -2,6 +2,7 @@
   "name": "lengrvis",
   "private": true,
   "version": "0.1.0",
+  "license": "BUSL-1.1",
   "description": "Lengrvis workspace packaging and QA scripts",
   "scripts": {
     "dev": "powershell -ExecutionPolicy Bypass -File ./scripts/dev.ps1",

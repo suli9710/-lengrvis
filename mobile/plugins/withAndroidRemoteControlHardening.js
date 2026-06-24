@@ -6,8 +6,8 @@ const path = require("path");
 // http://127.0.0.1 / http://localhost (emulator and adb-reverse pairing flows);
 // without this domain-config the release build would block that path at the
 // network layer while the client UI still offers it.
-// P1-14 fix: <certificates src="user" /> removed — only system trust anchors
-// are accepted to prevent MITM via user-installed CA certificates.
+// User-installed CA trust is intentionally omitted; only system trust anchors
+// are accepted to reduce MITM risk.
 const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
   <base-config cleartextTrafficPermitted="false">
@@ -25,9 +25,15 @@ const NETWORK_SECURITY_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 // P1-17 fix: Use regex to detect an actual setFlags call with FLAG_SECURE,
 // not just a string mention (which could be in a comment or import).
 const FLAG_SECURE_CALL_RE = /\b(?:window|getWindow\(\))\.setFlags\s*\([^)]*FLAG_SECURE[^)]*\)/;
+const BLOCKED_ANDROID_PERMISSIONS = [
+  "android.permission.READ_EXTERNAL_STORAGE",
+  "android.permission.SYSTEM_ALERT_WINDOW",
+  "android.permission.WRITE_EXTERNAL_STORAGE",
+];
 
 function withAndroidNetworkSecurityConfig(config) {
   config = withAndroidManifest(config, (modConfig) => {
+    AndroidConfig.Permissions.removePermissions(modConfig.modResults, BLOCKED_ANDROID_PERMISSIONS);
     const mainApplication = AndroidConfig.Manifest.getMainApplicationOrThrow(modConfig.modResults);
     mainApplication.$["android:allowBackup"] = "false";
     mainApplication.$["android:networkSecurityConfig"] = "@xml/network_security_config";

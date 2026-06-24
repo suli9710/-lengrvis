@@ -10956,3 +10956,138 @@ select:focus-visible,
     width: 100%;
   }
 }
+
+.privacy-consent-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(18, 25, 43, 0.58);
+}
+
+.privacy-consent-modal {
+  width: min(680px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.privacy-consent-header,
+.privacy-consent-body,
+.privacy-consent-actions {
+  padding: 20px 24px;
+}
+
+.privacy-consent-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.privacy-consent-title,
+.privacy-consent-full-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.privacy-consent-body {
+  display: grid;
+  gap: 16px;
+}
+
+.privacy-consent-summary-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-soft);
+}
+
+.privacy-consent-summary-item strong {
+  color: var(--text);
+}
+
+.privacy-consent-document-links,
+.privacy-consent-checkboxes {
+  display: grid;
+  gap: 8px;
+}
+
+.privacy-consent-full-link {
+  width: fit-content;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand-deep);
+  cursor: pointer;
+}
+
+.privacy-consent-full-link:disabled {
+  color: var(--muted);
+  cursor: wait;
+}
+
+.privacy-consent-checkboxes label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+}
+
+.privacy-consent-checkboxes input {
+  margin-top: 3px;
+}
+
+.privacy-consent-error {
+  margin: 0;
+  color: var(--red);
+}
+
+.privacy-consent-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.privacy-consent-decline {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.privacy-consent-full-doc {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.privacy-consent-full-title {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.privacy-consent-full-body {
+  margin: 0;
+  padding: 20px 24px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: var(--text-soft);
+  font: inherit;
+}
+
+@media (max-width: 640px) {
+  .privacy-consent-overlay {
+    padding: 12px;
+  }
+
+  .privacy-consent-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+}

@@ -1,5 +1,6 @@
 Lengrvis
 Copyright © 2026 cow milk. All rights reserved.
+Lengrvis is licensed under the Business Source License 1.1. See LICENSE.
 
 本产品使用以下开源软件组件，在此对原作者表示感谢。各组件受其各自许可证约束。
 
@@ -32,10 +33,6 @@ Playwright (>=1.40) — Apache 2.0 — Copyright © Microsoft Corporation
 
 Expo SDK (>=50) — MIT — Copyright © 650 Industries, Inc.
 React Native (>=0.73) — MIT — Copyright © Meta Platforms, Inc. and affiliates
-
-== 监控与遥测 ==
-
-Sentry SDK (Python/JS) (>=1) — MIT — Copyright © Sentry Inc.
 
 == 其他工具链 ==
 

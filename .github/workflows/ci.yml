@@ -48,6 +48,9 @@ jobs:
         run: |
           python -m pip install -U pip
           python -m pip install -r backend/requirements-lock.txt -r requirements-dev.txt
+          python -m pip install pip-audit
+      - name: Backend dependency audit gate
+        run: python -m pip_audit -r backend/requirements-lock.txt --disable-pip --no-deps
       - name: Install Playwright Chromium (browser tool tests)
         run: python -m playwright install chromium
       - name: Backend test suite

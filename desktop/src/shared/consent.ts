@@ -8,7 +8,7 @@
 /** Current EULA and privacy policy versions. Bump when legal docs change. */
 export const LEGAL_VERSIONS = {
   eula: "v1.0",
-  privacy: "v1.0",
+  privacy: "v1.1",
 } as const;
 
 /** Legal document identifiers for the about/settings page. */
@@ -65,6 +65,27 @@ export function needsEulaReconsent(record: ConsentRecord | null): boolean {
     return true;
   }
   return compareMajorMinor(record.eula_version, LEGAL_VERSIONS.eula) !== 0;
+}
+
+export function mergeConsentRecord(
+  existing: ConsentRecord | null,
+  patch: Partial<ConsentRecord>,
+  platform: string
+): ConsentRecord {
+  return {
+    eula_version: patch.eula_version ?? existing?.eula_version ?? LEGAL_VERSIONS.eula,
+    eula_accepted_at: patch.eula_accepted_at !== undefined
+      ? patch.eula_accepted_at
+      : existing?.eula_accepted_at ?? null,
+    privacy_version: patch.privacy_version ?? existing?.privacy_version ?? LEGAL_VERSIONS.privacy,
+    privacy_accepted_at: patch.privacy_accepted_at !== undefined
+      ? patch.privacy_accepted_at
+      : existing?.privacy_accepted_at ?? null,
+    installer_version: patch.installer_version !== undefined
+      ? patch.installer_version
+      : existing?.installer_version ?? null,
+    platform: patch.platform !== undefined ? patch.platform : existing?.platform ?? platform,
+  };
 }
 
 /**
