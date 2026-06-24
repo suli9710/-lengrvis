@@ -12,6 +12,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from tls_test_material import write_lan_tls_material
 
 from app.core import db
 from app.core.schemas import Approval, Plan, PlanStep, StepStatus, Task, TaskStatus, Wakeup
@@ -33,7 +34,6 @@ from app.services.approval_event_service import publish_approval_created
 from app.services.guardian_scheduler import GuardianScheduler
 from app.services.scheduler_service import Scheduler, _utc_now
 from app.services.settings_service import update_settings
-from tls_test_material import write_lan_tls_material
 
 
 async def _backend_unavailable() -> bool:
