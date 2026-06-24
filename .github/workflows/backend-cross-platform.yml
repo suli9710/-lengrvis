@@ -70,4 +70,8 @@ jobs:
       - name: Backend test suite
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          # GitHub's ephemeral macOS login keychain can accept a write and then
+          # immediately lose the item. Product keyring behavior has deterministic
+          # mocked coverage; the full suite uses the sanctioned test fallback.
+          PYTHON_KEYRING_BACKEND: keyring.backends.fail.Keyring
         run: python -m pytest backend/tests -q
