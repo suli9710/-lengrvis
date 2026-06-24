@@ -36,6 +36,10 @@ function Protect-Label {
     $text = [regex]::Replace($text, "(?i)\b(?:token|secret|password|pairing[_ -]?code|otp)\s*[:=]\s*[A-Za-z0-9._~+/=-]+", "[redacted-sensitive]")
     $text = [regex]::Replace($text, "(?i)\b(?:deviceId|device_id|grantId|grant_id)\s*[:=]\s*[A-Za-z0-9._~:/-]+", "[redacted-id]")
     $text = [regex]::Replace($text, "[A-Za-z]:\\[^\s,;]+", "[redacted-path]")
+    # POSIX absolute paths (CI runners on Linux/macOS) are not drive-letter
+    # rooted; redact temp/home roots so private filesystem paths never leak into
+    # shared evidence artifacts the way Windows C:\ paths are already scrubbed.
+    $text = [regex]::Replace($text, "(?:/private)?(?:/var/folders|/var/tmp|/tmp|/Users/[^/\s,;]+|/home/[^/\s,;]+|/root)(?:/[^\s,;]*)?", "[redacted-path]")
     return $text
 }
 
