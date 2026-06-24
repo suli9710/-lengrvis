@@ -109,7 +109,7 @@ Function WriteConsentRecord
   FileWrite $2 '{$\r\n'
   FileWrite $2 '  "eula_version": "v1.0",$\r\n'
   FileWrite $2 '  "eula_accepted_at": "__installer__",$\r\n'
-  FileWrite $2 '  "privacy_version": "v1.1",$\r\n'
+  FileWrite $2 '  "privacy_version": "v1.2",$\r\n'
   FileWrite $2 '  "privacy_accepted_at": null,$\r\n'
   FileWrite $2 '  "installer_version": "${VERSION}",$\r\n'
   FileWrite $2 '  "platform": "windows"$\r\n'

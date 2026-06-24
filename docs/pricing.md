@@ -46,10 +46,12 @@ LENGRVIS_PLAN=free   # free | pro | team
 ```
 
 - 套餐属于部署 / 授权属性，来源以环境变量 `LENGRVIS_PLAN` 为准。
+- 正式付费发行必须设置 `LENGRVIS_COMMERCIAL_RELEASE=true`；此时 `LENGRVIS_PLAN` 仅是配置提示，不能绕过许可证直接解锁 Pro/Team，缺失、过期、吊销或验签失败都会回退 Free。
 - 取值大小写不敏感，并接受常见别名（如 `professional`→pro、`team-self-hosted` / `enterprise`→team）；无法识别时回退到 `free`。
 - 在代码中通过 `app.commerce.entitlements` 判定：`has_feature(plan, feature)` 做布尔判定，`require_feature(plan, feature)` 在未准入时抛出 `EntitlementError`（HTTP 402）。
 - 桌面“设置 → 套餐与授权”会显示当前套餐、已启用能力、云端额度、授权主体和到期时间。
 - 官方签发的 Ed25519 离线许可证可从该入口导入；导入前会验签和校验有效期，成功后原子写入本机数据目录。组织通过环境变量管理的许可证不能被桌面覆盖。
+- 新签发许可证包含稳定 `license_id`；退款、拒付、换发或管理员撤销通过签名吊销清单生效。离线吊销需要客户或管理员部署更新后的清单，不是实时在线吊销。
 
 ## 5. 后续路线 (Roadmap)
 
@@ -57,6 +59,6 @@ LENGRVIS_PLAN=free   # free | pro | team
 
 - 套餐与许可证状态 API、桌面可见入口和离线 Ed25519 导入已落地。
 - 云端用量计量与可选强制限流已落地；正式套餐额度仍需与真实托管成本和支付账单对齐。
-- 在线激活、设备迁移、吊销同步、退款后自动降级和完整订阅生命周期仍待实现。
+- 离线签发、换发关联、签名吊销清单和退款后本机降级已落地；在线激活、自动吊销同步和完整订阅生命周期仍待实现。
 - 支付、税务、发票、订单、续费通知和客服工单尚未接入。
 - 审计导出与策略管控（Team 档）的具体落地。

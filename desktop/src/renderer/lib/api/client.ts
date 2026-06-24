@@ -35,6 +35,8 @@ import type {
   CommerceQuotaStatus,
   ContextUsage,
   DesktopWebSocketSubscribeRequest,
+  DesktopPrivacyEraseRequest,
+  DesktopPrivacyEraseResponse,
   DiagnosticExportResult,
   DocumentAskRequest,
   DocumentAskResponse,
@@ -65,6 +67,7 @@ import type {
   PerceptionSuggestionLaunchRequest,
   PerceptionSuggestionLaunchResponse,
   Plan,
+  PrivacyEraseResult,
   SafetyReview,
   SkillImportResult,
   SkillsCatalog,
@@ -1004,6 +1007,34 @@ export class LengrvisApiClient {
     return request.then((response) => mapResponse(response, mapDiagnosticExportResult));
   }
 
+  eraseLocalData(request: DesktopPrivacyEraseRequest): Promise<ApiResponse<PrivacyEraseResult>> {
+    if (!window.lengrvis?.privacy) {
+      return Promise.resolve({
+        ok: false,
+        status: 0,
+        error: {
+          code: "DESKTOP_REQUIRED",
+          message: "删除本机数据需要在 Electron 桌面应用中完成"
+        },
+        receivedAt: new Date().toISOString()
+      });
+    }
+    return window.lengrvis.privacy
+      .eraseLocalData(request)
+      .then((response: ApiResponse<DesktopPrivacyEraseResponse>) =>
+        mapResponse(response, (data) => ({
+          scope: data.scope,
+          deletedRowsByTable: data.deleted.rows_by_table,
+          deletedRowsTotal: Number(data.deleted.rows_total || 0),
+          deletedDiagnosticPackages: Number(data.deleted.diagnostic_packages || 0),
+          preserved: Array.isArray(data.preserved) ? data.preserved.map(String) : [],
+          settingsReset: !data.preserved.includes("app_settings"),
+          manualLogCleanupRequired: data.manual_cleanup?.log_dirs === "not_deleted_at_runtime_see_settings_system_info",
+          auditRecorded: data.audit === "erase_event_appended_to_local_audit_chain"
+        }))
+      );
+  }
+
   listApps(): Promise<ApiResponse<InstalledApp[]>> {
     return this.request<BackendAppsResponse>({ endpoint: "/api/apps" }).then((response) =>
       mapResponse(response, (data) => data.apps.map(mapInstalledApp))
@@ -1645,8 +1676,15 @@ function mapCommerceLicenseStatus(data: BackendCommerceLicenseStatus): CommerceL
     present: Boolean(data.present),
     active: Boolean(data.active),
     expired: Boolean(data.expired),
+    revoked: Boolean(data.revoked),
     verifierConfigured: Boolean(data.verifier_configured),
     managedBy: data.managed_by ?? undefined,
+    licenseId: data.license_id ?? undefined,
+    issuer: data.issuer ?? undefined,
+    replaces: data.replaces ?? undefined,
+    revocationCapable: Boolean(data.revocation_capable),
+    revocationSource: data.revocation_source ?? undefined,
+    revocationGeneratedAt: data.revocation_generated_at ?? undefined,
     plan: data.plan,
     subject: data.subject || undefined,
     seats: data.seats,

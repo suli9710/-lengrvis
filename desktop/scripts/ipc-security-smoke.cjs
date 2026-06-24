@@ -427,6 +427,14 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       {
         name: "diagnostics export through generic API",
         request: { endpoint: "/api/system/diagnostics/export", method: "POST" }
+      },
+      {
+        name: "privacy erase through generic API",
+        request: {
+          endpoint: "/api/system/privacy/erase-local-data",
+          method: "POST",
+          body: { confirm: "erase-local-data", include_settings: false }
+        }
       }
     ];
 
@@ -521,6 +529,14 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         expectedUrl: "http://127.0.0.1:8000/api/system/diagnostics/export",
         expectedMethod: "POST",
         expectedBody: undefined
+      },
+      {
+        name: "privacy erase",
+        channel: IPC_CHANNELS.privacyEraseLocalData,
+        args: [{ confirmationText: "删除本机数据", includeSettings: false }],
+        expectedUrl: "http://127.0.0.1:8000/api/system/privacy/erase-local-data",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ confirm: "erase-local-data", include_settings: false })
       },
       {
         name: "settings sensitive confirmation",
@@ -680,6 +696,31 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       assert.equal(messageBoxCalls.length, 1, `${testCase.name} denied path should ask exactly once`);
       assert.equal(fetchCalls.length, 0, `${testCase.name} denied path must not call backend`);
     }
+
+    const privacyEraseHandler = ipcHandlers.get(IPC_CHANNELS.privacyEraseLocalData);
+    messageBoxCalls = [];
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        privacyEraseHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          confirmationText: "erase-local-data",
+          includeSettings: false
+        }),
+      /confirmation text does not match/,
+      "privacy erase must require the exact user-facing confirmation phrase"
+    );
+    assert.equal(messageBoxCalls.length, 0, "invalid privacy phrase must fail before native confirmation");
+    assert.equal(fetchCalls.length, 0, "invalid privacy phrase must fail before backend fetch");
+    await assert.rejects(
+      async () =>
+        privacyEraseHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          confirmationText: "删除本机数据",
+          includeSettings: false,
+          confirm: "erase-local-data"
+        }),
+      /field is not allowed/,
+      "privacy erase bridge must reject renderer-supplied backend confirmation fields"
+    );
 
     const chooseDocumentHandler = ipcHandlers.get(IPC_CHANNELS.chooseDocument);
     const documentParseHandler = ipcHandlers.get(IPC_CHANNELS.documentsParse);

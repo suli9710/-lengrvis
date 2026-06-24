@@ -41,7 +41,12 @@ LICENSE_KEY_ENV_VAR = "LENGRVIS_LICENSE_KEY"
 LICENSE_PUBLIC_KEY_ENV_VAR = "LENGRVIS_LICENSE_PUBLIC_KEY"
 LICENSE_SIGNING_KEY_ENV_VAR = "LENGRVIS_LICENSE_SIGNING_KEY"  # Deprecated HMAC-era name; ignored by runtime load.
 LICENSE_FILE_NAME = "license.key"
+LICENSE_REVOCATIONS_ENV_VAR = "LENGRVIS_LICENSE_REVOCATIONS"
+LICENSE_REVOCATIONS_FILE_NAME = "license-revocations.key"
+COMMERCIAL_RELEASE_ENV_VAR = "LENGRVIS_COMMERCIAL_RELEASE"
 MAX_LICENSE_TOKEN_BYTES = 64 * 1024
+MAX_REVOCATION_TOKEN_BYTES = 1024 * 1024
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 class LicenseError(AppError):
@@ -54,7 +59,10 @@ class LicenseError(AppError):
 @dataclass(frozen=True)
 class License:
     plan: Plan
+    license_id: str = ""
     subject: str = ""
+    issuer: str = ""
+    replaces: str = ""
     issued_at: datetime | None = None
     expires_at: datetime | None = None
     seats: int = 0
@@ -70,6 +78,18 @@ class License:
         return not self.is_expired(now=now)
 
 
+@dataclass(frozen=True)
+class RevocationManifest:
+    generated_at: datetime | None
+    issuer: str
+    revoked_license_ids: frozenset[str]
+    records: tuple[dict[str, Any], ...]
+    payload: dict[str, Any] = field(default_factory=dict)
+
+    def is_revoked(self, license_id: str) -> bool:
+        return bool(license_id) and license_id in self.revoked_license_ids
+
+
 def _license_file_path(settings: Any | None) -> Path | None:
     data_dir = getattr(settings, "data_dir", "") if settings is not None else ""
     if not data_dir:
@@ -77,11 +97,31 @@ def _license_file_path(settings: Any | None) -> Path | None:
     return Path(str(data_dir)).expanduser().resolve() / LICENSE_FILE_NAME
 
 
+def _revocation_file_path(settings: Any | None) -> Path | None:
+    data_dir = getattr(settings, "data_dir", "") if settings is not None else ""
+    if not data_dir:
+        return None
+    return Path(str(data_dir)).expanduser().resolve() / LICENSE_REVOCATIONS_FILE_NAME
+
+
 def _license_token_with_source(settings: Any | None) -> tuple[str, str | None]:
     env_token = os.getenv(LICENSE_KEY_ENV_VAR)
     if env_token and env_token.strip():
         return env_token.strip(), "environment"
     path = _license_file_path(settings)
+    if path is None:
+        return "", None
+    try:
+        return path.read_text(encoding="utf-8").strip(), "file"
+    except OSError:
+        return "", None
+
+
+def _revocation_token_with_source(settings: Any | None) -> tuple[str, str | None]:
+    env_token = os.getenv(LICENSE_REVOCATIONS_ENV_VAR)
+    if env_token and env_token.strip():
+        return env_token.strip(), "environment"
+    path = _revocation_file_path(settings)
     if path is None:
         return "", None
     try:
@@ -119,13 +159,13 @@ def _load_public_key(public_key: str) -> Ed25519PublicKey:
         raise LicenseError("License public key is invalid", code="license_public_key_invalid") from exc
 
 
-def _load_private_key(private_key: str) -> Ed25519PrivateKey:
+def _load_private_key(private_key: str, *, password: bytes | None = None) -> Ed25519PrivateKey:
     text = str(private_key or "").strip()
     if not text:
         raise LicenseError("A private signing key is required to sign a license")
     try:
-        if "BEGIN PRIVATE KEY" in text:
-            key = serialization.load_pem_private_key(text.encode("utf-8"), password=None)
+        if "PRIVATE KEY" in text:
+            key = serialization.load_pem_private_key(text.encode("utf-8"), password=password)
             if not isinstance(key, Ed25519PrivateKey):
                 raise LicenseError("License private key must be Ed25519", code="license_private_key_invalid")
             return key
@@ -136,12 +176,26 @@ def _load_private_key(private_key: str) -> Ed25519PrivateKey:
         raise LicenseError("License private key is invalid", code="license_private_key_invalid") from exc
 
 
-def sign_license(payload: dict[str, Any], private_key: str) -> str:
-    """Produce a ``<body>.<signature>`` Ed25519 license token (test/admin helper)."""
-    signer = _load_private_key(private_key)
+def _sign_payload(payload: dict[str, Any], private_key: str, *, password: bytes | None = None) -> str:
+    signer = _load_private_key(private_key, password=password)
     body = _b64url_encode(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     signature = signer.sign(body.encode("ascii"))
     return f"{body}.{_b64url_encode(signature)}"
+
+
+def sign_license(payload: dict[str, Any], private_key: str, *, password: bytes | None = None) -> str:
+    """Produce a ``<body>.<signature>`` Ed25519 license token (test/admin helper)."""
+    return _sign_payload(payload, private_key, password=password)
+
+
+def sign_revocation_manifest(
+    payload: dict[str, Any],
+    private_key: str,
+    *,
+    password: bytes | None = None,
+) -> str:
+    """Sign a revocation manifest with the same offline Ed25519 trust root."""
+    return _sign_payload(payload, private_key, password=password)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -163,29 +217,34 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def parse_license(token: str, public_key: str) -> License:
-    """Verify the token signature and decode it (raises :class:`LicenseError`)."""
+def _parse_signed_payload(token: str, public_key: str, *, label: str) -> dict[str, Any]:
     if not token or not token.strip():
-        raise LicenseError("License token is empty")
+        raise LicenseError(f"{label} token is empty")
     body, _, signature = token.strip().partition(".")
     if not body or not signature:
-        raise LicenseError("License token is malformed")
+        raise LicenseError(f"{label} token is malformed")
     verifier = _load_public_key(public_key)
     try:
         verifier.verify(_b64url_decode(signature), body.encode("ascii"))
     except InvalidSignature as exc:
-        raise LicenseError("License signature does not match", code="license_signature_mismatch") from exc
+        raise LicenseError(f"{label} signature does not match", code="license_signature_mismatch") from exc
     except LicenseError:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise LicenseError("License signature is invalid", code="license_signature_invalid") from exc
+        raise LicenseError(f"{label} signature is invalid", code="license_signature_invalid") from exc
     raw = _b64url_decode(body)
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise LicenseError("License payload is not valid JSON") from exc
+        raise LicenseError(f"{label} payload is not valid JSON") from exc
     if not isinstance(payload, dict):
-        raise LicenseError("License payload must be a JSON object")
+        raise LicenseError(f"{label} payload must be a JSON object")
+    return payload
+
+
+def parse_license(token: str, public_key: str) -> License:
+    """Verify the token signature and decode it (raises :class:`LicenseError`)."""
+    payload = _parse_signed_payload(token, public_key, label="License")
     seats_raw = payload.get("seats", 0)
     try:
         seats = max(0, int(seats_raw))
@@ -193,7 +252,10 @@ def parse_license(token: str, public_key: str) -> License:
         seats = 0
     return License(
         plan=normalize_plan(payload.get("plan")),
+        license_id=str(payload.get("license_id") or payload.get("jti") or "").strip(),
         subject=str(payload.get("subject") or payload.get("sub") or ""),
+        issuer=str(payload.get("issuer") or payload.get("iss") or ""),
+        replaces=str(payload.get("replaces") or "").strip(),
         issued_at=_parse_datetime(payload.get("issued_at") or payload.get("iat")),
         expires_at=_parse_datetime(payload.get("expires_at") or payload.get("exp")),
         seats=seats,
@@ -201,11 +263,57 @@ def parse_license(token: str, public_key: str) -> License:
     )
 
 
-def verify_license(token: str, public_key: str, *, now: datetime | None = None) -> License:
+def parse_revocation_manifest(token: str, public_key: str) -> RevocationManifest:
+    payload = _parse_signed_payload(token, public_key, label="License revocation manifest")
+    if payload.get("schema") != 1:
+        raise LicenseError(
+            "License revocation manifest schema is unsupported",
+            code="license_revocation_schema_invalid",
+        )
+    raw_records = payload.get("revoked")
+    if not isinstance(raw_records, list):
+        raise LicenseError(
+            "License revocation manifest must contain a revoked list",
+            code="license_revocation_payload_invalid",
+        )
+    records: list[dict[str, Any]] = []
+    revoked_ids: set[str] = set()
+    for item in raw_records:
+        if not isinstance(item, dict):
+            raise LicenseError(
+                "License revocation record must be an object",
+                code="license_revocation_payload_invalid",
+            )
+        license_id = str(item.get("license_id") or "").strip()
+        if not license_id:
+            raise LicenseError(
+                "License revocation record is missing license_id",
+                code="license_revocation_payload_invalid",
+            )
+        records.append(dict(item))
+        revoked_ids.add(license_id)
+    return RevocationManifest(
+        generated_at=_parse_datetime(payload.get("generated_at")),
+        issuer=str(payload.get("issuer") or ""),
+        revoked_license_ids=frozenset(revoked_ids),
+        records=tuple(records),
+        payload=payload,
+    )
+
+
+def verify_license(
+    token: str,
+    public_key: str,
+    *,
+    now: datetime | None = None,
+    revocations: RevocationManifest | None = None,
+) -> License:
     """Parse and ensure the license is currently active (raises on expiry)."""
     license_ = parse_license(token, public_key)
     if license_.is_expired(now=now):
         raise LicenseError("License has expired", code="license_expired", status_code=402)
+    if revocations is not None and revocations.is_revoked(license_.license_id):
+        raise LicenseError("License has been revoked", code="license_revoked", status_code=402)
     return license_
 
 
@@ -215,6 +323,27 @@ def _read_license_token(settings: Any | None) -> str:
 
 def _read_public_key() -> str:
     return (os.getenv(LICENSE_PUBLIC_KEY_ENV_VAR) or "").strip()
+
+
+def commercial_release_enabled() -> bool:
+    return str(os.getenv(COMMERCIAL_RELEASE_ENV_VAR, "")).strip().lower() in _TRUE_VALUES
+
+
+def load_revocation_manifest(
+    settings: Any | None = None,
+    *,
+    public_key: str | None = None,
+) -> tuple[RevocationManifest | None, str | None]:
+    token, source = _revocation_token_with_source(settings)
+    if not token:
+        return None, None
+    if len(token.encode("utf-8")) > MAX_REVOCATION_TOKEN_BYTES:
+        raise LicenseError(
+            "License revocation manifest is too large",
+            code="license_revocation_token_too_large",
+            status_code=413,
+        )
+    return parse_revocation_manifest(token, public_key or _read_public_key()), source
 
 
 def license_status(settings: Any | None = None, *, now: datetime | None = None) -> dict[str, Any]:
@@ -237,12 +366,33 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
         license_ = parse_license(token, public_key)
     except LicenseError as exc:
         return {**base, "state": "invalid", "error_code": exc.code}
+    try:
+        revocations, revocation_source = load_revocation_manifest(settings, public_key=public_key)
+    except LicenseError as exc:
+        return {
+            **base,
+            "state": "revocation_data_invalid",
+            "error_code": exc.code,
+            "license_id": license_.license_id or None,
+            "revocation_capable": bool(license_.license_id),
+        }
     expired = license_.is_expired(now=now)
+    revoked = bool(revocations and revocations.is_revoked(license_.license_id))
+    state = "revoked" if revoked else "expired" if expired else "active"
     return {
         **base,
-        "state": "expired" if expired else "active",
-        "active": not expired,
+        "state": state,
+        "active": not expired and not revoked,
         "expired": expired,
+        "revoked": revoked,
+        "license_id": license_.license_id or None,
+        "issuer": license_.issuer or None,
+        "replaces": license_.replaces or None,
+        "revocation_capable": bool(license_.license_id),
+        "revocation_source": revocation_source,
+        "revocation_generated_at": (
+            revocations.generated_at.isoformat() if revocations and revocations.generated_at else None
+        ),
         "plan": license_.plan.value,
         "subject": license_.subject,
         "seats": license_.seats,
@@ -264,7 +414,9 @@ def install_license(token: str, settings: Any, *, now: datetime | None = None) -
         raise LicenseError("License token is empty")
     if len(normalized.encode("utf-8")) > MAX_LICENSE_TOKEN_BYTES:
         raise LicenseError("License token is too large", code="license_token_too_large", status_code=413)
-    license_ = verify_license(normalized, _read_public_key(), now=now)
+    public_key = _read_public_key()
+    revocations, _ = load_revocation_manifest(settings, public_key=public_key)
+    license_ = verify_license(normalized, public_key, now=now, revocations=revocations)
     path = _license_file_path(settings)
     if path is None:
         raise LicenseError(
@@ -312,12 +464,10 @@ def load_license(settings: Any | None = None, *, now: datetime | None = None) ->
             logger.warning("License token present but %s is not set; ignoring license.", LICENSE_PUBLIC_KEY_ENV_VAR)
         return None
     try:
-        license_ = parse_license(token, public_key)
+        revocations, _ = load_revocation_manifest(settings, public_key=public_key)
+        license_ = verify_license(token, public_key, now=now, revocations=revocations)
     except LicenseError as exc:
         logger.warning("Ignoring invalid license: %s", exc.message)
-        return None
-    if license_.is_expired(now=now):
-        logger.warning("Ignoring expired license (expired at %s).", license_.expires_at)
         return None
     return license_
 
@@ -330,15 +480,16 @@ def resolve_licensed_plan(settings: Any | None = None, *, now: datetime | None =
 def apply_licensed_plan(settings: Any, *, now: datetime | None = None):
     """Return settings whose ``plan`` reflects a valid, active license (no-op otherwise)."""
     plan = resolve_licensed_plan(settings, now=now)
-    if plan is None:
+    if plan is None and not commercial_release_enabled():
         return settings
+    resolved_plan = plan.value if plan is not None else Plan.FREE.value
     try:
         import dataclasses
 
-        return dataclasses.replace(settings, plan=plan.value)
+        return dataclasses.replace(settings, plan=resolved_plan)
     except Exception:  # noqa: BLE001 - never let licensing break settings resolution
         try:
-            settings.plan = plan.value
+            settings.plan = resolved_plan
         except Exception:  # noqa: BLE001
             return settings
         return settings

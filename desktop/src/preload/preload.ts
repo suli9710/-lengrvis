@@ -15,6 +15,7 @@ import type {
   DesktopPermissionPolicyRelaxationRequest,
   DesktopPermissionRuleDeleteRequest,
   DesktopPermissionRuleUpsertRequest,
+  DesktopPrivacyEraseRequest,
   DesktopRunStartRequest,
   DesktopSettingsPatch,
   MobilePairingRemoteInputGrantRequest,
@@ -91,6 +92,10 @@ const bridge: LengrvisDesktopBridge = {
   },
   system: {
     exportDiagnosticsPackage: () => ipcRenderer.invoke(IPC_CHANNELS.systemDiagnosticsExport)
+  },
+  privacy: {
+    eraseLocalData: (request: DesktopPrivacyEraseRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.privacyEraseLocalData, request)
   },
   documents: {
     parse: (request: DocumentParseRequest) => ipcRenderer.invoke(IPC_CHANNELS.documentsParse, request),

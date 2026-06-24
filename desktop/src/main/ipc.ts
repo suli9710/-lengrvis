@@ -10,6 +10,7 @@ import {
   API_REQUEST_SECURITY_LIMITS,
   IPC_CHANNELS
 } from "../shared/ipc";
+import { PRIVACY_ERASE_CONFIRMATION_TEXT } from "../shared/privacy";
 import type {
   ApiMethod,
   ApiQueryValue,
@@ -23,6 +24,8 @@ import type {
   DesktopPermissionRule,
   DesktopPermissionRuleDeleteRequest,
   DesktopPermissionRuleUpsertRequest,
+  DesktopPrivacyEraseRequest,
+  DesktopPrivacyEraseResponse,
   DesktopRunStartRequest,
   DesktopSettingsPatch,
   MobilePairingRemoteInputGrantRequest,
@@ -50,6 +53,8 @@ const API_REQUEST_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototyp
 const DOCUMENT_PARSE_ALLOWED_KEYS = new Set(["path", "includeText", "include_text"]);
 const DOCUMENT_ASK_ALLOWED_KEYS = new Set(["path", "question", "topK", "top_k"]);
 const DOCUMENT_COMPARE_ALLOWED_KEYS = new Set(["paths", "focus"]);
+const PRIVACY_ERASE_ALLOWED_KEYS = new Set(["confirmationText", "includeSettings"]);
+const BACKEND_PRIVACY_ERASE_CONFIRMATION = "erase-local-data";
 const SETTINGS_EGRESS_CONFIRMATION_FIELDS = new Set(["base_url", "wire_api"]);
 const SETTINGS_NATIVE_CONFIRMATION_FIELDS = new Set([
   "allowed_directories",
@@ -521,6 +526,27 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     return response;
   });
 
+  ipcMain.handle(IPC_CHANNELS.privacyEraseLocalData, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validatePrivacyEraseRequest(request);
+    await confirmNativeDesktopAction(event, {
+      type: "warning",
+      confirmLabel: "删除本机数据",
+      title: "确认删除本机数据",
+      message: "永久删除本机保存的个人数据？",
+      detail:
+        "任务、对话、运行记录、录屏、配对、记忆、文件索引和已导出的诊断包将被删除。安全审计链会保留；日志仍需在系统信息中手动清理。此操作无法撤销。"
+    });
+    return proxyExplicitDesktopBridgeRequest<DesktopPrivacyEraseResponse>(backend, {
+      endpoint: "/api/system/privacy/erase-local-data",
+      method: "POST",
+      body: {
+        confirm: BACKEND_PRIVACY_ERASE_CONFIRMATION,
+        include_settings: body.includeSettings
+      }
+    });
+  });
+
   ipcMain.handle(IPC_CHANNELS.documentsParse, async (event, request: unknown) => {
     assertTrustedRenderer(event);
     const body = validateDocumentParseRequest(request);
@@ -799,15 +825,21 @@ async function ensureDocumentReadGrant(
 
 export async function confirmNativeDesktopAction(
   event: IpcMainInvokeEvent,
-  options: { title: string; message: string; detail: string }
+  options: {
+    title: string;
+    message: string;
+    detail: string;
+    type?: "question" | "warning";
+    confirmLabel?: string;
+  }
 ): Promise<void> {
   if (typeof dialog.showMessageBox !== "function") {
     throw new ApiRequestValidationError("Sensitive desktop action requires a native confirmation dialog");
   }
   const window = BrowserWindow.fromWebContents(event.sender);
   const messageBoxOptions = {
-    type: "question" as const,
-    buttons: ["Allow once", "Cancel"],
+    type: options.type ?? ("question" as const),
+    buttons: [options.confirmLabel ?? "Allow once", "Cancel"],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
@@ -1303,6 +1335,18 @@ function validateRunStartRequest(value: unknown): DesktopRunStartRequest {
   const mode = validateBridgeEnum<DesktopRunStartRequest["mode"] & string>(request.mode, "run mode", RUN_MODES, "efficiency");
   const engine = validateBridgeEnum<DesktopRunStartRequest["engine"] & string>(request.engine, "run engine", RUN_ENGINES, "auto");
   return { message, mode, engine };
+}
+
+function validatePrivacyEraseRequest(value: unknown): Pick<DesktopPrivacyEraseRequest, "includeSettings"> {
+  const request = validatePlainBridgeBody(value, "privacy erase request") as DesktopPrivacyEraseRequest &
+    Record<string, unknown>;
+  rejectUnexpectedBridgeKeys(request, PRIVACY_ERASE_ALLOWED_KEYS, "privacy erase request");
+  if (request.confirmationText !== PRIVACY_ERASE_CONFIRMATION_TEXT) {
+    throw new ApiRequestValidationError("privacy erase confirmation text does not match");
+  }
+  return {
+    includeSettings: validateBridgeBoolean(request.includeSettings, "privacy erase includeSettings")
+  };
 }
 
 function validateDocumentParseRequest(value: unknown): { path: string; include_text?: boolean } {

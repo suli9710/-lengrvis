@@ -108,3 +108,16 @@ def test_remote_desktop_gated_by_plan_in_effective_settings(monkeypatch):
     registry.invalidate_settings_cache()
     pro_settings = registry.get_effective_settings()
     assert pro_settings.remote_desktop_enabled is True
+
+
+def test_commercial_release_cannot_unlock_paid_plan_with_environment_only(monkeypatch):
+    from app.llm import registry
+
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    monkeypatch.setenv("LENGRVIS_PLAN", "team")
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    registry.invalidate_settings_cache()
+
+    settings = registry.get_effective_settings()
+
+    assert settings.plan == "free"

@@ -38,7 +38,16 @@ const privacyPolicy = fs.readFileSync(
   path.join(repoRoot, "docs", "legal", "privacy-policy.md"),
   "utf8",
 );
-assert.match(privacyPolicy, /\*\*版本\*\*：v1\.1/);
+const consentSource = fs.readFileSync(
+  path.join(desktopRoot, "src", "shared", "consent.ts"),
+  "utf8",
+);
+const privacyVersion = consentSource.match(/privacy:\s*"(v[^"]+)"/)?.[1];
+assert.ok(privacyVersion, "shared privacy policy version must be declared");
+assert.ok(
+  privacyPolicy.includes(`**版本**：${privacyVersion}`),
+  `privacy policy must match shared version ${privacyVersion}`,
+);
 assert.match(privacyPolicy, /发布候选草案/);
 
 console.log("Legal resources are present and configured for all desktop packages.");

@@ -172,6 +172,7 @@ export class BackendProcessManager {
           ...envWithAliases("LENGRVIS_CONFIG_DIR", this.backendConfigDir),
           ...envWithAliases("LENGRVIS_DATA_DIR", this.backendDataDir),
           ...envWithAliases("LENGRVIS_FULL_BACKEND", "1"),
+          ...(app.isPackaged ? envWithAliases("LENGRVIS_COMMERCIAL_RELEASE", "true") : {}),
           ...envWithAliases("LENGRVIS_BACKEND_URL", this.getBaseUrl()),
           ...envWithAliases("LENGRVIS_DESKTOP_API_TOKEN", this.desktopApiToken),
           ...bundledOllamaEnv

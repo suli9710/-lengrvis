@@ -90,7 +90,10 @@ def validate_sources(repo_root: Path) -> list[str]:
         repo_root / "LICENSE",
         repo_root / "docs" / "pricing.md",
         repo_root / "docs" / "business" / "pricing.md",
+        repo_root / "docs" / "business" / "license-operations.md",
+        repo_root / "docs" / "business" / "support-privacy-operations.md",
         repo_root / "docs" / "legal" / "README.md",
+        repo_root / "scripts" / "license_admin.py",
     ]
     for path in required:
         if not path.exists():
@@ -106,6 +109,8 @@ def validate_sources(repo_root: Path) -> list[str]:
     else:
         if package.get("license") != "BUSL-1.1":
             errors.append("package.json license must be BUSL-1.1.")
+        if package.get("scripts", {}).get("license:admin") != "python scripts/license_admin.py":
+            errors.append("package.json must expose the offline license:admin command.")
 
     pricing_path = repo_root / "docs" / "pricing.md"
     pointer_path = repo_root / "docs" / "business" / "pricing.md"
@@ -126,6 +131,19 @@ def validate_sources(repo_root: Path) -> list[str]:
             errors.append(
                 "docs/business/pricing.md contains stale entitlement implementation claims."
             )
+    env_example = repo_root / ".env.example"
+    if env_example.exists():
+        env_text = env_example.read_text(encoding="utf-8")
+        if "LENGRVIS_COMMERCIAL_RELEASE=false" not in env_text:
+            errors.append(".env.example must document the commercial release profile gate.")
+        if "LENGRVIS_LICENSE_PRIVATE_KEY=" in env_text:
+            errors.append(".env.example must never define a runtime license private-key variable.")
+    support_runbook = repo_root / "docs" / "business" / "support-privacy-operations.md"
+    if support_runbook.exists():
+        support_text = support_runbook.read_text(encoding="utf-8")
+        for marker in ("Diagnostic package handling", "Data-subject and deletion requests", "Release rehearsal"):
+            if marker not in support_text:
+                errors.append(f"Support/privacy runbook is missing required section: {marker}.")
     return errors
 
 

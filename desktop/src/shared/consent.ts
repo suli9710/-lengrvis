@@ -8,7 +8,7 @@
 /** Current EULA and privacy policy versions. Bump when legal docs change. */
 export const LEGAL_VERSIONS = {
   eula: "v1.0",
-  privacy: "v1.1",
+  privacy: "v1.2",
 } as const;
 
 /** Legal document identifiers for the about/settings page. */

@@ -995,12 +995,26 @@ export interface BackendCommercePlanStatus {
 }
 
 export interface BackendCommerceLicenseStatus {
-  state: "absent" | "active" | "expired" | "invalid" | "verifier_unconfigured";
+  state:
+    | "absent"
+    | "active"
+    | "expired"
+    | "revoked"
+    | "invalid"
+    | "revocation_data_invalid"
+    | "verifier_unconfigured";
   present: boolean;
   active: boolean;
   expired: boolean;
+  revoked?: boolean;
   verifier_configured: boolean;
   managed_by?: "environment" | "file" | null;
+  license_id?: string | null;
+  issuer?: string | null;
+  replaces?: string | null;
+  revocation_capable?: boolean;
+  revocation_source?: "environment" | "file" | null;
+  revocation_generated_at?: string | null;
   plan?: "free" | "pro" | "team";
   subject?: string;
   seats?: number;

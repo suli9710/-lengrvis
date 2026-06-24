@@ -102,6 +102,7 @@ global.fetch = async (url, options = {}) => {
     assert.equal(spawnCall.options.env.LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR, modelsDir);
     assert.equal(spawnCall.options.env.LENGRVIS_OLLAMA_BUNDLE_MANIFEST, manifestPath);
     assert.equal(spawnCall.options.env.OLLAMA_MODELS, modelsDir);
+    assert.equal(spawnCall.options.env.LENGRVIS_COMMERCIAL_RELEASE, "true");
     assert.equal(spawnCall.options.env.LENGRVIS_DATA_DIR, process.env.LENGRVIS_DATA_DIR);
     assert.equal(spawnCall.options.env.LENGRVIS_DESKTOP_API_TOKEN, desktopApiToken);
     assert.equal(storedDesktopApiToken, desktopApiToken);

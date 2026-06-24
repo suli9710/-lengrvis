@@ -176,6 +176,9 @@ const HardwareAccelerationCard = lazy(() =>
 const CommercePanel = lazy(() =>
   import("./settings/CommercePanel").then((module) => ({ default: module.CommercePanel }))
 );
+const PrivacyDataPanel = lazy(() =>
+  import("./settings/PrivacyDataPanel").then((module) => ({ default: module.PrivacyDataPanel }))
+);
 
 export function SettingsPanel({
   settings,
@@ -704,6 +707,9 @@ export function SettingsPanel({
         </fieldset>
         <Suspense fallback={<div className="commerce-settings commerce-settings--loading settings-grid__full">正在读取套餐与授权...</div>}>
           <CommercePanel api={api} />
+        </Suspense>
+        <Suspense fallback={<div className="privacy-data-settings privacy-data-settings--loading settings-grid__full">正在准备隐私控制...</div>}>
+          <PrivacyDataPanel api={api} />
         </Suspense>
         {draft.mode === "privacy" || draft.mode === "hybrid" ? (
           <div

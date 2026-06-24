@@ -21,6 +21,7 @@
     "release:readiness:strict": "python scripts/check_release_readiness_dashboard.py --dashboard docs/release/release-readiness-dashboard.md --strict",
     "market:readiness": "python scripts/check_market_readiness.py --dashboard docs/business/market-readiness.md",
     "market:readiness:strict": "python scripts/check_market_readiness.py --dashboard docs/business/market-readiness.md --strict",
+    "license:admin": "python scripts/license_admin.py",
     "release:safety": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_release_safety.ps1",
     "sign:backend:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/sign_windows_backend.ps1",
     "release:quick": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",

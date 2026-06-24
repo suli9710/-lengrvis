@@ -170,12 +170,24 @@ export function CommercePanel({ api }: { api: LengrvisApiClient }) {
           <small>有效期</small>
           <strong>{licenseExpiry(license)}</strong>
         </span>
+        {license?.licenseId ? (
+          <span>
+            <small>许可证编号</small>
+            <strong>{license.licenseId}</strong>
+          </span>
+        ) : null}
       </div>
 
       {license?.state === "verifier_unconfigured" ? (
         <p className="commerce-settings__warning">
           <ShieldAlert size={15} aria-hidden="true" />
           当前构建未配置许可证验签公钥，不能接受付费许可证。
+        </p>
+      ) : null}
+      {license?.state === "revocation_data_invalid" ? (
+        <p className="commerce-settings__warning">
+          <ShieldAlert size={15} aria-hidden="true" />
+          吊销清单未通过验签，付费授权已按不可信状态停用。
         </p>
       ) : null}
       {message ? <p className="settings-status" role="status">{message}</p> : null}
@@ -188,6 +200,8 @@ function licenseSummary(license: CommerceLicenseStatus | null): string {
   if (!license) return "正在核验本机授权";
   if (license.state === "active") return license.managedBy === "environment" ? "由组织部署策略管理" : "本机许可证已验签";
   if (license.state === "expired") return "许可证已过期，已回退到免费能力";
+  if (license.state === "revoked") return "许可证已被吊销，已回退到免费能力";
+  if (license.state === "revocation_data_invalid") return "吊销数据不可信，付费能力已停用";
   if (license.state === "invalid") return "许可证无效，已回退到免费能力";
   if (license.state === "verifier_unconfigured") return "发行配置不完整";
   return "未导入付费许可证";

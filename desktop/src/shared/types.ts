@@ -38,6 +38,26 @@ export interface DesktopRunStartRequest {
   engine?: DesktopRunEngine;
 }
 
+export interface DesktopPrivacyEraseRequest {
+  confirmationText: string;
+  includeSettings: boolean;
+}
+
+export interface DesktopPrivacyEraseResponse {
+  ok: boolean;
+  scope: "local_only";
+  deleted: {
+    rows_by_table: Record<string, number>;
+    rows_total: number;
+    diagnostic_packages: number;
+  };
+  preserved: string[];
+  manual_cleanup: {
+    log_dirs: string;
+  };
+  audit: string;
+}
+
 export type DesktopSettingsPatch = Record<string, unknown>;
 
 export interface DesktopSensitiveChangeConfirmation {
@@ -169,15 +189,29 @@ export interface CommercePlanStatus {
   highRiskFeatures: CommerceFeature[];
 }
 
-export type CommerceLicenseState = "absent" | "active" | "expired" | "invalid" | "verifier_unconfigured";
+export type CommerceLicenseState =
+  | "absent"
+  | "active"
+  | "expired"
+  | "revoked"
+  | "invalid"
+  | "revocation_data_invalid"
+  | "verifier_unconfigured";
 
 export interface CommerceLicenseStatus {
   state: CommerceLicenseState;
   present: boolean;
   active: boolean;
   expired: boolean;
+  revoked?: boolean;
   verifierConfigured: boolean;
   managedBy?: "environment" | "file";
+  licenseId?: string;
+  issuer?: string;
+  replaces?: string;
+  revocationCapable?: boolean;
+  revocationSource?: "environment" | "file";
+  revocationGeneratedAt?: string;
   plan?: CommercePlan;
   subject?: string;
   seats?: number;
@@ -1269,6 +1303,17 @@ export interface DiagnosticExportResult {
   error?: string;
 }
 
+export interface PrivacyEraseResult {
+  scope: "local_only";
+  deletedRowsByTable: Record<string, number>;
+  deletedRowsTotal: number;
+  deletedDiagnosticPackages: number;
+  preserved: string[];
+  settingsReset: boolean;
+  manualLogCleanupRequired: boolean;
+  auditRecorded: boolean;
+}
+
 export interface BrowserLinkResult {
   title: string;
   url: string;
@@ -1697,6 +1742,11 @@ export interface LengrvisDesktopBridge {
   };
   system: {
     exportDiagnosticsPackage: () => Promise<ApiResponse<unknown>>;
+  };
+  privacy: {
+    eraseLocalData: (
+      request: DesktopPrivacyEraseRequest
+    ) => Promise<ApiResponse<DesktopPrivacyEraseResponse>>;
   };
   documents: {
     parse: (request: DocumentParseRequest) => Promise<ApiResponse<unknown>>;

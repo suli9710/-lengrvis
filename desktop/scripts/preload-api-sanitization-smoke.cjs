@@ -43,6 +43,17 @@ async function assertRejectsWithoutInvoke(request, pattern, label) {
 
     assert.ok(exposed.lengrvis, "preload should expose the Lengrvis bridge");
     assert.equal(typeof exposed.lengrvis.api.request, "function", "api.request should be exposed");
+    assert.equal(typeof exposed.lengrvis.privacy.eraseLocalData, "function", "privacy erase bridge should be exposed");
+
+    await exposed.lengrvis.privacy.eraseLocalData({
+      confirmationText: "删除本机数据",
+      includeSettings: true
+    });
+    assert.equal(invocations[0].channel, "lengrvis:privacy:erase-local-data");
+    assert.deepEqual(invocations[0].args[0], {
+      confirmationText: "删除本机数据",
+      includeSettings: true
+    });
 
     await exposed.lengrvis.api.request({
       endpoint: "/api/chat",
@@ -62,7 +73,7 @@ async function assertRejectsWithoutInvoke(request, pattern, label) {
       timeoutMs: 1000
     });
 
-    assert.equal(invocations[0].channel, "lengrvis:api:request");
+    assert.equal(invocations[1].channel, "lengrvis:api:request");
     assert.deepEqual(latestRequest(), {
       endpoint: "/api/chat",
       method: "POST",

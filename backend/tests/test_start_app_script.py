@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -9,7 +9,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from tls_test_material import write_lan_tls_material
 
 
@@ -93,7 +92,14 @@ def _run_release_safety(
     for key in (
         "LENGRVIS_ALLOW_MOCK_FALLBACK",
         "LENGRVIS_CONFIG_FILE",
+        "LENGRVIS_COMMERCIAL_RELEASE",
         "LENGRVIS_ENV_FILE",
+        "LENGRVIS_LICENSE_KEY",
+        "LENGRVIS_LICENSE_PRIVATE_KEY",
+        "LENGRVIS_LICENSE_PUBLIC_KEY",
+        "LENGRVIS_LICENSE_REVOCATIONS",
+        "LENGRVIS_LICENSE_SIGNING_KEY",
+        "LENGRVIS_PLAN",
         "LENGRVIS_STRICT_STATE_MACHINE",
     ):
         env.pop(key, None)
@@ -916,6 +922,80 @@ def test_release_safety_blocks_mock_fallback_even_with_strict_state_machine(
     assert "Release/production builds must not enable LENGRVIS_ALLOW_MOCK_FALLBACK=true" in output
     assert "source: env:LENGRVIS_ALLOW_MOCK_FALLBACK" in output
     assert "strict_state_machine=true" not in output
+
+
+def test_release_safety_requires_public_key_for_commercial_release(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Paid/commercial release profiles require LENGRVIS_LICENSE_PUBLIC_KEY" in output
+
+
+def test_release_safety_requires_commercial_mode_for_paid_plan(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_PLAN": "pro",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Paid plan release profiles must set LENGRVIS_COMMERCIAL_RELEASE=true" in output
+
+
+def test_release_safety_accepts_valid_public_key_for_commercial_release(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "Commercial license secrets are offline-only" in output
+
+
+def test_release_safety_rejects_runtime_license_private_key(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_LICENSE_PRIVATE_KEY": "must-not-ship",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Release runtime must not contain LENGRVIS_LICENSE_PRIVATE_KEY" in output
 
 
 def test_release_safety_default_strict_state_machine_is_documented_as_fail_closed(

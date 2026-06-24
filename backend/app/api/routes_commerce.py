@@ -67,8 +67,10 @@ def commerce_license_install(payload: LicenseInstallRequest) -> dict[str, Any]:
         "commerce.license.installed",
         "desktop",
         {
+            "license_id": license_.license_id,
             "plan": license_.plan.value,
             "subject": license_.subject,
+            "issuer": license_.issuer,
             "seats": license_.seats,
             "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
         },
