@@ -72,4 +72,4 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "B", "UP", "BLE", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]
+"tests/**" = ["S101", "S404", "S603", "S607"]
