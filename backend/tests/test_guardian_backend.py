@@ -19,9 +19,14 @@ from app.guardian import create_guardian_app
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.step_phase import StepPhase
 from app.orchestration.task_phase import TaskPhase
-from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
-from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_INPUT_SCOPE, decode_mobile_token, issue_mobile_token
 from app.security import mobile_jwt
+from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
+from app.security.mobile_jwt import (
+    MOBILE_AUTH_WS_PROTOCOL_PREFIX,
+    REMOTE_INPUT_SCOPE,
+    decode_mobile_token,
+    issue_mobile_token,
+)
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import guardian_scheduler, mobile_pairing_service, scheduler_service, wakeup_service
 from app.services.approval_event_service import publish_approval_created
@@ -41,7 +46,7 @@ async def _backend_available() -> bool:
 
 def _require_desktop_api_token(
     monkeypatch: pytest.MonkeyPatch,
-    token: str = "guardian-desktop-secret",
+    token: str = "guardian-desktop-secret",  # noqa: S107
 ) -> str:
     monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", token)
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
@@ -1286,7 +1291,10 @@ def test_guardian_approval_can_retry_after_transient_execute_failure(monkeypatch
         async def post(self, *args, **kwargs):  # noqa: ANN001, ANN002
             attempts["count"] += 1
             if attempts["count"] == 1:
-                return FakeResponse(409, {"detail": {"message": "Approval is no longer executable.", "approval": {"status": "approved"}}})
+                return FakeResponse(
+                    409,
+                    {"detail": {"message": "Approval is no longer executable.", "approval": {"status": "approved"}}},
+                )
             stored = Approval.model_validate(db.fetch_one("approvals", approval.id))
             stored.consumed_at = "2026-06-01T00:00:00+00:00"
             db.upsert_model("approvals", stored, status=stored.status)
