@@ -18,6 +18,17 @@ from typing import Any
 import pytest
 
 
+# Secure local secret storage (app.security.local_secret) fails closed when no
+# DPAPI/keyring backend is available. The autouse fixtures below set
+# LENGRVIS_TEST=1, and pytest sets PYTEST_CURRENT_TEST, but only at test *setup*
+# time -- neither is present during collection. Importing modules that touch
+# local-secret storage at import time therefore raises RuntimeError and aborts
+# collection on runners without a usable keyring backend. Opt into the
+# sanctioned test/dev fallback at import time. Tests asserting the fail-closed
+# behavior delete this var via monkeypatch, so this only provides a default.
+os.environ.setdefault("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+
 # test_start_app_script.py exercises Windows-only PowerShell launch behavior and
 # only passes on Windows runners. Skip collecting it on non-Windows platforms.
 collect_ignore_glob: list[str] = []
