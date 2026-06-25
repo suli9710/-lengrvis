@@ -61,6 +61,9 @@ UsersSuliAppDataLocalTempLengrvis-Code-review
 .mypy_cache/
 coverage.xml
 junit*.xml
+# Backend test scratch/debug artifacts
+backend/tests/_*.log
+backend/tests/_debug*.py
 # Accidental pip/glob and agent screenshot artifacts.
 =4.0
 tmp-agent-*.png

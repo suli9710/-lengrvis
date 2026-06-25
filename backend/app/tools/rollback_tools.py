@@ -12,6 +12,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.core import db
 from app.core.audit import record
 from app.core.errors import SecurityError
@@ -21,10 +23,11 @@ from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
+from app.tools.managed_backups import resolve_managed_backup_path
 
 try:
     from send2trash import send2trash
-except Exception:  # pragma: no cover - optional dependency guard
+except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
     send2trash = None
 
 
@@ -112,7 +115,7 @@ def execute_rollback(task_id: str) -> dict[str, Any]:
 def _rollback_context() -> dict[str, Any]:
     try:
         settings = get_effective_settings()
-    except Exception:  # pragma: no cover - startup/config failures should fail closed.
+    except Exception:  # noqa: BLE001
         return {"allowed_directories": []}
     return {"allowed_directories": [str(path) for path in settings.allowed_directories or []], "settings": settings}
 
@@ -246,9 +249,11 @@ def _results_for_task(task_id: str) -> list[ToolResult]:
         results = db.fetch_many("tool_results", "tool_call_id = ?", (call_id,), limit=10)
         for row in results:
             try:
-                out.append(ToolResult.model_validate(row))
-            except Exception:
-                continue
+                result = ToolResult.model_validate(row)
+            except ValidationError:
+                result = None
+            if result is not None:
+                out.append(result)
     return out
 
 
@@ -264,7 +269,7 @@ def _cleanup_rollback_steps(info: dict[str, Any], context: dict[str, Any]) -> li
                 "requires_user_action": True,
                 "detail": "Restore this item from the OS recycle bin.",
             }
-    )
+        )
     for item in _as_list(info.get("permanent_delete_unrecoverable")):
         path = item.get("path") if isinstance(item, dict) else item
         authorized = _authorize_cleanup_rollback_target(path, allowed)
@@ -349,20 +354,36 @@ def _delete_if_empty(path_str: str, allowed: list[str] | None = None) -> dict[st
         return {"ok": False, "action": "delete_folder_if_empty", "detail": str(exc)}
 
 
-def _restore_backup(backup_path: str, allowed: list[str] | None = None) -> dict[str, Any]:
+def _restore_backup(backup_spec: Any, allowed: list[str] | None = None) -> dict[str, Any]:
     try:
-        backup = _authorize_rollback_path(backup_path, allowed)
-    except SecurityError as exc:
+        backup, original = _resolve_backup_restore_paths(backup_spec, allowed)
+    except (SecurityError, ValueError) as exc:
         return {"ok": False, "action": "restore_backup", "detail": str(exc)}
     if not backup.exists():
         return {"ok": False, "action": "restore_backup", "detail": "backup missing"}
-    original = backup.with_suffix("")
+    if not backup.is_file():
+        return {"ok": False, "action": "restore_backup", "detail": "backup is not a file"}
     try:
+        original.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(backup, original)
         backup.unlink()
         return {"ok": True, "action": "restore_backup", "restored": str(original)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "action": "restore_backup", "detail": str(exc)}
+
+
+def _resolve_backup_restore_paths(backup_spec: Any, allowed: list[str] | None) -> tuple[Path, Path]:
+    if isinstance(backup_spec, dict):
+        backup_path = backup_spec.get("path")
+        original_path = backup_spec.get("original_path")
+        if not backup_path or not original_path:
+            raise ValueError("Managed backup rollback requires path and original_path.")
+        return resolve_managed_backup_path(str(backup_path)), _authorize_rollback_path(str(original_path), allowed)
+
+    if not backup_spec:
+        raise ValueError("Backup path is missing.")
+    backup = _authorize_rollback_path(str(backup_spec), allowed)
+    return backup, backup.with_suffix("")
 
 
 def _authorize_rollback_path(path_str: str, allowed: list[str] | None = None) -> Path:

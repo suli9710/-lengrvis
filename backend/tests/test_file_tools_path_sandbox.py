@@ -141,6 +141,56 @@ def test_write_text_rechecks_parent_after_authorization(
         _remove_escape_link(parent)
 
 
+def test_write_text_uses_managed_backup_without_overwriting_legacy_bak(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "note.txt"
+    target.write_text("original", encoding="utf-8")
+    legacy_backup = workspace / "note.txt.bak"
+    legacy_backup.write_text("keep me", encoding="utf-8")
+
+    result = file_tools.write_text(
+        {"path": str(target), "text": "changed", "dry_run": False},
+        _context(workspace),
+    )
+
+    backup = result["rollback_info"]["backup"]
+    backup_path = Path(str(backup["path"]))
+    assert backup["managed"] is True
+    assert backup_path.parent == (tmp_path / "data" / "file-tool-backups").resolve()
+    assert backup_path.read_text(encoding="utf-8") == "original"
+    assert legacy_backup.read_text(encoding="utf-8") == "keep me"
+    assert target.read_text(encoding="utf-8") == "changed"
+
+
+def test_edit_text_uses_managed_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "note.txt"
+    target.write_text("alpha beta", encoding="utf-8")
+
+    result = file_tools.edit_text(
+        {"path": str(target), "old_string": "alpha", "new_string": "omega", "dry_run": False},
+        _context(workspace),
+    )
+
+    backup = result["rollback_info"]["backup"]
+    backup_path = Path(str(backup["path"]))
+    assert result["ok"] is True
+    assert backup["managed"] is True
+    assert backup_path.parent == (tmp_path / "data" / "file-tool-backups").resolve()
+    assert backup_path.read_text(encoding="utf-8") == "alpha beta"
+    assert target.read_text(encoding="utf-8") == "omega beta"
+
+
 def test_move_file_rechecks_destination_parent_after_authorization(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

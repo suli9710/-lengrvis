@@ -9,16 +9,16 @@ from typing import Any
 
 try:
     from send2trash import send2trash
-except Exception:  # pragma: no cover - optional dependency guard
+except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
     send2trash = None
 
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
 from app.services.cleanup_planner_service import CleanupPlannerService
+from app.tools.managed_backups import create_managed_backup
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_catalog import tool_description, tool_search_hint
-
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".ts", ".tsx", ".js", ".css", ".yaml", ".yml"}
 READ_TEXT_MAX_CHARS = 120000
@@ -48,9 +48,11 @@ def _iter_files(context: dict[str, Any]):
         for path in root.rglob("*"):
             if path.is_file():
                 try:
-                    yield resolve_authorized(path, _allowed(context))
-                except Exception:
-                    continue
+                    authorized = resolve_authorized(path, _allowed(context))
+                except (OSError, SecurityError, ValueError):
+                    authorized = None
+                if authorized is not None:
+                    yield authorized
 
 
 def sha256_file(path: Path) -> str:
@@ -321,7 +323,11 @@ def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     src = resolve_authorized(args["source"], allowed)
     dst = resolve_authorized(args["destination"], allowed)
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "copy", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
+        return {
+            "dry_run": True,
+            "diff_preview": [{"action": "copy", "from": str(src), "to": str(dst)}],
+            "_resource_state": _resource_states(src, dst),
+        }
     _ensure_mutation_path_safe(src, allowed, include_self=True)
     _prepare_parent_for_mutation(dst, allowed)
     _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
@@ -334,7 +340,11 @@ def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     src = resolve_authorized(args["source"], allowed)
     dst = resolve_authorized(args["destination"], allowed)
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "move", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
+        return {
+            "dry_run": True,
+            "diff_preview": [{"action": "move", "from": str(src), "to": str(dst)}],
+            "_resource_state": _resource_states(src, dst),
+        }
     _ensure_mutation_path_safe(src, allowed, include_self=True)
     _prepare_parent_for_mutation(dst, allowed)
     _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
@@ -348,7 +358,11 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
     dst = src.with_name(str(args["new_name"]))
     dst = resolve_authorized(dst, allowed)
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "rename", "from": str(src), "to": str(dst)}], "_resource_state": _resource_states(src, dst)}
+        return {
+            "dry_run": True,
+            "diff_preview": [{"action": "rename", "from": str(src), "to": str(dst)}],
+            "_resource_state": _resource_states(src, dst),
+        }
     _ensure_mutation_path_safe(src, allowed, include_self=True)
     _prepare_parent_for_mutation(dst, allowed)
     _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
@@ -359,7 +373,11 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = _resolve_trash_target(args["path"], context)
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "trash", "path": str(path)}], "_resource_state": _resource_states(path)}
+        return {
+            "dry_run": True,
+            "diff_preview": [{"action": "trash", "path": str(path)}],
+            "_resource_state": _resource_states(path),
+        }
     if send2trash is None:
         raise RuntimeError("send2trash is not installed; permanent deletion is forbidden.")
     _ensure_mutation_path_safe(path, _allowed(context), include_self=True)
@@ -376,12 +394,15 @@ def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], allowed)
     text = str(args.get("text", ""))
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "write_text", "path": str(path), "bytes": len(text)}], "_resource_state": _resource_states(path)}
+        return {
+            "dry_run": True,
+            "diff_preview": [{"action": "write_text", "path": str(path), "bytes": len(text)}],
+            "_resource_state": _resource_states(path),
+        }
     backup = None
     if path.exists():
         _ensure_mutation_path_safe(path, allowed, include_self=True)
-        backup = str(path.with_suffix(path.suffix + ".bak"))
-        _safe_copy_existing_file(path, Path(backup), allowed)
+        backup = create_managed_backup(path)
     _safe_write_text(path, text, allowed)
     return {"changed_paths": [str(path)], "rollback_info": {"backup": backup}}
 
@@ -441,8 +462,7 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "_resource_state": _resource_states(path),
         }
 
-    backup = str(path.with_suffix(path.suffix + ".bak"))
-    _safe_copy_existing_file(path, Path(backup), allowed)
+    backup = create_managed_backup(path)
     _safe_write_text(path, edited, allowed)
     return {
         "ok": True,
@@ -460,7 +480,11 @@ def generate_markdown_report(args: dict[str, Any], context: dict[str, Any]) -> d
     body = args.get("body", "")
     text = f"# {title}\n\n{body}\n"
     if args.get("dry_run", True):
-        return {"dry_run": True, "diff_preview": [{"action": "generate_markdown_report", "path": str(path)}], "_resource_state": _resource_states(path)}
+        return {
+            "dry_run": True,
+            "diff_preview": [{"action": "generate_markdown_report", "path": str(path)}],
+            "_resource_state": _resource_states(path),
+        }
     _safe_write_text(path, text, allowed)
     return {"changed_paths": [str(path)], "rollback_info": {"trash_created_file": str(path)}}
 
@@ -717,7 +741,11 @@ def _input_schema(name: str) -> dict[str, Any]:
         },
         "file.rename": {
             "type": "object",
-            "properties": {"source": {"type": "string"}, "new_name": {"type": "string"}, "dry_run": {"type": "boolean"}},
+            "properties": {
+                "source": {"type": "string"},
+                "new_name": {"type": "string"},
+                "dry_run": {"type": "boolean"},
+            },
             "required": ["source", "new_name"],
             "additionalProperties": False,
         },
@@ -820,6 +848,14 @@ def register(registry) -> None:
                 resource_kinds=["file", "directory"],
                 fast_path_eligible=read_only,
                 trust_tier="builtin",
-                sensitive_arg_keys=["text"] if name == "file.write_text" else ["old_string", "new_string"] if name == "file.edit_text" else [],
+                sensitive_arg_keys=_sensitive_arg_keys(name),
             )
         )
+
+
+def _sensitive_arg_keys(name: str) -> list[str]:
+    if name == "file.write_text":
+        return ["text"]
+    if name == "file.edit_text":
+        return ["old_string", "new_string"]
+    return []

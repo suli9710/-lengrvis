@@ -13,6 +13,7 @@ from app.policy.approval_binding import args_binding_hmac, permission_policy_ver
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.tools import rollback_tools
+from app.tools.managed_backups import create_managed_backup
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +91,24 @@ def test_rollback_restore_backup(tmp_path: Path):
     assert outcome["ok"] is True
     assert original.read_text(encoding="utf-8") == "original-content"
     assert not backup.exists()
+
+
+def test_rollback_restore_managed_backup(tmp_path: Path):
+    original = tmp_path / "config.json"
+    original.write_text("original-content", encoding="utf-8")
+    backup = create_managed_backup(original)
+    original.write_text("changed-content", encoding="utf-8")
+
+    result = ToolResult(
+        tool_call_id="call-managed-backup",
+        ok=True,
+        rollback_info={"backup": backup},
+    )
+    outcome = rollback_tools.rollback_tool_result(result, {"allowed_directories": [str(tmp_path)]})
+
+    assert outcome["ok"] is True
+    assert original.read_text(encoding="utf-8") == "original-content"
+    assert not Path(str(backup["path"])).exists()
 
 
 def test_rollback_restore_from_recycle_bin_requires_user_action(tmp_path: Path):
