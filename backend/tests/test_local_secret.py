@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -157,3 +158,20 @@ def test_write_leaves_no_temp_file_and_survives_stale_temp(tmp_path: Path):
     assert value
     assert read_local_secret(secret_path) == value
     assert not stale.exists()
+
+
+def test_concurrent_create_returns_single_secret(monkeypatch, tmp_path: Path):
+    secret_path = tmp_path / "unit.secret"
+    monkeypatch.setattr(local_secret, "dpapi_available", lambda: False)
+    monkeypatch.setattr(local_secret, "keyring_available", lambda: False)
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+    def load(_: int) -> str:
+        return load_or_create_local_secret(secret_path, unavailable_message="unavailable")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        values = list(pool.map(load, range(24)))
+
+    assert len(set(values)) == 1
+    assert read_local_secret(secret_path) == values[0]
+    assert not list(tmp_path.glob("*.tmp"))

@@ -20,6 +20,7 @@ import base64
 import logging
 import os
 import secrets
+import threading
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -29,6 +30,7 @@ LOCAL_SECRET_KEYRING_PREFIX = "keyring:"  # noqa: S105 - marker prefix, not a cr
 ALLOW_INSECURE_LOCAL_SECRETS_ENV = "LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS"
 _DPAPI_DESCRIPTION = "lengrvis-local-secret"
 _KEYRING_SERVICE = "lengrvis.local-secret"
+_LOCAL_SECRET_FILE_LOCK = threading.RLock()
 logger = logging.getLogger(__name__)
 
 
@@ -139,28 +141,40 @@ def _stored_secret_value(path: Path, value: str) -> str:
 
 
 def _write_secret_file(path: Path, value: str) -> None:
-    stored = _stored_secret_value(path, value)
-    # Write to a sibling temp file created with O_EXCL and restrictive mode,
-    # then replace atomically: the secret is never on disk with default
-    # permissions, even briefly (the old write-then-chmod left a window).
-    tmp_path = path.with_name(path.name + ".tmp")
-    tmp_path.unlink(missing_ok=True)  # clear stale temp from a crashed writer
-    fd = os.open(tmp_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(stored)
-        replace_attempts = 5 if os.name == "nt" else 1
-        for attempt in range(replace_attempts):
+    with _LOCAL_SECRET_FILE_LOCK:
+        stored = _stored_secret_value(path, value)
+        # Write to a sibling temp file created with O_EXCL and restrictive mode,
+        # then replace atomically: the secret is never on disk with default
+        # permissions, even briefly (the old write-then-chmod left a window).
+        legacy_tmp_path = path.with_name(path.name + ".tmp")
+        legacy_tmp_path.unlink(missing_ok=True)  # clear stale temp from earlier fixed-name writers
+        tmp_path: Path | None = None
+        fd = -1
+        for _ in range(16):
+            candidate = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
             try:
-                os.replace(tmp_path, path)
-                break
-            except PermissionError:
-                if attempt == replace_attempts - 1:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-    except OSError:
-        tmp_path.unlink(missing_ok=True)
-        raise
+                fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                continue
+            tmp_path = candidate
+            break
+        if tmp_path is None or fd < 0:
+            raise FileExistsError(f"Could not create a unique temp file for local secret at {path}.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(stored)
+            replace_attempts = 5 if os.name == "nt" else 1
+            for attempt in range(replace_attempts):
+                try:
+                    os.replace(tmp_path, path)
+                    break
+                except PermissionError:
+                    if attempt == replace_attempts - 1:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+        except OSError:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
 
 def read_local_secret(path: Path) -> str:
@@ -192,6 +206,11 @@ def load_or_create_local_secret(path: Path, *, unavailable_message: str) -> str:
     when available. Raises ``RuntimeError`` with
     ``unavailable_message`` when the secret cannot be read or persisted.
     """
+    with _LOCAL_SECRET_FILE_LOCK:
+        return _load_or_create_local_secret_locked(path, unavailable_message=unavailable_message)
+
+
+def _load_or_create_local_secret_locked(path: Path, *, unavailable_message: str) -> str:
     try:
         if path.exists():
             stored = path.read_text(encoding="utf-8").strip()
