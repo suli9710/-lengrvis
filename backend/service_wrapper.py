@@ -7,12 +7,13 @@ import sys
 import threading
 import time
 from argparse import ArgumentParser, Namespace
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import uvicorn
 
@@ -22,6 +23,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+from app.security.lan import require_secure_non_loopback_bind  # noqa: E402
 
 DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 SERVICE_LOG_FILENAME = "lengrvis-service.log"
@@ -135,6 +138,12 @@ def get_backend_config() -> BackendConfig:
         SERVICE_OPTION_LAN_TLS_KEY_FILE,
         str(getattr(settings, "lan_tls_key_file", "") or ""),
     )
+    require_secure_non_loopback_bind(
+        host,
+        tls_enabled=tls_enabled,
+        cert_file=ssl_certfile,
+        key_file=ssl_keyfile,
+    )
     return BackendConfig(
         host=host,
         port=port,
@@ -223,7 +232,7 @@ def apply_service_runtime_options() -> None:
     for option, env_key in option_to_env.items():
         try:
             value = modules.win32serviceutil.GetServiceCustomOption(SERVICE_NAME, option, "")
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S112
             continue
         if value not in (None, ""):
             _set_env(env_key, str(value))
@@ -253,7 +262,10 @@ def configure_logging(
     logger.propagate = False
 
     log_path = log_dir / SERVICE_LOG_FILENAME
-    if not any(isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", None) == str(log_path) for handler in logger.handlers):
+    if not any(
+        isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", None) == str(log_path)
+        for handler in logger.handlers
+    ):
         file_handler = RotatingFileHandler(
             log_path,
             maxBytes=5 * 1024 * 1024,
@@ -325,7 +337,8 @@ class ServiceRunner:
         self._wait_until_started(timeout=timeout)
 
     def _run_server(self) -> None:
-        assert self.server is not None
+        if self.server is None:
+            raise RuntimeError("Lengrvis backend server has not been initialized.")
         config = get_backend_config()
         self._logger.info("Starting Lengrvis backend on %s:%s.", config.host, config.port)
         try:

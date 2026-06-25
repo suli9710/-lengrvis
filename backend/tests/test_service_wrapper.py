@@ -1,8 +1,9 @@
+# ruff: noqa: S104 - tests intentionally validate all-interface bind configuration.
+
 from __future__ import annotations
 
 import logging
 import os
-import platform
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,13 +18,13 @@ def test_get_backend_config_uses_backend_main_environment(monkeypatch: pytest.Mo
     monkeypatch.delenv("LENGRVIS_BACKEND_HOST", raising=False)
     monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
     monkeypatch.delenv("LENGRVIS_BACKEND_LOG_LEVEL", raising=False)
-    monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "0.0.0.0")
+    monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "127.0.0.2")
     monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "8123")
     monkeypatch.setenv("LENGRVIS_BACKEND_LOG_LEVEL", "debug")
 
     config = service_wrapper.get_backend_config()
 
-    assert config.host == "0.0.0.0"
+    assert config.host == "127.0.0.2"
     assert config.port == 8123
     assert config.log_level == "debug"
 
@@ -35,7 +36,7 @@ def test_get_backend_config_can_read_service_options(monkeypatch: pytest.MonkeyP
     fake_util = SimpleNamespace(
         GetServiceCustomOption=MagicMock(
             side_effect=lambda _name, key, default=None: {
-                "BackendHost": "0.0.0.0",
+                "BackendHost": "127.0.0.3",
                 "BackendPort": "9555",
                 "BackendLogLevel": "warning",
             }.get(key, default)
@@ -49,7 +50,7 @@ def test_get_backend_config_can_read_service_options(monkeypatch: pytest.MonkeyP
     ), patch.object(service_wrapper.platform, "system", return_value="Windows"):
         config = service_wrapper.get_backend_config()
 
-    assert config.host == "0.0.0.0"
+    assert config.host == "127.0.0.3"
     assert config.port == 9555
     assert config.log_level == "warning"
 
@@ -62,7 +63,20 @@ def test_get_backend_config_falls_back_when_port_is_invalid(monkeypatch: pytest.
     assert config.port == 8000
 
 
-def test_apply_service_runtime_options_sets_cwd_and_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_backend_config_rejects_non_loopback_without_lan_tls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "0.0.0.0")
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_CERT_FILE", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_KEY_FILE", raising=False)
+
+    with pytest.raises(RuntimeError, match="non-loopback"):
+        service_wrapper.get_backend_config()
+
+
+def test_apply_service_runtime_options_sets_cwd_and_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("LENGRVIS_CONFIG_DIR", raising=False)
     monkeypatch.delenv("LENGRVIS_CONFIG_DIR", raising=False)
@@ -175,7 +189,10 @@ def test_create_uvicorn_server_loads_backend_app_after_runtime_options(monkeypat
     uvicorn_module.Server.assert_called_once_with(fake_config)
 
 
-def test_create_uvicorn_server_passes_lan_tls_material_to_uvicorn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_create_uvicorn_server_passes_lan_tls_material_to_uvicorn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     cert = tmp_path / "lan.crt"
     key = tmp_path / "lan.key"
     cert.write_text("cert", encoding="utf-8")
@@ -335,7 +352,11 @@ def test_main_queries_service_status(capsys: pytest.CaptureFixture[str]) -> None
 
     with (
         patch.object(service_wrapper, "get_service_class", return_value=fake_service),
-        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=SimpleNamespace(win32serviceutil=fake_util)),
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
     ):
         result = service_wrapper.main(["query"])
 
@@ -350,7 +371,11 @@ def test_main_query_handles_missing_service(capsys: pytest.CaptureFixture[str]) 
 
     with (
         patch.object(service_wrapper, "get_service_class", return_value=fake_service),
-        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=SimpleNamespace(win32serviceutil=fake_util)),
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
     ):
         result = service_wrapper.main(["query"])
 
@@ -364,7 +389,11 @@ def test_main_delegates_lifecycle_commands_to_pywin32() -> None:
 
     with (
         patch.object(service_wrapper, "get_service_class", return_value=fake_service),
-        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=SimpleNamespace(win32serviceutil=fake_util)),
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
     ):
         result = service_wrapper.main(["start", "--wait", "10"])
 
@@ -385,7 +414,11 @@ def test_main_persists_install_options() -> None:
 
     with (
         patch.object(service_wrapper, "get_service_class", return_value=fake_service),
-        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=SimpleNamespace(win32serviceutil=fake_util)),
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
         patch.object(service_wrapper, "PROJECT_ROOT", Path("C:/repo")),
     ):
         result = service_wrapper.main(
@@ -420,8 +453,16 @@ def test_main_persists_install_options() -> None:
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendPort", "9000")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendLogLevel", "debug")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsEnabled", "true")
-    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsCertFile", "C:/certs/lengrvis.crt")
-    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsKeyFile", "C:/certs/lengrvis.key")
+    fake_util.SetServiceCustomOption.assert_any_call(
+        service_wrapper.SERVICE_NAME,
+        "LanTlsCertFile",
+        "C:/certs/lengrvis.crt",
+    )
+    fake_util.SetServiceCustomOption.assert_any_call(
+        service_wrapper.SERVICE_NAME,
+        "LanTlsKeyFile",
+        "C:/certs/lengrvis.key",
+    )
 
 
 def test_main_runs_service_dispatcher() -> None:
@@ -454,7 +495,11 @@ def test_main_accepts_pywin32_options_before_command() -> None:
 
     with (
         patch.object(service_wrapper, "get_service_class", return_value=fake_service),
-        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=SimpleNamespace(win32serviceutil=fake_util)),
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
     ):
         result = service_wrapper.main(["--wait", "15", "restart"])
 

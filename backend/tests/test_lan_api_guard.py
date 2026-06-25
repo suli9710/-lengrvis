@@ -495,6 +495,104 @@ def test_desktop_get_requires_desktop_token_when_enabled(monkeypatch, tmp_path):
     assert loopback.get("/api/tasks", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"}).status_code == 200
 
 
+def test_untrusted_forwarded_headers_do_not_bypass_loopback_lan_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
+    monkeypatch.delenv("LENGRVIS_TRUSTED_PROXY_IPS", raising=False)
+    db.init_db()
+    proxied = TestClient(app, client=("127.0.0.1", 50100))
+
+    response = proxied.get(
+        "/api/tasks",
+        headers={
+            "X-Lengrvis-Desktop-Token": "desktop-secret",
+            "X-Forwarded-For": "192.168.1.22",
+            "X-Forwarded-Proto": "http",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "untrusted_proxy_headers"
+
+
+def test_trusted_forwarded_headers_restore_remote_https_lan_guard(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
+    monkeypatch.setenv("LENGRVIS_TRUSTED_PROXY_IPS", "127.0.0.1")
+    db.init_db()
+    proxied = TestClient(app, client=("127.0.0.1", 50100))
+    headers = {
+        "X-Lengrvis-Desktop-Token": "desktop-secret",
+        "X-Forwarded-For": "192.168.1.22",
+    }
+
+    insecure = proxied.get("/api/tasks", headers={**headers, "X-Forwarded-Proto": "http"})
+    secure = proxied.get("/api/tasks", headers={**headers, "X-Forwarded-Proto": "https"})
+
+    assert insecure.status_code == 403
+    assert secure.status_code == 200
+
+
+def test_trusted_forwarded_headers_ignore_spoofed_leftmost_loopback(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", raising=False)
+    monkeypatch.setenv("LENGRVIS_TRUSTED_PROXY_IPS", "127.0.0.1")
+    db.init_db()
+    proxied = TestClient(app, client=("127.0.0.1", 50100))
+
+    response = proxied.get(
+        "/api/tasks",
+        headers={
+            "X-Lengrvis-Desktop-Token": "desktop-secret",
+            "X-Forwarded-For": "127.0.0.1, 192.168.1.22",
+            "X-Forwarded-Proto": "https",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_untrusted_forwarded_headers_do_not_bypass_loopback_desktop_websocket(monkeypatch, tmp_path):
+    _configure_production_desktop_token(monkeypatch, tmp_path)
+    _prepare_desktop_websocket_target(monkeypatch)
+    monkeypatch.delenv("LENGRVIS_TRUSTED_PROXY_IPS", raising=False)
+    client = TestClient(app, client=("127.0.0.1", 50100))
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/tasks/task_production_auth",
+            headers={
+                "X-Forwarded-For": "192.168.1.22",
+                "X-Forwarded-Proto": "http",
+                "Sec-WebSocket-Protocol": f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}",
+            },
+        ):
+            raise AssertionError("Untrusted forwarded headers should not be treated as loopback")
+
+    assert exc_info.value.code == 1008
+
+
+def test_trusted_forwarded_headers_restore_remote_wss_desktop_websocket(monkeypatch, tmp_path):
+    _configure_production_desktop_token(monkeypatch, tmp_path)
+    _prepare_desktop_websocket_target(monkeypatch)
+    monkeypatch.setenv("LENGRVIS_ALLOW_LAN_DESKTOP_API", "1")
+    monkeypatch.setenv("LENGRVIS_TRUSTED_PROXY_IPS", "127.0.0.1")
+    client = TestClient(app, client=("127.0.0.1", 50100))
+
+    with client.websocket_connect(
+        "/ws/tasks/task_production_auth",
+        headers={
+            "X-Forwarded-For": "192.168.1.22",
+            "X-Forwarded-Proto": "wss",
+            "Sec-WebSocket-Protocol": f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}",
+        },
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "connected", "task_id": "task_production_auth"}
+
+
 def test_loopback_state_changes_require_desktop_token_when_configured(monkeypatch, tmp_path):
     _enable_lan_tls(monkeypatch, tmp_path)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))

@@ -441,6 +441,8 @@ npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidenc
 - `WebSocket /ws/remote/screen` 与 `/ws/remote/input` — 远程屏幕和短期远程输入；客户端错误只返回泛化 code/message，底层异常细节只进入已脱敏的本机审计/日志。
 
 Android 伴侣 App 位于 `mobile/`，可用 `npm --prefix mobile run android` 启动。手机真机访问时，后端需要监听局域网地址，例如 `.\scripts\start_app.ps1 -BackendHost 0.0.0.0`；远程 LAN 客户端默认只能访问移动端配对与审批接口，桌面端完整 API 仍限制为本机访问。
+- 反向代理默认不被信任。若必须经本机 nginx/Caddy 等代理访问后端，需要显式设置 `LENGRVIS_TRUSTED_PROXY_IPS`（例如 `127.0.0.1` 或代理网段），后端才会解析 `Forwarded` / `X-Forwarded-For` / `X-Forwarded-Proto`；未配置可信代理却携带 forwarded headers 的请求会被拒绝。
+- 官方启动入口和 Windows service 在监听非回环地址时要求 LAN TLS：设置 `LENGRVIS_LAN_TLS_ENABLED=true`，并提供 `LENGRVIS_LAN_TLS_CERT_FILE` 与 `LENGRVIS_LAN_TLS_KEY_FILE`。
 
 文件与搜索：
 - `GET /api/files/search?q=...`、`GET /api/files/duplicates`、`POST /api/files/cluster`

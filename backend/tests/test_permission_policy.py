@@ -1,3 +1,5 @@
+# ruff: noqa: S108 - tests intentionally use illustrative temp paths.
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -86,6 +88,53 @@ def test_permission_policy_allows_when_no_rules_configured():
     assert decision.allowed is True
     assert decision.matched is False
     assert "default allow" in decision.reason.lower()
+
+
+def test_permission_policy_builtin_baseline_denies_high_risk_when_no_rules_configured():
+    decision = evaluate_permission_policy(
+        PermissionPolicy(rules=[]),
+        tool_name="file.trash",
+        args={"path": "/tmp/example.txt"},
+    )
+
+    assert decision.allowed is False
+    assert decision.rule_id == "builtin_high_risk_baseline"
+    assert "explicit allow" in decision.reason.lower()
+
+
+def test_permission_policy_builtin_baseline_denies_high_risk_when_only_deny_rules_exist():
+    policy = PermissionPolicy(rules=[weekend_delete_rule()])
+    weekday = datetime.fromisoformat("2026-05-28T12:00:00+00:00")
+
+    decision = evaluate_permission_policy(
+        policy,
+        tool_name="mcp.filesystem.write_file",
+        args={"path": "/tmp/example.txt"},
+        now=weekday,
+    )
+
+    assert decision.allowed is False
+    assert decision.rule_id == "builtin_high_risk_baseline"
+
+
+def test_permission_policy_explicit_allow_can_override_builtin_baseline():
+    allow_rule = PermissionRule(
+        id="allow_trash",
+        name="Allow trash",
+        effect="allow",
+        tools=["file.trash"],
+        path_patterns=["*"],
+        reason="Trash is allowed for this environment.",
+    )
+
+    decision = evaluate_permission_policy(
+        PermissionPolicy(rules=[allow_rule]),
+        tool_name="file.trash",
+        args={"path": "/tmp/example.txt"},
+    )
+
+    assert decision.allowed is True
+    assert decision.rule_id == "allow_trash"
 
 
 def test_permission_policy_denies_matching_weekend_delete():

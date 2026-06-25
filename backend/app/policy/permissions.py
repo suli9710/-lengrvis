@@ -12,8 +12,28 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 from app.core import db
 from app.core.schemas import now_iso
 
-
 PermissionEffect = Literal["allow", "deny"]
+BUILTIN_BASELINE_DENY_RULE_ID = "builtin_high_risk_baseline"
+BUILTIN_BASELINE_DENY_RULE_NAME = "Built-in high-risk baseline"
+_BUILTIN_BASELINE_DENY_PATTERNS: tuple[str, ...] = (
+    "mcp.*",
+    "external.*",
+    "*.delete*",
+    "*.trash*",
+    "*.uninstall*",
+    "*.cleanup_execute",
+    "*.cleanup_rollback",
+    "shell.*",
+    "*.shell*",
+    "dev.test_run",
+    "workflow.run",
+    "browser.act",
+    "browser.cua",
+    "browser.cua_run",
+    "browser.click_element",
+    "browser.fill_form",
+    "browser.submit_form",
+)
 
 
 class PermissionTimeWindow(BaseModel):
@@ -111,7 +131,7 @@ class PermissionPolicy(BaseModel):
         *,
         context: dict[str, Any] | None = None,
         now: datetime | None = None,
-    ) -> "PermissionDecision":
+    ) -> PermissionDecision:
         return evaluate_permission_policy(self, tool_name=tool_name, args=args, context=context, now=now)
 
 
@@ -140,7 +160,7 @@ class PermissionStore:
             return PermissionPolicy(id=self.policy_id)
         try:
             return PermissionPolicy.model_validate(json.loads(row["data"]))
-        except Exception:
+        except Exception:  # noqa: BLE001
             return PermissionPolicy()
 
     def updated_at(self) -> str:
@@ -181,7 +201,7 @@ class PermissionStore:
             if row:
                 try:
                     policy = PermissionPolicy.model_validate(json.loads(row["data"]))
-                except Exception:
+                except Exception:  # noqa: BLE001
                     policy = PermissionPolicy(id=self.policy_id)
             else:
                 policy = PermissionPolicy(id=self.policy_id)
@@ -267,6 +287,9 @@ def evaluate_permission_policy(
     allow = next((rule for rule in matching if rule.effect == "allow"), None)
     if allow:
         return _decision(True, allow)
+    builtin_deny = _builtin_baseline_deny_decision(tool_name)
+    if builtin_deny:
+        return builtin_deny
     has_allow_rules = any(rule.enabled and rule.effect == "allow" for rule in policy.rules)
     if has_allow_rules:
         return PermissionDecision(
@@ -278,6 +301,25 @@ def evaluate_permission_policy(
         allowed=True,
         matched=False,
         reason="No deny rule matched; default allow.",
+    )
+
+
+def _builtin_baseline_deny_decision(tool_name: str) -> PermissionDecision | None:
+    normalized = str(tool_name or "").casefold()
+    if not normalized:
+        return None
+    if not any(fnmatch.fnmatchcase(normalized, pattern.casefold()) for pattern in _BUILTIN_BASELINE_DENY_PATTERNS):
+        return None
+    return PermissionDecision(
+        allowed=False,
+        matched=True,
+        effect="deny",
+        rule_id=BUILTIN_BASELINE_DENY_RULE_ID,
+        rule_name=BUILTIN_BASELINE_DENY_RULE_NAME,
+        reason=(
+            "Built-in high-risk baseline denied this tool. "
+            "Add an explicit allow permission rule to enable it."
+        ),
     )
 
 
@@ -377,7 +419,7 @@ def _window_datetime(window: PermissionTimeWindow, now: datetime) -> datetime:
         return now
     try:
         zone = ZoneInfo(window.timezone)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return now
     return now.astimezone(zone) if now.tzinfo else now.replace(tzinfo=zone)
 
@@ -448,10 +490,10 @@ def _candidate_paths(value: Any) -> list[str]:
         for key, item in value.items():
             if "path" in str(key).casefold() or str(key) in {"source", "destination", "target", "folder", "directory"}:
                 result.extend(_candidate_paths(item))
-            elif isinstance(item, (dict, list, tuple)):
+            elif isinstance(item, dict | list | tuple):
                 result.extend(_candidate_paths(item))
         return result
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         for item in value:
             result.extend(_candidate_paths(item))
         return result
