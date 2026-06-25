@@ -4,11 +4,10 @@ import asyncio
 import inspect
 import json
 import logging
-import os
 import threading
-from contextlib import suppress
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -17,9 +16,8 @@ from typing import Any
 from pydantic import Field
 
 from app.config import get_env
-from app.core.schemas import new_id, now_iso
-from app.indexer.file_watcher import DirectoryChangeWatcher, FileChangeCallback
 from app.core.schemas import MessageType
+from app.indexer.file_watcher import DirectoryChangeWatcher, FileChangeCallback
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.orchestration.dispatcher import EventDispatcher
 from app.orchestration.events import Event
@@ -29,6 +27,8 @@ from app.perception.screen_monitor import ScreenMonitor, ScreenMonitorConfig
 from app.perception.storage import is_sensitive_context, sanitize_for_storage, store_observation, store_suggestion
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_TRIGGERED_SIGNATURE_LIMIT = 1000
 
 
 class EnvironmentEventType(StrEnum):
@@ -172,11 +172,13 @@ class EnvironmentRuleEngine:
         rules: Iterable[EnvironmentRule | dict[str, Any]] | None = None,
         *,
         history_size: int = 100,
+        triggered_signature_limit: int = DEFAULT_TRIGGERED_SIGNATURE_LIMIT,
         task_id: str = GLOBAL_TASK_ID,
     ) -> None:
         self._rules = [_coerce_rule(rule) for rule in (rules if rules is not None else default_environment_rules())]
         self._history: deque[EnvironmentEvent] = deque(maxlen=max(1, history_size))
-        self._triggered_signatures: set[tuple[str, tuple[str, ...]]] = set()
+        self._triggered_signature_limit = max(1, int(triggered_signature_limit or DEFAULT_TRIGGERED_SIGNATURE_LIMIT))
+        self._triggered_signatures: OrderedDict[tuple[str, tuple[str, ...]], None] = OrderedDict()
         self.task_id = task_id
 
     @property
@@ -198,8 +200,11 @@ class EnvironmentRuleEngine:
                 continue
             signature = (rule.id, tuple(item.id for item in matched))
             if signature in self._triggered_signatures:
+                self._triggered_signatures.move_to_end(signature)
                 continue
-            self._triggered_signatures.add(signature)
+            self._triggered_signatures[signature] = None
+            while len(self._triggered_signatures) > self._triggered_signature_limit:
+                self._triggered_signatures.popitem(last=False)
             suggestions.append(
                 ProactiveSuggestion(
                     task_id=event.task_id or self.task_id,

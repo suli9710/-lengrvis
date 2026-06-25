@@ -4,11 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
-
 from conftest import import_first, require_attr
 
 from app.tools.file_tools import read_text as app_read_text
-
 
 FILE_TOOL_MODULES = (
     "app.tools.file_tools",
@@ -263,6 +261,48 @@ def test_index_status_uses_latest_authorized_failure_when_newer_failure_is_outsi
     assert status["status"] == "degraded"
     assert status["latest_failure"]["path_label"] == "notes.txt"
     assert status["latest_failure"]["message"] == "embedding service offline"
+
+
+def test_rebuild_records_and_reports_file_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+
+    from app.core import db
+    from app.indexer import fts_index
+    from app.indexer.fts_index import FTSIndex
+
+    db.init_db()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ok_file = workspace / "a-ok.txt"
+    bad_file = workspace / "z-bad.txt"
+    ok_file.write_text("searchable notes", encoding="utf-8")
+    bad_file.write_text("broken notes", encoding="utf-8")
+
+    def parse_or_fail(path: Path) -> str:
+        if path.name == bad_file.name:
+            raise RuntimeError("parser offline")
+        return path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(fts_index, "parse_file", parse_or_fail)
+
+    result = FTSIndex(embedder=lambda texts: [[1.0] for _ in texts]).rebuild([str(ok_file), str(bad_file)])
+
+    assert result["files_indexed"] == 1
+    assert result["files_failed"] == 1
+    assert result["failures"] == [{"path_label": "z-bad.txt", "message": "parser offline"}]
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT data FROM audit_events WHERE event_type = ?",
+            ("index.rebuild_file_failed",),
+        ).fetchall()
+    assert len(rows) == 1
+    assert "z-bad.txt" in rows[0]["data"]
+
+    status = FTSIndex().status([str(workspace)])
+
+    assert status["status"] == "degraded"
+    assert status["latest_failure"]["path_label"] == "z-bad.txt"
+    assert status["latest_failure"]["message"] == "parser offline"
 
 
 def test_file_search_response_includes_index_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

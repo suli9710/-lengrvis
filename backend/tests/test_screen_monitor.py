@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 from types import SimpleNamespace
 
+import pytest
+
 from app.perception.schemas import AppContext, PerceptionEvent
 from app.perception.screen_monitor import ScreenMonitor, ScreenMonitorConfig
 
@@ -126,3 +128,30 @@ def test_screen_monitor_reuses_vision_result_for_unchanged_frame(tmp_path):
     assert second.description == first.description
     assert second.metadata["source"] == "test"
     assert second.metadata["frame_diff_gate"] == "reused"
+
+
+def test_screen_monitor_rejects_oversized_base64_before_tempfile(monkeypatch, tmp_path):
+    import app.perception.screen_monitor as screen_monitor
+
+    monkeypatch.setattr(screen_monitor, "MAX_SCREEN_IMAGE_BYTES", 4)
+    monkeypatch.setattr(screen_monitor, "MAX_SCREEN_IMAGE_BASE64_CHARS", 8)
+    frame = SimpleNamespace(
+        image_base64=base64.b64encode(b"too-large").decode("ascii"),
+        timestamp="2026-05-26T00:00:00+00:00",
+        width=640,
+        height=360,
+        original_width=1280,
+        original_height=720,
+        quality=50,
+    )
+    monitor = ScreenMonitor(
+        ScreenMonitorConfig(enabled=True, temp_dir=str(tmp_path)),
+        capture_fn=lambda **kwargs: frame,
+        describe_fn=lambda args, context: {"ok": True, "description": "Desktop"},
+        app_context_fn=lambda: AppContext(active_window_title="Desktop"),
+    )
+
+    with pytest.raises(ValueError, match="screen image exceeds"):
+        monitor.poll_once()
+
+    assert list(tmp_path.iterdir()) == []

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import re
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,9 @@ from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+
+MAX_VISION_GROUNDING_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS = ((MAX_VISION_GROUNDING_IMAGE_BYTES + 2) // 3) * 4
 
 
 def active_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
@@ -296,18 +301,22 @@ def _vision_grounding(description: str, screenshot_payload: dict[str, Any]) -> d
     encoded = image_data.split(",", 1)[1] if "," in image_data else image_data
     if not encoded:
         return {"ok": False, "error": "Screenshot payload contained no image data for vision grounding."}
+    try:
+        image_bytes = _decode_vision_grounding_image(encoded)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
     prompt = render_prompt("vision_locate_element.md", {"target": description})
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
-        handle.write(base64.b64decode(encoded))
-        temp_path = Path(handle.name)
+    temp_path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(image_bytes)
         answer = _run_vision(prompt, temp_path, task="vision")
     finally:
-        try:
-            temp_path.unlink()
-        except OSError:
-            pass
+        if temp_path is not None:
+            with suppress(OSError):
+                temp_path.unlink()
 
     parsed = _parse_grounding_answer(answer)
     if parsed is None:
@@ -338,6 +347,19 @@ def _vision_grounding(description: str, screenshot_payload: dict[str, Any]) -> d
         "screen_width": original_width,
         "screen_height": original_height,
     }
+
+
+def _decode_vision_grounding_image(encoded: str) -> bytes:
+    payload = str(encoded or "").strip()
+    if len(payload) > MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS:
+        raise ValueError(f"Screenshot image exceeds the {MAX_VISION_GROUNDING_IMAGE_BYTES} byte limit.")
+    try:
+        image_bytes = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Screenshot payload is not valid base64.") from exc
+    if len(image_bytes) > MAX_VISION_GROUNDING_IMAGE_BYTES:
+        raise ValueError(f"Screenshot image exceeds the {MAX_VISION_GROUNDING_IMAGE_BYTES} byte limit.")
+    return image_bytes
 
 
 def _parse_grounding_answer(answer: str) -> dict[str, Any] | None:

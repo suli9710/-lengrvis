@@ -14,11 +14,18 @@ from typing import Any, Protocol
 
 from pydantic import Field
 
-from app.core.schemas import new_id, now_iso
+from app.core.schemas import now_iso
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.perception.schemas import PerceptionEvent, ScreenState
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_AUDIO_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_AUDIO_CHUNKS = 512
+
+
+class AudioBufferLimitError(ValueError):
+    """Raised when realtime audio buffering exceeds configured safety limits."""
 
 
 class VoiceTranscriber(Protocol):
@@ -151,8 +158,8 @@ class WhisperCppTranscriber:
         temp_path = ""
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
-                handle.write(wav_audio)
                 temp_path = handle.name
+                handle.write(wav_audio)
             segments = self.model.transcribe(temp_path, language=language) if language else self.model.transcribe(temp_path)
         finally:
             if temp_path:
@@ -230,6 +237,8 @@ class VoiceInputProcessor:
         language: str | None = None,
         task_id: str = GLOBAL_TASK_ID,
         min_transcript_chars: int = 1,
+        max_buffered_audio_bytes: int = DEFAULT_MAX_AUDIO_BYTES,
+        max_buffered_chunks: int = DEFAULT_MAX_AUDIO_CHUNKS,
     ) -> None:
         self.transcriber = transcriber or build_default_transcriber()
         self.wake_gate = WakeWordGate(wake_words)
@@ -239,7 +248,10 @@ class VoiceInputProcessor:
         self.language = language
         self.task_id = task_id
         self.min_transcript_chars = max(0, int(min_transcript_chars or 0))
+        self.max_buffered_audio_bytes = max(1, int(max_buffered_audio_bytes or DEFAULT_MAX_AUDIO_BYTES))
+        self.max_buffered_chunks = max(1, int(max_buffered_chunks or DEFAULT_MAX_AUDIO_CHUNKS))
         self._buffer: list[AudioChunk] = []
+        self._buffered_audio_bytes = 0
         self._lock = asyncio.Lock()
 
     async def process_chunk(self, chunk: AudioChunk | bytes, *, final: bool | None = None) -> VoiceInputEvent | None:
@@ -247,21 +259,45 @@ class VoiceInputProcessor:
         if final is not None:
             audio_chunk.is_final = bool(final)
         async with self._lock:
+            chunk_size = len(audio_chunk.data)
+            if (
+                chunk_size > self.max_buffered_audio_bytes
+                or len(self._buffer) >= self.max_buffered_chunks
+                or self._buffered_audio_bytes + chunk_size > self.max_buffered_audio_bytes
+            ):
+                self._buffer = []
+                self._buffered_audio_bytes = 0
+                raise AudioBufferLimitError(
+                    f"audio buffer exceeds {self.max_buffered_audio_bytes} bytes or "
+                    f"{self.max_buffered_chunks} chunks"
+                )
             self._buffer.append(audio_chunk)
+            self._buffered_audio_bytes += chunk_size
             if not audio_chunk.is_final:
                 return None
             chunks = self._buffer
             self._buffer = []
+            self._buffered_audio_bytes = 0
 
         return await self.process_utterance(chunks)
 
     async def process_utterance(self, chunks: Iterable[AudioChunk] | bytes) -> VoiceInputEvent | None:
         if isinstance(chunks, bytes):
             audio = chunks
+            if len(audio) > self.max_buffered_audio_bytes:
+                raise AudioBufferLimitError(f"audio payload exceeds {self.max_buffered_audio_bytes} bytes")
             sample_rate = 16_000
             audio_metadata: dict[str, Any] = {"chunk_count": 1, "bytes": len(audio)}
         else:
-            chunk_list = list(chunks)
+            chunk_list: list[AudioChunk] = []
+            total_bytes = 0
+            for count, chunk in enumerate(chunks, start=1):
+                if count > self.max_buffered_chunks:
+                    raise AudioBufferLimitError(f"audio payload exceeds {self.max_buffered_chunks} chunks")
+                total_bytes += len(chunk.data)
+                if total_bytes > self.max_buffered_audio_bytes:
+                    raise AudioBufferLimitError(f"audio payload exceeds {self.max_buffered_audio_bytes} bytes")
+                chunk_list.append(chunk)
             if not chunk_list:
                 return None
             sample_rate = chunk_list[-1].sample_rate

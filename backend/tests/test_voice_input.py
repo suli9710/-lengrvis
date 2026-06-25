@@ -7,6 +7,7 @@ import pytest
 from app.orchestration.events import event_to_dict
 from app.perception.schemas import PerceptionEvent
 from app.perception.voice_input import (
+    AudioBufferLimitError,
     AudioChunk,
     DeterministicFallbackTranscriber,
     TranscriptionResult,
@@ -75,6 +76,37 @@ async def test_processor_buffers_realtime_chunks_until_final():
     assert event.audio_metadata["chunk_count"] == 2
     assert event.audio_metadata["bytes"] == 6
     assert event.audio_metadata["sample_rate"] == 8_000
+
+
+@pytest.mark.asyncio
+async def test_processor_rejects_realtime_buffer_over_limits():
+    processor = VoiceInputProcessor(
+        transcriber=FakeTranscriber("start task"),
+        auto_submit=False,
+        max_buffered_audio_bytes=5,
+        max_buffered_chunks=3,
+    )
+
+    assert await processor.process_chunk(AudioChunk(b"one")) is None
+    with pytest.raises(AudioBufferLimitError):
+        await processor.process_chunk(AudioChunk(b"two"))
+
+    event = await processor.process_chunk(AudioChunk(b"ok", is_final=True))
+
+    assert event is not None
+    assert event.audio_metadata["chunk_count"] == 1
+    assert event.audio_metadata["bytes"] == 2
+
+
+@pytest.mark.asyncio
+async def test_processor_rejects_single_utterance_over_byte_limit():
+    processor = VoiceInputProcessor(
+        transcriber=FakeTranscriber("start task"),
+        max_buffered_audio_bytes=4,
+    )
+
+    with pytest.raises(AudioBufferLimitError):
+        await processor.process_utterance(b"12345")
 
 
 @pytest.mark.asyncio

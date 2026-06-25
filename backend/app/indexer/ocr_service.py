@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import importlib.util
-import os
+import logging
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -28,10 +28,15 @@ from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.registry import get_effective_settings, get_provider
 from app.policy.privacy import can_use_cloud_model
 
-
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
 _MIN_PDF_TEXT_CHARS = 24
 _ACCELERATED_OCR_BACKENDS = ("winml", "directml", "openvino")
+DEFAULT_MAX_PDF_OCR_IMAGES = 64
+DEFAULT_MAX_PDF_OCR_IMAGE_BYTES = 12 * 1024 * 1024
+DEFAULT_MAX_PADDLE_OCR_PAGES = 32
+DEFAULT_MAX_PADDLE_OCR_LINES = 512
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -297,11 +302,21 @@ def extract_pdf_text_with_ocr_fallback(
             return extracted
 
         ocr_texts = []
+        image_count = 0
+        image_limit_reached = False
+        max_images = _env_int_limit("LENGRVIS_MAX_PDF_OCR_IMAGES", DEFAULT_MAX_PDF_OCR_IMAGES)
         for page_index, page in enumerate(reader.pages, start=1):
             for image_index, image_file in enumerate(getattr(page, "images", []) or [], start=1):
+                if image_count >= max_images:
+                    image_limit_reached = True
+                    break
+                image_count += 1
                 text = _ocr_pdf_image(image_file, path, page_index, image_index, settings=settings)
                 if text:
                     ocr_texts.append(text)
+            if image_limit_reached:
+                logger.warning("PDF OCR image limit reached for %s (max_images=%s)", path, max_images)
+                break
         if ocr_texts:
             return "\n".join(ocr_texts)
         return extracted
@@ -328,9 +343,26 @@ def _ocr_pdf_image(
         temp_image = Path(tmp_dir) / f"{pdf_path.stem}-p{page_index}-i{image_index}{suffix}"
         pil_image = getattr(image_file, "image", None)
         if pil_image is not None:
+            if _pil_image_exceeds_ocr_limit(pil_image):
+                logger.warning(
+                    "Skipping oversized PDF OCR image in %s page=%s image=%s",
+                    pdf_path,
+                    page_index,
+                    image_index,
+                )
+                return ""
             pil_image.save(temp_image)
         else:
-            temp_image.write_bytes(bytes(getattr(image_file, "data", b"")))
+            raw_data = getattr(image_file, "data", b"") or b""
+            if _raw_image_data_exceeds_ocr_limit(raw_data):
+                logger.warning(
+                    "Skipping oversized PDF OCR image data in %s page=%s image=%s",
+                    pdf_path,
+                    page_index,
+                    image_index,
+                )
+                return ""
+            temp_image.write_bytes(bytes(raw_data))
         result = ocr_image_result(temp_image, settings=settings)
         return result.text.strip() if result.ok else ""
 
@@ -400,8 +432,16 @@ def _ocr_text_with_paddleocr(image_path: Path) -> str:
         return ""
 
     lines: list[str] = []
-    for page in result or []:
+    max_pages = _env_int_limit("LENGRVIS_MAX_PADDLE_OCR_PAGES", DEFAULT_MAX_PADDLE_OCR_PAGES)
+    max_lines = _env_int_limit("LENGRVIS_MAX_PADDLE_OCR_LINES", DEFAULT_MAX_PADDLE_OCR_LINES)
+    for page_index, page in enumerate(result or []):
+        if page_index >= max_pages:
+            logger.warning("PaddleOCR page result limit reached for %s (max_pages=%s)", image_path, max_pages)
+            break
         for item in page or []:
+            if len(lines) >= max_lines:
+                logger.warning("PaddleOCR line result limit reached for %s (max_lines=%s)", image_path, max_lines)
+                return "\n".join(lines)
             try:
                 text = item[1][0]
             except Exception:
@@ -409,6 +449,35 @@ def _ocr_text_with_paddleocr(image_path: Path) -> str:
             if str(text).strip():
                 lines.append(str(text).strip())
     return "\n".join(lines)
+
+
+def _raw_image_data_exceeds_ocr_limit(raw_data: Any) -> bool:
+    max_bytes = _env_int_limit("LENGRVIS_MAX_PDF_OCR_IMAGE_BYTES", DEFAULT_MAX_PDF_OCR_IMAGE_BYTES)
+    try:
+        if len(raw_data) > max_bytes:
+            return True
+    except TypeError:
+        return False
+    return False
+
+
+def _pil_image_exceeds_ocr_limit(image: Any) -> bool:
+    max_bytes = _env_int_limit("LENGRVIS_MAX_PDF_OCR_IMAGE_BYTES", DEFAULT_MAX_PDF_OCR_IMAGE_BYTES)
+    try:
+        width = int(getattr(image, "width", 0) or 0)
+        height = int(getattr(image, "height", 0) or 0)
+        bands = getattr(image, "getbands", lambda: ())()
+        channels = max(1, len(tuple(bands or ())))
+    except Exception:
+        return False
+    return width > 0 and height > 0 and width * height * channels > max_bytes
+
+
+def _env_int_limit(name: str, default: int) -> int:
+    try:
+        return max(1, int(get_env(name, str(default)) or default))
+    except ValueError:
+        return default
 
 
 def _ocr_backend_candidates(configured_backend: str) -> list[str]:

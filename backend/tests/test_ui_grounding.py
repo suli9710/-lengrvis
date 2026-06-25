@@ -90,6 +90,21 @@ def test_vision_fallback_not_found_is_actionable(monkeypatch):
     assert "could not find" in result["error"]
 
 
+def test_vision_fallback_rejects_oversized_screenshot(monkeypatch):
+    monkeypatch.setattr(
+        ui_automation_tools,
+        "create_ui_automation_target",
+        lambda policy_engine=None: _FakeTarget(element=None, screenshot=_fake_screenshot_payload()),
+    )
+    monkeypatch.setattr(ui_automation_tools, "MAX_VISION_GROUNDING_IMAGE_BYTES", 4)
+    monkeypatch.setattr(ui_automation_tools, "MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS", 8)
+
+    result = ui_automation_tools.locate_on_screen({"target": "the Save button"}, {})
+
+    assert result["ok"] is False
+    assert "exceeds" in result["error"]
+
+
 def test_missing_selector_and_description_returns_guidance(monkeypatch):
     monkeypatch.setattr(
         ui_automation_tools,

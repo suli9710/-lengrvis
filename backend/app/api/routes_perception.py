@@ -10,16 +10,18 @@ from pydantic import BaseModel, Field
 from app.core.schemas import RunCreateResponse, RunEngine
 from app.perception.intent_predictor import IntentSuggestion
 from app.perception.voice_input import (
+    DEFAULT_MAX_AUDIO_BYTES,
+    AudioBufferLimitError,
     DeterministicFallbackTranscriber,
     VoiceInputProcessor,
     WhisperCppTranscriber,
 )
 from app.services import perception_suggestion_service
 
-
 router = APIRouter()
 
-MAX_VOICE_AUDIO_BYTES = 10 * 1024 * 1024  # ~5 minutes of 16 kHz mono PCM16.
+MAX_VOICE_AUDIO_BYTES = DEFAULT_MAX_AUDIO_BYTES  # ~5 minutes of 16 kHz mono PCM16.
+MAX_VOICE_AUDIO_BASE64_CHARS = ((MAX_VOICE_AUDIO_BYTES + 2) // 3) * 4
 _voice_processor: VoiceInputProcessor | None = None
 
 
@@ -107,6 +109,8 @@ def voice_health() -> VoiceHealthResponse:
 
 @router.post("/perception/voice/transcribe", response_model=VoiceTranscribeResponse)
 async def voice_transcribe(request: VoiceTranscribeRequest) -> VoiceTranscribeResponse:
+    if len(request.audio_base64) > MAX_VOICE_AUDIO_BASE64_CHARS:
+        raise HTTPException(status_code=413, detail="audio_base64 exceeds the 10 MB decoded payload limit")
     try:
         audio = base64.b64decode(request.audio_base64, validate=True)
     except (binascii.Error, ValueError):
@@ -119,7 +123,11 @@ async def voice_transcribe(request: VoiceTranscribeRequest) -> VoiceTranscribeRe
 
     processor = _get_voice_processor()
     processor.language = request.language or None
-    event = await processor.process_utterance(audio if sample_rate == 16_000 else _resample_pcm16(audio, sample_rate))
+    try:
+        payload = audio if sample_rate == 16_000 else _resample_pcm16(audio, sample_rate)
+        event = await processor.process_utterance(payload)
+    except AudioBufferLimitError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from None
     if event is None:
         return VoiceTranscribeResponse(transcript="", provider=type(processor.transcriber).__name__)
     return VoiceTranscribeResponse(

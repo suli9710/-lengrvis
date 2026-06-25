@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import tempfile
 import threading
@@ -22,6 +23,8 @@ from app.services.remote_desktop_service import (
 )
 from app.tools.vision_tools import describe_image
 
+MAX_SCREEN_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_SCREEN_IMAGE_BASE64_CHARS = ((MAX_SCREEN_IMAGE_BYTES + 2) // 3) * 4
 
 CaptureFn = Callable[..., Any]
 DescribeFn = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -197,15 +200,19 @@ class _temporary_image:
 
     def __enter__(self) -> Path:
         raw = _frame_image_base64(self.frame)
-        data = base64.b64decode(raw)
+        data = _decode_frame_image(raw)
         suffix = ".jpg"
-        handle = tempfile.NamedTemporaryFile(suffix=suffix, dir=self.temp_dir, delete=False)
         try:
-            handle.write(data)
-            self.path = Path(handle.name)
+            with tempfile.NamedTemporaryFile(suffix=suffix, dir=self.temp_dir, delete=False) as handle:
+                self.path = Path(handle.name)
+                handle.write(data)
             return self.path
-        finally:
-            handle.close()
+        except Exception:
+            if self.path is not None:
+                with suppress(OSError):
+                    self.path.unlink(missing_ok=True)
+                self.path = None
+            raise
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         if self.path is not None:
@@ -236,9 +243,25 @@ def _state_from_frame(frame: Any, *, vision_result: dict[str, Any], app_context:
 
 def _frame_image_base64(frame: Any) -> str:
     if isinstance(frame, str):
-        return frame.removeprefix("data:image/jpeg;base64,")
-    value = getattr(frame, "image_base64", "")
-    return str(value or "")
+        value = frame
+    else:
+        value = str(getattr(frame, "image_base64", "") or "")
+    if value.startswith("data:image/") and "," in value:
+        return value.split(",", 1)[1]
+    return value.removeprefix("data:image/jpeg;base64,")
+
+
+def _decode_frame_image(raw: str) -> bytes:
+    encoded = str(raw or "").strip()
+    if len(encoded) > MAX_SCREEN_IMAGE_BASE64_CHARS:
+        raise ValueError(f"screen image exceeds the {MAX_SCREEN_IMAGE_BYTES} byte limit")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("screen image is not valid base64") from exc
+    if len(data) > MAX_SCREEN_IMAGE_BYTES:
+        raise ValueError(f"screen image exceeds the {MAX_SCREEN_IMAGE_BYTES} byte limit")
+    return data
 
 
 def _frame_hash(frame: Any) -> str:

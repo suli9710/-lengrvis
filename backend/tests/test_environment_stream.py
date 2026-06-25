@@ -9,6 +9,7 @@ import pytest
 from app.core import db
 from app.indexer.file_watcher import FileWatcher
 from app.orchestration.dispatcher import EventDispatcher
+from app.perception import storage as perception_storage
 from app.perception.environment_stream import (
     EnvironmentEvent,
     EnvironmentEventType,
@@ -19,7 +20,6 @@ from app.perception.environment_stream import (
     reset_environment_stream,
 )
 from app.perception.schemas import AppContext, ScreenState, UIElement
-from app.perception import storage as perception_storage
 
 
 @pytest.fixture(autouse=True)
@@ -201,6 +201,32 @@ def test_environment_rule_engine_matches_event_sequence():
         EnvironmentEventType.APP_SWITCHED,
         EnvironmentEventType.FILE_CHANGED,
     ]
+
+
+def test_environment_rule_engine_bounds_triggered_signatures_with_lru():
+    engine = EnvironmentRuleEngine(
+        [
+            EnvironmentRule(
+                id="file_changed",
+                event_pattern=[EnvironmentEventType.FILE_CHANGED],
+                title="File changed",
+                body="File changed.",
+            )
+        ],
+        triggered_signature_limit=1,
+    )
+    first = file_changed_event("C:/work/first.txt", "upsert")
+    second = file_changed_event("C:/work/second.txt", "upsert")
+
+    assert engine.evaluate(first)
+    assert engine.evaluate(second)
+    assert len(engine._triggered_signatures) == 1
+    assert engine.evaluate(second) == []
+
+    repeated_first = engine.evaluate(first)
+
+    assert repeated_first
+    assert repeated_first[0].matched_event_ids == [first.id]
 
 
 def test_environment_stream_system_event_helpers_emit_expected_types():

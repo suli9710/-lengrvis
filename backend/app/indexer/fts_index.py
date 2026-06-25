@@ -19,8 +19,10 @@ from app.indexer.parsers import parse_file
 from app.llm.registry import get_effective_settings
 from app.tools.file_tools import sha256_file
 
-
 logger = logging.getLogger(__name__)
+
+INDEX_FAILURE_EVENT_TYPES = ("index.embedding_failed", "index.rebuild_file_failed")
+MAX_REBUILD_FAILURES_REPORTED = 20
 
 
 @dataclass
@@ -62,10 +64,10 @@ class FTSIndex:
                 """
                 SELECT data, created_at
                 FROM audit_events
-                WHERE event_type = ?
+                WHERE event_type IN (?, ?)
                 ORDER BY created_at DESC, sequence DESC, id DESC
                 """,
-                ("index.embedding_failed",),
+                INDEX_FAILURE_EVENT_TYPES,
             ).fetchall()
 
         scoped_rows = [row for row in index_rows if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)]
@@ -88,7 +90,11 @@ class FTSIndex:
         last_modified_at = max((str(row["modified_at"] or "") for row in scoped_rows), default="")
         latest_failure = _latest_index_failure(failure_rows, allowed_roots)
         status = "empty" if files_indexed <= 0 else "ready"
-        if latest_failure is not None and status == "ready" and _timestamp_after(latest_failure["at"], last_indexed_at):
+        if (
+            latest_failure is not None
+            and status in {"empty", "ready"}
+            and _timestamp_after(latest_failure["at"], last_indexed_at)
+        ):
             status = "degraded"
 
         return {
@@ -121,6 +127,26 @@ class FTSIndex:
         embedding_model = get_effective_settings().embedding_model
         pending_files: list[IndexedFile] = []
         pending_chunks: list[_PendingChunk] = []
+        failures_reported: list[dict[str, str]] = []
+        files_failed = 0
+
+        def record_rebuild_failure(path: str | Path, exc: Exception) -> None:
+            nonlocal files_failed
+            files_failed += 1
+            path_text = str(path)
+            logger.warning("Skipping file during index rebuild: %s: %s", path_text, exc, exc_info=True)
+            record(
+                "index.rebuild_file_failed",
+                "FTSIndex",
+                {"path": path_text, "error": str(exc)},
+            )
+            if len(failures_reported) < MAX_REBUILD_FAILURES_REPORTED:
+                failures_reported.append(
+                    {
+                        "path_label": Path(path_text).name or path_text[:80],
+                        "message": _safe_index_failure_message(exc),
+                    }
+                )
 
         def flush_pending() -> None:
             nonlocal embeddings
@@ -193,9 +219,16 @@ class FTSIndex:
             pending_chunks.clear()
 
         for raw in allowed_directories:
-            root = resolve_authorized(raw, allowed_directories)
-            candidates = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+            try:
+                root = resolve_authorized(raw, allowed_directories)
+                candidates = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+            except Exception as exc:
+                record_rebuild_failure(raw, exc)
+                continue
             for path in candidates:
+                pending_file_start = len(pending_files)
+                pending_chunk_start = len(pending_chunks)
+                chunks_start = chunks
                 try:
                     normalized = resolve_authorized(path, allowed_directories)
                     stat = normalized.stat()
@@ -224,13 +257,19 @@ class FTSIndex:
                     if len(pending_chunks) >= self.embedding_batch_size:
                         flush_pending()
                     files += 1
-                except Exception:
+                except Exception as exc:
+                    del pending_files[pending_file_start:]
+                    del pending_chunks[pending_chunk_start:]
+                    chunks = chunks_start
+                    record_rebuild_failure(path, exc)
                     continue
         flush_pending()
         return {
             "files_indexed": files,
             "chunks_indexed": chunks,
             "embeddings_indexed": embeddings,
+            "files_failed": files_failed,
+            "failures": failures_reported,
             "embedding_model": embedding_model,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
         }
