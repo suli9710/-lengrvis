@@ -64,7 +64,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1
       - name: Upload golden task report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: golden-tasks-report
           path: .tmp/qa-evidence/golden-tasks/
@@ -140,7 +140,7 @@ jobs:
         run: npm run sbom:generate
       - name: Upload current SBOM
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: current-sbom
           path: .tmp/sbom/lengrvis-sbom.cdx.json
@@ -177,7 +177,7 @@ jobs:
         run: npm run security:extensions
       - name: Upload extension security evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: extension-security-gate
           path: .tmp/extension-security-gate/
@@ -198,7 +198,7 @@ jobs:
         run: npm run evidence:current-release
       - name: Upload current release evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: current-release-evidence
           path: docs/release/current-release-evidence.md
