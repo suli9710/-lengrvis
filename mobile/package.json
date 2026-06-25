@@ -18,20 +18,20 @@
     "smoke:android-back": "node scripts/android-back-navigation-smoke.cjs"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "3.1.0",
-    "expo": "56.0.5",
-    "expo-camera": "56.0.7",
+    "@react-native-async-storage/async-storage": "3.1.1",
+    "expo": "56.0.12",
+    "expo-camera": "56.0.8",
     "expo-device": "56.0.4",
-    "expo-notifications": "56.0.13",
+    "expo-notifications": "56.0.18",
     "expo-secure-store": "56.0.4",
-    "lucide-react-native": "1.16.0",
-    "react": "19.2.6",
-    "react-native": "0.85.3"
+    "lucide-react-native": "1.21.0",
+    "react": "19.2.7",
+    "react-native": "0.86.0"
   },
   "devDependencies": {
-    "@types/react": "19.2.15",
+    "@types/react": "19.2.17",
     "eas-cli": "20.3.0",
-    "typescript": "5.9.3"
+    "typescript": "6.0.3"
   },
   "overrides": {
     "@xmldom/xmldom": "0.8.13",
