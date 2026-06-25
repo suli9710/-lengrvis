@@ -1,45 +1,47 @@
 # Lengrvis
 
-Lengrvis 是一款 Windows 优先的本地 OS Agent（电脑助手）。用户以自然语言描述目标，系统通过多 Agent 协作完成规划与执行，并在修改文件或系统设置前执行策略审查与用户确认。
+Lengrvis 是一款面向 Windows 的本地 AI 电脑助手。它把自然语言任务拆解为可审计的执行步骤，调用本机文件、文档、浏览器和系统工具，并在写入文件、删除内容或修改系统状态前展示预览、请求确认、保留回滚信息。
+
+产品设计以“本地优先、可控执行、可追溯”为核心：适合整理文件、总结文档、检索本机资料、检查电脑状态、辅助浏览器操作，以及在需要时把审批和任务监督延伸到 Android companion。
 
 **仓库：** [github.com/suli9710/-lengrvis](https://github.com/suli9710/-lengrvis)
+
+**当前版本：** [v0.1.0](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.0)（Windows portable zip / 自解压包 / 独立后端可执行文件）
 
 | 组件 | 技术栈 |
 | --- | --- |
 | 桌面端 | Electron · React · TypeScript · Vite · Zustand |
 | 后端 | Python 3.12 · FastAPI · SQLite · Playwright |
 | 移动伴侣 | Expo · React Native（Android Preview） |
-| CI | GitHub Actions（hygiene · deps/SBOM · pytest · golden gate · typecheck · smokes · IPC/Skill/MCP/settings security） |
+| 自动化验证 | GitHub Actions（依赖与 SBOM、pytest、golden tasks、typecheck、smoke、IPC/Skill/MCP/settings security） |
 
 ## 平台支持矩阵
 
 | 平台 | 状态 | 当前交付 | 已知限制 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable/zip/SFX 打包、任务工作台、审批、文件/文档/系统工具 | 发布包 portable 首屏、命令 dock 和后端只读任务证据以 CI/current release evidence 与 release gate handoff 为准；这不是任务结果完成签收，仍需 clean-machine、真实设备和候选版本人工验收。 |
-| Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 移动审批和远程 WS 脱敏已有后端目标证据；真机 LAN/WSS、证书信任路径和完整应用商店分发未完成。 |
-| macOS 桌面 | Preview | macOS 后端构建脚本与 DMG 脚本存在 | 不作为 0-90 天主线，需在 macOS 主机验证。 |
-| iOS Companion | Planned | 暂不交付 | 等 Android companion 闭环稳定后再排期。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、Windows portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.0 产物未签名；clean-machine、升级/回滚、真实设备联动仍需独立验收。 |
+| Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、受控远程输入授权 | 适合内部预览和联调；真机 LAN/WSS、证书信任路径和应用商店分发尚未完成。 |
+| macOS 桌面 | Preview | macOS 后端构建脚本与 DMG 脚本 | 需要在 macOS 主机完成打包、签名和 notarization 验证。 |
+| iOS Companion | Planned | 暂不交付 | Android companion 稳定后再排期。 |
 
-## 普通用户快速开始
+## 安装与快速开始
 
-1. 双击 `启动 Lengrvis.cmd` 启动 Lengrvis。
-2. 正式发布包会直接启动已打包好的产物，不会在第一次启动时现场运行 `pip install` 或 `npm install`。命令行窗口会显示“正在启动”“已启动”或失败原因。
-3. 启动成功后会打开 Lengrvis 桌面窗口。首屏可以直接从“整理下载目录、总结本地文档、查找大文件、检查电脑状态、文档问答”开始，每个模板都会显示本机处理、云端边界、审批、回滚和预计耗时。
-4. 如果启动失败，请先双击 `Start-Lengrvis-Debug.cmd`，它会把最近的错误日志打印出来；完整日志在 `logs` 文件夹。
-5. 如果你下载的是源码或 Git 仓库，请先看下面的“源码开发 setup”；源码依赖安装不属于普通用户启动路径。
-6. 完整的上手步骤、FAQ 与故障排查见 `docs/user-guide.md`。
+1. 打开 [Releases](https://github.com/suli9710/-lengrvis/releases)，下载 `Lengrvis-0.1.0-win-portable.zip` 或 `Lengrvis-0.1.0-x64-self-extracting.exe`。
+2. 使用 portable zip 时，解压后运行 `Lengrvis.exe`；使用自解压包时，双击后会释放到本机用户目录并启动应用。
+3. 启动成功后，桌面窗口会显示任务入口。你可以直接从整理下载目录、总结本地文档、查找大文件、检查电脑状态、文档问答等场景开始。
+4. 每个会改变本机状态的操作都会先进入预览和审批流程；文件写入和编辑会记录回滚信息，便于撤销。
+5. 如果你下载的是源码或 Git 仓库，请跳到“源码开发 setup”。源码模式需要安装 Python、Node 和前端依赖，不属于普通用户启动路径。
+6. 完整上手步骤、FAQ 与故障排查见 `docs/user-guide.md`。
 
-## 普通用户配置与诊断入口
+## 配置、隐私与诊断
 
-- 配置 AI、隐私模式、本地模型、硬件加速和手机配对时，优先打开桌面窗口里的“设置”。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
-- “设置 → 套餐与授权”会展示当前 Free / Pro / Team 能力、云端额度、许可证主体与到期时间；官方离线许可证可直接导入并在本机验签。在线购买、订阅、退款自动降级和吊销同步尚未上线。
-- 商业许可证的离线密钥生成、签发、换发、退款/拒付吊销与哈希链台账见 `docs/business/license-operations.md`；运行时只持有公钥，私钥不得进入应用或发布环境。
-- 删除本机个人数据：桌面“设置 → 本机数据与隐私”要求输入 `删除本机数据` 并再次通过 Electron 原生确认；随后清除任务、对话、录屏、配对、索引与已导出诊断包，保留防篡改审计链并记录删除事件。日志目录仍需手动清理。数据清单与合规自查见 `docs/compliance/pipl-gdpr-checklist.md`（法务定稿未完成，不得对外宣称合规）。
-- 应用能打开但任务异常时，打开“系统信息”。这里会显示桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明入口。
-- “刷新本机状态”只刷新当前安装版本、后端状态和诊断快照；当前没有完整在线自动更新、下载更新或自动安装更新通道。
-- 需要反馈问题时再点“导出诊断包”。诊断包会写入本机数据目录下的 `diagnostic-packages`，包含版本、服务状态、本机范围摘要、网络接口、进程、启动项和最近失败统计；导出内容会尽量把 data/database/log 绝对路径、进程用户名、密钥、任务正文、设备名、配对码、grant id 和模型路径脱敏。
-- 诊断包不是“可公开发布材料”：界面可能显示本机保存位置方便你打开文件，分享前仍应确认没有不该外发的路径、日志片段或组织信息。即使外发前做了人工内容复核，也只代表检查过该包内容，不代表 `public_safe=true`、clean-machine 验收、候选版本 RC sign-off 或发布签收；自动测试和 evidence helper 只能作为脱敏契约或 handoff 模板证据。
-- 应用打不开时，双击 `Start-Lengrvis-Debug.cmd`，它会显示已脱敏的最近启动日志摘要和下一步；完整日志位置通常在仓库 `logs` 目录或应用数据目录的 `logs` 目录，能打开应用时也可在“系统信息”里查看。
+- AI Provider、隐私模式、本地模型、硬件加速和手机配对优先在桌面“设置”中完成。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
+- “设置 → 套餐与授权”展示当前 Free / Pro / Team 能力、云端额度、许可证主体与到期时间；离线许可证可在本机验签。在线购买、订阅、退款自动降级和吊销同步仍在建设中。
+- “设置 → 本机数据与隐私”提供本机数据删除入口。删除前需要输入确认短语并再次通过系统确认；随后清除任务、对话、录屏、配对、索引与已导出诊断包，保留防篡改审计链并记录删除事件。日志目录仍需手动清理。
+- “系统信息”用于查看桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明。
+- “导出诊断包”用于支持排查。诊断包会写入本机数据目录下的 `diagnostic-packages`，包含版本、服务状态、本机范围摘要、网络接口、进程、启动项和最近失败统计；导出过程会尽量脱敏路径、用户名、密钥、任务正文、设备名、配对码、grant id 和模型路径。
+- 诊断包默认不是可公开材料。对外分享前，仍应检查是否包含不该外发的路径、日志片段或组织信息。
+- 应用打不开时，可运行 `Start-Lengrvis-Debug.cmd` 查看已脱敏的最近启动日志摘要；完整日志通常位于仓库 `logs` 目录或应用数据目录的 `logs` 目录。
 
 ## 任务证据与录屏隐私
 
@@ -47,11 +49,11 @@ Lengrvis 是一款 Windows 优先的本地 OS Agent（电脑助手）。用户�
 - 任务 timeline、replay、任务列表、agent messages、safety reviews、progress 和 explain 接口只返回 redacted summary、状态、计数和边界标签。它们不会返回截图 URL、截图文件名、recording id、raw tool args/result、隐藏 prompt、任务 metadata、review reasons 或文件正文。
 - 诊断包导出只保留 task recording 的状态边界，例如是否开启和默认 opt-in 策略；不会把录屏图片、截图文件名或 task recording 路径放进支持包。原始截图只能通过显式本机文件名路线读取，不能从公开 timeline/replay 自动发现。
 
-## 产品说明
+## 产品定位
 
-Lengrvis 是一款 Windows 优先的本地 OS Agent（电脑助手）原型。其核心定位是围绕用户本机提供可审计、可扩展、可自托管的任务执行能力：用户以自然语言描述目标，系统通过多 Agent 协作理解任务、规划步骤、调用本地工具，并在修改文件或系统设置前执行安全审查与用户确认。
+Lengrvis 的目标不是替代用户直接控制电脑，而是在用户授权范围内把重复、跨工具、需要上下文的本机任务变成可预览、可批准、可回滚的执行流程。
 
-桌面端首屏面向消费级电脑助手场景设计，提供：单句任务入口；隐私 / 混合 / 效率三种模式；文件、文档、图片、系统、应用与网页能力卡；移动端审批与屏幕查看入口；以及 Agent 进度与安全审批视图。相较发布级 OS AI 产品，当前版本仍需在本地模型开箱即用、跨端分发、应用深度集成与真实设备验收等方面持续完善。
+桌面端围绕消费级电脑助手场景设计，提供单句任务入口、隐私 / 混合 / 效率三种模式、文件/文档/图片/系统/应用/网页能力、移动端审批与屏幕查看入口，以及 Agent 进度和安全审批视图。当前版本已经具备 Windows 本地运行、打包分发和核心安全边界；本地模型开箱即用、跨端分发、深度应用集成、签名安装包和真实设备验收仍在持续完善。
 
 ## 架构
 
