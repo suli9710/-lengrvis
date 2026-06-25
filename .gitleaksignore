@@ -1,0 +1,22 @@
+# Intentional test fixtures used to verify redaction and TLS behavior.
+backend/tests/test_approval_binding.py:generic-api-key:574
+backend/tests/test_guardian_backend.py:generic-api-key:1028
+backend/tests/test_mobile_lan_wss_preflight.py:generic-api-key:279
+backend/tests/test_mobile_pairing.py:generic-api-key:2853
+backend/tests/test_mobile_pairing.py:generic-api-key:2929
+backend/tests/test_ollama_install_endpoint.py:generic-api-key:448
+backend/tests/test_ollama_service.py:generic-api-key:510
+backend/tests/test_privacy_mode_offline_eval.py:generic-api-key:357
+backend/tests/test_privacy_redaction.py:generic-api-key:68
+backend/tests/test_remote_desktop.py:generic-api-key:885
+backend/tests/test_remote_desktop.py:generic-api-key:983
+backend/tests/test_remote_desktop.py:generic-api-key:1108
+backend/tests/test_runs_api.py:generic-api-key:166
+backend/tests/test_sensitive_values.py:generic-api-key:40
+backend/tests/test_sensitive_values.py:generic-api-key:41
+backend/tests/test_start_app_script.py:generic-api-key:6130
+backend/tests/test_start_app_script.py:generic-api-key:6131
+backend/tests/test_ui_automation.py:generic-api-key:275
+backend/tests/tls_test_material.py:private-key:7
+desktop/scripts/backend-log-redaction-smoke.cjs:generic-api-key:25
+test_data/privacy/pii_payload.json:generic-api-key:2

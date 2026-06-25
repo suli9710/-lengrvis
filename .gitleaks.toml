@@ -41,6 +41,12 @@ paths = [
   '''vendor/''',
   '''desktop/node_modules/''',
   '''mobile/node_modules/''',
+  '''^\.lengrvis_data/''',
+  '''^\.tmp/''',
+  '''^dist/''',
+  '''^backend/\.pytest_cache/''',
+  '''^backend/\.ruff_cache/''',
+  '''__pycache__/''',
 ]
 # CI test secret is not a real secret
 regexes = [
