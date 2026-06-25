@@ -647,8 +647,8 @@ def test_debug_launcher_prints_redacted_summary_not_raw_logs(project_root: Path)
 
 def test_user_launch_docs_point_to_settings_and_debug_not_env_config(project_root: Path) -> None:
     text = _readme_text(project_root)
-    quick_start = _markdown_section(text, "## 普通用户快速开始")
-    user_entry = _markdown_section(text, "## 普通用户配置与诊断入口")
+    quick_start = _markdown_section(text, "## 安装与快速开始")
+    user_entry = _markdown_section(text, "## 配置、隐私与诊断")
 
     assert ".env" not in quick_start
     assert "config.yaml" not in quick_start
