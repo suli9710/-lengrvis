@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
+from tls_test_material import write_lan_tls_material
 
 from app.config import PROJECT_ROOT
 from app.core import db
@@ -12,7 +13,6 @@ from app.core.schemas import Approval, ApprovalStatus, Run, RunPhase, Task, Tool
 from app.main import create_app
 from app.orchestration.task_phase import TaskPhase
 from app.services import system_service, task_recording_service
-from tls_test_material import write_lan_tls_material
 
 
 def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path):
@@ -56,7 +56,7 @@ def test_system_diagnostics_include_local_product_metrics(monkeypatch, tmp_path)
     assert update_channel["release_notes"]["available"] is True
     assert update_channel["release_notes"]["label"] == "本地发布说明"
     assert update_channel["release_notes"]["detail"] == "打开随安装包提供的说明文件；本页不会联网检查更新。"
-    assert update_channel["release_notes"]["filename"] == "README.md"
+    assert update_channel["release_notes"]["filename"] == "CHANGELOG.md"
     assert update_channel["release_notes"]["path"] == "[path_label:release_notes]"
     assert update_channel["release_notes"]["path_kind"] == "local_file"
     assert update_channel["release_notes"]["source"] == "local_file"
@@ -419,8 +419,8 @@ def test_system_diagnostics_export_writes_redacted_support_package(monkeypatch, 
     for raw_path in raw_paths:
         assert raw_path not in package_text
         assert raw_path.replace("\\", "/") not in package_text
-    assert str(PROJECT_ROOT / "README.md") not in package_text
-    assert str(PROJECT_ROOT / "README.md").replace("\\", "/") not in package_text
+    assert str(PROJECT_ROOT / "CHANGELOG.md") not in package_text
+    assert str(PROJECT_ROOT / "CHANGELOG.md").replace("\\", "/") not in package_text
     assert "Suli" not in package_text
     assert "Contoso" not in package_text
     assert "sk-export-secret" not in package_text
@@ -461,7 +461,7 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
     nested_approval_message = "nested approval message marker: click payroll approval"
     host_name = "SULI-WORKSTATION-SECRET"
     host_header = "support-host-secret.internal"
-    bearer_token = "bearer-export-secret-1234567890"
+    bearer_token = "bearer-export-secret-1234567890"  # noqa: S105 - seeded fake secret for redaction tests.
     camel_device_id = "camel-device-secret-1234567890"
     camel_grant_id = "camel-grant-secret-1234567890"
     camel_pairing_id = "camel-pairing-secret-1234567890"
@@ -469,7 +469,7 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
     camel_task_body = "camel task body marker: reconcile private invoices"
     camel_user_goal = "camel user goal marker: open private compensation sheet"
     machine_id = "machine-id-secret-1234567890"
-    update_token = "update-token-secret-1234567890"
+    update_token = "update-token-secret-1234567890"  # noqa: S105 - seeded fake secret for redaction tests.
     crash_report_id = "crash-report-secret-1234567890"
     bare_recording_filename = "recording-secret-frame.png"
     bare_screenshot_filename = "screen-shot-secret-before.png"
@@ -486,9 +486,7 @@ def test_system_diagnostics_export_redacts_seeded_sensitive_evidence(monkeypatch
         f"Set-Cookie: session={cookie}; deviceId={camel_device_id}; grantId={camel_grant_id}; "
         f"pairingCode={camel_pairing_code}; taskBody={camel_task_body}; modelPath={model_path}"
     )
-    artifact_log_snippet = (
-        f"saved recording {bare_recording_filename}; saved screenshot {bare_screenshot_filename}"
-    )
+    artifact_log_snippet = f"saved recording {bare_recording_filename}; saved screenshot {bare_screenshot_filename}"
     monkeypatch.setattr(
         system_service,
         "diagnostics",
@@ -726,7 +724,11 @@ def test_system_diagnostics_get_redacts_seeded_sensitive_evidence(monkeypatch, t
     assert payload["support_debug"]["hostname"] == "[redacted:sensitive_field]"
     assert payload["top_processes"][0]["username"] == "[redacted:local_user]"
 
-    payload_text = json.dumps({key: value for key, value in payload.items() if key != "local_paths"}, ensure_ascii=False, sort_keys=True)
+    payload_text = json.dumps(
+        {key: value for key, value in payload.items() if key != "local_paths"},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     for secret in (
         task_body,
         api_key,
@@ -818,7 +820,14 @@ def _fake_system_diagnostics() -> dict:
 
 def _assert_task_recording_status(payload: dict, *, enabled: bool, env_override: str):
     task_recording = payload["task_recording"]
-    assert set(task_recording) == {"schema_version", "enabled", "default_policy", "local_only", "configuration", "export"}
+    assert set(task_recording) == {
+        "schema_version",
+        "enabled",
+        "default_policy",
+        "local_only",
+        "configuration",
+        "export",
+    }
     assert task_recording["schema_version"] == 1
     assert task_recording["enabled"] is enabled
     assert task_recording["default_policy"] == {
@@ -840,7 +849,7 @@ def _assert_task_recording_status(payload: dict, *, enabled: bool, env_override:
 
 
 def _insert_mobile_funnel_fixture():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     created_at = now.isoformat()
     expires_at = (now + timedelta(minutes=5)).isoformat()
     device = {

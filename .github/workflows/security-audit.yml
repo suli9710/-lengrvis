@@ -24,7 +24,7 @@ jobs:
         with:
           go-version: "1.23"
       - name: Run gitleaks
-        run: go run github.com/gitleaks/gitleaks/v8@v8.28.0 dir --config .gitleaks.toml --redact --no-banner .
+        run: go run github.com/zricethezav/gitleaks/v8@v8.28.0 dir --config .gitleaks.toml --redact --no-banner .
 
   sca:
     name: npm audit + pip-audit

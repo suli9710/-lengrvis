@@ -5,14 +5,14 @@ import importlib.metadata
 import os
 import platform
 import threading
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
 from app.config import AppSettings, get_env
-
 
 WINML_PROVIDER = "WindowsMLExecutionProvider"
 DIRECTML_PROVIDER = "DmlExecutionProvider"
@@ -120,7 +120,7 @@ def available_execution_providers() -> list[str]:
         return []
     try:
         return [str(provider) for provider in ort.get_available_providers()]
-    except Exception:
+    except Exception:  # noqa: BLE001 - native runtime probing must degrade to unavailable.
         return []
 
 
@@ -130,7 +130,7 @@ def import_onnxruntime() -> Any | None:
             return importlib.import_module(module_name)
         except ImportError:
             continue
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - broken optional runtimes should not block fallback.
             continue
     return None
 
@@ -140,13 +140,14 @@ def detect_session_backend(
     model_path: str,
     configured_provider: str = "",
     provider_preference: str = "",
+    available_providers: list[str] | None = None,
     settings: AppSettings | None = None,
     model_id: str = "",
 ) -> OnnxSessionBackend | None:
     candidate = resolve_onnx_model_path(model_path)
     if candidate is None:
         return None
-    providers = available_execution_providers()
+    providers = list(available_providers) if available_providers is not None else available_execution_providers()
     if not providers:
         return None
     selected = select_execution_provider(
@@ -334,7 +335,7 @@ def session_input_names(session: Any) -> list[str]:
 def session_output_names(session: Any) -> list[str]:
     try:
         return [str(item.name) for item in session.get_outputs()]
-    except Exception:
+    except Exception:  # noqa: BLE001 - output-name discovery is best-effort diagnostics.
         return []
 
 
@@ -423,7 +424,7 @@ def _runtime_package_snapshot(module_name: str) -> dict[str, Any]:
     version = ""
     try:
         version = importlib.metadata.version(module_name.replace("_", "-"))
-    except Exception:
+    except importlib.metadata.PackageNotFoundError:
         module = importlib.import_module(module_name)
         version = str(getattr(module, "__version__", "") or "")
     return {**status, "version": version}
@@ -434,7 +435,7 @@ def _module_status(module_name: str) -> dict[str, Any]:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         return {"available": False, "module": module_name, "error": str(exc)}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional runtime import failures become health data.
         return {"available": False, "module": module_name, "error": str(exc)}
     version = str(getattr(module, "__version__", "") or "")
     return {"available": True, "module": module_name, "version": version, "error": ""}

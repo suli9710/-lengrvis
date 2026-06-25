@@ -7,7 +7,6 @@ support, or a configured embedding model is missing, callers receive
 
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -26,7 +25,6 @@ from app.acceleration.onnx_sessions import (
     session_input_names,
 )
 from app.config import AppSettings, get_env
-
 
 _MODEL_ENV_KEYS = (
     "LENGRVIS_EMBEDDING_ONNX_MODEL_PATH",
@@ -170,6 +168,7 @@ def detect_local_embedding_backend(settings: AppSettings | None = None) -> Local
     backend = detect_session_backend(
         model_path=str(model_path),
         configured_provider=_configured_execution_provider(settings) or "",
+        available_providers=_available_execution_providers(),
         settings=settings,
         model_id=str(getattr(settings, "onnx_embedding_model_id", "") or "") if settings is not None else "",
     )
@@ -301,12 +300,15 @@ def _configured_execution_provider(settings: AppSettings | None) -> str | None:
         if value and value.strip():
             return value.strip()
     if settings is not None:
-        return first_present(
-            [
-                str(getattr(settings, "onnx_embedding_execution_provider", "") or ""),
-                str(getattr(settings, "onnx_execution_provider", "") or ""),
-            ]
-        ) or None
+        return (
+            first_present(
+                [
+                    str(getattr(settings, "onnx_embedding_execution_provider", "") or ""),
+                    str(getattr(settings, "onnx_execution_provider", "") or ""),
+                ]
+            )
+            or None
+        )
     return None
 
 

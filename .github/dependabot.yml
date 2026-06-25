@@ -2,55 +2,80 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
       time: "08:00"
       timezone: Asia/Shanghai
+    groups:
+      github-actions:
+        patterns:
+          - "*"
     labels:
       - dependencies
       - security
 
   - package-ecosystem: npm
     directory: /desktop
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
       time: "08:30"
       timezone: Asia/Shanghai
+    groups:
+      desktop-npm:
+        patterns:
+          - "*"
     labels:
       - dependencies
       - desktop
 
   - package-ecosystem: npm
     directory: /mobile
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
       time: "09:00"
       timezone: Asia/Shanghai
+    groups:
+      mobile-npm:
+        patterns:
+          - "*"
     labels:
       - dependencies
       - mobile
 
   - package-ecosystem: pip
     directory: /backend
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
       time: "09:30"
       timezone: Asia/Shanghai
+    groups:
+      backend-python:
+        patterns:
+          - "*"
     labels:
       - dependencies
       - backend
 
   - package-ecosystem: pip
     directory: /
+    open-pull-requests-limit: 2
     schedule:
       interval: weekly
       day: monday
       time: "10:00"
       timezone: Asia/Shanghai
+    groups:
+      root-python:
+        patterns:
+          - "*"
     labels:
       - dependencies
       - backend
