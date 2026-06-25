@@ -20,13 +20,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.23"
       - name: Run gitleaks
-        run: go run github.com/gitleaks/gitleaks/v8@v8.28.0 detect --source . --config .gitleaks.toml --redact --no-banner
+        run: go run github.com/gitleaks/gitleaks/v8@v8.28.0 dir --config .gitleaks.toml --redact --no-banner .
 
   sca:
     name: npm audit + pip-audit
