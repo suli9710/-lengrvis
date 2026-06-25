@@ -13,6 +13,12 @@ dist/
 build/
 .turbo/
 
+# Keep the signed macOS release entitlement template in the repo while
+# continuing to ignore generated build output.
+!desktop/build/
+desktop/build/*
+!desktop/build/entitlements.mac.plist
+
 # Ollama runtime/model artifacts are downloaded on demand and must not be committed.
 vendor/ollama/
 vendor/ollama-models/
