@@ -1,112 +1,104 @@
 from __future__ import annotations
 
-import base64
-import json
-import logging
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-try:
-    import yaml
-except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
-    yaml = None
+from app.config_normalization import (
+    normalize_mcp_servers as _normalize_mcp_servers,
+)
+from app.config_normalization import (
+    normalize_permission_mode as _normalize_permission_mode,
+)
+from app.config_normalization import (
+    normalize_skill_trusted_public_keys as _normalize_skill_trusted_public_keys,
+)
+from app.config_normalization import (
+    redact_secret_fields as _redact_secret_fields,
+)
+from app.config_paths import (
+    APP_ROOT,
+    CONFIG_PARENT_SEARCH_DEPTH,
+    DEFAULT_DATA_DIR,
+    DPAPI_PREFIX,
+    ENV_PREFIX,
+    MOBILE_JWT_SECRET_ENV_KEYS,
+    MOBILE_JWT_SECRET_FILE,
+    PROJECT_ROOT,
+)
+from app.config_sources import (
+    candidate_config_dirs as _candidate_config_dirs,
+)
+from app.config_sources import (
+    configured as _configured,
+)
+from app.config_sources import (
+    decrypt_windows_dpapi as _decrypt_windows_dpapi,
+)
+from app.config_sources import (
+    env_aliases,
+    env_flag,
+    env_raw,
+    env_value,
+    get_env,
+)
+from app.config_sources import (
+    external_data_dir as _external_data_dir,
+)
+from app.config_sources import (
+    find_config_file as _find_config_file,
+)
+from app.config_sources import (
+    load_dotenv as _load_dotenv,
+)
+from app.config_sources import (
+    load_yaml as _load_yaml,
+)
+from app.config_sources import (
+    local_mobile_jwt_secret as _local_mobile_jwt_secret,
+)
+from app.config_sources import (
+    preferred_data_dir as _preferred_data_dir,
+)
+from app.config_sources import (
+    resolve_mobile_jwt_secret as _resolve_mobile_jwt_secret,
+)
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-APP_ROOT = PROJECT_ROOT / "backend"
-DEFAULT_DATA_DIR = PROJECT_ROOT / ".lengrvis_data"
-CONFIG_PARENT_SEARCH_DEPTH = 5
-DPAPI_PREFIX = "dpapi:"
-ENV_PREFIX = "LENGRVIS"
-MOBILE_JWT_SECRET_ENV_KEYS = ("LENGRVIS_JWT_SECRET",)
-MOBILE_JWT_SECRET_FILE = "mobile_jwt.secret"  # noqa: S105
-logger = logging.getLogger(__name__)
-
-
-def _configured(raw: Any) -> bool:
-    return raw is not None and not (isinstance(raw, str) and raw == "")
-
-
-def env_aliases(env_key: str) -> tuple[str, ...]:
-    key = str(env_key or "").strip()
-    if not key:
-        return ()
-    return (key,)
-
-
-def env_value(source: dict[str, str] | os._Environ[str], env_key: str) -> str | None:
-    for alias in env_aliases(env_key):
-        raw = source.get(alias)
-        if _configured(raw):
-            return raw
-    return None
-
-
-def get_env(env_key: str, default: str | None = None) -> str | None:
-    raw = env_value(os.environ, env_key)
-    return raw if raw is not None else default
-
-
-def env_raw(env_key: str) -> str | None:
-    """Raw environment read that preserves "set but empty" values.
-
-    Prefer get_env unless the caller must distinguish an unset variable from
-    one explicitly set to an empty/falsy string (e.g. tri-state overrides).
-    Reads os.environ at call time so test monkeypatching keeps working.
-    """
-    for alias in env_aliases(env_key):
-        if alias in os.environ:
-            return os.environ[alias]
-    return None
-
-
-def env_flag(env_key: str, default: bool = False) -> bool:
-    """Shared truthy-flag parsing for boolean environment switches."""
-    raw = get_env(env_key)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _load_dotenv(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-    values: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists() or yaml is None:
-        return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return data if isinstance(data, dict) else {}
-
-
-def _decrypt_windows_dpapi(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    payload = text[len(DPAPI_PREFIX) :] if text.startswith(DPAPI_PREFIX) else text
-    if os.name != "nt":
-        raise RuntimeError("Encrypted API keys require Windows DPAPI on this platform.")
-    try:
-        import win32crypt  # type: ignore[import-not-found]
-
-        blob = base64.b64decode(payload)
-        return str(win32crypt.CryptUnprotectData(blob, None, None, None, 0)[1].decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001 - callers need a clear config failure.
-        raise RuntimeError("Failed to decrypt LENGRVIS_API_KEY_ENCRYPTED with Windows DPAPI.") from exc
+__all__ = [
+    "APP_ROOT",
+    "CONFIG_PARENT_SEARCH_DEPTH",
+    "DEFAULT_DATA_DIR",
+    "DPAPI_PREFIX",
+    "ENV_PREFIX",
+    "MOBILE_JWT_SECRET_ENV_KEYS",
+    "MOBILE_JWT_SECRET_FILE",
+    "PROJECT_ROOT",
+    "AppSettings",
+    "env_aliases",
+    "env_flag",
+    "env_raw",
+    "env_value",
+    "get_base_settings",
+    "get_env",
+    "_candidate_config_dirs",
+    "_configured",
+    "_decrypt_windows_dpapi",
+    "_external_data_dir",
+    "_find_config_file",
+    "_load_dotenv",
+    "_load_yaml",
+    "_local_mobile_jwt_secret",
+    "_normalize_mcp_servers",
+    "_normalize_permission_mode",
+    "_normalize_skill_trusted_public_keys",
+    "_preferred_data_dir",
+    "_redact_secret_fields",
+    "_resolve_api_key",
+    "_resolve_mobile_jwt_secret",
+]
 
 
 def _resolve_api_key(raw_plain: Any, raw_encrypted: Any) -> str:
@@ -117,76 +109,6 @@ def _resolve_api_key(raw_plain: Any, raw_encrypted: Any) -> str:
     if not encrypted:
         return ""
     return _decrypt_windows_dpapi(encrypted)
-
-
-def _resolve_mobile_jwt_secret(raw_secret: Any, data_dir: str | Path) -> str:
-    configured = str(raw_secret or "").strip()
-    if configured:
-        return configured
-    return _local_mobile_jwt_secret(Path(data_dir))
-
-
-def _local_mobile_jwt_secret(data_dir: Path) -> str:
-    from app.security.local_secret import load_or_create_local_secret
-
-    return load_or_create_local_secret(
-        data_dir / MOBILE_JWT_SECRET_FILE,
-        unavailable_message="Mobile JWT secret is unavailable.",
-    )
-
-
-def _candidate_config_dirs() -> list[Path]:
-    roots: list[Path] = []
-    for value in (
-        get_env("LENGRVIS_CONFIG_DIR"),
-        os.getcwd(),
-        PROJECT_ROOT,
-    ):
-        if value:
-            roots.append(Path(value))
-
-    if getattr(sys, "frozen", False):
-        roots.append(Path(sys.executable).resolve().parent)
-
-    seen: set[str] = set()
-    dirs: list[Path] = []
-    for root in roots:
-        try:
-            current = root.resolve()
-        except OSError:
-            current = root
-        for index, candidate in enumerate([current, *current.parents]):
-            if index > CONFIG_PARENT_SEARCH_DEPTH:
-                break
-            key = str(candidate).lower()
-            if key not in seen:
-                seen.add(key)
-                dirs.append(candidate)
-    return dirs
-
-
-def _find_config_file(file_name: str, explicit_env_key: str) -> Path | None:
-    explicit = get_env(explicit_env_key)
-    if explicit:
-        path = Path(explicit)
-        return path if path.exists() else None
-
-    for directory in _candidate_config_dirs():
-        path = directory / file_name
-        if path.exists():
-            return path
-    return None
-
-
-def _external_data_dir(config_file: Path | None, env_file: Path | None) -> Path:
-    anchor = env_file or config_file
-    if anchor:
-        return _preferred_data_dir(anchor.parent)
-    return _preferred_data_dir(PROJECT_ROOT)
-
-
-def _preferred_data_dir(parent: Path) -> Path:
-    return parent / ".lengrvis_data"
 
 
 class AppSettings(BaseSettings):
@@ -723,113 +645,3 @@ def get_base_settings() -> AppSettings:
     settings = AppSettings.from_sources()
     Path(settings.data_dir).mkdir(parents=True, exist_ok=True)
     return settings
-
-
-def _normalize_permission_mode(value: Any) -> str:
-    candidate = str(value or "default").strip().lower()
-    aliases = {
-        "accept_edits": "trusted_edits",
-        "trusted": "trusted_edits",
-        "auto": "auto_review",
-        "dontask": "dont_ask",
-        "deny": "dont_ask",
-    }
-    candidate = aliases.get(candidate, candidate)
-    if candidate not in {"plan", "default", "trusted_edits", "auto_review", "dont_ask"}:
-        return "default"
-    return candidate
-
-
-def _normalize_mcp_servers(value: Any) -> list[dict]:
-    if value is None or value == "":
-        return []
-    if isinstance(value, str):
-        import json as _json
-
-        try:
-            parsed = _json.loads(value)
-        except (ValueError, TypeError):
-            return []
-        return _normalize_mcp_servers(parsed)
-    if isinstance(value, list):
-        result: list[dict] = []
-        for item in value:
-            if isinstance(item, dict) and (item.get("url") or item.get("command")):
-                result.append(
-                    {
-                        "name": str(item.get("name") or item.get("id") or "mcp"),
-                        "url": str(item.get("url") or ""),
-                        "command": str(item.get("command") or ""),
-                        "args": list(item.get("args") or []),
-                        "transport": str(item.get("transport", "http")),
-                        "enabled": bool(item.get("enabled", True)),
-                        "auth": dict(item.get("auth") or {}),
-                    }
-                )
-        return result
-    return []
-
-
-def _normalize_skill_trusted_public_keys(value: Any) -> dict[str, str]:
-    if value is None or value == "":
-        return {}
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return {}
-        try:
-            parsed = json.loads(text)
-        except (ValueError, TypeError):
-            result: dict[str, str] = {}
-            for entry in text.split(";"):
-                if "=" not in entry:
-                    continue
-                key_id, public_key = entry.split("=", 1)
-                key_id = key_id.strip()
-                public_key = public_key.strip()
-                if key_id and public_key:
-                    result[key_id] = public_key
-            return result
-        return _normalize_skill_trusted_public_keys(parsed)
-    if isinstance(value, dict):
-        return {
-            str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()
-        }
-    if isinstance(value, list):
-        result: dict[str, str] = {}
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            key_id = str(item.get("key_id") or item.get("keyId") or item.get("id") or "").strip()
-            public_key = str(item.get("public_key") or item.get("publicKey") or item.get("key") or "").strip()
-            if key_id and public_key:
-                result[key_id] = public_key
-        return result
-    return {}
-
-
-_SECRET_FIELD_TOKENS = ("auth", "authorization", "api_key", "token", "password", "secret", "credential")
-_SECRET_CONTAINER_KEYS = {"headers"}
-
-
-def _redact_secret_fields(value: Any) -> Any:
-    if isinstance(value, list):
-        return [_redact_secret_fields(item) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_secret_fields(item) for item in value]
-    if isinstance(value, set):
-        return [_redact_secret_fields(item) for item in sorted(value, key=str)]
-    if isinstance(value, dict):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key).replace("-", "_").casefold()
-            if key_text in _SECRET_CONTAINER_KEYS:
-                redacted[key] = _redact_secret_fields(item)
-            else:
-                redacted[key] = (
-                    "***"
-                    if item and any(token in key_text for token in _SECRET_FIELD_TOKENS)
-                    else _redact_secret_fields(item)
-                )
-        return redacted
-    return value

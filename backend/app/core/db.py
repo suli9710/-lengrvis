@@ -5,22 +5,24 @@ import json
 import re
 import sqlite3
 import threading
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from app.config import get_base_settings, get_env
-
+from app.core.db_diagnostics import build_local_product_diagnostics
+from app.core.db_schema import initialize_schema
 
 _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_override", default=None)
 AUDIT_GENESIS_HASH = "0" * 64
-AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"
+AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"  # noqa: S105
 
 # Audit hot-path caches (2-H2): avoid re-reading the HMAC secret file and
 # re-querying the chain tail on every event. Single-writer assumption: failed
@@ -108,13 +110,17 @@ WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
     "chat_messages": frozenset({"id", "created_at"}),
     "document_chunks": frozenset({"id", "file_id", "chunk_index"}),
     "goals": frozenset({"id", "scope", "parent_goal_id", "status", "depth", "created_at", "updated_at"}),
-    "indexed_files": frozenset({"id", "normalized_path", "sha256", "name", "extension", "size", "modified_at", "indexed_at"}),
+    "indexed_files": frozenset(
+        {"id", "normalized_path", "sha256", "name", "extension", "size", "modified_at", "indexed_at"}
+    ),
     "llm_usage_events": frozenset({"id", "provider", "model", "mode", "task", "purpose", "created_at"}),
     "memories": frozenset({"id", "kind", "task_id", "created_at", "last_used_at"}),
     "mobile_devices": frozenset({"id", "created_at", "updated_at"}),
     "mobile_pairings": frozenset({"id", "status", "created_at", "expires_at", "used_at", "updated_at"}),
     "perception_observations": frozenset({"id", "task_id", "event_id", "event_type", "suppressed", "created_at"}),
-    "perception_suggestions": frozenset({"id", "task_id", "suggestion_id", "status", "severity", "suppressed", "created_at"}),
+    "perception_suggestions": frozenset(
+        {"id", "task_id", "suggestion_id", "status", "severity", "suppressed", "created_at"}
+    ),
     "permission_policies": frozenset({"id", "updated_at"}),
     "plans": frozenset({"id", "task_id", "created_at"}),
     "run_events": frozenset({"id", "run_id", "name", "sequence", "created_at"}),
@@ -140,7 +146,7 @@ _SAFE_COLUMN_DEFINITION_RE = re.compile(
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def db_path() -> Path:
@@ -213,351 +219,7 @@ def init_db() -> None:
 
 def _init_db_schema() -> None:
     with connect() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_tasks_created_at
-                ON tasks(created_at DESC, id DESC);
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS plans (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS goals (
-                id TEXT PRIMARY KEY,
-                scope TEXT NOT NULL,
-                parent_goal_id TEXT,
-                status TEXT NOT NULL,
-                depth INTEGER NOT NULL,
-                task_ids TEXT NOT NULL,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_goals_scope_status_depth
-                ON goals(scope, status, depth, created_at);
-            CREATE INDEX IF NOT EXISTS idx_goals_parent_goal_id
-                ON goals(parent_goal_id);
-            CREATE TABLE IF NOT EXISTS agent_messages (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                step_id TEXT,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_agent_messages_task_created
-                ON agent_messages(task_id, created_at DESC, id DESC);
-            CREATE TABLE IF NOT EXISTS runs (
-                id TEXT PRIMARY KEY,
-                task_id TEXT,
-                engine TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_runs_task_id
-                ON runs(task_id);
-            CREATE INDEX IF NOT EXISTS idx_runs_phase_updated
-                ON runs(phase, updated_at);
-            CREATE TABLE IF NOT EXISTS run_events (
-                id TEXT PRIMARY KEY,
-                run_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                sequence INTEGER NOT NULL,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_run_sequence
-                ON run_events(run_id, sequence);
-            CREATE INDEX IF NOT EXISTS idx_run_events_run_created
-                ON run_events(run_id, created_at);
-            CREATE INDEX IF NOT EXISTS idx_run_events_created
-                ON run_events(created_at);
-            CREATE TABLE IF NOT EXISTS task_recordings (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                step_id TEXT NOT NULL,
-                phase TEXT NOT NULL,
-                file_name TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                width INTEGER NOT NULL,
-                height INTEGER NOT NULL,
-                image BLOB NOT NULL,
-                data TEXT NOT NULL,
-                captured_at TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_task_recordings_task_id
-                ON task_recordings(task_id, captured_at);
-            CREATE INDEX IF NOT EXISTS idx_task_recordings_step_id
-                ON task_recordings(task_id, step_id, captured_at);
-            CREATE TABLE IF NOT EXISTS safety_reviews (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                step_id TEXT,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_safety_reviews_task_created
-                ON safety_reviews(task_id, created_at DESC, id DESC);
-            CREATE TABLE IF NOT EXISTS tool_calls (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                step_id TEXT NOT NULL,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS tool_results (
-                id TEXT PRIMARY KEY,
-                tool_call_id TEXT NOT NULL,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS approvals (
-                id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
-                step_id TEXT,
-                data TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS mobile_pairings (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                used_at TEXT,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_mobile_pairings_status_expires
-                ON mobile_pairings(status, expires_at);
-            CREATE TABLE IF NOT EXISTS mobile_devices (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS audit_events (
-                id TEXT PRIMARY KEY,
-                task_id TEXT,
-                event_type TEXT NOT NULL,
-                actor TEXT NOT NULL,
-                sequence INTEGER NOT NULL DEFAULT 0,
-                prev_hash TEXT NOT NULL DEFAULT '',
-                event_hash TEXT NOT NULL DEFAULT '',
-                hmac TEXT NOT NULL DEFAULT '',
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_audit_events_task_created
-                ON audit_events(task_id, created_at DESC, id DESC);
-            CREATE TABLE IF NOT EXISTS llm_usage_events (
-                id TEXT PRIMARY KEY,
-                provider TEXT NOT NULL,
-                model TEXT NOT NULL,
-                mode TEXT NOT NULL,
-                task TEXT NOT NULL,
-                purpose TEXT NOT NULL,
-                prompt_tokens INTEGER NOT NULL DEFAULT 0,
-                completion_tokens INTEGER NOT NULL DEFAULT 0,
-                total_tokens INTEGER NOT NULL DEFAULT 0,
-                total_cost_usd REAL,
-                estimated INTEGER NOT NULL DEFAULT 1,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_created_at
-                ON llm_usage_events(created_at);
-            CREATE INDEX IF NOT EXISTS idx_llm_usage_events_provider_model
-                ON llm_usage_events(provider, model, created_at);
-            CREATE TABLE IF NOT EXISTS app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS permission_policies (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS indexed_files (
-                id TEXT PRIMARY KEY,
-                normalized_path TEXT UNIQUE NOT NULL,
-                data TEXT NOT NULL,
-                sha256 TEXT NOT NULL,
-                name TEXT NOT NULL,
-                extension TEXT NOT NULL,
-                size INTEGER NOT NULL,
-                modified_at TEXT NOT NULL,
-                indexed_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS document_chunks (
-                id TEXT PRIMARY KEY,
-                file_id TEXT NOT NULL,
-                chunk_index INTEGER NOT NULL,
-                text TEXT NOT NULL,
-                data TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS document_chunk_embeddings (
-                id TEXT PRIMARY KEY,
-                chunk_id TEXT UNIQUE NOT NULL,
-                file_id TEXT NOT NULL,
-                chunk_index INTEGER NOT NULL,
-                model TEXT NOT NULL,
-                dim INTEGER NOT NULL,
-                embedding TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_document_chunk_embeddings_file_id
-                ON document_chunk_embeddings(file_id);
-            CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                id TEXT PRIMARY KEY,
-                cron TEXT NOT NULL,
-                goal TEXT NOT NULL,
-                mode TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                next_run_at TEXT,
-                last_run_at TEXT,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS wakeups (
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                source_id TEXT,
-                status TEXT NOT NULL,
-                due_at TEXT NOT NULL,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_wakeups_status_due
-                ON wakeups(status, due_at);
-            CREATE TABLE IF NOT EXISTS memories (
-                id TEXT PRIMARY KEY,
-                kind TEXT NOT NULL,
-                content TEXT NOT NULL,
-                tags TEXT,
-                task_id TEXT,
-                embedding BLOB,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_used_at TEXT
-            );
-            CREATE TABLE IF NOT EXISTS session_contexts (
-                id TEXT PRIMARY KEY,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS perception_observations (
-                id TEXT PRIMARY KEY,
-                task_id TEXT,
-                event_id TEXT,
-                event_type TEXT NOT NULL,
-                environment_type TEXT,
-                source_agent TEXT,
-                summary TEXT NOT NULL,
-                suppressed INTEGER NOT NULL DEFAULT 0,
-                process_name TEXT,
-                window_title TEXT,
-                screen_state_id TEXT,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_perception_observations_created
-                ON perception_observations(created_at);
-            CREATE INDEX IF NOT EXISTS idx_perception_observations_task
-                ON perception_observations(task_id, created_at);
-            CREATE TABLE IF NOT EXISTS perception_suggestions (
-                id TEXT PRIMARY KEY,
-                task_id TEXT,
-                suggestion_id TEXT,
-                rule_id TEXT,
-                severity TEXT NOT NULL,
-                title TEXT,
-                summary TEXT NOT NULL,
-                suppressed INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'proposed',
-                linked_run_id TEXT,
-                expires_at TEXT,
-                data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_perception_suggestions_created
-                ON perception_suggestions(created_at);
-            CREATE INDEX IF NOT EXISTS idx_perception_suggestions_task
-                ON perception_suggestions(task_id, created_at);
-            """
-        )
-        try:
-            conn.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5(file_id, path, text)"
-            )
-        except sqlite3.OperationalError:
-            # Some Python builds may not ship FTS5. The search service falls back to LIKE.
-            pass
-        _ensure_columns(
-            conn,
-            "audit_events",
-            {
-                "sequence": "INTEGER NOT NULL DEFAULT 0",
-                "prev_hash": "TEXT NOT NULL DEFAULT ''",
-                "event_hash": "TEXT NOT NULL DEFAULT ''",
-                "hmac": "TEXT NOT NULL DEFAULT ''",
-            },
-        )
-        conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_sequence
-                ON audit_events(sequence)
-                WHERE sequence > 0
-            """
-        )
-        conn.executescript(
-            """
-            CREATE TRIGGER IF NOT EXISTS audit_events_no_update
-            BEFORE UPDATE ON audit_events
-            BEGIN
-                SELECT RAISE(ABORT, 'audit_events is append-only');
-            END;
-            CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
-            BEFORE DELETE ON audit_events
-            BEGIN
-                SELECT RAISE(ABORT, 'audit_events is append-only');
-            END;
-            """
-        )
-        _ensure_columns(
-            conn,
-            "llm_usage_events",
-            {
-                "data": "TEXT NOT NULL DEFAULT '{}'",
-            },
-        )
-        _ensure_columns(
-            conn,
-            "perception_suggestions",
-            {
-                "status": "TEXT NOT NULL DEFAULT 'proposed'",
-                "linked_run_id": "TEXT",
-                "expires_at": "TEXT",
-            },
-        )
+        initialize_schema(conn, _ensure_columns)
 
 
 def _upsert_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
@@ -688,7 +350,10 @@ def _upsert_approvals(conn: sqlite3.Connection, data: dict[str, Any], now: str, 
 def _upsert_scheduled_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
     conn.execute(
         """
-        INSERT INTO scheduled_tasks (id, cron, goal, mode, enabled, next_run_at, last_run_at, data, created_at, updated_at)
+        INSERT INTO scheduled_tasks (
+            id, cron, goal, mode, enabled, next_run_at, last_run_at,
+            data, created_at, updated_at
+        )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             cron=excluded.cron,
@@ -753,7 +418,9 @@ def _upsert_memories(conn: sqlite3.Connection, data: dict[str, Any], now: str, s
             data.get("content", ""),
             ",".join(data.get("tags") or []),
             data.get("task_id") or "",
-            data.pop("embedding_blob", None) if isinstance(data.get("embedding_blob", None), (bytes, bytearray)) else None,
+            data.pop("embedding_blob", None)
+            if isinstance(data.get("embedding_blob", None), bytes | bytearray)
+            else None,
             _json(data),
             data.get("created_at", now),
             data.get("last_used_at") or None,
@@ -832,7 +499,7 @@ def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
     table_name = _data_table_name(table)
     _apply_read_barrier(table_name)
     with connect() as conn:
-        row = conn.execute(f"SELECT data FROM {table_name} WHERE id = ?", (record_id,)).fetchone()
+        row = conn.execute(f"SELECT data FROM {table_name} WHERE id = ?", (record_id,)).fetchone()  # noqa: S608
     return json.loads(row["data"]) if row else None
 
 
@@ -869,7 +536,9 @@ def fetch_many_by_fields(
     return _fetch_many_data(table_name, " AND ".join(clauses), tuple(args), limit)
 
 
-def fetch_many_in(table: str, column: str, values: list[Any] | tuple[Any, ...], *, limit: int = 200) -> list[dict[str, Any]]:
+def fetch_many_in(
+    table: str, column: str, values: list[Any] | tuple[Any, ...], *, limit: int = 200
+) -> list[dict[str, Any]]:
     table_name = _data_table_name(table)
     column_name = _where_column(table_name, column)
     args = tuple(values)
@@ -890,9 +559,11 @@ def fetch_many(table: str, where: str = "", args: tuple[Any, ...] = (), limit: i
     return _fetch_many_data(table_name, where_clause, args, limit)
 
 
-def _fetch_many_data(table_name: str, where_clause: str = "", args: tuple[Any, ...] = (), limit: int = 200) -> list[dict[str, Any]]:
+def _fetch_many_data(
+    table_name: str, where_clause: str = "", args: tuple[Any, ...] = (), limit: int = 200
+) -> list[dict[str, Any]]:
     _apply_read_barrier(table_name)
-    query = f"SELECT data FROM {table_name}"
+    query = f"SELECT data FROM {table_name}"  # noqa: S608
     if where_clause:
         query += f" WHERE {where_clause}"
     query += " ORDER BY created_at DESC LIMIT ?"
@@ -1160,7 +831,9 @@ def insert_perception_suggestion(payload: dict[str, Any]) -> None:
 
 def next_run_event_sequence(run_id: str) -> int:
     with connect() as conn:
-        row = conn.execute("SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM run_events WHERE run_id = ?", (run_id,)
+        ).fetchone()
     return int(row["sequence"] or 0) + 1
 
 
@@ -1218,7 +891,10 @@ def _insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
             stored = _prepare_audit_event_locked(conn, data)
             conn.execute(
                 """
-                INSERT INTO audit_events (id, task_id, event_type, actor, sequence, prev_hash, event_hash, hmac, data, created_at)
+                INSERT INTO audit_events (
+                    id, task_id, event_type, actor, sequence, prev_hash,
+                    event_hash, hmac, data, created_at
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -1290,7 +966,9 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
             )
             break
         if sequence != index:
-            failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "sequence_gap", "expected": index})
+            failures.append(
+                {"index": index, "id": row_id, "sequence": sequence, "reason": "sequence_gap", "expected": index}
+            )
             break
         if prev_hash != expected_prev:
             failures.append({"index": index, "id": row_id, "sequence": sequence, "reason": "prev_hash_mismatch"})
@@ -1390,9 +1068,9 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
     counts: dict[str, int] = {}
     with connect() as conn:
         for table in tables:
-            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+            row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
             counts[table] = int(row[0] or 0)
-            conn.execute(f"DELETE FROM {table}")
+            conn.execute(f"DELETE FROM {table}")  # noqa: S608
     with connect() as conn:
         conn.execute("VACUUM")
     if include_settings:
@@ -1402,207 +1080,17 @@ def erase_local_user_data(*, include_settings: bool = False) -> dict[str, int]:
 
 def local_product_diagnostics(*, recent_limit: int = 200) -> dict[str, Any]:
     limit = _query_limit(recent_limit)
-    tasks = fetch_many("tasks", limit=limit)
-    runs = fetch_many("runs", limit=limit)
-    approvals = fetch_many("approvals", limit=limit)
-    mobile_devices = fetch_many("mobile_devices", limit=limit)
-    mobile_pairings = fetch_many("mobile_pairings", limit=limit)
-    tool_results = fetch_many("tool_results", limit=limit)
-    audits = fetch_many("audit_events", limit=limit)
-
-    task_success_count = sum(1 for item in tasks if _is_success_state(item.get("status")) or _is_success_state(item.get("phase")))
-    task_failure_count = sum(1 for item in tasks if _is_failed_state(item.get("status")) or _is_failed_state(item.get("phase")))
-    run_success_count = sum(1 for item in runs if _is_success_state(item.get("phase")))
-    run_failure_count = sum(1 for item in runs if _is_failed_state(item.get("phase")))
-    tool_result_success_count = sum(1 for item in tool_results if item.get("ok") is True)
-    tool_result_failure_count = sum(1 for item in tool_results if item.get("ok") is False)
-    approval_status_counts = _status_counts(approvals, "status")
-    mobile_device_status_counts = _status_counts(mobile_devices, "status", default="active")
-    mobile_pairing_status_counts = _status_counts(mobile_pairings, "status")
-    remote_input_grant_counts = _remote_input_grant_counts(mobile_devices)
-    audit_failure_like_count = sum(
-        1
-        for item in audits
-        if any(token in str(item.get("event_type") or "").casefold() for token in ("fail", "error"))
+    return build_local_product_diagnostics(
+        sample_size=limit,
+        database_present=db_path().exists(),
+        tasks=fetch_many("tasks", limit=limit),
+        runs=fetch_many("runs", limit=limit),
+        approvals=fetch_many("approvals", limit=limit),
+        mobile_devices=fetch_many("mobile_devices", limit=limit),
+        mobile_pairings=fetch_many("mobile_pairings", limit=limit),
+        tool_results=fetch_many("tool_results", limit=limit),
+        audits=fetch_many("audit_events", limit=limit),
     )
-
-    latest_audit_event = None
-    if audits:
-        latest = audits[0]
-        latest_audit_event = {
-            "id": latest.get("id"),
-            "event_type": latest.get("event_type"),
-            "sequence": latest.get("sequence"),
-            "created_at": latest.get("created_at"),
-        }
-
-    product_metrics = {
-        "schema_version": 1,
-        "sample_size": limit,
-        "paired_devices_count": int(mobile_device_status_counts.get("active", 0)),
-        "active_remote_input_grants_count": int(remote_input_grant_counts.get("active", 0)),
-        "paired_devices": {
-            "total": len(mobile_devices),
-            "active": int(mobile_device_status_counts.get("active", 0)),
-            "revoked": int(mobile_device_status_counts.get("revoked", 0)),
-        },
-        "mobile_pairings": {
-            "recent_total": len(mobile_pairings),
-            "pending": int(mobile_pairing_status_counts.get("pending", 0)),
-            "used": int(mobile_pairing_status_counts.get("used", 0)),
-            "expired": int(mobile_pairing_status_counts.get("expired", 0)),
-        },
-        "remote_input_grants": remote_input_grant_counts,
-        "tasks": {
-            "recent_total": len(tasks),
-            "recent_success": task_success_count,
-            "recent_failure": task_failure_count,
-            "by_status": _status_counts(tasks, "status", "phase"),
-        },
-        "runs": {
-            "recent_total": len(runs),
-            "recent_success": run_success_count,
-            "recent_failure": run_failure_count,
-            "by_phase": _status_counts(runs, "phase"),
-        },
-        "approvals": {
-            "recent_total": len(approvals),
-            "pending": int(approval_status_counts.get("pending", 0)),
-            "approved": int(approval_status_counts.get("approved", 0)),
-            "rejected": int(approval_status_counts.get("rejected", 0)),
-            "expired": int(approval_status_counts.get("expired", 0)),
-            "consumed": sum(1 for item in approvals if item.get("consumed_at")),
-        },
-        "tool_results": {
-            "recent_total": len(tool_results),
-            "recent_success": tool_result_success_count,
-            "recent_failure": tool_result_failure_count,
-        },
-    }
-    product_funnel = {
-        "schema_version": 1,
-        "first_launch": {
-            "local_database_present": db_path().exists(),
-            "audit_events_recent_count": len(audits),
-            "latest_audit_event_type": latest_audit_event.get("event_type") if latest_audit_event else "",
-        },
-        "pairing": {
-            "paired_devices_count": product_metrics["paired_devices_count"],
-            "pairings_recent_used_count": product_metrics["mobile_pairings"]["used"],
-            "pairings_recent_pending_count": product_metrics["mobile_pairings"]["pending"],
-        },
-        "remote_input": {
-            "active_remote_input_grants_count": product_metrics["active_remote_input_grants_count"],
-            "remote_input_grants_recent_total": remote_input_grant_counts["total"],
-        },
-        "first_task": {
-            "tasks_recent_total": len(tasks),
-            "tasks_recent_success_count": task_success_count,
-            "tasks_recent_failure_count": task_failure_count,
-            "runs_recent_total": len(runs),
-            "runs_recent_success_count": run_success_count,
-            "runs_recent_failure_count": run_failure_count,
-        },
-        "approval_response": {
-            "approval_pending_count": product_metrics["approvals"]["pending"],
-            "approval_approved_count": product_metrics["approvals"]["approved"],
-            "approval_rejected_count": product_metrics["approvals"]["rejected"],
-            "approval_expired_count": product_metrics["approvals"]["expired"],
-        },
-    }
-
-    return {
-        "sample_size": limit,
-        "recent_counts": {
-            "tasks": len(tasks),
-            "runs": len(runs),
-            "approvals": len(approvals),
-            "mobile_devices": len(mobile_devices),
-            "mobile_pairings": len(mobile_pairings),
-            "tool_results": len(tool_results),
-            "audit_events": len(audits),
-        },
-        "recent_success_counts": {
-            "tasks_completed": task_success_count,
-            "runs_completed": run_success_count,
-            "tool_results_ok": tool_result_success_count,
-        },
-        "recent_failure_counts": {
-            "tasks_failed": task_failure_count,
-            "runs_failed": run_failure_count,
-            "tool_results_failed": tool_result_failure_count,
-            "audit_events_failure_like": audit_failure_like_count,
-        },
-        "product_metrics": product_metrics,
-        "product_funnel": product_funnel,
-        "latest_audit_event": latest_audit_event,
-    }
-
-
-def _status_counts(items: list[dict[str, Any]], *fields: str, default: str = "unknown") -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in items:
-        status = _first_text(item, *fields) or default
-        key = status.casefold()
-        counts[key] = counts.get(key, 0) + 1
-    return counts
-
-
-def _remote_input_grant_counts(devices: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"total": 0, "active": 0, "expired": 0, "revoked": 0, "unknown": 0}
-    now = datetime.now(timezone.utc)
-    for device in devices:
-        grants = device.get("remote_input_grants") or []
-        if not isinstance(grants, list):
-            continue
-        for raw_grant in grants:
-            if not isinstance(raw_grant, dict):
-                continue
-            counts["total"] += 1
-            status = _remote_input_grant_status(raw_grant, now)
-            counts[status] = counts.get(status, 0) + 1
-    return counts
-
-
-def _remote_input_grant_status(grant: dict[str, Any], now: datetime) -> str:
-    status = _first_text(grant, "status") or "active"
-    if status == "active":
-        expires_at = _parse_iso_datetime(grant.get("expires_at"))
-        if expires_at is not None and expires_at <= now:
-            return "expired"
-    if status in {"active", "expired", "revoked"}:
-        return status
-    return "unknown"
-
-
-def _first_text(item: dict[str, Any], *fields: str) -> str:
-    for field in fields:
-        value = item.get(field)
-        text = str(getattr(value, "value", value) or "").strip()
-        if text:
-            return text
-    return ""
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _is_success_state(value: Any) -> bool:
-    return str(getattr(value, "value", value) or "").casefold() in {"completed", "complete", "success", "succeeded", "done"}
-
-
-def _is_failed_state(value: Any) -> bool:
-    return str(getattr(value, "value", value) or "").casefold() in {"failed", "failure", "error"}
 
 
 def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
@@ -1765,15 +1253,17 @@ def expire_approval_if_unconsumed(
         if reason:
             data["expired_reason"] = reason
         placeholders = ",".join("?" for _ in allowed_statuses)
-        cursor = conn.execute(
-            f"""
+        query_template = """
             UPDATE approvals
             SET data = ?,
                 status = ?
             WHERE id = ?
-              AND status IN ({placeholders})
+              AND status IN ({status_placeholders})
               AND json_extract(data, '$.consumed_at') IS NULL
-            """,
+        """
+        query = query_template.format(status_placeholders=placeholders)  # noqa: S608
+        cursor = conn.execute(
+            query,
             (_json(data), "expired", approval_id, *sorted(allowed_statuses)),
         )
         if cursor.rowcount != 1:
@@ -1894,7 +1384,9 @@ def upsert_memory(payload: dict[str, Any]) -> None:
     with connect() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO memories (id, kind, content, tags, task_id, embedding, data, created_at, last_used_at)
+            INSERT OR REPLACE INTO memories (
+                id, kind, content, tags, task_id, embedding, data, created_at, last_used_at
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (

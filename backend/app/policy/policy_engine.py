@@ -4,13 +4,12 @@ import json
 import re
 from collections.abc import Callable
 from datetime import datetime
-from pathlib import PureWindowsPath
 from typing import Any
 
 from app.config import AppSettings
-from app.core.schemas import AgentMessage, Plan, PlanStep, SafetyReview, ToolResult
+from app.core.schemas import AgentMessage, Plan, SafetyReview, ToolResult
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, settings_fingerprint, short_digest
-from app.policy.decision_cache import tool_decision_cache
+from app.policy.decision_cache import _INTERNAL_CACHE_SCOPE_MARKER, tool_decision_cache
 from app.policy.dynamic_risk import DynamicRiskAssessor
 from app.policy.permission_modes import (
     is_modifying_risk,
@@ -18,214 +17,68 @@ from app.policy.permission_modes import (
     trusted_reversible_edit_allowed,
 )
 from app.policy.permissions import PermissionPolicy, PermissionStore
+from app.policy.policy_helpers import (
+    browser_activity_risk as _browser_activity_risk,
+)
+from app.policy.policy_helpers import (
+    cleanup_args_touch_system_or_sensitive_path as _cleanup_args_touch_system_or_sensitive_path,
+)
+from app.policy.policy_helpers import (
+    cleanup_has_trash_with_prompt as _cleanup_has_trash_with_prompt,
+)
+from app.policy.policy_helpers import (
+    contains_sensitive_arg as _contains_sensitive_arg,
+)
+from app.policy.policy_helpers import (
+    contains_system_path as _contains_system_path,
+)
+from app.policy.policy_helpers import (
+    ui_selector_text as _ui_selector_text,
+)
+from app.policy.policy_rules import (
+    BOUNDARY_CONTEXT_WINDOW,
+    BOUNDARY_TERMS,
+    BROWSER_ACTIVITY_HANDOFF_TERMS,
+    BROWSER_ACTIVITY_MUTATING_KINDS,
+    BROWSER_ACTIVITY_READ_KINDS,
+    BROWSER_ACTIVITY_TOOL_KIND_MAP,
+    BROWSER_PROMPT_INJECTION_PATTERNS,
+    BROWSER_WRITE_TOOLS,
+    CLEANUP_READ_TOOLS,
+    CLEANUP_WRITE_TOOLS,
+    FAST_PATH_ALLOWED_EFFECTS,
+    FAST_PATH_BLOCKED_TRUST_TIERS,
+    FAST_PATH_FORBIDDEN_EFFECTS,
+    FAST_PATH_TRUST_TIERS,
+    FORBIDDEN_TERMS,
+    MCP_PREFIXES,
+    SENSITIVE_FIELD_NAMES,
+    UI_AUTOMATION_WRITE_TOOLS,
+)
 from app.policy.privacy import can_use_browser_writes
 from app.policy.risk import RiskLevel, SafetyVerdict, max_risk
 from app.policy.sensitive_values import looks_sensitive_value
-from app.policy.decision_cache import _INTERNAL_CACHE_SCOPE_MARKER
 
-
-FORBIDDEN_TERMS = {
-    "password",
-    "密码",
-    "口令",
-    "cookie",
-    "token",
-    "credential",
-    "credentials",
-    "private key",
-    "密钥",
-    "pay",
-    "payment",
-    "支付",
-    "付款",
-    "order",
-    "下单",
-    "bypass",
-    "disable security",
-}
-
-
-# Words that signal a safety-system boundary notice (a denial being explained,
-# an approval being requested, a read-only alternative being offered).
-BOUNDARY_TERMS = (
-    "approval",
-    "approve",
-    "blocked",
-    "deny",
-    "denied",
-    "forbidden",
-    "handoff",
-    "never",
-    "read-only",
-    "restricted",
-    "safe alternative",
-    "supervision",
-)
-
-# A forbidden term is only exempt when a boundary term occurs within this many
-# characters of that occurrence (see PolicyEngine._unprotected_forbidden_hits).
-BOUNDARY_CONTEXT_WINDOW = 120
-
-
-SENSITIVE_FIELD_NAMES = {
-    "password",
-    "pwd",
-    "passwd",
-    "secret",
-    "token",
-    "api_key",
-    "apikey",
-    "credential",
-    "credentials",
-    "cvv",
-    "cvc",
-    "card_number",
-    "cardnumber",
-    "otp",
-    "2fa",
-    "passcode",
-    "payment",
-    "pay",
-    "order",
-    "ssn",
-    "口令",
-    "密码",
-}
-
-
-BROWSER_WRITE_TOOLS = {
-    "browser.act",
-    "browser.click_element",
-    "browser.cua",
-    "browser.cua_run",
-    "browser.fill_form",
-    "browser.submit_form",
-}
-UI_AUTOMATION_WRITE_TOOLS = {
-    "ui_automation.click",
-    "ui_automation.type_text",
-    "ui_automation.click_at",
-    "ui_automation.drag",
-    "ui_automation.key_press",
-    "ui_automation.hotkey",
-}
-BROWSER_ACTIVITY_READ_KINDS = {
-    "open",
-    "navigate",
-    "wait",
-    "screenshot",
-    "observe",
-}
-BROWSER_ACTIVITY_MUTATING_KINDS = {
-    "click",
-    "fill",
-    "submit",
-    "scroll",
-    "cua",
-}
-BROWSER_ACTIVITY_TOOL_KIND_MAP = {
-    "browser.act": "observe",
-    "browser.open_url": "open",
-    "browser.navigate": "navigate",
-    "browser.read_page": "observe",
-    "browser.summarize_page": "observe",
-    "browser.extract_links": "observe",
-    "browser.search_web_via_provider": "observe",
-    "browser.screenshot": "screenshot",
-    "browser.wait_for_selector": "wait",
-    "browser.click_element": "click",
-    "browser.fill_form": "fill",
-    "browser.submit_form": "submit",
-    "browser.cua": "cua",
-    "browser.cua_run": "cua",
-}
-BROWSER_ACTIVITY_HANDOFF_TERMS = {
-    "2fa",
-    "authenticator",
-    "checkout",
-    "cookie",
-    "credential",
-    "credentials",
-    "cvv",
-    "delete",
-    "download",
-    "login",
-    "message",
-    "order",
-    "otp",
-    "passcode",
-    "password",
-    "payment",
-    "purchase",
-    "send",
-    "token",
-    "upload",
-    "密码",
-    "支付",
-    "下单",
-}
-BROWSER_PROMPT_INJECTION_PATTERNS = {
-    r"ignore\s+(all\s+)?(previous|prior|system|developer)\s+instructions",
-    r"disregard\s+(all\s+)?(previous|prior|system|developer)\s+instructions",
-    r"reveal\s+(the\s+)?(system|developer)\s+prompt",
-    r"send\s+(your\s+)?(cookies|tokens|credentials|api\s*keys)",
-    r"disable\s+(safety|security|policy)",
-    r"you\s+are\s+now\s+(in\s+)?developer\s+mode",
-}
-CLEANUP_READ_TOOLS = {"file.cleanup_scan", "file.cleanup_plan", "file.dedupe_plan"}
-CLEANUP_WRITE_TOOLS = {"file.cleanup_execute", "file.cleanup_rollback"}
-
-FAST_PATH_ALLOWED_EFFECTS = {"read", "observe", "list", "open", "launch", "reveal", "navigate", "search", "inspect"}
-FAST_PATH_FORBIDDEN_EFFECTS = {
-    "write",
-    "delete",
-    "move",
-    "send",
-    "submit",
-    "type",
-    "shell",
-    "credential",
-    "payment",
-    "external_post",
-    "browser_write",
-}
-FAST_PATH_TRUST_TIERS = {"builtin", "core", "first_party"}
-FAST_PATH_BLOCKED_TRUST_TIERS = {"unknown", "advisory", "third_party", "untrusted"}
-PATH_ARG_KEYS = {
-    "path",
-    "paths",
-    "source",
-    "sources",
-    "destination",
-    "destinations",
-    "target",
-    "target_path",
-    "target_folder",
-    "folder",
-    "directory",
-    "output_path",
-    "file",
-    "files",
-}
-SYSTEM_PATH_PREFIXES = (
-    "c:/windows",
-    "c:/program files",
-    "c:/program files (x86)",
-    "c:/programdata",
-    "/windows",
-    "/program files",
-    "/programdata",
-    "/etc",
-    "/bin",
-    "/sbin",
-    "/usr",
-    "/var",
-    "/system",
-    "/library",
-)
-
-# P1-3 fix: MCP tool prefix matching should be case-insensitive.
-_MCP_PREFIXES = ("mcp.", "mcp_", "mcp-", "mcp:")
+__all__ = [
+    "BOUNDARY_CONTEXT_WINDOW",
+    "BOUNDARY_TERMS",
+    "BROWSER_ACTIVITY_HANDOFF_TERMS",
+    "BROWSER_ACTIVITY_MUTATING_KINDS",
+    "BROWSER_ACTIVITY_READ_KINDS",
+    "BROWSER_ACTIVITY_TOOL_KIND_MAP",
+    "BROWSER_PROMPT_INJECTION_PATTERNS",
+    "BROWSER_WRITE_TOOLS",
+    "CLEANUP_READ_TOOLS",
+    "CLEANUP_WRITE_TOOLS",
+    "FAST_PATH_ALLOWED_EFFECTS",
+    "FAST_PATH_BLOCKED_TRUST_TIERS",
+    "FAST_PATH_FORBIDDEN_EFFECTS",
+    "FAST_PATH_TRUST_TIERS",
+    "FORBIDDEN_TERMS",
+    "PolicyEngine",
+    "SENSITIVE_FIELD_NAMES",
+    "UI_AUTOMATION_WRITE_TOOLS",
+]
 
 
 class PolicyEngine:
@@ -372,7 +225,7 @@ class PolicyEngine:
             context=context,
             task_id=task_id,
         )
-        effective_risk = getattr(dynamic, "risk_level", None) or getattr(dynamic, "adjusted_risk")
+        effective_risk = getattr(dynamic, "risk_level", None) or dynamic.adjusted_risk
         adjustments = getattr(dynamic, "adjustments", None) or getattr(dynamic, "reasons", [])
         dynamic_reasons = [
             f"Dynamic risk adjusted {static_risk} -> {effective_risk}: {reason}"
@@ -407,7 +260,10 @@ class PolicyEngine:
                     risk_level=effective_risk,
                     reasons=[
                         *dynamic_reasons,
-                        "Modifying tools require dry_run=True preview before non-dry-run execution; dry_run was not specified.",
+                        (
+                            "Modifying tools require dry_run=True preview before non-dry-run execution; "
+                            "dry_run was not specified."
+                        ),
                     ],
                     user_confirmation_message=f"Run {tool_name} with dry_run=True first to generate a preview.",
                 )
@@ -478,8 +334,12 @@ class PolicyEngine:
                 target_type="tool_call",
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-                reasons=[f"Low-risk execution for {tool_name} requires authoritative metadata; trust tier is {trust_tier}."],
-                safe_alternative="Review and approve the tool through an explicit trusted adapter or built-in tool definition.",
+                reasons=[
+                    f"Low-risk execution for {tool_name} requires authoritative metadata; trust tier is {trust_tier}."
+                ],
+                safe_alternative=(
+                    "Review and approve the tool through an explicit trusted adapter or built-in tool definition."
+                ),
             )
         return None
 
@@ -597,7 +457,7 @@ class PolicyEngine:
     def _legacy_classify_tool_call(self, tool_name: str, args: dict[str, Any]) -> RiskLevel:
         # P1-3 fix: case-insensitive MCP prefix matching.
         lowered = tool_name.casefold()
-        if any(lowered.startswith(p) for p in _MCP_PREFIXES) or lowered == "mcp":
+        if any(lowered.startswith(p) for p in MCP_PREFIXES) or lowered == "mcp":
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
         if any(term in tool_name for term in ["password", "cookie", "token", "shell"]):
             return RiskLevel.R4_FORBIDDEN_OR_HANDOFF
@@ -727,7 +587,12 @@ class PolicyEngine:
                 target_type="tool_call",
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-                reasons=["GUI automation target appears to be a sensitive credential, payment, token, or one-time-code field."],
+                reasons=[
+                    (
+                        "GUI automation target appears to be a sensitive credential, payment, token, "
+                        "or one-time-code field."
+                    )
+                ],
                 safe_alternative="Ask the user to handle sensitive UI fields manually.",
             )
         typed_text = str(args.get("text") or args.get("value") or "")
@@ -869,7 +734,9 @@ class PolicyEngine:
         tool_definition: Any,
     ) -> str:
         settings = context.get("settings") or self.settings
-        allowed_directories = list(context.get("allowed_directories") or getattr(settings, "allowed_directories", []) or [])
+        allowed_directories = list(
+            context.get("allowed_directories") or getattr(settings, "allowed_directories", []) or []
+        )
         policy_version = permission_policy_version(self.permission_store.updated_at())
         return args_binding_hmac(
             "fast_path",
@@ -887,11 +754,17 @@ class PolicyEngine:
                 "capabilities": sorted(str(item) for item in (getattr(tool_definition, "capabilities", []) or [])),
                 "effects": sorted(str(item) for item in (getattr(tool_definition, "effects", None) or [])),
                 "resources": sorted(str(item) for item in (getattr(tool_definition, "resource_kinds", None) or [])),
-                "sensitive_arg_keys": sorted(str(item) for item in (getattr(tool_definition, "sensitive_arg_keys", []) or [])),
+                "sensitive_arg_keys": sorted(
+                    str(item) for item in (getattr(tool_definition, "sensitive_arg_keys", []) or [])
+                ),
                 "dynamic_context": {
                     "recent_failure_count": context.get("recent_failure_count", context.get("recent_failures", 0)),
-                    "trust_level": context.get("user_trust_level", context.get("trust_level", context.get("user_trust", "medium"))),
-                    "timestamp": str(context.get("timestamp") or context.get("now") or context.get("current_time") or ""),
+                    "trust_level": context.get(
+                        "user_trust_level", context.get("trust_level", context.get("user_trust", "medium"))
+                    ),
+                    "timestamp": str(
+                        context.get("timestamp") or context.get("now") or context.get("current_time") or ""
+                    ),
                 },
             },
             task_id=str(context.get("task_id") or ""),
@@ -906,7 +779,9 @@ class PolicyEngine:
     ) -> dict[str, Any]:
         context = context or {}
         settings = context.get("settings") or self.settings
-        allowed_directories = list(context.get("allowed_directories") or getattr(settings, "allowed_directories", []) or [])
+        allowed_directories = list(
+            context.get("allowed_directories") or getattr(settings, "allowed_directories", []) or []
+        )
         return {
             "_internal_cache_scope": _INTERNAL_CACHE_SCOPE_MARKER,
             "policy": permission_policy_version(self.permission_store.updated_at()),
@@ -920,11 +795,15 @@ class PolicyEngine:
                 "capabilities": sorted(str(item) for item in (getattr(tool_definition, "capabilities", []) or [])),
                 "effects": sorted(str(item) for item in (getattr(tool_definition, "effects", []) or [])),
                 "resource_kinds": sorted(str(item) for item in (getattr(tool_definition, "resource_kinds", []) or [])),
-                "sensitive_arg_keys": sorted(str(item) for item in (getattr(tool_definition, "sensitive_arg_keys", []) or [])),
+                "sensitive_arg_keys": sorted(
+                    str(item) for item in (getattr(tool_definition, "sensitive_arg_keys", []) or [])
+                ),
             },
             "dynamic_context": {
                 "recent_failure_count": context.get("recent_failure_count", context.get("recent_failures", 0)),
-                "trust_level": context.get("user_trust_level", context.get("trust_level", context.get("user_trust", "medium"))),
+                "trust_level": context.get(
+                    "user_trust_level", context.get("trust_level", context.get("user_trust", "medium"))
+                ),
                 "timestamp": str(context.get("timestamp") or context.get("now") or context.get("current_time") or ""),
             },
             "args": args_binding_hmac("cache", args),
@@ -932,13 +811,14 @@ class PolicyEngine:
 
     def _sensitive_arg_hit(self, args: dict[str, Any], tool_definition: Any | None = None) -> bool:
         sensitive_keys = set(SENSITIVE_FIELD_NAMES)
-        sensitive_keys.update(str(item).casefold() for item in (getattr(tool_definition, "sensitive_arg_keys", None) or []))
+        sensitive_keys.update(
+            str(item).casefold() for item in (getattr(tool_definition, "sensitive_arg_keys", None) or [])
+        )
         return _contains_sensitive_arg(args, sensitive_keys)
 
     def _inspectable_text(self, *items: Any) -> str:
         return " ".join(
-            json.dumps(item, ensure_ascii=False, default=str) if not isinstance(item, str) else item
-            for item in items
+            json.dumps(item, ensure_ascii=False, default=str) if not isinstance(item, str) else item for item in items
         ).lower()
 
     def _forbidden_hits(self, text: str) -> list[str]:
@@ -1031,7 +911,9 @@ class PolicyEngine:
                     target_type="tool_call",
                     verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
                     risk_level=static_risk,
-                    reasons=["Cleanup rollback preview generated; user approval is required for live rollback guidance."],
+                    reasons=[
+                        "Cleanup rollback preview generated; user approval is required for live rollback guidance."
+                    ],
                     user_confirmation_message="Approve cleanup rollback after reviewing the rollback preview?",
                 )
             if args.get("approved") and args.get("approval_id"):
@@ -1041,7 +923,12 @@ class PolicyEngine:
                     target_type="tool_call",
                     verdict=SafetyVerdict.ALLOW,
                     risk_level=static_risk,
-                    reasons=["Approved cleanup rollback may proceed; rollback tool still cannot restore recycle-bin items automatically."],
+                    reasons=[
+                        (
+                            "Approved cleanup rollback may proceed; rollback tool still cannot restore recycle-bin "
+                            "items automatically."
+                        )
+                    ],
                 )
             return SafetyReview(
                 task_id=task_id,
@@ -1062,7 +949,10 @@ class PolicyEngine:
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
                 reasons=[f"cleanup_execute requires a valid cleanup plan binding: missing {', '.join(missing)}."],
-                safe_alternative="Run file.cleanup_plan first and pass plan_id, content_hash, and selected_item_ids to cleanup_execute.",
+                safe_alternative=(
+                    "Run file.cleanup_plan first and pass plan_id, content_hash, and selected_item_ids "
+                    "to cleanup_execute."
+                ),
             )
 
         if _cleanup_args_touch_system_or_sensitive_path(args):
@@ -1073,7 +963,9 @@ class PolicyEngine:
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
                 reasons=["cleanup_execute arguments include a system or sensitive path hint."],
-                safe_alternative="Remove system, credential, browser profile, and sensitive paths from cleanup execution.",
+                safe_alternative=(
+                    "Remove system, credential, browser profile, and sensitive paths from cleanup execution."
+                ),
             )
 
         live = args.get("dry_run") is False
@@ -1085,7 +977,12 @@ class PolicyEngine:
                 target_type="tool_call",
                 verdict=SafetyVerdict.ALLOW,
                 risk_level=static_risk,
-                reasons=["Approved cleanup_execute may run; service will revalidate plan_id/content_hash and selected item ids."],
+                reasons=[
+                    (
+                        "Approved cleanup_execute may run; service will revalidate plan_id/content_hash "
+                        "and selected item ids."
+                    )
+                ],
             )
         if live or needs_trash_approval:
             return SafetyReview(
@@ -1107,7 +1004,10 @@ class PolicyEngine:
             verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
             risk_level=static_risk,
             reasons=[
-                "cleanup_execute is a destructive-capable tool; dry-run preview and approval are required before execution.",
+                (
+                    "cleanup_execute is a destructive-capable tool; dry-run preview and approval are required "
+                    "before execution."
+                ),
                 "The cleanup service will reject stale or tampered plan_id/content_hash values.",
             ],
             user_confirmation_message="Review the cleanup preview and approve the selected cleanup items?",
@@ -1122,137 +1022,3 @@ class _PermissionCheckDenied:
         self.reason = "Permission policy unavailable; fail-closed."
         if error:
             self.reason = f"{self.reason} {error}"
-
-
-def _contains_sensitive_arg(value: Any, sensitive_keys: set[str]) -> bool:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized = str(key).casefold()
-            if any(term in normalized for term in sensitive_keys):
-                return True
-            if _contains_sensitive_arg(item, sensitive_keys):
-                return True
-        return False
-    if isinstance(value, (list, tuple, set)):
-        return any(_contains_sensitive_arg(item, sensitive_keys) for item in value)
-    if isinstance(value, str):
-        text = value.casefold()
-        return any(term in text for term in {"password", "token", "cookie", "credential", "private key", "payment", "otp", "2fa"})
-    return False
-
-
-def _ui_selector_text(args: dict[str, Any]) -> str:
-    selector = args.get("selector")
-    parts: list[Any] = []
-    if isinstance(selector, dict):
-        parts.extend(selector.values())
-    elif selector:
-        parts.append(selector)
-    for key in (
-        "name",
-        "name_contains",
-        "nameContains",
-        "text_contains",
-        "textContains",
-        "automation_id",
-        "automationId",
-        "class_name",
-        "className",
-        "control_type",
-        "controlType",
-    ):
-        if key in args:
-            parts.append(args.get(key))
-    return " ".join(str(part) for part in parts if part is not None).casefold()
-
-
-def _contains_system_path(args: dict[str, Any]) -> bool:
-    return any(_is_system_path(path) for path in _candidate_paths(args))
-
-
-def _cleanup_args_touch_system_or_sensitive_path(args: dict[str, Any]) -> bool:
-    sensitive_terms = {
-        ".ssh",
-        "api_key",
-        "apikey",
-        "cookie",
-        "credential",
-        "credentials",
-        "id_rsa",
-        "key",
-        "password",
-        "passwd",
-        "private_key",
-        "secret",
-        "token",
-    }
-    for path in _candidate_paths(args):
-        normalized = _normalized_path(path)
-        if _is_system_path(path) or any(term in normalized for term in sensitive_terms):
-            return True
-    return False
-
-
-def _cleanup_has_trash_with_prompt(args: dict[str, Any]) -> bool:
-    if str(args.get("action") or "").casefold() == "trash_with_prompt":
-        return True
-    for item in args.get("items") or args.get("selected_items") or []:
-        if isinstance(item, dict) and str(item.get("action") or "").casefold() == "trash_with_prompt":
-            return True
-    return False
-
-
-def _candidate_paths(value: Any) -> list[str]:
-    result: list[str] = []
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized_key = str(key).casefold()
-            if normalized_key in PATH_ARG_KEYS or "path" in normalized_key:
-                result.extend(_candidate_paths(item))
-            elif isinstance(item, (dict, list, tuple, set)):
-                result.extend(_candidate_paths(item))
-        return result
-    if isinstance(value, (list, tuple, set)):
-        for item in value:
-            result.extend(_candidate_paths(item))
-        return result
-    if isinstance(value, str):
-        text = value.strip()
-        if text:
-            result.append(text)
-    return result
-
-
-def _is_system_path(path: str) -> bool:
-    normalized = _normalized_path(path)
-    return any(normalized == prefix or normalized.startswith(f"{prefix}/") for prefix in SYSTEM_PATH_PREFIXES)
-
-
-def _normalized_path(path: str) -> str:
-    text = path.strip().replace("\\", "/")
-    if not text:
-        return ""
-    try:
-        pure = PureWindowsPath(text)
-        if pure.drive:
-            text = pure.as_posix()
-    except (TypeError, ValueError):
-        return text.rstrip("/").casefold()
-    return text.rstrip("/").casefold()
-
-
-def _browser_activity_risk(args: dict[str, Any] | None) -> RiskLevel:
-    payload = args or {}
-    kind = str(payload.get("kind") or "").strip().casefold().replace("_", "-")
-    action = payload.get("action")
-    if not kind and isinstance(action, dict):
-        kind = str(action.get("kind") or "").strip().casefold().replace("_", "-")
-    if kind in {"open", "navigate"}:
-        return RiskLevel.R1_OPEN_ONLY
-    if kind in {"observe", "screenshot", "wait"}:
-        return RiskLevel.R0_READ_ONLY
-    if kind in {"click", "fill", "scroll"}:
-        return RiskLevel.R2_REVERSIBLE_MODIFY
-    if kind in {"submit", "cua", "computer-use"}:
-        return RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
-    return RiskLevel.R2_REVERSIBLE_MODIFY
