@@ -305,6 +305,67 @@ def test_rebuild_records_and_reports_file_failures(monkeypatch: pytest.MonkeyPat
     assert status["latest_failure"]["message"] == "parser offline"
 
 
+def test_rebuild_without_valid_roots_preserves_existing_index(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+
+    from app.core import db
+    from app.indexer.fts_index import FTSIndex
+
+    db.init_db()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    note = workspace / "keep.txt"
+    note.write_text("preserve searchable index content", encoding="utf-8")
+
+    index = FTSIndex(embedder=lambda texts: [[1.0] for _ in texts])
+    assert index.rebuild([str(workspace)])["files_indexed"] == 1
+    assert index.search("preserve searchable index content")
+
+    result = FTSIndex().rebuild([])
+
+    assert result["files_indexed"] == 0
+    assert result["files_failed"] == 0
+    assert FTSIndex().search("preserve searchable index content")
+
+
+def test_rebuild_keeps_lexical_index_when_embeddings_fail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+
+    from app.core import db
+    from app.indexer.fts_index import FTSIndex
+
+    db.init_db()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    note = workspace / "embedding-down.txt"
+    note.write_text("lexical rebuild fallback remains searchable", encoding="utf-8")
+
+    def broken_embedder(_texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding provider unavailable")
+
+    result = FTSIndex(embedder=broken_embedder, embedding_batch_size=1).rebuild([str(workspace)])
+
+    assert result["files_indexed"] == 1
+    assert result["chunks_indexed"] >= 1
+    assert result["embeddings_indexed"] == 0
+    assert result["files_failed"] == 0
+    assert FTSIndex().search("lexical rebuild fallback remains searchable")
+    with db.connect() as conn:
+        embedding_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM document_chunk_embeddings"
+        ).fetchone()["count"]
+        failure_rows = conn.execute(
+            "SELECT data FROM audit_events WHERE event_type = ?",
+            ("index.embedding_failed",),
+        ).fetchall()
+    assert embedding_count == 0
+    assert any("embedding provider unavailable" in row["data"] for row in failure_rows)
+
+
 def test_file_search_response_includes_index_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
 

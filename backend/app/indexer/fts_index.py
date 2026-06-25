@@ -121,15 +121,6 @@ class FTSIndex:
     def rebuild(self, allowed_directories: list[str]) -> dict[str, Any]:
         started = time.perf_counter()
         db.init_db()
-        with db.connect() as conn:
-            conn.execute("DELETE FROM indexed_files")
-            conn.execute("DELETE FROM document_chunks")
-            conn.execute("DELETE FROM document_chunk_embeddings")
-            try:
-                conn.execute("DELETE FROM document_chunks_fts")
-            except sqlite3.Error as exc:
-                logger.debug("could not clear optional FTS table: %s", exc, exc_info=True)
-
         files = 0
         chunks = 0
         embeddings = 0
@@ -157,12 +148,48 @@ class FTSIndex:
                     }
                 )
 
+        valid_roots: list[Path] = []
+        for raw in allowed_directories:
+            try:
+                valid_roots.append(resolve_authorized(raw, allowed_directories))
+            except Exception as exc:  # noqa: BLE001 - rebuild reports authorization failures.
+                record_rebuild_failure(raw, exc)
+
+        if not valid_roots:
+            return {
+                "files_indexed": files,
+                "chunks_indexed": chunks,
+                "embeddings_indexed": embeddings,
+                "files_failed": files_failed,
+                "failures": failures_reported,
+                "embedding_model": embedding_model,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+            }
+
+        with db.connect() as conn:
+            conn.execute("DELETE FROM indexed_files")
+            conn.execute("DELETE FROM document_chunks")
+            conn.execute("DELETE FROM document_chunk_embeddings")
+            try:
+                conn.execute("DELETE FROM document_chunks_fts")
+            except sqlite3.Error as exc:
+                logger.debug("could not clear optional FTS table: %s", exc, exc_info=True)
+
         def flush_pending() -> None:
             nonlocal embeddings
             if not pending_files and not pending_chunks:
                 return
 
-            vectors = embed_texts_sync([item.text for item in pending_chunks], embedder=self.embedder)
+            try:
+                vectors = embed_texts_sync([item.text for item in pending_chunks], embedder=self.embedder)
+            except Exception as exc:  # noqa: BLE001 - lexical rebuild should survive embedding outages.
+                logger.warning("embedding generation failed during index rebuild: %s", exc)
+                record(
+                    "index.embedding_failed",
+                    "FTSIndex",
+                    {"path": "rebuild", "error": str(exc), "chunks": len(pending_chunks)},
+                )
+                vectors = []
             with db.connect() as conn:
                 for indexed in pending_files:
                     conn.execute(
@@ -231,12 +258,11 @@ class FTSIndex:
             pending_files.clear()
             pending_chunks.clear()
 
-        for raw in allowed_directories:
+        for root in valid_roots:
             try:
-                root = resolve_authorized(raw, allowed_directories)
                 candidates = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
             except Exception as exc:  # noqa: BLE001 - rebuild reports authorization/enumeration failures.
-                record_rebuild_failure(raw, exc)
+                record_rebuild_failure(root, exc)
                 continue
             for path in candidates:
                 pending_file_start = len(pending_files)
