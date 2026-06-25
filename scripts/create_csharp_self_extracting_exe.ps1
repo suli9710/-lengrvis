@@ -124,7 +124,8 @@ if (Test-Path $OutputPath) {
     Remove-Item -LiteralPath $OutputPath -Force
 }
 
-& $Csc /nologo /target:winexe /platform:x64 /optimize+ /out:$OutputPath /resource:$PayloadPath,payload.zip /reference:System.IO.Compression.FileSystem.dll $SourcePath
+$ResourceArg = "/resource:$PayloadPath,payload.zip"
+& $Csc /nologo /target:winexe /platform:x64 /optimize+ /out:$OutputPath $ResourceArg /reference:System.IO.Compression.FileSystem.dll $SourcePath
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
