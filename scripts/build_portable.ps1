@@ -168,6 +168,19 @@ function Test-OllamaBundleManifest {
     Compare-Summary -Expected $manifest.models.summary -Actual (Get-DirectorySummary -Path $ModelsDir) -Label "Models"
 }
 
+function Initialize-ElectronRuntime {
+    param([string]$ElectronDist)
+    if (Test-Path -LiteralPath $ElectronDist) {
+        return
+    }
+
+    Write-Host "Electron runtime was not found at $ElectronDist; initializing Electron package runtime..."
+    npm --prefix desktop exec electron -- --version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Electron runtime initialization failed. Run npm --prefix desktop ci and retry."
+    }
+}
+
 $ElectronDist = Join-Path $Root "desktop\node_modules\electron\dist"
 $DesktopDist = Join-Path $Root "desktop\dist"
 $BackendExe = Resolve-ProjectPath $BackendExe
@@ -195,8 +208,10 @@ if ($PathSafetyCheckOnly) {
     exit 0
 }
 
+Initialize-ElectronRuntime -ElectronDist $ElectronDist
+
 if (-not (Test-Path $ElectronDist)) {
-    throw "Electron runtime was not found at $ElectronDist. Run npm --prefix desktop install first."
+    throw "Electron runtime was not found at $ElectronDist. Run npm --prefix desktop ci, then npm --prefix desktop exec electron -- --version."
 }
 
 if (-not (Test-Path $DesktopDist)) {

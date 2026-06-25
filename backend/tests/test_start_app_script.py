@@ -24,6 +24,10 @@ def _portable_first_screen_smoke_text(project_root: Path) -> str:
     return (project_root / "scripts" / "portable_first_screen_smoke.ps1").read_text(encoding="utf-8")
 
 
+def _build_portable_text(project_root: Path) -> str:
+    return (project_root / "scripts" / "build_portable.ps1").read_text(encoding="utf-8")
+
+
 def _mobile_lan_wss_preflight_text(project_root: Path) -> str:
     return (project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1").read_text(encoding="utf-8")
 
@@ -559,6 +563,17 @@ def test_setup_dev_owns_dependency_install(project_root: Path) -> None:
     assert "& $python -m pip install -r $requirementsPath" in text
     assert "& $npm --prefix $DesktopDir ci" in text
     assert "& $npm --prefix $DesktopDir install" in text
+
+
+def test_build_portable_initializes_electron_runtime_when_missing(project_root: Path) -> None:
+    text = _build_portable_text(project_root)
+
+    assert "function Initialize-ElectronRuntime" in text
+    assert "npm --prefix desktop exec electron -- --version" in text
+    assert "Run npm --prefix desktop install first" not in text
+    assert text.index("Initialize-ElectronRuntime -ElectronDist $ElectronDist") < text.index(
+        'if (-not (Test-Path $ElectronDist))'
+    )
 
 
 def test_start_app_does_not_stop_workspace_owned_full_backend(project_root: Path) -> None:
