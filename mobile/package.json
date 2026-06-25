@@ -18,7 +18,7 @@
     "smoke:android-back": "node scripts/android-back-navigation-smoke.cjs"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "3.1.0",
+    "@react-native-async-storage/async-storage": "3.1.1",
     "expo": "56.0.5",
     "expo-camera": "56.0.7",
     "expo-device": "56.0.4",
