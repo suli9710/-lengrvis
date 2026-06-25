@@ -374,7 +374,7 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 
 代码签名与自动更新（公开发布通道）：
 
-- **签名**：本地 `npm --prefix desktop run dist` 不签名（仅内部分发）。持 OV/EV PFX 证书时设置 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` 环境变量后照常构建即可；走 Azure Trusted Signing 时用 `npm --prefix desktop run dist:signed`（配置见 `desktop/electron-builder.signed.js`，需 `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`、`AZURE_TRUSTED_SIGNING_ENDPOINT`、`AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`、`AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`、`AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`）。`dist:signed` / `dist:publish` 会先运行 `verify:signed-build-config` 拒绝空值或 `REPLACE_*` 占位，再校验随包的 `backend.exe` 已在打包前单独用 signtool 或 Azure Trusted Signing 签名。
+- **签名**：本地 `npm --prefix desktop run dist` 不签名（仅内部分发）。持 OV/EV PFX 证书时设置 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` 环境变量后照常构建即可；走 Azure Trusted Signing 时用 `npm --prefix desktop run dist:signed`（配置见 `desktop/electron-builder.signed.js`，需 `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`、`AZURE_TRUSTED_SIGNING_ENDPOINT`、`AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`、`AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`、`AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`）。`dist:signed` / `dist:publish` 会先运行 `verify:signed-build-config` 拒绝空值或 `REPLACE_*` 占位，再校验随包的 `backend.exe` 已在打包前单独用 signtool 或 Azure Trusted Signing 签名。macOS 公开候选使用 `npm --prefix desktop run dist:mac:signed`，要求 `dist/backend` 已 codesign、`APPLE_TEAM_ID`、Apple notarization 凭证，以及 `MAC_CSC_NAME`/`CSC_NAME` 或 `MAC_CSC_LINK`/`CSC_LINK`；构建后会跑 codesign、Gatekeeper 和 stapler 校验。Linux AppImage 使用 `npm --prefix desktop run dist:linux` 生成并校验 `desktop/release/lengrvis-linux-checksums.sha256`，随候选产物一起上传。
 - **发布版本一致性门禁**：`dist:publish` 在上述签名校验之后、`electron-builder` 上传 Release 资产之前，会运行 `verify:release-version`（也可单独 `npm --prefix desktop run verify:release-version` 调用），校验发布 tag 等于 `desktop/package.json` 的 `version`（即 `v<version>`），避免 tag 与版本错配导致 electron-updater 解析到错误的 GitHub Release。tag 来源按 `--tag <值>` / `RELEASE_TAG` 环境变量 / `GITHUB_REF`（仅 `refs/tags/*`）优先级解析；本地无 tag 发布默认放行并打印提示，可设 `RELEASE_REQUIRE_TAG=1` 或传 `--require-tag` 在发布流水线中强制要求匹配的 tag。
 - **自动更新**：通过 electron-updater + GitHub Releases。`npm --prefix desktop run dist:publish`（需 `GH_TOKEN`）构建并上传 Release 资产；安装版应用启动时静默检查更新，托盘菜单提供「检查更新」，下载完成后提示重启安装；后端 exe 在安装包 resources 内随更新整体替换。
 
@@ -383,9 +383,11 @@ macOS DMG：
 ```bash
 npm --prefix desktop install
 npm --prefix desktop run dist:mac:arm64
+# Public signed/notarized candidate:
+npm --prefix desktop run dist:mac:signed
 ```
 
-`dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Lengrvis-<version>-arm64.dmg`（版本号来自 `desktop/package.json`）。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。
+`dist:mac:*` 会先检查 `dist/backend` 是否存在，避免打出缺后端的包。产物：`desktop/release/Lengrvis-<version>-arm64.dmg`（版本号来自 `desktop/package.json`）。打 `x64` 时先用 `bash scripts/build_backend_mac.sh x86_64` 生成匹配的 `dist/backend`，再运行 `npm --prefix desktop run dist:mac:x64`。公开 macOS 候选必须走 `dist:mac:signed`；未签名 `dist:mac:*` 只用于内部验证。
 
 Android QA APK 走 Expo/EAS managed 配置，源码预检和严格发布门禁分开跑：
 

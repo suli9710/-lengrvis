@@ -47,12 +47,31 @@ function Get-PinnedPythonLockEntries {
 
     $entries = @{}
     $unpinned = New-Object System.Collections.Generic.List[string]
+    $missingHashes = New-Object System.Collections.Generic.List[string]
+    $currentName = $null
+    $currentHashes = New-Object System.Collections.Generic.List[string]
 
     foreach ($line in Get-Content -LiteralPath $LockPath) {
         $cleanLine = Remove-RequirementComment -Line $line
-        if ([string]::IsNullOrWhiteSpace($cleanLine) -or $cleanLine.StartsWith("-")) {
+        if ([string]::IsNullOrWhiteSpace($cleanLine)) {
             continue
         }
+
+        $hashMatch = [regex]::Match($cleanLine, "--hash\s*=\s*sha256:(?<hash>[a-fA-F0-9]{64})")
+        if ($hashMatch.Success) {
+            $currentHashes.Add($hashMatch.Groups["hash"].Value.ToLowerInvariant())
+            continue
+        }
+
+        if ($cleanLine.StartsWith("-")) {
+            continue
+        }
+
+        if ($null -ne $currentName -and $currentHashes.Count -lt 1) {
+            $missingHashes.Add($currentName)
+        }
+        $currentName = $null
+        $currentHashes = New-Object System.Collections.Generic.List[string]
 
         $name = Get-PythonRequirementName -Line $cleanLine
         if ($null -eq $name) {
@@ -72,11 +91,17 @@ function Get-PinnedPythonLockEntries {
             Version = $pinMatch.Groups["version"].Value
             Line = $cleanLine
         }
+        $currentName = $pinMatch.Groups["name"].Value
+    }
+
+    if ($null -ne $currentName -and $currentHashes.Count -lt 1) {
+        $missingHashes.Add($currentName)
     }
 
     return [pscustomobject]@{
         Entries = $entries
         Unpinned = [string[]]$unpinned
+        MissingHashes = [string[]]$missingHashes
     }
 }
 
@@ -112,6 +137,9 @@ function Test-BackendPythonLocks {
     foreach ($unpinnedLine in $lockResult.Unpinned) {
         $Issues.Add("${selectedLockLabel} contains an unpinned dependency: $unpinnedLine")
     }
+    foreach ($missingHashName in $lockResult.MissingHashes) {
+        $Issues.Add("${selectedLockLabel} dependency '$missingHashName' is missing one or more --hash=sha256 pins; regenerate with uv pip compile --generate-hashes.")
+    }
 
     $requirements = New-Object System.Collections.Generic.List[string]
     foreach ($line in Get-Content -LiteralPath $requirementsPath) {
@@ -143,6 +171,9 @@ function Test-BackendPythonLocks {
         if ($lockText -notmatch "(?im)^#\s*Fully resolved dependency lock") {
             $Issues.Add("$selectedLockLabel is missing the fully resolved dependency lock header.")
         }
+        if ($lockText -notmatch "(?im)^#\s*.*--generate-hashes") {
+            $Issues.Add("$selectedLockLabel header must document the --generate-hashes lock generation command.")
+        }
         if ($lockText -notmatch "(?im)^\s+#\s+via") {
             $Issues.Add("$selectedLockLabel is missing resolver provenance comments (`# via ...`) expected from the transitive lock workflow.")
         }
@@ -151,8 +182,8 @@ function Test-BackendPythonLocks {
         $Issues.Add("$selectedLockLabel is a fallback constraints file; backend/requirements-lock.txt is required for the full Python transitive lock gate.")
     }
 
-    if ($lockResult.Unpinned.Count -eq 0) {
-        Write-Host "Verified backend transitive dependency lock in $selectedLockLabel ($($lockResult.Entries.Count) pinned packages; $($requirements.Count) direct requirements)."
+    if ($lockResult.Unpinned.Count -eq 0 -and $lockResult.MissingHashes.Count -eq 0) {
+        Write-Host "Verified backend transitive dependency lock in $selectedLockLabel ($($lockResult.Entries.Count) pinned packages with sha256 hashes; $($requirements.Count) direct requirements)."
     }
 }
 

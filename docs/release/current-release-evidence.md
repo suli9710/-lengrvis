@@ -36,7 +36,8 @@
 | --- | --- |
 | Repo hygiene + dependency locks | `npm run hygiene` |
 | Repo hygiene + dependency locks | `npm run deps:verify` |
-| Backend pytest + golden task gate | `python -m pip install -r backend/requirements-lock.txt -r requirements-dev.txt` |
+| Backend pytest + golden task gate | `python -m pip install --require-hashes -r backend/requirements-lock.txt` |
+| Backend pytest + golden task gate | `python -m pip install -r requirements-dev.txt` |
 | Backend pytest + golden task gate | `python -m playwright install chromium` |
 | Backend pytest + golden task gate | `python -m pytest backend/tests -q --maxfail=1` |
 | Backend pytest + golden task gate | `powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1` |

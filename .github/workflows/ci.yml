@@ -47,7 +47,8 @@ jobs:
       - name: Install backend dependencies (direct lock + dev)
         run: |
           python -m pip install -U pip
-          python -m pip install -r backend/requirements-lock.txt -r requirements-dev.txt
+          python -m pip install --require-hashes -r backend/requirements-lock.txt
+          python -m pip install -r requirements-dev.txt
           python -m pip install pip-audit
       - name: Backend dependency audit gate
         run: python -m pip_audit -r backend/requirements-lock.txt --disable-pip --no-deps
@@ -166,7 +167,8 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install -r backend/requirements-lock.txt -r requirements-dev.txt
+          python -m pip install --require-hashes -r backend/requirements-lock.txt
+          python -m pip install -r requirements-dev.txt
       - name: Install desktop dependencies
         run: npm --prefix desktop ci
       - name: IPC + Skill/MCP + settings security gate

@@ -29,7 +29,8 @@ jobs:
       - name: Install backend dependencies
         run: |
           python -m pip install -U pip
-          python -m pip install -r backend/requirements-lock.txt -r requirements-dev.txt
+          python -m pip install --require-hashes -r backend/requirements-lock.txt
+          python -m pip install -r requirements-dev.txt
           python -m pip install pip-audit
 
       - name: Install desktop dependencies

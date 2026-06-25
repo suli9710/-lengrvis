@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
@@ -15,6 +17,7 @@ from urllib.parse import quote
 PYTHON_REQUIREMENT_RE = re.compile(
     r"^\s*(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^\]]+\])?\s*==\s*(?P<version>[^\s;]+)"
 )
+PYTHON_HASH_RE = re.compile(r"--hash\s*=\s*sha256:(?P<hash>[a-fA-F0-9]{64})")
 
 
 def main() -> int:
@@ -90,31 +93,49 @@ def add_python_requirements(path: Path, components: dict[str, dict[str, Any]]) -
     if not path.exists():
         raise FileNotFoundError(f"Missing Python lock file: {path}")
 
+    python_components: dict[str, dict[str, Any]] = {}
+    current_purl = ""
+
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.split("#", 1)[0].strip()
-        if not line or line.startswith("-"):
+        if not line:
             continue
+
+        hash_match = PYTHON_HASH_RE.search(line)
+        if hash_match and current_purl:
+            python_components[current_purl].setdefault("hashes", []).append(
+                {"alg": "SHA-256", "content": hash_match.group("hash").lower()}
+            )
+            continue
+
+        if line.startswith("-"):
+            continue
+
         match = PYTHON_REQUIREMENT_RE.match(line)
         if not match:
             continue
         name = normalize_python_name(match.group("name"))
         version = match.group("version")
         purl = f"pkg:pypi/{quote(name, safe='')}@{quote(version, safe='')}"
-        upsert_component(
-            components,
-            purl,
-            {
-                "type": "library",
-                "name": name,
-                "version": version,
-                "purl": purl,
-                "bom-ref": purl,
-                "properties": [
-                    {"name": "lengrvis:ecosystem", "value": "python"},
-                    {"name": "lengrvis:source", "value": "backend/requirements-lock.txt"},
-                ],
-            },
-        )
+        current_purl = purl
+        python_components[purl] = {
+            "type": "library",
+            "name": name,
+            "version": version,
+            "purl": purl,
+            "bom-ref": purl,
+            "properties": [
+                {"name": "lengrvis:ecosystem", "value": "python"},
+                {"name": "lengrvis:source", "value": "backend/requirements-lock.txt"},
+            ],
+        }
+
+    for purl, component in python_components.items():
+        if "hashes" in component:
+            component["properties"].append(
+                {"name": "lengrvis:pypi_sha256_hash_count", "value": str(len(component["hashes"]))}
+            )
+        upsert_component(components, purl, component)
 
 
 def add_npm_lock(path: Path, project: str, components: dict[str, dict[str, Any]]) -> None:
@@ -139,23 +160,34 @@ def add_npm_lock(path: Path, project: str, components: dict[str, dict[str, Any]]
         encoded_version = quote(version, safe="")
         purl = f"pkg:npm/{encoded_name}@{encoded_version}"
         scope = "optional" if entry.get("optional") else "required"
+        properties = [
+            {"name": "lengrvis:ecosystem", "value": "npm"},
+            {"name": "lengrvis:source", "value": f"{project}/package-lock.json"},
+            {"name": "lengrvis:npm_project", "value": project},
+            {"name": "lengrvis:npm_dev_dependency", "value": "true" if entry.get("dev") else "false"},
+        ]
+        integrity = entry.get("integrity")
+        hashes = npm_integrity_hashes(integrity) if isinstance(integrity, str) else []
+        if isinstance(integrity, str) and integrity:
+            properties.append({"name": "lengrvis:npm_integrity", "value": integrity})
+        component = {
+            "type": "library",
+            "name": name,
+            "version": version,
+            "purl": purl,
+            "bom-ref": purl,
+            "scope": scope,
+            "properties": properties,
+        }
+        if hashes:
+            component["hashes"] = hashes
+        license_choice = cyclonedx_license_choice(entry.get("license"))
+        if license_choice:
+            component["licenses"] = [license_choice]
         upsert_component(
             components,
             purl,
-            {
-                "type": "library",
-                "name": name,
-                "version": version,
-                "purl": purl,
-                "bom-ref": purl,
-                "scope": scope,
-                "properties": [
-                    {"name": "lengrvis:ecosystem", "value": "npm"},
-                    {"name": "lengrvis:source", "value": f"{project}/package-lock.json"},
-                    {"name": "lengrvis:npm_project", "value": project},
-                    {"name": "lengrvis:npm_dev_dependency", "value": "true" if entry.get("dev") else "false"},
-                ],
-            },
+            component,
         )
 
 
@@ -173,6 +205,66 @@ def upsert_component(components: dict[str, dict[str, Any]], key: str, component:
             existing_props.add(prop_key)
     if existing.get("scope") == "optional" and component.get("scope") == "required":
         existing["scope"] = "required"
+    merge_unique_objects(existing, component, "hashes", ("alg", "content"))
+    merge_unique_objects(existing, component, "licenses", ("expression", "license"))
+
+
+def merge_unique_objects(existing: dict[str, Any], component: dict[str, Any], key: str, identity_fields: tuple[str, ...]) -> None:
+    incoming = component.get(key)
+    if not isinstance(incoming, list):
+        return
+
+    existing_items = existing.setdefault(key, [])
+    if not isinstance(existing_items, list):
+        existing[key] = []
+        existing_items = existing[key]
+
+    seen = {json.dumps(object_identity(item, identity_fields), sort_keys=True) for item in existing_items}
+    for item in incoming:
+        item_key = json.dumps(object_identity(item, identity_fields), sort_keys=True)
+        if item_key not in seen:
+            existing_items.append(item)
+            seen.add(item_key)
+
+
+def object_identity(item: Any, identity_fields: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {"value": item}
+    return {field: item.get(field) for field in identity_fields}
+
+
+def npm_integrity_hashes(integrity: str) -> list[dict[str, str]]:
+    hashes: list[dict[str, str]] = []
+    for token in integrity.split():
+        if "-" not in token:
+            continue
+        algorithm, encoded_digest = token.split("-", 1)
+        algorithm = algorithm.lower()
+        alg_name = {
+            "sha1": "SHA-1",
+            "sha256": "SHA-256",
+            "sha384": "SHA-384",
+            "sha512": "SHA-512",
+        }.get(algorithm)
+        if not alg_name:
+            continue
+        try:
+            digest = base64.b64decode(encoded_digest, validate=True).hex()
+        except (ValueError, binascii.Error):
+            continue
+        hashes.append({"alg": alg_name, "content": digest})
+    return hashes
+
+
+def cyclonedx_license_choice(raw_license: Any) -> dict[str, Any] | None:
+    if not isinstance(raw_license, str):
+        return None
+    license_text = raw_license.strip()
+    if not license_text:
+        return None
+    if re.fullmatch(r"[A-Za-z0-9-.+]+", license_text):
+        return {"license": {"id": license_text}}
+    return {"expression": license_text}
 
 
 def npm_name_from_lock_path(package_path: str) -> str:

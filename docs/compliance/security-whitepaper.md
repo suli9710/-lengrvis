@@ -42,13 +42,14 @@ Lengrvis 是本机优先的 OS Agent，可读取文件、执行系统诊断、�
 ## 8. 依赖与供应链安全
 
 - 依赖审计：`npm run audit:deps`（desktop/mobile `npm audit` + backend `pip-audit`，高危即失败）。
-- 密钥扫描：`.gitleaks.toml` + pre-commit 钩子（`.pre-commit-config.yaml`）。
+- 密钥扫描：`.gitleaks.toml` + pre-commit 钩子（`.pre-commit-config.yaml`）+ `.github/workflows/security-audit.yml` 的 PR/push/scheduled gitleaks job。
+- SAST：`.github/workflows/codeql.yml` 对 Python 与 TypeScript 运行 CodeQL。
 - 安全回归门禁：`npm run qa:gate`（含黄金任务回归 `npm run golden:gate`）、发布前 `npm run release:safety`。
 
 ## 9. 已知边界与未完成项
 
 - **第三方渗透测试未做**（含远程输入通道与审批绕过专项 fuzz），见 `PRODUCTIZATION_ISSUES.md`。
-- SAST（Bandit）与密钥扫描在 CI 中的集成仍在推进。
+- 第三方渗透测试、fuzz 与候选版本人工证据审阅仍在推进。
 - 本白皮书不代表已获得任何安全认证；认证进度见 `docs/compliance/certification-roadmap.md`。
 
 ## 10. 漏洞报告

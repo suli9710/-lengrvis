@@ -1022,8 +1022,14 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     ).read_text(encoding="utf-8")
 
     assert scripts["verify:signed-build-config"] == "node scripts/verify-signed-build-config.cjs"
+    assert scripts["verify:signed-build-config:mac"] == "node scripts/verify-signed-build-config.cjs mac"
+    assert scripts["verify:macos-release-signatures"] == "node scripts/verify-macos-release-signatures.cjs"
+    assert scripts["verify:linux-release-integrity"] == "node scripts/verify-linux-release-integrity.cjs"
     assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:signed"]
     assert "verify:signed-build-config && npm run verify:backend-signature" in scripts["dist:publish"]
+    assert "verify:signed-build-config:mac" in scripts["dist:mac:signed"]
+    assert "verify:macos-release-signatures" in scripts["dist:mac:signed"]
+    assert "verify:linux-release-integrity -- --write" in scripts["dist:linux"]
     assert "electron-builder.signed.js" in scripts["dist:signed"]
     assert "electron-builder.signed.js --publish always" in scripts["dist:publish"]
     assert "verify:signed-build-config" not in scripts["dist"]
@@ -1038,6 +1044,10 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert "publisherName" in signed_config
     assert "publisherName: [publisherName]" in signed_config
     assert "verifyUpdateCodeSignature: true" in signed_config
+    assert "hardenedRuntime: true" in signed_config
+    assert "notarize: macNotarizeOptions()" in signed_config
+    assert "APPLE_TEAM_ID" in signed_config
+    assert (project_root / "desktop" / "build" / "entitlements.mac.plist").exists()
     assert "REPLACE_" not in unsigned_config
     assert "未设置时跳过签名" in unsigned_config
     assert "仅限内部分发" in unsigned_config
@@ -1059,6 +1069,8 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert "verify the backend binary signature before packaging" in verify_script
     assert "win.azureSignOptions.publisherName" in verify_script
     assert "win.publisherName[0]" in verify_script
+    assert "mac.notarize" in verify_script
+    assert "APPLE_APP_SPECIFIC_PASSWORD" in verify_script
 
 
 def test_windows_signed_build_config_gate_rejects_missing_release_env(

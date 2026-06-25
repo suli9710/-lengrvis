@@ -236,7 +236,8 @@ $gates = @(
         job = "Backend pytest + golden task gate"
         scope = "Backend pytest suite and golden task regression gate"
         commands = @(
-            "python -m pip install -r backend/requirements-lock.txt -r requirements-dev.txt",
+            "python -m pip install --require-hashes -r backend/requirements-lock.txt",
+            "python -m pip install -r requirements-dev.txt",
             "python -m playwright install chromium",
             "python -m pytest backend/tests -q --maxfail=1",
             "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1"
