@@ -305,9 +305,7 @@ def test_rebuild_records_and_reports_file_failures(monkeypatch: pytest.MonkeyPat
     assert status["latest_failure"]["message"] == "parser offline"
 
 
-def test_rebuild_without_valid_roots_preserves_existing_index(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_rebuild_without_valid_roots_preserves_existing_index(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
 
     from app.core import db
@@ -330,9 +328,7 @@ def test_rebuild_without_valid_roots_preserves_existing_index(
     assert FTSIndex().search("preserve searchable index content")
 
 
-def test_rebuild_keeps_lexical_index_when_embeddings_fail(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_rebuild_keeps_lexical_index_when_embeddings_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
 
     from app.core import db
@@ -355,9 +351,7 @@ def test_rebuild_keeps_lexical_index_when_embeddings_fail(
     assert result["files_failed"] == 0
     assert FTSIndex().search("lexical rebuild fallback remains searchable")
     with db.connect() as conn:
-        embedding_count = conn.execute(
-            "SELECT COUNT(*) AS count FROM document_chunk_embeddings"
-        ).fetchone()["count"]
+        embedding_count = conn.execute("SELECT COUNT(*) AS count FROM document_chunk_embeddings").fetchone()["count"]
         failure_rows = conn.execute(
             "SELECT data FROM audit_events WHERE event_type = ?",
             ("index.embedding_failed",),

@@ -35,6 +35,7 @@ tags = ["lengrvis", "android", "secret"]
 
 [allowlist]
 description = "Allowed false positives"
+regexTarget = "match"
 paths = [
   '''node_modules/''',
   '''\.git/''',
@@ -51,4 +52,6 @@ paths = [
 # CI test secret is not a real secret
 regexes = [
   '''ci-audit-hmac-secret''',
+  '''lan-token=cert-secret-sk-proj-CERT1234\.crt''',
+  '''lan-secret=key-secret-sk-proj-KEY1234\.key''',
 ]
