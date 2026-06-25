@@ -46,13 +46,15 @@ class ScreenMonitorConfig:
     frame_diff_gate_enabled: bool = True
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "ScreenMonitorConfig":
+    def from_settings(cls, settings: Any) -> ScreenMonitorConfig:
         return cls(
             enabled=bool(getattr(settings, "perception_enabled", False)),
             interval_seconds=float(getattr(settings, "perception_interval_seconds", 5.0) or 5.0),
             publish_events=bool(getattr(settings, "perception_publish_events", False)),
             max_width=int(getattr(settings, "perception_max_width", DEFAULT_CAPTURE_WIDTH) or DEFAULT_CAPTURE_WIDTH),
-            max_height=int(getattr(settings, "perception_max_height", DEFAULT_CAPTURE_HEIGHT) or DEFAULT_CAPTURE_HEIGHT),
+            max_height=int(
+                getattr(settings, "perception_max_height", DEFAULT_CAPTURE_HEIGHT) or DEFAULT_CAPTURE_HEIGHT
+            ),
             quality=int(getattr(settings, "perception_jpeg_quality", DEFAULT_JPEG_QUALITY) or DEFAULT_JPEG_QUALITY),
             frame_diff_gate_enabled=bool(getattr(settings, "perception_frame_diff_gate_enabled", True)),
             vision_context={

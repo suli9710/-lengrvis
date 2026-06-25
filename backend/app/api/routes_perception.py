@@ -156,8 +156,14 @@ def _resample_pcm16(audio: bytes, sample_rate: int, *, target_rate: int = 16_000
     return resampled.tobytes()
 
 
-@router.post("/perception/suggestions/{suggestion_id}/launch", response_model=SuggestionLaunchResponse)
-async def launch_suggestion(suggestion_id: str, request: SuggestionLaunchRequest | None = None) -> SuggestionLaunchResponse:
+@router.post(
+    "/perception/suggestions/{suggestion_id}/launch",
+    response_model=SuggestionLaunchResponse,
+)
+async def launch_suggestion(
+    suggestion_id: str,
+    request: SuggestionLaunchRequest | None = None,
+) -> SuggestionLaunchResponse:
     payload = request or SuggestionLaunchRequest()
     try:
         run = await perception_suggestion_service.launch_suggestion(

@@ -286,9 +286,10 @@ def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
 
     screenshot_payload = asyncio.run(target.screenshot(max_width=1600, max_height=1000, quality=70))
     if not screenshot_payload.get("ok"):
+        error = screenshot_payload.get("error", "unknown capture error")
         return {
             "ok": False,
-            "error": f"Vision grounding fallback needs a screenshot, but capture failed: {screenshot_payload.get('error', 'unknown capture error')}",
+            "error": f"Vision grounding fallback needs a screenshot, but capture failed: {error}",
         }
     return _vision_grounding(description, screenshot_payload)
 
@@ -554,7 +555,10 @@ def register(registry) -> None:
             locate_on_screen,
             RiskLevel.R0_READ_ONLY,
             False,
-            "Locate a UI element: semantic UIAutomation lookup first, then screenshot + vision model grounding fallback; returns screen coordinates for click_at.",
+            (
+                "Locate a UI element: semantic UIAutomation lookup first, then screenshot + "
+                "vision model grounding fallback; returns screen coordinates for click_at."
+            ),
             ["observe", "inspect", "screenshot"],
         ),
         (
@@ -586,10 +590,16 @@ def register(registry) -> None:
                 supports_dry_run=supports_dry_run,
                 requires_authorized_path=False,
                 execute=fn,
-                search_hint="semantic ui automation accessibility windows app control gui desktop screen mouse keyboard",
+                search_hint=(
+                    "semantic ui automation accessibility windows app control gui desktop screen mouse keyboard"
+                ),
                 effects=effects,
                 concurrency_safe=risk == RiskLevel.R0_READ_ONLY,
-                concurrency_key="desktop_gui_input" if supports_dry_run or name in {"ui_automation.focus", "ui_automation.focus_window"} else "",
+                concurrency_key=(
+                    "desktop_gui_input"
+                    if supports_dry_run or name in {"ui_automation.focus", "ui_automation.focus_window"}
+                    else ""
+                ),
                 sensitive_arg_keys=["text"] if name == "ui_automation.type_text" else [],
             )
         )

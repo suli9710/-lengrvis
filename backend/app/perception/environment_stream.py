@@ -138,7 +138,7 @@ class EnvironmentRule:
             self.id = f"{pattern}:{hint}".lower()
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "EnvironmentRule":
+    def from_dict(cls, raw: dict[str, Any]) -> EnvironmentRule:
         event_pattern = raw.get("event_pattern") or raw.get("events") or []
         event_type = raw.get("event_type")
         return cls(
@@ -287,7 +287,10 @@ class EnvironmentStream:
         self._loop = asyncio.get_running_loop()
         self._started = True
         if self.file_source is None and file_directories:
-            self.file_source = DirectoryChangeWatcher(self.file_change_sink(), allowed_directories=[str(item) for item in file_directories])
+            self.file_source = DirectoryChangeWatcher(
+                self.file_change_sink(),
+                allowed_directories=[str(item) for item in file_directories],
+            )
         if self.file_source is not None and file_directories:
             self.file_source.start(list(file_directories))
         if self.screen_monitor is not None:
@@ -585,6 +588,7 @@ class EnvironmentStream:
             )
         )
 
+
 def file_changed_event(path: str | Path, action: str, *, task_id: str = GLOBAL_TASK_ID) -> EnvironmentEvent:
     raw_path = str(path)
     normalized_action = str(action or "changed")
@@ -666,7 +670,9 @@ def default_environment_rules() -> list[EnvironmentRule]:
             id="file_change_after_app_switch",
             event_pattern=[EnvironmentEventType.APP_SWITCHED, EnvironmentEventType.FILE_CHANGED],
             title="File changed in active workflow",
-            body="A file changed shortly after an app switch; consider refreshing context before planning the next step.",
+            body=(
+                "A file changed shortly after an app switch; consider refreshing context before planning the next step."
+            ),
             severity="info",
         ),
         EnvironmentRule(
@@ -769,7 +775,10 @@ def _rules_from_settings(settings: Any | None) -> list[EnvironmentRule]:
         return default_environment_rules()
 
 
-def _screen_monitor_from_settings(settings: Any, event_publisher: Callable[[PerceptionEvent], Any]) -> ScreenMonitor | None:
+def _screen_monitor_from_settings(
+    settings: Any,
+    event_publisher: Callable[[PerceptionEvent], Any],
+) -> ScreenMonitor | None:
     config = ScreenMonitorConfig.from_settings(settings)
     if not config.enabled:
         return None

@@ -24,7 +24,13 @@ class FakeTranscriber:
     text: str
     confidence: float = 0.8
 
-    def transcribe(self, audio: bytes, *, sample_rate: int = 16_000, language: str | None = None) -> TranscriptionResult:
+    def transcribe(
+        self,
+        audio: bytes,
+        *,
+        sample_rate: int = 16_000,
+        language: str | None = None,
+    ) -> TranscriptionResult:
         return TranscriptionResult(
             text=self.text,
             confidence=self.confidence,

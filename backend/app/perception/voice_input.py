@@ -29,7 +29,13 @@ class AudioBufferLimitError(ValueError):
 
 
 class VoiceTranscriber(Protocol):
-    def transcribe(self, audio: bytes, *, sample_rate: int = 16_000, language: str | None = None) -> str | "TranscriptionResult":
+    def transcribe(
+        self,
+        audio: bytes,
+        *,
+        sample_rate: int = 16_000,
+        language: str | None = None,
+    ) -> str | TranscriptionResult:
         """Return text for a single audio buffer."""
 
 
@@ -94,7 +100,13 @@ class DeterministicFallbackTranscriber:
 
     provider_name = "deterministic_fallback"
 
-    def transcribe(self, audio: bytes, *, sample_rate: int = 16_000, language: str | None = None) -> TranscriptionResult:
+    def transcribe(
+        self,
+        audio: bytes,
+        *,
+        sample_rate: int = 16_000,
+        language: str | None = None,
+    ) -> TranscriptionResult:
         text = _decode_text_like_audio(audio)
         digest = hashlib.sha256(audio).hexdigest()
         return TranscriptionResult(
@@ -136,7 +148,7 @@ class WhisperCppTranscriber:
     def available(cls) -> bool:
         try:
             cls._import_model_cls()
-        except Exception:
+        except Exception:  # noqa: BLE001 - optional dependency probe.
             return False
         return True
 
@@ -153,14 +165,23 @@ class WhisperCppTranscriber:
             self._model = model_cls(self.model_path, **self.model_kwargs)
         return self._model
 
-    def transcribe(self, audio: bytes, *, sample_rate: int = 16_000, language: str | None = None) -> TranscriptionResult:
+    def transcribe(
+        self,
+        audio: bytes,
+        *,
+        sample_rate: int = 16_000,
+        language: str | None = None,
+    ) -> TranscriptionResult:
         wav_audio = pcm16_to_wav(audio, sample_rate=sample_rate)
         temp_path = ""
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
                 temp_path = handle.name
                 handle.write(wav_audio)
-            segments = self.model.transcribe(temp_path, language=language) if language else self.model.transcribe(temp_path)
+            if language:
+                segments = self.model.transcribe(temp_path, language=language)
+            else:
+                segments = self.model.transcribe(temp_path)
         finally:
             if temp_path:
                 try:
@@ -174,7 +195,9 @@ class WhisperCppTranscriber:
 
 class WakeWordGate:
     def __init__(self, wake_words: Iterable[str] | None = None, *, strip_wake_word: bool = True) -> None:
-        self.wake_words = [normalize_transcript(item).lower() for item in (wake_words or []) if normalize_transcript(item)]
+        self.wake_words = [
+            normalize_transcript(item).lower() for item in (wake_words or []) if normalize_transcript(item)
+        ]
         self.strip_wake_word = strip_wake_word
 
     @property
@@ -193,7 +216,7 @@ class WakeWordGate:
                 continue
             gated = normalized
             if self.strip_wake_word:
-                gated = f"{normalized[:index]} {normalized[index + len(wake_word):]}".strip(" ,.:;")
+                gated = f"{normalized[:index]} {normalized[index + len(wake_word) :]}".strip(" ,.:;")
                 gated = normalize_transcript(gated)
             return True, wake_word, gated
         return False, "", normalized
@@ -268,8 +291,7 @@ class VoiceInputProcessor:
                 self._buffer = []
                 self._buffered_audio_bytes = 0
                 raise AudioBufferLimitError(
-                    f"audio buffer exceeds {self.max_buffered_audio_bytes} bytes or "
-                    f"{self.max_buffered_chunks} chunks"
+                    f"audio buffer exceeds {self.max_buffered_audio_bytes} bytes or {self.max_buffered_chunks} chunks"
                 )
             self._buffer.append(audio_chunk)
             self._buffered_audio_bytes += chunk_size
@@ -358,9 +380,9 @@ class VoiceInputProcessor:
 def build_default_transcriber(*, model_path: str = "base.en") -> VoiceTranscriber:
     try:
         transcriber = WhisperCppTranscriber(model_path)
-        transcriber.model
+        _ = transcriber.model
         return transcriber
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional dependency fallback.
         logger.info("pywhispercpp unavailable; using deterministic voice fallback: %s", exc)
         return DeterministicFallbackTranscriber()
 

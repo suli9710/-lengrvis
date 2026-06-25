@@ -1,4 +1,5 @@
 """Computer Use 视觉 grounding 回退链测试（UIA → 截图 → 视觉模型 → 坐标）。"""
+
 from __future__ import annotations
 
 import base64
@@ -61,7 +62,9 @@ def test_vision_fallback_scales_ratios_to_screen_coordinates(monkeypatch):
     )
     monkeypatch.setattr(
         "app.tools.vision_tools._run_vision",
-        lambda prompt, image_path, task="vision": '{"found": true, "x_ratio": 0.5, "y_ratio": 0.25, "confidence": 0.9, "label": "Save button"}',
+        lambda prompt, image_path, task="vision": (
+            '{"found": true, "x_ratio": 0.5, "y_ratio": 0.25, "confidence": 0.9, "label": "Save button"}'
+        ),
     )
 
     result = ui_automation_tools.locate_on_screen({"name": "Save", "target": "the Save button"}, {})

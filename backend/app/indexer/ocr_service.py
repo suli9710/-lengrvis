@@ -133,7 +133,11 @@ def local_ocr_image(image_path: Path, *, settings: AppSettings | None = None) ->
 def accelerated_ocr_image(image_path: Path, *, settings: AppSettings | None = None) -> OCRResult:
     status = detect_accelerated_ocr(settings=settings)
     if not status["available"]:
-        return OCRResult(ok=False, source="local_accelerated", error=str(status.get("error") or "Accelerated OCR unavailable."))
+        return OCRResult(
+            ok=False,
+            source="local_accelerated",
+            error=str(status.get("error") or "Accelerated OCR unavailable."),
+        )
     model = str(status.get("model") or "").strip()
     if not model:
         return OCRResult(
@@ -210,11 +214,11 @@ def accelerated_ocr_smoke(settings: AppSettings | None = None) -> dict[str, Any]
 def detect_accelerated_ocr(settings: AppSettings | None = None) -> dict[str, Any]:
     effective = settings or get_effective_settings()
     enabled = bool(getattr(effective, "ocr_acceleration_enabled", True))
-    configured_backend = str(
-        getattr(effective, "ocr_acceleration_backend", None)
-        or getattr(effective, "ocr_backend", "auto")
-        or "auto"
-    ).strip().lower()
+    configured_backend = (
+        str(getattr(effective, "ocr_acceleration_backend", None) or getattr(effective, "ocr_backend", "auto") or "auto")
+        .strip()
+        .lower()
+    )
     execution_provider = str(getattr(effective, "ocr_execution_provider", "") or "").strip().lower()
     if configured_backend == "auto" and execution_provider:
         configured_backend = execution_provider
@@ -320,7 +324,7 @@ def extract_pdf_text_with_ocr_fallback(
         if ocr_texts:
             return "\n".join(ocr_texts)
         return extracted
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - optional PDF/OCR stacks should fail closed with a message.
         return f"[PDF extraction unavailable: {exc}]"
 
 
@@ -370,7 +374,7 @@ def _ocr_pdf_image(
 def _pdf_image_ocr_hint(image_file: Any) -> str:
     try:
         obj = image_file.indirect_reference.get_object()
-    except Exception:
+    except Exception:  # noqa: BLE001 - pypdf image metadata varies by backend.
         return ""
     for key in ("/LengrvisOCRText", "/LengrvisOCRText", "/OCRText"):
         value = obj.get(key)
@@ -385,7 +389,7 @@ def _ocr_text_from_image_metadata(image_path: Path) -> str:
 
         with Image.open(image_path) as image:
             info = dict(getattr(image, "info", {}) or {})
-    except Exception:
+    except Exception:  # noqa: BLE001 - metadata extraction is best effort.
         return ""
     for key in ("lengrvis_ocr_text", "lengrvis_ocr_text", "ocr_text", "Description", "Comment"):
         value = info.get(key)
@@ -401,7 +405,7 @@ def _ocr_text_with_tesseract(image_path: Path) -> str:
 
         with Image.open(image_path) as image:
             return str(pytesseract.image_to_string(image) or "").strip()
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional local OCR engine.
         return ""
 
 
@@ -428,7 +432,7 @@ def _ocr_text_with_paddleocr(image_path: Path) -> str:
     try:
         ocr = _get_paddle_ocr(get_env("LENGRVIS_PADDLEOCR_LANG", "en") or "en")
         result = ocr.ocr(str(image_path), cls=True)
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional PaddleOCR engine.
         return ""
 
     lines: list[str] = []
@@ -444,7 +448,8 @@ def _ocr_text_with_paddleocr(image_path: Path) -> str:
                 return "\n".join(lines)
             try:
                 text = item[1][0]
-            except Exception:
+            except (IndexError, TypeError, KeyError) as exc:
+                logger.debug("Skipping malformed PaddleOCR result item: %s", exc)
                 continue
             if str(text).strip():
                 lines.append(str(text).strip())
@@ -468,7 +473,7 @@ def _pil_image_exceeds_ocr_limit(image: Any) -> bool:
         height = int(getattr(image, "height", 0) or 0)
         bands = getattr(image, "getbands", lambda: ())()
         channels = max(1, len(tuple(bands or ())))
-    except Exception:
+    except Exception:  # noqa: BLE001 - PIL-compatible image objects are optional best effort.
         return False
     return width > 0 and height > 0 and width * height * channels > max_bytes
 
@@ -609,7 +614,8 @@ def _load_ocr_vocab(model_dir: Path) -> dict[int, str]:
                     return {int(value): str(key) for key, value in raw.items()}
             lines = path.read_text(encoding="utf-8").splitlines()
             return {index: line.strip() for index, line in enumerate(lines)}
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - model vocab probing is best effort.
+            logger.debug("Skipping unreadable OCR vocab candidate %s: %s", path, exc)
             continue
     return {}
 

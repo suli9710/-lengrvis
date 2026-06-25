@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -70,19 +71,27 @@ class FTSIndex:
                 INDEX_FAILURE_EVENT_TYPES,
             ).fetchall()
 
-        scoped_rows = [row for row in index_rows if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)]
+        scoped_rows = [
+            row for row in index_rows if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)
+        ]
         scoped_file_ids = [str(row["id"]) for row in scoped_rows]
         chunks_indexed = 0
         embeddings_indexed = 0
         if scoped_file_ids:
             scoped_file_id_set = set(scoped_file_ids)
             with db.connect() as conn:
-                chunk_rows = conn.execute("SELECT file_id, COUNT(*) AS count FROM document_chunks GROUP BY file_id").fetchall()
+                chunk_rows = conn.execute(
+                    "SELECT file_id, COUNT(*) AS count FROM document_chunks GROUP BY file_id"
+                ).fetchall()
                 embedding_rows = conn.execute(
                     "SELECT file_id, COUNT(*) AS count FROM document_chunk_embeddings GROUP BY file_id"
                 ).fetchall()
-            chunks_indexed = sum(int(row["count"] or 0) for row in chunk_rows if str(row["file_id"]) in scoped_file_id_set)
-            embeddings_indexed = sum(int(row["count"] or 0) for row in embedding_rows if str(row["file_id"]) in scoped_file_id_set)
+            chunks_indexed = sum(
+                int(row["count"] or 0) for row in chunk_rows if str(row["file_id"]) in scoped_file_id_set
+            )
+            embeddings_indexed = sum(
+                int(row["count"] or 0) for row in embedding_rows if str(row["file_id"]) in scoped_file_id_set
+            )
 
         files_indexed = len(scoped_rows)
         bytes_indexed = sum(int(row["size"] or 0) for row in scoped_rows)
@@ -118,7 +127,7 @@ class FTSIndex:
             conn.execute("DELETE FROM document_chunk_embeddings")
             try:
                 conn.execute("DELETE FROM document_chunks_fts")
-            except Exception as exc:
+            except sqlite3.Error as exc:
                 logger.debug("could not clear optional FTS table: %s", exc, exc_info=True)
 
         files = 0
@@ -179,7 +188,11 @@ class FTSIndex:
                     vector = vectors[index] if index < len(vectors) else []
                     doc_chunk = item.chunk
                     conn.execute(
-                        "INSERT OR REPLACE INTO document_chunks (id, file_id, chunk_index, text, data) VALUES (?, ?, ?, ?, ?)",
+                        """
+                        INSERT OR REPLACE INTO document_chunks
+                        (id, file_id, chunk_index, text, data)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
                         (
                             doc_chunk.id,
                             doc_chunk.file_id,
@@ -193,7 +206,7 @@ class FTSIndex:
                             "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
                             (doc_chunk.file_id, item.path, item.text),
                         )
-                    except Exception as exc:
+                    except sqlite3.Error as exc:
                         logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
                     if vector:
                         conn.execute(
@@ -222,7 +235,7 @@ class FTSIndex:
             try:
                 root = resolve_authorized(raw, allowed_directories)
                 candidates = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - rebuild reports authorization/enumeration failures.
                 record_rebuild_failure(raw, exc)
                 continue
             for path in candidates:
@@ -257,7 +270,7 @@ class FTSIndex:
                     if len(pending_chunks) >= self.embedding_batch_size:
                         flush_pending()
                     files += 1
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - one bad parser/file must not stop rebuild.
                     del pending_files[pending_file_start:]
                     del pending_chunks[pending_chunk_start:]
                     chunks = chunks_start
@@ -287,10 +300,13 @@ class FTSIndex:
                 (str(normalized),),
             ).fetchone()
             if existing and existing["sha256"] == file_hash:
-                return self._backfill_missing_embeddings(
-                    str(existing["id"]),
-                    normalized,
-                ) > 0
+                return (
+                    self._backfill_missing_embeddings(
+                        str(existing["id"]),
+                        normalized,
+                    )
+                    > 0
+                )
 
         # Remove old entries for this path if they exist
         self.remove_file(str(normalized))
@@ -340,7 +356,11 @@ class FTSIndex:
             for item in chunks_data:
                 doc_chunk = item.chunk
                 conn.execute(
-                    "INSERT OR REPLACE INTO document_chunks (id, file_id, chunk_index, text, data) VALUES (?, ?, ?, ?, ?)",
+                    """
+                    INSERT OR REPLACE INTO document_chunks
+                    (id, file_id, chunk_index, text, data)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
                     (
                         doc_chunk.id,
                         doc_chunk.file_id,
@@ -354,7 +374,7 @@ class FTSIndex:
                         "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
                         (doc_chunk.file_id, item.path, item.text),
                     )
-                except Exception as exc:
+                except sqlite3.Error as exc:
                     logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
 
         self._store_embeddings(chunks_data, normalized)
@@ -445,21 +465,13 @@ class FTSIndex:
             if not row:
                 return False
             file_id = row["id"]
-            conn.execute(
-                "DELETE FROM document_chunk_embeddings WHERE file_id = ?", (file_id,)
-            )
-            conn.execute(
-                "DELETE FROM document_chunks WHERE file_id = ?", (file_id,)
-            )
+            conn.execute("DELETE FROM document_chunk_embeddings WHERE file_id = ?", (file_id,))
+            conn.execute("DELETE FROM document_chunks WHERE file_id = ?", (file_id,))
             try:
-                conn.execute(
-                    "DELETE FROM document_chunks_fts WHERE file_id = ?", (file_id,)
-                )
-            except Exception as exc:
+                conn.execute("DELETE FROM document_chunks_fts WHERE file_id = ?", (file_id,))
+            except sqlite3.Error as exc:
                 logger.debug("could not delete optional FTS rows for %s: %s", file_id, exc, exc_info=True)
-            conn.execute(
-                "DELETE FROM indexed_files WHERE id = ?", (file_id,)
-            )
+            conn.execute("DELETE FROM indexed_files WHERE id = ?", (file_id,))
         return True
 
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -468,18 +480,30 @@ class FTSIndex:
         with db.connect() as conn:
             try:
                 rows = conn.execute(
-                    "SELECT file_id, path, snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet FROM document_chunks_fts WHERE document_chunks_fts MATCH ? LIMIT ?",
+                    """
+                    SELECT file_id, path,
+                           snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
+                    FROM document_chunks_fts
+                    WHERE document_chunks_fts MATCH ?
+                    LIMIT ?
+                    """,
                     (fts_match_query(cleaned), limit),
                 ).fetchall()
                 if rows or len(cleaned) >= 3:
                     return [dict(row) for row in rows]
-            except Exception as exc:
+            except sqlite3.Error as exc:
                 logger.info("FTS search failed; falling back to LIKE for query=%r: %s", cleaned, exc)
             return self._search_like(conn, cleaned, limit)
 
     def _search_like(self, conn, query: str, limit: int) -> list[dict[str, Any]]:
         rows = conn.execute(
-            "SELECT dc.file_id, dc.text, f.data FROM document_chunks dc JOIN indexed_files f ON f.id = dc.file_id WHERE dc.text LIKE ? LIMIT ?",
+            """
+            SELECT dc.file_id, dc.text, f.data
+            FROM document_chunks dc
+            JOIN indexed_files f ON f.id = dc.file_id
+            WHERE dc.text LIKE ?
+            LIMIT ?
+            """,
             (f"%{query}%", limit),
         ).fetchall()
         results = []
@@ -570,9 +594,15 @@ def _index_status_retry_hint(status: str) -> str:
     if status == "missing_scope":
         return "Choose an authorized folder before indexing or searching files."
     if status == "empty":
-        return "The content index is empty. File-name search still scans live files; rebuild the index to search inside documents."
+        return (
+            "The content index is empty. File-name search still scans live files; "
+            "rebuild the index to search inside documents."
+        )
     if status == "degraded":
-        return "The content index is usable, but semantic indexing failed recently. Retry rebuild after the local embedding service recovers."
+        return (
+            "The content index is usable, but semantic indexing failed recently. "
+            "Retry rebuild after the local embedding service recovers."
+        )
     return ""
 
 

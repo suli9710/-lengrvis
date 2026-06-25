@@ -8,21 +8,13 @@ from conftest import import_first, require_attr
 
 from app.tools.file_tools import read_text as app_read_text
 
-FILE_TOOL_MODULES = (
-    "app.tools.file_tools",
-)
+FILE_TOOL_MODULES = ("app.tools.file_tools",)
 
-INDEX_MODULES = (
-    "app.indexer.fts_index",
-)
+INDEX_MODULES = ("app.indexer.fts_index",)
 
-SYSTEM_MODULES = (
-    "app.services.system_service",
-)
+SYSTEM_MODULES = ("app.services.system_service",)
 
-API_MODULES = (
-    "app.main",
-)
+API_MODULES = ("app.main",)
 
 
 def test_file_tool_reads_inside_workspace(workspace: Path):
@@ -252,9 +244,17 @@ def test_index_status_uses_latest_authorized_failure_when_newer_failure_is_outsi
                 indexed.indexed_at,
             ),
         )
-    record("index.embedding_failed", "FTSIndex", {"path": indexed.normalized_path, "error": "embedding service offline"})
+    record(
+        "index.embedding_failed",
+        "FTSIndex",
+        {"path": indexed.normalized_path, "error": "embedding service offline"},
+    )
     for index in range(30):
-        record("index.embedding_failed", "FTSIndex", {"path": str(outside / f"secret-{index}.txt"), "error": "outside failure"})
+        record(
+            "index.embedding_failed",
+            "FTSIndex",
+            {"path": str(outside / f"secret-{index}.txt"), "error": "outside failure"},
+        )
 
     status = FTSIndex().status([str(workspace)])
 

@@ -49,7 +49,9 @@ def test_environment_rule_matches_event_type_and_subject():
 
     assert len(suggestions) == 1
     assert suggestions[0].rule_id == "excel_rule"
-    assert engine.evaluate(EnvironmentEvent(environment_type=EnvironmentEventType.FILE_CHANGED, path="Budget.xlsx")) == []
+    assert (
+        engine.evaluate(EnvironmentEvent(environment_type=EnvironmentEventType.FILE_CHANGED, path="Budget.xlsx")) == []
+    )
 
 
 def test_environment_stream_emits_file_change_and_proactive_suggestion():
@@ -102,7 +104,12 @@ def test_environment_stream_dispatches_environment_event_to_dispatcher():
         dispatcher.register("environment.event", handler)
         stream = EnvironmentStream(dispatcher=dispatcher, rule_engine=EnvironmentRuleEngine([]))
 
-        await stream.emit(EnvironmentEvent(environment_type=EnvironmentEventType.APP_SWITCHED, summary_text="notepad.exe notes.txt"))
+        await stream.emit(
+            EnvironmentEvent(
+                environment_type=EnvironmentEventType.APP_SWITCHED,
+                summary_text="notepad.exe notes.txt",
+            )
+        )
 
         assert len(received) == 1
         assert received[0].environment_type == EnvironmentEventType.APP_SWITCHED
