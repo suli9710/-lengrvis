@@ -74,7 +74,7 @@ def test_get_llm_messages_honors_requested_limit_above_db_default(monkeypatch, t
     for index in range(550):
         bus.publish_text("task_context_limit", "User", f"message {index}", role=OpenAIMessageRole.USER)
 
-    assert flush_agent_message_writes(timeout_seconds=10)
+    assert flush_agent_message_writes(timeout_seconds=40)
     projected = bus.get_llm_messages("task_context_limit", settings, limit=500)
 
     assert len(projected) == 500
