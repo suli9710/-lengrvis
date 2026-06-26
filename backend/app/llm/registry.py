@@ -172,6 +172,8 @@ def _explicit_process_env_overrides(base: AppSettings) -> dict[str, object]:
         "LENGRVIS_APP_ALLOWLIST": "app_allowlist",
         "LENGRVIS_BROWSER_MAX_PAGE_BYTES": "browser_max_page_bytes",
         "LENGRVIS_DOCUMENT_MAX_CHARS_TO_LLM": "document_max_chars_to_llm",
+        "LENGRVIS_INDEX_REBUILD_MAX_FILES": "index_rebuild_max_files",
+        "LENGRVIS_INDEX_REBUILD_MAX_BYTES": "index_rebuild_max_bytes",
         "LENGRVIS_BROWSER_SCREENSHOT_DIR": "browser_screenshot_dir",
         "LENGRVIS_ALLOWED_DIRECTORIES": "allowed_directories",
         "LENGRVIS_SKILL_DIRECTORIES": "skill_directories",

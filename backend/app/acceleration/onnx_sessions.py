@@ -5,6 +5,7 @@ import importlib.metadata
 import os
 import platform
 import threading
+from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -51,9 +52,10 @@ RUNTIME_MODULES = (
     "openvino",
 )
 
-_SESSION_CACHE: dict[str, Any] = {}
+_SESSION_CACHE: OrderedDict[str, Any] = OrderedDict()
 _SESSION_LOCKS: dict[str, threading.Lock] = {}
 _GLOBAL_LOCK = threading.Lock()
+_DEFAULT_SESSION_CACHE_MAX_ENTRIES = 4
 
 
 class OnnxAccelerationUnavailable(RuntimeError):
@@ -298,12 +300,14 @@ def resolve_onnx_model_path(raw: str | Path | None) -> Path | None:
 
 def create_inference_session(backend: OnnxSessionBackend) -> Any:
     key = backend.cache_key()
-    if key in _SESSION_CACHE:
-        return _SESSION_CACHE[key]
+    cached = _cached_session(key)
+    if cached is not None:
+        return cached
     lock = _session_lock(key)
     with lock:
-        if key in _SESSION_CACHE:
-            return _SESSION_CACHE[key]
+        cached = _cached_session(key)
+        if cached is not None:
+            return cached
         ort = import_onnxruntime()
         if ort is None:
             raise OnnxAccelerationUnavailable("onnxruntime is not installed.")
@@ -314,7 +318,7 @@ def create_inference_session(backend: OnnxSessionBackend) -> Any:
             session = ort.InferenceSession(backend.model_path, providers=providers)
         except Exception as exc:  # noqa: BLE001 - optional native runtime failures should degrade.
             raise OnnxAccelerationUnavailable(f"Failed to create ONNX Runtime session: {exc}") from exc
-        _SESSION_CACHE[key] = session
+        _remember_session(key, session)
         return session
 
 
@@ -415,6 +419,41 @@ def _session_lock(key: str) -> threading.Lock:
         if key not in _SESSION_LOCKS:
             _SESSION_LOCKS[key] = threading.Lock()
         return _SESSION_LOCKS[key]
+
+
+def _cached_session(key: str) -> Any | None:
+    with _GLOBAL_LOCK:
+        if key not in _SESSION_CACHE:
+            return None
+        session = _SESSION_CACHE.pop(key)
+        _SESSION_CACHE[key] = session
+        return session
+
+
+def _remember_session(key: str, session: Any) -> None:
+    with _GLOBAL_LOCK:
+        _SESSION_CACHE[key] = session
+        _SESSION_CACHE.move_to_end(key)
+        limit = _session_cache_max_entries()
+        while len(_SESSION_CACHE) > limit:
+            evicted_key, _evicted_session = _SESSION_CACHE.popitem(last=False)
+            _SESSION_LOCKS.pop(evicted_key, None)
+
+
+def _session_cache_max_entries() -> int:
+    raw = str(get_env("LENGRVIS_ONNX_SESSION_CACHE_MAX_ENTRIES") or "").strip()
+    if not raw:
+        return _DEFAULT_SESSION_CACHE_MAX_ENTRIES
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DEFAULT_SESSION_CACHE_MAX_ENTRIES
+
+
+def clear_session_cache() -> None:
+    with _GLOBAL_LOCK:
+        _SESSION_CACHE.clear()
+        _SESSION_LOCKS.clear()
 
 
 def _runtime_package_snapshot(module_name: str) -> dict[str, Any]:

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from app.config import AppSettings
 from app.context_management import (
     ContextAwareProvider,
@@ -16,6 +14,7 @@ from app.context_management import (
     project_messages_for_llm,
     recent_complete_tail_start,
     repair_tool_message_invariants,
+    summarize_messages,
     warning_state,
 )
 from app.llm.base import LLMProvider
@@ -191,6 +190,36 @@ def test_project_messages_snips_long_history_without_deleting_recent_tail():
     assert any("history snip" in message["content"].lower() for message in projection.messages)
 
 
+def test_summarize_messages_keeps_semantic_tool_and_latest_user_entries():
+    messages = [{"role": "user", "content": f"background chatter {index} " + ("x" * 180)} for index in range(12)]
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "type": "function",
+                        "function": {"name": "file.read", "arguments": '{"path": "C:/work/plan.md"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_read", "content": "important plan contents " + ("y" * 700)},
+            {"role": "user", "content": "Next: keep the permission decision and finish CI."},
+        ]
+    )
+
+    summary = summarize_messages(messages, _settings(context_session_summary_limit=700))
+
+    assert len(summary) <= 700
+    assert "Latest user intent before compaction: Next: keep the permission decision and finish CI." in summary
+    assert "assistant requested tool(s): file.read(path)" in summary
+    assert "tool result:" in summary
+    assert "omitted" in summary
+    assert "[summary truncated]" not in summary
+
+
 def test_project_ledger_for_llm_uses_latest_boundary_and_preserved_segment():
     older_boundary = {
         "id": "boundary_old",
@@ -288,7 +317,9 @@ def test_project_ledger_filters_old_boundary_from_preserved_tail():
             new_boundary,
             {"id": "after", "role": "user", "content": "after"},
         ],
-        _settings(context_history_snip_enabled=False, context_micro_compact_enabled=False, context_auto_compact_enabled=False),
+        _settings(
+            context_history_snip_enabled=False, context_micro_compact_enabled=False, context_auto_compact_enabled=False
+        ),
         source="test-ledger",
     )
 
@@ -319,7 +350,9 @@ def test_history_snip_keeps_tool_call_pair_when_tail_starts_on_tool_result():
 
     projection = project_messages_for_llm(
         messages,
-        _settings(context_history_snip_threshold=8, context_history_snip_keep_recent=2, context_auto_compact_enabled=False),
+        _settings(
+            context_history_snip_threshold=8, context_history_snip_keep_recent=2, context_auto_compact_enabled=False
+        ),
         source="test",
     )
 
@@ -521,7 +554,10 @@ def test_context_aware_provider_reactive_compacts_after_prompt_too_long():
 
     assert asyncio.run(wrapped.chat([{"role": "user", "content": "x" * 1000} for _ in range(10)])) == "ok"
     assert provider.calls == 2
-    assert any("reactive" in message["content"].lower() or "auto-compaction" in message["content"].lower() for message in provider.messages)
+    assert any(
+        "reactive" in message["content"].lower() or "auto-compaction" in message["content"].lower()
+        for message in provider.messages
+    )
 
 
 def test_reactive_compact_keeps_tool_call_pair_when_tail_starts_on_tool_result():

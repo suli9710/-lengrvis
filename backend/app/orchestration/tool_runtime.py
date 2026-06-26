@@ -4,6 +4,7 @@ import asyncio
 import copy
 import inspect
 import logging
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,7 @@ from app.core.schemas import (
     ToolCall,
     ToolResult,
 )
-from app.orchestration.result_budget import apply_result_budget
+from app.llm.registry import get_effective_settings
 from app.orchestration.resource_state import (
     ResourceStateError,
     attach_dry_run_resource_state,
@@ -34,6 +35,7 @@ from app.orchestration.resource_state import (
     remember_read_states_for_tool,
     validate_write_preconditions,
 )
+from app.orchestration.result_budget import apply_result_budget
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
 from app.policy.approval_binding import (
@@ -41,24 +43,23 @@ from app.policy.approval_binding import (
     binding_preview,
     permission_policy_version,
     preview_hmac,
-    redacted_preview,
     settings_fingerprint,
 )
 from app.policy.execution_marker import mark_execution_approved
-from app.policy.permissions import PermissionStore
 from app.policy.model_boundary import model_control_arg_error
 from app.policy.permission_modes import permission_mode_from_context, trusted_reversible_edit_allowed
+from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import BROWSER_WRITE_TOOLS
 from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
-from app.llm.registry import get_effective_settings
 from app.tools.schemas import ToolDefinition
-
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TOOL_TIMEOUT_SECONDS = 300.0
+_MAX_DAEMON_TOOL_THREADS = 32
+_TOOL_THREAD_SLOTS = threading.BoundedSemaphore(_MAX_DAEMON_TOOL_THREADS)
 
 
 # Failure strings that give the reflection layer nothing to reason about
@@ -232,7 +233,9 @@ class ToolRuntime:
         )
         if review.verdict == SafetyVerdict.DENY:
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
-            orchestrator.bus.publish_text(task.id, orchestrator.name, f"Denied step: {step.description}", step_id=step.id)
+            orchestrator.bus.publish_text(
+                task.id, orchestrator.name, f"Denied step: {step.description}", step_id=step.id
+            )
             orchestrator._supervise_new_agent_messages(task.id, "tool_call_denied")
             return RuntimeExecutionResult("step_denied")
 
@@ -248,7 +251,11 @@ class ToolRuntime:
             orchestrator._supervise_new_agent_messages(task.id, "tool_permission_denied")
             return RuntimeExecutionResult("step_denied")
 
-        approval_review = browser_review if browser_review is not None and browser_review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL else None
+        approval_review = (
+            browser_review
+            if browser_review is not None and browser_review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL
+            else None
+        )
         if approval_review is None and review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             approval_review = review
         requires_runtime_approval = self._requires_runtime_approval(step, tool, runtime)
@@ -513,7 +520,9 @@ class ToolRuntime:
         result: ToolResult,
     ) -> RuntimeExecutionResult | None:
         orchestrator = self.orchestrator
-        post_tool_review = orchestrator.safety.review_tool_result(task.id, step.id, step.tool_name, result, tool.risk_level)
+        post_tool_review = orchestrator.safety.review_tool_result(
+            task.id, step.id, step.tool_name, result, tool.risk_level
+        )
         if post_tool_review.verdict == SafetyVerdict.DENY:
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
@@ -649,7 +658,7 @@ class ToolRuntime:
     def _hook_snapshot(self, value: Any) -> Any:
         if isinstance(value, Mapping):
             return MappingProxyType({key: self._hook_snapshot(child) for key, child in value.items()})
-        if isinstance(value, (list, tuple, set, frozenset)):
+        if isinstance(value, list | tuple | set | frozenset):
             return tuple(self._hook_snapshot(child) for child in value)
         try:
             return copy.deepcopy(value)
@@ -754,7 +763,9 @@ class ToolRuntime:
             risk_level=tool.risk_level.value,
             args_binding_hmac=args_binding_hmac(step.tool_name, step.args, task_id=task.id, step_id=step.id),
             preview_hmac=preview_hmac(safe_preview),
-            settings_fingerprint=settings_fingerprint(runtime.settings, allowed_directories=runtime.allowed_directories),
+            settings_fingerprint=settings_fingerprint(
+                runtime.settings, allowed_directories=runtime.allowed_directories
+            ),
             permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
             policy_mode=permission_mode_from_context(runtime.tool_context(), runtime.settings),
             tool_version=getattr(tool, "tool_version", "1"),
@@ -779,7 +790,9 @@ class ToolRuntime:
         orchestrator._supervise_new_agent_messages(task.id, "approval_gate")
         return RuntimeExecutionResult("waiting_user_approval", preview_result)
 
-    def _deny_approval_without_dry_run(self, task: Task, step: PlanStep, tool: ToolDefinition) -> RuntimeExecutionResult:
+    def _deny_approval_without_dry_run(
+        self, task: Task, step: PlanStep, tool: ToolDefinition
+    ) -> RuntimeExecutionResult:
         set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
         self.orchestrator._set_status(
             task,
@@ -831,7 +844,12 @@ class ToolRuntime:
     def _approval_dry_run_summary(self, tool: ToolDefinition, preview: dict[str, Any]) -> str:
         if preview.get("error"):
             return f"{tool.name} dry-run failed: {preview.get('error')}"
-        changed = preview.get("would_change") or preview.get("changes") or preview.get("items") or preview.get("changed_paths")
+        changed = (
+            preview.get("would_change")
+            or preview.get("changes")
+            or preview.get("items")
+            or preview.get("changed_paths")
+        )
         if isinstance(changed, list):
             return f"{tool.name} dry-run preview contains {len(changed)} item(s)."
         if isinstance(changed, dict):
@@ -888,7 +906,9 @@ class ToolRuntime:
         try:
             tool.validate_input(args, runtime.tool_context())
         except Exception as exc:  # noqa: BLE001
-            record("tool.validation_failed", "ToolRuntime", {"tool": tool.name, "error": str(exc)}, task_id=runtime.task.id)
+            record(
+                "tool.validation_failed", "ToolRuntime", {"tool": tool.name, "error": str(exc)}, task_id=runtime.task.id
+            )
             return str(exc)
         return ""
 
@@ -901,7 +921,9 @@ class ToolRuntime:
         try:
             allowed = tool.permission_policy(args, runtime.tool_context())
         except Exception as exc:  # noqa: BLE001
-            record("tool.permission_failed", "ToolRuntime", {"tool": tool.name, "error": str(exc)}, task_id=runtime.task.id)
+            record(
+                "tool.permission_failed", "ToolRuntime", {"tool": tool.name, "error": str(exc)}, task_id=runtime.task.id
+            )
             return str(exc)
         return "" if allowed else f"Tool permission policy denied {tool.name}."
 
@@ -953,7 +975,7 @@ class ToolRuntime:
                 summary = tool.result_summary(output)
                 if summary:
                     return summary
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - result summarizers are best-effort diagnostics.
                 logger.debug("tool result summary failed for %s: %s", tool.name, exc, exc_info=True)
         return step.expected_observation or f"{step.tool_name} completed."
 
@@ -998,10 +1020,10 @@ class ToolRuntime:
                 child_name = f"{arg_name}.{key}" if arg_name else key
                 if self._is_authorized_path_arg_key(key, top_level=top_level):
                     self._append_authorized_path_values(child, child_name, candidates)
-                elif isinstance(child, (dict, list, tuple, set)):
+                elif isinstance(child, dict | list | tuple | set):
                     self._collect_candidate_authorized_paths(child, child_name, candidates, top_level=False)
             return
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, list | tuple | set):
             for index, child in enumerate(value):
                 child_name = f"{arg_name}[{index}]" if arg_name else f"[{index}]"
                 self._collect_candidate_authorized_paths(child, child_name, candidates, top_level=False)
@@ -1012,10 +1034,10 @@ class ToolRuntime:
         arg_name: str,
         candidates: list[tuple[str, str | Path]],
     ) -> None:
-        if isinstance(value, (str, Path)) and str(value).strip():
+        if isinstance(value, str | Path) and str(value).strip():
             candidates.append((arg_name, value))
             return
-        if isinstance(value, (list, tuple, set)):
+        if isinstance(value, list | tuple | set):
             for index, child in enumerate(value):
                 child_name = f"{arg_name}[{index}]"
                 self._append_authorized_path_values(child, child_name, candidates)
@@ -1037,7 +1059,11 @@ class ToolRuntime:
             or normalized.endswith("_dirs")
             or normalized.endswith("_file")
             or normalized.endswith("_files")
-            or (top_level and normalized in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"})
+            or (
+                top_level
+                and normalized
+                in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"}
+            )
         )
 
     async def execute_tool_with_locks(
@@ -1126,10 +1152,10 @@ class ToolRuntime:
         # subprocess, HTTP). Always run them off the event loop thread so a
         # slow tool cannot freeze every concurrent request and WebSocket.
         timeout = self._tool_execution_timeout(context)
-        worker = asyncio.create_task(
-            asyncio.to_thread(tool.execute, args, context),
-            name=f"tool-{tool.name}",
-        )
+        try:
+            worker = self._start_daemon_tool_worker(tool, args, context)
+        except RuntimeError as exc:
+            return {"error": str(exc), "resource_exhausted": True, "retry_after_pending_completion": True}
         try:
             return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
         except TimeoutError:
@@ -1159,11 +1185,7 @@ class ToolRuntime:
     ) -> None:
         while True:
             pending = self._pending_tool_completions_for_current_loop()
-            waits = {
-                future
-                for key in lock_keys
-                if (future := pending.get(key)) is not None and not future.done()
-            }
+            waits = {future for key in lock_keys if (future := pending.get(key)) is not None and not future.done()}
             if not waits:
                 return
             record(
@@ -1203,6 +1225,48 @@ class ToolRuntime:
                     pending.pop(key, None)
 
         worker.add_done_callback(release_completion)
+
+    def _start_daemon_tool_worker(
+        self,
+        tool: ToolDefinition,
+        args: dict[str, Any],
+        context: dict[str, Any],
+    ) -> asyncio.Future[Any]:
+        if not _TOOL_THREAD_SLOTS.acquire(blocking=False):
+            raise RuntimeError(
+                f"Tool worker capacity exhausted ({_MAX_DAEMON_TOOL_THREADS} in-flight sync tools); "
+                "retry after pending tool executions finish."
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Any] = loop.create_future()
+
+        def complete_with_result(result: Any) -> None:
+            if not future.done():
+                future.set_result(result)
+
+        def complete_with_error(exc: BaseException) -> None:
+            if not future.done():
+                future.set_exception(exc)
+
+        def finish(callback: Any, *callback_args: Any) -> None:
+            try:
+                loop.call_soon_threadsafe(callback, *callback_args)
+            except RuntimeError:
+                logger.debug("tool worker %s finished after its event loop closed", tool.name, exc_info=True)
+
+        def run_tool() -> None:
+            try:
+                result = tool.execute(args, context)
+            except BaseException as exc:  # noqa: BLE001 - propagate tool crashes to the awaiting task.
+                finish(complete_with_error, exc)
+            else:
+                finish(complete_with_result, result)
+            finally:
+                _TOOL_THREAD_SLOTS.release()
+
+        thread = threading.Thread(target=run_tool, name=f"tool-{tool.name}", daemon=True)
+        thread.start()
+        return future
 
     def _tool_execution_timeout(self, context: dict[str, Any]) -> float:
         settings = context.get("settings")
@@ -1273,7 +1337,7 @@ class ToolRuntime:
         return result
 
     def _normalize_lock_path(self, value: Any) -> str:
-        if not isinstance(value, (str, Path)):
+        if not isinstance(value, str | Path):
             return ""
         text = str(value).strip()
         if not text:

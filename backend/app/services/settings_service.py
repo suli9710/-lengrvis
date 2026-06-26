@@ -118,6 +118,8 @@ def _coerce_setting_value(key: str, value: Any) -> Any:
     int_min_one_keys = {
         "browser_max_page_bytes",
         "document_max_chars_to_llm",
+        "index_rebuild_max_files",
+        "index_rebuild_max_bytes",
         "llm_api_circuit_failure_threshold",
         "model_context_window",
         "model_auto_compact_token_limit",

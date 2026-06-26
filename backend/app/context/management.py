@@ -171,7 +171,7 @@ def project_messages_for_llm(
     original = compact_boundary_view(_normalize_messages(messages))
     boundary = _latest_compact_boundary(original)
     original_tokens = count_messages_tokens(original)
-    projected = copy.deepcopy(original)
+    projected = list(original)
     micro_compacted = False
     micro_compact_metadata: dict[str, Any] = _empty_micro_compact_metadata()
     history_snipped = False
@@ -201,7 +201,11 @@ def project_messages_for_llm(
         compacted = compacted or auto_compacted
         projected_tokens = count_messages_tokens(projected)
 
-    projected = repair_tool_message_invariants(projected)
+    projected = (
+        repair_tool_message_invariants(projected)
+        if _has_tool_protocol_messages(projected)
+        else [dict(message) for message in projected]
+    )
     projected_tokens = count_messages_tokens(projected)
 
     projection = ContextProjection(
@@ -278,9 +282,9 @@ def _micro_compact_messages_with_metadata(
 
     compactable_limit = max(0, len(messages) - age)
     changed = False
-    result = copy.deepcopy(messages)
-    tool_context_by_id = _tool_context_by_id(result)
-    for index, message in enumerate(result):
+    result = list(messages)
+    tool_context_by_id = _tool_context_by_id(messages)
+    for index, message in enumerate(messages):
         if index >= compactable_limit:
             continue
         role = str(message.get("role") or "")
@@ -293,8 +297,6 @@ def _micro_compact_messages_with_metadata(
             message.get("content"),
             message=message,
         )
-        if cleared_attachment_ids:
-            message["content"] = collapsed_attachment_content
 
         compacted_tool_id = ""
         collapse_summary: dict[str, Any] = {}
@@ -311,14 +313,16 @@ def _micro_compact_messages_with_metadata(
                     max_chars=max_chars,
                     tool_context=tool_context,
                 )
-                message["content"] = collapse_summary["content"]
+                collapsed_attachment_content = collapse_summary["content"]
 
         if not cleared_attachment_ids and not compacted_tool_id:
             continue
 
-        after_tokens = count_message_tokens(message)
+        updated = dict(message)
+        updated["content"] = collapsed_attachment_content
+        after_tokens = count_message_tokens(updated)
         tokens_saved = max(0, before_tokens - after_tokens)
-        message_metadata = dict(message.get("metadata") or {})
+        message_metadata = dict(updated.get("metadata") or {})
         message_metadata["micro_compacted"] = True
         message_metadata["original_tokens"] = before_tokens
         message_metadata["projected_tokens"] = after_tokens
@@ -337,7 +341,7 @@ def _micro_compact_messages_with_metadata(
                     "tool_name": collapse_summary.get("tool_name", ""),
                     "kind": collapse_summary.get("kind", "tool_result"),
                     "original_chars": collapse_summary.get("original_chars", 0),
-                    "projected_chars": len(str(message.get("content") or "")),
+                    "projected_chars": len(str(updated.get("content") or "")),
                     "tokens_saved": tokens_saved,
                 }
             )
@@ -352,7 +356,8 @@ def _micro_compact_messages_with_metadata(
                 }
                 for attachment_id in cleared_attachment_ids
             )
-        message["metadata"] = message_metadata
+        updated["metadata"] = message_metadata
+        result[index] = updated
         metadata["tokens_saved"] += tokens_saved
         changed = True
     return result, changed, metadata
@@ -773,6 +778,10 @@ def repair_tool_message_invariants(messages: list[dict[str, Any]]) -> list[dict[
     return repaired
 
 
+def _has_tool_protocol_messages(messages: list[dict[str, Any]]) -> bool:
+    return any(str(message.get("role") or "") == "tool" or bool(message.get("tool_calls")) for message in messages)
+
+
 def _protected_head_end(messages: list[dict[str, Any]]) -> int:
     index = 0
     while index < len(messages) and messages[index].get("role") in {"system", "developer"}:
@@ -861,23 +870,134 @@ def summarize_messages(messages: list[dict[str, Any]], settings: AppSettings) ->
     if not messages:
         return ""
     limit = max(500, int(settings.context_session_summary_limit))
-    chunks: list[str] = []
-    for message in messages:
-        role = str(message.get("role") or "assistant")
-        name = str(message.get("name") or message.get("metadata", {}).get("from_agent") or "").strip()
-        label = f"{role}:{name}" if name else role
-        text = _content_text(message.get("content"))
-        if not text and message.get("tool_calls"):
-            text = _json(message.get("tool_calls"))
-        if not text:
-            continue
-        chunks.append(f"- {label}: {_single_line(text)[:600]}")
-    if not chunks:
+    entries = _semantic_summary_entries(messages)
+    if not entries:
         return ""
-    body = "\n".join(chunks)
-    if len(body) > limit:
-        body = body[:limit].rstrip() + "\n- [summary truncated]"
-    return "Earlier conversation summary:\n" + body
+    return _fit_summary_entries(entries, limit)
+
+
+def _semantic_summary_entries(messages: list[dict[str, Any]]) -> list[tuple[int, int, str]]:
+    role_counts: dict[str, int] = {}
+    latest_user_index = -1
+    latest_user_text = ""
+    for index, message in enumerate(messages):
+        role = str(message.get("role") or "assistant")
+        role_counts[role] = role_counts.get(role, 0) + 1
+        if role == "user":
+            text = _single_line(_content_text(message.get("content")))
+            if text:
+                latest_user_index = index
+                latest_user_text = text
+
+    entries: list[tuple[int, int, str]] = []
+    counts = ", ".join(f"{role}={count}" for role, count in sorted(role_counts.items()))
+    entries.append((0, -2, f"- Covered {len(messages)} earlier message(s) before compaction ({counts})."))
+    if latest_user_text:
+        entries.append((0, -1, f"- Latest user intent before compaction: {_clip_summary_text(latest_user_text, 420)}"))
+
+    tool_context_by_id = _tool_context_by_id(messages)
+    for index, message in enumerate(messages):
+        line = _semantic_summary_line(message, tool_context_by_id=tool_context_by_id)
+        if not line:
+            continue
+        role = str(message.get("role") or "assistant")
+        if role == "user" and index == latest_user_index:
+            continue
+        priority = 1 if _is_high_value_summary_message(message, line) else 2
+        entries.append((priority, index, line))
+    return sorted(entries, key=lambda item: (item[0], item[1]))
+
+
+def _semantic_summary_line(message: dict[str, Any], *, tool_context_by_id: dict[str, dict[str, Any]]) -> str:
+    role = str(message.get("role") or "assistant")
+    name = str(message.get("name") or message.get("metadata", {}).get("from_agent") or "").strip()
+    label = f"{role}:{name}" if name else role
+    tool_calls = [tool_call for tool_call in message.get("tool_calls") or [] if isinstance(tool_call, dict)]
+    text = _single_line(_content_text(message.get("content")))
+
+    if tool_calls:
+        tool_summary = ", ".join(_tool_call_brief(tool_call) for tool_call in tool_calls[:6])
+        suffix = f"; note: {_clip_summary_text(text, 220)}" if text else ""
+        return f"- {label} requested tool(s): {tool_summary}{suffix}"
+
+    if role == "tool":
+        tool_call_id = str(message.get("tool_call_id") or "").strip()
+        tool_context = tool_context_by_id.get(tool_call_id, {})
+        summary = _tool_result_collapse_summary(
+            message,
+            text,
+            max_chars=520,
+            tool_context=tool_context,
+        )
+        return f"- tool result: {_clip_summary_text(_single_line(summary['content']), 520)}"
+
+    if not text:
+        return ""
+    return f"- {label}: {_clip_summary_text(text, 420)}"
+
+
+def _tool_call_brief(tool_call: dict[str, Any]) -> str:
+    function = tool_call.get("function") or {}
+    function = function if isinstance(function, dict) else {}
+    arguments = _parse_tool_arguments(function.get("arguments"))
+    arg_keys = ", ".join(sorted(arguments.keys())[:6])
+    return f"{_tool_call_name(tool_call)}({arg_keys})" if arg_keys else f"{_tool_call_name(tool_call)}()"
+
+
+def _is_high_value_summary_message(message: dict[str, Any], line: str) -> bool:
+    role = str(message.get("role") or "")
+    if role == "tool" or message.get("tool_calls"):
+        return True
+    lowered = line.casefold()
+    markers = (
+        "approved",
+        "blocked",
+        "decision",
+        "denied",
+        "error",
+        "failed",
+        "next",
+        "permission",
+        "plan",
+        "risk",
+        "todo",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _fit_summary_entries(entries: list[tuple[int, int, str]], limit: int) -> str:
+    header = "Earlier conversation summary:\n"
+    body_budget = max(1, limit - len(header))
+    selected: list[str] = []
+    used = 0
+    omitted = 0
+    for _priority, _index, raw_line in entries:
+        line = _clip_summary_text(raw_line, min(700, body_budget)).rstrip()
+        line_size = len(line) + (1 if selected else 0)
+        if used + line_size <= body_budget or not selected:
+            selected.append(line)
+            used += line_size
+        else:
+            omitted += 1
+    if omitted:
+        marker = f"- [omitted {omitted} lower-priority summary item(s) due to context budget]"
+        marker_size = len(marker) + (1 if selected else 0)
+        while selected and used + marker_size > body_budget:
+            removed = selected.pop()
+            used -= len(removed) + (1 if selected else 0)
+            omitted += 1
+            marker = f"- [omitted {omitted} lower-priority summary item(s) due to context budget]"
+            marker_size = len(marker) + (1 if selected else 0)
+        if used + marker_size <= body_budget:
+            selected.append(marker)
+    return header + "\n".join(selected)
+
+
+def _clip_summary_text(text: str, max_chars: int) -> str:
+    normalized = _single_line(text)
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max(1, max_chars - 15)].rstrip() + " [truncated]"
 
 
 def agent_messages_to_openai(

@@ -146,8 +146,22 @@ private class LengrvisPinnedTrustManager(
   override fun getAcceptedIssuers(): Array<X509Certificate> = systemTrustManager.acceptedIssuers
 
   private fun systemTrustManager(): X509TrustManager {
+    val androidCaStore = KeyStore.getInstance("AndroidCAStore")
+    androidCaStore.load(null)
+    val systemOnlyStore = KeyStore.getInstance(KeyStore.getDefaultType())
+    systemOnlyStore.load(null)
+    var systemCertificateCount = 0
+    val aliases = androidCaStore.aliases()
+    while (aliases.hasMoreElements()) {
+      val alias = aliases.nextElement()
+      if (!alias.startsWith("system:")) continue
+      val certificate = androidCaStore.getCertificate(alias) ?: continue
+      systemOnlyStore.setCertificateEntry(alias, certificate)
+      systemCertificateCount += 1
+    }
+    check(systemCertificateCount > 0) { "Android system CA store did not expose any system trust anchors." }
     val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
-    factory.init(null as KeyStore?)
+    factory.init(systemOnlyStore)
     return factory.trustManagers.filterIsInstance<X509TrustManager>().first()
   }
 }

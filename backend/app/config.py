@@ -196,6 +196,8 @@ class AppSettings(BaseSettings):
     app_allowlist: list[str] = Field(default_factory=list)
     browser_max_page_bytes: int = 250000
     document_max_chars_to_llm: int = 30000
+    index_rebuild_max_files: int = 25000
+    index_rebuild_max_bytes: int = 2 * 1024 * 1024 * 1024
     browser_screenshot_dir: str = str(DEFAULT_DATA_DIR / "browser_screenshots")
     allowed_directories: list[str] = Field(default_factory=list)
     data_dir: str = str(DEFAULT_DATA_DIR)
@@ -531,6 +533,18 @@ class AppSettings(BaseSettings):
                 "LENGRVIS_DOCUMENT_MAX_CHARS_TO_LLM",
                 "document_max_chars_to_llm",
                 30000,
+                minimum=1,
+            ),
+            index_rebuild_max_files=int_value(
+                "LENGRVIS_INDEX_REBUILD_MAX_FILES",
+                "index_rebuild_max_files",
+                25000,
+                minimum=1,
+            ),
+            index_rebuild_max_bytes=int_value(
+                "LENGRVIS_INDEX_REBUILD_MAX_BYTES",
+                "index_rebuild_max_bytes",
+                2 * 1024 * 1024 * 1024,
                 minimum=1,
             ),
             browser_screenshot_dir=str(

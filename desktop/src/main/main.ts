@@ -1,4 +1,17 @@
-import { app, BrowserWindow, globalShortcut, Menu, Tray, nativeImage, shell, type MenuItemConstructorOptions } from "electron";
+import {
+  app,
+  BrowserWindow,
+  globalShortcut,
+  Menu,
+  Tray,
+  nativeImage,
+  session,
+  shell,
+  type MenuItemConstructorOptions,
+  type PermissionCheckHandlerHandlerDetails,
+  type PermissionRequest,
+  type WebContents
+} from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -53,6 +66,49 @@ let backendStatusTimer: NodeJS.Timeout | null = null;
 let healthConfirmTimer: NodeJS.Timeout | null = null;
 let isQuitting = false;
 let backgroundTransition: Promise<void> | null = null;
+
+function hardenDefaultSessionPermissions(): void {
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    callback(isAllowedRendererPermission(webContents, permission, details));
+  });
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, _requestingOrigin, details) => {
+    return isAllowedRendererPermission(webContents, permission, details);
+  });
+}
+
+function isAllowedRendererPermission(
+  webContents: WebContents | null,
+  permission: string,
+  details?: PermissionRequest | PermissionCheckHandlerHandlerDetails
+): boolean {
+  if (!mainWindow || mainWindow.isDestroyed() || webContents?.id !== mainWindow.webContents.id) {
+    return false;
+  }
+
+  if (permission === "clipboard-sanitized-write") {
+    return true;
+  }
+
+  if (permission !== "media") {
+    return false;
+  }
+
+  const mediaTypes = getRequestedMediaTypes(details);
+  return mediaTypes.length === 1 && mediaTypes[0] === "audio";
+}
+
+function getRequestedMediaTypes(details?: PermissionRequest | PermissionCheckHandlerHandlerDetails): string[] {
+  if (!details) {
+    return [];
+  }
+  if ("mediaTypes" in details && Array.isArray(details.mediaTypes)) {
+    return details.mediaTypes;
+  }
+  if ("mediaType" in details && typeof details.mediaType === "string") {
+    return [details.mediaType];
+  }
+  return [];
+}
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -349,6 +405,7 @@ if (!gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
+    hardenDefaultSessionPermissions();
     registerIpcHandlers(backend);
     registerDesktopWebSocketIpcHandlers(backend);
     registerConsentIpcHandlers();

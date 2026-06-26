@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from typing import Any
 
 from app.agents.app_agent import AppAgent
@@ -29,12 +30,12 @@ from app.core.schemas import (
     Task,
     TaskStatus,
     ToolResult,
-    now_iso,
 )
 from app.core.session_context import get_session_context_store
 from app.llm.registry import get_effective_settings
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.dispatcher import EventDispatcher
+from app.orchestration.goal_stack import GoalStack
 from app.orchestration.handlers import (
     CompletionHandler,
     ConsultationHandler,
@@ -44,7 +45,6 @@ from app.orchestration.handlers import (
     StepSchedulerHandler,
 )
 from app.orchestration.handlers.context import StepExecutionOutcome
-from app.orchestration.goal_stack import GoalStack
 from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
@@ -53,6 +53,9 @@ from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_err
 from app.policy.risk import SafetyVerdict
 from app.services.task_recording_service import capture_step_screenshot, recording_enabled
 from app.tools.registry import register_all_tools
+
+_MAX_SUPERVISION_TASK_CACHES = 256
+_MAX_SUPERVISED_IDS_PER_TASK = 5000
 
 
 class OrchestratorAgent:
@@ -83,7 +86,7 @@ class OrchestratorAgent:
 
         self.registry = register_all_tools(settings=get_effective_settings(), target=ToolRegistry())
         sync_extension_tools_from_global(self.registry)
-        self._supervised: dict[str, set[str]] = {}
+        self._supervised: dict[str, OrderedDict[str, None]] = {}
         self._supervision_cursor: dict[str, str] = {}
         self.planning_handler = PlanningHandler(self)
         self.consultation_handler = ConsultationHandler(self)
@@ -279,10 +282,7 @@ class OrchestratorAgent:
                 "boundary_error": model_control_arg_error(step.args),
             },
         ).to_metadata()
-        step.requires_approval = (
-            bool(step.requires_approval)
-            or tool.risk_level.value.startswith(("R2", "R3"))
-        )
+        step.requires_approval = bool(step.requires_approval) or tool.risk_level.value.startswith(("R2", "R3"))
         if changed:
             self.bus.publish_text(
                 task.id,
@@ -335,7 +335,7 @@ class OrchestratorAgent:
         try:
             tool = self.registry.get(step.tool_name) if step.tool_name else None
             from_agent = getattr(tool, "agent_owner", "") or step.agent_name
-        except Exception:
+        except Exception:  # noqa: BLE001 - missing tool metadata should degrade to the planned agent.
             from_agent = step.agent_name
         self.bus.publish_text(
             task.id,
@@ -373,35 +373,60 @@ class OrchestratorAgent:
 
     def _supervise_new_agent_messages(self, task_id: str, stage: str) -> bool:
         """Batch supervise new messages with per-task cursor and id de-dupe."""
-        cache = self._supervised.setdefault(task_id, set())
+        cache = self._supervision_cache(task_id)
         cursor = self._supervision_cursor.get(task_id)
         messages = self.bus.get_messages_after(task_id, cursor)
         if cursor is None:
             self._bootstrap_supervised_cache(task_id, cache, messages)
         pending = [
-            message
-            for message in messages
-            if message.from_agent != self.safety.name and message.id not in cache
+            message for message in messages if message.from_agent != self.safety.name and message.id not in cache
         ]
         if not pending:
             self._advance_supervision_cursor(task_id, messages)
             return True
         batch = self.safety.review_agent_messages_batch(pending, stage)
         for message_id in batch.supervised_message_ids:
-            cache.add(message_id)
+            self._remember_supervised_id(cache, message_id)
         supervised_pending = [message for message in pending if message.id in batch.supervised_message_ids]
         self._advance_supervision_cursor(task_id, supervised_pending)
         return batch.verdict != SafetyVerdict.DENY
 
-    def _bootstrap_supervised_cache(self, task_id: str, cache: set[str], messages: list[AgentMessage] | None = None) -> None:
+    def _supervision_cache(self, task_id: str) -> OrderedDict[str, None]:
+        cache = self._supervised.get(task_id)
+        if cache is not None:
+            self._supervised.pop(task_id)
+            self._supervised[task_id] = cache
+            return cache
+        while len(self._supervised) >= _MAX_SUPERVISION_TASK_CACHES:
+            evicted_task_id, _ = self._supervised.popitem(last=False)
+            self._supervision_cursor.pop(evicted_task_id, None)
+        cache = OrderedDict()
+        self._supervised[task_id] = cache
+        return cache
+
+    def _remember_supervised_id(self, cache: OrderedDict[str, None], message_id: str) -> None:
+        normalized = str(message_id or "").strip()
+        if not normalized:
+            return
+        cache.pop(normalized, None)
+        cache[normalized] = None
+        while len(cache) > _MAX_SUPERVISED_IDS_PER_TASK:
+            cache.popitem(last=False)
+
+    def _bootstrap_supervised_cache(
+        self,
+        task_id: str,
+        cache: OrderedDict[str, None],
+        messages: list[AgentMessage] | None = None,
+    ) -> None:
         for message in messages if messages is not None else self.bus.get_messages(task_id):
             if message.from_agent != self.safety.name:
                 continue
             for supervised_id in message.metadata.get("supervised_message_ids") or []:
-                cache.add(str(supervised_id))
+                self._remember_supervised_id(cache, str(supervised_id))
             legacy = message.metadata.get("supervised_message_id")
             if legacy:
-                cache.add(str(legacy))
+                self._remember_supervised_id(cache, str(legacy))
 
     def _advance_supervision_cursor(self, task_id: str, messages: list[AgentMessage]) -> None:
         newest = max((message.created_at for message in messages if message.created_at), default="")
@@ -421,7 +446,7 @@ class OrchestratorAgent:
                 seen.add(item_id)
                 combined.append(item)
             return combined[:5]
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - memory recall must not break task execution.
             record("memory.recall_failed", self.name, {"error": str(exc)})
             return []
 
@@ -432,7 +457,7 @@ class OrchestratorAgent:
         try:
             tool = self.registry.get(step.tool_name) if step.tool_name else None
             owner_name = getattr(tool, "agent_owner", "") or step.agent_name
-        except Exception:
+        except Exception:  # noqa: BLE001 - missing tool metadata should degrade to the planned agent.
             owner_name = step.agent_name
         agent = self.subagents.get(owner_name)
         if agent is None:
@@ -441,7 +466,7 @@ class OrchestratorAgent:
             step_for_reflect = step
             step_for_reflect.task_id = step_for_reflect.task_id or task.id
             await agent.reflect(step_for_reflect, result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - reflection failures are recorded but non-fatal.
             record("subagent.reflect_failed", agent.name, {"step": step.id, "error": str(exc)}, task_id=task.id)
 
     async def _consult_subagent(
@@ -471,16 +496,13 @@ class OrchestratorAgent:
         )
         try:
             action = await agent.act(step, context, observation=observation)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - subagent crashes become recoverable observations.
             record("subagent.act_failed", agent.name, {"step": step.id, "error": str(exc)}, task_id=task.id)
             return None
         if action is None:
             return None
         diverged = bool(
-            action.kind == "propose_tool"
-            and action.tool_name
-            and step.tool_name
-            and action.tool_name != step.tool_name
+            action.kind == "propose_tool" and action.tool_name and step.tool_name and action.tool_name != step.tool_name
         )
         rationale = (action.rationale or "").strip()
         summary_parts: list[str] = []

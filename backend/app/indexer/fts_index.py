@@ -33,6 +33,18 @@ class _PendingChunk:
     text: str
 
 
+@dataclass
+class _PreparedEmbedding:
+    id: str
+    chunk_id: str
+    file_id: str
+    chunk_index: int
+    model: str
+    dim: int
+    embedding: str
+    created_at: str
+
+
 class FTSIndex:
     def __init__(self, *, embedder: Embedder | None = None, embedding_batch_size: int = 64) -> None:
         self.embedder = embedder
@@ -121,14 +133,23 @@ class FTSIndex:
     def rebuild(self, allowed_directories: list[str]) -> dict[str, Any]:
         started = time.perf_counter()
         db.init_db()
+        settings = get_effective_settings()
         files = 0
         chunks = 0
         embeddings = 0
-        embedding_model = get_effective_settings().embedding_model
+        bytes_indexed = 0
+        embedding_model = settings.embedding_model
+        max_files = max(1, int(getattr(settings, "index_rebuild_max_files", 25000)))
+        max_bytes = max(1, int(getattr(settings, "index_rebuild_max_bytes", 2 * 1024 * 1024 * 1024)))
+        prepared_files: list[IndexedFile] = []
+        prepared_chunks: list[_PendingChunk] = []
+        prepared_embeddings: list[_PreparedEmbedding] = []
         pending_files: list[IndexedFile] = []
         pending_chunks: list[_PendingChunk] = []
         failures_reported: list[dict[str, str]] = []
         files_failed = 0
+        aborted = False
+        abort_reason = ""
 
         def record_rebuild_failure(path: str | Path, exc: Exception) -> None:
             nonlocal files_failed
@@ -148,6 +169,33 @@ class FTSIndex:
                     }
                 )
 
+        def result_payload() -> dict[str, Any]:
+            return {
+                "files_indexed": files,
+                "chunks_indexed": chunks,
+                "embeddings_indexed": embeddings,
+                "bytes_indexed": bytes_indexed,
+                "files_failed": files_failed,
+                "failures": failures_reported,
+                "embedding_model": embedding_model,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "aborted": aborted,
+                "abort_reason": abort_reason,
+                "limits": {
+                    "max_files": max_files,
+                    "max_bytes": max_bytes,
+                },
+            }
+
+        def abort_rebuild(reason: str, path: str | Path) -> None:
+            nonlocal aborted, abort_reason
+            aborted = True
+            abort_reason = reason
+            path_text = str(path)
+            record("index.rebuild_aborted", "FTSIndex", {"path": path_text, "reason": reason})
+            if len(failures_reported) < MAX_REBUILD_FAILURES_REPORTED:
+                failures_reported.append({"path_label": Path(path_text).name or path_text[:80], "message": reason})
+
         valid_roots: list[Path] = []
         for raw in allowed_directories:
             try:
@@ -156,24 +204,7 @@ class FTSIndex:
                 record_rebuild_failure(raw, exc)
 
         if not valid_roots:
-            return {
-                "files_indexed": files,
-                "chunks_indexed": chunks,
-                "embeddings_indexed": embeddings,
-                "files_failed": files_failed,
-                "failures": failures_reported,
-                "embedding_model": embedding_model,
-                "elapsed_seconds": round(time.perf_counter() - started, 3),
-            }
-
-        with db.connect() as conn:
-            conn.execute("DELETE FROM indexed_files")
-            conn.execute("DELETE FROM document_chunks")
-            conn.execute("DELETE FROM document_chunk_embeddings")
-            try:
-                conn.execute("DELETE FROM document_chunks_fts")
-            except sqlite3.Error as exc:
-                logger.debug("could not clear optional FTS table: %s", exc, exc_info=True)
+            return result_payload()
 
         def flush_pending() -> None:
             nonlocal embeddings
@@ -190,128 +221,168 @@ class FTSIndex:
                     {"path": "rebuild", "error": str(exc), "chunks": len(pending_chunks)},
                 )
                 vectors = []
-            with db.connect() as conn:
-                for indexed in pending_files:
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO indexed_files
-                        (id, normalized_path, data, sha256, name, extension, size, modified_at, indexed_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            indexed.id,
-                            indexed.normalized_path,
-                            indexed.model_dump_json(),
-                            indexed.sha256,
-                            indexed.name,
-                            indexed.extension,
-                            indexed.size,
-                            indexed.modified_at,
-                            indexed.indexed_at,
-                        ),
-                    )
 
-                for index, item in enumerate(pending_chunks):
-                    vector = vectors[index] if index < len(vectors) else []
+            prepared_files.extend(pending_files)
+            for index, item in enumerate(pending_chunks):
+                prepared_chunks.append(item)
+                vector = vectors[index] if index < len(vectors) else []
+                if vector:
                     doc_chunk = item.chunk
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO document_chunks
-                        (id, file_id, chunk_index, text, data)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (
-                            doc_chunk.id,
-                            doc_chunk.file_id,
-                            doc_chunk.chunk_index,
-                            doc_chunk.text,
-                            doc_chunk.model_dump_json(),
-                        ),
+                    prepared_embeddings.append(
+                        _PreparedEmbedding(
+                            id=str(doc_chunk.embedding_id or f"emb_{doc_chunk.id}"),
+                            chunk_id=doc_chunk.id,
+                            file_id=doc_chunk.file_id,
+                            chunk_index=doc_chunk.chunk_index,
+                            model=embedding_model,
+                            dim=len(vector),
+                            embedding=json.dumps(vector),
+                            created_at=now_iso(),
+                        )
                     )
-                    try:
-                        conn.execute(
-                            "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
-                            (doc_chunk.file_id, item.path, item.text),
-                        )
-                    except sqlite3.Error as exc:
-                        logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
-                    if vector:
-                        conn.execute(
-                            """
-                            INSERT OR REPLACE INTO document_chunk_embeddings
-                            (id, chunk_id, file_id, chunk_index, model, dim, embedding, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                doc_chunk.embedding_id,
-                                doc_chunk.id,
-                                doc_chunk.file_id,
-                                doc_chunk.chunk_index,
-                                embedding_model,
-                                len(vector),
-                                json.dumps(vector),
-                                now_iso(),
-                            ),
-                        )
-                        embeddings += 1
+                    embeddings += 1
 
             pending_files.clear()
             pending_chunks.clear()
 
         for root in valid_roots:
             try:
-                candidates = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+                candidates = (root,) if root.is_file() else root.rglob("*")
+                for path in candidates:
+                    if aborted:
+                        break
+                    if not path.is_file():
+                        continue
+                    pending_file_start = len(pending_files)
+                    pending_chunk_start = len(pending_chunks)
+                    chunks_start = chunks
+                    bytes_start = bytes_indexed
+                    try:
+                        normalized = resolve_authorized(path, allowed_directories)
+                        stat = normalized.stat()
+                        if files >= max_files:
+                            abort_rebuild(f"Index rebuild file limit exceeded ({max_files}).", normalized)
+                            break
+                        if bytes_indexed + int(stat.st_size) > max_bytes:
+                            abort_rebuild(f"Index rebuild byte limit exceeded ({max_bytes}).", normalized)
+                            break
+                        indexed = IndexedFile(
+                            path=str(normalized),
+                            normalized_path=str(normalized),
+                            name=normalized.name,
+                            extension=normalized.suffix.lower(),
+                            size=stat.st_size,
+                            sha256=sha256_file(normalized),
+                            created_at=str(stat.st_ctime),
+                            modified_at=str(stat.st_mtime),
+                        )
+                        text = parse_file(normalized)
+                        pending_files.append(indexed)
+                        for idx, chunk in enumerate(chunk_text(text)):
+                            doc_chunk = DocumentChunk(
+                                file_id=indexed.id,
+                                chunk_index=idx,
+                                text=chunk,
+                                token_count=max(1, len(chunk) // 4),
+                            )
+                            doc_chunk.embedding_id = f"emb_{doc_chunk.id}"
+                            pending_chunks.append(_PendingChunk(doc_chunk, str(normalized), chunk))
+                            chunks += 1
+                        if len(pending_chunks) >= self.embedding_batch_size:
+                            flush_pending()
+                        files += 1
+                        bytes_indexed += int(stat.st_size)
+                    except Exception as exc:  # noqa: BLE001 - one bad parser/file must not stop rebuild.
+                        del pending_files[pending_file_start:]
+                        del pending_chunks[pending_chunk_start:]
+                        chunks = chunks_start
+                        bytes_indexed = bytes_start
+                        record_rebuild_failure(path, exc)
+                        continue
             except Exception as exc:  # noqa: BLE001 - rebuild reports authorization/enumeration failures.
                 record_rebuild_failure(root, exc)
                 continue
-            for path in candidates:
-                pending_file_start = len(pending_files)
-                pending_chunk_start = len(pending_chunks)
-                chunks_start = chunks
-                try:
-                    normalized = resolve_authorized(path, allowed_directories)
-                    stat = normalized.stat()
-                    indexed = IndexedFile(
-                        path=str(normalized),
-                        normalized_path=str(normalized),
-                        name=normalized.name,
-                        extension=normalized.suffix.lower(),
-                        size=stat.st_size,
-                        sha256=sha256_file(normalized),
-                        created_at=str(stat.st_ctime),
-                        modified_at=str(stat.st_mtime),
-                    )
-                    text = parse_file(normalized)
-                    pending_files.append(indexed)
-                    for idx, chunk in enumerate(chunk_text(text)):
-                        doc_chunk = DocumentChunk(
-                            file_id=indexed.id,
-                            chunk_index=idx,
-                            text=chunk,
-                            token_count=max(1, len(chunk) // 4),
-                        )
-                        doc_chunk.embedding_id = f"emb_{doc_chunk.id}"
-                        pending_chunks.append(_PendingChunk(doc_chunk, str(normalized), chunk))
-                        chunks += 1
-                    if len(pending_chunks) >= self.embedding_batch_size:
-                        flush_pending()
-                    files += 1
-                except Exception as exc:  # noqa: BLE001 - one bad parser/file must not stop rebuild.
-                    del pending_files[pending_file_start:]
-                    del pending_chunks[pending_chunk_start:]
-                    chunks = chunks_start
-                    record_rebuild_failure(path, exc)
-                    continue
+            if aborted:
+                break
+        if aborted:
+            return result_payload()
         flush_pending()
-        return {
-            "files_indexed": files,
-            "chunks_indexed": chunks,
-            "embeddings_indexed": embeddings,
-            "files_failed": files_failed,
-            "failures": failures_reported,
-            "embedding_model": embedding_model,
-            "elapsed_seconds": round(time.perf_counter() - started, 3),
-        }
+
+        with db.connect() as conn:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM indexed_files")
+            conn.execute("DELETE FROM document_chunks")
+            conn.execute("DELETE FROM document_chunk_embeddings")
+            try:
+                conn.execute("DELETE FROM document_chunks_fts")
+            except sqlite3.Error as exc:
+                logger.debug("could not clear optional FTS table: %s", exc, exc_info=True)
+
+            for indexed in prepared_files:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO indexed_files
+                    (id, normalized_path, data, sha256, name, extension, size, modified_at, indexed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        indexed.id,
+                        indexed.normalized_path,
+                        indexed.model_dump_json(),
+                        indexed.sha256,
+                        indexed.name,
+                        indexed.extension,
+                        indexed.size,
+                        indexed.modified_at,
+                        indexed.indexed_at,
+                    ),
+                )
+
+            for item in prepared_chunks:
+                doc_chunk = item.chunk
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO document_chunks
+                    (id, file_id, chunk_index, text, data)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doc_chunk.id,
+                        doc_chunk.file_id,
+                        doc_chunk.chunk_index,
+                        doc_chunk.text,
+                        doc_chunk.model_dump_json(),
+                    ),
+                )
+                try:
+                    conn.execute(
+                        "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
+                        (doc_chunk.file_id, item.path, item.text),
+                    )
+                except sqlite3.Error as exc:
+                    logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
+
+            for embedding in prepared_embeddings:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO document_chunk_embeddings
+                    (id, chunk_id, file_id, chunk_index, model, dim, embedding, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        embedding.id,
+                        embedding.chunk_id,
+                        embedding.file_id,
+                        embedding.chunk_index,
+                        embedding.model,
+                        embedding.dim,
+                        embedding.embedding,
+                        embedding.created_at,
+                    ),
+                )
+
+        return result_payload()
 
     def index_file(self, file_path: str | Path, allowed_directories: list[str]) -> bool:
         """Index a single file incrementally. Returns True if the file was indexed."""

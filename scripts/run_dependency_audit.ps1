@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$AuditLevel = "high",
-    [switch]$SkipPython
+    [switch]$SkipPython,
+    [ValidateRange(1, 1800)]
+    [int]$PythonAuditTimeoutSeconds = 180
 )
 
 # Dependency vulnerability scan (SCA) entrypoint (market-readiness checklist #16).
@@ -28,6 +30,57 @@ function Invoke-NpmAudit([string]$Prefix) {
     }
 }
 
+function Invoke-PipAudit([string]$WorkingDirectory, [string]$LogDirectory) {
+    $stdoutPath = Join-Path $LogDirectory "pip-audit.stdout.log"
+    $stderrPath = Join-Path $LogDirectory "pip-audit.stderr.log"
+    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = "python"
+    $startInfo.Arguments = "-m pip_audit -r backend/requirements-lock.txt --disable-pip --no-deps"
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    [void]$process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $timeoutMilliseconds = $PythonAuditTimeoutSeconds * 1000
+    $completed = $process.WaitForExit($timeoutMilliseconds)
+    if (-not $completed) {
+        try {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            $process.WaitForExit()
+        }
+        catch {
+            Write-Warning "Unable to stop timed-out pip-audit process: $($_.Exception.Message)"
+        }
+    }
+    else {
+        # Ensure redirected streams are flushed and ExitCode is populated on Windows.
+        $process.WaitForExit()
+        $process.Refresh()
+    }
+
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    Set-Content -LiteralPath $stdoutPath -Value $stdout -Encoding utf8
+    Set-Content -LiteralPath $stderrPath -Value $stderr -Encoding utf8
+
+    foreach ($path in @($stdoutPath, $stderrPath)) {
+        if (Test-Path -LiteralPath $path) {
+            Get-Content -LiteralPath $path | ForEach-Object { Write-Host $_ }
+        }
+    }
+    return [pscustomobject]@{
+        Completed = $completed
+        ExitCode = if ($completed) { $process.ExitCode } else { $null }
+    }
+}
+
 Invoke-NpmAudit "desktop"
 Invoke-NpmAudit "mobile"
 
@@ -47,17 +100,14 @@ if (-not $SkipPython) {
         $failures += "pip-audit is not installed. Install with: python -m pip install pip-audit (or rerun with -SkipPython to record a waiver)."
     }
     else {
-        $pipAuditCacheDir = Join-Path $root ".tmp\pip-audit-cache"
-        New-Item -ItemType Directory -Path $pipAuditCacheDir -Force | Out-Null
-        Push-Location $root
-        try {
-            python -m pip_audit -r backend/requirements-lock.txt --disable-pip --no-deps --cache-dir $pipAuditCacheDir
-            if ($LASTEXITCODE -ne 0) {
-                $failures += "pip-audit reported vulnerabilities in backend/requirements-lock.txt"
-            }
+        $pipAuditLogDir = Join-Path $root ".tmp\pip-audit-cache"
+        New-Item -ItemType Directory -Path $pipAuditLogDir -Force | Out-Null
+        $auditResult = Invoke-PipAudit $root $pipAuditLogDir
+        if (-not $auditResult.Completed) {
+            $failures += "pip-audit timed out after $PythonAuditTimeoutSeconds seconds; inspect .tmp\\pip-audit-cache for diagnostics."
         }
-        finally {
-            Pop-Location
+        elseif ($auditResult.ExitCode -ne 0) {
+            $failures += "pip-audit reported vulnerabilities or an audit error in backend/requirements-lock.txt"
         }
     }
 }
