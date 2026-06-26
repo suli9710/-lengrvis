@@ -6,7 +6,7 @@ import socket
 import ssl
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -186,7 +186,9 @@ def _redeem_pairing_record(code: str, device_name: str) -> dict[str, Any] | None
 
 def list_pending_approvals(claims: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     approvals = db.fetch_many("approvals", "status = ?", ("pending",))
-    return [_safe_approval_payload(row, claims) for row in approvals if _mobile_claims_allow_approval_for_read(row, claims)]
+    return [
+        _safe_approval_payload(row, claims) for row in approvals if _mobile_claims_allow_approval_for_read(row, claims)
+    ]
 
 
 def get_approval_detail(approval_id: str, claims: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -236,14 +238,18 @@ def list_active_remote_input_grants_for_claims(claims: dict[str, Any]) -> list[d
     ]
 
 
-def create_remote_input_grant(device_id: str, *, expires_in_seconds: int = REMOTE_INPUT_GRANT_TTL_SECONDS) -> dict[str, Any]:
+def create_remote_input_grant(
+    device_id: str,
+    *,
+    expires_in_seconds: int = REMOTE_INPUT_GRANT_TTL_SECONDS,
+) -> dict[str, Any]:
     if not get_effective_settings().remote_desktop_enabled:
         raise HTTPException(status_code=403, detail="Remote desktop is disabled")
     normalized_id = _text(device_id)
     if not normalized_id:
         raise HTTPException(status_code=422, detail="Missing mobile device id")
     expires_in = _remote_input_grant_ttl(expires_in_seconds)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     created_at = now.isoformat()
     expires_at = (now + timedelta(seconds=expires_in)).isoformat()
     grant_id = f"rig_{secrets.token_hex(12)}"
@@ -309,7 +315,7 @@ def claim_remote_input_grant_token(grant_id: str, claims: dict[str, Any]) -> dic
     token_id = secrets.token_hex(16)
     grant, device_token_epoch = _bind_remote_input_grant_token_id(device_id, normalized_grant_id, token_id)
     expires_at = _grant_expires_at(grant)
-    remaining = int((expires_at - datetime.now(timezone.utc)).total_seconds())
+    remaining = int((expires_at - datetime.now(UTC)).total_seconds())
     if remaining <= 0:
         raise HTTPException(status_code=401, detail="Remote input grant expired")
     token = issue_mobile_token(
@@ -553,12 +559,12 @@ def _expire_pairing_record(record: dict[str, Any]) -> None:
 
 def _expire_stale_pairings() -> None:
     now = time.time()
-    for record in db.fetch_many("mobile_pairings", limit=500):
-        if record.get("status") != "pending":
+    for pairing_record in db.fetch_many("mobile_pairings", limit=500):
+        if pairing_record.get("status") != "pending":
             continue
-        expires_at = _parse_iso(str(record.get("expires_at") or ""))
+        expires_at = _parse_iso(str(pairing_record.get("expires_at") or ""))
         if expires_at <= now:
-            _expire_pairing_record(record)
+            _expire_pairing_record(pairing_record)
 
 
 def _upsert_mobile_device(*, device_id: str, device_name: str) -> None:
@@ -746,7 +752,10 @@ def _mobile_approval_denial_reason(approval: dict[str, Any], claims: dict[str, A
     return ""
 
 
-def _paired_mobile_claims_can_read_remote_input_approval(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
+def _paired_mobile_claims_can_read_remote_input_approval(
+    approval: dict[str, Any],
+    claims: dict[str, Any] | None,
+) -> bool:
     if claims is None or not _is_remote_input_approval(approval):
         return False
     device_id = _text(claims.get("device_id"))
@@ -765,7 +774,10 @@ def _paired_mobile_claims_can_read_remote_input_approval(approval: dict[str, Any
     return not approval_source or not claim_source or approval_source == claim_source
 
 
-def _paired_mobile_claims_can_reject_remote_input_approval(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
+def _paired_mobile_claims_can_reject_remote_input_approval(
+    approval: dict[str, Any],
+    claims: dict[str, Any] | None,
+) -> bool:
     if _text((claims or {}).get("source")) == "remote_input_grant":
         return False
     return _paired_mobile_claims_can_read_remote_input_approval(approval, claims)
@@ -835,7 +847,7 @@ def _text_list(value: Any) -> list[str]:
         return []
     if isinstance(value, str):
         return [item.strip() for item in value.replace(",", " ").split() if item.strip()]
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         result: list[str] = []
         for item in value:
             result.extend(_text_list(item))
@@ -870,7 +882,7 @@ def _normalized_remote_input_grants(device: dict[str, Any]) -> list[dict[str, An
     raw_grants = device.get("remote_input_grants") or []
     if not isinstance(raw_grants, list):
         return []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     grants: list[dict[str, Any]] = []
     for raw in raw_grants:
         if not isinstance(raw, dict):
@@ -934,7 +946,7 @@ def _grant_expires_at(grant: dict[str, Any]) -> datetime:
     try:
         return datetime.fromisoformat(str(grant.get("expires_at") or ""))
     except ValueError:
-        return datetime.fromtimestamp(0, timezone.utc)
+        return datetime.fromtimestamp(0, UTC)
 
 
 def _latest_plan(task_id: str) -> dict[str, Any] | None:
@@ -965,7 +977,10 @@ def _safe_approval_payload(approval: dict[str, Any], claims: dict[str, Any] | No
     return payload
 
 
-def _remote_input_public_binding_state(approval: dict[str, Any], claims: dict[str, Any] | None = None) -> dict[str, Any]:
+def _remote_input_public_binding_state(
+    approval: dict[str, Any],
+    claims: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     required_scopes = _approval_required_mobile_scopes(approval)
     allowed_devices = _approval_allowed_device_ids(approval)
     approval_grant_id = _approval_source_grant_id(approval)
@@ -1000,7 +1015,7 @@ def _safe_mobile_model_action(model_action: Any) -> dict[str, Any]:
 def _safe_mobile_model_action_args(raw_args: Any) -> Any:
     if isinstance(raw_args, dict):
         return {"redacted": True, "field_count": len(raw_args)}
-    if isinstance(raw_args, (list, tuple, set)):
+    if isinstance(raw_args, list | tuple | set):
         return {"redacted": True, "field_count": len(raw_args)}
     if raw_args in (None, ""):
         return {}
@@ -1191,11 +1206,15 @@ def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any
             next_action = "Create or point Lengrvis at a local TLS certificate and key, then restart the backend."
         else:
             warning = f"LAN HTTPS certificate/key validation failed: {tls_validation['error']}"
-            next_action = "Point Lengrvis at a parseable certificate and matching private key, then restart the backend."
+            next_action = (
+                "Point Lengrvis at a parseable certificate and matching private key, then restart the backend."
+            )
     else:
         status = "http_lan_insecure"
         warning = "LAN mobile pairing uses HTTP/ws transport unless HTTPS is explicitly configured."
-        next_action = "Use loopback for local testing, or configure LAN TLS before pairing phones on an untrusted network."
+        next_action = (
+            "Use loopback for local testing, or configure LAN TLS before pairing phones on an untrusted network."
+        )
 
     return {
         "status": status,
@@ -1268,7 +1287,7 @@ def _backend_port() -> int:
 
 
 def _iso(value: float) -> str:
-    return datetime.fromtimestamp(value, timezone.utc).isoformat()
+    return datetime.fromtimestamp(value, UTC).isoformat()
 
 
 def _parse_iso(value: str) -> float:

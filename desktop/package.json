@@ -38,7 +38,7 @@
     "verify:signed-build-config": "node scripts/verify-signed-build-config.cjs",
     "verify:signed-build-config:mac": "node scripts/verify-signed-build-config.cjs mac",
     "verify:release-version": "node scripts/verify-release-version.cjs",
-    "dist": "npm run dist:signed",
+    "dist": "node -e \"require('fs').accessSync('electron-builder.yml')\" && npm run dist:signed",
     "dist:unsigned": "npm run build && npm run verify:backend-resource && electron-builder --config electron-builder.yml",
     "dist:signed": "npm run build && npm run verify:backend-resource && npm run verify:signed-build-config && npm run verify:backend-signature && electron-builder --config electron-builder.signed.js && npm run verify:windows-release-signatures",
     "dist:publish": "npm run build && npm run verify:backend-resource && npm run verify:signed-build-config && npm run verify:backend-signature && npm run verify:release-version && electron-builder --config electron-builder.signed.js --publish always && npm run verify:windows-release-signatures",

@@ -148,6 +148,13 @@ class PermissionDecision(BaseModel):
         return self.rule_id
 
 
+def is_builtin_baseline_deny(decision: Any) -> bool:
+    return (
+        str(getattr(decision, "rule_id", "") or "") == BUILTIN_BASELINE_DENY_RULE_ID
+        and str(getattr(decision, "effect", "") or "") == "deny"
+    )
+
+
 class PermissionStore:
     def __init__(self, policy_id: str = "default") -> None:
         self.policy_id = policy_id
@@ -195,9 +202,7 @@ class PermissionStore:
         self._ensure_schema()
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)
-            ).fetchone()
+            row = conn.execute("SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)).fetchone()
             if row:
                 try:
                     policy = PermissionPolicy.model_validate(json.loads(row["data"]))
@@ -316,10 +321,7 @@ def _builtin_baseline_deny_decision(tool_name: str) -> PermissionDecision | None
         effect="deny",
         rule_id=BUILTIN_BASELINE_DENY_RULE_ID,
         rule_name=BUILTIN_BASELINE_DENY_RULE_NAME,
-        reason=(
-            "Built-in high-risk baseline denied this tool. "
-            "Add an explicit allow permission rule to enable it."
-        ),
+        reason=("Built-in high-risk baseline denied this tool. Add an explicit allow permission rule to enable it."),
     )
 
 
@@ -343,14 +345,24 @@ def evaluate_user_permission_for_tool(
     if effective_now is None and callable(now_provider):
         effective_now = now_provider()
     if policy_override is not None:
-        return evaluate_permission_policy(
+        decision = evaluate_permission_policy(
             policy_override,
             tool_name=tool_name,
             args=args,
             context=context,
             now=effective_now,
         )
-    return store.evaluate(tool_name=tool_name, args=args, context=context, now=effective_now)
+    else:
+        decision = store.evaluate(tool_name=tool_name, args=args, context=context, now=effective_now)
+    if is_builtin_baseline_deny(decision):
+        return PermissionDecision(
+            allowed=True,
+            matched=True,
+            rule_id=decision.rule_id,
+            rule_name=decision.rule_name,
+            reason="Built-in high-risk baseline deferred to the engine approval chain.",
+        )
+    return decision
 
 
 def weekend_delete_rule() -> PermissionRule:

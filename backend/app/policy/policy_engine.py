@@ -16,7 +16,7 @@ from app.policy.permission_modes import (
     permission_mode_from_context,
     trusted_reversible_edit_allowed,
 )
-from app.policy.permissions import PermissionPolicy, PermissionStore
+from app.policy.permissions import PermissionPolicy, PermissionStore, is_builtin_baseline_deny
 from app.policy.policy_helpers import (
     browser_activity_risk as _browser_activity_risk,
 )
@@ -154,7 +154,7 @@ class PolicyEngine:
         classified_risk = self.classify_tool_call(tool_name, args, tool_definition=tool_definition)
         static_risk = classified_risk if tool_name == "browser.act" else max_risk([risk_level, classified_risk])
         permission_decision = self._review_permission_policy(tool_name, args, context)
-        if not permission_decision.allowed:
+        if not permission_decision.allowed and not is_builtin_baseline_deny(permission_decision):
             reason = permission_decision.reason or f"Permission policy denied {tool_name}."
             rule_id = getattr(permission_decision, "matched_rule_id", "") or getattr(permission_decision, "rule_id", "")
             if rule_id:
