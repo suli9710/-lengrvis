@@ -53,6 +53,15 @@ class CleanupReviewAgent(BaseAgent):
         if tool_name not in CLEANUP_TOOLS:
             return None
         if tool_name == "file.cleanup_rollback":
+            if args.get("dry_run", True) is not False:
+                return SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type="cleanup_rollback",
+                    verdict=SafetyVerdict.ALLOW,
+                    risk_level=risk_level or RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+                    reasons=["Cleanup rollback preview is dry-run only."],
+                )
             return self._approval_review(task_id, step_id, "cleanup_rollback", risk_level)
 
         reasons = self._blocking_reasons(args)

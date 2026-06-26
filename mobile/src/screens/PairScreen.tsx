@@ -329,7 +329,7 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       }
 
       try {
-        const nextSession = await pairWithBackend(baseUrlSecurity.normalizedBaseUrl, code, safeDeviceName(Device.deviceName));
+        const nextSession = await pairWithBackend(baseUrlSecurity.normalizedBaseUrl, code, safeDeviceName(Device.deviceName), nextPayload?.security);
         if (requiresServerTrustConfirmation(nextSession)) {
           Alert.alert("确认这是你的电脑", serverTrustConfirmationMessage(nextSession), [
             { text: "取消", style: "cancel" },

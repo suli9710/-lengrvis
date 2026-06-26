@@ -10,8 +10,8 @@ from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services import file_service
 from app.services.local_library_service import list_local_library, preview_local_image
 from app.tools import file_tools
-from app.tools.registry import register_all_tools, registry as tool_registry
-
+from app.tools.registry import register_all_tools
+from app.tools.registry import registry as tool_registry
 
 router = APIRouter()
 
@@ -46,8 +46,8 @@ def _blocked_review_response(review: SafetyReview) -> dict | None:
     return None
 
 
-def _review_cleanup_execute(payload: dict, context: dict) -> dict | None:
-    tool = _tool_definition("file.cleanup_execute")
+def _review_cleanup_tool(tool_name: str, payload: dict, context: dict) -> dict | None:
+    tool = _tool_definition(tool_name)
     review = SafetyReviewAgent(settings=context.get("settings")).review_tool_call(
         "direct_file_api",
         None,
@@ -58,6 +58,30 @@ def _review_cleanup_execute(payload: dict, context: dict) -> dict | None:
         tool_definition=tool,
     )
     return _blocked_review_response(review)
+
+
+def _blocked_live_cleanup_response(tool_name: str, payload: dict) -> dict:
+    if payload.get("approved") or payload.get("approval_id"):
+        return {
+            "ok": False,
+            "status": "denied",
+            "tool_name": tool_name,
+            "error": (
+                f"{tool_name} direct file API cannot consume approval fields. "
+                "Run live cleanup through the approved tool runtime."
+            ),
+        }
+    return {
+        "ok": False,
+        "status": "requires_approval",
+        "requires_approval": True,
+        "paused": True,
+        "tool_name": tool_name,
+        "error": (
+            f"{tool_name} live execution is not available through the direct file API. "
+            "Run it through the approved tool runtime so the approval claim, ledger, and audit trail stay bound."
+        ),
+    }
 
 
 @router.post("/index/rebuild")
@@ -126,9 +150,13 @@ def cleanup_plan(payload: dict | None = None):
 def cleanup_execute(payload: dict | None = None):
     payload = payload or {}
     context = _tool_context()
-    blocked = _review_cleanup_execute(payload, context)
+    if payload.get("dry_run") is False and (payload.get("approved") or payload.get("approval_id")):
+        return _blocked_live_cleanup_response("file.cleanup_execute", payload)
+    blocked = _review_cleanup_tool("file.cleanup_execute", payload, context)
     if blocked is not None:
         return blocked
+    if payload.get("dry_run") is False:
+        return _blocked_live_cleanup_response("file.cleanup_execute", payload)
     try:
         return file_tools.cleanup_execute(payload, context)
     except SecurityError as exc:
@@ -137,12 +165,25 @@ def cleanup_execute(payload: dict | None = None):
 
 @router.post("/files/cleanup/rollback")
 def cleanup_rollback(payload: dict | None = None):
-    return file_tools.cleanup_rollback(payload or {}, _tool_context())
+    payload = payload or {}
+    context = _tool_context()
+    if payload.get("dry_run") is False and (payload.get("approved") or payload.get("approval_id")):
+        return _blocked_live_cleanup_response("file.cleanup_rollback", payload)
+    blocked = _review_cleanup_tool("file.cleanup_rollback", payload, context)
+    if blocked is not None:
+        return blocked
+    if payload.get("dry_run") is False:
+        return _blocked_live_cleanup_response("file.cleanup_rollback", payload)
+    try:
+        return file_tools.cleanup_rollback(payload, context)
+    except SecurityError as exc:
+        return {"ok": False, "status": "denied", "error": exc.message}
 
 
 @router.post("/files/cluster")
 def cluster_files(payload: dict | None = None):
-    from app.tools.registry import register_all_tools, registry as tool_registry
+    from app.tools.registry import register_all_tools
+    from app.tools.registry import registry as tool_registry
 
     if not tool_registry.list():
         register_all_tools()

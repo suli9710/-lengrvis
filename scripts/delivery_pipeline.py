@@ -73,15 +73,98 @@ def default_stages(*, strict: bool) -> List[Stage]:
     if strict:
         readiness_cmd.append("--strict")
         market_readiness_cmd.append("--strict")
-    return [
-        Stage("qa-gate", ["npm", "run", "qa:gate"], True, "Tests, typecheck, desktop smoke"),
-        Stage("supply-chain", ["npm", "run", "supply-chain:verify"], True, "Dependency locks + SBOM"),
-        Stage("security-extensions", ["npm", "run", "security:extensions"], True, "Extension/skill security gate"),
-        Stage("release-safety", ["npm", "run", "release:safety"], True, "Release safety checks"),
-        Stage("market-readiness", market_readiness_cmd, True, "Commercial launch dashboard validation"),
-        Stage("readiness", readiness_cmd, True, "Release readiness dashboard validation"),
-        Stage("evidence", ["npm", "run", "evidence:release"], False, "Collect release evidence packet"),
+    stages = [
+        Stage(
+            "qa-gate",
+            ["npm", "run", "qa:gate"],
+            True,
+            "Tests, typecheck, desktop smoke",
+        ),
+        Stage(
+            "golden-gate",
+            ["npm", "run", "golden:gate"],
+            True,
+            "Mock-provider deterministic golden tasks",
+        ),
+        Stage(
+            "supply-chain",
+            ["npm", "run", "supply-chain:verify"],
+            True,
+            "Dependency locks + SBOM",
+        ),
+        Stage(
+            "security-extensions",
+            ["npm", "run", "security:extensions"],
+            True,
+            "Extension/skill security gate",
+        ),
+        Stage(
+            "release-safety",
+            ["npm", "run", "release:safety"],
+            True,
+            "Release safety checks",
+        ),
+        Stage(
+            "market-readiness",
+            market_readiness_cmd,
+            True,
+            "Commercial launch dashboard validation",
+        ),
+        Stage(
+            "readiness", readiness_cmd, True, "Release readiness dashboard validation"
+        ),
+        Stage(
+            "evidence",
+            ["npm", "run", "evidence:release"],
+            False,
+            "Collect release evidence packet",
+        ),
     ]
+    if strict:
+        stages.insert(
+            2,
+            Stage(
+                "real-llm-eval",
+                [sys.executable, "scripts/run_real_llm_eval.py", "--quality-gate"],
+                True,
+                "Real provider golden replay quality gate",
+            ),
+        )
+        stages.insert(
+            7,
+            Stage(
+                "packaging-verify",
+                [
+                    "powershell",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "./scripts/build_all.ps1",
+                    "-VerifyOnly",
+                    "-RunExecutableSmoke",
+                    "-SmokeTimeoutSeconds",
+                    "45",
+                ],
+                True,
+                "Verify release artifacts and run executable smoke",
+            ),
+        )
+        stages.insert(
+            8,
+            Stage(
+                "signed-artifacts",
+                [
+                    "npm",
+                    "--prefix",
+                    "desktop",
+                    "run",
+                    "verify:windows-release-signatures",
+                ],
+                True,
+                "Verify Windows release artifact signatures",
+            ),
+        )
+    return stages
 
 
 def build_plan(stages: List[Stage]) -> List[dict]:
@@ -98,7 +181,9 @@ def build_plan(stages: List[Stage]) -> List[dict]:
 
 def aggregate_verdict(results: List[StageResult]) -> dict:
     required_failures = [r.name for r in results if r.required and r.status == "failed"]
-    optional_failures = [r.name for r in results if not r.required and r.status == "failed"]
+    optional_failures = [
+        r.name for r in results if not r.required and r.status == "failed"
+    ]
     skipped = [r.name for r in results if r.status == "skipped"]
     ok = not required_failures
     return {
@@ -126,10 +211,14 @@ def run_stage(stage: Stage, *, cwd: Path) -> StageResult:
             f"command not found: {exc}",
         )
     status = "passed" if code == 0 else "failed"
-    return StageResult(stage.name, stage.required, status, code, round(time.monotonic() - start, 3))
+    return StageResult(
+        stage.name, stage.required, status, code, round(time.monotonic() - start, 3)
+    )
 
 
-def run_pipeline(stages: List[Stage], *, cwd: Path, keep_going: bool) -> List[StageResult]:
+def run_pipeline(
+    stages: List[Stage], *, cwd: Path, keep_going: bool
+) -> List[StageResult]:
     results: List[StageResult] = []
     halted = False
     for index, stage in enumerate(stages):
@@ -145,17 +234,39 @@ def run_pipeline(stages: List[Stage], *, cwd: Path, keep_going: bool) -> List[St
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the Lengrvis delivery pipeline.")
-    parser.add_argument("--strict", action="store_true", help="Enforce strict release readiness (RC mode).")
-    parser.add_argument("--plan-only", action="store_true", help="Print the ordered plan without executing.")
-    parser.add_argument("--keep-going", action="store_true", help="Run remaining stages after a required failure.")
-    parser.add_argument("--repo-root", default=".", help="Repository root used as working directory.")
-    parser.add_argument("--output", default="", help="Optional path to write the JSON verdict.")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Enforce strict release readiness (RC mode).",
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Print the ordered plan without executing.",
+    )
+    parser.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="Run remaining stages after a required failure.",
+    )
+    parser.add_argument(
+        "--repo-root", default=".", help="Repository root used as working directory."
+    )
+    parser.add_argument(
+        "--output", default="", help="Optional path to write the JSON verdict."
+    )
     args = parser.parse_args()
 
     stages = default_stages(strict=args.strict)
 
     if args.plan_only:
-        print(json.dumps({"strict": args.strict, "plan": build_plan(stages)}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"strict": args.strict, "plan": build_plan(stages)},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
 
     repo_root = Path(args.repo_root).resolve()

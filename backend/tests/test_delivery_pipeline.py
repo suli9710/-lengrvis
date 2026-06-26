@@ -36,8 +36,10 @@ def test_default_stages_order_and_membership():
     stages = mod.default_stages(strict=False)
     names = [s.name for s in stages]
     assert names[0] == "qa-gate"
+    assert names[1] == "golden-gate"
     assert "market-readiness" in names
     assert "readiness" in names
+    assert "real-llm-eval" not in names
     assert names[-1] == "evidence"
     # Evidence is the only optional stage by default.
     optional = [s.name for s in stages if not s.required]
@@ -45,6 +47,10 @@ def test_default_stages_order_and_membership():
 
 
 def test_strict_adds_strict_flag_to_readiness():
+    names = [s.name for s in mod.default_stages(strict=True)]
+    assert "real-llm-eval" in names
+    assert "packaging-verify" in names
+    assert "signed-artifacts" in names
     readiness = next(s for s in mod.default_stages(strict=True) if s.name == "readiness")
     assert "--strict" in readiness.command
     market = next(s for s in mod.default_stages(strict=True) if s.name == "market-readiness")

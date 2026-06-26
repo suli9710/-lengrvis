@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+import threading
+import time
 
+from app.config import AppSettings
 from app.core import db
-from app.core.schemas import MessageType
-from app.orchestration.agent_bus import GLOBAL_TASK_ID, AgentBus
+from app.core.schemas import MessageType, OpenAIMessageRole
+from app.orchestration.agent_bus import GLOBAL_TASK_ID, AgentBus, flush_agent_message_writes
 
 
 def test_publish_cross_task_persists_global_message(monkeypatch, tmp_path):
@@ -52,6 +56,76 @@ def test_publish_persists_off_thread_and_reads_flush_pending_writes(monkeypatch,
     assert [row["id"] for row in rows] == [message.id]
     assert agent_bus_module.flush_agent_message_writes(timeout_seconds=5)
     assert writer_threads == ["agent-bus-writer"]
+
+
+def test_get_llm_messages_honors_requested_limit_above_db_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    bus = AgentBus()
+    settings = AppSettings(
+        provider_name="mock",
+        mode="efficiency",
+        context_auto_compact_enabled=False,
+        context_history_snip_enabled=False,
+        context_micro_compact_enabled=False,
+        context_session_memory_enabled=False,
+    )
+
+    for index in range(550):
+        bus.publish_text("task_context_limit", "User", f"message {index}", role=OpenAIMessageRole.USER)
+
+    assert flush_agent_message_writes(timeout_seconds=10)
+    projected = bus.get_llm_messages("task_context_limit", settings, limit=500)
+
+    assert len(projected) == 500
+    assert any(message["content"] == "message 549" for message in projected)
+    assert all(message["content"] != "message 0" for message in projected)
+
+
+def test_persist_queue_backpressure_preserves_tool_call_pairs(monkeypatch, tmp_path):
+    from app.orchestration import agent_bus as agent_bus_module
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_QUEUE", queue.Queue(maxsize=1))
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_QUEUE_MAX_SIZE", 1)
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_BACKPRESSURE_TIMEOUT", 0.01)
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_STATE", threading.Condition())
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_PENDING", 0)
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_THREAD", None)
+    original_upsert = db.upsert_model
+
+    def slow_upsert(table, model, **kwargs):
+        if table == "agent_messages":
+            time.sleep(0.03)
+        return original_upsert(table, model, **kwargs)
+
+    monkeypatch.setattr(db, "upsert_model", slow_upsert)
+    bus = AgentBus()
+
+    assistant = bus.publish_text(
+        "task_lossless_queue",
+        "Assistant",
+        "",
+        tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "system.get_info", "arguments": "{}"}}],
+    )
+    tool_result = bus.publish_text(
+        "task_lossless_queue",
+        "system.get_info",
+        '{"ok": true}',
+        message_type=MessageType.OBSERVATION,
+        role=OpenAIMessageRole.TOOL,
+        tool_call_id="call_1",
+    )
+    final = bus.publish_text("task_lossless_queue", "Assistant", "done")
+
+    assert agent_bus_module.flush_agent_message_writes(timeout_seconds=10)
+    persisted = bus.get_messages("task_lossless_queue", limit=10)
+    persisted_by_id = {message.id: message for message in persisted}
+
+    assert {assistant.id, tool_result.id, final.id}.issubset(persisted_by_id)
+    assert persisted_by_id[assistant.id].tool_calls[0]["id"] == "call_1"
+    assert persisted_by_id[tool_result.id].tool_call_id == "call_1"
 
 
 def test_global_subscription_receives_matching_event_type(monkeypatch, tmp_path):

@@ -40,7 +40,13 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 GOLDEN_DATASET_PATH = REPO_ROOT / "test_data" / "golden_tasks" / "golden_tasks.json"
 DEFAULT_REPORT_DIR = REPO_ROOT / ".tmp" / "qa-evidence" / "real-llm-eval"
-TERMINAL_OR_WAITING = {"completed", "failed", "denied", "cancelled", "awaiting_approval"}
+TERMINAL_OR_WAITING = {
+    "completed",
+    "failed",
+    "denied",
+    "cancelled",
+    "awaiting_approval",
+}
 LLM_ENTRIES = {"runs", "chat"}
 EVIDENCE_BOUNDARY = (
     "Machine-measured real-LLM behavior evidence. Input material for human "
@@ -50,12 +56,35 @@ EVIDENCE_BOUNDARY = (
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Replay golden tasks against the real configured LLM provider.")
+    parser = argparse.ArgumentParser(
+        description="Replay golden tasks against the real configured LLM provider."
+    )
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
-    parser.add_argument("--max-tasks", type=int, default=0, help="0 = all eligible tasks")
-    parser.add_argument("--categories", default="", help="comma-separated category filter")
-    parser.add_argument("--task-ids", default="", help="comma-separated golden task id filter")
-    parser.add_argument("--timeout-seconds", type=float, default=180.0, help="per-task wall clock budget")
+    parser.add_argument(
+        "--max-tasks", type=int, default=0, help="0 = all eligible tasks"
+    )
+    parser.add_argument(
+        "--categories", default="", help="comma-separated category filter"
+    )
+    parser.add_argument(
+        "--task-ids", default="", help="comma-separated golden task id filter"
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=180.0,
+        help="per-task wall clock budget",
+    )
+    parser.add_argument(
+        "--quality-gate",
+        action="store_true",
+        help="Fail non-zero when real LLM quality metrics miss release thresholds.",
+    )
+    parser.add_argument("--min-task-success-rate", type=float, default=0.8)
+    parser.add_argument("--min-intent-accuracy", type=float, default=0.7)
+    parser.add_argument("--min-tool-overlap-rate", type=float, default=0.8)
+    parser.add_argument("--min-risk-match-rate", type=float, default=0.8)
+    parser.add_argument("--max-param-missing-rate", type=float, default=0.05)
     return parser.parse_args()
 
 
@@ -65,10 +94,14 @@ def _require_real_provider() -> dict[str, str]:
 
     settings = get_effective_settings()
     if (settings.provider_name or "").lower() == "mock":
-        raise SystemExit("real-llm-eval refuses to run with provider_name=mock; configure a real provider first.")
+        raise SystemExit(
+            "real-llm-eval refuses to run with provider_name=mock; configure a real provider first."
+        )
     provider = get_provider_for_mode(settings, task="planner")
     if isinstance(provider, MockProvider):
-        raise SystemExit("real-llm-eval resolved MockProvider; configure LENGRVIS_API_KEY / a local backend first.")
+        raise SystemExit(
+            "real-llm-eval resolved MockProvider; configure LENGRVIS_API_KEY / a local backend first."
+        )
     return {
         "provider_name": settings.provider_name,
         "model": settings.model,
@@ -195,7 +228,9 @@ def _evaluate_task(task: dict[str, Any], timeout_seconds: float) -> dict[str, An
         env: dict[str, str | None] = {
             "LENGRVIS_DATA_DIR": str(tmp_path / "data"),
             "LENGRVIS_TASK_RECORDING_ENABLED": "false",
-            "LENGRVIS_ALLOWED_DIRECTORIES": None if task.get("no_scope") else str(workspace),
+            "LENGRVIS_ALLOWED_DIRECTORIES": None
+            if task.get("no_scope")
+            else str(workspace),
         }
         if task.get("mode"):
             env["LENGRVIS_MODE"] = str(task["mode"])
@@ -206,9 +241,17 @@ def _evaluate_task(task: dict[str, Any], timeout_seconds: float) -> dict[str, An
                 message = _sub(task["message"], workspace, outside)
                 with TestClient(_golden_app()) as client:
                     if task["entry"] == "runs":
-                        record.update(_run_runs_entry(client, task, message, expect, timeout_seconds))
+                        record.update(
+                            _run_runs_entry(
+                                client, task, message, expect, timeout_seconds
+                            )
+                        )
                     else:
-                        record.update(_run_chat_entry(client, task, message, expect, timeout_seconds))
+                        record.update(
+                            _run_chat_entry(
+                                client, task, message, expect, timeout_seconds
+                            )
+                        )
             record["ran"] = True
         except Exception as exc:  # noqa: BLE001 - single-task failure must not kill the eval.
             record["error"] = f"{type(exc).__name__}: {exc}"
@@ -225,12 +268,18 @@ def _run_runs_entry(
 ) -> dict[str, Any]:
     created = client.post(
         "/api/runs",
-        json={"message": message, "mode": task.get("mode", "efficiency"), "engine": task.get("engine", "os")},
+        json={
+            "message": message,
+            "mode": task.get("mode", "efficiency"),
+            "engine": task.get("engine", "os"),
+        },
     )
     if created.status_code != 200:
         return {"error": f"run submit failed: HTTP {created.status_code}"}
     run = created.json()
-    final = _wait_for_phase(client, run["run_id"], set(expect.get("phase") or []), timeout_seconds)
+    final = _wait_for_phase(
+        client, run["run_id"], set(expect.get("phase") or []), timeout_seconds
+    )
     return _measure(final.get("task_id") or "", final.get("phase") or "", expect)
 
 
@@ -243,7 +292,9 @@ def _run_chat_entry(
 ) -> dict[str, Any]:
     from app.core import db
 
-    response = client.post("/api/chat", json={"message": message, "mode": task.get("mode", "efficiency")})
+    response = client.post(
+        "/api/chat", json={"message": message, "mode": task.get("mode", "efficiency")}
+    )
     if response.status_code != 200:
         return {"error": f"chat submit failed: HTTP {response.status_code}"}
     payload = response.json()
@@ -253,11 +304,18 @@ def _run_chat_entry(
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             stored = db.fetch_one("tasks", task_id)
-            if stored and stored["status"] in {"completed", "failed", "denied", "cancelled"}:
+            if stored and stored["status"] in {
+                "completed",
+                "failed",
+                "denied",
+                "cancelled",
+            }:
                 phase = stored["status"]
                 break
             time.sleep(0.1)
-    expected_phases = expect.get("phase") or (["completed"] if expect.get("task_completed") else [])
+    expected_phases = expect.get("phase") or (
+        ["completed"] if expect.get("task_completed") else []
+    )
     measured = _measure(task_id, phase, {**expect, "phase": expected_phases})
     measured.setdefault("chat_delegated", payload.get("delegated"))
     return measured
@@ -277,14 +335,18 @@ def _measure(task_id: str, phase: str, expect: dict[str, Any]) -> dict[str, Any]
         expected_tools = expect.get("plan_tools") or []
         if expected_tools:
             result["intent_exact_match"] = actual_tools == expected_tools
-            result["expected_tools_planned"] = all(tool in actual_tools for tool in expected_tools)
+            result["expected_tools_planned"] = all(
+                tool in actual_tools for tool in expected_tools
+            )
         if expect.get("global_risk"):
             result["risk_match"] = result["risk_actual"] == expect["global_risk"]
         result["param_missing"] = _required_args_missing(steps)
     return result
 
 
-def _wait_for_phase(client: Any, run_id: str, target_phases: set[str], timeout_seconds: float) -> dict[str, Any]:
+def _wait_for_phase(
+    client: Any, run_id: str, target_phases: set[str], timeout_seconds: float
+) -> dict[str, Any]:
     stop_phases = target_phases | TERMINAL_OR_WAITING
     payload: dict[str, Any] = {}
     deadline = time.monotonic() + timeout_seconds
@@ -315,11 +377,60 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "tasks_total": len(records),
         "tasks_ran": len(ran),
         "tasks_errored": len([r for r in records if r["error"]]),
-        "task_success_rate": _rate(sum(1 for r in phase_known if r["phase_ok"]), len(phase_known)),
-        "intent_accuracy": _rate(sum(1 for r in intent_known if r["intent_exact_match"]), len(intent_known)),
-        "tool_overlap_rate": _rate(sum(1 for r in overlap_known if r["expected_tools_planned"]), len(overlap_known)),
-        "risk_match_rate": _rate(sum(1 for r in risk_known if r["risk_match"]), len(risk_known)),
-        "param_missing_rate": _rate(sum(1 for r in planned if r["param_missing"]), len(planned)),
+        "task_success_rate": _rate(
+            sum(1 for r in phase_known if r["phase_ok"]), len(phase_known)
+        ),
+        "intent_accuracy": _rate(
+            sum(1 for r in intent_known if r["intent_exact_match"]), len(intent_known)
+        ),
+        "tool_overlap_rate": _rate(
+            sum(1 for r in overlap_known if r["expected_tools_planned"]),
+            len(overlap_known),
+        ),
+        "risk_match_rate": _rate(
+            sum(1 for r in risk_known if r["risk_match"]), len(risk_known)
+        ),
+        "param_missing_rate": _rate(
+            sum(1 for r in planned if r["param_missing"]), len(planned)
+        ),
+    }
+
+
+def _quality_gate(summary: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    failures: list[str] = []
+    if summary["tasks_ran"] == 0:
+        failures.append("no real-LLM tasks ran")
+    if summary["tasks_errored"]:
+        failures.append(f"{summary['tasks_errored']} real-LLM task(s) errored")
+    for key, minimum in (
+        ("task_success_rate", args.min_task_success_rate),
+        ("intent_accuracy", args.min_intent_accuracy),
+        ("tool_overlap_rate", args.min_tool_overlap_rate),
+        ("risk_match_rate", args.min_risk_match_rate),
+    ):
+        value = summary.get(key)
+        if value is None:
+            failures.append(f"{key} was not measured")
+        elif float(value) < minimum:
+            failures.append(f"{key}={value} below release threshold {minimum}")
+    param_missing = summary.get("param_missing_rate")
+    if param_missing is None:
+        failures.append("param_missing_rate was not measured")
+    elif float(param_missing) > args.max_param_missing_rate:
+        failures.append(
+            f"param_missing_rate={param_missing} above release threshold {args.max_param_missing_rate}"
+        )
+    return {
+        "enabled": bool(args.quality_gate),
+        "passed": not failures,
+        "thresholds": {
+            "min_task_success_rate": args.min_task_success_rate,
+            "min_intent_accuracy": args.min_intent_accuracy,
+            "min_tool_overlap_rate": args.min_tool_overlap_rate,
+            "min_risk_match_rate": args.min_risk_match_rate,
+            "max_param_missing_rate": args.max_param_missing_rate,
+        },
+        "failures": failures,
     }
 
 
@@ -328,7 +439,9 @@ def main() -> int:
     provider_info = _require_real_provider()
 
     dataset = json.loads(GOLDEN_DATASET_PATH.read_text(encoding="utf-8"))
-    tasks: list[dict[str, Any]] = [t for t in dataset["tasks"] if t.get("entry") in LLM_ENTRIES]
+    tasks: list[dict[str, Any]] = [
+        t for t in dataset["tasks"] if t.get("entry") in LLM_ENTRIES
+    ]
     if args.categories:
         wanted = {item.strip() for item in args.categories.split(",") if item.strip()}
         tasks = [t for t in tasks if t.get("category") in wanted]
@@ -340,34 +453,51 @@ def main() -> int:
     if not tasks:
         raise SystemExit("no eligible golden tasks matched the filters.")
 
-    print(f"real-llm-eval: provider={provider_info['provider_name']} model={provider_info['model']} tasks={len(tasks)}")
+    print(
+        f"real-llm-eval: provider={provider_info['provider_name']} model={provider_info['model']} tasks={len(tasks)}"
+    )
     records: list[dict[str, Any]] = []
     for index, task in enumerate(tasks, start=1):
         print(f"[{index}/{len(tasks)}] {task['id']} ...", flush=True)
         record = _evaluate_task(task, args.timeout_seconds)
-        status = "ERROR" if record["error"] else ("ok" if record["phase_ok"] in {True, None} else "MISS")
-        print(f"    -> {status} phase={record['phase']} tools={record['actual_plan_tools']} {record['error']}", flush=True)
+        status = (
+            "ERROR"
+            if record["error"]
+            else ("ok" if record["phase_ok"] in {True, None} else "MISS")
+        )
+        print(
+            f"    -> {status} phase={record['phase']} tools={record['actual_plan_tools']} {record['error']}",
+            flush=True,
+        )
         records.append(record)
 
+    summary = _aggregate(records)
+    quality_gate = _quality_gate(summary, args)
     report = {
         "kind": "real-llm-eval-report",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "provider": provider_info,
         "dataset": str(GOLDEN_DATASET_PATH.relative_to(REPO_ROOT)),
         "evidence_boundary": EVIDENCE_BOUNDARY,
-        "summary": _aggregate(records),
+        "summary": summary,
+        "quality_gate": quality_gate,
         "tasks": records,
     }
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / "real-llm-eval-report.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     print(json.dumps(report["summary"], ensure_ascii=False, indent=2))
+    if args.quality_gate:
+        print(json.dumps({"quality_gate": quality_gate}, ensure_ascii=False, indent=2))
     print(f"report: {report_path}")
 
-    summary = report["summary"]
     if summary["tasks_ran"] == 0:
         return 2
+    if args.quality_gate and not quality_gate["passed"]:
+        return 1
     return 0
 
 

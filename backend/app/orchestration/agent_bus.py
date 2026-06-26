@@ -20,17 +20,16 @@ GLOBAL_TASK_ID = "__global__"
 _ALL_EVENT_TYPES = "*"
 logger = logging.getLogger(__name__)
 
-# --- P1 fix: Bounded persist queue with backpressure ---
+# --- P1 fix: Bounded persist queue with lossless backpressure ---
 # Previously _PERSIST_QUEUE was an unbounded queue.Queue(), which meant that
 # under sustained high message throughput (e.g. long-running orchestrator
 # tasks, burst perception events) the queue could grow without limit, causing
 # unbounded memory growth and eventual OOM.
 #
 # The queue now has a configurable max size. When full, publishers apply
-# backpressure by blocking briefly. If the queue still cannot accept a message
-# after the backpressure timeout, the oldest message is dropped (with error
-# log) to prevent OOM. The persist worker drains the queue as fast as SQLite
-# allows; in practice the queue should rarely fill up.
+# backpressure by waiting until the writer drains space. The durable queue must
+# never drop agent_messages: assistant tool_calls and matching tool results are
+# the authoritative ledger used to rebuild LLM context and audit history.
 
 _PERSIST_QUEUE_MAX_SIZE = int(os.environ.get("LENGRVIS_PERSIST_QUEUE_MAX_SIZE", "10000"))
 _PERSIST_BACKPRESSURE_TIMEOUT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_TIMEOUT", "5.0"))
@@ -85,38 +84,21 @@ def _enqueue_persist(message: AgentMessage) -> None:
             _PERSIST_QUEUE_MAX_SIZE,
         )
 
-    try:
-        # Block briefly to give the writer thread time to drain the queue.
-        # This applies backpressure to the calling coroutine instead of
-        # allowing unbounded memory growth.
-        with _PERSIST_STATE:
-            _PERSIST_PENDING += 1
-        _PERSIST_QUEUE.put((message, data_dir), timeout=_PERSIST_BACKPRESSURE_TIMEOUT)
-    except queue.Full:
-        # Queue is still full after backpressure timeout. Drop the oldest
-        # entry to make room, preventing OOM at the cost of losing one
-        # persisted message (logged as error for monitoring).
-        with suppress(queue.Empty):
-            dropped_message, _ = _PERSIST_QUEUE.get_nowait()
-            logger.error(
-                "agent_bus: persist queue full after %.1fs backpressure; dropping oldest message %s to prevent OOM",
-                _PERSIST_BACKPRESSURE_TIMEOUT,
-                dropped_message.id,
-            )
-        with _PERSIST_STATE:
-            _PERSIST_PENDING -= 1  # Correct for the dropped message
-            _PERSIST_PENDING += 1  # Increment for the new message
+    # Count the message before queueing: the writer can drain immediately after
+    # put() returns, so incrementing afterwards can race the worker decrement.
+    with _PERSIST_STATE:
+        _PERSIST_PENDING += 1
+
+    while True:
         try:
             _PERSIST_QUEUE.put((message, data_dir), timeout=_PERSIST_BACKPRESSURE_TIMEOUT)
+            return
         except queue.Full:
-            # Extremely unlikely: queue still full after dropping one entry.
-            # Drop the new message entirely to guarantee OOM safety.
             logger.error(
-                "agent_bus: persist queue still full after drop; discarding new message %s",
+                "agent_bus: persist queue full after %.1fs backpressure; waiting to preserve durable message %s",
+                _PERSIST_BACKPRESSURE_TIMEOUT,
                 message.id,
             )
-            with _PERSIST_STATE:
-                _PERSIST_PENDING -= 1
 
 
 def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
@@ -313,14 +295,15 @@ class AgentBus:
             metadata=meta,
         )
 
-    def get_messages(self, task_id: str) -> list[AgentMessage]:
+    def get_messages(self, task_id: str, *, limit: int = 1000) -> list[AgentMessage]:
         return [
-            AgentMessage.model_validate(item) for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,))
+            AgentMessage.model_validate(item)
+            for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=max(1, limit))
         ]
 
     def get_messages_after(self, task_id: str, created_after: str | None, *, limit: int = 500) -> list[AgentMessage]:
         if not created_after:
-            messages = self.get_messages(task_id)
+            messages = self.get_messages(task_id, limit=limit)
         else:
             messages = [
                 AgentMessage.model_validate(item)
@@ -346,7 +329,10 @@ class AgentBus:
         *,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
-        messages = sorted(self.get_messages(task_id), key=lambda message: (message.created_at, message.id))
+        read_limit = limit if limit > 0 else 1000
+        messages = sorted(
+            self.get_messages(task_id, limit=read_limit), key=lambda message: (message.created_at, message.id)
+        )
         if limit > 0:
             messages = messages[-limit:]
         ledger = [message.to_openai_dict(include_legacy=False) for message in messages]

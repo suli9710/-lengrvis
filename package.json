@@ -25,7 +25,7 @@
     "release:safety": "powershell -ExecutionPolicy Bypass -File ./scripts/verify_release_safety.ps1",
     "sign:backend:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/sign_windows_backend.ps1",
     "release:quick": "npm run qa:gate && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly",
-    "release:check": "npm run qa:gate && npm run supply-chain:verify && npm run security:extensions && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45 && npm run market:readiness:strict && npm run release:readiness:strict",
+    "release:check": "npm run qa:gate && npm run golden:gate && npm run eval:real-llm -- --quality-gate && npm run supply-chain:verify && npm run security:extensions && npm run release:safety && powershell -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45 && npm --prefix desktop run verify:windows-release-signatures && npm run market:readiness:strict && npm run release:readiness:strict",
     "release:smoke": "npm run release:check",
     "release:gate": "npm run release:check",
     "evidence:release": "powershell -ExecutionPolicy Bypass -File ./scripts/collect_release_evidence_packet.ps1",

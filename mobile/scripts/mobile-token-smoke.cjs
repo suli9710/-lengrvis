@@ -21,6 +21,9 @@ function loadAuth(client, storage) {
   return loadTsModule(mobilePath("src/store/auth.ts"), {
     require: (id) => {
       if (id === "../api/client") return client;
+      if (id === "../api/client/nativeTlsTrust") {
+        return loadTsModule(mobilePath("src/api/client/nativeTlsTrust.ts"));
+      }
       if (id === "@react-native-async-storage/async-storage") return { __esModule: true, default: storage.asyncStorage, ...storage.asyncStorage };
       if (id === "expo-secure-store") return storage.secureStore;
       return require(id);

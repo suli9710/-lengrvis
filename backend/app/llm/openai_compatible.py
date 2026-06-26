@@ -132,6 +132,10 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url = self._api_base_url()
         if self.settings.wire_api.lower() == "responses":
             return f"{base_url}/responses"
+        return self._chat_completions_endpoint()
+
+    def _chat_completions_endpoint(self) -> str:
+        base_url = self._api_base_url()
         return f"{base_url}/chat/completions"
 
     def _circuit_key(self, endpoint_kind: str, model: str) -> tuple[str, str, str, str]:
@@ -324,6 +328,22 @@ class OpenAICompatibleProvider(LLMProvider):
         if self.settings.wire_api.lower() == "responses":
             return await self._responses_chat_result(messages, model=model, temperature=temperature, tools=tools)
 
+        return await self._chat_completions_chat_result(
+            messages,
+            model=model,
+            temperature=temperature,
+            tools=tools,
+        )
+
+    async def _chat_completions_chat_result(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> LLMResponse:
         target_model = model or self.settings.model
         wire_messages = [_chat_message_payload(message) for message in messages]
         payload: dict[str, Any] = {
@@ -334,7 +354,9 @@ class OpenAICompatibleProvider(LLMProvider):
         }
         if tools:
             payload["tools"] = tools
-        data = await self._post_json(self._chat_endpoint(), payload, endpoint_kind="chat", model=target_model)
+        data = await self._post_json(
+            self._chat_completions_endpoint(), payload, endpoint_kind="chat", model=target_model
+        )
         self._raise_for_embedded_error(data)
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -358,6 +380,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 "wire_api": "chat_completions",
                 "tool_calls": message.get("tool_calls") or [],
                 "api_trace": self.transport_metadata(),
+                **(metadata or {}),
             },
         )
 
@@ -377,8 +400,17 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: float | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-        if any(message.get("role") == "tool" for message in messages):
-            raise NotImplementedError("Responses API transport does not yet map tool-role messages safely.")
+        if _requires_chat_completions_tool_mapping(messages):
+            return await self._chat_completions_chat_result(
+                messages,
+                model=model,
+                temperature=temperature,
+                tools=tools,
+                metadata={
+                    "wire_api_requested": "responses",
+                    "wire_api_fallback_reason": "tool_message_mapping_requires_chat_completions",
+                },
+            )
         input_items = [
             {"role": message["role"], "content": message.get("content", "")}
             for message in messages
@@ -796,3 +828,7 @@ def _chat_message_payload(message: dict[str, Any]) -> dict[str, Any]:
     if role == "tool" and message.get("tool_call_id"):
         payload["tool_call_id"] = message.get("tool_call_id")
     return payload
+
+
+def _requires_chat_completions_tool_mapping(messages: list[dict[str, Any]]) -> bool:
+    return any(message.get("role") == "tool" or bool(message.get("tool_calls")) for message in messages)

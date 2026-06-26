@@ -10,11 +10,10 @@ from app.context_management import PromptTooLongError
 from app.core.outbound_url import PinnedOutboundRequest
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.openai_compatible import (
+    _CIRCUITS,
     LLMApiCircuitOpen,
     LLMApiResponseError,
     OpenAICompatibleProvider,
-    _CIRCUITS,
-    _shared_http_client,
     _validate_structured_payload_lightweight,
     circuit_snapshot,
     close_shared_http_client,
@@ -556,18 +555,26 @@ def test_responses_vision_rejects_failed_or_empty_success_payload(monkeypatch, t
         asyncio.run(provider.vision(str(image), "describe"))
 
 
-def test_responses_api_rejects_tool_role_messages():
+def test_responses_api_with_tool_role_messages_falls_back_to_chat_completions(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "ok"}}]})]
     provider = OpenAICompatibleProvider(_settings(wire_api="responses"))
 
-    with pytest.raises(NotImplementedError):
-        asyncio.run(
-            provider.chat(
-                [
-                    {"role": "user", "content": "run tool"},
-                    {"role": "tool", "content": "tool output"},
-                ]
-            )
+    result = asyncio.run(
+        provider.chat_result(
+            [
+                {"role": "user", "content": "run tool"},
+                {"role": "tool", "content": "tool output", "tool_call_id": "call_1"},
+            ]
         )
+    )
+
+    assert result.content == "ok"
+    assert result.metadata["wire_api"] == "chat_completions"
+    assert result.metadata["wire_api_requested"] == "responses"
+    assert result.metadata["wire_api_fallback_reason"] == "tool_message_mapping_requires_chat_completions"
+    assert FakeAsyncClient.requests[0]["url"].endswith("/chat/completions")
+    assert FakeAsyncClient.requests[0]["json"]["messages"][1]["role"] == "tool"
 
 
 def test_auth_error_does_not_retry_or_open_circuit(monkeypatch):

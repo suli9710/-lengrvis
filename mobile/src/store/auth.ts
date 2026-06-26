@@ -12,6 +12,7 @@ import {
   type PairingSecurityMetadata,
   type PairingSession,
 } from "../api/client";
+import { clearNativeTlsTrust, configureNativeTlsTrust } from "../api/client/nativeTlsTrust";
 
 const SESSION_KEY = "lengrvis.mobile.session";
 const TOKEN_KEY = "lengrvis.mobile.session.token";
@@ -62,6 +63,7 @@ export async function loadSession(): Promise<PairingSession | null> {
     }
     try {
       const safeSession = assertSafePairingSession({ ...session, token });
+      await configureNativeTlsTrust(safeSession.baseUrlSecurity);
       await saveSession(safeSession);
       if (migratedLegacyEmbeddedToken) {
         await eraseLegacyAsyncStorageSecrets();
@@ -93,6 +95,7 @@ export async function saveSession(session: PairingSession): Promise<void> {
   if (baseUrlSecurity.isInsecureLan) {
     throw new InsecureLanBaseUrlError(baseUrlSecurity);
   }
+  await configureNativeTlsTrust(baseUrlSecurity);
   const metadata = {
     baseUrl: baseUrlSecurity.normalizedBaseUrl,
     baseUrlSecurity,
@@ -114,6 +117,7 @@ export async function saveSession(session: PairingSession): Promise<void> {
 export async function clearSession(): Promise<void> {
   clearRemoteInputGrantTokens();
   await Promise.all([
+    clearNativeTlsTrust(),
     asyncStorageRemoveItem(SESSION_KEY),
     secureStoreDeleteItem(TOKEN_KEY),
     ...LEGACY_ASYNC_STORAGE_KEYS.map((key) => asyncStorageRemoveItem(key)),

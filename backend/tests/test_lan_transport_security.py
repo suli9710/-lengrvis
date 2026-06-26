@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import ssl
+from hashlib import sha256
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from tls_test_material import write_lan_tls_material
 
 from app.config import AppSettings
 from app.core import db
 from app.main import create_app
-from tls_test_material import write_lan_tls_material
 
 
 def test_app_settings_loads_lan_tls_from_yaml_and_env(monkeypatch, tmp_path: Path):
@@ -96,6 +98,7 @@ def test_pairing_responses_include_tls_transport_metadata_when_files_exist(monke
     monkeypatch.setenv("LENGRVIS_LAN_PUBLIC_BASE_URL", "https://phone-lan.example.test:8443")
     db.init_db()
     client = TestClient(create_app())
+    expected_fingerprint = sha256(ssl.PEM_cert_to_DER_cert(cert_file.read_text(encoding="utf-8"))).hexdigest()
 
     request_payload = client.post("/api/pair/request").json()
     confirm_response = client.post(
@@ -115,6 +118,8 @@ def test_pairing_responses_include_tls_transport_metadata_when_files_exist(monke
         assert transport["cert_present"] is True
         assert transport["key_present"] is True
         assert transport["tls_material_valid"] is True
+        assert transport["fingerprint_sha256"] == expected_fingerprint
+        assert transport["certificate_fingerprint_sha256"] == expected_fingerprint
 
 
 def _isolate_config(monkeypatch, tmp_path: Path, *, config_path: Path | None = None) -> None:

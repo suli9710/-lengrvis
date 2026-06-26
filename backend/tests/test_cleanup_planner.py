@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from app.api import routes_files
+from app.config import AppSettings
 from app.core import db
 from app.core.errors import SecurityError
 from app.core.schemas import Approval, ApprovalStatus
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
-from app.api import routes_files
-from app.config import AppSettings
 from app.services.cleanup_planner_service import CleanupPlannerService
 from app.tools import file_tools
 from app.tools.registry import register_all_tools
@@ -131,7 +131,9 @@ def _approved_cleanup_execution(args: dict, context: dict, preview: dict) -> App
         risk_level=RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM.value,
         args_binding_hmac=args_binding_hmac("file.cleanup_execute", args, task_id="direct_cleanup_api", step_id=None),
         preview_hmac=preview_hmac(preview),
-        settings_fingerprint=settings_fingerprint(context.get("settings"), allowed_directories=context.get("allowed_directories") or []),
+        settings_fingerprint=settings_fingerprint(
+            context.get("settings"), allowed_directories=context.get("allowed_directories") or []
+        ),
         permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
         tool_version="1",
         diff_preview=preview,
@@ -140,7 +142,9 @@ def _approved_cleanup_execution(args: dict, context: dict, preview: dict) -> App
     return approval
 
 
-def test_cleanup_execute_trash_requires_valid_approval_and_uses_send2trash(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_cleanup_execute_trash_requires_valid_approval_and_uses_send2trash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     db.init_db()
     root = _workspace(tmp_path)
     downloads = root / "Downloads"
@@ -185,7 +189,16 @@ def test_cleanup_execute_trash_requires_valid_approval_and_uses_send2trash(monke
         service.execute(forged_args, context)
 
     approved_args = {**forged_args, "approval_id": ""}
-    preview = service.execute({**args, "plan_id": plan.plan_id, "content_hash": plan.content_hash, "selected_item_ids": selected, "dry_run": True}, context)
+    preview = service.execute(
+        {
+            **args,
+            "plan_id": plan.plan_id,
+            "content_hash": plan.content_hash,
+            "selected_item_ids": selected,
+            "dry_run": True,
+        },
+        context,
+    )
     approval = _approved_cleanup_execution(approved_args, context, preview)
     approved_args["approval_id"] = approval.id
 
@@ -261,7 +274,7 @@ def test_cleanup_execute_route_requires_policy_and_bound_approval(monkeypatch: p
     }
 
     blocked = routes_files.cleanup_execute(payload)
-    assert blocked["status"] == "requires_approval"
+    assert blocked["status"] in {"requires_approval", "denied"}
     assert target.exists()
 
     forged = routes_files.cleanup_execute({**payload, "approved": True, "approval_id": "approval-forged"})
@@ -271,19 +284,42 @@ def test_cleanup_execute_route_requires_policy_and_bound_approval(monkeypatch: p
 
     preview = service.execute({**payload, "dry_run": True}, context)
     approval = _approved_cleanup_execution(payload, context, preview)
-    allowed = routes_files.cleanup_execute({**payload, "approved": True, "approval_id": approval.id})
+    blocked_valid = routes_files.cleanup_execute({**payload, "approved": True, "approval_id": approval.id})
 
-    assert allowed["ok"] is True
-    assert str(target.resolve()) in allowed["changed_paths"]
-    assert not target.exists()
+    assert blocked_valid["status"] == "denied"
+    assert "direct file api cannot consume approval" in blocked_valid["error"].lower()
+    assert target.exists()
     refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
-    assert refreshed.consumed_at
+    assert refreshed.consumed_at is None
+
+
+def test_cleanup_rollback_route_blocks_direct_live_execution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    root = _workspace(tmp_path)
+    settings = AppSettings(provider_name="mock", mode="efficiency", allowed_directories=[str(root)])
+    monkeypatch.setattr(routes_files, "get_effective_settings", lambda: settings)
+    payload = {
+        "rollback_info": {"restore_from_recycle_bin": str(root / "trashed.txt")},
+        "dry_run": False,
+    }
+
+    blocked = routes_files.cleanup_rollback(payload)
+    assert blocked["status"] in {"requires_approval", "denied"}
+
+    forged = routes_files.cleanup_rollback({**payload, "approved": True, "approval_id": "approval-forged"})
+    assert forged["status"] == "denied"
+    assert "direct file api cannot consume approval" in forged["error"].lower()
 
 
 def test_cleanup_tools_are_registered_with_schemas(tmp_path: Path):
     registry = register_all_tools(load_skills=False)
 
-    for name in ("file.cleanup_scan", "file.cleanup_plan", "file.cleanup_execute", "file.cleanup_rollback", "file.dedupe_plan"):
+    for name in (
+        "file.cleanup_scan",
+        "file.cleanup_plan",
+        "file.cleanup_execute",
+        "file.cleanup_rollback",
+        "file.dedupe_plan",
+    ):
         tool = registry.get(name)
         assert tool.input_schema["type"] == "object"
 

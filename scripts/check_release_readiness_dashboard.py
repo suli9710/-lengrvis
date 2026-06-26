@@ -13,7 +13,9 @@ import json
 import re
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 
 ALLOWED_STATUSES = {"blocked", "in_progress", "passed", "waived"}
 STRICT_ALLOWED_P0_STATUSES = {"passed", "waived"}
@@ -28,6 +30,7 @@ class ReadinessRow:
     status: str
     artifact: str
     owner: str
+    expiry: str
     notes: str
 
 
@@ -56,15 +59,19 @@ def parse_rows(markdown: str) -> list[ReadinessRow]:
                 status=cells[3].strip("`").lower(),
                 artifact=cells[4] if len(cells) > 4 else "",
                 owner=cells[5] if len(cells) > 5 else "",
+                expiry=cells[6] if len(cells) > 7 else "",
                 notes=cells[-1] if cells else "",
             )
         )
     return rows
 
 
-def validate(rows: list[ReadinessRow], *, strict: bool) -> tuple[list[str], list[str]]:
+def validate(
+    rows: list[ReadinessRow], *, strict: bool, artifact_root: Path | None = None
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    artifact_root = artifact_root or Path.cwd()
     if not rows:
         errors.append("No readiness rows found.")
         return errors, warnings
@@ -80,28 +87,102 @@ def validate(rows: list[ReadinessRow], *, strict: bool) -> tuple[list[str], list
             if not row.owner or row.owner.upper() == "TBD":
                 errors.append(f"{row.row_id}: {row.status} row requires an owner.")
             if not row.artifact or row.artifact.upper() == "TBD":
-                errors.append(f"{row.row_id}: {row.status} row requires an artifact/link label.")
+                errors.append(
+                    f"{row.row_id}: {row.status} row requires an artifact/link label."
+                )
         if row.row_id.startswith(P0_PREFIX) and row.status != "passed":
             warnings.append(f"{row.row_id}: stop-ship row is {row.status}.")
-        if strict and row.row_id.startswith(P0_PREFIX) and row.status not in STRICT_ALLOWED_P0_STATUSES:
-            errors.append(f"{row.row_id}: strict release readiness requires passed or waived, got {row.status}.")
+        if (
+            strict
+            and row.row_id.startswith(P0_PREFIX)
+            and row.status not in STRICT_ALLOWED_P0_STATUSES
+        ):
+            errors.append(
+                f"{row.row_id}: strict release readiness requires passed or waived, got {row.status}."
+            )
+        if (
+            strict
+            and row.status in {"passed", "waived"}
+            and not _artifact_is_verifiable(row.artifact, artifact_root)
+        ):
+            errors.append(
+                f"{row.row_id}: strict release readiness requires artifact to be an existing repo-relative path "
+                "or HTTPS URL."
+            )
+        if strict and row.status == "waived":
+            waiver_error = _waiver_error(row)
+            if waiver_error:
+                errors.append(f"{row.row_id}: {waiver_error}")
 
     return errors, warnings
 
 
+def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:
+    value = artifact.strip()
+    if not value or value.upper() == "TBD":
+        return False
+    markdown_link = re.search(r"\[[^\]]+\]\(([^)]+)\)", value)
+    if markdown_link:
+        value = markdown_link.group(1).strip()
+    parsed = urlparse(value)
+    if parsed.scheme in {"https"} and parsed.netloc:
+        return True
+    if parsed.scheme:
+        return False
+    candidate = (artifact_root / value).resolve()
+    try:
+        candidate.relative_to(artifact_root.resolve())
+    except ValueError:
+        return False
+    return candidate.exists()
+
+
+def _waiver_error(row: ReadinessRow) -> str:
+    text = f"{row.expiry} {row.notes}"
+    match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    if not match:
+        return "waived row requires an ISO expiry date."
+    try:
+        expiry = date.fromisoformat(match.group(1))
+    except ValueError:
+        return "waived row expiry date is invalid."
+    if expiry < date.today():
+        return "waived row expiry date has passed."
+    notes = row.notes.casefold()
+    if "reason" not in notes:
+        return "waived row notes require a reason."
+    if "follow-up" not in notes and "followup" not in notes and "issue" not in notes:
+        return "waived row notes require a follow-up issue."
+    return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dashboard", default="docs/release/release-readiness-dashboard.md")
+    parser.add_argument(
+        "--dashboard", default="docs/release/release-readiness-dashboard.md"
+    )
     parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
 
     dashboard_path = Path(args.dashboard)
     if not dashboard_path.exists():
-        print(json.dumps({"ok": False, "error": f"Dashboard not found: {dashboard_path}"}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {"ok": False, "error": f"Dashboard not found: {dashboard_path}"},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 2
 
     rows = parse_rows(dashboard_path.read_text(encoding="utf-8"))
-    errors, warnings = validate(rows, strict=args.strict)
+    resolved_dashboard = dashboard_path.resolve()
+    artifact_root = (
+        resolved_dashboard.parents[2]
+        if len(resolved_dashboard.parents) > 2
+        else Path.cwd()
+    )
+    errors, warnings = validate(rows, strict=args.strict, artifact_root=artifact_root)
     p0_rows = [row for row in rows if row.row_id.startswith(P0_PREFIX)]
     summary = {
         "ok": not errors,

@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -1165,7 +1166,11 @@ def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any
     key_file = str(getattr(settings, "lan_tls_key_file", "") or "").strip()
     cert_present = bool(cert_file) and Path(cert_file).expanduser().exists()
     key_present = bool(key_file) and Path(key_file).expanduser().exists()
-    tls_validation = _validate_lan_tls_material(cert_file, key_file) if https_enabled and cert_present and key_present else {"ok": False, "error": ""}
+    tls_validation = (
+        _validate_lan_tls_material(cert_file, key_file)
+        if https_enabled and cert_present and key_present
+        else {"ok": False, "error": "", "fingerprint_sha256": ""}
+    )
     tls_ready = https_enabled and cert_present and key_present and bool(tls_validation["ok"])
     scheme = "https" if https_enabled else "http"
     origin = _configured_lan_origin(settings, scheme)
@@ -1206,6 +1211,8 @@ def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any
         "requires_trust": https_enabled,
         "trust_required": https_enabled,
         "trust_model": "local_certificate" if https_enabled else "none",
+        "fingerprint_sha256": str(tls_validation.get("fingerprint_sha256") or ""),
+        "certificate_fingerprint_sha256": str(tls_validation.get("fingerprint_sha256") or ""),
         "warning": warning,
         "next_action": next_action,
     }
@@ -1214,10 +1221,20 @@ def lan_transport_security(settings: AppSettings | None = None) -> dict[str, Any
 def _validate_lan_tls_material(cert_file: str, key_file: str) -> dict[str, Any]:
     try:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(str(Path(cert_file).expanduser()), str(Path(key_file).expanduser()))
+        cert_path = Path(cert_file).expanduser()
+        context.load_cert_chain(str(cert_path), str(Path(key_file).expanduser()))
+        fingerprint = _certificate_fingerprint_sha256(cert_path)
     except Exception as exc:  # noqa: BLE001 - readiness should report a structured status.
-        return {"ok": False, "error": _safe_tls_error(exc)}
-    return {"ok": True, "error": ""}
+        return {"ok": False, "error": _safe_tls_error(exc), "fingerprint_sha256": ""}
+    return {"ok": True, "error": "", "fingerprint_sha256": fingerprint}
+
+
+def _certificate_fingerprint_sha256(cert_path: Path) -> str:
+    data = cert_path.read_bytes()
+    text = data.decode("utf-8", errors="ignore")
+    if "-----BEGIN CERTIFICATE-----" in text:
+        data = ssl.PEM_cert_to_DER_cert(text)
+    return sha256(data).hexdigest()
 
 
 def _safe_tls_error(error: Exception) -> str:

@@ -115,6 +115,7 @@ android {
         versionName "0.1.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     signingConfigs {
         debug {
@@ -124,10 +125,10 @@ android {
             // Use the Android default debug keystore from the user's home
             // directory (~/.android/debug.keystore) which is auto-generated
             // by the Android SDK and local to the developer's machine.
-            storeFile rootProject.file("debug.keystore")
-            // Fallback: if the project-local debug.keystore does not exist
-            // (it was removed from the repo), the Android Gradle Plugin will
-            // automatically use the default ~/.android/debug.keystore.
+            def localDebugKeystore = rootProject.file("debug.keystore")
+            if (localDebugKeystore.exists()) {
+                storeFile localDebugKeystore
+            }
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
@@ -222,4 +223,9 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("junit:junit:4.13.2")
 }

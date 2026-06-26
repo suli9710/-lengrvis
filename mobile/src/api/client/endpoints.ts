@@ -1,6 +1,7 @@
 import type { ApprovalDetail, BackendApproval, BackendWakeup, MobileTask, MobileTaskLaunchResult, MobileTaskMode, MobileTaskTemplateId, PairingSession, RemoteInputGrant, RemoteInputGrantToken } from "./types";
 import { AuthExpiredError, BackendHttpError, ForbiddenError, InsecureLanBaseUrlError, authHeaders, fetchWithTimeout, jsonAuthHeaders, parseJson, parseRemoteInputGrantJson } from "./http";
-import { assertSafeBaseUrl, assertSafePairingSession, assertWebSocketSubprotocolToken, mergeBaseUrlSecurityMetadata, normalizePairingSecurityMetadata, normalizePairingServerInfo, sessionHasUnsafeRemoteTransport, validatePairResult } from "./security";
+import { assertSafePairingSession, assertWebSocketSubprotocolToken, describeBaseUrlSecurity, mergeBaseUrlSecurityMetadata, normalizePairingSecurityMetadata, normalizePairingServerInfo, sessionHasUnsafeRemoteTransport, validatePairResult } from "./security";
+import { configureNativeTlsTrust } from "./nativeTlsTrust";
 import { REMOTE_INPUT_SCOPE } from "./types";
 
 const remoteInputGrantTokens = new Map<string, RemoteInputGrantToken>();
@@ -10,8 +11,13 @@ export async function pairWithBackend(
   baseUrl: string,
   code: string,
   deviceName: string,
+  pairingMetadata?: unknown,
 ): Promise<PairingSession> {
-  const baseUrlSecurity = assertSafeBaseUrl(baseUrl);
+  const baseUrlSecurity = describeBaseUrlSecurity(baseUrl, pairingMetadata);
+  if (baseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(baseUrlSecurity)) {
+    throw new InsecureLanBaseUrlError(baseUrlSecurity);
+  }
+  await configureNativeTlsTrust(baseUrlSecurity);
   const normalizedBaseUrl = baseUrlSecurity.normalizedBaseUrl;
   const response = await fetchWithTimeout(`${normalizedBaseUrl}/api/pair/confirm`, {
     method: "POST",
@@ -27,6 +33,7 @@ export async function pairWithBackend(
   if (mergedBaseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(mergedBaseUrlSecurity)) {
     throw new InsecureLanBaseUrlError(mergedBaseUrlSecurity);
   }
+  await configureNativeTlsTrust(mergedBaseUrlSecurity);
   return {
     baseUrl: normalizedBaseUrl,
     token: payload.token,
@@ -39,7 +46,7 @@ export async function pairWithBackend(
 }
 
 export async function listPendingApprovals(session: PairingSession): Promise<BackendApproval[]> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/approvals/pending`, {
     headers: authHeaders(safeSession.token),
   });
@@ -47,7 +54,7 @@ export async function listPendingApprovals(session: PairingSession): Promise<Bac
 }
 
 export async function getApprovalDetail(session: PairingSession, approvalId: string): Promise<ApprovalDetail> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/approvals/${encodeURIComponent(approvalId)}`, {
     headers: authHeaders(safeSession.token),
   });
@@ -60,7 +67,7 @@ export async function submitApprovalDecision(
   decision: "approved" | "denied",
   options: { approval?: BackendApproval; approvalType?: string; remoteInputGrant?: RemoteInputGrant | null } = {},
 ): Promise<BackendApproval> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   if (decision === "approved") {
     const remoteInputGrantToken = await remoteInputGrantTokenForApproval(safeSession, approvalId, options);
     if (remoteInputGrantToken) {
@@ -89,7 +96,7 @@ export async function submitApprovalDecision(
 }
 
 export async function disconnectMobileDevice(session: PairingSession): Promise<void> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/devices/${encodeURIComponent(safeSession.deviceId)}`, {
     method: "DELETE",
     headers: authHeaders(safeSession.token),
@@ -98,7 +105,7 @@ export async function disconnectMobileDevice(session: PairingSession): Promise<v
 }
 
 export async function listMobileTasks(session: PairingSession): Promise<MobileTask[]> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/tasks`, {
     headers: authHeaders(safeSession.token),
   });
@@ -107,7 +114,7 @@ export async function listMobileTasks(session: PairingSession): Promise<MobileTa
 }
 
 export async function listPendingMobileWakeups(session: PairingSession): Promise<BackendWakeup[]> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/wakeups/pending`, {
     headers: authHeaders(safeSession.token),
   });
@@ -115,7 +122,7 @@ export async function listPendingMobileWakeups(session: PairingSession): Promise
 }
 
 export async function approveMobileWakeup(session: PairingSession, wakeupId: string): Promise<BackendWakeup> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/wakeups/${encodeURIComponent(wakeupId)}/approve`, {
     method: "POST",
     headers: authHeaders(safeSession.token),
@@ -124,7 +131,7 @@ export async function approveMobileWakeup(session: PairingSession, wakeupId: str
 }
 
 export async function rejectMobileWakeup(session: PairingSession, wakeupId: string): Promise<BackendWakeup> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/wakeups/${encodeURIComponent(wakeupId)}/reject`, {
     method: "POST",
     headers: authHeaders(safeSession.token),
@@ -136,7 +143,7 @@ export async function createMobileTask(
   session: PairingSession,
   request: { template_id: MobileTaskTemplateId; user_input?: string; mode: MobileTaskMode },
 ): Promise<MobileTaskLaunchResult> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/tasks`, {
     method: "POST",
     headers: jsonAuthHeaders(safeSession.token),
@@ -150,7 +157,7 @@ export async function submitMobileTaskFollowUp(
   taskId: string,
   request: { instruction: string; mode?: MobileTaskMode },
 ): Promise<MobileTaskLaunchResult> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/follow-up`, {
     method: "POST",
     headers: jsonAuthHeaders(safeSession.token),
@@ -164,7 +171,7 @@ export async function submitMobileTaskCommand(
   taskId: string,
   command: "pause" | "resume" | "cancel",
 ): Promise<MobileTask> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/tasks/${encodeURIComponent(taskId)}/${command}`, {
     method: "POST",
     headers: authHeaders(safeSession.token),
@@ -173,7 +180,7 @@ export async function submitMobileTaskCommand(
 }
 
 export async function claimRemoteInputGrantToken(session: PairingSession, grantId: string): Promise<RemoteInputGrantToken> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}/token`, {
     method: "POST",
     headers: authHeaders(safeSession.token),
@@ -188,7 +195,7 @@ export async function claimRemoteInputGrantToken(session: PairingSession, grantI
 }
 
 export async function revokeRemoteInputGrant(session: PairingSession, grantId: string): Promise<RemoteInputGrant> {
-  const safeSession = assertSafePairingSession(session);
+  const safeSession = await safeNetworkSession(session);
   const response = await fetchWithTimeout(`${safeSession.baseUrl}/api/mobile/remote-input-grants/${encodeURIComponent(grantId)}`, {
     method: "DELETE",
     headers: authHeaders(safeSession.token),
@@ -351,6 +358,12 @@ export function normalizedRemoteInputGrantText(value: string | undefined): strin
   return String(value ?? "").trim().toLowerCase();
 }
 
+async function safeNetworkSession(session: PairingSession): Promise<PairingSession> {
+  const safeSession = assertSafePairingSession(session);
+  await configureNativeTlsTrust(safeSession.baseUrlSecurity);
+  return safeSession;
+}
+
 export function isRemoteInputApproval(approval: BackendApproval): boolean {
   return (
     approval.approval_type === "remote_input" ||
@@ -425,4 +438,3 @@ export function assertRemoteInputApprovalRejectAllowedForSession(session: Pairin
     throw new ForbiddenError("Remote input approval does not match this mobile device.");
   }
 }
-

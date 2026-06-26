@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,36 @@ def test_aggregate_metrics_math():
     assert summary["tool_overlap_rate"] == 1.0
     assert summary["risk_match_rate"] == 1.0
     assert summary["param_missing_rate"] == 0.5
+
+
+def test_quality_gate_blocks_low_real_llm_metrics():
+    harness = _load_harness()
+    args = Namespace(
+        quality_gate=True,
+        min_task_success_rate=0.8,
+        min_intent_accuracy=0.7,
+        min_tool_overlap_rate=0.8,
+        min_risk_match_rate=0.8,
+        max_param_missing_rate=0.05,
+    )
+
+    gate = harness._quality_gate(
+        {
+            "tasks_ran": 2,
+            "tasks_errored": 1,
+            "task_success_rate": 0.5,
+            "intent_accuracy": 0.5,
+            "tool_overlap_rate": 1.0,
+            "risk_match_rate": 1.0,
+            "param_missing_rate": 0.5,
+        },
+        args,
+    )
+
+    assert gate["enabled"] is True
+    assert gate["passed"] is False
+    assert any("task_success_rate" in failure for failure in gate["failures"])
+    assert any("param_missing_rate" in failure for failure in gate["failures"])
 
 
 def test_required_args_missing_flags_unknown_tools(monkeypatch, tmp_path):
