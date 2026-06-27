@@ -20,7 +20,7 @@ from app.tools.registry import ToolRegistry
         "git log --oneline",
         "git show --stat",
         "dir",
-        "rg ToolDefinition backend/app/tools/schemas.py",
+        "select-string ToolDefinition backend/app/tools/schemas.py",
         "where python",
         "whoami",
     ],
@@ -46,6 +46,13 @@ def test_validate_readonly_shell_allows_inspection_commands(command: str) -> Non
         "mkdir generated",
         "echo hi > generated.txt",
         "rg query | Out-File result.txt",
+        "rg ToolDefinition backend/app/tools/schemas.py",
+        "rg ToolDefinition --pre python",
+        "rg ToolDefinition --pre=python",
+        "rg ToolDefinition --pre-glob *.py",
+        "rg ToolDefinition --hostname-bin hostname",
+        "rg ToolDefinition --search-zip",
+        "rg -f patterns.txt backend",
         "curl https://example.com",
     ],
 )
@@ -76,7 +83,29 @@ def test_shell_readonly_does_not_execute_rejected_commands(monkeypatch: pytest.M
     assert calls == []
 
 
-def test_shell_readonly_rejects_git_branch_mutation_and_redirection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_shell_readonly_rejects_ripgrep_pre_without_execution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[Any] = []
+
+    def fake_run_command(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append((args, kwargs))
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
+
+    result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": 'rg needle --pre "python -c print(1)"'},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is False
+    assert result["readonly"] is False
+    assert "not in the read-only allowlist" in result["error"]
+    assert calls == []
+
+
+def test_shell_readonly_rejects_git_branch_mutation_and_redirection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls: list[Any] = []
 
     def fake_run_command(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -87,7 +116,9 @@ def test_shell_readonly_rejects_git_branch_mutation_and_redirection(monkeypatch:
     context = {"allowed_directories": [str(tmp_path)]}
 
     branch_result = developer_tools.shell_readonly({"cwd": str(tmp_path), "command": "git branch codex/test"}, context)
-    redirect_result = developer_tools.shell_readonly({"cwd": str(tmp_path), "command": "echo hi > generated.txt"}, context)
+    redirect_result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": "echo hi > generated.txt"}, context
+    )
 
     assert branch_result["ok"] is False
     assert branch_result["readonly"] is False
@@ -135,7 +166,13 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
 
     def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:
         calls.append({"command": command, "cwd": cwd, "shell": shell})
-        return {"returncode": 0, "stdout": "## main\n", "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
+        return {
+            "returncode": 0,
+            "stdout": "## main\n",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
 
     monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
 
@@ -156,12 +193,20 @@ def test_shell_readonly_executes_allowed_commands_as_readonly(monkeypatch: pytes
     assert calls[0]["command"][-2:] == ["status", "--short"]
 
 
-def test_shell_readonly_executes_builtins_without_process_spawn(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_shell_readonly_executes_builtins_without_process_spawn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls: list[dict[str, Any]] = []
 
     def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:
         calls.append({"command": command, "cwd": cwd, "shell": shell})
-        return {"returncode": 0, "stdout": "hello\r\n", "stderr": "", "stdout_truncated": False, "stderr_truncated": False}
+        return {
+            "returncode": 0,
+            "stdout": "hello\r\n",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
 
     monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
 
@@ -310,7 +355,9 @@ def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatc
         stderr = "partial stderr"
 
     def fake_run(*args: Any, **kwargs: Any):  # noqa: ANN202
-        raise developer_tools.subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"], output=Timeout.stdout, stderr=Timeout.stderr)
+        raise developer_tools.subprocess.TimeoutExpired(
+            cmd=args[0], timeout=kwargs["timeout"], output=Timeout.stdout, stderr=Timeout.stderr
+        )
 
     monkeypatch.setattr(developer_tools.subprocess, "run", fake_run)
 
@@ -343,7 +390,11 @@ def test_dev_test_run_background_returns_task_status(monkeypatch: pytest.MonkeyP
             }
 
     monkeypatch.setattr(developer_tools, "start_background_process", lambda *args, **kwargs: FakeTask())
-    monkeypatch.setattr(developer_tools, "background_task_status", lambda task_id: {"ok": True, "task_id": task_id, "status": "succeeded"})
+    monkeypatch.setattr(
+        developer_tools,
+        "background_task_status",
+        lambda task_id: {"ok": True, "task_id": task_id, "status": "succeeded"},
+    )
 
     started = developer_tools.test_run(
         {"cwd": str(tmp_path), "command": "pytest backend/tests", "background": True},
@@ -379,7 +430,9 @@ def test_diff_preview_returns_summary_and_truncation_marker(monkeypatch: pytest.
     assert "diff.external=" in calls[0]
 
 
-def test_shell_readonly_wraps_git_diff_with_external_execution_guards(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_shell_readonly_wraps_git_diff_with_external_execution_guards(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls: list[list[str]] = []
 
     def fake_run_command(command: list[str], *, cwd: Path, shell: bool = False) -> dict[str, Any]:  # noqa: ARG001
@@ -388,7 +441,9 @@ def test_shell_readonly_wraps_git_diff_with_external_execution_guards(monkeypatc
 
     monkeypatch.setattr(developer_tools, "_run_command", fake_run_command)
 
-    result = developer_tools.shell_readonly({"cwd": str(tmp_path), "command": "git diff -- backend/tests"}, {"allowed_directories": [str(tmp_path)]})
+    result = developer_tools.shell_readonly(
+        {"cwd": str(tmp_path), "command": "git diff -- backend/tests"}, {"allowed_directories": [str(tmp_path)]}
+    )
 
     assert result["ok"] is True
     assert calls
