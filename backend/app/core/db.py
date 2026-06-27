@@ -24,7 +24,7 @@ from app.core.db_schema import initialize_schema
 _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_override", default=None)
 AUDIT_GENESIS_HASH = "0" * 64
 AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"  # noqa: S105
-AUDIT_HMAC_SECRET_DIR = "secrets"
+AUDIT_HMAC_SECRET_DIR = "secrets"  # noqa: S105
 
 # Audit hot-path caches (2-H2): avoid re-reading the HMAC secret file and
 # re-querying the chain tail on every event. Single-writer assumption: failed
