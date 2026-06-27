@@ -7,8 +7,14 @@ import pytest
 
 from app.acceleration import onnx_sessions
 from app.core import db
+from app.core.schemas import PlanStep, Task, ToolResult
 from app.indexer.fts_index import FTSIndex
 from app.llm.registry import invalidate_settings_cache
+from app.orchestration.execution_engine import InMemoryRunStore, RunNotFoundError
+from app.orchestration.execution_models import LargeResultRef, RunObservation, RunPhase, RunState
+from app.orchestration.handlers.context import StepExecutionOutcome
+from app.orchestration.os_execution_engine import OSExecutionEngine
+from app.policy.risk import RiskLevel
 
 
 def test_db_connect_reuses_thread_connection_for_same_path(monkeypatch, tmp_path: Path) -> None:
@@ -79,6 +85,103 @@ def test_onnx_session_cache_evicts_least_recent(monkeypatch, tmp_path: Path) -> 
         ]
     finally:
         onnx_sessions.clear_session_cache()
+
+
+def test_in_memory_run_store_evicts_least_recent_run() -> None:
+    now = 0.0
+    store = InMemoryRunStore(max_runs=2, ttl_seconds=100, terminal_ttl_seconds=100, clock=lambda: now)
+
+    store.put(RunState(run_id="run_a", engine="os", phase=RunPhase.RUNNING))
+    store.put(RunState(run_id="run_b", engine="os", phase=RunPhase.RUNNING))
+    store.get("run_a")
+    store.put(RunState(run_id="run_c", engine="os", phase=RunPhase.RUNNING))
+
+    assert store.get("run_a").run_id == "run_a"
+    assert store.get("run_c").run_id == "run_c"
+    with pytest.raises(RunNotFoundError):
+        store.get("run_b")
+    assert len(store) == 2
+
+
+def test_in_memory_run_store_expires_terminal_runs_without_read_refresh() -> None:
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    store = InMemoryRunStore(max_runs=10, ttl_seconds=100, terminal_ttl_seconds=5, clock=clock)
+    store.put(RunState(run_id="run_done", engine="os", phase=RunPhase.COMPLETED))
+
+    now = 4.0
+    assert store.get("run_done").phase == RunPhase.COMPLETED
+    now = 6.0
+    with pytest.raises(RunNotFoundError):
+        store.get("run_done")
+
+
+def test_in_memory_run_store_trims_run_state_history() -> None:
+    store = InMemoryRunStore(max_observations=3, max_large_result_refs=2)
+    state = RunState(
+        run_id="run_history",
+        engine="os",
+        phase=RunPhase.RUNNING,
+        observations=[RunObservation(turn=index, source="test", message=str(index)) for index in range(5)],
+        large_result_refs=[LargeResultRef(ref_id=f"ref_{index}", path=f"result-{index}.json") for index in range(4)],
+    )
+
+    stored = store.put(state)
+    loaded = store.get("run_history")
+
+    assert [item.turn for item in stored.observations] == [2, 3, 4]
+    assert [item.turn for item in loaded.observations] == [2, 3, 4]
+    assert [item.ref_id for item in loaded.large_result_refs] == ["ref_2", "ref_3"]
+
+
+@pytest.mark.asyncio
+async def test_os_engine_records_only_recent_run_observations() -> None:
+    store = InMemoryRunStore(max_observations=3, max_large_result_refs=3)
+    engine = OSExecutionEngine(store=store)
+    state = RunState(
+        run_id="osrun_history",
+        engine="os",
+        phase=RunPhase.RUNNING,
+        observations=[RunObservation(turn=index, source="old", message=str(index)) for index in range(5)],
+        large_result_refs=[LargeResultRef(ref_id=f"old_ref_{index}", path=f"old-{index}.json") for index in range(3)],
+    )
+    task = Task(user_goal="bounded observations", mode="efficiency")
+    step = PlanStep(
+        task_id=task.id,
+        order=1,
+        agent_name="FileAgent",
+        tool_name="test.bound",
+        description="Record bounded observation",
+        args={},
+        risk_level=RiskLevel.R0_READ_ONLY,
+    )
+    result = ToolResult(
+        tool_call_id="call_bound",
+        ok=True,
+        output={
+            "persisted_result": True,
+            "path": "new-result.json",
+            "original_size": 42,
+            "preview": "new",
+        },
+        observation="new bounded observation",
+    )
+
+    updated = await engine._record_step_results(
+        state,
+        task,
+        {},
+        None,
+        turn=9,
+        step_outcomes=[(step, StepExecutionOutcome("succeeded", result))],
+        observations_by_step={},
+    )
+
+    assert [item.turn for item in updated.observations] == [3, 4, 9]
+    assert [item.ref_id for item in updated.large_result_refs] == ["old_ref_1", "old_ref_2", result.id]
 
 
 def test_index_rebuild_limit_preserves_existing_index(monkeypatch, tmp_path: Path) -> None:
