@@ -743,7 +743,7 @@ def test_os_reflection_decider_respects_configured_limits() -> None:
     assert OSReflectionDecider(max_per_run=0).should_reflect(_input(0)) is False
 
 
-def test_os_reflection_skips_equivalent_recovery_step() -> None:
+def test_os_reflection_skips_redundant_recovery_step() -> None:
     from types import SimpleNamespace
 
     from app.orchestration.os_reflection import OSReflectionDecision, apply_reflection_decision
@@ -767,7 +767,7 @@ def test_os_reflection_skips_equivalent_recovery_step() -> None:
         agent_name="BrowserAgent",
         tool_name="browser.read_page",
         description="Retry same page read.",
-        args={"url": "https://example.com", "dry_run": True},
+        args={"dry_run": True},
         risk_level=RiskLevel.R0_READ_ONLY,
     )
     plan = Plan(task_id=task.id, goal=task.user_goal, steps=[step])

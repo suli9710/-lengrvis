@@ -130,7 +130,7 @@ class RecoveryHandler:
             return await self.rollback_and_fail(task, plan, step, result, reason="no_alternative")
 
         recovery_step = self._create_recovery_step(step, action)
-        if _has_equivalent_recovery_step(plan, recovery_step):
+        if _has_equivalent_recovery_step(plan, recovery_step) or _is_redundant_recovery_step(step, recovery_step):
             record(
                 "task.recovery_duplicate_rejected",
                 orchestrator.name,
@@ -268,6 +268,14 @@ class RecoveryHandler:
 def _has_equivalent_recovery_step(plan: Plan, candidate: PlanStep) -> bool:
     candidate_key = _recovery_step_key(candidate)
     return any(_recovery_step_key(step) == candidate_key for step in plan.steps)
+
+
+def _is_redundant_recovery_step(failed_step: PlanStep, candidate: PlanStep) -> bool:
+    if candidate.tool_name != failed_step.tool_name:
+        return False
+    failed_args = dict(failed_step.args or {})
+    candidate_args = dict(candidate.args or {})
+    return all(key in failed_args and failed_args[key] == value for key, value in candidate_args.items())
 
 
 def _recovery_step_key(step: PlanStep) -> tuple[str, str, tuple[str, ...]]:

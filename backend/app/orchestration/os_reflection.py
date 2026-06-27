@@ -242,6 +242,8 @@ def _add_reflection_steps(plan: Plan, steps: list[PlanStep]) -> list[PlanStep]:
         signature = _reflection_step_signature(step)
         if signature in existing_signatures:
             continue
+        if _is_redundant_reflection_step(plan, step):
+            continue
         if not step.id or step.id in existing_ids:
             step.id = new_id("step")
         max_order += 1
@@ -295,6 +297,19 @@ def _reflection_step_signature(step: PlanStep) -> tuple[str, str, tuple[str, ...
         _stable_json(step.args or {}),
         tuple(str(item) for item in (step.depends_on or [])),
     )
+
+
+def _is_redundant_reflection_step(plan: Plan, candidate: PlanStep) -> bool:
+    if candidate.depends_on:
+        return False
+    candidate_args = dict(candidate.args or {})
+    for existing in plan.steps:
+        if candidate.tool_name != existing.tool_name or existing.depends_on:
+            continue
+        existing_args = dict(existing.args or {})
+        if all(key in existing_args and existing_args[key] == value for key, value in candidate_args.items()):
+            return True
+    return False
 
 
 def _stable_json(value: object) -> str:
