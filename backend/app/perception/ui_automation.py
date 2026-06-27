@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import hmac
 import logging
 import sys
 import time
@@ -9,12 +10,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.schemas import SafetyReview
+from app.core import db
+from app.core.schemas import Approval, ApprovalStatus, SafetyReview, now_iso
 from app.perception.app_context import get_current_app_context
 from app.perception.schemas import AppContext, Rect, UIElement
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.execution_marker import execution_is_marked_approved
+from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
-
 
 logger = logging.getLogger(__name__)
 
@@ -243,8 +247,15 @@ class UIAutomationTarget(ABC):
 class WindowsCOMUIAutomationTarget(UIAutomationTarget):
     """Windows COM UIAutomation adapter with graceful degradation."""
 
-    def __init__(self, policy_engine: PolicyEngine | None = None, *, automation: Any | None = None) -> None:
+    def __init__(
+        self,
+        policy_engine: PolicyEngine | None = None,
+        *,
+        automation: Any | None = None,
+        approval_context: dict[str, Any] | None = None,
+    ) -> None:
         self.policy_engine = policy_engine or PolicyEngine()
+        self.approval_context = approval_context or {}
         self._automation = automation
         self._available_error = ""
         if automation is None:
@@ -757,6 +768,16 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             )
             if review.verdict == SafetyVerdict.DENY:
                 return review
+            approval_error = self._approval_gate_error(task_id, step_id, tool_name, args)
+            if approval_error:
+                return SafetyReview(
+                    task_id=task_id or "ui_automation",
+                    step_id=step_id,
+                    target_type="tool_call",
+                    verdict=SafetyVerdict.DENY,
+                    risk_level=risk_level,
+                    reasons=[approval_error],
+                )
             return SafetyReview(
                 task_id=task_id or "ui_automation",
                 step_id=step_id,
@@ -771,6 +792,58 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             tool_name,
             args,
             risk_level,
+        )
+
+    def _approval_gate_error(
+        self,
+        task_id: str,
+        step_id: str | None,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> str:
+        if execution_is_marked_approved(self.approval_context):
+            return ""
+        approval_id = str(args.get("approval_id") or "").strip()
+        if not approval_id:
+            return "UIAutomation live execution requires a valid approved approval_id."
+        try:
+            data = db.fetch_one("approvals", approval_id)
+        except Exception as exc:  # noqa: BLE001 - storage may be unavailable in low-level adapters/tests.
+            return f"UIAutomation approval storage lookup failed: {exc}"
+        if not data:
+            return "UIAutomation approval id was not found in the approval database."
+        try:
+            approval = Approval.model_validate(data)
+        except Exception as exc:  # noqa: BLE001
+            return f"UIAutomation approval record is invalid: {exc}"
+        binding_error = _ui_automation_approval_binding_error(
+            approval,
+            tool_name,
+            args,
+            context=self.approval_context,
+            settings=getattr(self.policy_engine, "settings", None),
+            task_id=task_id,
+            step_id=step_id,
+            allow_consumed=False,
+        )
+        if binding_error:
+            return binding_error
+        try:
+            claimed = db.claim_approval_for_execution(approval.id, now_iso())
+        except Exception as exc:  # noqa: BLE001
+            return f"UIAutomation approval claim failed: {exc}"
+        if not claimed:
+            return "UIAutomation approval has already been consumed or is no longer approved."
+        claimed_approval = Approval.model_validate(claimed)
+        return _ui_automation_approval_binding_error(
+            claimed_approval,
+            tool_name,
+            args,
+            context=self.approval_context,
+            settings=getattr(self.policy_engine, "settings", None),
+            task_id=task_id,
+            step_id=step_id,
+            allow_consumed=True,
         )
 
 
@@ -917,11 +990,98 @@ class UnavailableUIAutomationTarget(UIAutomationTarget):
         return []
 
 
-def create_ui_automation_target(policy_engine: PolicyEngine | None = None) -> UIAutomationTarget:
-    target = WindowsCOMUIAutomationTarget(policy_engine=policy_engine)
+def create_ui_automation_target(
+    policy_engine: PolicyEngine | None = None,
+    *,
+    approval_context: dict[str, Any] | None = None,
+) -> UIAutomationTarget:
+    target = WindowsCOMUIAutomationTarget(policy_engine=policy_engine, approval_context=approval_context)
     if target.available or sys.platform == "win32":
         return target
     return UnavailableUIAutomationTarget(target.unavailable_reason)
+
+
+def _ui_automation_approval_binding_error(
+    approval: Approval,
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    context: dict[str, Any] | None,
+    settings: Any,
+    task_id: str,
+    step_id: str | None,
+    allow_consumed: bool,
+) -> str:
+    if approval.approval_type != "tool_call":
+        return "UIAutomation approval is not bound to a tool call."
+    if approval.status != ApprovalStatus.APPROVED:
+        return f"UIAutomation approval status is {approval.status}; expected approved."
+    if approval.consumed_at and not allow_consumed:
+        return "UIAutomation approval has already been consumed."
+    tool = _ui_automation_tool_definition(tool_name)
+    if approval.tool_name != tool_name:
+        return "UIAutomation approval tool name does not match this action."
+    if task_id and approval.task_id != task_id:
+        return "UIAutomation approval task does not match this action."
+    if step_id and approval.step_id != step_id:
+        return "UIAutomation approval step does not match this action."
+    missing = [
+        key
+        for key, value in {
+            "tool_name": approval.tool_name,
+            "args_binding_hmac": approval.args_binding_hmac,
+            "preview_hmac": approval.preview_hmac,
+            "settings_fingerprint": approval.settings_fingerprint,
+            "permission_policy_version": approval.permission_policy_version,
+            "tool_version": approval.tool_version,
+        }.items()
+        if not value
+    ]
+    if missing:
+        return f"UIAutomation approval lacks binding metadata: {', '.join(missing)}."
+    if approval.risk_level and approval.risk_level != tool.risk_level.value:
+        return "UIAutomation approval risk level does not match this tool."
+    if approval.tool_version != getattr(tool, "tool_version", "1"):
+        return "UIAutomation approval tool version does not match this tool."
+    expected_args = args_binding_hmac(
+        tool_name,
+        _ui_automation_approval_args(args),
+        task_id=approval.task_id,
+        step_id=approval.step_id,
+    )
+    if not hmac.compare_digest(str(approval.args_binding_hmac or ""), str(expected_args or "")):
+        return "UIAutomation approval arguments do not match this action."
+    expected_preview = preview_hmac(approval.diff_preview)
+    if not hmac.compare_digest(str(approval.preview_hmac or ""), str(expected_preview or "")):
+        return "UIAutomation approval preview was modified after review."
+    runtime_context = context or {}
+    runtime_settings = runtime_context.get("settings") or settings
+    allowed_directories = list(
+        runtime_context.get("allowed_directories") or getattr(runtime_settings, "allowed_directories", []) or []
+    )
+    expected_settings = settings_fingerprint(runtime_settings, allowed_directories=allowed_directories)
+    if not hmac.compare_digest(str(approval.settings_fingerprint or ""), str(expected_settings or "")):
+        return "UIAutomation runtime settings changed after approval preview."
+    expected_policy = permission_policy_version(PermissionStore().updated_at())
+    if not hmac.compare_digest(str(approval.permission_policy_version or ""), str(expected_policy or "")):
+        return "UIAutomation permission policy changed after approval preview."
+    return ""
+
+
+def _ui_automation_approval_args(args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in args.items()
+        if key not in {"approved", "approval_id", "dry_run"}
+    }
+
+
+def _ui_automation_tool_definition(tool_name: str) -> Any:
+    from app.tools.registry import register_all_tools, registry
+
+    if not registry.list():
+        register_all_tools()
+    return registry.get(tool_name)
 
 
 def _coerce_selector(

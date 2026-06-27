@@ -21,13 +21,13 @@ MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS = ((MAX_VISION_GROUNDING_IMAGE_BYTES + 2
 
 
 def active_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     app_context = asyncio.run(target.active_window())
     return {"ok": bool(app_context.available), "app_context": app_context.model_dump(mode="json")}
 
 
 def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.observe(
             _selector_args(args),
@@ -38,7 +38,7 @@ def observe(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def find_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     element = asyncio.run(
         target.find_element(
             _selector_args(args),
@@ -48,7 +48,7 @@ def find_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
 
 
 def wait_for_element(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     element = asyncio.run(
         target.wait_for_element(
             _selector_args(args),
@@ -65,7 +65,7 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return _preview("click", selector)
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("click")
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.click(
             selector,
@@ -84,7 +84,7 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return _preview("type_text", {**selector, "characters": len(text)})
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("type_text")
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.type_text(
             selector,
@@ -98,18 +98,18 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def focus(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(target.focus(_selector_args(args)))
 
 
 def list_windows(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     windows = asyncio.run(target.list_windows())
     return {"ok": True, "windows": windows, "count": len(windows)}
 
 
 def focus_window(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.focus_window(
             title=str(args.get("title") or ""),
@@ -134,7 +134,7 @@ def click_at(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return _preview("click_at", detail)
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("click_at")
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.click_at(
             x,
@@ -162,7 +162,7 @@ def drag(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return _preview("drag", detail)
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("drag")
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.drag(
             detail["start_x"],
@@ -187,7 +187,7 @@ def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return _preview("key_press", {"key": key})
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("key_press")
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.key_press(
             key,
@@ -210,7 +210,7 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return _preview("hotkey", {"keys": keys})
     if not _has_approval(args) or not execution_is_marked_approved(context):
         return _approval_error("hotkey")
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.hotkey(
             keys,
@@ -223,7 +223,7 @@ def hotkey(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 
 def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     return asyncio.run(
         target.screenshot(
             max_width=int(args.get("max_width") or args.get("maxWidth") or 1280),
@@ -237,13 +237,13 @@ def get_property(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     prop = str(args.get("prop") or args.get("property") or "")
     if not prop:
         return {"ok": False, "error": "Property name is required."}
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     value = asyncio.run(target.get_property(_selector_args(args), prop))
     return {"ok": value is not None, "property": prop, "value": value}
 
 
 def get_children(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     children = asyncio.run(target.get_children(_selector_args(args)))
     return {"ok": True, "children": [child.to_dict() for child in children], "count": len(children)}
 
@@ -255,7 +255,7 @@ def locate_on_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     them still goes through ui_automation.click_at, which keeps the
     dry-run + approval contract for coordinate clicks.
     """
-    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")))
+    target = create_ui_automation_target(policy_engine=PolicyEngine(context.get("settings")), approval_context=context)
     selector = _selector_args(args)
     description = str(args.get("target") or args.get("description") or "").strip()
 

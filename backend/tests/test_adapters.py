@@ -132,7 +132,7 @@ def test_webhook_dry_run_redacts_sensitive_payload_fields_recursively():
 
     assert result["ok"] is True
     assert result["request"]["payload"]["api_key"] == "***"
-    assert result["request"]["payload"]["nested"][0]["token"] == "***"
+    assert result["request"]["payload"]["nested"][0]["token"] == "***"  # noqa: S105 - redaction marker.
     assert result["request"]["payload"]["nested"][1]["safe"] == "visible"
     assert "payload-secret" not in str(result)
     assert "nested-secret" not in str(result)
@@ -158,12 +158,24 @@ def test_webhook_execute_pins_outbound_url(monkeypatch):
     adapter.connect()
     monkeypatch.setattr(
         "app.adapters.webhook.pin_outbound_http_url",
-        lambda url, allow_private=False: type("Pinned", (), {"url": "https://203.0.113.10/hook", "headers": {"Host": "hooks.example.test"}, "extensions": {}})(),
+        lambda url, allow_private=False: type(
+            "Pinned",
+            (),
+            {
+                "url": "https://203.0.113.10/hook",
+                "headers": {"Host": "hooks.example.test"},
+                "extensions": {},
+            },
+        )(),
     )
 
     result = adapter.execute(
         "post_webhook",
-        {"url": "https://hooks.example.test/hook", "payload": {"text": "hello"}, "headers": {"X-Trace": "1"}},
+        {
+            "url": "https://hooks.example.test/hook",
+            "payload": {"text": "hello"},
+            "headers": {"Host": "evil.example.test", "X-Trace": "1"},
+        },
     )
 
     assert result["ok"] is True

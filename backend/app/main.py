@@ -44,6 +44,7 @@ from app.observability import (
     register_observability_middleware,
 )
 from app.security.cors import configure_cors
+from app.security.desktop_api import assert_no_production_test_escape_hatches
 from app.security.middleware import register_security_middleware
 
 
@@ -59,6 +60,7 @@ def _dev_api_enabled(settings: AppSettings) -> bool:
 def create_app() -> FastAPI:
     configure_logging()
     install_crash_handlers()
+    assert_no_production_test_escape_hatches()
     db.init_db()
     settings = get_effective_settings()
     app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.0", lifespan=full_backend_lifespan)

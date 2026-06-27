@@ -78,7 +78,6 @@ def _env_flag(name: str) -> bool:
 def _insecure_plaintext_allowed() -> bool:
     return (
         _env_flag(ALLOW_INSECURE_LOCAL_SECRETS_ENV)
-        or _env_flag("LENGRVIS_TEST")
         or bool(str(os.getenv("PYTEST_CURRENT_TEST") or "").strip())
     )
 

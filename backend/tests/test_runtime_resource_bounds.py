@@ -213,3 +213,42 @@ def test_index_rebuild_limit_preserves_existing_index(monkeypatch, tmp_path: Pat
     assert [row["name"] for row in rows] == ["kept.txt"]
 
     db.close_thread_connection()
+
+
+def test_index_rebuild_subset_preserves_other_scopes(monkeypatch, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    first_workspace = tmp_path / "first"
+    second_workspace = tmp_path / "second"
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    db.close_thread_connection()
+    db.reset_init_db_cache()
+    invalidate_settings_cache()
+    db.init_db()
+
+    def embedder(texts: list[str]) -> list[list[float]]:
+        return [[1.0] for _text in texts]
+
+    old_first = first_workspace / "old-first.txt"
+    kept_second = second_workspace / "kept-second.txt"
+    old_first.write_text("old first scoped document", encoding="utf-8")
+    kept_second.write_text("second scoped document should stay indexed", encoding="utf-8")
+
+    initial = FTSIndex(embedder=embedder).rebuild([str(first_workspace), str(second_workspace)])
+    assert initial["files_indexed"] == 2
+
+    old_first.unlink()
+    new_first = first_workspace / "new-first.txt"
+    new_first.write_text("new first scoped document", encoding="utf-8")
+    subset = FTSIndex(embedder=embedder).rebuild([str(first_workspace)])
+
+    assert subset["files_indexed"] == 1
+    with db.connect() as conn:
+        rows = conn.execute("SELECT normalized_path FROM indexed_files ORDER BY normalized_path").fetchall()
+    indexed_paths = [row["normalized_path"] for row in rows]
+    assert str(old_first.resolve()) not in indexed_paths
+    assert str(new_first.resolve()) in indexed_paths
+    assert str(kept_second.resolve()) in indexed_paths
+
+    db.close_thread_connection()

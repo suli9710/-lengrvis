@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.config import AppSettings
 from app.core import db
-from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
 from app.orchestration.developer_engine import DeveloperExecutionEngine
 from app.orchestration.engine_router import EngineRouter, configured_default_engine, configured_max_turns, route_engine
 from app.orchestration.execution_engine import InMemoryRunStore
 from app.orchestration.execution_models import RunPhase, RunState
+from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.lengrvis_code_config import LengrvisCodeConfig, default_allowed_tools
 from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.policy.risk import RiskLevel
@@ -717,6 +719,95 @@ async def test_os_engine_concurrent_runs_on_shared_engine_do_not_cross_orchestra
     assert step_b.status == StepStatus.SUCCEEDED
     assert calls_a == [{"label": "primary"}]
     assert calls_b == [{"label": "primary"}]
+
+
+@pytest.mark.asyncio
+async def test_os_engine_parallel_recovery_waits_for_batch_and_runs_serially() -> None:
+    import asyncio
+
+    events: list[tuple[str, str, bool]] = []
+    recovery_threaded: list[bool] = []
+
+    async def fake_execute(
+        task: Task,
+        plan: Plan,
+        step: PlanStep,
+        context: dict[str, object],
+        observation: ToolResult | None,
+        *,
+        threaded_tools: bool,
+    ) -> StepExecutionOutcome:
+        events.append((step.id, "start", threaded_tools))
+        if step.id == "A":
+            await asyncio.sleep(0)
+            return StepExecutionOutcome(
+                "failed",
+                ToolResult(tool_call_id=step.id, ok=False, error="planned failure", observation="failed"),
+            )
+        await asyncio.sleep(0.05)
+        events.append((step.id, "end", threaded_tools))
+        return StepExecutionOutcome("succeeded", ToolResult(tool_call_id=step.id, ok=True, observation="ok"))
+
+    class Recovery:
+        async def recover_failed_step(
+            self,
+            task: Task,
+            plan: Plan,
+            step: PlanStep,
+            result: ToolResult | None,
+            context: dict[str, object],
+            observation: ToolResult | None,
+            *,
+            threaded_tools: bool = False,
+            recovery_chain_id: str | None = None,
+        ) -> StepExecutionOutcome:
+            recovery_threaded.append(threaded_tools)
+            events.append((step.id, "recovery", threaded_tools))
+            return StepExecutionOutcome(
+                "recovered",
+                ToolResult(tool_call_id=f"{step.id}_recovered", ok=True, observation="recovered"),
+            )
+
+    task = Task(id="task_parallel_recovery", user_goal="parallel recovery", mode="efficiency")
+    steps = [
+        PlanStep(
+            id="A",
+            task_id=task.id,
+            order=1,
+            agent_name="FileAgent",
+            tool_name="test.a",
+            description="Fail in the original parallel batch.",
+        ),
+        PlanStep(
+            id="B",
+            task_id=task.id,
+            order=2,
+            agent_name="FileAgent",
+            tool_name="test.b",
+            description="Finish the original parallel batch.",
+        ),
+    ]
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=steps)
+    engine = OSExecutionEngine(
+        orchestrator=SimpleNamespace(
+            _execute_step=fake_execute,
+            _dependency_observation=lambda step, observations: None,
+            recovery_handler=Recovery(),
+        )
+    )
+
+    results = await engine._execute_selected_steps(
+        task,
+        plan,
+        steps,
+        {"task_id": task.id, "run_id": "osrun_parallel_recovery"},
+        {},
+        threaded_tools=True,
+    )
+
+    assert [outcome.kind for _step, outcome in results] == ["recovered", "succeeded"]
+    assert recovery_threaded == [False]
+    assert events.index(("B", "end", True)) < events.index(("A", "recovery", False))
 
 
 def test_os_reflection_decider_respects_configured_limits() -> None:

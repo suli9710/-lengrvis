@@ -13,13 +13,19 @@ from app.config import env_flag, get_base_settings, get_env
 from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_secure_transport_scheme
 from app.security.local_secret import load_or_create_local_secret
 
-DESKTOP_API_TOKEN_HEADER = "x-lengrvis-desktop-token"
-DESKTOP_API_TOKEN_FILE = "desktop_api.secret"
+DESKTOP_API_TOKEN_HEADER = "x-lengrvis-desktop-token"  # noqa: S105 - header name, not a secret.
+DESKTOP_API_TOKEN_FILE = "desktop_api.secret"  # noqa: S105 - file name, not a secret.
 DESKTOP_API_WS_PROTOCOL_PREFIX = "lengrvis.desktop.token."
 DESKTOP_SIGNED_RESOURCE_EXPIRES_QUERY = "expires"
 DESKTOP_SIGNED_RESOURCE_SIGNATURE_QUERY = "signature"
 DESKTOP_SIGNED_RESOURCE_MAX_TTL_SECONDS = 10 * 60
 DESKTOP_SIGNED_RESOURCE_PATHS = {"/api/library/preview"}
+PRODUCTION_ENV_VALUES = {"prod", "production", "release"}
+PRODUCTION_TEST_ESCAPE_ENVS = (
+    "LENGRVIS_TEST",
+    "LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL",
+    "LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS",
+)
 logger = logging.getLogger(__name__)
 
 
@@ -156,6 +162,35 @@ def _desktop_api_token_optional() -> bool:
 
 def desktop_api_token_optional_for_test() -> bool:
     return _desktop_api_token_optional()
+
+
+def production_test_escape_fingerprint() -> dict[str, str]:
+    production_envs: dict[str, str] = {}
+    for name in ("LENGRVIS_ENV", "APP_ENV", "ENVIRONMENT"):
+        value = str(get_env(name) or "").strip()
+        if value.lower() in PRODUCTION_ENV_VALUES:
+            production_envs[name] = value
+    if not production_envs:
+        return {}
+
+    unsafe_flags: dict[str, str] = {}
+    for name in PRODUCTION_TEST_ESCAPE_ENVS:
+        if env_flag(name):
+            unsafe_flags[name] = "<enabled>"
+    if str(get_env("PYTEST_CURRENT_TEST") or "").strip():
+        unsafe_flags["PYTEST_CURRENT_TEST"] = "<set>"
+    if not unsafe_flags:
+        return {}
+
+    return {**production_envs, **unsafe_flags}
+
+
+def assert_no_production_test_escape_hatches() -> None:
+    fingerprint = production_test_escape_fingerprint()
+    if not fingerprint:
+        return
+    env_names = ", ".join(sorted(fingerprint))
+    raise RuntimeError(f"Refusing to start production backend with test/dev security escape hatches set: {env_names}")
 
 
 def _is_test_environment() -> bool:

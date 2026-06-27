@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from watchdog.events import FileModifiedEvent
 
 from app.core import db
 from app.indexer import file_watcher as file_watcher_module
+from app.indexer import fts_index as fts_index_module
 from app.indexer.fts_index import FTSIndex
 
 
@@ -131,6 +133,71 @@ def test_remove_file_returns_false_for_missing():
     """Removing a non-existent file returns False."""
     fts = FTSIndex()
     assert fts.remove_file("C:\\nonexistent\\fake.txt") is False
+
+
+def test_index_file_rolls_back_partial_write_on_failure(monkeypatch, allowed_dir: Path):
+    test_file = allowed_dir / "partial.txt"
+    test_file.write_text("partial index write should roll back", encoding="utf-8")
+
+    def fail_chunk_insert(_conn, _chunks):
+        raise RuntimeError("chunk write failed")
+
+    monkeypatch.setattr(fts_index_module, "_insert_document_chunk_rows", fail_chunk_insert)
+
+    with pytest.raises(RuntimeError, match="chunk write failed"):
+        FTSIndex(embedder=lambda texts: [[1.0] for _text in texts]).index_file(
+            str(test_file),
+            [str(allowed_dir)],
+        )
+
+    with db.connect() as conn:
+        file_count = conn.execute("SELECT COUNT(*) AS count FROM indexed_files").fetchone()["count"]
+        chunk_count = conn.execute("SELECT COUNT(*) AS count FROM document_chunks").fetchone()["count"]
+    assert file_count == 0
+    assert chunk_count == 0
+
+
+def test_remove_file_rolls_back_partial_delete_on_failure(allowed_dir: Path):
+    test_file = allowed_dir / "blocked-delete.txt"
+    test_file.write_text("blocked delete should leave index intact", encoding="utf-8")
+    normalized = str(test_file.resolve())
+    fts = FTSIndex(embedder=lambda texts: [[1.0] for _text in texts])
+    assert fts.index_file(str(test_file), [str(allowed_dir)]) is True
+
+    with db.connect() as conn:
+        file_id = conn.execute(
+            "SELECT id FROM indexed_files WHERE normalized_path = ?",
+            (normalized,),
+        ).fetchone()["id"]
+        conn.execute(
+            """
+            CREATE TRIGGER block_indexed_file_delete
+            BEFORE DELETE ON indexed_files
+            BEGIN
+                SELECT RAISE(ABORT, 'blocked delete');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.DatabaseError, match="blocked delete"):
+        fts.remove_file(normalized)
+
+    with db.connect() as conn:
+        file_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM indexed_files WHERE id = ?",
+            (file_id,),
+        ).fetchone()["count"]
+        chunk_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM document_chunks WHERE file_id = ?",
+            (file_id,),
+        ).fetchone()["count"]
+        embedding_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM document_chunk_embeddings WHERE file_id = ?",
+            (file_id,),
+        ).fetchone()["count"]
+    assert file_count == 1
+    assert chunk_count == 1
+    assert embedding_count == 1
 
 
 def test_file_watcher_debounce(allowed_dir: Path):

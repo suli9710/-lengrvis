@@ -61,7 +61,11 @@ def test_rebuild_persists_embeddings_and_semantic_search_reranks(tmp_path: Path)
         persisted = conn.execute("SELECT COUNT(*) AS count FROM document_chunk_embeddings").fetchone()["count"]
     assert persisted == 3
 
-    result = VectorIndex(embedder=semantic_embedder).search("automobile service", limit=3)
+    result = VectorIndex(embedder=semantic_embedder).search(
+        "automobile service",
+        limit=3,
+        allowed_directories=[str(workspace)],
+    )
 
     assert result["source"] in {"fts_vector_rerank", "vector_scan"}
     assert result["count"] == 3
@@ -151,7 +155,11 @@ def test_semantic_search_uses_fts_candidates_before_rerank(tmp_path: Path) -> No
     )
 
     FTSIndex(embedder=semantic_embedder).rebuild([str(workspace)])
-    result = VectorIndex(embedder=semantic_embedder).search("repair automobile", limit=3)
+    result = VectorIndex(embedder=semantic_embedder).search(
+        "repair automobile",
+        limit=3,
+        allowed_directories=[str(workspace)],
+    )
 
     assert result["source"] == "fts_vector_rerank"
     assert result["candidate_count"] >= 3
@@ -175,6 +183,7 @@ def test_semantic_search_falls_back_to_lexical_candidate_when_embeddings_missing
     result = VectorIndex(embedder=lambda texts: [[0.0, 1.0] for _ in texts]).search(
         "spaceship orbit",
         limit=3,
+        allowed_directories=[str(workspace)],
     )
 
     assert result["source"] == "fts_lexical_fallback"
@@ -199,6 +208,7 @@ def test_semantic_search_includes_missing_embedding_candidate_with_embedded_matc
     result = VectorIndex(embedder=lambda texts: [[0.0, 1.0] for _ in texts]).search(
         "spaceship orbit",
         limit=3,
+        allowed_directories=[str(workspace)],
     )
 
     names = [item["name"] for item in result["results"]]
@@ -217,7 +227,12 @@ def test_bounded_1000_document_indexing_perf(tmp_path: Path) -> None:
         )
 
     rebuild = FTSIndex(embedder=semantic_embedder, embedding_batch_size=128).rebuild([str(workspace)])
-    result = VectorIndex(embedder=semantic_embedder).search("automobile garage", limit=5, scan_limit=1000)
+    result = VectorIndex(embedder=semantic_embedder).search(
+        "automobile garage",
+        limit=5,
+        scan_limit=1000,
+        allowed_directories=[str(workspace)],
+    )
 
     assert rebuild["files_indexed"] == 1000
     assert rebuild["embeddings_indexed"] == 1000
@@ -235,7 +250,23 @@ def test_vector_scan_is_bounded_to_1000_chunks(tmp_path: Path) -> None:
         )
     FTSIndex(embedder=semantic_embedder, embedding_batch_size=128).rebuild([str(workspace)])
 
-    result = VectorIndex(embedder=semantic_embedder).search("spaceship orbit", scan_limit=1000)
+    result = VectorIndex(embedder=semantic_embedder).search(
+        "spaceship orbit",
+        scan_limit=1000,
+        allowed_directories=[str(workspace)],
+    )
 
     assert result["source"] == "vector_scan"
     assert result["candidate_count"] == 1000
+
+
+def test_vector_search_without_allowed_directories_is_fail_closed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "garage.txt").write_text("Vehicle automobile garage notes.", encoding="utf-8")
+    FTSIndex(embedder=semantic_embedder).rebuild([str(workspace)])
+
+    result = VectorIndex(embedder=semantic_embedder).search("automobile")
+
+    assert result["results"] == []
+    assert result["count"] == 0

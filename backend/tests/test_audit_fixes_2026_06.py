@@ -20,7 +20,7 @@ from app.core.paths import SYSTEM_ROOTS
 from app.core.schemas import RunEngine, Task
 from app.main import create_app
 from app.orchestration.task_phase import TaskPhase
-from app.security.desktop_api import desktop_api_token_optional_for_test
+from app.security.desktop_api import assert_no_production_test_escape_hatches, desktop_api_token_optional_for_test
 from app.services import run_service, run_service_background
 from app.services.task_service import handle_chat
 
@@ -71,6 +71,26 @@ def test_desktop_token_optional_still_honored_for_lengrvis_test(monkeypatch):
     monkeypatch.setenv("LENGRVIS_TEST", "1")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     assert desktop_api_token_optional_for_test() is True
+
+
+def test_production_environment_refuses_test_escape_hatches(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_ENV", "production")
+    monkeypatch.setenv("LENGRVIS_TEST", "1")
+
+    with pytest.raises(RuntimeError, match="Refusing to start production backend"):
+        assert_no_production_test_escape_hatches()
+
+
+def test_production_environment_without_escape_hatches_can_start(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_ENV", "production")
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.setenv("LENGRVIS_TEST", "0")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "false")
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "0")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    assert_no_production_test_escape_hatches()
 
 
 def test_desktop_token_guard_allows_cors_preflight_without_token(monkeypatch, tmp_path):

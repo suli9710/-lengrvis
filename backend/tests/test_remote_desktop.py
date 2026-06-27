@@ -711,6 +711,47 @@ def test_remote_input_websocket_rate_limits_event_burst(monkeypatch: pytest.Monk
     assert any(event["event_type"] == "remote.input.rate_limited" for event in db.fetch_many("audit_events", limit=20))
 
 
+def test_remote_input_rate_limit_is_shared_by_grant_and_device(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_MAX_EVENTS_PER_WINDOW", 1)
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS", 60.0)
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMITERS", {})
+    calls: list[dict[str, object]] = []
+
+    def fake_handle(event: dict[str, object], *, claims: dict[str, object] | None = None) -> dict[str, object]:
+        calls.append({"event": event, "claims": claims or {}})
+        return {"type": "accepted"}
+
+    monkeypatch.setattr(routes_remote, "handle_remote_input_event", fake_handle)
+    token, _grant_id = _remote_input_grant_token("mobile_input_shared_limit", "Shared Limit Host")
+    client = TestClient(_test_app())
+
+    with client.websocket_connect(
+        "/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        websocket.send_json({"type": "click", "x": 100, "y": 200})
+        assert websocket.receive_json() == {"type": "accepted"}
+
+    with client.websocket_connect(
+        "/ws/remote/input",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        websocket.send_json({"type": "click", "x": 101, "y": 201})
+        assert websocket.receive_json() == {
+            "type": "error",
+            "code": "remote_input.rate_limited",
+            "message": "Remote input rate limit exceeded.",
+            "status_code": 429,
+        }
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_json()
+
+    assert len(calls) == 1
+
+
 def test_remote_input_websocket_pending_approval_limit_fails_closed(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     device_id = "mobile_input_pending_limit"

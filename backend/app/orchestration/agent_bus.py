@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 _PERSIST_QUEUE_MAX_SIZE = int(os.environ.get("LENGRVIS_PERSIST_QUEUE_MAX_SIZE", "10000"))
 _PERSIST_BACKPRESSURE_TIMEOUT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_TIMEOUT", "5.0"))
+_PERSIST_BACKPRESSURE_MAX_WAIT = float(os.environ.get("LENGRVIS_PERSIST_BACKPRESSURE_MAX_WAIT", "30.0"))
 _PERSIST_QUEUE: queue.Queue[tuple[AgentMessage, str]] = queue.Queue(maxsize=_PERSIST_QUEUE_MAX_SIZE)
 _PERSIST_STATE = threading.Condition()
 _PERSIST_PENDING = 0
@@ -89,16 +90,54 @@ def _enqueue_persist(message: AgentMessage) -> None:
     with _PERSIST_STATE:
         _PERSIST_PENDING += 1
 
+    item = (message, data_dir)
+    try:
+        if _running_in_event_loop():
+            _PERSIST_QUEUE.put_nowait(item)
+        else:
+            _put_persist_item_with_backpressure(item, message.id)
+    except queue.Full as exc:
+        _decrement_pending_persist()
+        raise AgentMessagePersistBackpressureError(
+            f"agent_bus persist queue is full; refusing to block event loop for message {message.id}"
+        ) from exc
+    except AgentMessagePersistBackpressureError:
+        _decrement_pending_persist()
+        raise
+
+
+def _put_persist_item_with_backpressure(item: tuple[AgentMessage, str], message_id: str) -> None:
+    deadline = time.monotonic() + max(0.0, _PERSIST_BACKPRESSURE_MAX_WAIT)
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AgentMessagePersistBackpressureError(
+                f"agent_bus persist queue stayed full for {_PERSIST_BACKPRESSURE_MAX_WAIT:.1f}s"
+            )
         try:
-            _PERSIST_QUEUE.put((message, data_dir), timeout=_PERSIST_BACKPRESSURE_TIMEOUT)
+            _PERSIST_QUEUE.put(item, timeout=min(max(0.001, _PERSIST_BACKPRESSURE_TIMEOUT), remaining))
             return
         except queue.Full:
             logger.error(
                 "agent_bus: persist queue full after %.1fs backpressure; waiting to preserve durable message %s",
                 _PERSIST_BACKPRESSURE_TIMEOUT,
-                message.id,
+                message_id,
             )
+
+
+def _decrement_pending_persist() -> None:
+    global _PERSIST_PENDING
+    with _PERSIST_STATE:
+        _PERSIST_PENDING -= 1
+        _PERSIST_STATE.notify_all()
+
+
+def _running_in_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
@@ -117,6 +156,10 @@ def flush_agent_message_writes(timeout_seconds: float = 10.0) -> bool:
 
 class AgentMessageReadConsistencyError(RuntimeError):
     """Raised when agent_messages reads would observe a stale timeline."""
+
+
+class AgentMessagePersistBackpressureError(RuntimeError):
+    """Raised when a publish cannot be durably queued without blocking asyncio."""
 
 
 def _flush_agent_messages_for_read() -> None:

@@ -92,6 +92,21 @@ def test_non_windows_without_keyring_fails_closed_outside_test(monkeypatch, tmp_
     assert not secret_path.exists()
 
 
+def test_lengrvis_test_alone_does_not_allow_plaintext_fallback(monkeypatch, tmp_path: Path):
+    if dpapi_available():
+        pytest.skip("DPAPI is the secure backend on Windows")
+    secret_path = tmp_path / "unit.secret"
+    monkeypatch.setenv("LENGRVIS_TEST", "1")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", raising=False)
+    monkeypatch.setattr(local_secret, "keyring_available", lambda: False)
+
+    with pytest.raises(RuntimeError):
+        load_or_create_local_secret(secret_path, unavailable_message="unavailable")
+
+    assert not secret_path.exists()
+
+
 def test_explicit_insecure_dev_fallback_keeps_plaintext_on_non_windows(monkeypatch, tmp_path: Path):
     if dpapi_available():
         pytest.skip("DPAPI is the secure backend on Windows")

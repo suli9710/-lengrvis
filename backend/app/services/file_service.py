@@ -51,11 +51,7 @@ def search_files(query: str) -> dict:
             },
         }
 
-    indexed = [
-        item
-        for item in index.search(normalized_query)
-        if _within_allowed_directories(str(item.get("path") or ""), settings.allowed_directories)
-    ]
+    indexed = index.search(normalized_query, allowed_directories=settings.allowed_directories)
     names = search_by_name(
         {"query": normalized_query, "limit": 100, "max_scanned": 5000},
         {"allowed_directories": settings.allowed_directories},

@@ -649,9 +649,11 @@ class OSExecutionEngine(ExecutionEngine):
             return [(step, outcome)]
 
         work: dict[asyncio.Task[StepExecutionOutcome], tuple[PlanStep, PlanStep, ToolResult | None]] = {}
+        original_observations: dict[str, ToolResult | None] = {}
         run_id = str(context.get("run_id") or "")
         for step in selected:
             observation = self._dependency_observation(step, observations_by_step)
+            original_observations[step.id] = observation
             step_context = copy.deepcopy(context)
             # Parallel executors mutate step fields across await points; hand each
             # one an isolated snapshot and write it back serially on completion
@@ -685,16 +687,6 @@ class OSExecutionEngine(ExecutionEngine):
                     outcome = self._normalize_step_outcome(task, step, raw_outcome)
                     if outcome.result is not None:
                         observations_by_step[step.id] = outcome.result
-                    if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
-                        outcome = await self._orchestrator().recovery_handler.recover_failed_step(
-                            task,
-                            plan,
-                            step,
-                            outcome.result,
-                            context,
-                            observation,
-                            threaded_tools=True,
-                        )
                     results.append((step, outcome))
                     if outcome.kind in {
                         "step_denied",
@@ -731,7 +723,38 @@ class OSExecutionEngine(ExecutionEngine):
             if work:
                 await asyncio.gather(*work.keys(), return_exceptions=True)
             raise
+        if not stop_requested:
+            results = await self._recover_parallel_failures_serially(
+                task,
+                plan,
+                results,
+                context,
+                original_observations,
+            )
         return results
+
+    async def _recover_parallel_failures_serially(
+        self,
+        task: Task,
+        plan: Plan,
+        results: list[tuple[PlanStep, StepExecutionOutcome]],
+        context: dict[str, Any],
+        original_observations: dict[str, ToolResult | None],
+    ) -> list[tuple[PlanStep, StepExecutionOutcome]]:
+        recovered: list[tuple[PlanStep, StepExecutionOutcome]] = []
+        for step, outcome in results:
+            if outcome.kind == "failed" and not self._defer_recovery_to_reflection(outcome):
+                outcome = await self._orchestrator().recovery_handler.recover_failed_step(
+                    task,
+                    plan,
+                    step,
+                    outcome.result,
+                    context,
+                    original_observations.get(step.id),
+                    threaded_tools=False,
+                )
+            recovered.append((step, outcome))
+        return recovered
 
     async def _execute_one_step(
         self,

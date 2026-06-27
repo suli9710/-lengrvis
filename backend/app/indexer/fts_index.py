@@ -309,78 +309,12 @@ class FTSIndex:
         flush_pending()
 
         with db.connect() as conn:
-            if not conn.in_transaction:
-                conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM indexed_files")
-            conn.execute("DELETE FROM document_chunks")
-            conn.execute("DELETE FROM document_chunk_embeddings")
-            try:
-                conn.execute("DELETE FROM document_chunks_fts")
-            except sqlite3.Error as exc:
-                logger.debug("could not clear optional FTS table: %s", exc, exc_info=True)
-
+            _begin_write(conn)
+            _delete_files_in_roots(conn, valid_roots)
             for indexed in prepared_files:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO indexed_files
-                    (id, normalized_path, data, sha256, name, extension, size, modified_at, indexed_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        indexed.id,
-                        indexed.normalized_path,
-                        indexed.model_dump_json(),
-                        indexed.sha256,
-                        indexed.name,
-                        indexed.extension,
-                        indexed.size,
-                        indexed.modified_at,
-                        indexed.indexed_at,
-                    ),
-                )
-
-            for item in prepared_chunks:
-                doc_chunk = item.chunk
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO document_chunks
-                    (id, file_id, chunk_index, text, data)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        doc_chunk.id,
-                        doc_chunk.file_id,
-                        doc_chunk.chunk_index,
-                        doc_chunk.text,
-                        doc_chunk.model_dump_json(),
-                    ),
-                )
-                try:
-                    conn.execute(
-                        "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
-                        (doc_chunk.file_id, item.path, item.text),
-                    )
-                except sqlite3.Error as exc:
-                    logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
-
-            for embedding in prepared_embeddings:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO document_chunk_embeddings
-                    (id, chunk_id, file_id, chunk_index, model, dim, embedding, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        embedding.id,
-                        embedding.chunk_id,
-                        embedding.file_id,
-                        embedding.chunk_index,
-                        embedding.model,
-                        embedding.dim,
-                        embedding.embedding,
-                        embedding.created_at,
-                    ),
-                )
+                _insert_indexed_file_row(conn, indexed)
+            _insert_document_chunk_rows(conn, prepared_chunks)
+            _insert_embedding_rows(conn, prepared_embeddings)
 
         return result_payload()
 
@@ -405,9 +339,6 @@ class FTSIndex:
                     > 0
                 )
 
-        # Remove old entries for this path if they exist
-        self.remove_file(str(normalized))
-
         stat = normalized.stat()
         indexed = IndexedFile(
             path=str(normalized),
@@ -431,50 +362,14 @@ class FTSIndex:
             doc_chunk.embedding_id = f"emb_{doc_chunk.id}"
             chunks_data.append(_PendingChunk(doc_chunk, str(normalized), chunk))
 
+        embeddings = self._prepare_embeddings(chunks_data, normalized)
         with db.connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO indexed_files
-                (id, normalized_path, data, sha256, name, extension, size, modified_at, indexed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    indexed.id,
-                    indexed.normalized_path,
-                    indexed.model_dump_json(),
-                    indexed.sha256,
-                    indexed.name,
-                    indexed.extension,
-                    indexed.size,
-                    indexed.modified_at,
-                    indexed.indexed_at,
-                ),
-            )
-            for item in chunks_data:
-                doc_chunk = item.chunk
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO document_chunks
-                    (id, file_id, chunk_index, text, data)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        doc_chunk.id,
-                        doc_chunk.file_id,
-                        doc_chunk.chunk_index,
-                        doc_chunk.text,
-                        doc_chunk.model_dump_json(),
-                    ),
-                )
-                try:
-                    conn.execute(
-                        "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
-                        (doc_chunk.file_id, item.path, item.text),
-                    )
-                except sqlite3.Error as exc:
-                    logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
+            _begin_write(conn)
+            _delete_file_by_path(conn, str(normalized))
+            _insert_indexed_file_row(conn, indexed)
+            _insert_document_chunk_rows(conn, chunks_data)
+            _insert_embedding_rows(conn, embeddings)
 
-        self._store_embeddings(chunks_data, normalized)
         return True
 
     def _backfill_missing_embeddings(self, file_id: str, normalized: Path) -> int:
@@ -509,8 +404,17 @@ class FTSIndex:
         return self._store_embeddings(chunks_data, normalized)
 
     def _store_embeddings(self, chunks_data: list[_PendingChunk], normalized: Path) -> int:
-        if not chunks_data:
+        embeddings = self._prepare_embeddings(chunks_data, normalized)
+        if not embeddings:
             return 0
+        with db.connect() as conn:
+            _begin_write(conn)
+            _insert_embedding_rows(conn, embeddings)
+        return len(embeddings)
+
+    def _prepare_embeddings(self, chunks_data: list[_PendingChunk], normalized: Path) -> list[_PreparedEmbedding]:
+        if not chunks_data:
+            return []
         try:
             embedding_model = get_effective_settings().embedding_model
             vectors = embed_texts_sync([item.text for item in chunks_data], embedder=self.embedder)
@@ -521,88 +425,115 @@ class FTSIndex:
                 "FTSIndex",
                 {"path": str(normalized), "error": str(exc)},
             )
-            return 0
+            return []
 
-        inserted = 0
-        if vectors:
-            with db.connect() as conn:
-                for index, item in enumerate(chunks_data):
-                    vector = vectors[index] if index < len(vectors) else []
-                    if not vector:
-                        continue
-                    doc_chunk = item.chunk
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO document_chunk_embeddings
-                        (id, chunk_id, file_id, chunk_index, model, dim, embedding, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            doc_chunk.embedding_id,
-                            doc_chunk.id,
-                            doc_chunk.file_id,
-                            doc_chunk.chunk_index,
-                            embedding_model,
-                            len(vector),
-                            json.dumps(vector),
-                            now_iso(),
-                        ),
-                    )
-                    inserted += 1
-        return inserted
+        prepared: list[_PreparedEmbedding] = []
+        for index, item in enumerate(chunks_data):
+            vector = vectors[index] if index < len(vectors) else []
+            if not vector:
+                continue
+            doc_chunk = item.chunk
+            prepared.append(
+                _PreparedEmbedding(
+                    id=str(doc_chunk.embedding_id or f"emb_{doc_chunk.id}"),
+                    chunk_id=doc_chunk.id,
+                    file_id=doc_chunk.file_id,
+                    chunk_index=doc_chunk.chunk_index,
+                    model=embedding_model,
+                    dim=len(vector),
+                    embedding=json.dumps(vector),
+                    created_at=now_iso(),
+                )
+            )
+        return prepared
 
     def remove_file(self, normalized_path: str) -> bool:
         """Remove a file and all its chunks from the index. Returns True if something was removed."""
         db.init_db()
         with db.connect() as conn:
-            row = conn.execute(
-                "SELECT id FROM indexed_files WHERE normalized_path = ?",
-                (normalized_path,),
-            ).fetchone()
-            if not row:
-                return False
-            file_id = row["id"]
-            conn.execute("DELETE FROM document_chunk_embeddings WHERE file_id = ?", (file_id,))
-            conn.execute("DELETE FROM document_chunks WHERE file_id = ?", (file_id,))
-            try:
-                conn.execute("DELETE FROM document_chunks_fts WHERE file_id = ?", (file_id,))
-            except sqlite3.Error as exc:
-                logger.debug("could not delete optional FTS rows for %s: %s", file_id, exc, exc_info=True)
-            conn.execute("DELETE FROM indexed_files WHERE id = ?", (file_id,))
-        return True
+            _begin_write(conn)
+            return _delete_file_by_path(conn, normalized_path)
 
-    def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 20,
+        allowed_directories: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         db.init_db()
         cleaned = str(query or "").strip()
+        allowed_roots = None
+        if allowed_directories is not None:
+            allowed_roots = _normalized_allowed_roots(allowed_directories)
+            if not allowed_roots:
+                return []
         with db.connect() as conn:
             try:
-                rows = conn.execute(
-                    """
-                    SELECT file_id, path,
-                           snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
-                    FROM document_chunks_fts
-                    WHERE document_chunks_fts MATCH ?
-                    LIMIT ?
-                    """,
-                    (fts_match_query(cleaned), limit),
-                ).fetchall()
+                if allowed_roots is None:
+                    rows = conn.execute(
+                        """
+                        SELECT file_id, path,
+                               snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
+                        FROM document_chunks_fts
+                        WHERE document_chunks_fts MATCH ?
+                        LIMIT ?
+                        """,
+                        (fts_match_query(cleaned), limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT file_id, path,
+                               snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
+                        FROM document_chunks_fts
+                        WHERE document_chunks_fts MATCH ?
+                        """,
+                        (fts_match_query(cleaned),),
+                    ).fetchall()
+                    rows = [
+                        row
+                        for row in rows
+                        if _path_within_roots(str(row["path"] or ""), allowed_roots)
+                    ][:limit]
                 if rows or len(cleaned) >= 3:
                     return [dict(row) for row in rows]
             except sqlite3.Error as exc:
                 logger.info("FTS search failed; falling back to LIKE for query=%r: %s", cleaned, exc)
-            return self._search_like(conn, cleaned, limit)
+            return self._search_like(conn, cleaned, limit, allowed_roots)
 
-    def _search_like(self, conn, query: str, limit: int) -> list[dict[str, Any]]:
-        rows = conn.execute(
-            """
-            SELECT dc.file_id, dc.text, f.data
-            FROM document_chunks dc
-            JOIN indexed_files f ON f.id = dc.file_id
-            WHERE dc.text LIKE ?
-            LIMIT ?
-            """,
-            (f"%{query}%", limit),
-        ).fetchall()
+    def _search_like(
+        self,
+        conn,
+        query: str,
+        limit: int,
+        allowed_roots: list[Path] | None,
+    ) -> list[dict[str, Any]]:
+        if allowed_roots is None:
+            rows = conn.execute(
+                """
+                SELECT dc.file_id, dc.text, f.data, f.normalized_path
+                FROM document_chunks dc
+                JOIN indexed_files f ON f.id = dc.file_id
+                WHERE dc.text LIKE ?
+                LIMIT ?
+                """,
+                (f"%{query}%", limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT dc.file_id, dc.text, f.data, f.normalized_path
+                FROM document_chunks dc
+                JOIN indexed_files f ON f.id = dc.file_id
+                WHERE dc.text LIKE ?
+                """,
+                (f"%{query}%",),
+            ).fetchall()
+            rows = [
+                row
+                for row in rows
+                if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)
+            ][:limit]
         results = []
         for row in rows:
             file_data = json.loads(row["data"])
@@ -662,6 +593,107 @@ def _path_within_roots(path: str, roots: list[Path]) -> bool:
         if resolved == root or root in resolved.parents:
             return True
     return False
+
+
+def _begin_write(conn: sqlite3.Connection) -> None:
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+
+
+def _delete_files_in_roots(conn: sqlite3.Connection, roots: list[Path]) -> None:
+    rows = conn.execute("SELECT id, normalized_path FROM indexed_files").fetchall()
+    for row in rows:
+        if _path_within_roots(str(row["normalized_path"] or ""), roots):
+            _delete_file_by_id(conn, str(row["id"]))
+
+
+def _delete_file_by_path(conn: sqlite3.Connection, normalized_path: str) -> bool:
+    row = conn.execute(
+        "SELECT id FROM indexed_files WHERE normalized_path = ?",
+        (normalized_path,),
+    ).fetchone()
+    if not row:
+        return False
+    _delete_file_by_id(conn, str(row["id"]))
+    return True
+
+
+def _delete_file_by_id(conn: sqlite3.Connection, file_id: str) -> None:
+    conn.execute("DELETE FROM document_chunk_embeddings WHERE file_id = ?", (file_id,))
+    conn.execute("DELETE FROM document_chunks WHERE file_id = ?", (file_id,))
+    try:
+        conn.execute("DELETE FROM document_chunks_fts WHERE file_id = ?", (file_id,))
+    except sqlite3.Error as exc:
+        logger.debug("could not delete optional FTS rows for %s: %s", file_id, exc, exc_info=True)
+    conn.execute("DELETE FROM indexed_files WHERE id = ?", (file_id,))
+
+
+def _insert_indexed_file_row(conn: sqlite3.Connection, indexed: IndexedFile) -> None:
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO indexed_files
+        (id, normalized_path, data, sha256, name, extension, size, modified_at, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            indexed.id,
+            indexed.normalized_path,
+            indexed.model_dump_json(),
+            indexed.sha256,
+            indexed.name,
+            indexed.extension,
+            indexed.size,
+            indexed.modified_at,
+            indexed.indexed_at,
+        ),
+    )
+
+
+def _insert_document_chunk_rows(conn: sqlite3.Connection, chunks: list[_PendingChunk]) -> None:
+    for item in chunks:
+        doc_chunk = item.chunk
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO document_chunks
+            (id, file_id, chunk_index, text, data)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                doc_chunk.id,
+                doc_chunk.file_id,
+                doc_chunk.chunk_index,
+                doc_chunk.text,
+                doc_chunk.model_dump_json(),
+            ),
+        )
+        try:
+            conn.execute(
+                "INSERT INTO document_chunks_fts (file_id, path, text) VALUES (?, ?, ?)",
+                (doc_chunk.file_id, item.path, item.text),
+            )
+        except sqlite3.Error as exc:
+            logger.debug("could not insert optional FTS row for %s: %s", item.path, exc, exc_info=True)
+
+
+def _insert_embedding_rows(conn: sqlite3.Connection, embeddings: list[_PreparedEmbedding]) -> None:
+    for embedding in embeddings:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO document_chunk_embeddings
+            (id, chunk_id, file_id, chunk_index, model, dim, embedding, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                embedding.id,
+                embedding.chunk_id,
+                embedding.file_id,
+                embedding.chunk_index,
+                embedding.model,
+                embedding.dim,
+                embedding.embedding,
+                embedding.created_at,
+            ),
+        )
 
 
 def _latest_index_failure(rows: list[Any], allowed_roots: list[Path]) -> dict[str, str] | None:

@@ -8,7 +8,12 @@ import time
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import MessageType, OpenAIMessageRole
-from app.orchestration.agent_bus import GLOBAL_TASK_ID, AgentBus, flush_agent_message_writes
+from app.orchestration.agent_bus import (
+    GLOBAL_TASK_ID,
+    AgentBus,
+    AgentMessagePersistBackpressureError,
+    flush_agent_message_writes,
+)
 
 
 def test_publish_cross_task_persists_global_message(monkeypatch, tmp_path):
@@ -126,6 +131,38 @@ def test_persist_queue_backpressure_preserves_tool_call_pairs(monkeypatch, tmp_p
     assert {assistant.id, tool_result.id, final.id}.issubset(persisted_by_id)
     assert persisted_by_id[assistant.id].tool_calls[0]["id"] == "call_1"
     assert persisted_by_id[tool_result.id].tool_call_id == "call_1"
+
+
+def test_persist_queue_full_does_not_block_event_loop(monkeypatch, tmp_path):
+    from app.core.schemas import AgentMessage
+    from app.orchestration import agent_bus as agent_bus_module
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    full_queue: queue.Queue[tuple[AgentMessage, str]] = queue.Queue(maxsize=1)
+    full_queue.put((AgentMessage(task_id="already_full", content="queued"), str(tmp_path)))
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_QUEUE", full_queue)
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_QUEUE_MAX_SIZE", 1)
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_STATE", threading.Condition())
+    monkeypatch.setattr(agent_bus_module, "_PERSIST_PENDING", 0)
+    monkeypatch.setattr(agent_bus_module, "_ensure_persist_thread", lambda: None)
+
+    async def run() -> None:
+        bus = AgentBus()
+        started = time.monotonic()
+        try:
+            try:
+                bus.publish_text("task_loop_backpressure", "PlannerAgent", "queued from loop")
+            except AgentMessagePersistBackpressureError:
+                pass
+            else:
+                raise AssertionError("full persist queue should fail closed in the event loop")
+        finally:
+            elapsed = time.monotonic() - started
+            assert elapsed < 0.5
+            assert agent_bus_module._PERSIST_PENDING == 0
+
+    asyncio.run(run())
 
 
 def test_global_subscription_receives_matching_event_type(monkeypatch, tmp_path):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,7 @@ class VectorIndex:
         if not query:
             return {"query": query, "results": [], "count": 0, "candidate_count": 0, "source": "vector"}
         allowed_bases = _allowed_bases(allowed_directories)
-        if allowed_bases == []:
+        if not allowed_bases:
             return {"query": query, "results": [], "count": 0, "candidate_count": 0, "source": "vector"}
 
         query_vector = embed_texts_sync([query], embedder=self.embedder)[0]
@@ -97,7 +98,7 @@ class VectorIndex:
                     """,
                     (fts_match_query(query), limit),
                 ).fetchall()
-            except Exception as exc:
+            except sqlite3.Error as exc:
                 logger.debug("FTS candidate lookup failed, using LIKE fallback: %s", exc)
                 fts_rows = []
 
@@ -134,7 +135,7 @@ class VectorIndex:
                     """,
                     (fts_match_query(query), limit),
                 ).fetchall()
-            except Exception as exc:
+            except sqlite3.Error as exc:
                 logger.debug("FTS lexical lookup failed, using LIKE fallback: %s", exc)
                 fts_rows = []
 
@@ -205,8 +206,7 @@ class VectorIndex:
         embedding_join = "JOIN document_chunk_embeddings e ON e.chunk_id = dc.id"
         if not require_embeddings:
             embedding_join = "LEFT JOIN document_chunk_embeddings e ON e.chunk_id = dc.id"
-        rows = conn.execute(
-            f"""
+        query_sql = f"""
             SELECT
                 dc.file_id,
                 dc.id AS chunk_id,
@@ -221,7 +221,9 @@ class VectorIndex:
             WHERE dc.file_id IN ({placeholders})
             ORDER BY dc.chunk_index ASC
             LIMIT ?
-            """,
+            """  # noqa: S608 - placeholders and join fragment are generated from internal values.
+        rows = conn.execute(
+            query_sql,
             (*file_scores.keys(), limit),
         ).fetchall()
         candidates = []
@@ -232,9 +234,9 @@ class VectorIndex:
         return candidates
 
 
-def _allowed_bases(allowed_directories: list[str] | None) -> list[Path] | None:
+def _allowed_bases(allowed_directories: list[str] | None) -> list[Path]:
     if allowed_directories is None:
-        return None
+        return []
     bases: list[Path] = []
     for raw_base in allowed_directories:
         try:
@@ -244,9 +246,7 @@ def _allowed_bases(allowed_directories: list[str] | None) -> list[Path] | None:
     return bases
 
 
-def _filter_allowed_rows(rows: list[dict[str, Any]], allowed_bases: list[Path] | None) -> list[dict[str, Any]]:
-    if allowed_bases is None:
-        return rows
+def _filter_allowed_rows(rows: list[dict[str, Any]], allowed_bases: list[Path]) -> list[dict[str, Any]]:
     return [row for row in rows if _within_allowed_bases(str(row.get("path") or ""), allowed_bases)]
 
 

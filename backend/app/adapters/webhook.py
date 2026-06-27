@@ -7,7 +7,13 @@ from app.core.outbound_url import pin_outbound_http_url, validate_outbound_http_
 
 
 class WebhookClient(Protocol):
-    def post(self, url: str, payload: dict[str, Any], headers: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+    def post(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
         ...
 
 
@@ -66,7 +72,7 @@ class WebhookAdapter(AdapterBase):
             return connected_error
         if self.client is None:
             return {"ok": False, "adapter": self.config.service_name, "error": "Webhook client is not configured."}
-        result = self.client.post(pinned.url, body, {**pinned.headers, **headers}, timeout)
+        result = self.client.post(pinned.url, body, _merge_pinned_headers(pinned.headers, headers), timeout)
         return {"ok": bool(result.get("ok", True)), "adapter": self.config.service_name, **result}
 
     def health_check(self) -> AdapterResult:
@@ -88,6 +94,16 @@ def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
         key: "***" if any(term in key.lower() for term in sensitive_terms) else value
         for key, value in headers.items()
     }
+
+
+def _merge_pinned_headers(pinned_headers: dict[str, str], caller_headers: dict[str, str]) -> dict[str, str]:
+    merged = dict(pinned_headers)
+    pinned_names = {key.lower() for key in pinned_headers}
+    for key, value in caller_headers.items():
+        if key.lower() == "host" and "host" in pinned_names:
+            continue
+        merged[key] = value
+    return merged
 
 
 def _redact_sensitive_values(value: Any) -> Any:

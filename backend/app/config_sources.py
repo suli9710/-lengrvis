@@ -122,28 +122,12 @@ def local_mobile_jwt_secret(data_dir: Path) -> str:
 
 
 def candidate_config_dirs() -> list[Path]:
-    roots: list[Path] = []
-    for value in (
-        get_env("LENGRVIS_CONFIG_DIR"),
-        os.getcwd(),
-        PROJECT_ROOT,
-    ):
-        if value:
-            roots.append(Path(value))
-
-    if getattr(sys, "frozen", False):
-        roots.append(Path(sys.executable).resolve().parent)
-
+    roots = _candidate_config_roots()
     seen: set[str] = set()
     dirs: list[Path] = []
-    for root in roots:
-        try:
-            current = root.resolve()
-        except OSError:
-            current = root
-        for index, candidate in enumerate([current, *current.parents]):
-            if index > CONFIG_PARENT_SEARCH_DEPTH:
-                break
+    for root, allow_parent_search in roots:
+        current = _resolve_path(root)
+        for candidate in _bounded_parent_candidates(current, allow_parent_search):
             key = str(candidate).lower()
             if key not in seen:
                 seen.add(key)
@@ -173,3 +157,49 @@ def external_data_dir(config_file: Path | None, env_file: Path | None) -> Path:
 
 def preferred_data_dir(parent: Path) -> Path:
     return parent / ".lengrvis_data"
+
+
+def _candidate_config_roots() -> list[tuple[Path, bool]]:
+    roots: list[tuple[Path, bool]] = []
+    explicit_config_dir = get_env("LENGRVIS_CONFIG_DIR")
+    if explicit_config_dir:
+        roots.append((Path(explicit_config_dir), False))
+    roots.append((Path(os.getcwd()), True))
+    roots.append((PROJECT_ROOT, False))
+
+    if getattr(sys, "frozen", False):
+        roots.append((Path(sys.executable).resolve().parent, False))
+    return roots
+
+
+def _bounded_parent_candidates(current: Path, allow_parent_search: bool) -> list[Path]:
+    if not allow_parent_search:
+        return [current]
+
+    project_root = _resolve_path(PROJECT_ROOT)
+    if not _is_relative_to(current, project_root):
+        return [current]
+
+    candidates: list[Path] = []
+    for index, candidate in enumerate([current, *current.parents]):
+        if index > CONFIG_PARENT_SEARCH_DEPTH:
+            break
+        candidates.append(candidate)
+        if candidate == project_root:
+            break
+    return candidates
+
+
+def _resolve_path(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True

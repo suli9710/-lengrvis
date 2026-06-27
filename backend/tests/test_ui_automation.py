@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.schemas import SafetyReview
+from app.core import db
+from app.core.schemas import Approval, ApprovalStatus, SafetyReview
 from app.perception.ui_automation import (
     UIAutomationElement,
-    UIAutomationSelector,
     UnavailableUIAutomationTarget,
     WindowsCOMUIAutomationTarget,
     create_ui_automation_target,
 )
+from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.execution_marker import mark_execution_approved
+from app.policy.permissions import PermissionStore
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools import ui_automation_tools
@@ -31,6 +34,32 @@ class FakePolicy:
             risk_level=risk_level,
             reasons=["fake policy"],
         )
+
+
+def _bound_ui_approval(
+    *,
+    task_id: str = "task_1",
+    step_id: str = "step_1",
+    tool_name: str = "ui_automation.key_press",
+    args: dict | None = None,
+    risk_level: RiskLevel = RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+) -> Approval:
+    bound_args = args or {"key": "enter"}
+    preview = {"ok": True, "dry_run": True, "diff_preview": [{"action": "key_press", **bound_args}]}
+    return Approval(
+        task_id=task_id,
+        step_id=step_id,
+        status=ApprovalStatus.APPROVED,
+        message="Approve UIAutomation action",
+        diff_preview=preview,
+        tool_name=tool_name,
+        risk_level=risk_level.value,
+        args_binding_hmac=args_binding_hmac(tool_name, bound_args, task_id=task_id, step_id=step_id),
+        preview_hmac=preview_hmac(preview),
+        settings_fingerprint=settings_fingerprint(None, allowed_directories=[]),
+        permission_policy_version=permission_policy_version(PermissionStore().updated_at()),
+        tool_version="1",
+    )
 
 
 class FakeNative:
@@ -125,7 +154,7 @@ async def test_windows_adapter_finds_and_clicks_native_element_with_policy():
     target = WindowsCOMUIAutomationTarget(policy_engine=policy, automation=FakeAutomation(native))
 
     found = await target.find_element(automation_id="send_button")
-    clicked = await target.click(found, task_id="task_1", step_id="step_1", approved=True, approval_id="approval_1")
+    clicked = await target.click(found, task_id="task_1", step_id="step_1")
 
     assert isinstance(found, UIAutomationElement)
     assert clicked["ok"] is True
@@ -210,7 +239,13 @@ async def test_focus_sets_native_focus():
 @pytest.mark.asyncio
 async def test_approved_keyboard_action_bypasses_policy_wait(monkeypatch):
     policy = FakePolicy(SafetyVerdict.NEEDS_USER_APPROVAL)
-    target = WindowsCOMUIAutomationTarget(policy_engine=policy, automation=FakeAutomation(FakeNative()))
+    approval_context = {}
+    mark_execution_approved(approval_context)
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=policy,
+        automation=FakeAutomation(FakeNative()),
+        approval_context=approval_context,
+    )
     pressed = []
     monkeypatch.setattr("app.perception.ui_automation._press_key", lambda key: pressed.append(key))
 
@@ -220,6 +255,72 @@ async def test_approved_keyboard_action_bypasses_policy_wait(monkeypatch):
     assert blocked["approval_required"] is True
     assert allowed["ok"] is True
     assert pressed == ["enter"]
+
+
+@pytest.mark.asyncio
+async def test_approved_keyboard_action_claims_stored_approval_once(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    policy = FakePolicy(SafetyVerdict.NEEDS_USER_APPROVAL)
+    target = WindowsCOMUIAutomationTarget(policy_engine=policy, automation=FakeAutomation(FakeNative()))
+    pressed = []
+    monkeypatch.setattr("app.perception.ui_automation._press_key", lambda key: pressed.append(key))
+    approval = _bound_ui_approval()
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    first = await target.key_press("enter", task_id="task_1", step_id="step_1", approved=True, approval_id=approval.id)
+    second = await target.key_press("enter", task_id="task_1", step_id="step_1", approved=True, approval_id=approval.id)
+
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert first["ok"] is True
+    assert second["denied"] is True
+    assert "consumed" in " ".join(second["reasons"]).lower()
+    assert pressed == ["enter"]
+    assert refreshed.consumed_at
+
+
+@pytest.mark.asyncio
+async def test_ui_automation_approval_args_mismatch_denies_before_claim(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(SafetyVerdict.NEEDS_USER_APPROVAL),
+        automation=FakeAutomation(FakeNative()),
+    )
+    pressed = []
+    monkeypatch.setattr("app.perception.ui_automation._press_key", lambda key: pressed.append(key))
+    approval = _bound_ui_approval(args={"key": "enter"})
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    result = await target.key_press(
+        "escape",
+        task_id="task_1",
+        step_id="step_1",
+        approved=True,
+        approval_id=approval.id,
+    )
+
+    refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
+    assert result["denied"] is True
+    assert "arguments" in " ".join(result["reasons"]).lower()
+    assert refreshed.consumed_at is None
+    assert pressed == []
+
+
+@pytest.mark.asyncio
+async def test_forged_ui_automation_approval_id_does_not_self_authorize(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+    policy = FakePolicy(SafetyVerdict.NEEDS_USER_APPROVAL)
+    target = WindowsCOMUIAutomationTarget(policy_engine=policy, automation=FakeAutomation(FakeNative()))
+    pressed = []
+    monkeypatch.setattr("app.perception.ui_automation._press_key", lambda key: pressed.append(key))
+
+    result = await target.key_press("enter", approved=True, approval_id="forged_approval")
+
+    assert result["denied"] is True
+    assert "not found" in " ".join(result["reasons"]).lower()
+    assert pressed == []
 
 
 @pytest.mark.asyncio

@@ -245,3 +245,34 @@ def test_search_files_empty_query_does_not_scan(monkeypatch, tmp_path: Path) -> 
     assert result["name_results"] == []
     assert result["name_search"]["status"] == "empty_query"
     assert result["name_search"]["scanned"] == 0
+
+
+def test_search_files_filters_authorized_scope_before_fts_limit(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.reset_init_db_cache()
+    db.init_db()
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    query_text = "blueprint-marker"
+
+    fts = FTSIndex()
+    for index in range(25):
+        outside_file = outside / f"outside-{index}.txt"
+        outside_file.write_text(f"{query_text} outside document {index}", encoding="utf-8")
+        assert fts.index_file(str(outside_file), [str(outside)]) is True
+    allowed_file = allowed / "inside.txt"
+    allowed_file.write_text(f"{query_text} authorized document", encoding="utf-8")
+    assert fts.index_file(str(allowed_file), [str(allowed)]) is True
+
+    monkeypatch.setattr(
+        file_service,
+        "get_effective_settings",
+        lambda: type("Settings", (), {"allowed_directories": [str(allowed)]})(),
+    )
+
+    result = file_service.search_files(query_text)
+
+    assert [item["path"] for item in result["index_results"]] == [str(allowed_file.resolve())]
+    assert str(outside) not in json.dumps(result["index_results"])
