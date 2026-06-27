@@ -5,7 +5,7 @@ Lengrvis 是一个 Windows 优先的本地电脑助手。你用一句话描述�
 它适合处理这些日常活：整理下载目录、总结本地文档、查找大文件、检查电脑状态、做文档问答，或者把审批和任务监督交给 Android companion。默认思路很朴素：能在本机处理的留在本机；需要动手前先问；出事以后能追踪。
 
 - 仓库：[github.com/suli9710/-lengrvis](https://github.com/suli9710/-lengrvis)
-- 当前版本：[v0.1.0](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.0)
+- 当前版本：[v0.1.1](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.1)
 - License：BUSL-1.1
 
 | 组件 | 技术栈 |
@@ -19,7 +19,7 @@ Lengrvis 是一个 Windows 优先的本地电脑助手。你用一句话描述�
 
 | 平台 | 状态 | 当前交付 | 还没收口的地方 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.0 产物未签名；clean-machine、升级/回滚、真实设备联动还需要候选版本证据。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.1 产物未签名；clean-machine、升级/回滚、真实设备联动还需要候选版本证据。 |
 | Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、短期远程输入授权 | 适合内部预览和联调；真机 LAN/WSS、证书信任路径和应用商店分发还没完成。 |
 | macOS 桌面 | Preview | macOS 后端构建脚本和 DMG 脚本 | 需要在 macOS 主机上完成打包、签名和 notarization 验证。 |
 | iOS Companion | Planned | 暂不交付 | Android companion 稳定后再排期。 |
@@ -27,7 +27,7 @@ Lengrvis 是一个 Windows 优先的本地电脑助手。你用一句话描述�
 ## 安装与快速开始
 
 1. 打开 [Releases](https://github.com/suli9710/-lengrvis/releases)。
-2. 下载 `Lengrvis-0.1.0-win-portable.zip` 或 `Lengrvis-0.1.0-x64-self-extracting.exe`。
+2. 下载 `Lengrvis-0.1.1-win-portable.zip` 或 `Lengrvis-0.1.1-x64-self-extracting.exe`。
 3. portable zip 解压后运行 `Lengrvis.exe`；自解压包双击后会释放到本机用户目录并启动。
 4. 启动后，在桌面窗口里输入任务，例如“找出重复文件，但先不要删除”。
 5. 会改动本机状态的步骤会进入预览和审批。文件写入、编辑等操作会记录回滚信息。
@@ -336,7 +336,7 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 版本号唯一来源是 `desktop\package.json`。自定义输出目录：
 
 ```powershell
-.\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Lengrvis-win-portable -PortableZip release\win\Lengrvis-win-portable.zip -SelfExtractingExe release\win\Lengrvis-0.1.0-x64-self-extracting.exe
+.\scripts\build_all.ps1 -DistDir release\win -PortableDir release\win\Lengrvis-win-portable -PortableZip release\win\Lengrvis-win-portable.zip -SelfExtractingExe release\win\Lengrvis-0.1.1-x64-self-extracting.exe
 ```
 
 签名与自动更新：

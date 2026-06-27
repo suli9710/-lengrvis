@@ -1,6 +1,8 @@
 # Intentional test fixtures used to verify redaction and TLS behavior.
 backend/tests/test_approval_binding.py:generic-api-key:574
+backend/tests/test_best_effort_logging.py:generic-api-key:15
 backend/tests/test_guardian_backend.py:generic-api-key:1028
+backend/tests/test_guardian_backend.py:generic-api-key:1050
 backend/tests/test_mobile_lan_wss_preflight.py:generic-api-key:279
 backend/tests/test_mobile_pairing.py:generic-api-key:2853
 backend/tests/test_mobile_pairing.py:generic-api-key:2929

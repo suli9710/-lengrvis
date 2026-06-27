@@ -973,7 +973,7 @@ export class LengrvisApiClient {
       this.request<BackendAppsResponse>({ endpoint: "/api/apps" })
     ]).then(([infoResponse, diagnosticsResponse, processesResponse, startupResponse, appsResponse]) =>
       mapResponse(infoResponse, (info) => ({
-        appVersion: window.lengrvis?.versions.app ?? "0.1.0",
+        appVersion: window.lengrvis?.versions.app ?? "0.1.1",
         electronVersion: window.lengrvis?.versions.electron ?? "未知",
         chromeVersion: window.lengrvis?.versions.chrome ?? "未知",
         nodeVersion: window.lengrvis?.versions.node ?? "未知",

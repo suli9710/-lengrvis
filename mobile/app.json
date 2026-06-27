@@ -2,13 +2,13 @@
   "expo": {
     "name": "Lengrvis 手机端",
     "slug": "lengrvis-approval",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "orientation": "default",
     "scheme": "lengrvisapproval",
     "userInterfaceStyle": "light",
     "android": {
       "package": "com.lengrvis.approval",
-      "versionCode": 1,
+      "versionCode": 2,
       "permissions": [
         "CAMERA",
         "POST_NOTIFICATIONS"

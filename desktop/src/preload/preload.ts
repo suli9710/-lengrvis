@@ -184,7 +184,7 @@ const bridge: LengrvisDesktopBridge = {
   },
   platform: preloadProcess?.platform ?? "win32",
   versions: {
-    app: env.npm_package_version ?? "0.1.0",
+    app: env.npm_package_version ?? "0.1.1",
     electron: version("electron"),
     chrome: version("chrome"),
     node: version("node")

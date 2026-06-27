@@ -1,7 +1,7 @@
 {
   "name": "lengrvis",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "BUSL-1.1",
   "description": "Lengrvis workspace packaging and QA scripts",
   "scripts": {

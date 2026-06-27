@@ -63,7 +63,7 @@ def create_app() -> FastAPI:
     assert_no_production_test_escape_hatches()
     db.init_db()
     settings = get_effective_settings()
-    app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.0", lifespan=full_backend_lifespan)
+    app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.1", lifespan=full_backend_lifespan)
     # Hardened CORS shared with the guardian backend (app/guardian.py) via
     # app.security.cors.configure_cors so the two apps can never drift.
     configure_cors(app)
@@ -128,4 +128,4 @@ def create_app() -> FastAPI:
     return app
 
 
-app = LazyASGIApp(create_app, title="Lengrvis Agent EXE Backend", version="0.1.0")
+app = LazyASGIApp(create_app, title="Lengrvis Agent EXE Backend", version="0.1.1")

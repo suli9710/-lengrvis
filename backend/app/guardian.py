@@ -15,7 +15,7 @@ __all__ = ["app", "create_guardian_app", "decode_mobile_token", "pair_router"]
 
 
 def create_guardian_app() -> FastAPI:
-    app = FastAPI(title="Lengrvis Guardian Backend", version="0.1.0", lifespan=guardian_lifespan)
+    app = FastAPI(title="Lengrvis Guardian Backend", version="0.1.1", lifespan=guardian_lifespan)
     # Hardened CORS shared with the full backend (app/main.py) via
     # app.security.cors.configure_cors so the two apps can never drift.
     configure_cors(app)
@@ -32,4 +32,4 @@ def create_guardian_app() -> FastAPI:
     return app
 
 
-app = LazyASGIApp(create_guardian_app, title="Lengrvis Guardian Backend", version="0.1.0")
+app = LazyASGIApp(create_guardian_app, title="Lengrvis Guardian Backend", version="0.1.1")

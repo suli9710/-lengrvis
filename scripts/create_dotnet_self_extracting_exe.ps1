@@ -52,7 +52,7 @@ Copy-Item -LiteralPath $ZipPath -Destination (Join-Path $ProjectDir "payload.zip
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <AssemblyName>Lengrvis</AssemblyName>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="payload.zip" LogicalName="payload.zip" />
