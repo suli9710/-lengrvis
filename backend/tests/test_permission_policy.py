@@ -102,6 +102,32 @@ def test_permission_policy_builtin_baseline_denies_high_risk_when_no_rules_confi
     assert "explicit allow" in decision.reason.lower()
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "file.write_text",
+        "file.copy",
+        "file.move",
+        "remote.click",
+        "remote.type_text",
+        "ui_automation.type_text",
+        "ui_automation.hotkey",
+        "app.launch",
+        "workflow.run",
+    ],
+)
+def test_permission_policy_builtin_baseline_denies_write_and_control_tools_without_rules(tool_name: str):
+    decision = evaluate_permission_policy(
+        PermissionPolicy(rules=[]),
+        tool_name=tool_name,
+        args={"path": "/tmp/example.txt", "dry_run": False},
+    )
+
+    assert decision.allowed is False
+    assert decision.rule_id == "builtin_high_risk_baseline"
+    assert "explicit allow" in decision.reason.lower()
+
+
 def test_permission_policy_builtin_baseline_denies_high_risk_when_only_deny_rules_exist():
     policy = PermissionPolicy(rules=[weekend_delete_rule()])
     weekday = datetime.fromisoformat("2026-05-28T12:00:00+00:00")

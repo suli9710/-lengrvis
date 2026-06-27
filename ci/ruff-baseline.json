@@ -1,0 +1,6 @@
+{
+  "max_violations": 1116,
+  "scope": "backend",
+  "ruff_version": "0.9.6",
+  "note": "Temporary debt budget for full-tree Ruff. CI must fail if backend Ruff findings grow; lower this as the backlog is retired."
+}

@@ -16,6 +16,10 @@ from app.agents.delegation_metadata import (
 from app.agents.worker_agents import normalize_supervisor_agent_hint
 
 
+def _discard_background(coro, **kwargs):  # noqa: ANN001, ARG001
+    coro.close()
+
+
 def test_normalize_supervisor_agent_hint_rejects_orchestrator():
     assert normalize_supervisor_agent_hint("OrchestratorAgent") == ""
     assert normalize_supervisor_agent_hint("BrowserAgent") == "BrowserAgent"
@@ -84,7 +88,7 @@ async def test_create_run_persists_supervisor_hint_on_os_task(monkeypatch, tmp_p
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
-    monkeypatch.setattr("app.services.run_service._schedule_background", lambda coro, **kwargs: None)
+    monkeypatch.setattr("app.services.run_service._schedule_background", _discard_background)
     monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
 
@@ -152,7 +156,7 @@ async def test_runs_api_accepts_agent_hint(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
-    monkeypatch.setattr("app.services.run_service._schedule_background", lambda coro, **kwargs: None)
+    monkeypatch.setattr("app.services.run_service._schedule_background", _discard_background)
     monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
 
@@ -193,9 +197,6 @@ async def test_create_run_developer_engine_capabilities(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOW_MOCK_FALLBACK", "true")
     monkeypatch.delenv("LENGRVIS_DEVELOPER_WRITES_ENABLED", raising=False)
-    def _discard_background(coro, **kwargs):  # noqa: ANN001, ARG001
-        coro.close()
-
     monkeypatch.setattr("app.services.run_service._schedule_background", _discard_background)
     monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
@@ -220,7 +221,7 @@ async def test_runs_api_exposes_engine_route_rule_for_chinese_os_goal(monkeypatc
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "workspace"))
     (tmp_path / "workspace").mkdir()
-    monkeypatch.setattr("app.services.run_service._schedule_background", lambda coro, **kwargs: None)
+    monkeypatch.setattr("app.services.run_service._schedule_background", _discard_background)
     monkeypatch.setattr("app.services.run_service._track_active_run", lambda run_id, task: None)
     monkeypatch.setattr("app.services.run_service._track_run_router", lambda run_id, router: None)
 

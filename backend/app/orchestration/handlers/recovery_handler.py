@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import json
 import logging
 import threading
 from typing import TYPE_CHECKING
@@ -128,6 +130,14 @@ class RecoveryHandler:
             return await self.rollback_and_fail(task, plan, step, result, reason="no_alternative")
 
         recovery_step = self._create_recovery_step(step, action)
+        if _has_equivalent_recovery_step(plan, recovery_step) or _is_redundant_recovery_step(step, recovery_step):
+            record(
+                "task.recovery_duplicate_rejected",
+                orchestrator.name,
+                {"failed_step": step.id, "tool": recovery_step.tool_name},
+                task_id=task.id,
+            )
+            return await self.rollback_and_fail(task, plan, step, result, reason="duplicate_recovery")
         plan.steps.append(recovery_step)
         orchestrator._persist_plan_update(plan, f"Added recovery step for failed step {step.id}.")
         orchestrator.bus.publish_text(
@@ -228,7 +238,7 @@ class RecoveryHandler:
     def _risk_for_tool(self, tool_name: str, fallback: RiskLevel) -> RiskLevel:
         try:
             return self.orchestrator.registry.get(tool_name).risk_level
-        except Exception:
+        except Exception:  # noqa: BLE001 - recovery falls back when registry adapters are unavailable.
             return fallback
 
     def _risk_requires_approval(self, risk: RiskLevel) -> bool:
@@ -253,3 +263,28 @@ class RecoveryHandler:
 
     def _is_recovery_action(self, action: AgentAction | None) -> bool:
         return bool(action and action.kind == "propose_tool")
+
+
+def _has_equivalent_recovery_step(plan: Plan, candidate: PlanStep) -> bool:
+    candidate_key = _recovery_step_key(candidate)
+    return any(_recovery_step_key(step) == candidate_key for step in plan.steps)
+
+
+def _is_redundant_recovery_step(failed_step: PlanStep, candidate: PlanStep) -> bool:
+    if candidate.tool_name != failed_step.tool_name:
+        return False
+    failed_args = dict(failed_step.args or {})
+    candidate_args = dict(candidate.args or {})
+    return all(key in failed_args and failed_args[key] == value for key, value in candidate_args.items())
+
+
+def _recovery_step_key(step: PlanStep) -> tuple[str, str, tuple[str, ...]]:
+    return (
+        str(step.tool_name or ""),
+        _stable_json(step.args or {}),
+        tuple(str(item) for item in (step.depends_on or [])),
+    )
+
+
+def _stable_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)

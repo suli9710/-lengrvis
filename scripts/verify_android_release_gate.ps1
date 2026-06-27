@@ -454,6 +454,17 @@ $easJsonPath = Join-Path $mobileRoot "eas.json"
 $mobilePackagePath = Join-Path $mobileRoot "package.json"
 $androidGradlePath = Join-Path $mobileRoot "android\app\build.gradle"
 $rootPackagePath = Join-Path $resolvedRoot "package.json"
+$androidNetworkConfigPaths = @(
+    (Join-Path $mobileRoot "android\app\src\main\res\xml\network_security_config.xml"),
+    (Join-Path $mobileRoot "android\app\src\debug\res\xml\network_security_config.xml"),
+    (Join-Path $mobileRoot "android\app\src\debugOptimized\res\xml\network_security_config.xml")
+)
+$androidNetworkConfigSources = @{}
+foreach ($networkConfigPath in $androidNetworkConfigPaths) {
+    $androidNetworkConfigSources[$networkConfigPath] = Read-TextFile $networkConfigPath "android_network_security_config" $sourceIssues
+}
+$androidMainApplicationSource = Read-TextFile (Join-Path $mobileRoot "android\app\src\main\java\com\lengrvis\approval\MainApplication.kt") "android_main_application" $sourceIssues
+$androidLanTrustSource = Read-TextFile (Join-Path $mobileRoot "android\app\src\main\java\com\lengrvis\approval\LengrvisLanTrust.kt") "android_lan_trust" $sourceIssues
 
 $appJson = Read-JsonFile $appJsonPath "mobile_app_json" $sourceIssues
 $easJson = Read-JsonFile $easJsonPath "mobile_eas_json" $sourceIssues
@@ -573,6 +584,25 @@ if ($null -ne $appJson) {
     }
     if ($hardeningPluginSource -match '<certificates\s+src="user"') {
         Add-Issue $sourceIssues "android_user_ca_trust_enabled" "Android release network security must not trust user-installed CAs by default."
+    }
+    foreach ($networkConfigPath in $androidNetworkConfigPaths) {
+        $networkConfigSource = [string]$androidNetworkConfigSources[$networkConfigPath]
+        if ($networkConfigSource.IndexOf('certificates src="system"', [System.StringComparison]::Ordinal) -lt 0) {
+            Add-Issue $sourceIssues "android_system_ca_trust_missing" "Android network security config $(Get-DisplayPath $networkConfigPath) must retain the system trust anchor."
+        }
+        if ($networkConfigSource -match '<certificates\s+src="user"') {
+            Add-Issue $sourceIssues "android_user_ca_trust_enabled" "Android network security config $(Get-DisplayPath $networkConfigPath) must not trust user-installed CAs."
+        }
+    }
+    foreach ($fragment in @("LengrvisLanTrust.install(this)")) {
+        if ($androidMainApplicationSource.IndexOf($fragment, [System.StringComparison]::Ordinal) -lt 0) {
+            Add-Issue $sourceIssues "android_lan_tls_install_missing" "Android application startup must include '$fragment' so React Native HTTPS and WSS use the pinned client."
+        }
+    }
+    foreach ($fragment in @("OkHttpClientProvider.setOkHttpClientFactory", ".sslSocketFactory", "AndroidCAStore", 'alias.startsWith("system:")', "hasAnyFingerprint", "hostHasFingerprint")) {
+        if ($androidLanTrustSource.IndexOf($fragment, [System.StringComparison]::Ordinal) -lt 0) {
+            Add-Issue $sourceIssues "android_lan_tls_pin_contract_mismatch" "Android LAN TLS trust implementation must include '$fragment' for per-host certificate pinning."
+        }
     }
 }
 

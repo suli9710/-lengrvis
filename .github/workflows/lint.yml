@@ -1,8 +1,7 @@
 # Ruff lint gate (code-review checklist I-03).
 # ruff is configured in backend/pyproject.toml and pinned in
-# .pre-commit-config.yaml (v0.9.6). The existing backend tree still has a
-# historical Ruff backlog, so CI blocks changed backend Python files only until
-# the full-tree backlog is retired.
+# .pre-commit-config.yaml (v0.9.6). CI keeps changed backend Python files strict
+# and also fails if full-tree Ruff debt grows beyond ci/ruff-baseline.json.
 name: Lint
 
 on:
@@ -16,7 +15,7 @@ permissions:
 
 jobs:
   ruff:
-    name: Ruff lint + format gate (changed backend files)
+    name: Ruff lint + format gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -28,6 +27,8 @@ jobs:
           python-version: "3.12"
       - name: Install ruff (pinned to the pre-commit version)
         run: python -m pip install "ruff==0.9.6"
+      - name: Ruff full-tree debt budget
+        run: python scripts/check_ruff_baseline.py backend --baseline ci/ruff-baseline.json
       - name: Collect changed backend Python files
         id: ruff_targets
         shell: bash

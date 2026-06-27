@@ -8,6 +8,7 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -40,6 +41,16 @@ _AUDIT_CHAIN_HEADS: dict[str, tuple[int, str]] = {}
 # WAL + busy_timeout. RLock so a path that already holds the lock can audit
 # its own failure without self-deadlocking.
 _EVENT_WRITE_LOCK = threading.RLock()
+
+
+@dataclass
+class _ThreadConnectionState:
+    path: Path
+    conn: sqlite3.Connection
+    depth: int = 0
+
+
+_CONNECTION_LOCAL = threading.local()
 
 
 def reset_audit_caches() -> None:
@@ -171,7 +182,39 @@ def using_data_dir(data_dir: str | Path | None) -> Iterator[None]:
 
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(db_path(), isolation_level=None)
+    path = db_path()
+    state = _thread_connection_state()
+    if state is not None and state.path != path:
+        _close_thread_connection(state)
+        state = None
+    if state is None:
+        state = _ThreadConnectionState(path=path, conn=_open_connection(path))
+        _CONNECTION_LOCAL.state = state
+
+    conn = state.conn
+    state.depth += 1
+    try:
+        yield conn
+    except BaseException:
+        if state.depth == 1 and conn.in_transaction:
+            conn.rollback()
+        raise
+    else:
+        if state.depth == 1 and conn.in_transaction:
+            conn.commit()
+    finally:
+        state.depth = max(0, state.depth - 1)
+
+
+def _thread_connection_state() -> _ThreadConnectionState | None:
+    state = getattr(_CONNECTION_LOCAL, "state", None)
+    if isinstance(state, _ThreadConnectionState):
+        return state
+    return None
+
+
+def _open_connection(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL + busy_timeout: watcher/scheduler threads and async handlers open
@@ -179,11 +222,23 @@ def connect() -> Iterator[sqlite3.Connection]:
     # "database is locked" errors under load.
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
+def _close_thread_connection(state: _ThreadConnectionState) -> None:
     try:
-        yield conn
-        conn.commit()
+        if state.conn.in_transaction:
+            state.conn.rollback()
     finally:
-        conn.close()
+        state.conn.close()
+        if getattr(_CONNECTION_LOCAL, "state", None) is state:
+            _CONNECTION_LOCAL.state = None
+
+
+def close_thread_connection() -> None:
+    state = _thread_connection_state()
+    if state is not None:
+        _close_thread_connection(state)
 
 
 def _json(data: Any) -> str:
@@ -201,6 +256,7 @@ _INITIALIZED_DB_PATHS: set[str] = set()
 def reset_init_db_cache() -> None:
     with _INIT_DB_LOCK:
         _INITIALIZED_DB_PATHS.clear()
+    close_thread_connection()
 
 
 def init_db() -> None:
