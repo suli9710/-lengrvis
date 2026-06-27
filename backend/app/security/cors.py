@@ -3,9 +3,14 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import get_env
+
 # Browser origins allowed to call the backend: the local Vite dev server
 # (localhost / 127.0.0.1) and the packaged desktop shell (app://local).
-CORS_ALLOW_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173", "app://local"]
+DESKTOP_CORS_ALLOW_ORIGINS = ["app://local"]
+DEV_CORS_ALLOW_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+CORS_ALLOW_ORIGINS = [*DEV_CORS_ALLOW_ORIGINS, *DESKTOP_CORS_ALLOW_ORIGINS]
+PRODUCTION_ENV_VALUES = {"prod", "production", "release"}
 # P1-7 fix: hardened method/header allowlists instead of wildcard "*". Kept as
 # the single source of truth for both the guardian and full backends so their
 # CORS policy can never drift.
@@ -21,7 +26,7 @@ def configure_cors(app: FastAPI) -> None:
     """
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=CORS_ALLOW_ORIGINS,
+        allow_origins=cors_allow_origins(),
         allow_credentials=True,
         allow_methods=CORS_ALLOW_METHODS,
         allow_headers=CORS_ALLOW_HEADERS,
@@ -34,3 +39,16 @@ def is_cors_preflight(request: Request) -> bool:
         and bool(request.headers.get("origin"))
         and bool(request.headers.get("access-control-request-method"))
     )
+
+
+def cors_allow_origins() -> list[str]:
+    if _is_production_environment():
+        return list(DESKTOP_CORS_ALLOW_ORIGINS)
+    return list(CORS_ALLOW_ORIGINS)
+
+
+def _is_production_environment() -> bool:
+    for name in ("LENGRVIS_ENV", "APP_ENV", "ENVIRONMENT"):
+        if str(get_env(name) or "").strip().lower() in PRODUCTION_ENV_VALUES:
+            return True
+    return False

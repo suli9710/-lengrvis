@@ -43,7 +43,7 @@ def test_semantic_uia_hit_returns_center_coordinates(monkeypatch):
     monkeypatch.setattr(
         ui_automation_tools,
         "create_ui_automation_target",
-        lambda policy_engine=None: _FakeTarget(element=_FakeElement()),
+        lambda policy_engine=None, approval_context=None: _FakeTarget(element=_FakeElement()),  # noqa: ARG005
     )
 
     result = ui_automation_tools.locate_on_screen({"name": "Save"}, {})
@@ -58,7 +58,10 @@ def test_vision_fallback_scales_ratios_to_screen_coordinates(monkeypatch):
     monkeypatch.setattr(
         ui_automation_tools,
         "create_ui_automation_target",
-        lambda policy_engine=None: _FakeTarget(element=None, screenshot=_fake_screenshot_payload()),
+        lambda policy_engine=None, approval_context=None: _FakeTarget(  # noqa: ARG005
+            element=None,
+            screenshot=_fake_screenshot_payload(),
+        ),
     )
     monkeypatch.setattr(
         "app.tools.vision_tools._run_vision",
@@ -80,7 +83,10 @@ def test_vision_fallback_not_found_is_actionable(monkeypatch):
     monkeypatch.setattr(
         ui_automation_tools,
         "create_ui_automation_target",
-        lambda policy_engine=None: _FakeTarget(element=None, screenshot=_fake_screenshot_payload()),
+        lambda policy_engine=None, approval_context=None: _FakeTarget(  # noqa: ARG005
+            element=None,
+            screenshot=_fake_screenshot_payload(),
+        ),
     )
     monkeypatch.setattr(
         "app.tools.vision_tools._run_vision",
@@ -97,7 +103,10 @@ def test_vision_fallback_rejects_oversized_screenshot(monkeypatch):
     monkeypatch.setattr(
         ui_automation_tools,
         "create_ui_automation_target",
-        lambda policy_engine=None: _FakeTarget(element=None, screenshot=_fake_screenshot_payload()),
+        lambda policy_engine=None, approval_context=None: _FakeTarget(  # noqa: ARG005
+            element=None,
+            screenshot=_fake_screenshot_payload(),
+        ),
     )
     monkeypatch.setattr(ui_automation_tools, "MAX_VISION_GROUNDING_IMAGE_BYTES", 4)
     monkeypatch.setattr(ui_automation_tools, "MAX_VISION_GROUNDING_IMAGE_BASE64_CHARS", 8)
@@ -112,7 +121,7 @@ def test_missing_selector_and_description_returns_guidance(monkeypatch):
     monkeypatch.setattr(
         ui_automation_tools,
         "create_ui_automation_target",
-        lambda policy_engine=None: _FakeTarget(element=None),
+        lambda policy_engine=None, approval_context=None: _FakeTarget(element=None),  # noqa: ARG005
     )
 
     result = ui_automation_tools.locate_on_screen({}, {})

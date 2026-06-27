@@ -11,6 +11,7 @@ from typing import Any
 from app.config import DEFAULT_DATA_DIR
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
+from app.core.process_tree import run_process_tree
 from app.core.subprocess_output import decode_process_output
 from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
@@ -599,7 +600,7 @@ def _run_test_foreground(
 ) -> dict[str, Any]:
     started_at = time.time()
     try:
-        completed = subprocess.run(  # noqa: S603 - dev.test_run accepts only controlled test commands.
+        completed = run_process_tree(
             command,
             cwd=str(cwd),
             shell=False,

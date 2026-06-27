@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags:
+      - "v*"
+      - "rc-*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,18 +38,18 @@ jobs:
         run: |
           python scripts/delivery_pipeline.py --plan-only
 
-      - name: Strict release readiness (informational until RC)
+      - name: Strict release readiness
         # Strict mode fails while any P0 blocker is still open. This is expected
-        # before RC, so it is reported but does not fail the build yet. Flip
-        # continue-on-error to false when cutting a real release candidate.
-        continue-on-error: true
+        # before RC, so PR/main runs report it without failing. Manual RC and
+        # release tag runs are hard gates.
+        continue-on-error: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
         run: |
           python scripts/check_release_readiness_dashboard.py \
             --dashboard docs/release/release-readiness-dashboard.md \
             --strict
 
-      - name: Strict market readiness (informational until RC)
-        continue-on-error: true
+      - name: Strict market readiness
+        continue-on-error: ${{ github.event_name != 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/') }}
         run: |
           python scripts/check_market_readiness.py \
             --dashboard docs/business/market-readiness.md \

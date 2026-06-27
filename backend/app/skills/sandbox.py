@@ -11,8 +11,8 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import get_env
+from app.core.process_tree import run_process_tree
 from app.skills.schemas import SkillExecution, SkillExecutionType
-
 
 MAX_STDOUT_BYTES = 1024 * 1024
 MAX_STDERR_BYTES = 128 * 1024
@@ -120,7 +120,7 @@ class SkillSandbox:
     ) -> dict[str, Any]:
         payload = self._payload(args, context)
         try:
-            completed = subprocess.run(
+            completed = run_process_tree(
                 command,
                 input=json.dumps(payload),
                 cwd=str(self.skill_root),
@@ -131,10 +131,13 @@ class SkillSandbox:
                 env=_sandbox_env(),
                 timeout=execution.timeout_seconds,
                 shell=False,
-                creationflags=_creation_flags(),
+                hide_window=True,
             )
         except subprocess.TimeoutExpired:
-            return {"error": f"Skill handler timed out after {execution.timeout_seconds:g}s.", "timeout_seconds": execution.timeout_seconds}
+            return {
+                "error": f"Skill handler timed out after {execution.timeout_seconds:g}s.",
+                "timeout_seconds": execution.timeout_seconds,
+            }
         except OSError as exc:
             return {"error": f"Skill handler could not start: {exc}"}
 
@@ -240,10 +243,6 @@ def _sandbox_env() -> dict[str, str]:
         if key.startswith("LENGRVIS_SKILL_ENV_"):
             env[key.removeprefix("LENGRVIS_SKILL_ENV_")] = value
     return env
-
-
-def _creation_flags() -> int:
-    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 
 def _truthy(value: Any) -> bool:

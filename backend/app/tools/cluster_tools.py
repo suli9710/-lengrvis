@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from app.core import db
+from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 from app.indexer.clustering import cluster_texts, hashing_vectorize, kmeans
 from app.indexer.embedding_service import embed_texts_sync
+from app.indexer.fts_index import _normalized_allowed_roots, _path_within_roots
 from app.indexer.ocr_service import IMAGE_EXTENSIONS
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -39,14 +42,50 @@ def _category_for_extension(extension: str) -> str:
     return "other"
 
 
+def _allowed(context: dict[str, Any]) -> list[str]:
+    return list(context.get("allowed_directories") or [])
+
+
+def _allowed_roots(context: dict[str, Any]) -> list[Path]:
+    return _normalized_allowed_roots(_allowed(context))
+
+
+def _iter_authorized_paths(context: dict[str, Any], *, image_only: bool = False):
+    allowed = _allowed(context)
+    if not _normalized_allowed_roots(allowed):
+        return
+    for base in allowed:
+        try:
+            root = resolve_authorized(base, allowed)
+        except (OSError, SecurityError, ValueError):
+            continue
+        candidates = (root,) if root.is_file() else root.rglob("*")
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                authorized = resolve_authorized(path, allowed)
+            except (OSError, SecurityError, ValueError):
+                continue
+            if image_only and authorized.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            yield authorized
+
+
 def _iter_indexed_files(context: dict[str, Any]):
+    allowed_roots = _allowed_roots(context)
+    if not allowed_roots:
+        return
     try:
         with db.connect() as conn:
             rows = conn.execute(
                 "SELECT id, normalized_path AS path, name, extension, size FROM indexed_files LIMIT 2000"
             ).fetchall()
-        if rows:
-            for row in rows:
+        scoped_rows = [
+            row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)
+        ]
+        if scoped_rows:
+            for row in scoped_rows:
                 yield {
                     "id": row["id"],
                     "path": row["path"],
@@ -55,20 +94,11 @@ def _iter_indexed_files(context: dict[str, Any]):
                     "size": row["size"],
                 }
             return
-    except Exception as exc:
+    except (OSError, sqlite3.Error) as exc:
         logger.debug("indexed file lookup failed, falling back to authorized walk: %s", exc, exc_info=True)
     # Fallback: walk authorized directories when nothing is indexed yet.
-    for base in context.get("allowed_directories") or []:
-        try:
-            root = resolve_authorized(base, list(context.get("allowed_directories") or []))
-        except Exception:
-            continue
-        if root.is_file():
-            yield _row_from_path(root)
-            continue
-        for path in root.rglob("*"):
-            if path.is_file():
-                yield _row_from_path(path)
+    for path in _iter_authorized_paths(context):
+        yield _row_from_path(path)
 
 
 def _row_from_path(path: Path) -> dict[str, Any]:
@@ -290,8 +320,12 @@ def _category_from_app(app: dict[str, Any]) -> str:
 
 def _iter_image_files(args: dict[str, Any], context: dict[str, Any]):
     requested = _requested_image_paths(args, context)
-    if requested:
+    if requested is not None:
         yield from requested
+        return
+
+    allowed_roots = _allowed_roots(context)
+    if not allowed_roots:
         return
 
     yielded = False
@@ -304,55 +338,49 @@ def _iter_image_files(args: dict[str, Any], context: dict[str, Any]):
                 FROM indexed_files
                 WHERE lower(extension) IN ({placeholders})
                 LIMIT 2000
-                """,
+                """,  # noqa: S608 - placeholders are derived from the fixed IMAGE_EXTENSIONS set.
                 tuple(sorted(IMAGE_EXTENSIONS)),
             ).fetchall()
         for row in rows:
-            path = Path(row["path"])
+            path_text = str(row["path"] or "")
+            if not _path_within_roots(path_text, allowed_roots):
+                continue
+            path = Path(path_text)
             if path.exists() and path.suffix.lower() in IMAGE_EXTENSIONS:
                 yielded = True
                 yield path
-    except Exception as exc:
+    except (OSError, sqlite3.Error) as exc:
         logger.debug("indexed image lookup failed, falling back to authorized walk: %s", exc, exc_info=True)
     if yielded:
         return
 
-    for base in context.get("allowed_directories") or []:
-        try:
-            root = resolve_authorized(base, list(context.get("allowed_directories") or []))
-        except Exception:
-            continue
-        if root.is_file() and root.suffix.lower() in IMAGE_EXTENSIONS:
-            yield root
-            continue
-        if root.is_dir():
-            for path in root.rglob("*"):
-                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
-                    yield path
+    yield from _iter_authorized_paths(context, image_only=True)
 
 
-def _requested_image_paths(args: dict[str, Any], context: dict[str, Any]) -> list[Path]:
+def _requested_image_paths(args: dict[str, Any], context: dict[str, Any]) -> list[Path] | None:
     raw_paths = args.get("paths") or args.get("image_paths") or args.get("images")
     if raw_paths is None and args.get("path"):
         raw_paths = [args["path"]]
     if raw_paths is None:
-        return []
-    if isinstance(raw_paths, (str, Path)):
+        return None
+    if isinstance(raw_paths, str | Path):
         raw_paths = [raw_paths]
 
-    allowed = list(context.get("allowed_directories") or [])
+    allowed = _allowed(context)
     paths: list[Path] = []
     for raw_path in raw_paths:
         try:
             path = resolve_authorized(raw_path, allowed)
-        except Exception:
-            path = Path(raw_path)
+        except (OSError, SecurityError, ValueError):
+            continue
         if path.is_dir():
-            paths.extend(
-                candidate
-                for candidate in path.rglob("*")
-                if candidate.is_file() and candidate.suffix.lower() in IMAGE_EXTENSIONS
-            )
+            for candidate in path.rglob("*"):
+                if not candidate.is_file() or candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+                    continue
+                try:
+                    paths.append(resolve_authorized(candidate, allowed))
+                except (OSError, SecurityError, ValueError):
+                    continue
         elif path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
             paths.append(path)
     return sorted(dict.fromkeys(paths), key=lambda path: str(path).lower())
@@ -398,7 +426,7 @@ def _image_semantic_vectors(
     embedder = args.get("embedder") or context.get("embedder")
     try:
         semantic_vectors = embed_texts_sync(label_texts, embedder=embedder)
-    except Exception:
+    except Exception:  # noqa: BLE001 - embedding providers vary; fall back to local hashing.
         semantic_vectors = hashing_vectorize(label_texts, dim=64)
     if len(semantic_vectors) != len(profiles):
         semantic_vectors = hashing_vectorize(label_texts, dim=64)
@@ -537,7 +565,7 @@ def _image_group_keys(profile: dict[str, Any], *, group_by: str) -> list[str]:
 def _normalize_label_values(values: Any) -> list[str]:
     if values is None:
         return []
-    raw_items = values if isinstance(values, (list, tuple, set)) else [values]
+    raw_items = values if isinstance(values, list | tuple | set) else [values]
     keys: list[str] = []
     for item in raw_items:
         key = str(item).strip().lower().replace(" ", "_")
@@ -865,7 +893,10 @@ def register(registry) -> None:
             "group_by": {
                 "type": "string",
                 "enum": ["scene", "people", "objects", "tags", "time", "location"],
-                "description": "Optional exact grouping dimension. Alias for cluster_by, with label buckets for scene/people/objects/tags.",
+                "description": (
+                    "Optional exact grouping dimension. Alias for cluster_by, "
+                    "with label buckets for scene/people/objects/tags."
+                ),
             },
             "k": {
                 "type": "integer",

@@ -21,6 +21,13 @@ ALLOWED_STATUSES = {"blocked", "in_progress", "passed", "waived"}
 STRICT_ALLOWED_P0_STATUSES = {"passed", "waived"}
 P0_PREFIX = "RR-P0-"
 ROW_RE = re.compile(r"^\|\s*(RR-[^|]+?)\s*\|(?P<body>.*)\|\s*$")
+CI_ARTIFACT_PATH_PREFIXES = (
+    ".tmp/qa-evidence/",
+    ".tmp/release-evidence-packet/",
+    ".tmp/packaging-smoke/",
+    "build/",
+    "desktop/release/",
+)
 
 
 @dataclass(frozen=True)
@@ -109,6 +116,16 @@ def validate(
                 f"{row.row_id}: strict release readiness requires artifact to be an existing repo-relative path "
                 "or HTTPS URL."
             )
+        if (
+            strict
+            and row.row_id.startswith(P0_PREFIX)
+            and row.status in {"passed", "waived"}
+            and not _artifact_is_ci_evidence(row.artifact, artifact_root)
+        ):
+            errors.append(
+                f"{row.row_id}: strict P0 readiness requires artifact to point to CI-generated evidence, "
+                "such as a GitHub Actions run URL or CI artifact path."
+            )
         if strict and row.status == "waived":
             waiver_error = _waiver_error(row)
             if waiver_error:
@@ -128,6 +145,29 @@ def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:
     if parsed.scheme in {"https"} and parsed.netloc:
         return True
     if parsed.scheme:
+        return False
+    candidate = (artifact_root / value).resolve()
+    try:
+        candidate.relative_to(artifact_root.resolve())
+    except ValueError:
+        return False
+    return candidate.exists()
+
+
+def _artifact_is_ci_evidence(artifact: str, artifact_root: Path) -> bool:
+    value = artifact.strip()
+    markdown_link = re.search(r"\[[^\]]+\]\(([^)]+)\)", value)
+    if markdown_link:
+        value = markdown_link.group(1).strip()
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and parsed.netloc and "/actions/runs/" in parsed.path:
+        return True
+    if parsed.scheme:
+        return False
+    normalized = value.replace("\\", "/").lstrip("./")
+    if normalized == "docs/release/current-release-evidence.md":
+        return True
+    if not normalized.startswith(CI_ARTIFACT_PATH_PREFIXES):
         return False
     candidate = (artifact_root / value).resolve()
     try:

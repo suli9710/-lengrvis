@@ -1,29 +1,32 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import base64
+import concurrent.futures
 import json
+import shutil
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.agents.planner_agent import PlannerAgent
 from app.api.routes_approvals import router as approvals_router
 from app.api.routes_perception import router as perception_router
 from app.api.routes_runs import router, ws_router
 from app.core import db
 from app.core.schemas import Approval, ApprovalStatus, Plan, PlanStep, Task
+from app.orchestration.execution_models import EngineTurnResult
+from app.orchestration.execution_models import RunPhase as EngineRunPhase
 from app.orchestration.execution_stage import ExecutionStage
-from app.orchestration.task_phase import TaskPhase
-from app.agents.planner_agent import PlannerAgent
 from app.orchestration.run_event_bus import RunEventBus
-from app.orchestration.execution_models import EngineTurnResult, RunPhase as EngineRunPhase
-from app.services import run_service
+from app.orchestration.task_phase import TaskPhase
 from app.policy.risk import RiskLevel
+from app.services import run_service
 from app.services.mobile_pairing_service import approve_approval
 from app.tools.registry import register_all_tools
 from app.tools.schemas import ToolDefinition
@@ -60,6 +63,14 @@ def _wait_for_run_inactive(run_id: str) -> None:
     raise AssertionError(f"Run {run_id} was still active after reaching a terminal/waiting phase")
 
 
+def _fake_send2trash(path: str) -> None:
+    target = Path(path)
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink(missing_ok=True)
+
+
 def test_run_api_routes_developer_engine_and_replays_events(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
@@ -84,9 +95,28 @@ parser.add_argument("--allowedTools")
 parser.add_argument("prompt")
 args = parser.parse_args()
 
-print(json.dumps({"type": "system", "subtype": "init", "tools": args.allowedTools.split(",")}), flush=True)
-print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "API fake developer run"}, {"type": "tool_use", "name": "Read", "input": {"file_path": "README.md"}}]}}), flush=True)
-print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "API fake complete"}), flush=True)
+print(
+    json.dumps({"type": "system", "subtype": "init", "tools": args.allowedTools.split(",")}),
+    flush=True,
+)
+print(
+    json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "API fake developer run"},
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "README.md"}},
+                ],
+            },
+        }
+    ),
+    flush=True,
+)
+print(
+    json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "API fake complete"}),
+    flush=True,
+)
 """.lstrip(),
         encoding="utf-8",
     )
@@ -571,6 +601,7 @@ def test_os_run_keeps_r2_dry_run_approval(monkeypatch, tmp_path):
 def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setattr("app.tools.file_tools.send2trash", _fake_send2trash)
     target = tmp_path / "approved-delete.txt"
     target.write_text("remove me", encoding="utf-8")
     db.init_db()
@@ -603,7 +634,7 @@ def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
             "/api/runs",
             json={"message": "delete approved file", "mode": "efficiency", "engine": "os"},
         ).json()
-        final = _wait_for_phase(client, created["run_id"], "awaiting_approval")
+        _wait_for_phase(client, created["run_id"], "awaiting_approval")
         approvals = db.fetch_many("approvals", limit=10)
         approval = Approval.model_validate(approvals[0])
         approve_approval(approval.id)
@@ -611,7 +642,6 @@ def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
         assert approval.status == ApprovalStatus.APPROVED
 
         from app.api.routes_approvals import _execute_approved_step
-        import asyncio
 
         asyncio.run(_execute_approved_step(approval))
         after = _wait_for_phase(client, created["run_id"], "completed", "failed")
@@ -625,6 +655,7 @@ def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
 def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    monkeypatch.setattr("app.tools.file_tools.send2trash", _fake_send2trash)
     target = tmp_path / "approved-multi-step.txt"
     target.write_text("remove me", encoding="utf-8")
     keep_file = tmp_path / "keep-after-trash.txt"
@@ -1165,7 +1196,10 @@ def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(
     )
 
     with TestClient(_test_app()) as client:
-        response = client.post("/api/perception/suggestions/open_notepad/launch", json={"mode": "efficiency", "engine": "os"})
+        response = client.post(
+            "/api/perception/suggestions/open_notepad/launch",
+            json={"mode": "efficiency", "engine": "os"},
+        )
 
     assert response.status_code == 200
     assert response.json()["run_id"] == "osrun_suggestion_launch"
@@ -1177,8 +1211,8 @@ def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(
 
 def test_perception_capture_api_returns_sanitized_summary(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
-    from app.perception.schemas import AppContext
     from app.perception import context_store
+    from app.perception.schemas import AppContext
 
     context_store.clear()
     monkeypatch.setattr(
@@ -1436,7 +1470,12 @@ Path(os.environ["LENGRVIS_FAKE_RECORD"]).write_text(json.dumps({"argv": sys.argv
 print(json.dumps({"type": "system", "subtype": "init", "tools": args.allowedTools.split(",")}), flush=True)
 
 def handle_signal(signum, frame):
-    print(json.dumps({"type": "result", "subtype": "error_during_execution", "is_error": True, "errors": ["terminated"]}), flush=True)
+    print(
+        json.dumps(
+            {"type": "result", "subtype": "error_during_execution", "is_error": True, "errors": ["terminated"]}
+        ),
+        flush=True,
+    )
     sys.exit(23)
 
 signal.signal(signal.SIGTERM, handle_signal)

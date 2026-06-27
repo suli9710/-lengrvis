@@ -24,6 +24,7 @@ from app.core.db_schema import initialize_schema
 _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_override", default=None)
 AUDIT_GENESIS_HASH = "0" * 64
 AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"  # noqa: S105
+AUDIT_HMAC_SECRET_DIR = "secrets"
 
 # Audit hot-path caches (2-H2): avoid re-reading the HMAC secret file and
 # re-querying the chain tail on every event. Single-writer assumption: failed
@@ -84,6 +85,7 @@ DATA_TABLES = frozenset(
         "approvals",
         "agent_messages",
         "audit_events",
+        "audit_chain_heads",
         "chat_messages",
         "document_chunks",
         "goals",
@@ -166,6 +168,16 @@ def db_path() -> Path:
     path = data_dir / "lengrvis.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def audit_hmac_secret_path() -> Path:
+    configured = str(get_env("LENGRVIS_AUDIT_HMAC_SECRET_FILE") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_absolute():
+            path = db_path().parent / path
+        return path.resolve(strict=False)
+    return db_path().parent / AUDIT_HMAC_SECRET_DIR / AUDIT_HMAC_SECRET_FILE
 
 
 @contextmanager
@@ -967,7 +979,7 @@ def _insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
             # Head is reserved in _prepare_audit_event_locked; refresh with the committed hash.
-            _store_audit_chain_head(stored["sequence"], stored["event_hash"])
+            _store_audit_chain_head(stored["sequence"], stored["event_hash"], event_id=stored["id"])
     except Exception:
         _invalidate_audit_chain_head()
         raise
@@ -992,8 +1004,11 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
     last_hash = expected_prev
     last_event_id: str | None = None
     last_sequence = 0
+    persisted_head: dict[str, Any] | None = None
     with connect() as conn:
         rows = conn.execute(query, args).fetchall()
+        if limit is None:
+            persisted_head = _latest_persisted_audit_chain_head(conn)
 
     for index, row in enumerate(rows, start=1):
         row_id = str(row["id"] or "")
@@ -1049,6 +1064,21 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
         last_event_id = row_id
         last_sequence = sequence
         expected_prev = event_hash
+
+    if not failures and limit is None and persisted_head is not None:
+        anchored_sequence = int(persisted_head["sequence"] or 0)
+        anchored_hash = str(persisted_head["event_hash"] or "")
+        if anchored_sequence != last_sequence or anchored_hash != last_hash:
+            failures.append(
+                {
+                    "index": checked + 1,
+                    "id": persisted_head.get("event_id") or None,
+                    "sequence": anchored_sequence,
+                    "reason": "tail_truncated",
+                    "expected_last_sequence": anchored_sequence,
+                    "actual_last_sequence": last_sequence,
+                }
+            )
 
     failure = failures[0] if failures else {}
     return {
@@ -1164,11 +1194,21 @@ def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) 
     with _AUDIT_CACHE_LOCK:
         head = _AUDIT_CHAIN_HEADS.get(key)
         if head is None:
-            row = conn.execute(
-                "SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1"
-            ).fetchone()
-            sequence = int(row["sequence"] or 0) + 1 if row else 1
-            prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
+            persisted_head = _latest_persisted_audit_chain_head(conn)
+            if persisted_head is not None:
+                sequence = int(persisted_head["sequence"] or 0) + 1
+                prev_hash = str(persisted_head["event_hash"] or "")
+            else:
+                row = conn.execute(
+                    """
+                    SELECT sequence, event_hash
+                    FROM audit_events
+                    ORDER BY sequence DESC, created_at DESC, id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                sequence = int(row["sequence"] or 0) + 1 if row else 1
+                prev_hash = str(row["event_hash"] or "") if row else AUDIT_GENESIS_HASH
         else:
             sequence = head[0] + 1
             prev_hash = head[1]
@@ -1186,14 +1226,43 @@ def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) 
     return stored
 
 
-def _store_audit_chain_head(sequence: int, event_hash: str) -> None:
+def _store_audit_chain_head(sequence: int, event_hash: str, *, event_id: str = "") -> None:
     with _AUDIT_CACHE_LOCK:
         _AUDIT_CHAIN_HEADS[str(db_path())] = (int(sequence), str(event_hash))
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO audit_chain_heads (id, sequence, event_hash, event_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (f"audit_head_{uuid4().hex}", int(sequence), str(event_hash), str(event_id or ""), _now_iso()),
+        )
 
 
 def _invalidate_audit_chain_head() -> None:
     with _AUDIT_CACHE_LOCK:
         _AUDIT_CHAIN_HEADS.pop(str(db_path()), None)
+
+
+def _latest_persisted_audit_chain_head(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    try:
+        row = conn.execute(
+            """
+            SELECT sequence, event_hash, event_id
+            FROM audit_chain_heads
+            ORDER BY sequence DESC, created_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    sequence = int(row["sequence"] or 0)
+    event_hash = str(row["event_hash"] or "")
+    if sequence <= 0 or not event_hash:
+        return None
+    return {"sequence": sequence, "event_hash": event_hash, "event_id": str(row["event_id"] or "")}
 
 
 def _audit_event_hash(event: dict[str, Any]) -> str:
@@ -1213,7 +1282,7 @@ def _audit_hmac_secret() -> str:
     if configured:
         return configured
 
-    secret_path = db_path().parent / AUDIT_HMAC_SECRET_FILE
+    secret_path = _active_audit_hmac_secret_path()
     key = str(secret_path)
     with _AUDIT_CACHE_LOCK:
         cached = _AUDIT_SECRET_CACHE.get(key)
@@ -1227,6 +1296,19 @@ def _audit_hmac_secret() -> str:
     with _AUDIT_CACHE_LOCK:
         _AUDIT_SECRET_CACHE[key] = secret
     return secret
+
+
+def _active_audit_hmac_secret_path() -> Path:
+    secret_path = audit_hmac_secret_path()
+    legacy_path = db_path().parent / AUDIT_HMAC_SECRET_FILE
+    if secret_path == legacy_path or secret_path.exists() or not legacy_path.exists():
+        return secret_path
+    try:
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.replace(secret_path)
+        return secret_path
+    except OSError:
+        return legacy_path
 
 
 def fetch_run_events(run_id: str, *, after_sequence: int = 0, limit: int = 1000) -> list[dict[str, Any]]:

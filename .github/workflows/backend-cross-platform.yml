@@ -40,6 +40,14 @@ jobs:
           LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
           LENGRVIS_CROSS_PLATFORM_CI: "1"
         run: python -m pytest backend/tests -q -m "not slow"
+      - name: Backend slow lifecycle canaries
+        env:
+          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_CROSS_PLATFORM_CI: "1"
+        run: |
+          python -m pytest -q \
+            backend/tests/test_task_pool.py::test_pool_shutdown_drains_running_tasks \
+            backend/tests/test_runs_api.py::test_cancelled_run_is_not_overwritten_by_finishing_engine_turn
 
   backend-macos:
     name: Backend pytest (macos-latest)
@@ -70,3 +78,12 @@ jobs:
           # mocked coverage; the full suite uses the sanctioned test fallback.
           PYTHON_KEYRING_BACKEND: keyring.backends.fail.Keyring
         run: python -m pytest backend/tests -q -m "not slow"
+      - name: Backend slow lifecycle canaries
+        env:
+          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_CROSS_PLATFORM_CI: "1"
+          PYTHON_KEYRING_BACKEND: keyring.backends.fail.Keyring
+        run: |
+          python -m pytest -q \
+            backend/tests/test_task_pool.py::test_pool_shutdown_drains_running_tasks \
+            backend/tests/test_runs_api.py::test_cancelled_run_is_not_overwritten_by_finishing_engine_turn

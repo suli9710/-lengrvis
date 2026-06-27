@@ -10,7 +10,6 @@ from app.policy.redaction import redact_run_payload
 from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.services import run_service
 
-
 router = APIRouter()
 ws_router = APIRouter()
 
@@ -108,11 +107,20 @@ async def run_events(websocket: WebSocket, run_id: str):
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=25)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await websocket.send_json({"type": "heartbeat", "run_id": run_id})
                 continue
             if event.sequence <= last_sequence:
                 continue
+            if event.sequence > last_sequence + 1:
+                last_sequence = await _replay_missing_events(
+                    websocket,
+                    run_id,
+                    last_sequence=last_sequence,
+                    target_sequence=event.sequence,
+                )
+                if event.sequence <= last_sequence:
+                    continue
             last_sequence = event.sequence
             await websocket.send_json(run_event_to_wire(event))
     except WebSocketDisconnect:
@@ -126,6 +134,31 @@ def _load_run(run_id: str) -> Run:
         return run_service.get_run(run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Run not found") from None
+
+
+async def _replay_missing_events(
+    websocket: WebSocket,
+    run_id: str,
+    *,
+    last_sequence: int,
+    target_sequence: int,
+) -> int:
+    while last_sequence + 1 < target_sequence:
+        replayed_events = run_event_bus.replay(run_id, after_sequence=last_sequence)
+        if not replayed_events:
+            break
+        advanced = False
+        for replayed_event in replayed_events:
+            if replayed_event.sequence <= last_sequence:
+                continue
+            if replayed_event.sequence >= target_sequence:
+                return last_sequence
+            last_sequence = replayed_event.sequence
+            advanced = True
+            await websocket.send_json(run_event_to_wire(replayed_event, replay=True))
+        if not advanced:
+            break
+    return last_sequence
 
 
 def _state_response(run: Run) -> RunStateResponse:

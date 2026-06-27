@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from app.core import db
-from app.indexer.clustering import cluster_texts, hashing_vectorize, kmeans
+from app.core.schemas import IndexedFile
+from app.indexer.clustering import cluster_texts, hashing_vectorize
 from app.tools import cluster_tools
 
 
@@ -16,6 +17,38 @@ def _isolate_db(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     yield
+
+
+def _insert_indexed_file(path: Path, digest: str) -> None:
+    indexed = IndexedFile(
+        path=str(path),
+        normalized_path=str(path),
+        name=path.name,
+        extension=path.suffix.lower(),
+        size=path.stat().st_size if path.exists() else 1,
+        sha256=digest,
+        modified_at="1700000000",
+        indexed_at="2026-01-02T03:04:05+00:00",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO indexed_files
+            (id, normalized_path, data, sha256, name, extension, size, modified_at, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                indexed.id,
+                indexed.normalized_path,
+                indexed.model_dump_json(),
+                indexed.sha256,
+                indexed.name,
+                indexed.extension,
+                indexed.size,
+                indexed.modified_at,
+                indexed.indexed_at,
+            ),
+        )
 
 
 def test_hashing_vectorize_produces_consistent_dim():
@@ -65,6 +98,83 @@ def test_suggest_folder_structure_groups_by_category(tmp_path: Path):
     folder_names = [item["folder"] for item in result["suggestions"]]
     assert "documents" in folder_names
     assert "spreadsheets" in folder_names
+
+
+def test_cluster_by_content_filters_stale_index_after_allowed_directories_change(tmp_path: Path):
+    indexed_workspace = tmp_path / "private"
+    current_workspace = tmp_path / "public"
+    indexed_workspace.mkdir()
+    current_workspace.mkdir()
+    stale_file = indexed_workspace / "secret.txt"
+    current_file = current_workspace / "public.txt"
+    stale_file.write_text("old private index entry", encoding="utf-8")
+    current_file.write_text("current public entry", encoding="utf-8")
+    _insert_indexed_file(stale_file, "stale")
+    _insert_indexed_file(current_file, "current")
+
+    result = cluster_tools.cluster_by_content(
+        {"group_by": "extension"},
+        {"allowed_directories": [str(current_workspace)]},
+    )
+    suggestions = cluster_tools.suggest_folder_structure(
+        {},
+        {"allowed_directories": [str(current_workspace)]},
+    )
+
+    cluster_previews = [path for cluster in result["clusters"] for path in cluster["preview"]]
+    suggestion_previews = [path for suggestion in suggestions["suggestions"] for path in suggestion["preview"]]
+    rendered_paths = cluster_previews + suggestion_previews
+    assert result["count"] == 1
+    assert str(current_file) in rendered_paths
+    assert str(stale_file) not in rendered_paths
+    assert all("secret.txt" not in path for path in rendered_paths)
+
+
+def test_cluster_by_content_without_allowed_directories_is_fail_closed(tmp_path: Path):
+    stale_file = tmp_path / "private" / "secret.txt"
+    stale_file.parent.mkdir()
+    stale_file.write_text("private index entry", encoding="utf-8")
+    _insert_indexed_file(stale_file, "stale")
+
+    result = cluster_tools.cluster_by_content(
+        {"group_by": "extension"},
+        {"allowed_directories": []},
+    )
+
+    assert result == {"ok": True, "clusters": [], "count": 0}
+    assert str(stale_file) not in str(result)
+
+
+def test_iter_image_files_filters_stale_index_after_allowed_directories_change(tmp_path: Path):
+    indexed_workspace = tmp_path / "private"
+    current_workspace = tmp_path / "public"
+    indexed_workspace.mkdir()
+    current_workspace.mkdir()
+    stale_image = indexed_workspace / "secret.png"
+    current_image = current_workspace / "public.png"
+    stale_image.write_bytes(b"\x89PNG\r\n")
+    current_image.write_bytes(b"\x89PNG\r\n")
+    _insert_indexed_file(stale_image, "stale")
+    _insert_indexed_file(current_image, "current")
+
+    paths = list(cluster_tools._iter_image_files({}, {"allowed_directories": [str(current_workspace)]}))
+
+    assert paths == [current_image]
+    assert stale_image not in paths
+
+
+def test_requested_image_paths_rejects_unauthorized_paths(tmp_path: Path):
+    indexed_workspace = tmp_path / "private"
+    current_workspace = tmp_path / "public"
+    indexed_workspace.mkdir()
+    current_workspace.mkdir()
+    stale_image = indexed_workspace / "secret.png"
+    stale_image.write_bytes(b"\x89PNG\r\n")
+
+    context = {"allowed_directories": [str(current_workspace)]}
+
+    assert cluster_tools._requested_image_paths({"paths": [str(stale_image)]}, context) == []
+    assert list(cluster_tools._iter_image_files({"paths": [str(stale_image)]}, context)) == []
 
 
 def test_cluster_apps_buckets_installed_listing(monkeypatch, tmp_path: Path):
@@ -160,10 +270,20 @@ def _patch_image_pipeline(monkeypatch, tmp_path, profiles):
         "app.tools.vision_tools.structure_image_labels",
         lambda desc, meta: {"scene_type": "unknown", "people_count": 0, "visible_objects": [], "metadata": {}},
     )
+
     def _deterministic_embed(texts, **kw):
         """Produce distinct vectors based on keywords so k-means can separate them."""
         vectors = []
-        keyword_map = {"beach": 0, "office": 1, "landscape": 2, "food": 3, "portrait": 4, "city": 5, "indoor": 6, "outdoor": 7}
+        keyword_map = {
+            "beach": 0,
+            "office": 1,
+            "landscape": 2,
+            "food": 3,
+            "portrait": 4,
+            "city": 5,
+            "indoor": 6,
+            "outdoor": 7,
+        }
         dim = 32
         for text in texts:
             vec = [0.0] * dim

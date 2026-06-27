@@ -158,6 +158,15 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
         );
         CREATE INDEX IF NOT EXISTS idx_audit_events_task_created
             ON audit_events(task_id, created_at DESC, id DESC);
+        CREATE TABLE IF NOT EXISTS audit_chain_heads (
+            id TEXT PRIMARY KEY,
+            sequence INTEGER NOT NULL,
+            event_hash TEXT NOT NULL,
+            event_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_chain_heads_sequence
+            ON audit_chain_heads(sequence DESC, created_at DESC, id DESC);
         CREATE TABLE IF NOT EXISTS llm_usage_events (
             id TEXT PRIMARY KEY,
             provider TEXT NOT NULL,
@@ -331,6 +340,16 @@ def initialize_schema(conn: sqlite3.Connection, ensure_columns: EnsureColumns) -
         BEFORE DELETE ON audit_events
         BEGIN
             SELECT RAISE(ABORT, 'audit_events is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_chain_heads_no_update
+        BEFORE UPDATE ON audit_chain_heads
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_chain_heads is append-only');
+        END;
+        CREATE TRIGGER IF NOT EXISTS audit_chain_heads_no_delete
+        BEFORE DELETE ON audit_chain_heads
+        BEGIN
+            SELECT RAISE(ABORT, 'audit_chain_heads is append-only');
         END;
         """
     )

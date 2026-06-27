@@ -150,10 +150,11 @@ def test_audit_verify_route(monkeypatch, tmp_path):
 def test_audit_hmac_secret_is_generated_and_reused(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET_FILE", raising=False)
     db.init_db()
 
     first = record("security.local_secret_first", "pytest", {"ok": True})
-    secret_path = tmp_path / db.AUDIT_HMAC_SECRET_FILE
+    secret_path = db.audit_hmac_secret_path()
     stored_secret = secret_path.read_text(encoding="utf-8").strip()
     second = record("security.local_secret_second", "pytest", {"ok": True})
 
@@ -171,6 +172,21 @@ def test_audit_hmac_secret_is_generated_and_reused(monkeypatch, tmp_path):
     assert second.hmac
     assert secret_path.read_text(encoding="utf-8").strip() == stored_secret
     assert db.verify_audit_log()["ok"] is True
+
+
+def test_audit_hmac_secret_marker_is_not_next_to_database_by_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET_FILE", raising=False)
+    db.init_db()
+
+    record("security.local_secret_path", "pytest", {"ok": True})
+
+    secret_path = db.audit_hmac_secret_path()
+    assert secret_path.exists()
+    assert secret_path.parent != db.db_path().parent
+    assert secret_path.parent == tmp_path / db.AUDIT_HMAC_SECRET_DIR
+    assert not (tmp_path / db.AUDIT_HMAC_SECRET_FILE).exists()
 
 
 def test_audit_chain_head_cache_keeps_chain_consistent(monkeypatch, tmp_path):
@@ -193,14 +209,44 @@ def test_audit_chain_head_cache_keeps_chain_consistent(monkeypatch, tmp_path):
     assert verification["checked"] == 6
 
 
+def test_audit_verification_detects_tail_truncation_after_restart(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    db.init_db()
+    first = record("security.tail_first", "pytest", {"ok": True})
+    second = record("security.tail_second", "pytest", {"ok": True})
+    third = record("security.tail_third", "pytest", {"ok": True})
+
+    conn = sqlite3.connect(db.db_path())
+    try:
+        conn.execute("DROP TRIGGER audit_events_no_delete")
+        conn.execute("DELETE FROM audit_events WHERE id = ?", (third.id,))
+        conn.commit()
+    finally:
+        conn.close()
+    db.reset_audit_caches()
+
+    result = db.verify_audit_log()
+
+    assert result["ok"] is False
+    assert result["checked"] == 2
+    assert result["last_event_id"] == second.id
+    assert result["last_sequence"] == 2
+    assert result["failure_reason"] == "tail_truncated"
+    assert result["failure_sequence"] == 3
+    assert result["failure_event_id"] == third.id
+    assert first.sequence == 1
+
+
 def test_audit_hmac_secret_read_once_per_process(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET_FILE", raising=False)
     db.init_db()
 
     calls = {"count": 0}
     original = local_secret.load_or_create_local_secret
-    audit_secret_path = tmp_path / db.AUDIT_HMAC_SECRET_FILE
+    audit_secret_path = db.audit_hmac_secret_path()
 
     def counting_loader(path, **kwargs):  # noqa: ANN001, ANN202
         if str(path) == str(audit_secret_path):

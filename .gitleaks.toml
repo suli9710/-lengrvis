@@ -54,4 +54,10 @@ regexes = [
   '''ci-audit-hmac-secret''',
   '''lan-token=cert-secret-sk-proj-CERT1234\.crt''',
   '''lan-secret=key-secret-sk-proj-KEY1234\.key''',
+  '''token=abcdef1234567890''',
+  '''sk-proposedapikeyvalue1234567890''',
+  '''hunter2-proposed-secret''',
+  '''token=secretDRYRUN123456''',
+  '''token=secretDENYREASON123456''',
+  '''token=secretPOLICY123456''',
 ]

@@ -359,7 +359,7 @@ def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatc
             cmd=args[0], timeout=kwargs["timeout"], output=Timeout.stdout, stderr=Timeout.stderr
         )
 
-    monkeypatch.setattr(developer_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(developer_tools, "run_process_tree", fake_run)
 
     result = developer_tools.test_run(
         {"cwd": str(tmp_path), "command": "pytest backend/tests", "timeout_seconds": 1},

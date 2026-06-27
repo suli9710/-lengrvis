@@ -36,7 +36,7 @@ SAMPLE = """
 | ID | Area | Required evidence | Status | Artifact / link label | Owner | Expiry / next review | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | RR-P0-001 | Clean machine | ev | blocked | TBD | TBD | TBD | n |
-| RR-P0-002 | Android | ev | passed | docs/release/release-readiness-dashboard.md | alice | 2026-01-01 | n |
+| RR-P0-002 | Android | ev | passed | https://github.com/example/repo/actions/runs/123 | alice | 2026-01-01 | n |
 | RR-P1-001 | Large files | change | in_progress | TBD | TBD | n |
 """
 
@@ -52,7 +52,7 @@ def test_parse_rows_reads_p0_and_p1():
     by_id = {row.row_id: row for row in rows}
     assert by_id["RR-P0-002"].status == "passed"
     assert by_id["RR-P0-002"].owner == "alice"
-    assert by_id["RR-P0-002"].artifact == "docs/release/release-readiness-dashboard.md"
+    assert by_id["RR-P0-002"].artifact == "https://github.com/example/repo/actions/runs/123"
 
 
 def test_non_strict_allows_blocked_p0_but_warns():
@@ -106,6 +106,16 @@ def test_strict_requires_verifiable_artifact_for_passed_rows():
     )
     errors, _ = mod.validate(mod.parse_rows(markdown), strict=True, artifact_root=REPO_ROOT)
     assert any("RR-P0-011" in e and "existing repo-relative path" in e for e in errors)
+
+
+def test_strict_requires_p0_artifact_to_point_to_ci_evidence():
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| RR-P0-013 | X | ev | passed | docs/release/release-readiness-dashboard.md | alice | 2026-01-01 | n |\n"
+    )
+    errors, _ = mod.validate(mod.parse_rows(markdown), strict=True, artifact_root=REPO_ROOT)
+    assert any("RR-P0-013" in e and "CI-generated evidence" in e for e in errors)
 
 
 def test_strict_waiver_requires_unexpired_expiry_reason_and_followup():

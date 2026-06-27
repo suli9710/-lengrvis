@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.core.process_tree import kill_process_tree, process_tree_popen_kwargs
 from app.core.subprocess_output import decode_process_output
 
 
@@ -26,27 +27,29 @@ class BackgroundTask:
     error: str = ""
     completed_at: float | None = None
     _process: subprocess.Popen | None = field(default=None, repr=False)
+    _lock: Any = field(default_factory=threading.RLock, repr=False)
 
     def snapshot(self, *, preview_chars: int = 4000) -> dict[str, Any]:
         refresh_background_task(self)
         stdout_preview, stdout_size = _tail_preview(Path(self.stdout_path), preview_chars)
         stderr_preview, stderr_size = _tail_preview(Path(self.stderr_path), preview_chars)
-        return {
-            "task_id": self.id,
-            "status": self.status,
-            "command": list(self.command),
-            "cwd": self.cwd,
-            "returncode": self.returncode,
-            "error": self.error,
-            "started_at": self.started_at,
-            "completed_at": self.completed_at,
-            "stdout_path": self.stdout_path,
-            "stderr_path": self.stderr_path,
-            "stdout_preview": stdout_preview,
-            "stderr_preview": stderr_preview,
-            "stdout_bytes": stdout_size,
-            "stderr_bytes": stderr_size,
-        }
+        with self._lock:
+            return {
+                "task_id": self.id,
+                "status": self.status,
+                "command": list(self.command),
+                "cwd": self.cwd,
+                "returncode": self.returncode,
+                "error": self.error,
+                "started_at": self.started_at,
+                "completed_at": self.completed_at,
+                "stdout_path": self.stdout_path,
+                "stderr_path": self.stderr_path,
+                "stdout_preview": stdout_preview,
+                "stderr_preview": stderr_preview,
+                "stdout_bytes": stdout_size,
+                "stderr_bytes": stderr_size,
+            }
 
 
 _TASKS: dict[str, BackgroundTask] = {}
@@ -84,13 +87,14 @@ def start_background_process(
     stdout_file = stdout_path.open("w", encoding="utf-8", errors="replace")
     stderr_file = stderr_path.open("w", encoding="utf-8", errors="replace")
     try:
-        process = subprocess.Popen(
+        process = subprocess.Popen(  # noqa: S603 - dev background tasks receive validated command lists.
             command,
             cwd=str(cwd),
             env=env,
             stdout=stdout_file,
             stderr=stderr_file,
             shell=False,
+            **process_tree_popen_kwargs(),
         )
     finally:
         # Popen has duplicated the file descriptors it needs on supported
@@ -132,22 +136,29 @@ def background_task_status(task_id: str) -> dict[str, Any]:
 
 
 def refresh_background_task(task: BackgroundTask) -> None:
-    process = task._process
-    if process is None or task.status != "running":
-        return
-    returncode = process.poll()
-    if returncode is None:
-        if time.time() - task.started_at > task.timeout_seconds:
-            with suppress(OSError):
-                process.kill()
-            task.status = "timed_out"
-            task.error = f"Background task exceeded {task.timeout_seconds}s timeout."
-            task.returncode = process.poll()
-            task.completed_at = time.time()
-        return
-    task.returncode = returncode
-    task.status = "succeeded" if returncode == 0 else "failed"
-    task.completed_at = time.time()
+    process_to_kill: subprocess.Popen | None = None
+    with task._lock:
+        process = task._process
+        if process is None or task.status != "running":
+            return
+        returncode = process.poll()
+        if returncode is None:
+            if time.time() - task.started_at <= task.timeout_seconds:
+                return
+            process_to_kill = _mark_task_timed_out_locked(task)
+        else:
+            _finish_task_if_running_locked(
+                task,
+                "succeeded" if returncode == 0 else "failed",
+                returncode=returncode,
+            )
+            return
+
+    if process_to_kill is not None:
+        kill_process_tree(process_to_kill)
+        with task._lock:
+            if task.status == "timed_out":
+                task.returncode = process_to_kill.poll()
 
 
 def _watch_process(task: BackgroundTask) -> None:
@@ -156,22 +167,60 @@ def _watch_process(task: BackgroundTask) -> None:
         return
     try:
         returncode = process.wait(timeout=task.timeout_seconds)
-        task.returncode = returncode
-        task.status = "succeeded" if returncode == 0 else "failed"
+        with task._lock:
+            _finish_task_if_running_locked(
+                task,
+                "succeeded" if returncode == 0 else "failed",
+                returncode=returncode,
+            )
     except subprocess.TimeoutExpired:
-        with suppress(OSError):
-            process.kill()
-        task.status = "timed_out"
-        task.error = f"Background task exceeded {task.timeout_seconds}s timeout."
+        with task._lock:
+            process_to_kill = _mark_task_timed_out_locked(task)
+        if process_to_kill is None:
+            return
+        kill_process_tree(process_to_kill)
         try:
-            task.returncode = process.wait(timeout=5)
+            returncode = process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            task.returncode = None
+            returncode = None
+        with task._lock:
+            if process_to_kill is not None and task.status == "timed_out":
+                task.returncode = returncode
     except Exception as exc:  # noqa: BLE001
-        task.status = "failed"
-        task.error = str(exc)
-    finally:
-        task.completed_at = time.time()
+        with task._lock:
+            _finish_task_if_running_locked(task, "failed", error=str(exc))
+
+
+def _finish_task_if_running_locked(
+    task: BackgroundTask,
+    status: str,
+    *,
+    returncode: int | None = None,
+    error: str = "",
+) -> bool:
+    if task.status != "running":
+        return False
+    task.status = status
+    task.returncode = returncode
+    if error:
+        task.error = error
+    task.completed_at = time.time()
+    return True
+
+
+def _mark_task_timed_out_locked(task: BackgroundTask) -> subprocess.Popen | None:
+    process = task._process
+    if process is None:
+        raise RuntimeError("Background task has no process.")
+    if task.status != "running":
+        return None
+    _finish_task_if_running_locked(
+        task,
+        "timed_out",
+        returncode=process.poll(),
+        error=f"Background task exceeded {task.timeout_seconds}s timeout.",
+    )
+    return process
 
 
 def _tail_preview(path: Path, limit: int) -> tuple[str, int]:

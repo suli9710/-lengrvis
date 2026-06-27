@@ -20,6 +20,7 @@ from app.core.paths import SYSTEM_ROOTS
 from app.core.schemas import RunEngine, Task
 from app.main import create_app
 from app.orchestration.task_phase import TaskPhase
+from app.security.cors import cors_allow_origins
 from app.security.desktop_api import assert_no_production_test_escape_hatches, desktop_api_token_optional_for_test
 from app.services import run_service, run_service_background
 from app.services.task_service import handle_chat
@@ -110,6 +111,18 @@ def test_desktop_token_guard_allows_cors_preflight_without_token(monkeypatch, tm
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_production_cors_excludes_vite_dev_origins(monkeypatch):
+    monkeypatch.setenv("LENGRVIS_ENV", "production")
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+    origins = cors_allow_origins()
+
+    assert origins == ["app://local"]
+    assert "http://localhost:5173" not in origins
+    assert "http://127.0.0.1:5173" not in origins
 
 
 # --- LIFECYCLE: duplicate engine loop guard -------------------------------

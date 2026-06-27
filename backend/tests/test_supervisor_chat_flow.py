@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 
 import httpx
@@ -45,6 +46,14 @@ class RecordingPlanProvider(RecordingSupervisorProvider):
                 }
             ],
         }
+
+
+def _fake_send2trash(path: str) -> None:
+    target = Path(path)
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink(missing_ok=True)
 
 
 @pytest.fixture(autouse=True)
@@ -346,6 +355,7 @@ async def test_approval_executes_trash_step_after_user_approval(monkeypatch, tmp
     target = tmp_path / "workspace" / "old-folder"
     target.mkdir(parents=True)
     (target / "note.txt").write_text("remove me\n", encoding="utf-8")
+    monkeypatch.setattr("app.tools.file_tools.send2trash", _fake_send2trash)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_API_KEY", "")
@@ -379,6 +389,7 @@ async def test_explicit_path_trash_can_run_without_global_authorized_directory(m
     target = tmp_path / "workspace" / "old-folder"
     target.mkdir(parents=True)
     (target / "note.txt").write_text("remove me\n", encoding="utf-8")
+    monkeypatch.setattr("app.tools.file_tools.send2trash", _fake_send2trash)
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_API_KEY", "")

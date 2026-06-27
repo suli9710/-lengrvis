@@ -59,7 +59,7 @@ jobs:
         # audit write must never depend on secret-file bootstrap in CI.
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
-        run: python -m pytest backend/tests -q --maxfail=1 --cov=backend/app --cov-report=term-missing:skip-covered --cov-fail-under=10
+        run: python -m pytest backend/tests -q --maxfail=1 --cov=backend/app --cov-report=term-missing:skip-covered --cov-fail-under=55
       - name: Golden task gate (>=95% pass rate report)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1
       - name: Upload golden task report
@@ -68,6 +68,54 @@ jobs:
         with:
           name: golden-tasks-report
           path: .tmp/qa-evidence/golden-tasks/
+          if-no-files-found: ignore
+
+  real-llm-quality:
+    name: Real LLM quality gate
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-lock.txt
+            requirements-dev.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install -U pip
+          python -m pip install --require-hashes -r backend/requirements-lock.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Skip real LLM quality gate when secret is unavailable
+        if: ${{ env.LENGRVIS_API_KEY == '' }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .tmp/qa-evidence/real-llm-eval | Out-Null
+          @{
+            ok = $true
+            skipped = $true
+            reason = "LENGRVIS_REAL_LLM_API_KEY secret is not configured for this workflow context."
+          } | ConvertTo-Json | Set-Content .tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json -Encoding UTF8
+      - name: Real LLM eval quality gate
+        if: ${{ env.LENGRVIS_API_KEY != '' }}
+        env:
+          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
+          LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
+          LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
+          LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
+          LENGRVIS_MODE: efficiency
+        run: python scripts/run_real_llm_eval.py --quality-gate
+      - name: Upload real LLM eval report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: real-llm-eval-report
+          path: .tmp/qa-evidence/real-llm-eval/
           if-no-files-found: ignore
 
   desktop:

@@ -1,8 +1,8 @@
 """Shared pytest helpers for implementation-contract tests.
 
-These tests are intentionally written against the public surfaces the backend is
-expected to expose. If a surface is not implemented yet, the individual test
-skips with a precise module/API name instead of failing the whole suite.
+These tests are written against public surfaces the backend is expected to keep
+exposing. Missing modules or APIs are regressions, so the helpers fail closed
+instead of silently skipping coverage.
 """
 
 from __future__ import annotations
@@ -78,15 +78,12 @@ SLOW_TEST_NODEID_SUBSTRINGS = {
     "test_windows_core_capabilities.py::test_system_diagnostics_startup_and_settings_dry_run",
 }
 CROSS_PLATFORM_CI_SKIP_NODEID_SUBSTRINGS = {
-    # These flows intentionally exercise the host OS trash/recycle-bin adapter.
+    # This flow intentionally exercises the host OS trash/recycle-bin adapter.
     # Windows CI remains the authoritative gate; Linux/macOS runners do not
     # provide the same user-session trash semantics and have historically failed
-    # here for environment reasons unrelated to the backend contract.
+    # here for environment reasons unrelated to the backend contract. Approval
+    # resume flows fake send2trash and remain covered cross-platform.
     "test_rollback.py::test_rollback_trash_created_file_sends_to_recycle_bin",
-    "test_runs_api.py::test_run_timeline_reconciles_after_approval",
-    "test_runs_api.py::test_approval_resume_continues_remaining_run_steps",
-    "test_supervisor_chat_flow.py::test_approval_executes_trash_step_after_user_approval",
-    "test_supervisor_chat_flow.py::test_explicit_path_trash_can_run_without_global_authorized_directory",
 }
 
 
@@ -205,7 +202,7 @@ def import_first(module_names: Iterable[str]) -> Any:
         except ModuleNotFoundError as exc:
             if exc.name != name:
                 raise
-    pytest.skip(f"Expected module not implemented yet. Tried: {', '.join(attempted)}")
+    pytest.fail(f"Expected module is missing. Tried: {', '.join(attempted)}")
 
 
 def require_attr(module: Any, attr_names: Iterable[str]) -> Any:
@@ -214,7 +211,7 @@ def require_attr(module: Any, attr_names: Iterable[str]) -> Any:
     for name in attr_names:
         if hasattr(module, name):
             return getattr(module, name)
-    pytest.skip(f"{module.__name__} is present but none of these APIs exist: {', '.join(attr_names)}")
+    pytest.fail(f"{module.__name__} is present but none of these APIs exist: {', '.join(attr_names)}")
 
 
 def call_with_supported_kwargs(func: Callable[..., Any], **kwargs: Any) -> Any:
