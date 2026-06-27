@@ -10,12 +10,12 @@ This dashboard covers engineering delivery. A paid or publicly advertised commer
 
 | Field | Value |
 | --- | --- |
-| Candidate commit | `TBD` |
-| Build id | `TBD` |
+| Candidate commit | `1176c66` |
+| Build id | `main CI 28288204979` |
 | Platform | `Windows primary; Android companion preview` |
-| Release owner | `TBD` |
-| Dashboard last reviewed UTC | `TBD` |
-| Decision | `blocked` |
+| Release owner | `suli9710` |
+| Dashboard last reviewed UTC | `2026-06-27T12:10:00Z` |
+| Decision | `waived for v0.1.1 maintenance packaging only; not RC, GA, commercial launch, or public claims sign-off` |
 
 ## Stop-ship blockers
 
@@ -23,12 +23,12 @@ Status values are restricted to: `blocked`, `in_progress`, `passed`, `waived`.
 
 | ID | Area | Required evidence | Status | Artifact / link label | Owner | Expiry / next review | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| RR-P0-001 | Clean-machine Windows install | Install, launch, backend health, first read-only task, diagnostics export, uninstall/rollback on a clean Windows machine/profile. | blocked | TBD | TBD | TBD | Required before RC. |
-| RR-P0-002 | Local model clean-machine path | Runtime install/start/pull, privacy-mode task smoke, explicit failure state if model unavailable. | blocked | TBD | TBD | TBD | Do not market privacy mode until passed. |
-| RR-P0-003 | Android real-device / emulator LAN-WSS | QR pairing, HTTPS/WSS approval stream, remote screen stream, remote input grant, revoke/expiry, certificate trust, redacted screenshot/log review. | blocked | TBD | TBD | TBD | Mobile remains preview until passed. |
-| RR-P0-004 | Result quality review | 30+ realistic natural-language tasks with outcome, user-visible artifact review, success rate, rewrite rate, and safety false-positive/false-negative notes. | blocked | TBD | TBD | TBD | Machine golden tasks are not enough. |
-| RR-P0-005 | Diagnostics external-share review | Actual exported diagnostic package manually checked for paths, tokens, device identifiers, task text, logs, model paths, and public-sharing decision. | blocked | TBD | TBD | TBD | No `public_safe=true` claim without this. |
-| RR-P0-006 | RC handoff and release-owner sign-off | Candidate commit/build/platform, full gate log, manual P1 checks, waivers, residual risk, owner approval. | blocked | TBD | TBD | TBD | Required before tag or announcement. |
+| RR-P0-001 | Clean-machine Windows install | Install, launch, backend health, first read-only task, diagnostics export, uninstall/rollback on a clean Windows machine/profile. | waived | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | 2026-07-27 | Reason: v0.1.1 is maintenance packaging only, not RC or public GA. Follow-up issue: collect clean-machine Windows evidence before RC. |
+| RR-P0-002 | Local model clean-machine path | Runtime install/start/pull, privacy-mode task smoke, explicit failure state if model unavailable. | waived | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | 2026-07-27 | Reason: no privacy-mode marketing claim is made for v0.1.1. Follow-up issue: collect local-model clean-machine evidence before privacy-mode claim. |
+| RR-P0-003 | Android real-device / emulator LAN-WSS | QR pairing, HTTPS/WSS approval stream, remote screen stream, remote input grant, revoke/expiry, certificate trust, redacted screenshot/log review. | waived | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | 2026-07-27 | Reason: Android companion remains preview for v0.1.1. Follow-up issue: collect real-device LAN/WSS evidence before mobile release claim. |
+| RR-P0-004 | Result quality review | 30+ realistic natural-language tasks with outcome, user-visible artifact review, success rate, rewrite rate, and safety false-positive/false-negative notes. | waived | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | 2026-07-27 | Reason: v0.1.1 relies on automated gates only and is not task-result quality sign-off. Follow-up issue: run 30+ realistic task review before RC. |
+| RR-P0-005 | Diagnostics external-share review | Actual exported diagnostic package manually checked for paths, tokens, device identifiers, task text, logs, model paths, and public-sharing decision. | waived | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | 2026-07-27 | Reason: no public-safe diagnostics sharing claim is made for v0.1.1. Follow-up issue: complete diagnostics external-share review before any public diagnostic artifact. |
+| RR-P0-006 | RC handoff and release-owner sign-off | Candidate commit/build/platform, full gate log, manual P1 checks, waivers, residual risk, owner approval. | waived | [main CI run 28288204979](https://github.com/suli9710/-lengrvis/actions/runs/28288204979) | suli9710 | 2026-07-27 | Reason: release owner approves scope-limited v0.1.1 maintenance packaging only. Follow-up issue: produce full RC handoff before RC, GA, announcement, or broad distribution. |
 
 ## P1 hardening backlog
 
