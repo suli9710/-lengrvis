@@ -24,7 +24,6 @@ READONLY_SHELL_COMMANDS = {
     "git",
     "ls",
     "pwd",
-    "rg",
     "select-string",
     "type",
     "where",
@@ -88,7 +87,18 @@ GIT_CONFIG_GUARDS = [
     "diff.trustExitCode=false",
 ]
 GIT_DIFF_GUARD_FLAGS = ["--no-ext-diff", "--no-textconv"]
-TEST_EXECUTABLES = {"pytest", "pytest.exe", "python", "python.exe", "py", "py.exe", "npm", "npm.cmd", "pnpm", "pnpm.cmd"}
+TEST_EXECUTABLES = {
+    "pytest",
+    "pytest.exe",
+    "python",
+    "python.exe",
+    "py",
+    "py.exe",
+    "npm",
+    "npm.cmd",
+    "pnpm",
+    "pnpm.cmd",
+}
 PYTEST_WRITE_FLAGS = {
     "--basetemp",
     "--cache-clear-output",
@@ -142,7 +152,9 @@ def grep_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not query:
         return {"ok": False, "error": "Missing query.", "results": []}
     for path in root.rglob("*"):
-        if not path.is_file() or not (fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern) or fnmatch.fnmatch(path.name, pattern)):
+        if not path.is_file() or not (
+            fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern) or fnmatch.fnmatch(path.name, pattern)
+        ):
             continue
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -326,7 +338,9 @@ def validate_readonly_shell(command: str, *, allowed_directories: list[str] | No
     return (tokens is not None, reason)
 
 
-def _parse_readonly_shell(command: str, *, allowed_directories: list[str] | None = None) -> tuple[list[str] | None, str]:
+def _parse_readonly_shell(
+    command: str, *, allowed_directories: list[str] | None = None
+) -> tuple[list[str] | None, str]:
     try:
         tokens = shlex.split(command, posix=False)
     except ValueError as exc:
@@ -546,7 +560,7 @@ def _guarded_git_command(args: list[str]) -> list[str]:
 
 def _run_command(command: list[str] | str, *, cwd: Path, shell: bool = False) -> dict[str, Any]:
     try:
-        completed = subprocess.run(
+        completed = subprocess.run(  # noqa: S603 - callers pass commands after allowlist validation.
             command,
             cwd=str(cwd),
             shell=shell,
@@ -585,7 +599,7 @@ def _run_test_foreground(
 ) -> dict[str, Any]:
     started_at = time.time()
     try:
-        completed = subprocess.run(
+        completed = subprocess.run(  # noqa: S603 - dev.test_run accepts only controlled test commands.
             command,
             cwd=str(cwd),
             shell=False,
@@ -638,7 +652,20 @@ def _run_test_foreground(
 def _safe_command_env() -> dict[str, str]:
     from app.config import get_env
 
-    keys = ("COMSPEC", "HOME", "LANG", "LOCALAPPDATA", "PATH", "PATHEXT", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "WINDIR")
+    keys = (
+        "COMSPEC",
+        "HOME",
+        "LANG",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "WINDIR",
+    )
     env = {key: value for key in keys if (value := get_env(key))}
     env.update(
         {
@@ -723,11 +750,11 @@ def _pytest_tests_from_source(source: str) -> list[dict[str, Any]]:
     tree = ast.parse(source)
     tests: list[dict[str, Any]] = []
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test_"):
             tests.append({"name": node.name, "line": node.lineno, "kind": "function"})
         elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
             for child in node.body:
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name.startswith("test_"):
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) and child.name.startswith("test_"):
                     tests.append({"name": f"{node.name}.{child.name}", "line": child.lineno, "kind": "method"})
     return tests
 
@@ -759,13 +786,19 @@ def _summarize_shell_readonly(command: str, payload: dict[str, Any]) -> str:
     stdout_len = len(str(payload.get("stdout") or ""))
     stderr_len = len(str(payload.get("stderr") or ""))
     truncated = " Truncated." if payload.get("stdout_truncated") or payload.get("stderr_truncated") else ""
-    return f"Read-only shell command {status}: {command} ({stdout_len} stdout char(s), {stderr_len} stderr char(s)).{truncated}"
+    return (
+        f"Read-only shell command {status}: {command} "
+        f"({stdout_len} stdout char(s), {stderr_len} stderr char(s)).{truncated}"
+    )
 
 
 def _summarize_pytest_inventory(payload: dict[str, Any]) -> str:
     error_count = len(payload.get("errors") or [])
     suffix = f" with {error_count} parse error(s)" if error_count else ""
-    return f"Static pytest inventory found {payload.get('test_count', 0)} test(s) in {payload.get('file_count', 0)} file(s){suffix}."
+    return (
+        "Static pytest inventory found "
+        f"{payload.get('test_count', 0)} test(s) in {payload.get('file_count', 0)} file(s){suffix}."
+    )
 
 
 def _summarize_test_run(payload: dict[str, Any]) -> str:
@@ -775,7 +808,10 @@ def _summarize_test_run(payload: dict[str, Any]) -> str:
     stdout_len = int(payload.get("stdout_bytes") or 0)
     stderr_len = int(payload.get("stderr_bytes") or 0)
     truncated = " Preview truncated." if payload.get("stdout_truncated") or payload.get("stderr_truncated") else ""
-    return f"Controlled test run {status} with return code {payload.get('returncode')} ({stdout_len} stdout byte(s), {stderr_len} stderr byte(s)).{truncated}"
+    return (
+        f"Controlled test run {status} with return code {payload.get('returncode')} "
+        f"({stdout_len} stdout byte(s), {stderr_len} stderr byte(s)).{truncated}"
+    )
 
 
 def _result_summary(output: dict[str, Any]) -> str:
@@ -830,7 +866,12 @@ def _schema(name: str) -> dict[str, Any]:
         },
         "dev.worktree_preview": {
             "type": "object",
-            "properties": {"cwd": {"type": "string"}, "name": {"type": "string"}, "branch": {"type": "string"}, "target_path": {"type": "string"}},
+            "properties": {
+                "cwd": {"type": "string"},
+                "name": {"type": "string"},
+                "branch": {"type": "string"},
+                "target_path": {"type": "string"},
+            },
             "additionalProperties": False,
         },
         "dev.test_run": {
