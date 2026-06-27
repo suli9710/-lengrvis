@@ -13,10 +13,11 @@ from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus, ToolR
 from app.llm.registry import get_effective_settings
 from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
 from app.orchestration.execution_models import (
+    NON_EXECUTABLE_RUN_PHASES,
+    TERMINAL_RUN_PHASES,
     EngineSelection,
     EngineTurnResult,
     LargeResultRef,
-    NON_EXECUTABLE_RUN_PHASES,
     RunObservation,
     RunPhase,
     RunState,
@@ -25,14 +26,14 @@ from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.observations import summarize_result
 from app.orchestration.orchestrator_registry import orchestrator_registry
-from app.orchestration.plan_snapshot import snapshot_step, write_back_step
-from app.orchestration.resource_state import clear_task_read_states
 from app.orchestration.os_reflection import (
     OSReflectionDecider,
     OSReflectionInput,
     apply_reflection_decision,
     reflection_count_updates,
 )
+from app.orchestration.plan_snapshot import snapshot_step, write_back_step
+from app.orchestration.resource_state import clear_task_read_states
 from app.orchestration.step_phase import set_step_status
 from app.policy.risk import RiskLevel
 
@@ -45,7 +46,7 @@ OSEventHook = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 # Per-run orchestrator binding (R4-H2). run_plan_turn binds the run's
 # orchestrator here for the duration of the turn; asyncio.create_task copies
 # the context, so parallel step tasks inherit the same binding.
-_CURRENT_RUN_ORCHESTRATOR: ContextVar["OrchestratorAgent | None"] = ContextVar(
+_CURRENT_RUN_ORCHESTRATOR: ContextVar[OrchestratorAgent | None] = ContextVar(
     "os_engine_current_run_orchestrator",
     default=None,
 )
@@ -81,7 +82,7 @@ class OSExecutionEngine(ExecutionEngine):
     ) -> None:
         self.orchestrator = orchestrator
         self.orchestrator_factory = orchestrator_factory
-        self.store = store or default_run_store
+        self.store = store if store is not None else default_run_store
         self.event_hook = event_hook
         self._orchestrators_by_run: dict[str, OrchestratorAgent] = {}
         self._run_tasks: dict[str, set[asyncio.Task[Any]]] = {}
@@ -124,7 +125,9 @@ class OSExecutionEngine(ExecutionEngine):
         # run's live timeline/approval events are silently dropped.
         self._orchestrator_for_state(state)
         if state.phase == RunPhase.PAUSED:
-            resumed = state.model_copy(update={"phase": RunPhase.RUNNING, "transition_reason": "os run resumed"}, deep=True)
+            resumed = state.model_copy(
+                update={"phase": RunPhase.RUNNING, "transition_reason": "os run resumed"}, deep=True
+            )
             return self.store.put(resumed)
         if state.phase == RunPhase.AWAITING_APPROVAL:
             return state.model_copy(
@@ -146,7 +149,9 @@ class OSExecutionEngine(ExecutionEngine):
             clear_task_read_states(task_id)
             task_data = db.fetch_one("tasks", task_id)
             if task_data:
-                orchestrator._set_status(Task.model_validate(task_data), TaskStatus.CANCELLED, final_summary="Run cancelled.")
+                orchestrator._set_status(
+                    Task.model_validate(task_data), TaskStatus.CANCELLED, final_summary="Run cancelled."
+                )
         cancelled = state.model_copy(
             update={"phase": RunPhase.CANCELLED, "transition_reason": "os run cancelled"},
             deep=True,
@@ -162,7 +167,9 @@ class OSExecutionEngine(ExecutionEngine):
         task = await self._task_for_state(orchestrator, state)
         plan = await self._plan_for_state(orchestrator, task, state)
         if task.status in {TaskStatus.CANCELLED, TaskStatus.DENIED, TaskStatus.FAILED}:
-            updated = self._state_from_task_plan(state, task, plan, phase=self._phase_for_task_plan(task, plan), reason=task.final_summary)
+            updated = self._state_from_task_plan(
+                state, task, plan, phase=self._phase_for_task_plan(task, plan), reason=task.final_summary
+            )
             return EngineTurnResult(state=self.store.put(updated), finished=True, message=task.final_summary)
         return await self.run_plan_turn(task, plan, state=state)
 
@@ -417,7 +424,8 @@ class OSExecutionEngine(ExecutionEngine):
                 },
             )
 
-        return current.model_copy(update={"observations": observations, "large_result_refs": large_refs}, deep=True)
+        updated = current.model_copy(update={"observations": observations, "large_result_refs": large_refs}, deep=True)
+        return self.store.trim_state_history(updated)
 
     async def _resolve_turn_outcome(
         self,
@@ -635,7 +643,9 @@ class OSExecutionEngine(ExecutionEngine):
     ) -> list[tuple[PlanStep, StepExecutionOutcome]]:
         if not threaded_tools or len(selected) <= 1:
             step = selected[0]
-            outcome = await self._execute_one_step(task, plan, step, context, observations_by_step, threaded_tools=False)
+            outcome = await self._execute_one_step(
+                task, plan, step, context, observations_by_step, threaded_tools=False
+            )
             return [(step, outcome)]
 
         work: dict[asyncio.Task[StepExecutionOutcome], tuple[PlanStep, PlanStep, ToolResult | None]] = {}
@@ -648,7 +658,9 @@ class OSExecutionEngine(ExecutionEngine):
             # so siblings never observe (or persist) a half-updated step.
             isolated = snapshot_step(step)
             task_work = asyncio.create_task(
-                self._orchestrator()._execute_step(task, plan, isolated, step_context, observation, threaded_tools=True),
+                self._orchestrator()._execute_step(
+                    task, plan, isolated, step_context, observation, threaded_tools=True
+                ),
                 name=f"os-step-{step.id}",
             )
             if run_id:
@@ -664,7 +676,9 @@ class OSExecutionEngine(ExecutionEngine):
                     step, isolated, observation = work.pop(task_work)
                     try:
                         raw_outcome = task_work.result()
-                    except BaseException as exc:
+                    except asyncio.CancelledError as exc:
+                        raw_outcome = exc
+                    except Exception as exc:  # noqa: BLE001 - step failures are normalized below.
                         raw_outcome = exc
                     if not isinstance(raw_outcome, BaseException):
                         write_back_step(step, isolated)
@@ -682,7 +696,13 @@ class OSExecutionEngine(ExecutionEngine):
                             threaded_tools=True,
                         )
                     results.append((step, outcome))
-                    if outcome.kind in {"step_denied", "fatal_denied", "fatal_failed", "waiting_user_approval", "revision_requested"}:
+                    if outcome.kind in {
+                        "step_denied",
+                        "fatal_denied",
+                        "fatal_failed",
+                        "waiting_user_approval",
+                        "revision_requested",
+                    }:
                         stop_requested = True
             if stop_requested and work:
                 # Drain like StepSchedulerHandler._drain_running_after_stop:
@@ -694,7 +714,7 @@ class OSExecutionEngine(ExecutionEngine):
                 for pending_work in remaining:
                     pending_work.cancel()
                 raw_outcomes = await asyncio.gather(*remaining, return_exceptions=True)
-                for task_work, raw_outcome in zip(remaining, raw_outcomes):
+                for task_work, raw_outcome in zip(remaining, raw_outcomes, strict=False):
                     step, isolated, observation = work.pop(task_work)
                     if isinstance(raw_outcome, asyncio.CancelledError):
                         continue
@@ -765,7 +785,6 @@ class OSExecutionEngine(ExecutionEngine):
         hook: OSEventHook | None,
         turn: int,
     ) -> EngineTurnResult:
-        orchestrator = self._orchestrator()
         pending = self._mark_blocked_pending_steps(plan)
 
         if task.status in {TaskStatus.CANCELLED, TaskStatus.DENIED, TaskStatus.FAILED}:
@@ -837,7 +856,9 @@ class OSExecutionEngine(ExecutionEngine):
             )
             outputs["outcome"] = "continue"
             outputs["current_plan"] = stored.current_plan
-            return EngineTurnResult(state=stored, finished=False, message="Continue to next OS execution turn.", outputs=outputs)
+            return EngineTurnResult(
+                state=stored, finished=False, message="Continue to next OS execution turn.", outputs=outputs
+            )
 
         return await self._finish_turn(
             state,
@@ -916,9 +937,12 @@ class OSExecutionEngine(ExecutionEngine):
         outputs["outcome"] = outcome
         outputs["phase"] = stored.phase.value
         outputs["current_plan"] = stored.current_plan
+        orchestrator_name = self._orchestrator().name
         if finished and task.id:
             clear_task_read_states(task.id)
-        record("task.finished_or_waiting", self._orchestrator().name, {"status": task.status}, task_id=task.id)
+        if finished and stored.phase in TERMINAL_RUN_PHASES:
+            self._release_run_runtime(stored.run_id)
+        record("task.finished_or_waiting", orchestrator_name, {"status": task.status}, task_id=task.id)
         return EngineTurnResult(state=stored, finished=finished, message=message, outputs=outputs)
 
     def _register_run_task(self, run_id: str, work: asyncio.Task[Any]) -> None:
@@ -934,6 +958,11 @@ class OSExecutionEngine(ExecutionEngine):
                 self._run_tasks.pop(run_id, None)
 
         work.add_done_callback(_on_done)
+
+    def _release_run_runtime(self, run_id: str) -> None:
+        self._orchestrators_by_run.pop(run_id, None)
+        self._run_tasks.pop(run_id, None)
+        orchestrator_registry.release_run(run_id)
 
     def _mark_blocked_pending_steps(self, plan: Plan) -> set[str]:
         orchestrator = self._orchestrator()
@@ -981,11 +1010,17 @@ class OSExecutionEngine(ExecutionEngine):
             return raw_outcome
         set_step_status(step, StepStatus.FAILED, actor="OSExecutionEngine")
         error = str(raw_outcome)
-        self._orchestrator()._set_status(task, TaskStatus.FAILED, final_summary=self._orchestrator()._friendly_tool_error(error))
-        record("task.step_failed_unhandled", self._orchestrator().name, {"step": step.id, "error": error}, task_id=task.id)
+        self._orchestrator()._set_status(
+            task, TaskStatus.FAILED, final_summary=self._orchestrator()._friendly_tool_error(error)
+        )
+        record(
+            "task.step_failed_unhandled", self._orchestrator().name, {"step": step.id, "error": error}, task_id=task.id
+        )
         return StepExecutionOutcome(
             "fatal_failed",
-            ToolResult(tool_call_id=f"{step.id}_exception", ok=False, error=error, observation=f"{step.tool_name} failed."),
+            ToolResult(
+                tool_call_id=f"{step.id}_exception", ok=False, error=error, observation=f"{step.tool_name} failed."
+            ),
         )
 
     async def _task_for_state(self, orchestrator: OrchestratorAgent, state: RunState) -> Task:
@@ -1023,9 +1058,10 @@ class OSExecutionEngine(ExecutionEngine):
 
         goal_review = orchestrator.safety.review_goal(task.id, task.user_goal)
         if goal_review.verdict.value == "deny":
-            denial_summary = "; ".join(
-                part for part in [*goal_review.reasons, goal_review.safe_alternative] if part
-            ) or "Forbidden intent detected."
+            denial_summary = (
+                "; ".join(part for part in [*goal_review.reasons, goal_review.safe_alternative] if part)
+                or "Forbidden intent detected."
+            )
             orchestrator._set_status(task, TaskStatus.DENIED, final_summary=denial_summary)
             return Plan(task_id=task.id, goal=task.user_goal, steps=[])
 
@@ -1089,13 +1125,20 @@ class OSExecutionEngine(ExecutionEngine):
                 continue
             try:
                 observations[step_id] = ToolResult.model_validate(result_payload)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                record(
+                    "run.observation_payload_invalid",
+                    self._orchestrator().name,
+                    {"step_id": step_id, "error": str(exc)},
+                    task_id=state.task_id,
+                )
                 continue
         return observations
 
     def _run_observation(self, turn: int, step: PlanStep, outcome: StepExecutionOutcome) -> RunObservation:
         result = outcome.result
-        assert result is not None
+        if result is None:
+            raise ValueError("Run observation requires a tool result.")
         return RunObservation(
             turn=turn,
             source=step.agent_name or "ToolRuntime",
@@ -1143,7 +1186,7 @@ class OSExecutionEngine(ExecutionEngine):
         reason: str,
         turn_count: int | None = None,
     ) -> RunState:
-        return state.model_copy(
+        updated = state.model_copy(
             update={
                 "phase": phase,
                 "turn_count": state.turn_count if turn_count is None else turn_count,
@@ -1156,12 +1199,15 @@ class OSExecutionEngine(ExecutionEngine):
             },
             deep=True,
         )
+        return self.store.trim_state_history(updated)
 
     def _plan_snapshot(self, task: Task, plan: Plan) -> dict[str, Any]:
         return {
             "task_id": task.id,
             "task_status": str(task.status.value if hasattr(task.status, "value") else task.status),
-            "execution_stage": str(task.execution_stage.value if hasattr(task.execution_stage, "value") else task.execution_stage),
+            "execution_stage": str(
+                task.execution_stage.value if hasattr(task.execution_stage, "value") else task.execution_stage
+            ),
             "plan_id": plan.id,
             "goal": plan.goal,
             "step_status_counts": self._step_status_counts(plan),

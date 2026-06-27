@@ -3,11 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.config import AppSettings, PROJECT_ROOT
 from app.agents.delegation_metadata import developer_engine_capabilities
+from app.config import PROJECT_ROOT, AppSettings
 from app.integrations.lengrvis_code import (
     allowed_tools_for_developer,
     validate_allowed_tools,
+)
+from app.orchestration.developer_write_guard import run_write_verification
+from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
+from app.orchestration.execution_models import (
+    NON_EXECUTABLE_RUN_PHASES,
+    EngineSelection,
+    EngineTurnResult,
+    RunPhase,
+    RunState,
 )
 from app.orchestration.lengrvis_code_config import LENGRVIS_CODE_DISPLAY_NAME, LengrvisCodeConfig
 from app.orchestration.lengrvis_code_runner import (
@@ -15,15 +24,6 @@ from app.orchestration.lengrvis_code_runner import (
     cancel_lengrvis_code_run,
     lengrvis_code_summary_to_turn_result,
     run_lengrvis_code,
-)
-from app.orchestration.execution_engine import ExecutionEngine, InMemoryRunStore, default_run_store
-from app.orchestration.developer_write_guard import run_write_verification
-from app.orchestration.execution_models import (
-    NON_EXECUTABLE_RUN_PHASES,
-    EngineSelection,
-    EngineTurnResult,
-    RunPhase,
-    RunState,
 )
 
 
@@ -41,7 +41,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
         use_lengrvis_code: bool = True,
     ) -> None:
         self.settings = settings or AppSettings()
-        self.store = store or default_run_store
+        self.store = store if store is not None else default_run_store
         self.lengrvis_code_config = lengrvis_code_config
         self.use_lengrvis_code = use_lengrvis_code
 
@@ -74,7 +74,10 @@ class DeveloperExecutionEngine(ExecutionEngine):
             mode=mode,
             transition_reason=tool_safety_error or f"developer {LENGRVIS_CODE_DISPLAY_NAME} run created",
             current_plan={
-                "summary": f"Run {LENGRVIS_CODE_DISPLAY_NAME} headless with Lengrvis-controlled OpenAI config and tool permissions.",
+                "summary": (
+                    f"Run {LENGRVIS_CODE_DISPLAY_NAME} headless with Lengrvis-controlled "
+                    "OpenAI config and tool permissions."
+                ),
                 "adapter": "lengrvis_code_headless_stream_json",
                 "adapter_display_name": LENGRVIS_CODE_DISPLAY_NAME,
                 "workspace": _default_workspace(self.settings),
@@ -89,7 +92,11 @@ class DeveloperExecutionEngine(ExecutionEngine):
                 "capability_disclosure": caps["disclosure"],
                 **({"safety_error": tool_safety_error} if tool_safety_error else {}),
                 "steps": [
-                    {"id": "lengrvis_code_run", "tool": "lengrvis_code", "status": "failed" if tool_safety_error else "pending"},
+                    {
+                        "id": "lengrvis_code_run",
+                        "tool": "lengrvis_code",
+                        "status": "failed" if tool_safety_error else "pending",
+                    },
                     *(
                         [{"id": "write_verification", "tool": "developer_write_guard", "status": "pending"}]
                         if writes_enabled and not tool_safety_error
@@ -104,7 +111,10 @@ class DeveloperExecutionEngine(ExecutionEngine):
         state = self.store.get(run_id)
         if state.phase == RunPhase.PAUSED:
             state = state.model_copy(
-                update={"phase": RunPhase.RUNNING, "transition_reason": f"developer {LENGRVIS_CODE_DISPLAY_NAME} run resumed"},
+                update={
+                    "phase": RunPhase.RUNNING,
+                    "transition_reason": f"developer {LENGRVIS_CODE_DISPLAY_NAME} run resumed",
+                },
                 deep=True,
             )
             return self.store.put(state)
@@ -114,7 +124,10 @@ class DeveloperExecutionEngine(ExecutionEngine):
         await cancel_lengrvis_code_run(run_id)
         state = self.store.get(run_id)
         updated = state.model_copy(
-            update={"phase": RunPhase.CANCELLED, "transition_reason": f"developer {LENGRVIS_CODE_DISPLAY_NAME} run cancelled"},
+            update={
+                "phase": RunPhase.CANCELLED,
+                "transition_reason": f"developer {LENGRVIS_CODE_DISPLAY_NAME} run cancelled",
+            },
             deep=True,
         )
         return self.store.put(updated)
@@ -148,9 +161,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
                     from app.integrations.lengrvis_code import WRITE_CAPABLE_ALLOWED_TOOLS
 
                     candidate_tools = tuple(
-                        tool
-                        for tool in plan_tools
-                        if tool.split("(", 1)[0] not in WRITE_CAPABLE_ALLOWED_TOOLS
+                        tool for tool in plan_tools if tool.split("(", 1)[0] not in WRITE_CAPABLE_ALLOWED_TOOLS
                     )
                 if candidate_tools:
                     allowed_tools = validate_allowed_tools(candidate_tools, allow_write_tools=writes_enabled)
@@ -200,7 +211,9 @@ class DeveloperExecutionEngine(ExecutionEngine):
         except Exception as exc:  # noqa: BLE001 - external CLI failures become run failures.
             result = lengrvis_code_summary_to_turn_result(
                 state,
-                LengrvisCodeStreamSummary(launch_error=f"Unexpected {LENGRVIS_CODE_DISPLAY_NAME} adapter failure: {exc}"),
+                LengrvisCodeStreamSummary(
+                    launch_error=f"Unexpected {LENGRVIS_CODE_DISPLAY_NAME} adapter failure: {exc}"
+                ),
             )
             result.state.current_plan = _mark_plan_steps_status(result.state.current_plan, "failed")
             return result.model_copy(update={"state": self.store.put(result.state)}, deep=True)
@@ -211,7 +224,9 @@ class DeveloperExecutionEngine(ExecutionEngine):
         elif writes_enabled and result.state.phase == RunPhase.COMPLETED:
             result = _apply_write_verification(result, summary, settings=self.settings, writes_enabled=writes_enabled)
         step_status = _plan_step_status(result.state.phase)
-        result.state.current_plan = _mark_plan_steps_status(result.state.current_plan, step_status, step_id="lengrvis_code_run")
+        result.state.current_plan = _mark_plan_steps_status(
+            result.state.current_plan, step_status, step_id="lengrvis_code_run"
+        )
         if writes_enabled and result.outputs.get("write_verification"):
             verify_ok = bool(result.outputs["write_verification"].get("ok"))
             result.state.current_plan = _mark_plan_steps_status(
@@ -258,7 +273,8 @@ def _default_workspace(settings: AppSettings) -> str:
 
 def _prompt_from_goal(goal: str, *, writes_enabled: bool = False) -> str:
     write_clause = (
-        "Write/Edit tools are enabled inside the workspace only; every mutation must pass Lengrvis Code permission prompts "
+        "Write/Edit tools are enabled inside the workspace only; every mutation must pass "
+        "Lengrvis Code permission prompts "
         "(dry-run/approval) before applying. After edits, run the smallest relevant pytest command to verify the fix. "
         if writes_enabled
         else "Do not request Write/Edit/Bash/Agent tools or bypass permissions. "
