@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import AppSettings
@@ -12,6 +14,7 @@ from app.llm.local_provider import LocalBackend
 from app.llm.onnx_provider import OnnxBackend, OnnxProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
 from app.llm.registry import get_provider_for_mode
+from app.llm.structured_output import LLMStructuredOutputError
 
 
 def _write_genai_bundle(path: Path, *, model_file: str = "model.int4.onnx") -> Path:
@@ -159,7 +162,11 @@ def test_detect_onnx_backend_prefers_directml_provider(monkeypatch, tmp_path: Pa
     model = _write_genai_bundle(tmp_path / "Qwen2.5-3B-Instruct-ONNX" / "int4")
 
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
-    monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["CPUExecutionProvider", "DmlExecutionProvider"])
+    monkeypatch.setattr(
+        onnx_provider,
+        "_available_execution_providers",
+        lambda: ["CPUExecutionProvider", "DmlExecutionProvider"],
+    )
 
     backend = onnx_provider.detect_onnx_backend(model_path=str(model))
 
@@ -368,6 +375,38 @@ def test_onnx_provider_chat_uses_genai_runtime(monkeypatch, tmp_path: Path):
     assert text == "ok!"
 
 
+def test_onnx_structured_chat_rejects_missing_required_field(monkeypatch, tmp_path: Path):
+    model_dir = _write_genai_bundle(tmp_path / "genai-model")
+    backend = OnnxBackend(
+        kind="onnx-directml",
+        model_path=str(model_dir),
+        execution_provider="DmlExecutionProvider",
+        available_providers=["DmlExecutionProvider"],
+    )
+    provider = OnnxProvider(
+        AppSettings(mode="privacy", model=str(model_dir), structured_output_repair_retries=0),
+        backend,
+    )
+
+    async def fake_chat(messages, model=None, temperature=None, tools=None):  # noqa: ARG001
+        return '{"count":1}'
+
+    monkeypatch.setattr(provider, "chat", fake_chat)
+    schema = {
+        "type": "object",
+        "required": ["name", "count"],
+        "properties": {
+            "name": {"type": "string"},
+            "count": {"type": "integer"},
+        },
+    }
+
+    with pytest.raises(LLMStructuredOutputError) as exc_info:
+        asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert exc_info.value.failure_kind == "schema_mismatch"
+
+
 def test_onnx_provider_configures_provider_options(tmp_path: Path):
     model_dir = _write_genai_bundle(tmp_path / "genai-model")
     backend = OnnxBackend(
@@ -410,7 +449,11 @@ def test_detect_onnx_backend_discovers_quantized_qwen_bundle(monkeypatch, tmp_pa
 
     monkeypatch.setenv("LENGRVIS_ONNX_MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
-    monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(
+        onnx_provider,
+        "_available_execution_providers",
+        lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
+    )
 
     backend = onnx_provider.detect_onnx_backend()
 
@@ -471,7 +514,11 @@ def test_openvino_backend_does_not_use_directml_device_option(monkeypatch, tmp_p
 
     monkeypatch.setenv("LENGRVIS_ONNX_DIRECTML_DEVICE_ID", "2")
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
-    monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["OpenVINOExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(
+        onnx_provider,
+        "_available_execution_providers",
+        lambda: ["OpenVINOExecutionProvider", "CPUExecutionProvider"],
+    )
 
     backend = onnx_provider.detect_onnx_backend(model_path=str(model))
 
@@ -513,7 +560,11 @@ def test_settings_onnx_status_route_reports_snapshot(monkeypatch, tmp_path: Path
 
     monkeypatch.setenv("LENGRVIS_ONNX_MODEL_PATH", str(model))
     monkeypatch.setattr(onnx_provider, "_is_genai_runtime_available", lambda: True)
-    monkeypatch.setattr(onnx_provider, "_available_execution_providers", lambda: ["DmlExecutionProvider", "CPUExecutionProvider"])
+    monkeypatch.setattr(
+        onnx_provider,
+        "_available_execution_providers",
+        lambda: ["DmlExecutionProvider", "CPUExecutionProvider"],
+    )
 
     from app.main import create_app
 

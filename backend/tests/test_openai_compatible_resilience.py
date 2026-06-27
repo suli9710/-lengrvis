@@ -12,14 +12,19 @@ from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.openai_compatible import (
     _CIRCUITS,
     LLMApiCircuitOpen,
-    LLMApiResponseError,
     OpenAICompatibleProvider,
-    _validate_structured_payload_lightweight,
     circuit_snapshot,
     close_shared_http_client,
     normalize_openai_base_url,
 )
 from app.llm.registry import get_provider_for_mode
+from app.llm.structured_output import (
+    LLMApiResponseError,
+    LLMStructuredOutputError,
+)
+from app.llm.structured_output import (
+    validate_structured_payload_lightweight as _validate_structured_payload_lightweight,
+)
 
 
 class FakeAsyncClient:
@@ -406,6 +411,146 @@ def test_structured_chat_validates_schema_and_extracts_embedded_json(monkeypatch
     assert payload == {"name": "Ada", "items": [{"id": "a", "count": 2}]}
 
 
+def test_structured_chat_chat_completions_sends_native_json_schema(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(200, {"choices": [{"message": {"content": '{"name":"Ada"}'}, "finish_reason": "stop"}]}),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}},
+        "additionalProperties": False,
+    }
+    provider = OpenAICompatibleProvider(
+        _settings(structured_output_mode="native", structured_output_repair_retries=0)
+    )
+
+    payload = asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert payload == {"name": "Ada"}
+    response_format = FakeAsyncClient.requests[0]["json"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert "type" not in response_format["json_schema"]
+    assert response_format["json_schema"]["schema"] == schema
+    assert response_format["json_schema"]["strict"] is True
+
+
+def test_structured_chat_responses_sends_native_json_schema(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(200, {"status": "completed", "output": [{"content": [{"text": '{"name":"Ada"}'}]}]}),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}},
+        "additionalProperties": False,
+    }
+    provider = OpenAICompatibleProvider(
+        _settings(wire_api="responses", structured_output_mode="native", structured_output_repair_retries=0)
+    )
+
+    payload = asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert payload == {"name": "Ada"}
+    text_format = FakeAsyncClient.requests[0]["json"]["text"]["format"]
+    assert text_format["type"] == "json_schema"
+    assert text_format["schema"] == schema
+    assert text_format["strict"] is True
+
+
+def test_structured_chat_auto_falls_back_when_native_json_schema_is_unsupported(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(400, {"error": {"message": "unknown parameter: response_format.json_schema"}}),
+        _response(200, {"choices": [{"message": {"content": '{"name":"Ada"}'}, "finish_reason": "stop"}]}),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}},
+    }
+    provider = OpenAICompatibleProvider(
+        _settings(structured_output_mode="auto", structured_output_repair_retries=0)
+    )
+
+    payload = asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert payload == {"name": "Ada"}
+    assert "response_format" in FakeAsyncClient.requests[0]["json"]
+    assert "response_format" not in FakeAsyncClient.requests[1]["json"]
+    assert "Return only valid JSON" in FakeAsyncClient.requests[1]["json"]["messages"][0]["content"]
+
+
+def test_structured_chat_native_mode_fail_closes_when_json_schema_is_unsupported(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(400, {"error": {"message": "unknown parameter: response_format.json_schema"}}),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}},
+    }
+    provider = OpenAICompatibleProvider(
+        _settings(structured_output_mode="native", structured_output_repair_retries=0)
+    )
+
+    with pytest.raises(LLMStructuredOutputError) as exc_info:
+        asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert exc_info.value.failure_kind == "native_unsupported"
+
+
+def test_structured_chat_prompt_repairs_invalid_json_once(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {"choices": [{"message": {"content": "not json token=repair-secret-123"}, "finish_reason": "stop"}]},
+        ),
+        _response(200, {"choices": [{"message": {"content": '{"name":"Ada"}'}, "finish_reason": "stop"}]}),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}},
+    }
+    provider = OpenAICompatibleProvider(_settings(structured_output_mode="prompt", structured_output_repair_retries=1))
+
+    payload = asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert payload == {"name": "Ada"}
+    assert FakeAsyncClient.calls == 2
+    repair_prompt = FakeAsyncClient.requests[1]["json"]["messages"][0]["content"]
+    assert "[REDACTED]" in repair_prompt
+    assert "repair-secret-123" not in repair_prompt
+
+
+def test_structured_chat_repair_failure_raises_sanitized_structured_error(monkeypatch):
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [
+        _response(
+            200,
+            {"choices": [{"message": {"content": "not json sk-abcdefghijklmnopqrst"}, "finish_reason": "stop"}]},
+        ),
+        _response(200, {"choices": [{"message": {"content": "still not json"}, "finish_reason": "stop"}]}),
+    ]
+    schema = {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string"}},
+    }
+    provider = OpenAICompatibleProvider(_settings(structured_output_mode="prompt", structured_output_repair_retries=1))
+
+    with pytest.raises(LLMStructuredOutputError) as exc_info:
+        asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
+
+    assert exc_info.value.failure_kind == "not_json"
+    assert "sk-abcdefghijklmnopqrst" not in str(exc_info.value)
+
+
 def test_structured_chat_rejects_missing_required_field(monkeypatch):
     _patch_shared_client(monkeypatch)
     FakeAsyncClient.responses = [
@@ -419,7 +564,7 @@ def test_structured_chat_rejects_missing_required_field(monkeypatch):
             "count": {"type": "integer"},
         },
     }
-    provider = OpenAICompatibleProvider(_settings())
+    provider = OpenAICompatibleProvider(_settings(structured_output_repair_retries=0))
 
     with pytest.raises(LLMApiResponseError, match="structured response did not match output schema"):
         asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
@@ -457,7 +602,7 @@ def test_structured_chat_rejects_wrong_nested_type(monkeypatch):
             }
         },
     }
-    provider = OpenAICompatibleProvider(_settings())
+    provider = OpenAICompatibleProvider(_settings(structured_output_repair_retries=0))
 
     with pytest.raises(LLMApiResponseError, match="structured response did not match output schema"):
         asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))

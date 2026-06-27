@@ -17,16 +17,23 @@ from app.context.management import PromptTooLongError, is_prompt_too_long_error,
 from app.core.outbound_url import is_local_base_url, pin_outbound_http_url, validate_outbound_http_url
 from app.llm.base import LLMProvider
 from app.llm.prompts import load_prompt, render_prompt
+from app.llm.structured_output import (
+    LLMApiResponseError,
+    LLMStructuredOutputError,
+    safe_structured_excerpt,
+)
+from app.llm.structured_output import (
+    check_output_schema as _check_structured_output_schema,
+)
+from app.llm.structured_output import (
+    parse_and_validate_structured_content as _parse_and_validate_structured_content,
+)
 from app.llm.types import LLMResponse, LLMUsage
 from app.llm.usage import estimate_usage
 
 
 class LLMApiCircuitOpen(RuntimeError):
     """Raised when repeated transient failures temporarily block provider calls."""
-
-
-class LLMApiResponseError(RuntimeError):
-    """Raised when a provider returns a syntactically successful but invalid body."""
 
 
 # P1-10 fix: Redact API keys from error messages before surfacing to callers.
@@ -511,15 +518,162 @@ class OpenAICompatibleProvider(LLMProvider):
             details={key: value for key, value in usage.items() if str(key).endswith("_details")},
         )
 
-    async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:
+    async def _structured_chat_prompt(
+        self,
+        messages: list[dict[str, str]],
+        output_schema: dict[str, Any],
+    ) -> dict[str, Any]:
         schema_prompt = {
             "role": "system",
             "content": render_prompt("structured_json_schema.md", {"schema": json.dumps(output_schema)}),
         }
         content = await self.chat([schema_prompt, *messages], temperature=0)
-        payload = _parse_structured_json(content)
-        _validate_structured_payload(payload, output_schema)
-        return payload
+        return await self._parse_structured_content_with_repair(content, output_schema)
+
+    async def _structured_chat_native(
+        self,
+        messages: list[dict[str, str]],
+        output_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.settings.wire_api.lower() == "responses":
+            content = await self._structured_responses_content(messages, output_schema)
+        else:
+            content = await self._structured_chat_completions_content(messages, output_schema)
+        return await self._parse_structured_content_with_repair(content, output_schema)
+
+    async def _structured_chat_completions_content(
+        self, messages: list[dict[str, str]], output_schema: dict[str, Any]
+    ) -> str:
+        target_model = self.settings.model
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "messages": [_chat_message_payload(message) for message in messages],
+            "temperature": 0,
+            "max_tokens": self.settings.max_tokens,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": _native_json_schema_spec(output_schema),
+            },
+        }
+        data = await self._post_json(
+            self._chat_completions_endpoint(), payload, endpoint_kind="structured_chat", model=target_model
+        )
+        self._raise_for_embedded_error(data)
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise LLMStructuredOutputError(
+                "LLM structured response choice was malformed.",
+                "malformed_provider_response",
+            )
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise LLMStructuredOutputError(
+                "LLM structured response choice was malformed.",
+                "malformed_provider_response",
+            )
+        message = choice.get("message") or {}
+        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+            raise LLMStructuredOutputError(
+                "LLM structured response did not include output text.",
+                "malformed_provider_response",
+            )
+        return message["content"]
+
+    async def _structured_responses_content(
+        self,
+        messages: list[dict[str, str]],
+        output_schema: dict[str, Any],
+    ) -> str:
+        input_items = [
+            {"role": message["role"], "content": message.get("content", "")}
+            for message in messages
+            if message.get("role") in {"developer", "system", "user", "assistant"}
+        ]
+        target_model = self.settings.model
+        payload: dict[str, Any] = {
+            "model": target_model,
+            "input": input_items,
+            "temperature": 0,
+            "max_output_tokens": self.settings.max_tokens,
+            "store": not self.settings.disable_response_storage,
+            "text": {"format": _native_json_schema_format(output_schema)},
+        }
+        if self.settings.model_reasoning_effort:
+            payload["reasoning"] = {"effort": self.settings.model_reasoning_effort}
+        data = await self._post_json(
+            self._chat_endpoint(),
+            payload,
+            endpoint_kind="structured_responses",
+            model=target_model,
+        )
+        self._raise_for_embedded_error(data)
+        status = str(data.get("status") or "")
+        if status in {"failed", "cancelled", "incomplete"}:
+            raise LLMStructuredOutputError(
+                "LLM responses API returned a terminal structured-output status.",
+                "malformed_provider_response",
+            )
+        content = self._extract_responses_text(data)
+        if not content:
+            raise LLMStructuredOutputError(
+                "LLM responses API did not include structured output text.",
+                "malformed_provider_response",
+            )
+        return content
+
+    async def _parse_structured_content_with_repair(
+        self, content: str, output_schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            return _parse_and_validate_structured_content(content, output_schema)
+        except LLMStructuredOutputError as exc:
+            last_error = exc
+
+        retries = max(0, int(getattr(self.settings, "structured_output_repair_retries", 1) or 0))
+        if retries == 0:
+            raise last_error
+        repair_content = content
+        for _attempt in range(retries):
+            repair_prompt = {
+                "role": "system",
+                "content": render_prompt(
+                    "structured_json_repair.md",
+                    {
+                        "schema": json.dumps(output_schema, ensure_ascii=False),
+                        "failure_kind": last_error.failure_kind,
+                        "output_excerpt": safe_structured_excerpt(repair_content),
+                    },
+                ),
+            }
+            repair_content = await self.chat([repair_prompt], temperature=0)
+            try:
+                return _parse_and_validate_structured_content(repair_content, output_schema)
+            except LLMStructuredOutputError as exc:
+                last_error = exc
+
+        raise LLMStructuredOutputError(
+            f"LLM structured response could not be repaired ({last_error.failure_kind}).",
+            last_error.failure_kind,
+        ) from last_error
+
+    async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:
+        _check_structured_output_schema(output_schema)
+        mode = _structured_output_mode(self.settings)
+        if mode in {"auto", "native"}:
+            try:
+                return await self._structured_chat_native(messages, output_schema)
+            except httpx.HTTPStatusError as exc:
+                if not _is_native_schema_unsupported(exc):
+                    raise
+                if mode == "native":
+                    raise LLMStructuredOutputError(
+                        "LLM provider does not support native structured JSON.",
+                        "native_unsupported",
+                    ) from exc
+            except LLMStructuredOutputError:
+                raise
+
+        return await self._structured_chat_prompt(messages, output_schema)
 
     async def embed(self, texts: list[str], model: str | None = None) -> list[list[float]]:
         target_model = model or self.settings.embedding_model
@@ -636,183 +790,57 @@ class OpenAICompatibleProvider(LLMProvider):
         return await self.vision(image_path, load_prompt("vision_ocr.md"))
 
 
-def _parse_structured_json(content: str) -> Any:
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError as original:
-        decoder = json.JSONDecoder()
-        for index, char in enumerate(content):
-            if char not in "{[":
-                continue
-            try:
-                payload, _ = decoder.raw_decode(content[index:])
-            except json.JSONDecodeError:
-                continue
-            return payload
-        raise LLMApiResponseError("LLM structured response was not valid JSON.") from original
-
-
-def _validate_structured_payload(payload: Any, output_schema: dict[str, Any]) -> None:
-    if not isinstance(output_schema, dict):
-        raise LLMApiResponseError("LLM output schema must be a JSON Schema object.")
-    try:
-        from jsonschema import Draft202012Validator
-        from jsonschema.exceptions import SchemaError, ValidationError
-    except Exception:  # noqa: BLE001 - jsonschema is optional; use lightweight validation if unavailable.
-        _validate_structured_payload_lightweight(payload, output_schema)
-        return
-
-    try:
-        Draft202012Validator.check_schema(output_schema)
-        Draft202012Validator(output_schema).validate(payload)
-    except SchemaError as exc:
-        raise LLMApiResponseError(f"LLM output schema is invalid: {exc.message}") from exc
-    except ValidationError as exc:
-        raise LLMApiResponseError(
-            f"LLM structured response did not match output schema: {_format_jsonschema_error(exc)}"
-        ) from exc
-
-
-def _validate_structured_payload_lightweight(payload: Any, schema: dict[str, Any], path: str = "$") -> None:
-    if not isinstance(schema, dict):
-        return
-    expected_type = schema.get("type")
-    if expected_type is not None and not _matches_json_schema_type(payload, expected_type):
-        raise _schema_validation_error(
-            f"{path} expected {_format_expected_type(expected_type)}, got {_json_type_name(payload)}."
-        )
-    enum = schema.get("enum")
-    if isinstance(enum, list) and payload not in enum:
-        raise _schema_validation_error(f"{path} must be one of {enum!r}.")
-
-    if _should_validate_object_keywords(payload, schema):
-        _validate_object_payload(payload, schema, path)
-    if _should_validate_array_keywords(payload, schema):
-        _validate_array_payload(payload, schema, path)
-
-
-def _should_validate_object_keywords(payload: Any, schema: dict[str, Any]) -> bool:
-    schema_type = schema.get("type")
-    return (
-        schema_type == "object"
-        or isinstance(payload, dict)
-        and any(key in schema for key in ("required", "properties", "additionalProperties"))
-    )
-
-
-def _should_validate_array_keywords(payload: Any, schema: dict[str, Any]) -> bool:
-    schema_type = schema.get("type")
-    return schema_type == "array" or isinstance(payload, list) and "items" in schema
-
-
-def _validate_object_payload(payload: Any, schema: dict[str, Any], path: str) -> None:
-    if not isinstance(payload, dict):
-        raise _schema_validation_error(f"{path} expected object, got {_json_type_name(payload)}.")
-
-    required = schema.get("required") or []
-    missing = [str(key) for key in required if str(key) not in payload]
-    if missing:
-        raise _schema_validation_error(f"{path} missing required field(s): {', '.join(missing)}.")
-
-    properties = schema.get("properties") or {}
-    if not isinstance(properties, dict):
-        properties = {}
-    for key, property_schema in properties.items():
-        if key in payload:
-            _validate_structured_payload_lightweight(payload[key], property_schema, _join_schema_path(path, key))
-
-    additional_properties = schema.get("additionalProperties", True)
-    extra_keys = [key for key in payload if key not in properties]
-    if additional_properties is False and extra_keys:
-        extra = ", ".join(str(key) for key in extra_keys)
-        raise _schema_validation_error(f"{path} included unexpected field(s): {extra}.")
-    if isinstance(additional_properties, dict):
-        for key in extra_keys:
-            _validate_structured_payload_lightweight(
-                payload[key],
-                additional_properties,
-                _join_schema_path(path, key),
-            )
-
-
-def _validate_array_payload(payload: Any, schema: dict[str, Any], path: str) -> None:
-    if not isinstance(payload, list):
-        raise _schema_validation_error(f"{path} expected array, got {_json_type_name(payload)}.")
-    items_schema = schema.get("items")
-    if not isinstance(items_schema, dict):
-        return
-    for index, item in enumerate(payload):
-        _validate_structured_payload_lightweight(item, items_schema, f"{path}[{index}]")
-
-
-def _schema_validation_error(detail: str) -> LLMApiResponseError:
-    return LLMApiResponseError(f"LLM structured response did not match output schema: {detail}")
-
-
-def _matches_json_schema_type(value: Any, expected_type: Any) -> bool:
-    if isinstance(expected_type, list):
-        return any(_matches_json_schema_type(value, item) for item in expected_type)
-    if expected_type == "object":
-        return isinstance(value, dict)
-    if expected_type == "array":
-        return isinstance(value, list)
-    if expected_type == "string":
-        return isinstance(value, str)
-    if expected_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected_type == "number":
-        return isinstance(value, int | float) and not isinstance(value, bool)
-    if expected_type == "boolean":
-        return isinstance(value, bool)
-    if expected_type == "null":
-        return value is None
-    return True
-
-
-def _json_type_name(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, dict):
-        return "object"
-    if isinstance(value, list):
-        return "array"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "number"
-    return type(value).__name__
-
-
-def _format_expected_type(expected_type: Any) -> str:
-    if isinstance(expected_type, list):
-        return " or ".join(str(item) for item in expected_type)
-    return str(expected_type)
-
-
-def _format_jsonschema_error(exc: Any) -> str:
-    path = "$"
-    for part in exc.path:
-        path = _join_schema_path(path, part)
-    return f"{path}: {exc.message}"
-
-
-def _join_schema_path(path: str, part: Any) -> str:
-    if isinstance(part, int):
-        return f"{path}[{part}]"
-    key = str(part)
-    if key.isidentifier():
-        return f"{path}.{key}"
-    return f"{path}[{key!r}]"
-
-
 def _status_code(exc: Exception) -> int | None:
     response = getattr(exc, "response", None)
     status_code = getattr(response, "status_code", None)
     return int(status_code) if isinstance(status_code, int) else None
+
+
+def _structured_output_mode(settings: AppSettings) -> str:
+    mode = str(getattr(settings, "structured_output_mode", "auto") or "auto").strip().lower()
+    return mode if mode in {"auto", "native", "prompt"} else "auto"
+
+
+def _native_json_schema_format(output_schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        **_native_json_schema_spec(output_schema),
+    }
+
+
+def _native_json_schema_spec(output_schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": "lengrvis_structured_response",
+        "schema": output_schema,
+        "strict": True,
+    }
+
+
+def _is_native_schema_unsupported(exc: Exception) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    status_code = exc.response.status_code
+    if status_code not in {400, 422}:
+        return False
+    text = _http_error_text(exc).lower()
+    schema_terms = ("response_format", "json_schema", "json schema", "text.format")
+    unsupported_terms = (
+        "unsupported",
+        "not support",
+        "unknown parameter",
+        "unrecognized",
+        "invalid parameter",
+        "extra inputs are not permitted",
+    )
+    return any(term in text for term in schema_terms) and any(term in text for term in unsupported_terms)
+
+
+def _http_error_text(exc: httpx.HTTPStatusError) -> str:
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        return exc.response.text
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _chat_message_payload(message: dict[str, Any]) -> dict[str, Any]:

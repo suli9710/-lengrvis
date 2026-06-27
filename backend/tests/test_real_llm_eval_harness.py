@@ -55,6 +55,9 @@ def test_aggregate_metrics_math():
             "risk_match": True,
             "actual_plan_tools": ["system.diagnostics"],
             "param_missing": [],
+            "structured_failure_kind": "",
+            "plan_schema_valid": True,
+            "unknown_tool_count": 0,
         },
         {
             "ran": True,
@@ -63,8 +66,11 @@ def test_aggregate_metrics_math():
             "intent_exact_match": False,
             "expected_tools_planned": True,
             "risk_match": None,
-            "actual_plan_tools": ["file.search_by_name"],
-            "param_missing": [{"tool": "file.search_by_name", "missing": ["query"]}],
+            "actual_plan_tools": ["definitely.not.a.tool"],
+            "param_missing": [{"tool": "definitely.not.a.tool", "missing": ["<unknown tool>"]}],
+            "structured_failure_kind": "",
+            "plan_schema_valid": True,
+            "unknown_tool_count": 1,
         },
         {
             "ran": False,
@@ -75,6 +81,9 @@ def test_aggregate_metrics_math():
             "risk_match": None,
             "actual_plan_tools": [],
             "param_missing": [],
+            "structured_failure_kind": "not_json",
+            "plan_schema_valid": None,
+            "unknown_tool_count": 0,
         },
     ]
 
@@ -88,6 +97,9 @@ def test_aggregate_metrics_math():
     assert summary["tool_overlap_rate"] == 1.0
     assert summary["risk_match_rate"] == 1.0
     assert summary["param_missing_rate"] == 0.5
+    assert summary["structured_failure_rate"] == 0.3333
+    assert summary["plan_schema_valid_rate"] == 1.0
+    assert summary["unknown_tool_rate"] == 0.5
 
 
 def test_quality_gate_blocks_low_real_llm_metrics():
@@ -99,6 +111,8 @@ def test_quality_gate_blocks_low_real_llm_metrics():
         min_tool_overlap_rate=0.8,
         min_risk_match_rate=0.8,
         max_param_missing_rate=0.05,
+        max_structured_failure_rate=0.0,
+        max_unknown_tool_rate=0.0,
     )
 
     gate = harness._quality_gate(
@@ -110,6 +124,9 @@ def test_quality_gate_blocks_low_real_llm_metrics():
             "tool_overlap_rate": 1.0,
             "risk_match_rate": 1.0,
             "param_missing_rate": 0.5,
+            "structured_failure_rate": 0.0,
+            "plan_schema_valid_rate": 1.0,
+            "unknown_tool_rate": 0.0,
         },
         args,
     )
@@ -118,6 +135,41 @@ def test_quality_gate_blocks_low_real_llm_metrics():
     assert gate["passed"] is False
     assert any("task_success_rate" in failure for failure in gate["failures"])
     assert any("param_missing_rate" in failure for failure in gate["failures"])
+
+
+def test_quality_gate_blocks_structured_failure_and_unknown_tools():
+    harness = _load_harness()
+    args = Namespace(
+        quality_gate=True,
+        min_task_success_rate=0.8,
+        min_intent_accuracy=0.7,
+        min_tool_overlap_rate=0.8,
+        min_risk_match_rate=0.8,
+        max_param_missing_rate=0.05,
+        max_structured_failure_rate=0.0,
+        max_unknown_tool_rate=0.0,
+    )
+
+    gate = harness._quality_gate(
+        {
+            "tasks_ran": 3,
+            "tasks_errored": 0,
+            "task_success_rate": 1.0,
+            "intent_accuracy": 1.0,
+            "tool_overlap_rate": 1.0,
+            "risk_match_rate": 1.0,
+            "param_missing_rate": 0.0,
+            "structured_failure_rate": 0.25,
+            "plan_schema_valid_rate": 1.0,
+            "unknown_tool_rate": 0.25,
+        },
+        args,
+    )
+
+    assert gate["enabled"] is True
+    assert gate["passed"] is False
+    assert any("structured_failure_rate" in failure for failure in gate["failures"])
+    assert any("unknown_tool_rate" in failure for failure in gate["failures"])
 
 
 def test_required_args_missing_flags_unknown_tools(monkeypatch, tmp_path):

@@ -125,6 +125,8 @@ class AppSettings(BaseSettings):
     model: str = "gpt-4o-mini"
     review_model: str = ""
     wire_api: str = "chat_completions"
+    structured_output_mode: str = "auto"
+    structured_output_repair_retries: int = 1
     requires_openai_auth: bool = True
     model_reasoning_effort: str = "medium"
     disable_response_storage: bool = False
@@ -384,6 +386,10 @@ class AppSettings(BaseSettings):
             model=str(value("LENGRVIS_MODEL", "model", "gpt-4o-mini")),
             review_model=str(value("LENGRVIS_REVIEW_MODEL", "review_model", "")),
             wire_api=str(value("LENGRVIS_WIRE_API", "wire_api", "chat_completions")),
+            structured_output_mode=str(value("LENGRVIS_STRUCTURED_OUTPUT_MODE", "structured_output_mode", "auto")),
+            structured_output_repair_retries=int_value(
+                "LENGRVIS_STRUCTURED_OUTPUT_REPAIR_RETRIES", "structured_output_repair_retries", 1, minimum=0
+            ),
             requires_openai_auth=flag("LENGRVIS_REQUIRES_OPENAI_AUTH", "requires_openai_auth", True),
             model_reasoning_effort=str(value("LENGRVIS_MODEL_REASONING_EFFORT", "model_reasoning_effort", "medium")),
             disable_response_storage=flag("LENGRVIS_DISABLE_RESPONSE_STORAGE", "disable_response_storage", False),

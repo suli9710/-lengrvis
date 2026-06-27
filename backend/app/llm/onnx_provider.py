@@ -18,6 +18,14 @@ from typing import Any
 from app.config import PROJECT_ROOT, AppSettings, get_env
 from app.llm.base import LLMProvider
 from app.llm.prompts import render_prompt
+from app.llm.structured_output import (
+    LLMStructuredOutputError,
+    parse_and_validate_structured_content,
+    safe_structured_excerpt,
+)
+from app.llm.structured_output import (
+    check_output_schema as _check_structured_output_schema,
+)
 from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
 
@@ -134,19 +142,48 @@ class OnnxProvider(LLMProvider):
         )
 
     async def structured_chat(self, messages: list[dict[str, str]], output_schema: dict[str, Any]) -> dict[str, Any]:
+        _check_structured_output_schema(output_schema)
         schema_prompt = {
             "role": "system",
             "content": render_prompt("structured_json_schema.md", {"schema": json.dumps(output_schema)}),
         }
         content = await self.chat([schema_prompt, *messages], temperature=0)
+        return await self._parse_structured_content_with_repair(content, output_schema)
+
+    async def _parse_structured_content_with_repair(
+        self, content: str, output_schema: dict[str, Any]
+    ) -> dict[str, Any]:
         try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            start = content.find("{")
-            end = content.rfind("}")
-            if start >= 0 and end > start:
-                return json.loads(content[start : end + 1])
-            raise
+            return parse_and_validate_structured_content(content, output_schema)
+        except LLMStructuredOutputError as exc:
+            last_error = exc
+
+        repair_content = content
+        retries = max(0, int(getattr(self.settings, "structured_output_repair_retries", 1) or 0))
+        if retries == 0:
+            raise last_error
+        for _attempt in range(retries):
+            repair_prompt = {
+                "role": "system",
+                "content": render_prompt(
+                    "structured_json_repair.md",
+                    {
+                        "schema": json.dumps(output_schema, ensure_ascii=False),
+                        "failure_kind": last_error.failure_kind,
+                        "output_excerpt": safe_structured_excerpt(repair_content),
+                    },
+                ),
+            }
+            repair_content = await self.chat([repair_prompt], temperature=0)
+            try:
+                return parse_and_validate_structured_content(repair_content, output_schema)
+            except LLMStructuredOutputError as exc:
+                last_error = exc
+
+        raise LLMStructuredOutputError(
+            f"LLM structured response could not be repaired ({last_error.failure_kind}).",
+            last_error.failure_kind,
+        ) from last_error
 
     def _generate_text(self, prompt: str, *, temperature: float) -> str:
         from app.llm.local_provider import LocalBackendUnavailable

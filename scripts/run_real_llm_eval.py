@@ -8,6 +8,9 @@ llama.cpp）重放 ``test_data/golden_tasks/golden_tasks.json`` 中 LLM 相关�
 - intent_accuracy：plan 工具序列与期望完全一致的比例
 - tool_overlap_rate：期望工具被规划命中的比例（宽松口径）
 - param_missing_rate：plan 步骤缺少 registry 必填参数的比例
+- structured_failure_rate：结构化输出失败的比例
+- plan_schema_valid_rate：plan schema 形状有效的比例
+- unknown_tool_rate：plan 中出现未知工具的比例
 - task_success_rate：终态 phase 落在期望集合内的比例
 - risk_match_rate：global risk 与期望一致的比例
 
@@ -85,6 +88,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--min-tool-overlap-rate", type=float, default=0.8)
     parser.add_argument("--min-risk-match-rate", type=float, default=0.8)
     parser.add_argument("--max-param-missing-rate", type=float, default=0.05)
+    parser.add_argument("--max-structured-failure-rate", type=float, default=0.0)
+    parser.add_argument("--max-unknown-tool-rate", type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -210,6 +215,9 @@ def _evaluate_task(task: dict[str, Any], timeout_seconds: float) -> dict[str, An
         "risk_expected": expect.get("global_risk", ""),
         "risk_actual": "",
         "risk_match": None,
+        "structured_failure_kind": "",
+        "plan_schema_valid": None,
+        "unknown_tool_count": 0,
         "duration_seconds": 0.0,
     }
 
@@ -255,6 +263,7 @@ def _evaluate_task(task: dict[str, Any], timeout_seconds: float) -> dict[str, An
             record["ran"] = True
         except Exception as exc:  # noqa: BLE001 - single-task failure must not kill the eval.
             record["error"] = f"{type(exc).__name__}: {exc}"
+            record["structured_failure_kind"] = str(getattr(exc, "failure_kind", "") or "")
     record["duration_seconds"] = round(time.monotonic() - started, 2)
     return record
 
@@ -328,7 +337,13 @@ def _measure(task_id: str, phase: str, expect: dict[str, Any]) -> dict[str, Any]
 
     plan = _plan_record(task_id) if task_id else None
     if plan:
-        steps = plan.get("steps") or []
+        raw_steps = plan.get("steps")
+        result["plan_schema_valid"] = isinstance(raw_steps, list) and all(
+            isinstance(step, dict) for step in raw_steps
+        )
+        if not result["plan_schema_valid"]:
+            return result
+        steps = raw_steps
         actual_tools = [step.get("tool_name") for step in steps]
         result["actual_plan_tools"] = actual_tools
         result["risk_actual"] = plan.get("global_risk_level") or ""
@@ -341,6 +356,9 @@ def _measure(task_id: str, phase: str, expect: dict[str, Any]) -> dict[str, Any]
         if expect.get("global_risk"):
             result["risk_match"] = result["risk_actual"] == expect["global_risk"]
         result["param_missing"] = _required_args_missing(steps)
+        result["unknown_tool_count"] = sum(
+            1 for item in result["param_missing"] if item.get("missing") == ["<unknown tool>"]
+        )
     return result
 
 
@@ -373,6 +391,8 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     overlap_known = [r for r in ran if r["expected_tools_planned"] is not None]
     risk_known = [r for r in ran if r["risk_match"] is not None]
     planned = [r for r in ran if r["actual_plan_tools"]]
+    attempted = [r for r in records if r.get("ran") or r.get("error")]
+    plan_schema_known = [r for r in attempted if r.get("plan_schema_valid") is not None]
     return {
         "tasks_total": len(records),
         "tasks_ran": len(ran),
@@ -392,6 +412,15 @@ def _aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "param_missing_rate": _rate(
             sum(1 for r in planned if r["param_missing"]), len(planned)
+        ),
+        "structured_failure_rate": _rate(
+            sum(1 for r in attempted if r.get("structured_failure_kind")), len(attempted)
+        ),
+        "plan_schema_valid_rate": _rate(
+            sum(1 for r in plan_schema_known if r.get("plan_schema_valid")), len(plan_schema_known)
+        ),
+        "unknown_tool_rate": _rate(
+            sum(1 for r in planned if int(r.get("unknown_tool_count") or 0) > 0), len(planned)
         ),
     }
 
@@ -420,6 +449,20 @@ def _quality_gate(summary: dict[str, Any], args: argparse.Namespace) -> dict[str
         failures.append(
             f"param_missing_rate={param_missing} above release threshold {args.max_param_missing_rate}"
         )
+    structured_failure = summary.get("structured_failure_rate")
+    max_structured_failure = getattr(args, "max_structured_failure_rate", 0.0)
+    if structured_failure is None:
+        failures.append("structured_failure_rate was not measured")
+    elif float(structured_failure) > max_structured_failure:
+        failures.append(
+            f"structured_failure_rate={structured_failure} above release threshold {max_structured_failure}"
+        )
+    unknown_tool = summary.get("unknown_tool_rate")
+    max_unknown_tool = getattr(args, "max_unknown_tool_rate", 0.0)
+    if unknown_tool is None:
+        failures.append("unknown_tool_rate was not measured")
+    elif float(unknown_tool) > max_unknown_tool:
+        failures.append(f"unknown_tool_rate={unknown_tool} above release threshold {max_unknown_tool}")
     return {
         "enabled": bool(args.quality_gate),
         "passed": not failures,
@@ -429,6 +472,8 @@ def _quality_gate(summary: dict[str, Any], args: argparse.Namespace) -> dict[str
             "min_tool_overlap_rate": args.min_tool_overlap_rate,
             "min_risk_match_rate": args.min_risk_match_rate,
             "max_param_missing_rate": args.max_param_missing_rate,
+            "max_structured_failure_rate": max_structured_failure,
+            "max_unknown_tool_rate": max_unknown_tool,
         },
         "failures": failures,
     }
