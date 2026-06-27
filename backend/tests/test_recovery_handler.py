@@ -81,7 +81,11 @@ def test_recovery_handler_creates_and_executes_recovery_step():
     assert step.status == StepStatus.SKIPPED
     assert len(plan.steps) == 2
     assert orchestrator.executed_recovery_steps[0].args["path"] == "C:/tmp/fallback.txt"
-    events = [message for message in orchestrator.bus.get_messages(task.id) if message.message_type == MessageType.NOTIFICATION]
+    events = [
+        message
+        for message in orchestrator.bus.get_messages(task.id)
+        if message.message_type == MessageType.NOTIFICATION
+    ]
     assert any(message.structured_payload.get("event_type") == "tool.failed" for message in events)
 
 
@@ -144,7 +148,7 @@ def test_recovery_handler_retry_limit_applies_to_recovery_chain(monkeypatch):
     assert rollback_calls == [task.id]
 
 
-def test_recovery_handler_default_allows_multiple_recovery_attempts(monkeypatch):
+def test_recovery_handler_stops_repeated_identical_recovery_attempt(monkeypatch):
     rollback_calls: list[str] = []
 
     def fake_rollback(task_id: str):
@@ -175,8 +179,8 @@ def test_recovery_handler_default_allows_multiple_recovery_attempts(monkeypatch)
     outcome = asyncio.run(handler.recover_failed_step(task, plan, step, failed, {}, None))
 
     assert outcome.kind == "fatal_failed"
-    assert len(orchestrator.executed_recovery_steps) == 3
-    assert len(plan.steps) == 4
+    assert len(orchestrator.executed_recovery_steps) == 1
+    assert len(plan.steps) == 2
     assert rollback_calls == [task.id]
 
 

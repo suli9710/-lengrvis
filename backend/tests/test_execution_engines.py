@@ -8,11 +8,11 @@ from app.agents.orchestrator_agent import OrchestratorAgent
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentAction, Plan, PlanStep, StepStatus, Task, TaskStatus
-from app.orchestration.lengrvis_code_config import LengrvisCodeConfig, default_allowed_tools
 from app.orchestration.developer_engine import DeveloperExecutionEngine
 from app.orchestration.engine_router import EngineRouter, configured_default_engine, configured_max_turns, route_engine
 from app.orchestration.execution_engine import InMemoryRunStore
 from app.orchestration.execution_models import RunPhase, RunState
+from app.orchestration.lengrvis_code_config import LengrvisCodeConfig, default_allowed_tools
 from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
@@ -101,8 +101,23 @@ from __future__ import annotations
 import json
 
 print(json.dumps({"type": "system", "subtype": "init", "tools": ["Read"]}), flush=True)
-print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Working"}, {"type": "tool_use", "name": "Read", "input": {"file_path": "sample.py"}}]}}), flush=True)
-print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "Fake developer result"}), flush=True)
+assistant_message = {
+    "type": "assistant",
+    "message": {
+        "content": [
+            {"type": "text", "text": "Working"},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "sample.py"}},
+        ]
+    },
+}
+print(json.dumps(assistant_message), flush=True)
+result_message = {
+    "type": "result",
+    "subtype": "success",
+    "is_error": False,
+    "result": "Fake developer result",
+}
+print(json.dumps(result_message), flush=True)
 """.lstrip(),
         encoding="utf-8",
     )
@@ -260,7 +275,9 @@ def test_build_lengrvis_command_writes_enabled_uses_default_permission_mode(tmp_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("unsafe_tool", ["Edit", "Agent"])
-async def test_developer_engine_rejects_write_capable_tools_before_launch(tmp_path, monkeypatch, unsafe_tool: str) -> None:
+async def test_developer_engine_rejects_write_capable_tools_before_launch(
+    tmp_path, monkeypatch, unsafe_tool: str
+) -> None:
     async def fail_run_lengrvis_code(*args, **kwargs):  # noqa: ANN001, ANN202, ARG001
         raise AssertionError("unsafe developer tool allowlists must be rejected before launch")
 
@@ -268,7 +285,9 @@ async def test_developer_engine_rejects_write_capable_tools_before_launch(tmp_pa
     engine = DeveloperExecutionEngine(
         settings=AppSettings(allowed_directories=[str(tmp_path)], api_key="test-api-key"),
         store=InMemoryRunStore(),
-        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('should not run')"), allowed_tools=("Read", unsafe_tool)),
+        lengrvis_code_config=LengrvisCodeConfig(
+            command=(sys.executable, "-c", "print('should not run')"), allowed_tools=("Read", unsafe_tool)
+        ),
     )
 
     state = await engine.start_run("edit repository files", "efficiency", "developer")
@@ -386,7 +405,9 @@ class DoneOnlyAgent:
         return "ok"
 
 
-def _runtime_tool(name: str, calls: list[dict], *, risk: RiskLevel = RiskLevel.R0_READ_ONLY, ok: bool = True) -> ToolDefinition:
+def _runtime_tool(
+    name: str, calls: list[dict], *, risk: RiskLevel = RiskLevel.R0_READ_ONLY, ok: bool = True
+) -> ToolDefinition:
     def execute(args, context):  # noqa: ANN001, ANN202, ARG001
         calls.append(dict(args))
         if not ok:
@@ -721,3 +742,49 @@ def test_os_reflection_decider_respects_configured_limits() -> None:
     # A zero cap disables reflection entirely, even on a graph error.
     assert OSReflectionDecider(max_per_run=0).should_reflect(_input(0)) is False
 
+
+def test_os_reflection_skips_equivalent_recovery_step() -> None:
+    from types import SimpleNamespace
+
+    from app.orchestration.os_reflection import OSReflectionDecision, apply_reflection_decision
+
+    task = Task(id="task_duplicate_reflection", user_goal="read page", mode="efficiency")
+    step = PlanStep(
+        id="step_1",
+        task_id=task.id,
+        order=1,
+        agent_name="BrowserAgent",
+        tool_name="browser.read_page",
+        description="Read the requested page.",
+        args={"url": "https://example.com", "dry_run": True},
+        risk_level=RiskLevel.R0_READ_ONLY,
+        status=StepStatus.FAILED,
+    )
+    duplicate = PlanStep(
+        id="step_retry",
+        task_id=task.id,
+        order=2,
+        agent_name="BrowserAgent",
+        tool_name="browser.read_page",
+        description="Retry same page read.",
+        args={"url": "https://example.com", "dry_run": True},
+        risk_level=RiskLevel.R0_READ_ONLY,
+    )
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[step])
+    persisted: list[str] = []
+    orchestrator = SimpleNamespace(
+        name="OrchestratorAgent",
+        _persist_plan_update=lambda _plan, content: persisted.append(content),
+        bus=SimpleNamespace(publish_text=lambda *args, **kwargs: None),
+    )
+
+    updates = apply_reflection_decision(
+        task,
+        plan,
+        OSReflectionDecision(action="add_steps", steps=[duplicate], target_step_ids=[step.id]),
+        orchestrator,
+    )
+
+    assert updates == {"added_step_ids": []}
+    assert plan.steps == [step]
+    assert persisted == []

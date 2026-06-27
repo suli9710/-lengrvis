@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -7,7 +8,6 @@ from app.core.schemas import AgentAction, MessageType, Plan, PlanStep, StepStatu
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.step_phase import StepPhase
 from app.policy.risk import RiskLevel
-
 
 OSReflectionAction = Literal["continue", "add_steps", "replace_pending", "ask_user", "finish", "fail"]
 
@@ -115,7 +115,9 @@ class OSReflectionDecider:
         return OSReflectionDecision(action="continue", reason="No reflection action needed.")
 
 
-def apply_reflection_decision(task: Task, plan: Plan, decision: OSReflectionDecision, orchestrator: Any) -> dict[str, Any]:
+def apply_reflection_decision(
+    task: Task, plan: Plan, decision: OSReflectionDecision, orchestrator: Any
+) -> dict[str, Any]:
     if decision.action == "add_steps":
         added = _add_reflection_steps(plan, decision.steps)
         if added:
@@ -190,12 +192,14 @@ async def _consult_owner_for_reflection(
         return None
     try:
         action = await orchestrator._consult_subagent(task, step, observation=result)
-    except Exception:
+    except Exception:  # noqa: BLE001 - reflection is best-effort and must not mask the original failure.
         return None
     return action
 
 
-def _step_from_action(task: Task, plan: Plan, failed_step: PlanStep, action: AgentAction, orchestrator: Any | None = None) -> PlanStep:  # noqa: ARG001
+def _step_from_action(
+    task: Task, plan: Plan, failed_step: PlanStep, action: AgentAction, orchestrator: Any | None = None
+) -> PlanStep:  # noqa: ARG001
     tool_name = action.tool_name or failed_step.tool_name
     args = dict(action.args or failed_step.args or {})
     risk = _risk_for_tool(orchestrator, tool_name, failed_step.risk_level)
@@ -218,7 +222,7 @@ def _step_from_action(task: Task, plan: Plan, failed_step: PlanStep, action: Age
 def _risk_for_tool(orchestrator: Any | None, tool_name: str, fallback: RiskLevel) -> RiskLevel:
     try:
         return orchestrator.registry.get(tool_name).risk_level
-    except Exception:
+    except Exception:  # noqa: BLE001 - missing or partial registries should use the failed step risk.
         return fallback
 
 
@@ -231,8 +235,12 @@ def _add_reflection_steps(plan: Plan, steps: list[PlanStep]) -> list[PlanStep]:
     max_order = max((step.order for step in plan.steps), default=0)
     added: list[PlanStep] = []
     existing_ids = {step.id for step in plan.steps}
+    existing_signatures = {_reflection_step_signature(step) for step in plan.steps}
     for step in steps:
         if step.id in protected_ids:
+            continue
+        signature = _reflection_step_signature(step)
+        if signature in existing_signatures:
             continue
         if not step.id or step.id in existing_ids:
             step.id = new_id("step")
@@ -242,6 +250,7 @@ def _add_reflection_steps(plan: Plan, steps: list[PlanStep]) -> list[PlanStep]:
         step.step_phase = StepPhase.PENDING
         plan.steps.append(step)
         existing_ids.add(step.id)
+        existing_signatures.add(_reflection_step_signature(step))
         added.append(step)
     return added
 
@@ -260,7 +269,9 @@ def _retire_reflected_failed_steps(plan: Plan, step_ids: list[str]) -> None:
             step.step_phase = StepPhase.SUCCEEDED
 
 
-def _publish_reflection(orchestrator: Any, task: Task, decision: OSReflectionDecision, *, added_step_ids: list[str]) -> None:
+def _publish_reflection(
+    orchestrator: Any, task: Task, decision: OSReflectionDecision, *, added_step_ids: list[str]
+) -> None:
     try:
         orchestrator.bus.publish_text(
             task.id,
@@ -274,8 +285,20 @@ def _publish_reflection(orchestrator: Any, task: Task, decision: OSReflectionDec
                 "added_step_ids": added_step_ids,
             },
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - event publication must not affect reflection decisions.
         return
+
+
+def _reflection_step_signature(step: PlanStep) -> tuple[str, str, tuple[str, ...]]:
+    return (
+        str(step.tool_name or ""),
+        _stable_json(step.args or {}),
+        tuple(str(item) for item in (step.depends_on or [])),
+    )
+
+
+def _stable_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _pending_mutable_steps(plan: Plan) -> list[PlanStep]:
@@ -293,13 +316,19 @@ def _resource_state_error(result: ToolResult | None) -> bool:
     if result is None:
         return False
     output = result.output or {}
-    return bool(output.get("resource_state_error") or output.get("error_code") in {"STALE_RESOURCE_STATE", "READ_STATE_REQUIRED"})
+    return bool(
+        output.get("resource_state_error")
+        or output.get("error_code") in {"STALE_RESOURCE_STATE", "READ_STATE_REQUIRED"}
+    )
 
 
 def _is_low_information_failure(result: ToolResult | None) -> bool:
     if result is None:
         return True
-    text = " ".join(str(value or "") for value in (result.error, result.observation, result.output.get("error") if result.output else ""))
+    text = " ".join(
+        str(value or "")
+        for value in (result.error, result.observation, result.output.get("error") if result.output else "")
+    )
     normalized = text.strip().casefold()
     return not normalized or normalized in {"planned failure", "tool failed.", "failed", "unknown error"}
 

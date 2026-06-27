@@ -138,6 +138,21 @@ jobs:
           if (-not $env:ANDROID_HOME -or -not (Test-Path -LiteralPath $env:ANDROID_HOME)) {
             throw "ANDROID_HOME is required to compile the Android companion."
           }
+          $debugKeystore = Join-Path $env:USERPROFILE ".android\\debug.keystore"
+          if (-not (Test-Path -LiteralPath $debugKeystore)) {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $debugKeystore) | Out-Null
+            & keytool -genkeypair -v `
+              -storetype JKS `
+              -keystore $debugKeystore `
+              -storepass android `
+              -keypass android `
+              -alias androiddebugkey `
+              -keyalg RSA `
+              -keysize 2048 `
+              -validity 10000 `
+              -dname "CN=Android Debug,O=Android,C=US"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           Push-Location mobile/android
           try {
             & .\\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --stacktrace
