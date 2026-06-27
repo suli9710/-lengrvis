@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from typing import Awaitable, Callable
 
 from app.core.audit import record
 from app.core.schemas import Task
+from app.observability.best_effort import log_best_effort_failure
+
+logger = logging.getLogger(__name__)
 
 
 class TaskPool:
@@ -48,7 +52,13 @@ class TaskPool:
                         raise
                     except Exception as exc:  # noqa: BLE001
                         self._record_completed(task.id, f"failed:{exc}")
-                        record("task_pool.run_failed", "TaskPool", {"task_id": task.id, "error": str(exc)}, task_id=task.id)
+                        log_best_effort_failure(logger, "task_pool.worker.run", exc, task_id=task.id)
+                        record(
+                            "task_pool.run_failed",
+                            "TaskPool",
+                            {"task_id": task.id, "error": str(exc)},
+                            task_id=task.id,
+                        )
                     finally:
                         self._running.pop(task.id, None)
             except asyncio.CancelledError:

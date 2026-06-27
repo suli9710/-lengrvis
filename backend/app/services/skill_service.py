@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
 import zipfile
@@ -11,15 +12,19 @@ from app.core.audit import record
 from app.core.errors import AppError, SecurityError
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
+from app.observability.best_effort import log_best_effort_failure
 from app.policy.risk import RISK_ORDER
 from app.skills.loader import (
-    LoadedSkillPackage,
     SKILL_MANIFEST_NAMES,
+    LoadedSkillPackage,
     load_skill_package,
     skill_directories_from_settings,
 )
 from app.skills.schemas import SkillLoadError
-from app.tools.registry import register_all_tools, registry as tool_registry
+from app.tools.registry import register_all_tools
+from app.tools.registry import registry as tool_registry
+
+logger = logging.getLogger(__name__)
 
 
 class SkillServiceError(AppError):
@@ -125,6 +130,7 @@ async def refresh_runtime_registry(settings: AppSettings | None = None) -> dict[
         mcp_definitions = await mcp_registry.adapt_to_tool_definitions()
     except Exception as exc:  # noqa: BLE001
         mcp_definitions = []
+        log_best_effort_failure(logger, "skill.refresh_runtime_registry.mcp_definitions", exc)
         record("mcp.refresh_load_failed", "SkillService", {"error": str(exc)})
     register_all_tools(extra_definitions=mcp_definitions, settings=effective)
     return {
@@ -236,11 +242,24 @@ async def _finalize_import(
     try:
         refresh = await refresh_runtime_registry()
     except Exception as exc:
+        log_best_effort_failure(
+            logger,
+            "skill.finalize_import.refresh",
+            exc,
+            skill=package.definition.name,
+            version=package.definition.version,
+        )
         _remove_installed_copy(destination)
         try:
             await refresh_runtime_registry()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as rollback_exc:  # noqa: BLE001
+            log_best_effort_failure(
+                logger,
+                "skill.finalize_import.rollback_refresh",
+                rollback_exc,
+                skill=package.definition.name,
+                version=package.definition.version,
+            )
         raise SkillServiceError(f"Skill failed registry refresh and was not installed: {exc}") from exc
 
     installed = load_skill_package(destination, trusted_public_keys=trusted_public_keys)

@@ -47,6 +47,7 @@ from app.llm.profiles import ProviderProfile, profile_for_provider
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage, record_llm_response
+from app.observability.best_effort import log_best_effort_failure
 
 if TYPE_CHECKING:
     from app.core.schemas import AgentMessage
@@ -124,7 +125,8 @@ def build_llm_request_snapshot(
         from app.policy.permissions import PermissionStore
 
         policy_version = permission_policy_version(PermissionStore().updated_at())
-    except Exception:  # noqa: BLE001 - context snapshots tolerate policy-store failures.
+    except Exception as exc:  # noqa: BLE001 - context snapshots tolerate policy-store failures.
+        log_best_effort_failure(logger, "context_snapshot.policy_version", exc, purpose=purpose)
         policy_version = ""
     return {
         "snapshot_id": f"ctx_{prompt_hash[:16]}",
@@ -1708,7 +1710,8 @@ def _load_session_context() -> dict[str, Any] | None:
         from app.core.session_context import get_session_context_store
 
         return get_session_context_store().planning_context()
-    except Exception:  # noqa: BLE001 - optional session context should not block projection.
+    except Exception as exc:  # noqa: BLE001 - optional session context should not block projection.
+        log_best_effort_failure(logger, "context.load_session_context", exc)
         return None
 
 
@@ -1718,7 +1721,7 @@ def _record_event(event_type: str, actor: str, payload: dict[str, Any] | None = 
 
         record(event_type, actor, payload or {})
     except Exception as exc:  # noqa: BLE001 - audit failures are best-effort here.
-        logger.debug("audit record failed for %s by %s: %s", event_type, actor, exc, exc_info=True)
+        log_best_effort_failure(logger, "context.record_event", exc, actor=actor, event_type=event_type)
 
 
 def _error_text(exc: BaseException) -> str:
@@ -1748,7 +1751,8 @@ def _safe_context_usage_snapshot(projection: ContextProjection, settings: AppSet
                 include_projection=True,
             )
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - context usage diagnostics should not block LLM calls.
+        log_best_effort_failure(logger, "context.safe_usage_snapshot", exc)
         return {"error": str(exc)}
 
 

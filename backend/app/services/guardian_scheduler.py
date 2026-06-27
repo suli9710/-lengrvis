@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+import logging
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import ScheduledTask, now_iso
+from app.observability.best_effort import log_best_effort_failure
 from app.services import wakeup_service
 from app.services.scheduler_service import _next_run
 
-
 DEFAULT_GUARDIAN_TICK_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 
 class GuardianScheduler:
@@ -40,7 +43,7 @@ class GuardianScheduler:
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
         self._task = None
         self._stop = None
@@ -50,7 +53,7 @@ class GuardianScheduler:
             return []
 
         fired: list[str] = []
-        now_dt = now or datetime.now(timezone.utc)
+        now_dt = now or datetime.now(UTC)
         for row in db.fetch_many("scheduled_tasks", "enabled = 1", (), limit=500):
             if not _due(row, now=now_dt):
                 continue
@@ -84,10 +87,11 @@ class GuardianScheduler:
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001
+                log_best_effort_failure(logger, "guardian_scheduler.run.tick", exc)
                 record("guardian_scheduler.tick_failed", "GuardianScheduler", {"error": str(exc)})
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.tick_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             else:
                 break
@@ -103,7 +107,8 @@ class GuardianScheduler:
             from app.services.guardian_runtime import runtime
 
             return await runtime._is_full_backend_healthy()
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - guardian mode should take over when health checks fail.
+            log_best_effort_failure(logger, "guardian_scheduler.full_backend_health", exc)
             return False
 
 
@@ -114,10 +119,10 @@ def _due(schedule_data: dict[str, Any], now: datetime) -> bool:
     try:
         parsed = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
     except ValueError:
         return True
-    return parsed.astimezone(timezone.utc) <= now
+    return parsed.astimezone(UTC) <= now
 
 
 _scheduler: GuardianScheduler | None = None

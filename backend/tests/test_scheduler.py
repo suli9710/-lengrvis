@@ -7,8 +7,9 @@ don't spin up an actual orchestrator or wait for cron windows.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,31 @@ def test_tick_fires_due_schedules_through_injected_executor():
     assert refreshed is not None
     assert refreshed.last_status == "completed"
     assert refreshed.last_task_id == "task-1"
+
+
+def test_scheduler_execute_failure_logs_best_effort_warning(caplog):
+    async def executor(goal: str, mode: str) -> str:  # noqa: ARG001
+        raise RuntimeError("executor exploded")
+
+    sched = Scheduler(executor=executor)
+    item = sched.schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    far_future = _utc_now() + timedelta(days=1)
+
+    async def runner():
+        fired = await sched.tick(now=far_future)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        return fired
+
+    with caplog.at_level(logging.WARNING, logger=scheduler_service.logger.name):
+        fired_ids = asyncio.run(runner())
+
+    assert item.id in fired_ids
+    refreshed = sched.get(item.id)
+    assert refreshed is not None
+    assert refreshed.last_status.startswith("failed:")
+    assert "scheduler.execute" in caplog.text
+    assert "executor exploded" in caplog.text
 
 
 def test_tick_skips_not_due_schedules():

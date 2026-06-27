@@ -59,7 +59,7 @@ jobs:
         # audit write must never depend on secret-file bootstrap in CI.
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
-        run: python -m pytest backend/tests -q --maxfail=1 --cov=backend/app --cov-report=term-missing:skip-covered --cov-fail-under=55
+        run: python -m pytest backend/tests -q --maxfail=1 --cov=backend/app --cov-report=term-missing:skip-covered --cov-fail-under=75
       - name: Golden task gate (>=95% pass rate report)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1
       - name: Upload golden task report

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,29 @@ def test_parse_advanced_txt_uses_builtin_fallback_without_heavy_deps(tmp_path: P
     assert ir.document_id.startswith(("blake3:", "sha256:"))
 
 
+def test_parse_advanced_logs_unexpected_parser_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    path = tmp_path / "memo.txt"
+    path.write_text("Executive summary", encoding="utf-8")
+
+    def _failed_parser(_path: Path):
+        raise RuntimeError("parser failed token=supersecrettokenvalue1234567890")
+
+    monkeypatch.setattr(svc, "_parse_with_docling", _failed_parser)
+    caplog.set_level(logging.WARNING, logger="app.services.document_intelligence_service")
+
+    ir = svc.parse_advanced(path)
+
+    assert ir.parse_engine == "builtin"
+    assert any("docling parser failed" in warning for warning in ir.warnings)
+    assert "supersecrettokenvalue" not in "\n".join(ir.warnings)
+    assert "document_intelligence.advanced_parser" in caplog.text
+    assert "supersecrettokenvalue" not in caplog.text
+
+
 def test_extract_tables_from_csv(tmp_path: Path):
     path = tmp_path / "sales.csv"
     path.write_text("Region,Revenue\nNorth,100\nSouth,120\n", encoding="utf-8")
@@ -101,7 +125,11 @@ def test_ask_with_citations_uses_provider_when_available(tmp_path: Path):
     path.write_text("Support responses must include citations for source-backed claims.", encoding="utf-8")
     provider = _StubProvider("Use citations for source-backed claims. [p1:b1]")
 
-    result = svc.ask_with_citations(path, "What must support responses include?", provider_resolver=lambda task="subagent": provider)
+    result = svc.ask_with_citations(
+        path,
+        "What must support responses include?",
+        provider_resolver=lambda task="subagent": provider,
+    )
 
     assert result["note"] == "llm_qa"
     assert "[p1:b1]" in result["answer"]
@@ -254,8 +282,8 @@ def test_edit_xlsx_dry_run_includes_resource_state(tmp_path: Path):
 def test_document_edit_tools_support_rollback_restore(tmp_path: Path):
     from docx import Document
 
-    from app.tools import rollback_tools
     from app.core.schemas import ToolResult
+    from app.tools import rollback_tools
 
     path = tmp_path / "memo.docx"
     doc = Document()
@@ -291,7 +319,6 @@ def test_apply_redaction_preview_then_write(tmp_path: Path):
 
 def test_edit_docx_preserves_run_formatting_when_match_is_single_run(tmp_path: Path):
     from docx import Document
-    from docx.shared import Pt
 
     path = tmp_path / "styled.docx"
     doc = Document()

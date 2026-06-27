@@ -61,6 +61,7 @@ if (Test-Path ".venv\Scripts\Activate.ps1") {
 }
 
 $ParsedArgs = Split-TestArguments -RawArgs $args
+$HasExplicitPytestTarget = Test-ExplicitPytestTarget -PytestArgs $ParsedArgs.PytestArgs
 
 function Test-PytestXdistAvailable {
     $previousErrorActionPreference = $ErrorActionPreference
@@ -75,7 +76,7 @@ function Test-PytestXdistAvailable {
 }
 
 $ArgsList = @()
-if (-not (Test-ExplicitPytestTarget -PytestArgs $ParsedArgs.PytestArgs)) {
+if (-not $HasExplicitPytestTarget) {
     $ArgsList += @("backend/tests")
     if (Test-PytestXdistAvailable) {
         $ArgsList += @("-n", "auto")
@@ -83,6 +84,9 @@ if (-not (Test-ExplicitPytestTarget -PytestArgs $ParsedArgs.PytestArgs)) {
 }
 if ($ParsedArgs.Coverage) {
     $ArgsList += @("--cov=backend", "--cov-report=term-missing")
+    if (-not $HasExplicitPytestTarget) {
+        $ArgsList += @("--cov-fail-under=75")
+    }
 }
 $ArgsList += $ParsedArgs.PytestArgs
 

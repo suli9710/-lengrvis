@@ -21,6 +21,7 @@ from app.security import mobile_jwt
 from app.security.mobile_jwt import MOBILE_AUTH_WS_PROTOCOL_PREFIX, REMOTE_VIEW_SCOPE, TOKEN_SCOPE, issue_mobile_token
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import mobile_pairing_service, remote_desktop_service
+from app.services.remote_input_rate_limit import RemoteInputRateLimiter, RemoteInputRateLimiterStore
 from app.services.settings_service import update_settings
 from app.tools.registry import register_all_tools
 
@@ -35,7 +36,9 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
     db.init_db()
+    routes_remote._REMOTE_INPUT_RATE_LIMITERS.clear()
     yield
+    routes_remote._REMOTE_INPUT_RATE_LIMITERS.clear()
 
 
 def _test_app() -> FastAPI:
@@ -715,7 +718,7 @@ def test_remote_input_rate_limit_is_shared_by_grant_and_device(monkeypatch: pyte
     _enable_remote_desktop()
     monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_MAX_EVENTS_PER_WINDOW", 1)
     monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS", 60.0)
-    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMITERS", {})
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMITERS", RemoteInputRateLimiterStore())
     calls: list[dict[str, object]] = []
 
     def fake_handle(event: dict[str, object], *, claims: dict[str, object] | None = None) -> dict[str, object]:
@@ -750,6 +753,26 @@ def test_remote_input_rate_limit_is_shared_by_grant_and_device(monkeypatch: pyte
             websocket.receive_json()
 
     assert len(calls) == 1
+
+
+def test_remote_input_rate_limiters_prune_idle_grant_device_entries(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS", 10.0)
+    store = RemoteInputRateLimiterStore()
+    monkeypatch.setattr(routes_remote, "_REMOTE_INPUT_RATE_LIMITERS", store)
+    claims = {"grant_id": "grant_pruned", "device_id": "device_pruned"}
+    fallback = RemoteInputRateLimiter()
+
+    assert routes_remote._remote_input_limit_error(claims, fallback, now=100.0) is None
+    assert ("grant_pruned", "device_pruned") in store.keys()
+
+    routes_remote._remote_input_rate_limiter_for_claims(
+        {"grant_id": "grant_active", "device_id": "device_active"},
+        fallback,
+        now=121.0,
+    )
+
+    assert ("grant_pruned", "device_pruned") not in store.keys()
+    assert ("grant_active", "device_active") in store.keys()
 
 
 def test_remote_input_websocket_pending_approval_limit_fails_closed(monkeypatch: pytest.MonkeyPatch):

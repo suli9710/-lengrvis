@@ -9,6 +9,7 @@ PII never leak into logs, metrics labels, or crash reports.
 from __future__ import annotations
 
 from app.observability import context
+from app.observability.best_effort import log_best_effort_failure
 from app.observability.context import (
     correlation_snapshot,
     get_request_id,
@@ -19,6 +20,11 @@ from app.observability.context import (
     set_request_id,
     set_span_id,
     set_trace_id,
+)
+from app.observability.crash import (
+    install_crash_handlers,
+    report_exception,
+    reset_crash_handlers_for_tests,
 )
 from app.observability.logging_config import (
     JsonLogFormatter,
@@ -38,13 +44,8 @@ from app.observability.metrics import (
     snapshot,
     timer,
 )
-from app.observability.tracing import Span, span, traced
-from app.observability.crash import (
-    install_crash_handlers,
-    report_exception,
-    reset_crash_handlers_for_tests,
-)
 from app.observability.middleware import register_observability_middleware
+from app.observability.tracing import Span, span, traced
 
 __all__ = [
     "context",
@@ -58,6 +59,7 @@ __all__ = [
     "set_span_id",
     "set_trace_id",
     "configure_logging",
+    "log_best_effort_failure",
     "JsonLogFormatter",
     "RedactingTextFormatter",
     "DEFAULT_BUCKETS",

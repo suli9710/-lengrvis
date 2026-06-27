@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from app.config import AppSettings
+from app.context import management as context_management_module
 from app.context_management import (
     ContextAwareProvider,
     PromptTooLongError,
@@ -65,6 +67,21 @@ def test_context_thresholds_reserve_output_tokens():
 
     assert effective_context_window(settings) == 1750
     assert auto_compact_threshold(settings) == 1050
+
+
+def test_context_record_event_logs_best_effort_audit_failures(monkeypatch, caplog):
+    from app.core import audit
+
+    def fail_record(*args, **kwargs):
+        raise RuntimeError("audit exploded")
+
+    monkeypatch.setattr(audit, "record", fail_record)
+
+    with caplog.at_level(logging.WARNING, logger=context_management_module.logger.name):
+        context_management_module._record_event("context.test", "pytest", {"ok": True})
+
+    assert "context.record_event" in caplog.text
+    assert "audit exploded" in caplog.text
 
 
 def test_warning_state_uses_configured_auto_compact_limit():

@@ -4,27 +4,33 @@ import csv
 import difflib
 import hashlib
 import json
+import logging
 import re
 import shutil
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_fallback, ocr_image_result
+from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.resource_state import resource_states
+from app.policy.redaction import redact_value
 from app.services import document_service
-
 
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".log", ".rst"}
 CODE_OR_DATA_EXTENSIONS = {".json", ".yaml", ".yml", ".py", ".ts", ".tsx", ".js"}
 TABLE_EXTENSIONS = {".csv", ".xlsx"}
 OFFICE_EXTENSIONS = {".pdf", ".docx", ".pptx", ".html", ".htm"}
-SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | CODE_OR_DATA_EXTENSIONS | TABLE_EXTENSIONS | OFFICE_EXTENSIONS | IMAGE_EXTENSIONS
+SUPPORTED_EXTENSIONS = (
+    TEXT_EXTENSIONS | CODE_OR_DATA_EXTENSIONS | TABLE_EXTENSIONS | OFFICE_EXTENSIONS | IMAGE_EXTENSIONS
+)
 
 DEFAULT_TOP_K = 4
 DEFAULT_REPORT_BLOCKS = 8
 DEFAULT_PREVIEW_CHARS = 20000
+logger = logging.getLogger(__name__)
 
 
 class AdvancedParserUnavailable(RuntimeError):
@@ -113,6 +119,21 @@ class DocumentIR:
 ProviderResolver = Callable[[str], Any]
 
 
+def _append_extraction_warning(
+    warnings: list[str],
+    message: str,
+    operation: str,
+    exc: BaseException,
+    **context: Any,
+) -> None:
+    warnings.append(f"{message}: {_redacted_error(exc)}")
+    log_best_effort_failure(logger, operation, exc, **context)
+
+
+def _redacted_error(exc: BaseException) -> str:
+    return str(redact_value(str(exc)))
+
+
 def parse_advanced(
     path: str | Path,
     *,
@@ -129,10 +150,17 @@ def parse_advanced(
             try:
                 ir = parser(document_path)
             except AdvancedParserUnavailable as exc:
-                warnings.append(f"{parser_name} parser unavailable: {exc}")
+                warnings.append(f"{parser_name} parser unavailable: {_redacted_error(exc)}")
                 continue
             except Exception as exc:  # noqa: BLE001 - parser plugins fail in many environment-specific ways.
-                warnings.append(f"{parser_name} parser failed: {exc}")
+                _append_extraction_warning(
+                    warnings,
+                    f"{parser_name} parser failed",
+                    "document_intelligence.advanced_parser",
+                    exc,
+                    parser=parser_name,
+                    extension=document_path.suffix.lower(),
+                )
                 continue
             if ir.blocks or ir.tables:
                 ir.warnings = warnings + ir.warnings
@@ -465,9 +493,15 @@ def _parse_with_builtin(path: Path, *, settings: Any | None, warnings: list[str]
     else:
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
+        except OSError as exc:
             text = ""
-            warnings.append(f"Unsupported document type: {ext or '<none>'}")
+            _append_extraction_warning(
+                warnings,
+                f"Unsupported document type: {ext or '<none>'}",
+                "document_intelligence.unsupported_text_fallback",
+                exc,
+                extension=ext or "<none>",
+            )
         pages = [{"page": 1, "text": text}]
 
     return _build_ir(
@@ -487,7 +521,13 @@ def _extract_csv_tables(path: Path, warnings: list[str]) -> list[DocumentTable]:
         with path.open("r", encoding="utf-8-sig", errors="ignore", newline="") as handle:
             rows = [[_stringify_cell(cell) for cell in row] for row in csv.reader(handle)]
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"CSV extraction failed: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "CSV extraction failed",
+            "document_intelligence.csv",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return []
     if not rows:
         return []
@@ -507,7 +547,13 @@ def _extract_xlsx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
     try:
         from openpyxl import load_workbook
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"XLSX extraction unavailable: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "XLSX extraction unavailable",
+            "document_intelligence.xlsx.import",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return [{"page": 1, "text": ""}], []
 
     pages: list[dict[str, Any]] = []
@@ -515,7 +561,13 @@ def _extract_xlsx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
     try:
         workbook = load_workbook(path, read_only=True, data_only=True)
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"XLSX extraction failed: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "XLSX extraction failed",
+            "document_intelligence.xlsx.load",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return [{"page": 1, "text": ""}], []
 
     try:
@@ -560,7 +612,13 @@ def _extract_pdf_pages(path: Path, *, settings: Any | None, warnings: list[str])
         if any(len(page["text"].strip()) >= 24 for page in pages):
             return pages
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"PDF page extraction fell back to OCR/text fallback: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "PDF page extraction fell back to OCR/text fallback",
+            "document_intelligence.pdf.page_extract",
+            exc,
+            extension=path.suffix.lower(),
+        )
 
     text = extract_pdf_text_with_ocr_fallback(path, settings=settings)
     return [{"page": 1, "text": text}]
@@ -570,13 +628,25 @@ def _extract_docx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
     try:
         from docx import Document
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"DOCX extraction unavailable: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "DOCX extraction unavailable",
+            "document_intelligence.docx.import",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return [{"page": 1, "text": ""}], []
 
     try:
         document = Document(str(path))
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"DOCX extraction failed: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "DOCX extraction failed",
+            "document_intelligence.docx.load",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return [{"page": 1, "text": ""}], []
 
     paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
@@ -602,13 +672,25 @@ def _extract_pptx(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
     try:
         from pptx import Presentation
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"PPTX extraction unavailable: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "PPTX extraction unavailable",
+            "document_intelligence.pptx.import",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return [{"page": 1, "text": ""}], []
 
     try:
         presentation = Presentation(str(path))
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"PPTX extraction failed: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "PPTX extraction failed",
+            "document_intelligence.pptx.load",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return [{"page": 1, "text": ""}], []
 
     pages: list[dict[str, Any]] = []
@@ -640,7 +722,13 @@ def _extract_html(path: Path, warnings: list[str]) -> tuple[list[dict[str, Any]]
     try:
         from bs4 import BeautifulSoup
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"HTML parser unavailable, used tag-stripping fallback: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "HTML parser unavailable, used tag-stripping fallback",
+            "document_intelligence.html.import",
+            exc,
+            extension=path.suffix.lower(),
+        )
         text = re.sub(r"<[^>]+>", " ", raw)
         return [{"page": 1, "text": " ".join(text.split())}], []
 
@@ -759,7 +847,13 @@ def _document_id(path: Path, warnings: list[str]) -> str:
 
         return f"blake3:{blake3.blake3(data).hexdigest()}"
     except Exception as exc:  # noqa: BLE001
-        warnings.append(f"blake3 unavailable, used sha256 fallback: {exc}")
+        _append_extraction_warning(
+            warnings,
+            "blake3 unavailable, used sha256 fallback",
+            "document_intelligence.document_id.blake3",
+            exc,
+            extension=path.suffix.lower(),
+        )
         return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
@@ -858,7 +952,8 @@ def _coerce_docling_tables(raw_tables: Iterable[Any]) -> list[DocumentTable]:
                 dataframe = export()
                 rows = [list(map(_stringify_cell, dataframe.columns))]
                 rows.extend([list(map(_stringify_cell, row)) for row in dataframe.values.tolist()])
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - dataframe export is optional parser metadata.
+                log_best_effort_failure(logger, "document_intelligence.docling_table", exc)
                 rows = []
         if not rows:
             text = str(raw or "").strip()
@@ -909,10 +1004,7 @@ def _document_qa_messages(question: str, source_blocks: str) -> list[dict[str, s
         ),
         dict(
             role="user",
-            content="Question: {question}\n\nSource blocks:\n{source_blocks}".format(
-                question=question,
-                source_blocks=source_blocks,
-            ),
+            content=f"Question: {question}\n\nSource blocks:\n{source_blocks}",
         ),
     ]
 
@@ -928,10 +1020,7 @@ def _document_report_messages(title: str, source_blocks: str) -> list[dict[str, 
         ),
         dict(
             role="user",
-            content="Title: {title}\n\nSource blocks:\n{source_blocks}".format(
-                title=title,
-                source_blocks=source_blocks,
-            ),
+            content=f"Title: {title}\n\nSource blocks:\n{source_blocks}",
         ),
     ]
 
@@ -1092,7 +1181,15 @@ def edit_pptx(
     replacement = str(replace or "")
     prs = Presentation(str(path_obj))
     match_count = _pptx_replace_text(prs, needle, replacement, dry_run=True)
-    diff_preview = [{"action": "edit_pptx", "path": str(path_obj), "find": needle, "replace": replacement, "match_count": match_count}]
+    diff_preview = [
+        {
+            "action": "edit_pptx",
+            "path": str(path_obj),
+            "find": needle,
+            "replace": replacement,
+            "match_count": match_count,
+        }
+    ]
     if dry_run:
         return {
             "dry_run": True,
@@ -1182,7 +1279,15 @@ def edit_docx(
     replacement = str(replace or "")
     doc = Document(str(path_obj))
     match_count = _docx_replace_text(doc, needle, replacement, dry_run=True)
-    diff_preview = [{"action": "edit_docx", "path": str(path_obj), "find": needle, "replace": replacement, "match_count": match_count}]
+    diff_preview = [
+        {
+            "action": "edit_docx",
+            "path": str(path_obj),
+            "find": needle,
+            "replace": replacement,
+            "match_count": match_count,
+        }
+    ]
     if dry_run:
         return {
             "dry_run": True,

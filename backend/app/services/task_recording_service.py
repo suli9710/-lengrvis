@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import re
-import os
 import json
+import logging
+import re
+from datetime import UTC, datetime
 from io import BytesIO
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,12 +13,13 @@ from app.config import AppSettings, env_raw, get_env
 from app.core import db
 from app.core.schemas import now_iso
 from app.llm.registry import get_effective_settings
-
+from app.observability.best_effort import log_best_effort_failure
 
 RECORDING_KIND = "step_screenshot"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _DEFAULT_MIME_TYPE = "image/png"
 _TEST_ENV_TRUE_VALUES = {"1", "true", "yes", "on", "test", "testing"}
+logger = logging.getLogger(__name__)
 
 
 def capture_step_screenshot(
@@ -65,6 +66,14 @@ def capture_step_screenshot(
         recording_id = persist_recording_frame(frame, png)
         return {**frame, "recording_id": recording_id}
     except Exception as exc:  # noqa: BLE001
+        log_best_effort_failure(
+            logger,
+            "task_recording.capture_step_screenshot",
+            exc,
+            task_id=task_id,
+            step_id=step_id,
+            phase=phase,
+        )
         return _failed_frame(task_id, step_id, phase, captured_at, file_name, str(exc))
 
 
@@ -236,7 +245,7 @@ def _safe_name(value: str) -> str:
 
 
 def _timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
 
 
 def _env_flag(name: str) -> bool | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -42,7 +43,17 @@ def test_cancel_run_reuses_tracked_router(monkeypatch: pytest.MonkeyPatch) -> No
         "get_effective_settings",
         lambda: AppSettings(data_dir="."),
     )
-    monkeypatch.setattr(run_service, "get_run", lambda run_id: SimpleNamespace(id=run_id, phase=run_service.RunPhase.RUNNING, engine=run_service.RunEngine.OS, task_id=None, state={}))
+    monkeypatch.setattr(
+        run_service,
+        "get_run",
+        lambda run_id: SimpleNamespace(
+            id=run_id,
+            phase=run_service.RunPhase.RUNNING,
+            engine=run_service.RunEngine.OS,
+            task_id=None,
+            state={},
+        ),
+    )
     monkeypatch.setattr(run_service, "_cancel_persisted_state", lambda run: None)
     monkeypatch.setattr(run_service, "_update_run", lambda run, **kwargs: run)
     monkeypatch.setattr(run_service, "_cancel_active_run_task", lambda run_id, **kwargs: None)
@@ -61,3 +72,48 @@ def test_cancel_run_reuses_tracked_router(monkeypatch: pytest.MonkeyPatch) -> No
     assert len(scheduled) == 1
     asyncio.run(scheduled[0])
     assert engine.cancelled == ["run_stub"]
+
+
+def test_cancel_run_logs_schedule_failure_with_redacted_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    run = SimpleNamespace(
+        id="run_stub_failure",
+        phase=run_service.RunPhase.RUNNING,
+        engine=run_service.RunEngine.OS,
+        task_id=None,
+        state={},
+    )
+    router = EngineRouter({"os": StubEngine()}, default_engine="os", max_turns=1)
+
+    monkeypatch.setattr(
+        run_service,
+        "get_effective_settings",
+        lambda: AppSettings(data_dir="."),
+    )
+    monkeypatch.setattr(run_service, "get_run", lambda run_id: run)
+    monkeypatch.setattr(run_service, "_cancel_persisted_state", lambda run: None)
+    monkeypatch.setattr(run_service, "_router_for_run", lambda run_id, settings: router)
+    monkeypatch.setattr(run_service, "_cancel_active_run_task", lambda run_id, **kwargs: None)
+    monkeypatch.setattr(run_service, "run_event_bus", SimpleNamespace(publish=lambda *args, **kwargs: None))
+
+    def update_run(target, **kwargs):
+        for key, value in kwargs.items():
+            if value is not None:
+                setattr(target, key, value)
+        return target
+
+    def fake_schedule(coro, *, data_dir):
+        coro.close()
+        raise RuntimeError("schedule failed token=supersecrettokenvalue1234567890")
+
+    monkeypatch.setattr(run_service, "_update_run", update_run)
+    monkeypatch.setattr(run_service, "_schedule_background", fake_schedule)
+    caplog.set_level(logging.WARNING, logger="app.services.run_service")
+
+    cancelled = run_service.cancel_run("run_stub_failure")
+
+    assert cancelled.phase == run_service.RunPhase.CANCELLED
+    assert "cancel_run.schedule_engine_cancellation" in caplog.text
+    assert "supersecrettokenvalue" not in caplog.text

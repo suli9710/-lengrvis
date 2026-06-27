@@ -1,25 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import ScheduledTask, now_iso
+from app.observability.best_effort import log_best_effort_failure
 
 try:
     from croniter import croniter as _Croniter
+
     _CRONITER_AVAILABLE = True
-except Exception:  # pragma: no cover - guarded fallback
+except ImportError:  # pragma: no cover - guarded fallback
     _CRONITER_AVAILABLE = False
 
 
 _DEFAULT_TICK_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _next_run(cron_expr: str, *, base: datetime | None = None) -> str:
@@ -31,8 +35,8 @@ def _next_run(cron_expr: str, *, base: datetime | None = None) -> str:
     itr = _Croniter(cron_expr, ref)
     next_dt = itr.get_next(datetime)
     if next_dt.tzinfo is None:
-        next_dt = next_dt.replace(tzinfo=timezone.utc)
-    return next_dt.astimezone(timezone.utc).isoformat()
+        next_dt = next_dt.replace(tzinfo=UTC)
+    return next_dt.astimezone(UTC).isoformat()
 
 
 def _due(schedule_data: dict[str, Any], now: datetime | None = None) -> bool:
@@ -42,10 +46,10 @@ def _due(schedule_data: dict[str, Any], now: datetime | None = None) -> bool:
     try:
         parsed = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
     except ValueError:
         return True
-    return parsed.astimezone(timezone.utc) <= (now or _utc_now())
+    return parsed.astimezone(UTC) <= (now or _utc_now())
 
 
 class Scheduler:
@@ -79,7 +83,7 @@ class Scheduler:
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
         self._task = None
         self._stop = None
@@ -90,7 +94,7 @@ class Scheduler:
                     asyncio.gather(*pending, return_exceptions=True),
                     timeout=30,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 for execution in pending:
                     if not execution.done():
                         execution.cancel()
@@ -149,10 +153,11 @@ class Scheduler:
             try:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001
+                log_best_effort_failure(logger, "scheduler.run.tick", exc)
                 record("scheduler.tick_failed", "Scheduler", {"error": str(exc)})
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.tick_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             else:
                 break
@@ -200,6 +205,7 @@ class Scheduler:
             last_task_id = str(task_id or "")
         except Exception as exc:  # noqa: BLE001
             last_status = f"failed: {exc}"
+            log_best_effort_failure(logger, "scheduler.execute", exc, schedule_id=schedule.id)
             record("scheduler.execute_failed", "Scheduler", {"id": schedule.id, "error": str(exc)}, task_id=schedule.id)
         finally:
             persisted = db.complete_scheduled_task_run(
@@ -225,7 +231,8 @@ class Scheduler:
                 task_id=schedule.id,
                 severity="info" if ok else "error",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - notifications are best-effort after schedule persistence.
+            log_best_effort_failure(logger, "scheduler.notification", exc, schedule_id=schedule.id)
             record(
                 "scheduler.notification_failed",
                 "Scheduler",

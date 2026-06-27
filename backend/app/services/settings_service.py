@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.core import db
@@ -10,10 +11,12 @@ from app.llm.profiles import profile_for_provider, profile_for_settings
 from app.llm.prompts import load_prompt
 from app.llm.registry import _is_local_base_url, get_effective_settings, get_provider, get_provider_for_mode
 from app.llm.usage import list_usage_events, usage_summary
+from app.observability.best_effort import log_best_effort_failure
 from app.policy.redaction import redact_text
 from app.security.sensitive_confirmation import CONFIRMATION_FIELD, require_settings_confirmation
 
 SENSITIVE_SETTINGS = {"api_key", "jwt_secret"}
+logger = logging.getLogger(__name__)
 
 
 def get_settings() -> dict[str, Any]:
@@ -49,6 +52,7 @@ def get_llm_profile() -> dict[str, Any]:
         degraded = getattr(provider, "name", "") == "mock"
         error = ""
     except Exception as exc:  # noqa: BLE001
+        log_best_effort_failure(logger, "settings.llm_profile", exc, mode=settings.mode)
         profile = profile_for_settings(settings)
         degraded = True
         error = _safe_error(exc)
@@ -76,6 +80,7 @@ def get_llm_health() -> dict[str, Any]:
             "error": "",
         }
     except Exception as exc:  # noqa: BLE001
+        log_best_effort_failure(logger, "settings.llm_health", exc, mode=settings.mode)
         profile = profile_for_settings(settings)
         active = {
             "available": False,
@@ -304,6 +309,12 @@ async def test_llm_provider() -> dict[str, Any]:
     except LocalBackendUnavailable as exc:
         return {"ok": False, "provider": "local", "error": _safe_error(exc)}
     except Exception as exc:  # noqa: BLE001 - provider probes surface user-facing diagnostics.
+        log_best_effort_failure(
+            logger,
+            "settings.test_llm_provider",
+            exc,
+            provider=getattr(provider, "name", "unknown"),
+        )
         return {"ok": False, "provider": getattr(provider, "name", "unknown"), "error": _safe_error(exc)}
 
 

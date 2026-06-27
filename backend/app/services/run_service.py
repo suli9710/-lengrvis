@@ -6,41 +6,62 @@ import logging
 import threading
 from typing import Any
 
+from app.agents.delegation_metadata import merge_run_task_metadata
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import Approval, Plan, Run, RunEngine, RunEvent, RunPhase, StepStatus, now_iso
 from app.llm.registry import get_effective_settings
+from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.engine_router import EngineRouter
-from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.execution_engine import default_run_store
 from app.orchestration.execution_models import (
-    TERMINAL_RUN_PHASES,
     APPROVAL_REMAINING_STEPS_SUMMARY,
+    TERMINAL_RUN_PHASES,
     EngineTurnResult,
-    RunPhase as EngineRunPhase,
     RunState,
 )
+from app.orchestration.execution_models import (
+    RunPhase as EngineRunPhase,
+)
+from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.run_event_bus import run_event_bus, task_message_to_run_event
 from app.orchestration.task_phase import TaskPhase
 from app.policy.redaction import redact_run_payload, redact_value
 from app.policy.risk import RiskLevel
 from app.services.run_service_background import (
     active_run_ids,
-    cancel_active_run_task as _bg_cancel_active_run_task,
     leftover_active_tasks,
+)
+from app.services.run_service_background import (
+    cancel_active_run_task as _bg_cancel_active_run_task,
+)
+from app.services.run_service_background import (
     register_resident_task as _bg_register_resident_task,
+)
+from app.services.run_service_background import (
     run_active as _bg_run_active,
+)
+from app.services.run_service_background import (
     schedule_background as _bg_schedule_background,
+)
+from app.services.run_service_background import (
     track_active_run as _bg_track_active_run,
+)
+from app.services.run_service_background import (
     track_active_run_if_idle as _bg_track_active_run_if_idle,
+)
+from app.services.run_service_background import (
     unregister_resident_task as _bg_unregister_resident_task,
+)
+from app.services.run_service_background import (
     untrack_active_run as _bg_untrack_active_run,
 )
-from app.agents.delegation_metadata import merge_run_task_metadata
-from app.services.run_service_capabilities import engine_capabilities_for_run, engine_route_rule_for_run
+from app.services.run_service_capabilities import (
+    engine_capabilities_for_run,  # noqa: F401 - re-exported for route callers and tests.
+    engine_route_rule_for_run,  # noqa: F401 - re-exported for route callers and tests.
+)
 from app.services.task_service import get_task, set_task_status
-
 
 TERMINAL_PHASES = {RunPhase(phase.value) for phase in TERMINAL_RUN_PHASES}
 TASK_SYNC_EVENT_PHASES = {
@@ -114,7 +135,11 @@ async def create_run(
             error="full_backend_backgrounding",
         )
         db.upsert_model("runs", run)
-        run_event_bus.publish(run.id, "run.paused", {"reason": "full_backend_backgrounding", "message": message, "mode": mode})
+        run_event_bus.publish(
+            run.id,
+            "run.paused",
+            {"reason": "full_backend_backgrounding", "message": message, "mode": mode},
+        )
         return run
     settings = get_effective_settings()
     run_event_bus.prune_old_events(settings)
@@ -237,7 +262,8 @@ async def prepare_for_background(*, timeout_seconds: float = 8.0) -> dict[str, A
     for run_id in active_ids:
         try:
             pause_run(run_id)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - backgrounding should keep draining other runs.
+            log_best_effort_failure(logger, "prepare_for_background.pause_run", exc, run_id=run_id)
             continue
     deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
     while active_run_ids() and asyncio.get_running_loop().time() < deadline:
@@ -263,12 +289,15 @@ def recover_interrupted_runs() -> list[str]:
     recovered: list[str] = []
     try:
         rows = db.fetch_many("runs", "phase = ?", (RunPhase.RUNNING.value,), limit=1000)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - startup recovery should not block backend startup.
+        log_best_effort_failure(logger, "recover_interrupted_runs.scan", exc)
         return recovered
     for row in rows:
         try:
             run = Run.model_validate(row)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - skip corrupt rows but surface diagnostics.
+            row_id = row.get("id") if isinstance(row, dict) else ""
+            log_best_effort_failure(logger, "recover_interrupted_runs.validate_row", exc, run_id=row_id)
             continue
         if _run_active(run.id):
             continue
@@ -296,7 +325,8 @@ async def shutdown_runs(*, timeout_seconds: float = 10.0) -> dict[str, Any]:
     for run_id in paused_ids:
         try:
             pause_run(run_id)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - shutdown should continue draining other runs.
+            log_best_effort_failure(logger, "shutdown_runs.pause_run", exc, run_id=run_id)
             continue
     deadline = asyncio.get_running_loop().time() + max(0.0, timeout_seconds)
     while active_run_ids() and asyncio.get_running_loop().time() < deadline:
@@ -336,8 +366,8 @@ def pause_run(run_id: str) -> Run:
         _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
         try:
             set_task_status(run.task_id, "paused")
-        except Exception as exc:
-            logger.debug("could not mark task %s paused: %s", run.task_id, exc, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - pausing the run should still proceed.
+            log_best_effort_failure(logger, "pause_run.set_task_status", exc, run_id=run.id, task_id=run.task_id)
     _sync_persisted_state_phase(run, RunPhase.PAUSED, "pause_requested")
     _update_run(run, phase=RunPhase.PAUSED)
     run_event_bus.publish(run.id, "turn.completed", {"reason": "pause_requested", "phase": run.phase.value})
@@ -403,21 +433,21 @@ def cancel_run(run_id: str) -> Run:
 
             _schedule_background(cancel_lengrvis_code_run(run.id), data_dir=_run_data_dir(run))
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
-            logger.warning("Failed to schedule developer run cancellation for %s: %s", run.id, exc, exc_info=True)
+            log_best_effort_failure(logger, "cancel_run.schedule_developer_cancellation", exc, run_id=run.id)
     elif run.engine in {RunEngine.OS, RunEngine.AUTO}:
         try:
             settings = get_effective_settings()
             router = _router_for_run(run.id, settings)
             _schedule_background(router.cancel_run(run.id), data_dir=_run_data_dir(run))
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
-            logger.warning("Failed to schedule engine run cancellation for %s: %s", run.id, exc, exc_info=True)
+            log_best_effort_failure(logger, "cancel_run.schedule_engine_cancellation", exc, run_id=run.id)
     if run.task_id:
         expired = _expire_pending_approvals(run.task_id, "cancel_requested")
         _deny_waiting_steps_for_expired_approvals(run.task_id, expired)
         try:
             set_task_status(run.task_id, TaskPhase.CANCELLED)
         except Exception as exc:  # noqa: BLE001 - cancellation still records run state below.
-            logger.warning("Failed to mark task %s cancelled while cancelling run %s: %s", run.task_id, run.id, exc, exc_info=True)
+            log_best_effort_failure(logger, "cancel_run.set_task_cancelled", exc, run_id=run.id, task_id=run.task_id)
     _update_run(run, phase=RunPhase.CANCELLED)
     _cancel_active_run_task(run.id, grace_seconds=2.0)
     run_event_bus.publish(run.id, "run.cancelled", {"task_id": run.task_id, "reason": "cancel_requested"})
@@ -428,7 +458,7 @@ def _expire_pending_approvals(task_id: str, reason: str) -> list[Approval]:
     try:
         expired = db.expire_pending_approvals_for_task(task_id, now_iso(), reason)
     except Exception as exc:  # noqa: BLE001 - approval expiry is best effort during state transitions.
-        logger.warning("Failed to expire pending approvals for task %s: %s", task_id, exc, exc_info=True)
+        log_best_effort_failure(logger, "expire_pending_approvals.persist", exc, task_id=task_id)
         return []
     if not expired:
         return []
@@ -439,7 +469,7 @@ def _expire_pending_approvals(task_id: str, reason: str) -> list[Approval]:
         for approval in approvals:
             publish_approval_decided(approval)
     except Exception as exc:  # noqa: BLE001 - expiry already persisted; event fanout is best effort.
-        logger.warning("Failed to publish expired approval events for task %s: %s", task_id, exc, exc_info=True)
+        log_best_effort_failure(logger, "expire_pending_approvals.publish_events", exc, task_id=task_id)
     return approvals
 
 
@@ -539,10 +569,10 @@ async def _run_engine_loop(
         if bridge_task is not None:
             try:
                 await asyncio.wait_for(bridge_task, timeout=0.5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 bridge_task.cancel()
-            except Exception as exc:
-                logger.debug("run bridge task failed while stopping %s: %s", run_id, exc, exc_info=True)
+            except Exception as exc:  # noqa: BLE001 - run cleanup must release active-run state below.
+                log_best_effort_failure(logger, "run_engine_loop.stop_bridge", exc, run_id=run_id)
         _untrack_active_run(run_id)
         _release_run_router(run_id)
         _release_terminal_orchestrator(run_id)
@@ -558,7 +588,10 @@ def _release_terminal_orchestrator(run_id: str) -> None:
     """
     try:
         run = get_run(run_id)
-    except Exception:
+    except KeyError:
+        return
+    except Exception as exc:  # noqa: BLE001 - cleanup should not affect terminal run completion.
+        log_best_effort_failure(logger, "release_terminal_orchestrator.get_run", exc, run_id=run_id)
         return
     if run.phase not in TERMINAL_PHASES:
         return
@@ -620,16 +653,17 @@ async def _monitor_task_to_terminal(
         stop_event.set()
         try:
             await asyncio.wait_for(bridge_task, timeout=0.5)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             bridge_task.cancel()
-        except Exception as exc:
-            logger.debug("run bridge task failed while monitoring %s: %s", run_id, exc, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - terminal monitor already persisted the task outcome.
+            log_best_effort_failure(logger, "monitor_task_terminal_phase.stop_bridge", exc, run_id=run_id)
 
 
 async def _resume_engine_loop(run_id: str, router: EngineRouter, state: RunState) -> None:
     try:
         resumed = await router.engines[state.engine].resume_run(state.run_id)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - resume can fall back to persisted state.
+        log_best_effort_failure(logger, "resume_engine_loop.resume_run", exc, run_id=run_id, engine=state.engine)
         resumed = state
     stop_event: asyncio.Event | None = None
     bridge_task: asyncio.Future | None = None
@@ -664,7 +698,7 @@ async def _bridge_task_messages(
         while not stop_event.is_set():
             try:
                 message = await asyncio.wait_for(queue.get(), timeout=0.2)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             _publish_translated_message(run_id, message, seen_message_ids)
         # stop_event fires as soon as the run reaches a terminal phase; tail
@@ -739,7 +773,14 @@ def _agent_message(raw: dict[str, Any]) -> Any | None:
         from app.core.schemas import AgentMessage
 
         return AgentMessage.model_validate(raw)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - invalid historical messages are skipped during replay.
+        message_id = raw.get("id") if isinstance(raw, dict) else ""
+        logger.debug(
+            "invalid agent message skipped while bridging run messages (message_id=%s): %s",
+            message_id,
+            _redacted_error(exc),
+            exc_info=True,
+        )
         return None
 
 
@@ -837,7 +878,8 @@ def _is_approval_continuation(run: Run) -> bool:
         return False
     try:
         state = RunState.model_validate(_run_state_payload(run.state or {}))
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - invalid runtime state simply cannot be resumed as a continuation.
+        log_best_effort_failure(logger, "is_approval_continuation.parse_state", exc, run_id=run.id)
         return False
     return state.continuation_kind == "approval_remaining_steps"
 
@@ -847,7 +889,8 @@ def _sync_persisted_state_phase(run: Run, phase: RunPhase, reason: str = "") -> 
         return
     try:
         state = RunState.model_validate(_run_state_payload(run.state))
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - persisted state sync is best effort.
+        log_best_effort_failure(logger, "sync_persisted_state_phase.parse_state", exc, run_id=run.id, phase=phase.value)
         return
     continuation_kind: str = ""
     if reason == APPROVAL_REMAINING_STEPS_SUMMARY:
@@ -868,7 +911,8 @@ def _cancel_persisted_state(run: Run) -> None:
     runtime = (run.state or {}).get("_runtime") if isinstance(run.state, dict) else None
     try:
         state = _state_from_run(run)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - run cancellation still persists the outer run phase.
+        log_best_effort_failure(logger, "cancel_persisted_state.parse_state", exc, run_id=run.id)
         return
     if isinstance(runtime, dict) and runtime:
         run.state["_runtime"] = dict(runtime)
@@ -908,7 +952,10 @@ def _sync_run_phase_from_task(run: Run) -> Run:
         return run
     try:
         task = get_task(run.task_id)
-    except Exception:
+    except KeyError:
+        return run
+    except Exception as exc:  # noqa: BLE001 - run reads should tolerate task-store failures.
+        log_best_effort_failure(logger, "sync_run_phase_from_task.task_lookup", exc, run_id=run.id, task_id=run.task_id)
         return run
     phase = _phase_for_task(task)
     if phase == RunPhase.CANCELLED:
@@ -936,13 +983,15 @@ def _sync_run_phase_from_task(run: Run) -> Run:
 def _latest_plan_for_task(task_id: str) -> Plan | None:
     try:
         rows = db.fetch_many("plans", "task_id = ?", (task_id,), limit=1)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - plan lookup only refines cancelled-vs-denied mapping.
+        log_best_effort_failure(logger, "latest_plan_for_task.fetch", exc, task_id=task_id)
         return None
     if not rows:
         return None
     try:
         return Plan.model_validate(rows[0])
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - invalid historical plan rows should not block run reads.
+        log_best_effort_failure(logger, "latest_plan_for_task.validate_row", exc, task_id=task_id)
         return None
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -280,6 +281,23 @@ def test_capture_step_screenshot_persists_png_blob(monkeypatch: pytest.MonkeyPat
     image, mime_type = read_recording_image("task_capture", frame["file_name"])
     assert mime_type == "image/png"
     assert image.startswith(b"\x89PNG")
+
+
+def test_capture_step_screenshot_logs_capture_failures(monkeypatch: pytest.MonkeyPatch, caplog):
+    monkeypatch.setenv("LENGRVIS_TASK_RECORDING_FORCE", "1")
+    caplog.set_level(logging.WARNING, logger="app.services.task_recording_service")
+
+    def grab_screen():
+        raise RuntimeError("screen capture unavailable")
+
+    monkeypatch.setattr(task_recording_service, "_grab_screen", grab_screen)
+
+    frame = task_recording_service.capture_step_screenshot("task_failed_capture", "step_capture", "before")
+
+    assert frame["ok"] is False
+    assert frame["error"] == "screen capture unavailable"
+    assert "task_recording.capture_step_screenshot" in caplog.text
+    assert "step_id=step_capture" in caplog.text
 
 
 def test_perception_capture_does_not_write_task_recordings(monkeypatch: pytest.MonkeyPatch):

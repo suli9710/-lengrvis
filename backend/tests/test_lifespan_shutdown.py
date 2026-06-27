@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,25 @@ def test_startup_recovers_crash_orphaned_running_runs():
     assert alive.id not in recovered
     assert run_service.get_run(orphan.id).phase == RunPhase.PAUSED
     assert run_service.get_run(alive.id).phase == RunPhase.RUNNING
+
+
+def test_startup_recovery_logs_scan_failures(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    from app.core import db
+    from app.services import run_service
+
+    db.init_db()
+
+    def fail_fetch_many(*args, **kwargs):
+        raise RuntimeError("scan exploded")
+
+    monkeypatch.setattr(db, "fetch_many", fail_fetch_many)
+
+    with caplog.at_level(logging.WARNING, logger=run_service.logger.name):
+        recovered = run_service.recover_interrupted_runs()
+
+    assert recovered == []
+    assert "recover_interrupted_runs.scan" in caplog.text
+    assert "scan exploded" in caplog.text
 
 
 def test_lifespan_shutdown_calls_task_pool_shutdown(monkeypatch: pytest.MonkeyPatch):

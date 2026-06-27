@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,6 +36,37 @@ def test_extract_zip_safely_rejects_too_many_members(tmp_path: Path):
         skill_service._extract_zip_safely(crowded, tmp_path / "out2")
 
 
+def test_refresh_runtime_registry_logs_mcp_definition_failures(monkeypatch, caplog, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
+    db.init_db()
+    recorded: list[tuple[str, str, dict]] = []
+
+    class FailingMcpRegistry:
+        def load_from_settings(self, settings):  # noqa: ARG002
+            return None
+
+        async def adapt_to_tool_definitions(self):
+            raise RuntimeError("mcp exploded")
+
+    monkeypatch.setattr(skill_service, "get_mcp_registry", lambda: FailingMcpRegistry())
+    monkeypatch.setattr(skill_service, "register_all_tools", lambda **kwargs: None)
+    monkeypatch.setattr(skill_service, "tool_registry", SimpleNamespace(list=lambda: []))
+    monkeypatch.setattr(
+        skill_service,
+        "record",
+        lambda event, actor, payload, **kwargs: recorded.append((event, actor, payload)),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=skill_service.logger.name):
+        result = asyncio.run(skill_service.refresh_runtime_registry())
+
+    assert result["ok"] is True
+    assert "skill.refresh_runtime_registry.mcp_definitions" in caplog.text
+    assert "mcp exploded" in caplog.text
+    assert recorded == [("mcp.refresh_load_failed", "SkillService", {"error": "mcp exploded"})]
+
+
 def _write_skill(root: Path, name: str = "route-demo") -> Path:
     skill_root = root / name
     skill_root.mkdir(parents=True)
@@ -52,7 +86,9 @@ tools:
         encoding="utf-8",
     )
     (skill_root / "echo.py").write_text(
-        "import json, sys\npayload=json.loads(sys.stdin.read() or '{}')\nprint(json.dumps({'ok': True, 'echo': payload.get('args', {}).get('text', '')}))\n",
+        "import json, sys\n"
+        "payload=json.loads(sys.stdin.read() or '{}')\n"
+        "print(json.dumps({'ok': True, 'echo': payload.get('args', {}).get('text', '')}))\n",
         encoding="utf-8",
     )
     return skill_root
@@ -181,7 +217,10 @@ def test_skill_route_imports_product_manifest_showcase_into_real_catalog(
     assert tool["smoke_tests"] == [
         {
             "name": "product-manifest-boundaries-preview",
-            "description": "Dry-run preview lists file read/write, UI, network, messaging, delete, and rollback or handoff boundaries.",
+            "description": (
+                "Dry-run preview lists file read/write, UI, network, messaging, delete, "
+                "and rollback or handoff boundaries."
+            ),
             "has_args": True,
             "arg_keys": ["dry_run", "endpoint", "message", "path"],
             "expected_keys": ["dry_run", "ok"],
@@ -228,7 +267,10 @@ def test_skill_route_reports_invalid_import(monkeypatch, tmp_path: Path):
 
     bad = tmp_path / "bad"
     bad.mkdir()
-    (bad / "skill.yaml").write_text("name: bad skill\nversion: 1\nagent_owner: FileAgent\ntools: []\n", encoding="utf-8")
+    (bad / "skill.yaml").write_text(
+        "name: bad skill\nversion: 1\nagent_owner: FileAgent\ntools: []\n",
+        encoding="utf-8",
+    )
 
     response = TestClient(create_app()).post("/api/skills/import", json={"path": str(bad)})
 

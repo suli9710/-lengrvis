@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -82,8 +83,9 @@ def test_pool_shutdown_drains_running_tasks():
     asyncio.run(main())
 
 
-def test_pool_records_failure():
+def test_pool_records_failure(caplog):
     pool = task_pool.reset_pool_for_tests(max_concurrent=2)
+    caplog.set_level(logging.WARNING, logger="app.services.task_pool")
 
     async def runner(task: Task) -> Task:
         raise RuntimeError("boom")
@@ -94,5 +96,7 @@ def test_pool_records_failure():
         await spawned
         completed = pool.status()["completed"][task.id]
         assert completed.startswith("failed")
+        assert "task_pool.worker.run" in caplog.text
+        assert "task_id=" in caplog.text
 
     asyncio.run(main())

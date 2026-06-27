@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi.testclient import TestClient
 
-from app.main import create_app
-from app.core import db
 from app.config import AppSettings
+from app.core import db
+from app.main import create_app
 from app.services import settings_service
 
 
@@ -88,8 +90,9 @@ def test_llm_health_includes_active_provider_and_retry(tmp_path, monkeypatch):
     assert "circuit" in body["retry"]
 
 
-def test_llm_profile_redacts_provider_errors(tmp_path, monkeypatch):
+def test_llm_profile_redacts_provider_errors(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    caplog.set_level(logging.WARNING, logger="app.services.settings_service")
 
     def fail_provider(settings):
         raise RuntimeError("provider failed token=supersecrettokenvalue1234567890")
@@ -103,10 +106,13 @@ def test_llm_profile_redacts_provider_errors(tmp_path, monkeypatch):
     error = response.json()["error"]
     assert "supersecrettokenvalue" not in error
     assert "[REDACTED" in error
+    assert "settings.llm_profile" in caplog.text
+    assert "supersecrettokenvalue" not in caplog.text
 
 
-def test_llm_health_redacts_provider_errors(tmp_path, monkeypatch):
+def test_llm_health_redacts_provider_errors(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    caplog.set_level(logging.WARNING, logger="app.services.settings_service")
 
     def fail_provider(settings):
         raise RuntimeError("provider failed https://api.example.test/v1?api_key=secretapikeyvalue123456")
@@ -120,10 +126,13 @@ def test_llm_health_redacts_provider_errors(tmp_path, monkeypatch):
     error = response.json()["active"]["error"]
     assert "secretapikeyvalue" not in error
     assert "api_key=%5BREDACTED%5D" in error
+    assert "settings.llm_health" in caplog.text
+    assert "secretapikeyvalue" not in caplog.text
 
 
-def test_llm_provider_test_redacts_errors(tmp_path, monkeypatch):
+def test_llm_provider_test_redacts_errors(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    caplog.set_level(logging.WARNING, logger="app.services.settings_service")
 
     class FailingProvider:
         name = "custom_http"
@@ -140,6 +149,8 @@ def test_llm_provider_test_redacts_errors(tmp_path, monkeypatch):
     error = response.json()["error"]
     assert "secretbearertokenvalue" not in error
     assert "Bearer [REDACTED]" in error
+    assert "settings.test_llm_provider" in caplog.text
+    assert "secretbearertokenvalue" not in caplog.text
 
 
 def test_sensitive_settings_require_bound_confirmation(tmp_path, monkeypatch):

@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-import threading
-from collections import deque
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -46,6 +44,7 @@ from app.services.remote_desktop_service import (
     normalize_fps,
     normalize_quality,
 )
+from app.services.remote_input_rate_limit import RemoteInputRateLimiter, RemoteInputRateLimiterStore
 from app.tools.registry import register_all_tools
 
 ws_router = APIRouter()
@@ -65,8 +64,7 @@ _REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS = 10.0
 _REMOTE_INPUT_MAX_EVENTS_PER_WINDOW = 20
 _REMOTE_INPUT_PENDING_APPROVAL_LIMIT = 5
 _REMOTE_INPUT_PENDING_APPROVAL_SCAN_LIMIT = 1000
-_REMOTE_INPUT_RATE_LIMITERS: dict[tuple[str, str], _RemoteInputRateLimiter] = {}
-_REMOTE_INPUT_RATE_LIMITERS_LOCK = threading.Lock()
+_REMOTE_INPUT_RATE_LIMITERS = RemoteInputRateLimiterStore()
 _REMOTE_REVIEW_REASON_AUDIT_LIMIT = 3
 _REMOTE_WEBSOCKET_RETRY_CLOSE_CODE = 1012
 _REMOTE_WEBSOCKET_AUTH_CLOSE_CODE = 4401
@@ -102,24 +100,6 @@ _REMOTE_INPUT_SAFE_KEYS = {
     "tab",
     "up",
 }
-
-
-class _RemoteInputRateLimiter:
-    def __init__(self) -> None:
-        self._event_times: deque[float] = deque()
-        self._lock = threading.Lock()
-
-    def allow(self, now: float) -> bool:
-        with self._lock:
-            window_seconds = max(0.1, float(_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS))
-            max_events = max(1, int(_REMOTE_INPUT_MAX_EVENTS_PER_WINDOW))
-            cutoff = now - window_seconds
-            while self._event_times and self._event_times[0] <= cutoff:
-                self._event_times.popleft()
-            if len(self._event_times) >= max_events:
-                return False
-            self._event_times.append(now)
-            return True
 
 
 @ws_router.websocket("/ws/remote/screen")
@@ -222,7 +202,7 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
         return
 
     await websocket.accept()
-    limiter = _RemoteInputRateLimiter()
+    limiter = RemoteInputRateLimiter()
     record("remote.input.connected", _REMOTE_ACTOR, _claim_payload(claims))
     try:
         await websocket.send_json({"type": "connected"})
@@ -401,12 +381,16 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
 
 def _remote_input_limit_error(
     claims: dict[str, Any],
-    limiter: _RemoteInputRateLimiter,
+    limiter: RemoteInputRateLimiter,
     *,
     now: float,
 ) -> dict[str, Any] | None:
     reason = ""
-    if not _remote_input_rate_limiter_for_claims(claims, limiter).allow(now):
+    if not _remote_input_rate_limiter_for_claims(claims, limiter, now=now).allow(
+        now,
+        window_seconds=_remote_input_rate_limit_window_seconds(),
+        max_events=_REMOTE_INPUT_MAX_EVENTS_PER_WINDOW,
+    ):
         reason = "event_window"
     elif _remote_input_pending_approval_count(claims) >= max(0, int(_REMOTE_INPUT_PENDING_APPROVAL_LIMIT)):
         reason = "pending_approvals"
@@ -435,19 +419,23 @@ def _remote_input_limit_error(
 
 def _remote_input_rate_limiter_for_claims(
     claims: dict[str, Any],
-    fallback: _RemoteInputRateLimiter,
-) -> _RemoteInputRateLimiter:
+    fallback: RemoteInputRateLimiter,
+    *,
+    now: float,
+) -> RemoteInputRateLimiter:
     grant_id = str(claims.get("grant_id") or "")
     device_id = str(claims.get("device_id") or "")
-    if not grant_id or not device_id:
-        return fallback
-    key = (grant_id, device_id)
-    with _REMOTE_INPUT_RATE_LIMITERS_LOCK:
-        limiter = _REMOTE_INPUT_RATE_LIMITERS.get(key)
-        if limiter is None:
-            limiter = _RemoteInputRateLimiter()
-            _REMOTE_INPUT_RATE_LIMITERS[key] = limiter
-        return limiter
+    return _REMOTE_INPUT_RATE_LIMITERS.limiter_for(
+        grant_id,
+        device_id,
+        fallback=fallback,
+        now=now,
+        window_seconds=_remote_input_rate_limit_window_seconds(),
+    )
+
+
+def _remote_input_rate_limit_window_seconds() -> float:
+    return max(0.1, float(_REMOTE_INPUT_RATE_LIMIT_WINDOW_SECONDS))
 
 
 def _remote_input_pending_approval_count(claims: dict[str, Any]) -> int:

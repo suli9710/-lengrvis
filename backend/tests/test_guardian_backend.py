@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -302,6 +303,27 @@ def test_guardian_scheduler_skips_when_full_backend_is_available(monkeypatch, tm
     assert refreshed.last_status == ""
     wakeups = db.fetch_many("wakeups", "source_id = ?", (schedule.id,), limit=10)
     assert wakeups == []
+
+
+def test_guardian_scheduler_logs_tick_failures(monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    guardian_scheduler._scheduler = None
+
+    async def failing_backend_check() -> bool:
+        raise RuntimeError("guardian tick exploded")
+
+    async def runner() -> None:
+        guardian = GuardianScheduler(tick_seconds=60, full_backend_available=failing_backend_check)
+        await guardian.start()
+        await asyncio.sleep(0)
+        await guardian.stop()
+
+    with caplog.at_level(logging.WARNING, logger=guardian_scheduler.logger.name):
+        asyncio.run(runner())
+
+    assert "guardian_scheduler.run.tick" in caplog.text
+    assert "guardian tick exploded" in caplog.text
 
 
 def test_guardian_scheduler_concurrent_ticks_create_one_wakeup(monkeypatch, tmp_path: Path):
