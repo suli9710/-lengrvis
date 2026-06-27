@@ -118,10 +118,7 @@ def get_backend_config() -> BackendConfig:
         "127.0.0.1",
     )
     try:
-        port = int(
-            _env("LENGRVIS_BACKEND_PORT")
-            or _get_service_option(SERVICE_OPTION_BACKEND_PORT, "8000")
-        )
+        port = int(_env("LENGRVIS_BACKEND_PORT") or _get_service_option(SERVICE_OPTION_BACKEND_PORT, "8000"))
     except ValueError:
         LOGGER.warning("Invalid LENGRVIS_BACKEND_PORT; falling back to 8000.")
         port = 8000
@@ -272,9 +269,7 @@ def configure_logging(
             backupCount=5,
             encoding="utf-8",
         )
-        file_handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-        )
+        file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
         logger.addHandler(file_handler)
 
     if event_log and platform.system() == "Windows" and import_pywin32_service_modules() is not None:
@@ -324,14 +319,18 @@ class ServiceRunner:
         self.server: Any | None = None
         self.thread: threading.Thread | None = None
         self._startup_error: BaseException | None = None
+        self._runtime_error: BaseException | None = None
         self._server_exited = False
+        self._stop_requested = False
 
     def start(self, *, timeout: int = DEFAULT_START_TIMEOUT_SECONDS) -> None:
         if self.thread and self.thread.is_alive():
             return
         self.server = self._server_factory()
         self._startup_error = None
+        self._runtime_error = None
         self._server_exited = False
+        self._stop_requested = False
         self.thread = threading.Thread(target=self._run_server, name="lengrvis-uvicorn", daemon=True)
         self.thread.start()
         self._wait_until_started(timeout=timeout)
@@ -343,9 +342,12 @@ class ServiceRunner:
         self._logger.info("Starting Lengrvis backend on %s:%s.", config.host, config.port)
         try:
             self.server.run()
-        except Exception as exc:  # noqa: BLE001
-            self._startup_error = exc
-            self._logger.exception("Lengrvis backend server failed.")
+        except BaseException as exc:  # noqa: BLE001
+            if not self._stop_requested:
+                self._runtime_error = exc
+                if not bool(getattr(self.server, "started", False)):
+                    self._startup_error = exc
+                self._logger.exception("Lengrvis backend server failed.")
         finally:
             self._server_exited = True
             self._logger.info("Lengrvis backend server stopped.")
@@ -366,6 +368,8 @@ class ServiceRunner:
 
     def stop(self, *, timeout: int = DEFAULT_STOP_TIMEOUT_SECONDS) -> bool:
         self._logger.info("Stopping Lengrvis backend service.")
+        if self.thread is not None and self.thread.is_alive():
+            self._stop_requested = True
         if self.server is not None:
             self.server.should_exit = True
         if self.thread is None:
@@ -379,6 +383,12 @@ class ServiceRunner:
     def wait(self) -> None:
         if self.thread is not None:
             self.thread.join()
+        if self._stop_requested:
+            return
+        if self._runtime_error is not None:
+            raise RuntimeError("Lengrvis backend stopped unexpectedly.") from self._runtime_error
+        if self._server_exited:
+            raise RuntimeError("Lengrvis backend stopped unexpectedly.")
 
 
 def get_service_class(
@@ -404,6 +414,16 @@ def get_service_class(
             self.stop_event = modules.win32event.CreateEvent(None, 0, 0, None)
             self.runner = runner_factory()
 
+        def _report_stopped(self, *, failed: bool = False) -> None:
+            if failed:
+                self.ReportServiceStatus(
+                    modules.win32service.SERVICE_STOPPED,
+                    win32ExitCode=1,
+                    svcExitCode=1,
+                )
+                return
+            self.ReportServiceStatus(modules.win32service.SERVICE_STOPPED)
+
         def SvcStop(self) -> None:
             configure_logging()
             LOGGER.info("Service stop requested.")
@@ -415,7 +435,7 @@ def get_service_class(
                 modules.servicemanager.LogErrorMsg(message)
                 raise TimeoutError(message)
             modules.win32event.SetEvent(self.stop_event)
-            self.ReportServiceStatus(modules.win32service.SERVICE_STOPPED)
+            self._report_stopped()
 
         def SvcDoRun(self) -> None:
             apply_service_runtime_options()
@@ -423,17 +443,21 @@ def get_service_class(
             LOGGER.info("Service run requested.")
             modules.servicemanager.LogInfoMsg(f"{SERVICE_DISPLAY_NAME} is starting.")
             self.ReportServiceStatus(modules.win32service.SERVICE_START_PENDING)
+            failed = False
             try:
                 self.runner.start()
                 self.ReportServiceStatus(modules.win32service.SERVICE_RUNNING)
                 modules.servicemanager.LogInfoMsg(f"{SERVICE_DISPLAY_NAME} is running.")
                 self.runner.wait()
             except Exception as exc:  # noqa: BLE001
+                failed = True
                 LOGGER.exception("Service run failed.")
                 modules.servicemanager.LogErrorMsg(f"{SERVICE_DISPLAY_NAME} failed: {exc}")
+                self._report_stopped(failed=True)
                 raise
             finally:
-                self.ReportServiceStatus(modules.win32service.SERVICE_STOPPED)
+                if not failed:
+                    self._report_stopped()
 
     LengrvisBackendServiceImpl.__name__ = "LengrvisBackendService"
     LengrvisBackendServiceImpl.__qualname__ = "LengrvisBackendService"

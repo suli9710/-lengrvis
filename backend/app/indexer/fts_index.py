@@ -609,13 +609,22 @@ class FTSIndex:
             results.append({"file_id": row["file_id"], "path": file_data["path"], "snippet": row["text"][:240]})
         return results
 
-    def duplicates(self) -> list[dict[str, Any]]:
+    def duplicates(self, allowed_directories: list[str] | None = None) -> list[dict[str, Any]]:
         db.init_db()
+        allowed_roots = _normalized_allowed_roots(allowed_directories or [])
+        if not allowed_roots:
+            return []
         with db.connect() as conn:
-            rows = conn.execute("SELECT data, sha256 FROM indexed_files").fetchall()
+            rows = conn.execute("SELECT data, normalized_path, sha256 FROM indexed_files").fetchall()
         groups: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
-            groups.setdefault(row["sha256"], []).append(json.loads(row["data"]))
+            file_data = json.loads(row["data"])
+            indexed_path = str(
+                row["normalized_path"] or file_data.get("normalized_path") or file_data.get("path") or ""
+            )
+            if not _path_within_roots(indexed_path, allowed_roots):
+                continue
+            groups.setdefault(row["sha256"], []).append(file_data)
         return [{"sha256": digest, "files": files} for digest, files in groups.items() if len(files) > 1]
 
 

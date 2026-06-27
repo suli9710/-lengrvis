@@ -96,7 +96,7 @@ def semantic_search(query: str, *, limit: int = 10) -> dict:
 
 def duplicates() -> dict:
     settings = get_effective_settings()
-    indexed = FTSIndex().duplicates()
+    indexed = FTSIndex().duplicates(settings.allowed_directories)
     if not settings.allowed_directories:
         live = {
             "duplicates": [],

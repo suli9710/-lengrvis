@@ -43,11 +43,14 @@ def test_get_backend_config_can_read_service_options(monkeypatch: pytest.MonkeyP
         )
     )
 
-    with patch.object(
-        service_wrapper,
-        "import_pywin32_service_modules",
-        return_value=SimpleNamespace(win32serviceutil=fake_util),
-    ), patch.object(service_wrapper.platform, "system", return_value="Windows"):
+    with (
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
+        patch.object(service_wrapper.platform, "system", return_value="Windows"),
+    ):
         config = service_wrapper.get_backend_config()
 
     assert config.host == "127.0.0.3"
@@ -99,11 +102,14 @@ def test_apply_service_runtime_options_sets_cwd_and_environment(
         )
     )
 
-    with patch.object(
-        service_wrapper,
-        "import_pywin32_service_modules",
-        return_value=SimpleNamespace(win32serviceutil=fake_util),
-    ), patch.object(service_wrapper.platform, "system", return_value="Windows"):
+    with (
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
+        patch.object(service_wrapper.platform, "system", return_value="Windows"),
+    ):
         service_wrapper.apply_service_runtime_options()
 
     assert Path.cwd() == project_root
@@ -172,8 +178,9 @@ def test_create_uvicorn_server_loads_backend_app_after_runtime_options(monkeypat
         Server=MagicMock(return_value=fake_server),
     )
 
-    with patch.object(service_wrapper, "load_backend_app", return_value=app) as load_app, patch.object(
-        service_wrapper, "import_pywin32_service_modules", return_value=None
+    with (
+        patch.object(service_wrapper, "load_backend_app", return_value=app) as load_app,
+        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=None),
     ):
         server = service_wrapper.create_uvicorn_server(uvicorn_module=uvicorn_module)
 
@@ -212,8 +219,9 @@ def test_create_uvicorn_server_passes_lan_tls_material_to_uvicorn(
         Server=MagicMock(return_value=fake_server),
     )
 
-    with patch.object(service_wrapper, "load_backend_app", return_value=app), patch.object(
-        service_wrapper, "import_pywin32_service_modules", return_value=None
+    with (
+        patch.object(service_wrapper, "load_backend_app", return_value=app),
+        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=None),
     ):
         server = service_wrapper.create_uvicorn_server(uvicorn_module=uvicorn_module)
 
@@ -254,6 +262,32 @@ def test_service_runner_raises_when_server_exits_before_start() -> None:
 
     with pytest.raises(RuntimeError, match="exited before startup"):
         runner.start(timeout=1)
+
+
+def test_service_runner_wait_raises_when_server_crashes_after_start() -> None:
+    fake_server = MagicMock()
+    fake_server.started = True
+    fake_server.run.side_effect = RuntimeError("boom")
+
+    runner = service_wrapper.ServiceRunner(server_factory=lambda: fake_server)
+    runner.start(timeout=1)
+
+    with pytest.raises(RuntimeError, match="stopped unexpectedly") as exc_info:
+        runner.wait()
+
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+    assert str(exc_info.value.__cause__) == "boom"
+
+
+def test_service_runner_wait_raises_when_server_returns_without_stop() -> None:
+    fake_server = MagicMock()
+    fake_server.started = True
+
+    runner = service_wrapper.ServiceRunner(server_factory=lambda: fake_server)
+    runner.start(timeout=1)
+
+    with pytest.raises(RuntimeError, match="stopped unexpectedly"):
+        runner.wait()
 
 
 def test_service_runner_stop_reports_stuck_thread() -> None:
@@ -337,6 +371,56 @@ def test_get_service_class_builds_pywin32_service() -> None:
     runner.wait.assert_called_once()
     runner.stop.assert_called_once()
     fake_win32event.SetEvent.assert_called_once_with("stop-event")
+
+
+def test_pywin32_service_reports_nonzero_status_when_runner_crashes() -> None:
+    class FakeServiceFramework:
+        def __init__(self, args):
+            self.args = args
+            self.status_reports = []
+
+        def ReportServiceStatus(self, status, *args, **kwargs):
+            self.status_reports.append((status, args, kwargs))
+
+    fake_win32event = SimpleNamespace(
+        CreateEvent=MagicMock(return_value="stop-event"),
+        SetEvent=MagicMock(),
+        WaitForSingleObject=MagicMock(),
+        INFINITE=999,
+    )
+    fake_win32service = SimpleNamespace(
+        SERVICE_START_PENDING=2,
+        SERVICE_STOP_PENDING=3,
+        SERVICE_STOPPED=1,
+        SERVICE_RUNNING=4,
+    )
+    fake_win32serviceutil = SimpleNamespace(ServiceFramework=FakeServiceFramework)
+    modules = service_wrapper.Pywin32ServiceModules(
+        servicemanager=SimpleNamespace(LogInfoMsg=MagicMock(), LogErrorMsg=MagicMock()),
+        win32event=fake_win32event,
+        win32service=fake_win32service,
+        win32serviceutil=fake_win32serviceutil,
+    )
+    runner = MagicMock()
+    runner.wait.side_effect = RuntimeError("boom")
+
+    with (
+        patch.object(service_wrapper.platform, "system", return_value="Windows"),
+        patch.object(service_wrapper, "import_pywin32_service_modules", return_value=modules),
+        patch.object(service_wrapper, "configure_logging"),
+    ):
+        service_class = service_wrapper.get_service_class(runner_factory=lambda: runner)
+
+    service = service_class(["service-arg"])
+    with pytest.raises(RuntimeError, match="boom"):
+        service.SvcDoRun()
+
+    assert service.status_reports[0][0] == fake_win32service.SERVICE_START_PENDING
+    assert service.status_reports[1][0] == fake_win32service.SERVICE_RUNNING
+    stopped_reports = [report for report in service.status_reports if report[0] == fake_win32service.SERVICE_STOPPED]
+    assert stopped_reports == [(fake_win32service.SERVICE_STOPPED, (), {"win32ExitCode": 1, "svcExitCode": 1})]
+    runner.start.assert_called_once()
+    runner.wait.assert_called_once()
 
 
 def test_main_returns_error_when_service_is_unsupported(capsys: pytest.CaptureFixture[str]) -> None:

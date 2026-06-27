@@ -1,9 +1,45 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from app.core import db
+from app.core.schemas import IndexedFile
+from app.indexer.fts_index import FTSIndex
 from app.services import file_service
 from app.tools.file_tools import find_duplicates, search_by_name, search_full_text
+
+
+def _insert_indexed_file(path: Path, digest: str) -> None:
+    indexed = IndexedFile(
+        path=str(path),
+        normalized_path=str(path),
+        name=path.name,
+        extension=path.suffix,
+        size=1,
+        sha256=digest,
+        modified_at="1700000000",
+        indexed_at="2026-01-02T03:04:05+00:00",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO indexed_files
+            (id, normalized_path, data, sha256, name, extension, size, modified_at, indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                indexed.id,
+                indexed.normalized_path,
+                indexed.model_dump_json(),
+                indexed.sha256,
+                indexed.name,
+                indexed.extension,
+                indexed.size,
+                indexed.modified_at,
+                indexed.indexed_at,
+            ),
+        )
 
 
 def test_search_by_name_stops_after_limit(tmp_path: Path) -> None:
@@ -101,7 +137,7 @@ def test_find_duplicates_stops_after_scan_budget(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     for index in range(20):
-        (workspace / f"file-{index}.bin").write_bytes(f"unique-{index}".encode("utf-8"))
+        (workspace / f"file-{index}.bin").write_bytes(f"unique-{index}".encode())
 
     result = find_duplicates(
         {"limit": 100, "max_scanned": 5},
@@ -148,7 +184,8 @@ def test_file_service_duplicates_returns_live_scan_meta(monkeypatch, tmp_path: P
     )
 
     class FakeFTSIndex:
-        def duplicates(self) -> list[dict]:
+        def duplicates(self, allowed_directories: list[str]) -> list[dict]:
+            assert allowed_directories == [str(workspace)]
             return []
 
     monkeypatch.setattr(file_service, "FTSIndex", FakeFTSIndex)
@@ -160,8 +197,33 @@ def test_file_service_duplicates_returns_live_scan_meta(monkeypatch, tmp_path: P
     assert result["live_duplicates_meta"]["truncated"] is False
 
 
+def test_index_duplicates_are_scoped_to_authorized_directories(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.reset_init_db_cache()
+    db.init_db()
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+
+    _insert_indexed_file(allowed / "a.txt", "shared")
+    _insert_indexed_file(allowed / "b.txt", "shared")
+    _insert_indexed_file(outside / "secret-a.txt", "shared")
+    _insert_indexed_file(outside / "secret-b.txt", "outside-only")
+    _insert_indexed_file(outside / "secret-c.txt", "outside-only")
+
+    result = FTSIndex().duplicates([str(allowed)])
+    rendered = json.dumps(result)
+
+    assert len(result) == 1
+    assert result[0]["sha256"] == "shared"
+    assert {Path(item["path"]).name for item in result[0]["files"]} == {"a.txt", "b.txt"}
+    assert str(outside) not in rendered
+    assert FTSIndex().duplicates([]) == []
+
+
 def test_search_files_without_scope_returns_missing_scope(monkeypatch) -> None:
-    monkeypatch.setattr(file_service, "get_effective_settings", lambda: type("Settings", (), {"allowed_directories": []})())
+    monkeypatch.setattr(
+        file_service, "get_effective_settings", lambda: type("Settings", (), {"allowed_directories": []})()
+    )
 
     result = file_service.search_files("contract")
 
