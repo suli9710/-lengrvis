@@ -110,10 +110,18 @@ class OrchestratorAgent:
 
     def _set_status(self, task: Task, status: TaskStatus, *, final_summary: str | None = None) -> Task:
         target_phase = _phase_of(status)
-        task = safe_transition(task, status, actor=self.name)
-        if final_summary is not None and task.status == target_phase:
+        original_summary = task.final_summary
+        if final_summary is not None:
             task.final_summary = final_summary
+        try:
+            task = safe_transition(task, status, actor=self.name)
+        except Exception:
+            task.final_summary = original_summary
+            raise
+        if final_summary is not None and task.status == target_phase:
             db.upsert_model("tasks", task)
+        elif final_summary is not None:
+            task.final_summary = original_summary
         if task.status in _TERMINAL_TASK_PHASES:
             self.recovery_handler.cleanup_task(task.id)
         return task

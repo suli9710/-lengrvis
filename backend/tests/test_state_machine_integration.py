@@ -115,6 +115,27 @@ def test_set_status_persists_summary_after_valid_transition():
     assert persisted.final_summary == "done"
 
 
+def test_set_status_writes_terminal_summary_atomically(monkeypatch: pytest.MonkeyPatch):
+    from app.agents.orchestrator_agent import OrchestratorAgent
+
+    task = _make_task(TaskStatus.PLANNING)
+    writes: list[Task] = []
+    original_upsert = db.upsert_model
+
+    def spy_upsert(table: str, model, **kwargs):
+        if table == "tasks" and getattr(model, "id", "") == task.id:
+            writes.append(Task.model_validate(model.model_dump(mode="python")))
+        return original_upsert(table, model, **kwargs)
+
+    monkeypatch.setattr(db, "upsert_model", spy_upsert)
+
+    OrchestratorAgent()._set_status(task, TaskStatus.DENIED, final_summary="Denied: policy blocked this task.")
+
+    assert writes
+    assert writes[0].status == TaskPhase.CANCELLED
+    assert writes[0].final_summary == "Denied: policy blocked this task."
+
+
 def test_same_status_transition_syncs_phase():
     task = _make_task(TaskStatus.PLANNING)
     task.phase = TaskPhase.CREATED
