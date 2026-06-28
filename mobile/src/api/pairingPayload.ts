@@ -13,6 +13,7 @@ export type PairingPayloadSource = "json" | "url" | "text";
 export interface PairingPayload {
   baseUrl: string;
   code: string;
+  claimSecret?: string;
   expiresAt?: string;
   security?: PairingSecurityMetadata;
   source: PairingPayloadSource;
@@ -109,6 +110,7 @@ function parseUrlPayload(raw: string): PairingPayload | null {
 
   const params = parsed.searchParams;
   const code = normalizePairingCode(firstParam(params, "code", "pair_code", "pairCode", "pairing_code", "pairingCode"));
+  const claimSecret = normalizePairingClaimSecret(firstParam(params, "claim_secret", "claimSecret", "pairing_secret", "pairingSecret"));
   const baseUrl =
     firstParam(params, "base_url", "baseUrl", "url", "origin", "server", "server_url", "serverUrl", "server_origin", "serverOrigin") ??
     baseUrlFromParts({
@@ -121,6 +123,7 @@ function parseUrlPayload(raw: string): PairingPayload | null {
   return normalizePayloadParts({
     baseUrl,
     code,
+    claimSecret,
     expiresAt: firstParam(params, "expires_at", "expiresAt"),
     security: securityMetadataFromParams(params),
     source: "url",
@@ -143,6 +146,10 @@ function payloadFromRecord(record: Record<string, unknown> | undefined, source: 
     firstText(pairing, "code", "pair_code", "pairCode", "pairing_code", "pairingCode") ??
       firstText(record, "code", "pair_code", "pairCode", "pairing_code", "pairingCode"),
   );
+  const claimSecret = normalizePairingClaimSecret(
+    firstText(pairing, "claim_secret", "claimSecret", "pairing_secret", "pairingSecret") ??
+      firstText(record, "claim_secret", "claimSecret", "pairing_secret", "pairingSecret"),
+  );
   const baseUrl =
     firstText(record, "base_url", "baseUrl", "origin", "server_origin", "serverOrigin", "url", "server_url", "serverUrl") ??
     firstText(server, "origin", "base_url", "baseUrl", "url", "server_url", "serverUrl") ??
@@ -153,12 +160,13 @@ function payloadFromRecord(record: Record<string, unknown> | undefined, source: 
       port: firstText(server, "port"),
     });
   const expiresAt = firstText(record, "expires_at", "expiresAt") ?? firstText(pairing, "expires_at", "expiresAt");
-  return normalizePayloadParts({ baseUrl, code, expiresAt, security: normalizePairingSecurityMetadata(record), source });
+  return normalizePayloadParts({ baseUrl, code, claimSecret, expiresAt, security: normalizePairingSecurityMetadata(record), source });
 }
 
 function normalizePayloadParts(parts: {
   baseUrl?: string;
   code?: string;
+  claimSecret?: string;
   expiresAt?: string;
   security?: PairingSecurityMetadata;
   source: PairingPayloadSource;
@@ -177,6 +185,12 @@ function normalizePayloadParts(parts: {
       ...(parts.expiresAt ? { expiresAt: parts.expiresAt } : {}),
       source: parts.source,
     };
+    if (parts.claimSecret) {
+      Object.defineProperty(payload, "claimSecret", {
+        value: parts.claimSecret,
+        enumerable: false,
+      });
+    }
     if (parts.security) {
       Object.defineProperty(payload, "security", {
         value: parts.security,
@@ -250,6 +264,12 @@ function firstStandaloneCode(value: string): string | undefined {
 function normalizePairingCode(value: string | undefined): string | undefined {
   const normalized = value?.replace(/[^a-z0-9]/gi, "").toLowerCase();
   return normalized && normalized.length === PAIRING_CODE_LENGTH ? normalized : undefined;
+}
+
+function normalizePairingClaimSecret(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length < 32 || normalized.length > 128) return undefined;
+  return normalized;
 }
 
 function baseUrlFromParts(parts: { scheme?: string; host?: string; port?: string }): string | undefined {

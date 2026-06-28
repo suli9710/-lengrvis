@@ -16,8 +16,10 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+from app.api.activation_admin_template import ADMIN_HTML
 from app.commerce.activation import (
     ActivationError,
+    enforce_activation_rate_limit,
     list_subscription_keys,
     renew_subscription_key,
     revoke_subscription_key,
@@ -38,7 +40,6 @@ ADMIN_CSRF_COOKIE = "lengrvis_admin_csrf"  # noqa: S105 - cookie name only.
 _PASSWORD_HASH_SCHEME = "pbkdf2_sha256"  # noqa: S105 - password hash algorithm label.
 _PASSWORD_HASH_ITERATIONS = 390_000
 _SESSION_TTL_SECONDS = 60 * 60 * 8
-_LOGIN_BUCKETS: dict[str, list[float]] = {}
 _ADMIN_PLANS = {"free", "pro", "max"}
 _ADMIN_STATUSES = {"active", "trialing", "past_due", "canceled", "expired", "revoked"}
 
@@ -49,7 +50,7 @@ class AdminLoginRequest(BaseModel):
 
 class AdminCreateSubscriptionRequest(BaseModel):
     plan: str = Field(default="pro", max_length=16)
-    subscription_id: str = Field(min_length=1, max_length=128)
+    subscription_id: str = Field(default="", max_length=128)
     status: str = Field(default="active", max_length=32)
     subject: str = Field(default="", max_length=256)
     seats: int = Field(default=1, ge=1, le=10_000)
@@ -76,7 +77,7 @@ class AdminAuthError(AppError):
 
 @router.get("/admin", response_class=HTMLResponse)
 def admin_page() -> HTMLResponse:
-    return HTMLResponse(_ADMIN_HTML)
+    return HTMLResponse(ADMIN_HTML)
 
 
 @router.get("/admin/")
@@ -145,13 +146,14 @@ def admin_list_subscriptions(request: Request) -> dict[str, Any]:
 def admin_create_subscription(payload: AdminCreateSubscriptionRequest, request: Request) -> dict[str, Any]:
     session = _require_admin_session(request)
     _require_csrf(request, session)
+    _enforce_mutation_rate_limit(request)
     plan = _normalize_admin_plan(payload.plan)
     status = _normalize_admin_status(payload.status)
     activation_key = f"lgrv_{secrets.token_urlsafe(24)}"
     result = upsert_subscription_key(
         activation_key=activation_key,
         plan=plan,
-        subscription_id=payload.subscription_id,
+        subscription_id=_subscription_id_or_generated(plan, payload.subscription_id),
         status=status,
         subject=payload.subject,
         seats=payload.seats,
@@ -172,6 +174,7 @@ def admin_create_subscription(payload: AdminCreateSubscriptionRequest, request: 
 def admin_revoke_subscription(key_hash: str, request: Request) -> dict[str, Any]:
     session = _require_admin_session(request)
     _require_csrf(request, session)
+    _enforce_mutation_rate_limit(request)
     return {"ok": True, "record": revoke_subscription_key(key_hash=key_hash)}
 
 
@@ -183,6 +186,7 @@ def admin_renew_subscription(
 ) -> dict[str, Any]:
     session = _require_admin_session(request)
     _require_csrf(request, session)
+    _enforce_mutation_rate_limit(request)
     record = renew_subscription_key(
         key_hash=key_hash,
         status=_normalize_admin_status(payload.status),
@@ -199,6 +203,7 @@ def admin_renew_subscription(
 def admin_unbind_device(license_id: str, request: Request) -> dict[str, Any]:
     session = _require_admin_session(request)
     _require_csrf(request, session)
+    _enforce_mutation_rate_limit(request)
     return {"ok": True, **unbind_activation_device(license_id=license_id)}
 
 
@@ -308,15 +313,51 @@ def _session_ttl_seconds() -> int:
         return _SESSION_TTL_SECONDS
 
 
+_ADMIN_LOGIN_RATE_LIMIT_MAX = 10
+_ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS = 300
+_ADMIN_MUTATION_RATE_LIMIT_MAX = 30
+_ADMIN_MUTATION_RATE_LIMIT_WINDOW_SECONDS = 300
+
+
+def _enforce_admin_rate_limit(
+    scope: str,
+    *,
+    maximum: int,
+    window_seconds: int,
+    message: str,
+) -> None:
+    try:
+        enforce_activation_rate_limit(
+            scope,
+            maximum=maximum,
+            window_seconds=window_seconds,
+        )
+    except ActivationError as exc:
+        if exc.code == "activation_rate_limited":
+            raise AdminAuthError(
+                message,
+                code="admin_rate_limited",
+                status_code=429,
+            ) from exc
+        raise
+
+
 def _enforce_login_rate_limit(scope: str) -> None:
-    current = time.time()
-    cutoff = current - 300
-    bucket = [value for value in _LOGIN_BUCKETS.get(scope, []) if value > cutoff]
-    if len(bucket) >= 10:
-        _LOGIN_BUCKETS[scope] = bucket
-        raise AdminAuthError("管理员登录尝试过多，请稍后再试。", code="admin_rate_limited", status_code=429)
-    bucket.append(current)
-    _LOGIN_BUCKETS[scope] = bucket
+    _enforce_admin_rate_limit(
+        f"admin_login:{scope}",
+        maximum=_ADMIN_LOGIN_RATE_LIMIT_MAX,
+        window_seconds=_ADMIN_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+        message="管理员登录尝试过多，请稍后再试。",
+    )
+
+
+def _enforce_mutation_rate_limit(request: Request) -> None:
+    _enforce_admin_rate_limit(
+        f"admin_mutation:{_client_scope(request)}",
+        maximum=_ADMIN_MUTATION_RATE_LIMIT_MAX,
+        window_seconds=_ADMIN_MUTATION_RATE_LIMIT_WINDOW_SECONDS,
+        message="管理员操作过于频繁，请稍后再试。",
+    )
 
 
 def _client_scope(request: Request) -> str:
@@ -330,7 +371,7 @@ def _secure_cookie(request: Request) -> bool:
 def _normalize_admin_plan(value: str) -> str:
     plan = normalize_plan(value)
     if plan.value not in _ADMIN_PLANS:
-        raise ActivationError("套餐必须是 Free、Pro 或 Max。", code="admin_plan_invalid", status_code=422)
+        raise ActivationError("套餐必须是免费版、专业版或旗舰版。", code="admin_plan_invalid", status_code=422)
     return plan.value
 
 
@@ -344,6 +385,14 @@ def _normalize_admin_status(value: str) -> str:
 def _empty_to_none(value: str | None) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _subscription_id_or_generated(plan: str, value: str | None) -> str:
+    text = str(value or "").strip()
+    if text:
+        return text
+    timestamp = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+    return f"sub_{plan}_{timestamp}_{secrets.token_hex(4)}"
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -674,7 +723,7 @@ _ADMIN_HTML = r"""<!doctype html>
       <div class="brand-mark">L</div>
       <div class="brand-copy">
         <h1>Lengrvis 激活管理后台</h1>
-        <div class="eyebrow">订阅 Key 与设备授权</div>
+        <div class="eyebrow">订阅授权码与设备授权</div>
       </div>
     </div>
     <button id="logout" class="hidden">退出登录</button>
@@ -698,15 +747,15 @@ _ADMIN_HTML = r"""<!doctype html>
       <div class="layout">
         <section class="panel">
           <div class="panel-title">
-            <h2>创建授权 Key</h2>
+            <h2>创建授权码</h2>
             <span>一次性显示</span>
           </div>
           <div class="panel-body">
             <label>套餐
               <select id="plan">
                 <option value="free">免费版</option>
-                <option value="pro" selected>Pro</option>
-                <option value="max">Max</option>
+                <option value="pro" selected>专业版</option>
+                <option value="max">旗舰版</option>
               </select>
             </label>
             <label>订阅 ID<input id="subscriptionId" placeholder="sub_customer_001"></label>
@@ -744,11 +793,11 @@ _ADMIN_HTML = r"""<!doctype html>
               <input id="cancelAtPeriodEnd" type="checkbox">
               周期结束后取消，不自动续期
             </label>
-            <div class="actions"><button id="createKey" class="primary">创建 Key</button></div>
+            <div class="actions"><button id="createKey" class="primary">创建授权码</button></div>
             <div id="createMessage" class="message"></div>
             <div id="newKeyWrap" class="handoff hidden">
               <div class="handoff-head">
-                <span>新授权 Key</span>
+                <span>新授权码</span>
                 <button id="copyKey" class="compact">复制</button>
               </div>
               <div id="newKey" class="keybox"></div>
@@ -818,7 +867,7 @@ _ADMIN_HTML = r"""<!doctype html>
             <table>
               <thead>
                 <tr>
-                  <th>套餐</th><th>状态</th><th>订阅</th><th>客户标签</th>
+                <th>套餐</th><th>状态</th><th>订阅</th><th>客户标签</th>
                   <th>设备</th><th>时间</th><th>操作</th>
                 </tr>
               </thead>
@@ -945,7 +994,7 @@ _ADMIN_HTML = r"""<!doctype html>
         const result = await api('/api/admin/subscriptions', {method: 'POST', body: JSON.stringify(payload)});
         $('newKey').textContent = result.activation_key;
         $('newKeyWrap').classList.remove('hidden');
-        setMessage('createMessage', 'Key 已创建。这个值只显示一次，请立即保存。', 'ok');
+        setMessage('createMessage', '授权码已创建。这个值只显示一次，请立即保存。', 'ok');
         await loadSubscriptions();
       } catch (err) {
         setMessage('createMessage', err.message, 'error');
@@ -996,7 +1045,7 @@ _ADMIN_HTML = r"""<!doctype html>
       $('metricDevices').textContent = String(devices);
     }
     function displayPlan(plan) {
-      const labels = {free: '免费版', pro: 'Pro', max: 'Max'};
+      const labels = {free: '免费版', pro: '专业版', max: '旗舰版'};
       return labels[String(plan || '').toLowerCase()] || plan || '';
     }
     function displayStatus(status) {
@@ -1050,6 +1099,7 @@ _ADMIN_HTML = r"""<!doctype html>
         const profile = device.device_profile || {};
         const profileText = [profile.os, profile.arch].filter(Boolean).join(' / ');
         meta.textContent = [
+          device.server_device_ref_label ? '服务端引用 ' + device.server_device_ref_label : '',
           device.device_fingerprint_label ? '指纹 ' + device.device_fingerprint_label : '未提交设备指纹',
           profileText,
           profile.signal_count !== undefined ? '信号 ' + String(profile.signal_count) : '',
@@ -1091,7 +1141,7 @@ _ADMIN_HTML = r"""<!doctype html>
         await navigator.clipboard.writeText(value);
         setMessage('createMessage', '已复制到剪贴板。', 'ok');
       } catch {
-        setMessage('createMessage', '复制失败，请手动选中 Key。', 'error');
+        setMessage('createMessage', '复制失败，请手动选中授权码。', 'error');
       }
     }
     async function renewSubscription(item) {
@@ -1140,13 +1190,13 @@ _ADMIN_HTML = r"""<!doctype html>
       }
     }
     async function revokeSubscription(keyHash) {
-      if (!confirm('确认撤销这个订阅 Key？')) return;
+      if (!confirm('确认撤销这个订阅授权码？')) return;
       try {
         const result = await api('/api/admin/subscriptions/' + keyHash + '/revoke', {method: 'POST'});
         const ids = result?.record?.revoked_license_ids || [];
         await loadSubscriptions();
         if (result?.record?.revocation_manifest_required) {
-          setMessage('listMessage', '订阅 Key 已撤销；仍需为 ' + ids.length + ' 个已激活设备发布签名吊销清单或换发许可。', 'error');
+          setMessage('listMessage', '订阅授权码已撤销；仍需为 ' + ids.length + ' 个已激活设备发布签名吊销清单或换发许可。', 'error');
         }
       } catch (err) {
         setMessage('listMessage', err.message, 'error');

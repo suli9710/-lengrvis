@@ -43,16 +43,21 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
     # (rather than rejecting) keeps incidental payload fields from breaking
     # unrelated settings updates the frontend may send alongside.
     payload = {k: v for k, v in payload.items() if k not in NON_PERSISTABLE_SETTINGS}
-    allowed = set(type(get_effective_settings()).model_fields)
-    coerced: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key in allowed:
-            coerced[key] = _coerce_setting_value(key, value)
+    coerced = coerce_settings_patch(payload)
     _validate_settings_patch(coerced)
     require_settings_confirmation({**coerced, CONFIRMATION_FIELD: payload.get(CONFIRMATION_FIELD)})
     for key, value in coerced.items():
         db.set_setting(key, value)
     return get_settings()
+
+
+def coerce_settings_patch(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = set(type(get_effective_settings()).model_fields)
+    coerced: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in allowed:
+            coerced[key] = _coerce_setting_value(key, value)
+    return coerced
 
 
 def get_llm_profile() -> dict[str, Any]:

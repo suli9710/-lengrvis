@@ -22,6 +22,7 @@ from app.orchestration.execution_stage import ExecutionStage
 from app.policy.approval_binding import redacted_preview, remote_input_binding_ref
 from app.policy.redaction import contains_sensitive_key, redact_public_text, redact_value
 from app.security.mobile_jwt import (
+    MOBILE_REMOTE_VIEW_TTL_SECONDS,
     MOBILE_TOKEN_TTL_SECONDS,
     REMOTE_INPUT_SCOPE,
     REMOTE_VIEW_SCOPE,
@@ -39,6 +40,7 @@ REMOTE_INPUT_GRANT_TTL_SECONDS = 5 * 60
 # and is single-use, so 2**64 makes online brute force over the LAN infeasible even
 # when a distributed attacker spreads guesses across many source IPs.
 PAIR_CODE_HEX_LENGTH = 8
+PAIR_CLAIM_SECRET_BYTES = 32
 PAIR_CONFIRM_FAILURE_LIMIT = 8
 PAIR_CONFIRM_FAILURE_WINDOW_SECONDS = 60
 
@@ -54,9 +56,11 @@ def create_pairing_request() -> dict[str, Any]:
 
     now = time.time()
     code = _unique_code()
+    claim_secret = _new_pairing_claim_secret()
     record = {
         "id": code,
         "code": code,
+        "claim_secret_hash": _hash_pairing_claim_secret(claim_secret),
         "status": "pending",
         "device_id": "",
         "device_name": "",
@@ -69,6 +73,7 @@ def create_pairing_request() -> dict[str, Any]:
     _write_pairing_record(record)
     return {
         "code": code,
+        "claim_secret": claim_secret,
         "expires_at": record["expires_at"],
         "expires_in": PAIR_CODE_TTL_SECONDS,
         "server": record["server"],
@@ -90,7 +95,7 @@ def _raise_if_pairing_transport_not_ready(transport: dict[str, Any]) -> None:
     )
 
 
-def confirm_pairing(*, code: str, device_name: str, client_host: str = "") -> dict[str, Any]:
+def confirm_pairing(*, code: str, device_name: str, claim_secret: str = "", client_host: str = "") -> dict[str, Any]:
     db.init_db()
     _expire_stale_pairings()
 
@@ -104,7 +109,7 @@ def confirm_pairing(*, code: str, device_name: str, client_host: str = "") -> di
             detail=f"Pairing code must be {expected_code_length} characters",
         )
 
-    result = _redeem_pairing_record(normalized, device_name)
+    result = _redeem_pairing_record(normalized, device_name, claim_secret)
     if result is None:
         _record_pairing_failure(rate_key)
         raise HTTPException(status_code=401, detail="Pairing code is invalid or expired")
@@ -112,18 +117,21 @@ def confirm_pairing(*, code: str, device_name: str, client_host: str = "") -> di
     return result
 
 
-def _redeem_pairing_record(code: str, device_name: str) -> dict[str, Any] | None:
+def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> dict[str, Any] | None:
     now = time.time()
     device_id = new_device_id()
     device_name = _safe_device_name(device_name)
     token_scopes = [TOKEN_SCOPE]
+    scope_ttl: dict[str, int] | None = None
     if get_effective_settings().remote_desktop_enabled:
         token_scopes.append(REMOTE_VIEW_SCOPE)
+        scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
     token = issue_mobile_token(
         device_id=device_id,
         device_name=device_name,
         expires_in_seconds=TOKEN_TTL_SECONDS,
         scope=token_scopes,
+        scope_ttl=scope_ttl,
     )
     used_at = now_iso()
     with db.connect() as conn:
@@ -133,6 +141,8 @@ def _redeem_pairing_record(code: str, device_name: str) -> dict[str, Any] | None
             return None
         record = json.loads(row["data"])
         if record.get("status") != "pending":
+            return None
+        if not _pairing_claim_secret_matches(record, claim_secret):
             return None
         if _parse_iso(str(record.get("expires_at") or "")) <= now:
             updated = dict(record)
@@ -516,6 +526,45 @@ def reject_approval(approval_id: str, claims: dict[str, Any] | None = None) -> A
     return _decide_approval(approval_id, ApprovalStatus.REJECTED, claims=claims)
 
 
+def refresh_mobile_session_token(claims: dict[str, Any]) -> dict[str, Any]:
+    """Re-issue the paired mobile token, refreshing short-lived remote view scope."""
+    device_id = _text(claims.get("device_id"))
+    if not device_id:
+        raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
+    if not is_mobile_device_active(device_id):
+        raise HTTPException(status_code=401, detail="Mobile device has been revoked")
+    if _text(claims.get("source")) == "remote_input_grant":
+        raise HTTPException(status_code=403, detail="Remote input grant token cannot refresh paired session")
+
+    scopes = mobile_token_scopes(claims)
+    if TOKEN_SCOPE not in scopes:
+        raise HTTPException(status_code=403, detail="Mobile token scope is not allowed")
+
+    token_scopes = [TOKEN_SCOPE]
+    scope_ttl: dict[str, int] | None = None
+    if get_effective_settings().remote_desktop_enabled:
+        token_scopes.append(REMOTE_VIEW_SCOPE)
+        scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
+
+    device = db.fetch_one("mobile_devices", device_id) or {}
+    token = issue_mobile_token(
+        device_id=device_id,
+        device_name=str(claims.get("device_name") or device.get("device_name") or "Android device"),
+        expires_in_seconds=TOKEN_TTL_SECONDS,
+        scope=token_scopes,
+        scope_ttl=scope_ttl,
+        token_epoch=int(device.get("token_epoch") or 0),
+    )
+    return {
+        "token": token,
+        "token_type": "Bearer",
+        "device_id": device_id,
+        "expires_in": TOKEN_TTL_SECONDS,
+        "view_expires_in": MOBILE_REMOTE_VIEW_TTL_SECONDS if REMOTE_VIEW_SCOPE in token_scopes else 0,
+        "server": _server_info(),
+    }
+
+
 def validate_mobile_token(token: str) -> dict[str, Any]:
     return decode_mobile_token(token)
 
@@ -663,7 +712,7 @@ def _approval_state_error(approval_id: str) -> str:
 
 
 def _raise_if_mobile_claims_disallowed(approval: dict[str, Any], claims: dict[str, Any] | None) -> None:
-    reason = _mobile_approval_denial_reason(approval, claims)
+    reason = _mobile_approval_approve_denial_reason(approval, claims)
     if reason:
         raise HTTPException(status_code=403, detail=reason)
 
@@ -704,6 +753,26 @@ def _mobile_approval_reject_denial_reason(approval: dict[str, Any], claims: dict
     if _paired_mobile_claims_can_reject_remote_input_approval(approval, claims):
         return ""
     return reason
+
+
+def _mobile_approval_approve_denial_reason(approval: dict[str, Any], claims: dict[str, Any] | None) -> str:
+    reason = _mobile_approval_denial_reason(approval, claims)
+    if reason:
+        return reason
+    if _remote_input_grant_cannot_self_approve(approval, claims):
+        return "Remote input grant token cannot approve its own input request."
+    return ""
+
+
+def _remote_input_grant_cannot_self_approve(approval: dict[str, Any], claims: dict[str, Any] | None) -> bool:
+    if claims is None or not _is_remote_input_approval(approval):
+        return False
+    if _text(claims.get("source")) != "remote_input_grant":
+        return False
+    claim_grant_id = _text(claims.get("grant_id"))
+    if not claim_grant_id:
+        return False
+    return claim_grant_id == _approval_source_grant_id(approval)
 
 
 def _mobile_approval_denial_reason(approval: dict[str, Any], claims: dict[str, Any] | None) -> str:
@@ -1120,6 +1189,22 @@ def _unique_code() -> str:
         if not db.fetch_one("mobile_pairings", code):
             return code
     raise HTTPException(status_code=503, detail="Unable to allocate a pairing code")
+
+
+def _new_pairing_claim_secret() -> str:
+    return secrets.token_urlsafe(PAIR_CLAIM_SECRET_BYTES)
+
+
+def _hash_pairing_claim_secret(claim_secret: str) -> str:
+    return sha256(str(claim_secret or "").encode("utf-8")).hexdigest()
+
+
+def _pairing_claim_secret_matches(record: dict[str, Any], claim_secret: str) -> bool:
+    expected_hash = str(record.get("claim_secret_hash") or "").strip()
+    supplied = str(claim_secret or "").strip()
+    if not expected_hash or not supplied:
+        return False
+    return secrets.compare_digest(expected_hash, _hash_pairing_claim_secret(supplied))
 
 
 def _normalize_code(code: str) -> str:

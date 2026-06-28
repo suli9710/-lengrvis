@@ -190,6 +190,15 @@ def test_edit_docx_dry_run_counts_matches_without_writing(tmp_path: Path):
     assert after == "Quarterly memo for ada@example.com"
 
 
+def test_edit_docx_rejects_oversized_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LENGRVIS_DOCUMENT_MAX_PARSE_BYTES", "16")
+    path = tmp_path / "large.docx"
+    path.write_bytes(b"x" * 32)
+
+    with pytest.raises(svc.DocumentTooLargeError):
+        svc.edit_docx(path, find="x", replace="y", dry_run=True)
+
+
 def test_edit_docx_writes_replacement_when_dry_run_false(tmp_path: Path):
     path = tmp_path / "memo.docx"
     from docx import Document
@@ -389,7 +398,8 @@ def test_document_intelligence_tools_are_registered_readonly():
         assert tool.requires_authorized_path is True
 
 
-def test_document_tool_parse_advanced_authorizes_path(tmp_path: Path):
+def test_document_tool_parse_advanced_authorizes_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LENGRVIS_PLAN", "pro")
     path = tmp_path / "memo.txt"
     path.write_text("Authorized document text", encoding="utf-8")
     context = {"allowed_directories": [str(tmp_path)]}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app.core import db
@@ -68,10 +67,6 @@ class StepExecutionHandler:
         runtime = self._runtime_context(task, context)
         runtime.extra_context["task_id"] = task.id
         runtime.extra_context["step_id"] = step.id
-        if step.tool_name == "file.trash" and not runtime.allowed_directories:
-            target = _path_arg(step.args, "path")
-            if target:
-                runtime.allowed_directories = [str(Path(target).expanduser().resolve(strict=False))]
         return runtime
 
     async def execute_step(
@@ -491,8 +486,3 @@ def hmac_compare(left: str, right: str) -> bool:
     import hmac
 
     return hmac.compare_digest(str(left or ""), str(right or ""))
-
-
-def _path_arg(args: dict[str, Any], key: str) -> str:
-    value = args.get(key)
-    return str(value).strip() if value is not None else ""

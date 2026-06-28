@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
@@ -11,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.api import routes_commerce
+from app.commerce.device_identity import DeviceIdentityError, collect_activation_device_identity
 from app.commerce.entitlements import Plan
 from app.commerce.licensing import (
     LicenseError,
@@ -24,6 +26,7 @@ from app.commerce.licensing import (
     resolve_licensed_plan,
     sign_license,
     sign_revocation_manifest,
+    subscription_confirmation_fresh_for_high_risk,
     verify_license,
 )
 
@@ -129,6 +132,67 @@ def test_license_status_reports_inactive_subscription(monkeypatch: pytest.Monkey
     assert status["active"] is False
     assert status["plan"] == "max"
     assert status["subscription_status"] == "canceled"
+
+
+def test_subscription_license_requires_recent_online_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.delenv("LENGRVIS_ACTIVATION_BASE_URL", raising=False)
+    token = _make_token(
+        plan="max",
+        license_id="lic_unconfirmed",
+        subscription_id="sub_unconfirmed",
+        subscription_status="active",
+        activation={"source": "activation_server"},
+    )
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(token, _S())
+    assert excinfo.value.code == "subscription_confirmation_required"
+
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+    assert load_license(_S()) is None
+    status = license_status(_S())
+    assert status["state"] == "subscription_confirmation_failed"
+    assert status["active"] is False
+    assert status["error_code"] == "activation_unconfigured"
+    assert status["subscription_confirmation_required"] is True
+    assert status["subscription_confirmation_fresh"] is False
+
+
+def test_high_risk_subscription_confirmation_uses_shorter_freshness_window(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    now = datetime.now(UTC)
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.delenv("LENGRVIS_ACTIVATION_BASE_URL", raising=False)
+    token = _make_token(
+        plan="max",
+        license_id="lic_high_risk_stale",
+        subscription_id="sub_high_risk",
+        subscription_status="active",
+        issued_at=(now - timedelta(minutes=20)).isoformat(),
+        expires_at=(now + timedelta(days=7)).isoformat(),
+        activation={"source": "activation_server"},
+    )
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    ordinary_status = license_status(_S(), now=now)
+
+    assert ordinary_status["state"] == "active"
+    assert ordinary_status["subscription_confirmation_fresh"] is True
+    assert subscription_confirmation_fresh_for_high_risk(_S(), now=now) is False
 
 
 def test_tampered_signature_rejected() -> None:
@@ -245,6 +309,41 @@ def test_commercial_release_ignores_paid_plan_override_without_license(
     assert settings.plan == "free"
 
 
+def test_non_commercial_ignores_paid_plan_override_without_license(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.delenv("LENGRVIS_COMMERCIAL_RELEASE", raising=False)
+    monkeypatch.delenv("LENGRVIS_TEST", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    class _S:
+        plan = "max"
+        data_dir = ""
+
+    settings = apply_licensed_plan(_S())
+    assert settings.plan == "free"
+
+
+def test_license_status_reports_ignored_paid_plan_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.delenv("LENGRVIS_TEST", raising=False)
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+
+    class _S:
+        plan = "max"
+        data_dir = ""
+
+    status = license_status(_S())
+
+    assert status["state"] == "absent"
+    assert status["requested_env_plan"] == "max"
+    assert status["plan_env_ignored"] is True
+
+
 def test_commercial_release_uses_verified_license_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -351,7 +450,7 @@ def test_device_bound_license_fails_closed_when_device_id_unavailable(
     monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
     monkeypatch.setattr(
-        "app.commerce.licensing.local_activation_device_id",
+        "app.commerce.licensing.collect_activation_device_identity",
         lambda settings: (_ for _ in ()).throw(RuntimeError("device unavailable")),
     )
 
@@ -370,6 +469,202 @@ def test_device_bound_license_fails_closed_when_device_id_unavailable(
     assert status["state"] == "device_unverified"
     assert status["active"] is False
     assert status["error_code"] == "license_device_unverified"
+
+
+def test_device_bound_license_with_fingerprint_accepts_local_install(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    identity = collect_activation_device_identity(_S())
+    token = _make_token(
+        plan="pro",
+        license_id="lic_fp_ok",
+        device_id=identity.device_id,
+        device_fingerprint=identity.fingerprint,
+    )
+
+    installed = install_license(token, _S())
+
+    assert installed.plan is Plan.PRO
+    assert load_license(_S()) is not None
+    status = license_status(_S())
+    assert status["state"] == "active"
+    assert status["device_fingerprint"] == identity.fingerprint
+
+
+def test_cloned_license_and_secret_rejected_on_different_machine(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Copying license.key + activation_install.secret still fails when hardware differs."""
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    monkeypatch.setattr(
+        "app.commerce.device_identity._read_machine_id",
+        lambda: "source-machine-guid",
+    )
+    source_identity = collect_activation_device_identity(_S())
+    token = _make_token(
+        plan="pro",
+        license_id="lic_clone",
+        device_id=source_identity.device_id,
+        device_fingerprint=source_identity.fingerprint,
+    )
+
+    monkeypatch.setattr(
+        "app.commerce.device_identity._read_machine_id",
+        lambda: "cloned-host-machine-guid",
+    )
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(token, _S())
+
+    assert excinfo.value.code == "license_device_fingerprint_mismatch"
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+    assert load_license(_S()) is None
+    status = license_status(_S())
+    assert status["state"] == "device_fingerprint_mismatch"
+    assert status["active"] is False
+    assert status["error_code"] == "license_device_fingerprint_mismatch"
+
+
+def test_device_bound_license_without_fingerprint_skips_fingerprint_check(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    identity = collect_activation_device_identity(_S())
+    token = _make_token(plan="pro", license_id="lic_legacy_bind", device_id=identity.device_id)
+
+    installed = install_license(token, _S())
+
+    assert installed.plan is Plan.PRO
+    assert license_status(_S())["state"] == "active"
+
+
+def test_commercial_release_rejects_license_without_device_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    identity = collect_activation_device_identity(_S())
+    token = _make_token(plan="pro", license_id="lic_commercial_legacy", device_id=identity.device_id)
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(token, _S())
+
+    assert excinfo.value.code == "license_device_fingerprint_missing"
+
+
+def test_commercial_release_license_status_reports_missing_device_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    identity = collect_activation_device_identity(_S())
+    token = _make_token(plan="pro", license_id="lic_commercial_status", device_id=identity.device_id)
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+
+    status = license_status(_S())
+
+    assert status["state"] == "device_fingerprint_missing"
+    assert status["active"] is False
+    assert status["error_code"] == "license_device_fingerprint_missing"
+
+
+def test_commercial_release_rejects_install_hash_only_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+    monkeypatch.setattr("app.commerce.device_identity._read_machine_id", lambda: "")
+    monkeypatch.setattr("app.commerce.device_identity._safe_hostname", lambda: "")
+    monkeypatch.setattr("app.commerce.device_identity._safe_node_id", lambda: "")
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    with pytest.raises(DeviceIdentityError) as excinfo:
+        collect_activation_device_identity(_S())
+
+    assert excinfo.value.code == "activation_device_fingerprint_weak"
+
+
+def test_commercial_release_rejects_plaintext_activation_secret_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    secret_path = tmp_path / "activation_install.secret"
+    secret_path.write_text("plaintext-secret-value", encoding="utf-8")
+
+    monkeypatch.setattr("app.commerce.device_identity.os.name", "nt")
+
+    with pytest.raises(DeviceIdentityError) as excinfo:
+        from app.commerce import device_identity
+
+        device_identity._assert_restrictive_secret_file_permissions(secret_path)
+
+    assert excinfo.value.code == "activation_secret_insecure_permissions"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix permission model")
+def test_world_readable_activation_secret_rejects_license(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+
+    secret_path = tmp_path / "activation_install.secret"
+    secret_path.write_text("copied-secret-value", encoding="utf-8")
+    secret_path.chmod(0o644)
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    device_id = f"dev_{sha256(b'copied-secret-value').hexdigest()[:32]}"
+    token = _make_token(plan="pro", license_id="lic_insecure_secret", device_id=device_id)
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(token, _S())
+
+    assert excinfo.value.code == "activation_secret_insecure_permissions"
 
 
 def test_runtime_revocation_file_disables_installed_license(
@@ -493,6 +788,8 @@ def test_commerce_api_activation_records_safe_audit(
         license_id="lic_activated",
         subscription_id="sub_activated",
         subscription_status="active",
+        issued_at=datetime.now(UTC).isoformat(),
+        activation={"source": "activation_server"},
     )
     audit_events: list[tuple[str, str, dict[str, object]]] = []
     invalidations: list[bool] = []

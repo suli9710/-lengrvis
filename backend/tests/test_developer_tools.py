@@ -372,6 +372,89 @@ def test_diff_preview_rejects_symlinked_pathspec_escaping_workspace(tmp_path: Pa
     assert "outside the authorized workspace" in result["error"].lower()
 
 
+def _create_directory_escape_link(link: Path, target: Path) -> None:
+    import os
+    import subprocess
+
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError as exc:
+        if os.name != "nt":
+            pytest.skip(f"symlink creation is unavailable on this platform: {exc}")
+
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation failed: {completed.stderr or completed.stdout}")
+
+
+def _remove_escape_link(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    elif hasattr(link, "is_junction") and link.is_junction():
+        link.rmdir()
+
+
+@pytest.mark.parametrize("tool_fn", [developer_tools.glob_files, developer_tools.grep_files])
+def test_rglob_tools_ignore_directory_escape_links(tmp_path: Path, tool_fn) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("outside-secret-token", encoding="utf-8")
+    link = workspace / "linked-outside"
+    _create_directory_escape_link(link, outside)
+
+    try:
+        if tool_fn is developer_tools.grep_files:
+            result = tool_fn(
+                {"path": str(workspace), "query": "outside-secret-token", "pattern": "*.txt"},
+                {"allowed_directories": [str(workspace)]},
+            )
+            assert result["ok"] is True
+            assert result["count"] == 0
+            assert result["results"] == []
+        else:
+            result = tool_fn(
+                {"path": str(workspace), "pattern": "**/secret.txt"},
+                {"allowed_directories": [str(workspace)]},
+            )
+            assert result["ok"] is True
+            assert result["count"] == 0
+            assert result["matches"] == []
+    finally:
+        _remove_escape_link(link)
+
+
+def test_pytest_inventory_ignores_directory_escape_links(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "test_escape.py").write_text(
+        "def test_outside():\n    assert False\n",
+        encoding="utf-8",
+    )
+    link = workspace / "linked-outside"
+    _create_directory_escape_link(link, outside)
+
+    try:
+        result = developer_tools.pytest_inventory(
+            {"path": str(workspace), "pattern": "test_*.py"},
+            {"allowed_directories": [str(workspace)]},
+        )
+        assert result["ok"] is True
+        assert result["file_count"] == 0
+        assert result["test_files"] == []
+    finally:
+        _remove_escape_link(link)
+
+
 def test_shell_readonly_rejects_without_allowed_directories(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[Any] = []
 

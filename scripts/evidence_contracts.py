@@ -9,7 +9,7 @@ import os
 import re
 from hashlib import sha256
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 PASS_VALUES = {"pass", "passed", "success", "succeeded", "verified", "reviewed_passed"}
@@ -36,6 +36,10 @@ PROHIBITED_KEY_MARKERS = (
     "customer_name",
 )
 EVIDENCE_SIGNATURE_ENV = "LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"
+SHA256_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
+DEFAULT_ARTIFACT_CROSS_CHECK_BINDINGS: tuple[tuple[str, str], ...] = (
+    ("candidate.artifact_path", "candidate.artifact_sha256"),
+)
 
 
 def load_json(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
@@ -133,6 +137,65 @@ def canonical_evidence_payload_hash(payload: dict[str, Any]) -> str:
         evidence.pop("signing_key_fingerprint", None)
     normalized = json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def is_sha256_hex(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return len(text) == 64 and all(ch in SHA256_HEX_CHARS for ch in text)
+
+
+def require_sha256_hex(payload: dict[str, Any], path: str, errors: list[str]) -> None:
+    if not is_sha256_hex(get_path(payload, path)):
+        errors.append(f"{path} must be a 64-character SHA256 hex digest")
+
+
+def _normalize_repo_relative_path(path_text: str) -> str:
+    return path_text.strip().replace("\\", "/").lstrip("./")
+
+
+def _resolve_dist_artifact_path(repo_root: Path, artifact_path: str) -> Path | None:
+    normalized = _normalize_repo_relative_path(artifact_path)
+    if not normalized.startswith("dist/"):
+        return None
+    if ".." in PurePosixPath(normalized).parts:
+        return None
+    dist_root = (repo_root / "dist").resolve(strict=False)
+    candidate = (repo_root / normalized).resolve(strict=False)
+    try:
+        candidate.relative_to(dist_root)
+    except ValueError:
+        return None
+    return candidate
+
+
+def validate_dist_artifact_sha256_cross_check(
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    repo_root: Path | None = None,
+    bindings: tuple[tuple[str, str], ...] = DEFAULT_ARTIFACT_CROSS_CHECK_BINDINGS,
+) -> None:
+    root = (repo_root or Path.cwd()).resolve()
+    for path_key, sha_key in bindings:
+        artifact_path = get_path(payload, path_key)
+        if not isinstance(artifact_path, str) or not artifact_path.strip():
+            continue
+        expected_sha = get_path(payload, sha_key)
+        if not is_sha256_hex(expected_sha):
+            continue
+        resolved = _resolve_dist_artifact_path(root, artifact_path)
+        if resolved is None:
+            errors.append(f"{path_key} must be a repo-relative path under dist/")
+            continue
+        if not resolved.is_file():
+            continue
+        actual_sha = sha256(resolved.read_bytes()).hexdigest()
+        if not hmac.compare_digest(actual_sha, str(expected_sha).strip().lower()):
+            errors.append(
+                f"{sha_key} does not match SHA256 of on-disk artifact at {path_key} ({artifact_path})"
+            )
 
 
 def validate_evidence_signature(payload: dict[str, Any], errors: list[str]) -> dict[str, bool]:

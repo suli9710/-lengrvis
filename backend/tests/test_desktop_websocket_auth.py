@@ -8,8 +8,7 @@ from app.core import db
 from app.main import create_app
 from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX
 
-
-DESKTOP_SECRET = "desktop-secret"
+DESKTOP_SECRET = "desktop-secret"  # noqa: S105 - deterministic test credential.
 
 
 @pytest.mark.parametrize(
@@ -52,6 +51,58 @@ def test_production_desktop_websocket_accepts_prefixed_token_among_subprotocols(
     with client.websocket_connect(
         "/ws/tasks/task_ws_auth",
         subprotocols=["lengrvis.client.v1", f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"],
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "connected", "task_id": "task_ws_auth"}
+
+
+def test_production_desktop_websocket_rejects_untrusted_origin(monkeypatch, tmp_path):
+    _configure_production_desktop_token(monkeypatch, tmp_path)
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/tasks/task_ws_auth",
+            headers={"Origin": "https://evil.example"},
+            subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"],
+        ):
+            raise AssertionError("desktop websocket should reject untrusted browser origins")
+
+    assert exc_info.value.code == 1008
+
+
+def test_strict_desktop_websocket_accepts_missing_origin_with_subprotocol_token(monkeypatch, tmp_path):
+    _configure_production_desktop_token(monkeypatch, tmp_path)
+    monkeypatch.setenv("LENGRVIS_STRICT_WEBSOCKET_ORIGIN", "true")
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+
+    with client.websocket_connect(
+        "/ws/tasks/task_ws_auth",
+        subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"],
+    ) as websocket:
+        assert websocket.receive_json() == {"type": "connected", "task_id": "task_ws_auth"}
+
+
+def test_strict_desktop_websocket_rejects_missing_origin_without_token(monkeypatch, tmp_path):
+    _configure_production_desktop_token(monkeypatch, tmp_path)
+    monkeypatch.setenv("LENGRVIS_STRICT_WEBSOCKET_ORIGIN", "true")
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tasks/task_ws_auth"):
+            raise AssertionError("strict desktop websocket should reject missing Origin without token")
+
+    assert exc_info.value.code == 1008
+
+
+def test_strict_desktop_websocket_accepts_app_origin(monkeypatch, tmp_path):
+    _configure_production_desktop_token(monkeypatch, tmp_path)
+    monkeypatch.setenv("LENGRVIS_STRICT_WEBSOCKET_ORIGIN", "true")
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+
+    with client.websocket_connect(
+        "/ws/tasks/task_ws_auth",
+        headers={"Origin": "app://local"},
+        subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}{DESKTOP_SECRET}"],
     ) as websocket:
         assert websocket.receive_json() == {"type": "connected", "task_id": "task_ws_auth"}
 

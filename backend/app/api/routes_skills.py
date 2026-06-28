@@ -15,7 +15,8 @@ def list_skills() -> dict:
 
 @router.post("/skills/import")
 async def import_skill_package(payload: dict) -> dict:
-    return await import_skill(str(payload.get("path", "")))
+    source_path = str(payload.get("path") or "").strip()
+    return await import_skill(source_path)
 
 
 @router.post("/skills/refresh")

@@ -50,4 +50,29 @@ assert.ok(
 );
 assert.match(privacyPolicy, /发布候选草案/);
 
+const consentGateSource = fs.readFileSync(
+  path.join(desktopRoot, "src", "renderer", "components", "legal", "ConsentGate.tsx"),
+  "utf8",
+);
+assert.match(
+  consentGateSource,
+  /isWebOnlyDevConsentGateBypassEnabled/,
+  "ConsentGate must require an explicit dev:web bypass before skipping legal consent",
+);
+assert.doesNotMatch(
+  consentGateSource,
+  /if \(!bridge\?\.consent\?\.getStatus\) \{\s*setLoading\(false\);\s*return;\s*\}/,
+  "ConsentGate must not silently skip consent when the bridge is missing",
+);
+
+const transportSource = fs.readFileSync(
+  path.join(desktopRoot, "src", "renderer", "lib", "api", "transport.ts"),
+  "utf8",
+);
+assert.match(
+  transportSource,
+  /dev:web only: VITE_LENGRVIS_DEV_SKIP_CONSENT_GATE/,
+  "dev:web consent bypass must document the security risk",
+);
+
 console.log("Legal resources are present and configured for all desktop packages.");

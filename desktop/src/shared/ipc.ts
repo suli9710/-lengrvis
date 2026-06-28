@@ -75,7 +75,6 @@ export type IpcChannelSecurityPolicy = {
     | "file-picker-grant"
     | "safe-external-url"
     | "permission-nonce"
-    | "mobile-device-grant"
     | "browser-host-approval"
     | "desktop-ws-session";
   risk: "read" | "write" | "sensitive" | "external-navigation" | "event";
@@ -101,7 +100,7 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   ollamaInstall: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
   ollamaPull: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
   ollamaStart: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
-  runsStart: { schema: "typedRequest", capability: "backend-token", risk: "write" },
+  runsStart: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   systemDiagnosticsExport: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
   privacyEraseLocalData: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   documentsParse: { schema: "typedRequest", capability: "file-picker-grant", risk: "sensitive" },
@@ -114,9 +113,9 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   permissionPolicyDeleteRule: { schema: "typedRequest", capability: "permission-nonce", risk: "sensitive" },
   mobilePairingCreateCode: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
   mobilePairingListDevices: { schema: "none", capability: "backend-token", risk: "read" },
-  mobilePairingRevokeDevice: { schema: "string", capability: "mobile-device-grant", risk: "sensitive" },
+  mobilePairingRevokeDevice: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
   mobilePairingCreateRemoteInputGrant: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
-  mobilePairingRevokeRemoteInputGrant: { schema: "typedRequest", capability: "mobile-device-grant", risk: "sensitive" },
+  mobilePairingRevokeRemoteInputGrant: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   openExternal: { schema: "string", capability: "safe-external-url", risk: "external-navigation" },
   getFileIcon: { schema: "string", capability: "file-picker-grant", risk: "read" },
   showItemInFolder: { schema: "string", capability: "file-picker-grant", risk: "write" },

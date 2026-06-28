@@ -122,3 +122,18 @@ def test_commercial_release_cannot_unlock_paid_plan_with_environment_only(monkey
     settings = registry.get_effective_settings()
 
     assert settings.plan == "free"
+
+
+def test_non_commercial_cannot_unlock_paid_plan_with_environment_only(monkeypatch):
+    from app.llm import registry
+
+    monkeypatch.delenv("LENGRVIS_COMMERCIAL_RELEASE", raising=False)
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.delenv("LENGRVIS_TEST", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
+    registry.invalidate_settings_cache()
+
+    settings = registry.get_effective_settings()
+
+    assert settings.plan == "free"

@@ -64,3 +64,18 @@ def test_structured_fetch_helpers_validate_columns(monkeypatch: pytest.MonkeyPat
         db.fetch_many_by_fields("tasks", {"data": "{}"})
     with pytest.raises(ValueError, match="Unsupported WHERE column"):
         db.fetch_many_in("tool_results", "data", ["{}"])
+
+
+def test_ensure_columns_skips_tables_outside_whitelist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+
+    with db.connect() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS rogue_table (id TEXT PRIMARY KEY)")
+        db._ensure_columns(conn, "rogue_table", {"injected": "TEXT"})
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(rogue_table)").fetchall()}
+
+    assert "injected" not in columns

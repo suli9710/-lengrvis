@@ -1694,6 +1694,8 @@ function mapCommerceLicenseStatus(data: BackendCommerceLicenseStatus): CommerceL
     revoked: Boolean(data.revoked),
     verifierConfigured: Boolean(data.verifier_configured),
     managedBy: data.managed_by ?? undefined,
+    requestedEnvPlan: data.requested_env_plan ? normalizeCommercePlan(data.requested_env_plan) : undefined,
+    planEnvIgnored: Boolean(data.plan_env_ignored),
     licenseId: data.license_id ?? undefined,
     issuer: data.issuer ?? undefined,
     replaces: data.replaces ?? undefined,

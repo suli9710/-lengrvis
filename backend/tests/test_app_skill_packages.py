@@ -102,6 +102,7 @@ def test_zip_skill_import_rejects_manifest_schema_path_escape(monkeypatch: pytes
     data_dir = tmp_path / "data"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
 
     source = tmp_path / "zip_source" / "bad-zip-skill"
@@ -139,6 +140,7 @@ def test_zip_skill_import_rejects_zip_slip_member(monkeypatch: pytest.MonkeyPatc
     data_dir = tmp_path / "data"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
 
     zip_path = tmp_path / "zip-slip-skill.zip"

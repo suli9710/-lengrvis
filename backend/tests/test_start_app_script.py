@@ -1156,6 +1156,29 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert "APPLE_APP_SPECIFIC_PASSWORD" in verify_script
 
 
+def test_windows_release_signature_verification_covers_portable_artifacts(
+    project_root: Path,
+) -> None:
+    verify_script = (
+        project_root / "desktop" / "scripts" / "verify-windows-release-signatures.cjs"
+    ).read_text(encoding="utf-8")
+    smoke_script = (
+        project_root / "desktop" / "scripts" / "windows-release-signatures-smoke.cjs"
+    ).read_text(encoding="utf-8")
+    root_package = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+    normalized = verify_script.replace("\\", "/")
+
+    assert "Lengrvis-win-portable" in normalized
+    assert "x64-self-extracting.exe" in normalized
+    assert "Lengrvis.exe" in normalized
+    assert "portableBackendExe" in normalized
+    assert "Get-AuthenticodeSignature" in verify_script
+    assert 'status !== "Valid"' in verify_script
+    assert "verify:windows-release-signatures" in root_package["scripts"]["release:check"]
+    assert "Lengrvis-win-portable" in smoke_script
+    assert "x64-self-extracting.exe" in smoke_script
+
+
 def test_windows_signed_build_config_gate_rejects_missing_release_env(
     project_root: Path,
 ) -> None:
@@ -1635,10 +1658,13 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:result-quality-review",
         "evidence:mobile-lan-wss",
         "evidence:android-real-device-template",
-        "evidence:local-model-template",
-        "evidence:diagnostics-review",
-        "evidence:distribution-template",
-    }
+            "evidence:local-model-template",
+            "evidence:diagnostics-review",
+            "evidence:distribution-template",
+            "evidence:distribution-verify",
+            "evidence:clean-machine-verify",
+            "evidence:commercial-loop",
+        }
     forbidden_name_pattern = re.compile(
         r"pass|passed|signoff|sign-off|signed-off|approved|approval|public-safe|ready",
         re.IGNORECASE,

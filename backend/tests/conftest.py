@@ -26,6 +26,7 @@ import pytest
 # sanctioned test/dev fallback at import time. Tests asserting the fail-closed
 # behavior delete this var via monkeypatch, so this only provides a default.
 os.environ.setdefault("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+os.environ.setdefault("LENGRVIS_NATIVE_CONFIRMATION_SECRET", "test-native-confirmation-secret")
 
 
 # test_start_app_script.py exercises Windows-only PowerShell launch behavior and
@@ -121,12 +122,15 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             substring in normalized for substring in CROSS_PLATFORM_CI_SKIP_NODEID_SUBSTRINGS
         ):
             item.add_marker(cross_platform_skip)
+        if not item.get_closest_marker("requires_desktop_api_token"):
+            item.add_marker(pytest.mark.desktop_api_token_optional)
 
 
 @pytest.fixture(autouse=True)
-def desktop_api_token_optional_for_testclient(monkeypatch: pytest.MonkeyPatch) -> None:
+def desktop_api_token_optional_for_testclient(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LENGRVIS_TEST", "1")
-    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
+    if request.node.get_closest_marker("desktop_api_token_optional"):
+        monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -151,12 +155,15 @@ def isolate_local_runtime_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
     AppSettings.from_sources() auto-discovers config.yaml/.env from the repo
     root, so a developer's live cloud configuration would otherwise leak into
-    contract assertions. Point discovery at nonexistent paths; tests that need
-    a specific config file set LENGRVIS_CONFIG_FILE/LENGRVIS_ENV_FILE themselves.
+    contract assertions. Point discovery and local state at temporary paths;
+    tests that need a specific config or data directory set the corresponding
+    LENGRVIS_* variable themselves.
     """
     missing = tmp_path / "_no_runtime_config"
     monkeypatch.setenv("LENGRVIS_CONFIG_FILE", str(missing / "config.yaml"))
     monkeypatch.setenv("LENGRVIS_ENV_FILE", str(missing / ".env"))
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "pytest-audit-hmac-secret")
 
 
 @pytest.fixture(autouse=True)
@@ -183,12 +190,14 @@ def reset_pairing_rate_limit_state() -> Iterable[None]:
 
 @pytest.fixture(autouse=True)
 def reset_audit_chain_head_cache() -> Iterable[None]:
-    """Audit sequence allocation uses an in-memory head keyed by db path."""
+    """DB handles and audit state must never leak across test cases."""
     from app.core import db
 
-    db.reset_audit_caches()
+    db.reset_connection_state()
+    db.set_startup_sensitive_integrity_status({"ok": True, "checked": 0, "failures": []})
     yield
-    db.reset_audit_caches()
+    db.set_startup_sensitive_integrity_status({"ok": True, "checked": 0, "failures": []})
+    db.reset_connection_state()
 
 
 def import_first(module_names: Iterable[str]) -> Any:

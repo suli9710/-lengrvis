@@ -17,11 +17,24 @@ exposed through npm scripts.
 | 7 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (strict in RC mode). |
 | 8 | evidence | no | `npm run evidence:release` | Collect the release evidence packet. |
 
+Non-strict `delivery:run` inserts required `release-artifact-preflight` and
+`signed-artifacts` stages after `release-safety` unless `--skip-signature-verify` is
+passed. Strict RC mode (`delivery:rc`) always runs `signed-artifacts` and ignores
+`--skip-signature-verify`.
+
 Strict RC mode inserts additional required stages after golden/safety/artifact checks:
 `real-llm-eval`, `packaging-verify`, `signed-artifacts`, `distribution-evidence`,
 `clean-machine-evidence`, `android-strict-gate`, and `commercial-loop`. These stages
 require reviewed evidence JSON and real Android APK/device evidence; template/preflight
 outputs intentionally fail them.
+
+Windows RC signing order (`.github/workflows/release-candidate.yml`):
+
+1. `build_all.ps1` builds backend, portable tree, zip, and self-extracting EXE.
+2. `sign_windows_backend.ps1` signs `dist/backend.exe` and copies it into the portable tree.
+3. `refresh_portable_release_bundle.ps1` re-compresses portable and rebuilds the self-extracting EXE.
+4. `sign_windows_portable_artifacts.ps1` signs the portable launcher and self-extracting EXE.
+5. `desktop dist:signed` signs Electron installer artifacts.
 
 ## Commands
 
@@ -43,6 +56,8 @@ The orchestrator prints and optionally writes a JSON verdict:
 ```json
 {
   "strict": true,
+  "skip_signature_verify": false,
+  "warnings": [],
   "ok": false,
   "decision": "blocked",
   "required_failures": ["market-readiness"],
@@ -51,6 +66,9 @@ The orchestrator prints and optionally writes a JSON verdict:
   "stages": [ { "name": "qa-gate", "status": "passed", "exit_code": 0 } ]
 }
 ```
+
+- `warnings` records delivery policy deviations (for example skipped signature
+  verification in non-strict mode, or `--skip-signature-verify` ignored in strict RC).
 
 - `ok=false` and a non-zero exit code whenever any required stage fails.
 - Remaining stages are `skipped` after the first required failure unless `--keep-going`.

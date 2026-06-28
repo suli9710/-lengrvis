@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from native_confirmation_helpers import native_confirmation_headers
 
 from app.api.routes_approvals import router as approvals_router
 from app.api.routes_chat import router as chat_router
@@ -194,7 +195,10 @@ def _run_entry(task: dict[str, Any], workspace: Path, outside: Path) -> None:
         if after:
             approval = _latest_pending_approval(task_id)
             assert approval is not None, "expected a pending approval before the follow-up action"
-            response = client.post(f"/api/approvals/{approval['id']}/{after}")
+            response = client.post(
+                f"/api/approvals/{approval['id']}/{after}",
+                headers=native_confirmation_headers("approve" if after == "approve" else "reject", approval["id"]),
+            )
             assert response.status_code == 200, response.text
             after_expect = task["after_expect"]
             final_after = _wait_for_phase(client, run["run_id"], set(after_expect["phase"]))

@@ -36,6 +36,10 @@ def validate_outbound_http_url(url: str, *, allow_private: bool = False) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Only absolute http(s) URLs are allowed.")
     hostname = parsed.hostname or ""
+    if _is_cloud_metadata_host(hostname):
+        raise ValueError(
+            "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
+        )
     if not allow_private and _is_blocked_outbound_host(hostname):
         raise ValueError(
             "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
@@ -50,6 +54,10 @@ def validate_outbound_http_url_preview(url: str, *, allow_private: bool = False)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Only absolute http(s) URLs are allowed.")
     hostname = parsed.hostname or ""
+    if _is_cloud_metadata_host(hostname):
+        raise ValueError(
+            "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
+        )
     if not allow_private and _is_statically_blocked_host(hostname):
         raise ValueError(
             "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
@@ -90,6 +98,10 @@ def pin_outbound_http_url(url: str, *, allow_private: bool = False) -> PinnedOut
     except ValueError:
         pass
     if allow_private:
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError(
+                "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
+            )
         return PinnedOutboundRequest(url=raw)
     pinned_ip = _resolve_pinned_outbound_ip(hostname)
     if pinned_ip is None:
@@ -131,12 +143,25 @@ def _resolve_pinned_outbound_ip(hostname: str) -> str | None:
     )
 
 
-def _is_statically_blocked_host(hostname: str) -> bool:
+def _is_cloud_metadata_host(hostname: str) -> bool:
     if not hostname:
-        return True
+        return False
     lowered = hostname.lower().rstrip(".")
     if lowered in _METADATA_HOSTS:
         return True
+    try:
+        ip = ipaddress.ip_address(lowered.split("%")[0])
+    except ValueError:
+        return False
+    return ip == ipaddress.ip_address("169.254.169.254")
+
+
+def _is_statically_blocked_host(hostname: str) -> bool:
+    if not hostname:
+        return True
+    if _is_cloud_metadata_host(hostname):
+        return True
+    lowered = hostname.lower().rstrip(".")
     try:
         return _is_blocked_ip(ipaddress.ip_address(lowered.split("%")[0]))
     except ValueError:

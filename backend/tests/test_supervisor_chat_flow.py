@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from native_confirmation_helpers import native_confirmation_headers
 
 import app.agents.planner_agent as planner_module
 import app.agents.supervisor_agent as supervisor_module
@@ -374,7 +375,10 @@ async def test_approval_executes_trash_step_after_user_approval(monkeypatch, tmp
 
         task_id = chat_response.json()["task_id"]
         approval = await _await_pending_approval(task_id)
-        approve_response = await client.post(f"/api/approvals/{approval['id']}/approve")
+        approve_response = await client.post(
+            f"/api/approvals/{approval['id']}/approve",
+            headers=native_confirmation_headers("approve", approval["id"]),
+        )
         assert approve_response.status_code == 200
         task = await _await_task_status(task_id, "completed")
 
@@ -406,7 +410,10 @@ async def test_explicit_path_trash_can_run_without_global_authorized_directory(m
         task_id = chat_response.json()["task_id"]
         approval = await _await_pending_approval(task_id)
         assert Path(approval["diff_preview"]["diff_preview"][0]["path"]) == target
-        approve_response = await client.post(f"/api/approvals/{approval['id']}/approve")
+        approve_response = await client.post(
+            f"/api/approvals/{approval['id']}/approve",
+            headers=native_confirmation_headers("approve", approval["id"]),
+        )
         assert approve_response.status_code == 200
         task = await _await_task_status(task_id, "completed")
 

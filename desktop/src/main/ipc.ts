@@ -46,9 +46,16 @@ export { assertTrustedRenderer, isTrustedRendererUrl } from "./rendererTrust";
 
 const DEFAULT_REMOTE_INPUT_GRANT_TTL_SECONDS = 300;
 const DESKTOP_API_TOKEN_HEADER = "X-Lengrvis-Desktop-Token";
+const NATIVE_CONFIRMATION_ID_HEADER = "X-Lengrvis-Native-Confirmation-Id";
+const NATIVE_CONFIRMATION_TIMESTAMP_HEADER = "X-Lengrvis-Native-Confirmation-Timestamp";
+const NATIVE_CONFIRMATION_SIGNATURE_HEADER = "X-Lengrvis-Native-Confirmation-Signature";
 const BACKEND_PRIVACY_ERASE_CONFIRMATION = "erase-local-data";
 
 const apiInflightGroups = new Map<string, AbortController>();
+
+type InternalDesktopBridgeRequest = Omit<ApiRequest, "headers"> & {
+  headers?: Record<string, string>;
+};
 
 function abortInflightApiGroup(abortGroup: string): void {
   apiInflightGroups.get(abortGroup)?.abort();
@@ -233,7 +240,7 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
         return backendNotReady;
       }
     }
-    return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken());
+    return proxyRendererApiRequest(backend, request);
   });
 
   ipcMain.handle(IPC_CHANNELS.apiAbortInflight, async (event, abortGroup: unknown) => {
@@ -266,11 +273,17 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     if (!approvalResponse.ok) {
       throw new ApiRequestValidationError("Approval details are unavailable for native confirmation");
     }
+    const confirmationHeaders = await nativeApprovalConfirmationHeaders(
+      backend,
+      "approve",
+      safeApprovalId,
+      approvalResponse.data
+    );
     await confirmNativeDesktopAction(event, approvalConfirmationDialogOptions(safeApprovalId, approvalResponse.data, "approve"));
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: `/api/approvals/${encodeURIComponent(safeApprovalId)}/approve`,
       method: "POST",
-      query: { desktop_native_confirmed: true }
+      headers: confirmationHeaders
     });
   });
 
@@ -284,11 +297,17 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     if (!approvalResponse.ok) {
       throw new ApiRequestValidationError("Approval details are unavailable for native confirmation");
     }
+    const confirmationHeaders = await nativeApprovalConfirmationHeaders(
+      backend,
+      "reject",
+      safeApprovalId,
+      approvalResponse.data
+    );
     await confirmNativeDesktopAction(event, approvalConfirmationDialogOptions(safeApprovalId, approvalResponse.data, "reject"));
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: `/api/approvals/${encodeURIComponent(safeApprovalId)}/reject`,
       method: "POST",
-      query: { desktop_native_confirmed: true }
+      headers: confirmationHeaders
     });
   });
 
@@ -420,14 +439,28 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
   ipcMain.handle(IPC_CHANNELS.runsStart, async (event, request: unknown) => {
     assertTrustedRenderer(event);
+    const body = validateRunStartRequest(request);
     const backendNotReady = await ensureBackendReadyForRendererSubmission(backend);
     if (backendNotReady) {
       return backendNotReady;
     }
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm agent run",
+      message: "Start this agent run?",
+      detail: [
+        `Mode: ${body.mode ?? "efficiency"}`,
+        `Engine: ${body.engine ?? "auto"}`,
+        "",
+        "Prompt:",
+        truncateForDialog(body.message),
+        "",
+        "Runs can use tools, access authorized files, and request further approvals."
+      ].join("\n")
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/runs",
       method: "POST",
-      body: validateRunStartRequest(request)
+      body
     });
   });
 
@@ -592,6 +625,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
   ipcMain.handle(IPC_CHANNELS.mobilePairingRevokeDevice, async (event, deviceId: string) => {
     assertTrustedRenderer(event);
     const safeDeviceId = validateBridgeIdentifier(deviceId, "mobile device id");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm device disconnect",
+      message: "Disconnect this paired mobile device?",
+      detail: `Device id: ${safeDeviceId}\n\nThe device will lose access until paired again.`
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: `/api/pair/devices/${encodeURIComponent(safeDeviceId)}`,
       method: "DELETE"
@@ -624,6 +662,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     assertTrustedRenderer(event);
     const safeDeviceId = validateBridgeIdentifier(request?.deviceId, "mobile device id");
     const safeGrantId = validateBridgeIdentifier(request?.grantId, "remote input grant id");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm remote input revoke",
+      message: "Revoke remote input access for this device?",
+      detail: `Device id: ${safeDeviceId}\nGrant id: ${safeGrantId}\n\nThe mobile device will return to read-only remote view.`
+    });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: `/api/pair/devices/${encodeURIComponent(safeDeviceId)}/remote-input-grants/${encodeURIComponent(safeGrantId)}`,
       method: "DELETE"
@@ -634,11 +677,19 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
 
 function proxyExplicitDesktopBridgeRequest<TData>(
   backend: BackendProcessManager,
-  request: ApiRequest
+  request: InternalDesktopBridgeRequest
 ): Promise<ApiResponse<TData>> {
   return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken(), {
-    allowDeniedDesktopBridgePath: true
+    allowDeniedDesktopBridgePath: true,
+    allowInternalHeaders: true
   });
+}
+
+function proxyRendererApiRequest<TData>(
+  backend: BackendProcessManager,
+  request: ApiRequest
+): Promise<ApiResponse<TData>> {
+  return proxyApiRequest(backend.getBaseUrl(), request, backend.getDesktopApiToken());
 }
 
 async function ensureBackendReadyForRendererSubmission(
@@ -776,6 +827,49 @@ export async function confirmNativeDesktopAction(
   if (result.response !== 0) {
     throw new ApiRequestValidationError("Sensitive desktop action was not confirmed");
   }
+}
+
+interface NativeConfirmationChallengePayload extends Record<string, unknown> {
+  confirmation_id?: unknown;
+  expires_at_epoch?: unknown;
+  signing_payload?: unknown;
+}
+
+async function nativeApprovalConfirmationHeaders(
+  backend: BackendProcessManager,
+  action: "approve" | "reject",
+  approvalId: string,
+  approvalPayload: unknown
+): Promise<Record<string, string>> {
+  const challenge = await proxyExplicitDesktopBridgeRequest<NativeConfirmationChallengePayload>(backend, {
+    endpoint: `/api/approvals/${encodeURIComponent(approvalId)}/native-confirmation-challenge`,
+    method: "POST",
+    body: {
+      action,
+      expected_preview_hmac: approvalPreviewHmac(approvalPayload)
+    }
+  });
+  if (!challenge.ok || !challenge.data) {
+    throw new ApiRequestValidationError("Native confirmation challenge is unavailable");
+  }
+  const confirmationId = stringField(challenge.data, "confirmation_id");
+  const signingPayload = stringField(challenge.data, "signing_payload");
+  const expiresAt = String(challenge.data.expires_at_epoch ?? "").trim();
+  if (!confirmationId || !signingPayload || !expiresAt) {
+    throw new ApiRequestValidationError("Native confirmation challenge is malformed");
+  }
+  const signature = backend.signNativeConfirmationPayload(signingPayload);
+  return {
+    [NATIVE_CONFIRMATION_ID_HEADER]: confirmationId,
+    [NATIVE_CONFIRMATION_TIMESTAMP_HEADER]: expiresAt,
+    [NATIVE_CONFIRMATION_SIGNATURE_HEADER]: signature
+  };
+}
+
+function approvalPreviewHmac(payload: unknown): string {
+  const detail = isPlainRecord(payload) ? payload : {};
+  const approval = isPlainRecord(detail.approval) ? detail.approval : detail;
+  return stringField(approval, "preview_hmac") || stringField(approval, "previewHmac");
 }
 
 function approvalConfirmationDialogOptions(
@@ -920,15 +1014,18 @@ function isSameOrNestedPath(rootPath: string, candidatePath: string): boolean {
 
 async function proxyApiRequest<TData>(
   baseUrl: string,
-  request: ApiRequest,
+  request: InternalDesktopBridgeRequest,
   desktopApiToken: string,
-  options: ApiRequestValidationOptions = {}
+  options: ApiRequestValidationOptions & { allowInternalHeaders?: boolean } = {}
 ): Promise<ApiResponse<TData>> {
   const receivedAt = new Date().toISOString();
   let timeout: ReturnType<typeof setTimeout> | undefined;
 
   try {
-    const validatedRequest = validateApiRequest(request, options);
+    const { allowInternalHeaders, ...validationOptions } = options;
+    const { headers: extraHeaders, ...requestWithoutHeaders } = request;
+    const requestForValidation = allowInternalHeaders ? requestWithoutHeaders : request;
+    const validatedRequest = validateApiRequest(requestForValidation, validationOptions);
     const url = buildValidatedRequestUrl(baseUrl, validatedRequest);
     const timeoutController = new AbortController();
     timeout = setTimeout(
@@ -945,6 +1042,7 @@ async function proxyApiRequest<TData>(
       headers: {
         Accept: "application/json",
         [DESKTOP_API_TOKEN_HEADER]: desktopApiToken,
+        ...(allowInternalHeaders ? (extraHeaders ?? {}) : {}),
         ...(validatedRequest.serializedBody !== undefined ? { "Content-Type": "application/json" } : {})
       },
       body: validatedRequest.serializedBody,

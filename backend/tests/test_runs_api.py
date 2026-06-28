@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from native_confirmation_helpers import native_confirmation_headers
 
 from app.agents.planner_agent import PlannerAgent
 from app.api.routes_approvals import router as approvals_router
@@ -704,7 +705,10 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
         ).json()
         _wait_for_phase(client, created["run_id"], "awaiting_approval")
         approval = Approval.model_validate(db.fetch_many("approvals", limit=10)[0])
-        approved = client.post(f"/api/approvals/{approval.id}/approve")
+        approved = client.post(
+            f"/api/approvals/{approval.id}/approve",
+            headers=native_confirmation_headers("approve", approval.id),
+        )
         assert approved.status_code == 200
         final = _wait_for_phase(client, created["run_id"], "completed", "failed", "denied")
         assert final["phase"] == "completed"
@@ -1018,7 +1022,10 @@ def test_reject_approval_moves_run_to_cancelled(monkeypatch, tmp_path):
         _wait_for_phase(client, created["run_id"], "awaiting_approval")
         approval = Approval.model_validate(db.fetch_many("approvals", limit=10)[0])
 
-        rejected = client.post(f"/api/approvals/{approval.id}/reject")
+        rejected = client.post(
+            f"/api/approvals/{approval.id}/reject",
+            headers=native_confirmation_headers("reject", approval.id),
+        )
 
         assert rejected.status_code == 200
         final = _wait_for_phase(client, created["run_id"], "cancelled")
@@ -1070,7 +1077,10 @@ def test_cancel_run_expires_pending_approval_and_blocks_late_approve(monkeypatch
         approval = Approval.model_validate(db.fetch_many("approvals", limit=10)[0])
 
         cancelled = client.post(f"/api/runs/{created['run_id']}/cancel")
-        late_approve = client.post(f"/api/approvals/{approval.id}/approve")
+        late_approve = client.post(
+            f"/api/approvals/{approval.id}/approve",
+            headers=native_confirmation_headers("approve", approval.id),
+        )
 
         assert cancelled.status_code == 200
         assert late_approve.status_code == 409

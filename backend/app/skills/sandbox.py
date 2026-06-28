@@ -43,6 +43,8 @@ class SkillSandbox:
                 return _local_skill_execution_disabled_error(execution)
             return self._execute_process(self._shell_command(execution), execution, args, context)
         if execution.type == SkillExecutionType.HTTP:
+            if not self._local_skill_execution_allowed(context):
+                return _local_skill_execution_disabled_error(execution)
             return self._execute_http(execution, args, context)
         return {"error": f"Unsupported skill execution type: {execution.type}"}
 
@@ -165,6 +167,16 @@ class SkillSandbox:
             return {"error": "HTTP skill execution entry must be an absolute http(s) URL."}
         if not is_loopback_http_url(url):
             return {"error": "HTTP skill handlers must use a loopback host."}
+        if not is_allowed_loopback_http_url(url):
+            port = loopback_http_port(url)
+            return {
+                "error": (
+                    "HTTP skill handlers must not target protected local service ports "
+                    f"(port {port} is blocked)."
+                ),
+                "policy": "skill_http_port_denied",
+                "port": port,
+            }
 
         payload = self._payload(args, context)
         try:
@@ -252,8 +264,8 @@ def _truthy(value: Any) -> bool:
 def _local_skill_execution_disabled_error(execution: SkillExecution) -> dict[str, Any]:
     return {
         "error": (
-            f"Local {execution.type.value} skill execution is disabled by default because these handlers run as "
-            "normal local subprocesses, not an OS sandbox. Enable only trusted development skills with "
+            f"Local {execution.type.value} skill execution is disabled by default because these handlers can "
+            "access local machine resources without an OS sandbox. Enable only trusted development skills with "
             f"{UNSAFE_LOCAL_SKILL_EXECUTION_ENV}=1 or AppSettings.allow_unsafe_local_skill_execution=True."
         ),
         "policy": "local_skill_execution_disabled",
@@ -261,10 +273,56 @@ def _local_skill_execution_disabled_error(execution: SkillExecution) -> dict[str
     }
 
 
+_DEFAULT_BLOCKED_LOOPBACK_HTTP_PORTS = frozenset({
+    80,
+    443,
+    5173,  # Vite dev server
+    1234,  # LM Studio default
+    8765,  # common local MCP example port
+    11434,  # Ollama default
+})
+
+
+def blocked_loopback_http_ports() -> frozenset[int]:
+    ports = set(_DEFAULT_BLOCKED_LOOPBACK_HTTP_PORTS)
+    for env_name in ("LENGRVIS_BACKEND_PORT", "LENGRVIS_GUARDIAN_PORT"):
+        raw = str(get_env(env_name) or "").strip()
+        if raw.isdigit():
+            ports.add(int(raw))
+    if not any(str(get_env(name) or "").strip().isdigit() for name in ("LENGRVIS_BACKEND_PORT", "LENGRVIS_GUARDIAN_PORT")):
+        ports.add(8000)
+    extra = str(get_env("LENGRVIS_SKILL_HTTP_BLOCKED_PORTS") or "").strip()
+    for part in extra.split(","):
+        item = part.strip()
+        if item.isdigit():
+            ports.add(int(item))
+    return frozenset(ports)
+
+
+def loopback_http_port(url: str) -> int | None:
+    parsed = urlparse(url)
+    if parsed.port is not None:
+        return parsed.port
+    if parsed.scheme == "https":
+        return 443
+    if parsed.scheme == "http":
+        return 80
+    return None
+
+
 def is_loopback_http_url(url: str) -> bool:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     return host in {"localhost", "127.0.0.1", "::1"} or host.startswith("127.")
+
+
+def is_allowed_loopback_http_url(url: str) -> bool:
+    if not is_loopback_http_url(url):
+        return False
+    port = loopback_http_port(url)
+    if port is None:
+        return False
+    return port not in blocked_loopback_http_ports()
 
 
 def _parse_json_output(stdout: str) -> dict[str, Any]:

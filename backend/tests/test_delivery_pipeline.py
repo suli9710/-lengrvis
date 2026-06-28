@@ -37,6 +37,9 @@ def test_default_stages_order_and_membership():
     names = [s.name for s in stages]
     assert names[0] == "qa-gate"
     assert names[1] == "golden-gate"
+    assert "signed-artifacts" in names
+    assert names.index("release-safety") < names.index("signed-artifacts")
+    assert names.index("signed-artifacts") < names.index("market-readiness")
     assert "market-readiness" in names
     assert "readiness" in names
     assert "real-llm-eval" not in names
@@ -44,6 +47,57 @@ def test_default_stages_order_and_membership():
     # Evidence is the only optional stage by default.
     optional = [s.name for s in stages if not s.required]
     assert optional == ["evidence"]
+    signed = next(s for s in stages if s.name == "signed-artifacts")
+    assert signed.required is True
+    assert "verify:windows-release-signatures" in signed.command
+
+
+def test_non_strict_skip_signature_verify_omits_stage():
+    stages = mod.default_stages(strict=False, skip_signature_verify=True)
+    names = [s.name for s in stages]
+    assert "signed-artifacts" not in names
+    assert "release-artifact-preflight" not in names
+    assert names[-1] == "evidence"
+
+
+def test_non_strict_includes_release_preflight_before_signed_artifacts():
+    stages = mod.default_stages(strict=False)
+    names = [s.name for s in stages]
+    assert "release-artifact-preflight" in names
+    assert "signed-artifacts" in names
+    assert names.index("release-artifact-preflight") < names.index("signed-artifacts")
+    assert names.index("signed-artifacts") < names.index("market-readiness")
+
+
+def test_strict_always_includes_signed_artifacts_even_when_skip_requested():
+    stages = mod.default_stages(strict=True, skip_signature_verify=True)
+    names = [s.name for s in stages]
+    assert "signed-artifacts" in names
+
+
+def test_build_signature_verify_warnings():
+    effective, warnings = mod.build_signature_verify_warnings(
+        strict=False,
+        skip_signature_verify_requested=True,
+    )
+    assert effective is True
+    assert len(warnings) == 1
+    assert "skipped via --skip-signature-verify" in warnings[0]
+
+    effective, warnings = mod.build_signature_verify_warnings(
+        strict=True,
+        skip_signature_verify_requested=True,
+    )
+    assert effective is False
+    assert len(warnings) == 1
+    assert "ignored in strict RC mode" in warnings[0]
+
+    effective, warnings = mod.build_signature_verify_warnings(
+        strict=False,
+        skip_signature_verify_requested=False,
+    )
+    assert effective is False
+    assert warnings == []
 
 
 def test_strict_adds_strict_flag_to_readiness():

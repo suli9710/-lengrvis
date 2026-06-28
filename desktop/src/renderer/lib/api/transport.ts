@@ -456,6 +456,21 @@ export function isWebOnlyDevBackendBridge(): boolean {
   return !window.lengrvis && import.meta.env.DEV;
 }
 
+// dev:web only: VITE_LENGRVIS_DEV_SKIP_CONSENT_GATE bypasses ConsentGate when the
+// Electron consent bridge is unavailable. Never set this for production builds;
+// vite.config.ts strips the value when mode=production.
+export function isWebOnlyDevConsentGateBypassEnabled(): boolean {
+  if (!isWebOnlyDevBackendBridge()) {
+    return false;
+  }
+  const flag = String(import.meta.env.VITE_LENGRVIS_DEV_SKIP_CONSENT_GATE ?? "").trim().toLowerCase();
+  return flag === "true" || flag === "1";
+}
+
+// dev:web only: VITE_LENGRVIS_DESKTOP_API_TOKEN bypasses the Electron IPC bridge so
+// browser fetches/WebSockets can reach loopback :8000. Never set this for production
+// builds; vite.config.ts strips the value when mode=production. Treat the token like
+// desktop_api.secret and keep it off shared machines or committed .env files.
 export const WEB_ONLY_DEV_DESKTOP_WS_PROTOCOL_PREFIX = "lengrvis.desktop.token.";
 export const WEB_ONLY_DEV_WS_PROTOCOL_TOKEN_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 

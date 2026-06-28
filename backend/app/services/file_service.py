@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.core.errors import SecurityError
+from app.core.paths import is_sensitive_path, is_system_path, normalize_path
 from app.indexer.fts_index import FTSIndex
 from app.indexer.vector_index import VectorIndex
 from app.llm.registry import get_effective_settings
@@ -12,9 +14,32 @@ def rebuild_index() -> dict:
     return FTSIndex().rebuild(get_effective_settings().allowed_directories)
 
 
+def _validate_index_directory(path: str) -> str:
+    raw = (path or "").strip()
+    if not raw:
+        raise SecurityError("Directory path is required.", code="invalid_directory")
+    if ".." in Path(raw).parts:
+        raise SecurityError("Path traversal is not allowed.")
+    parts = Path(raw).parts
+    if any(":" in part for part in parts[1:]):
+        raise SecurityError("Windows alternate data streams are not allowed.")
+    try:
+        resolved = normalize_path(raw)
+    except OSError as exc:
+        raise SecurityError("Directory path could not be resolved.") from exc
+    if not resolved.exists():
+        raise SecurityError("Directory does not exist.", code="invalid_directory")
+    if not resolved.is_dir():
+        raise SecurityError("Path is not a directory.", code="invalid_directory")
+    if is_system_path(resolved) or is_sensitive_path(resolved):
+        raise SecurityError("Sensitive or system paths are not allowed.")
+    return str(resolved)
+
+
 def add_directory(path: str, *, confirmation_nonce: str | None = None) -> dict:
+    normalized_path = _validate_index_directory(path)
     settings = get_effective_settings()
-    dirs = list(dict.fromkeys([*settings.allowed_directories, path]))
+    dirs = list(dict.fromkeys([*settings.allowed_directories, normalized_path]))
     from app.services.settings_service import update_settings
 
     update_settings({"allowed_directories": dirs, "confirmation_nonce": confirmation_nonce})

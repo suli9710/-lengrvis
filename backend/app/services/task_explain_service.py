@@ -98,7 +98,7 @@ PUBLIC_MISSING_CHECK_LABELS = {
 }
 
 
-def build_task_explain(task_id: str) -> dict[str, Any]:
+def build_task_explain(task_id: str, *, audits: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     task_data = db.fetch_one("tasks", task_id)
     if not task_data:
         raise KeyError(task_id)
@@ -106,7 +106,8 @@ def build_task_explain(task_id: str) -> dict[str, Any]:
     task = Task.model_validate(task_data)
     messages = _chronological(db.fetch_many(SOURCE_AGENT_MESSAGES, "task_id = ?", (task_id,), limit=5000))
     reviews = _chronological(db.fetch_many(SOURCE_SAFETY_REVIEWS, "task_id = ?", (task_id,), limit=5000))
-    audits = _chronological(db.fetch_many(SOURCE_AUDIT_EVENTS, "task_id = ?", (task_id,), limit=5000))
+    if audits is None:
+        audits = _chronological(db.fetch_many(SOURCE_AUDIT_EVENTS, "task_id = ?", (task_id,), limit=5000))
     plan_payload, plan_source = _latest_plan_payload(task_id, messages)
     initial_plan_message = _initial_plan_message(messages)
 

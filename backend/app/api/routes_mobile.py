@@ -128,6 +128,11 @@ MOBILE_TASK_STRUCTURED_EVIDENCE_RE = re.compile(
 MOBILE_TERMINAL_TASK_PHASES = {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED}
 
 
+@router.post("/mobile/session/refresh")
+def refresh_mobile_session(token: dict = Depends(require_mobile_token)) -> dict:
+    return mobile_pairing_service.refresh_mobile_session_token(token)
+
+
 @router.get("/mobile/approvals/pending")
 def pending_mobile_approvals(token: dict = Depends(require_mobile_token)) -> list[dict]:
     return mobile_pairing_service.list_pending_approvals(token)
@@ -350,7 +355,7 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
 
 async def _close_if_mobile_claims_inactive(websocket: WebSocket, claims: dict) -> bool:
     try:
-        validate_mobile_claims_active(claims)
+        validate_mobile_claims_active(claims, scope_exp_scopes={TOKEN_SCOPE})
     except HTTPException:
         await websocket.close(code=1008)
         return True

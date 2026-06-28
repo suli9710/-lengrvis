@@ -7,21 +7,28 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from pydantic import BaseModel as PydanticBaseModel
 
 from app.commerce.entitlements import Feature, active_plan, require_feature
-from app.indexer.ocr_service import accelerated_ocr_health, accelerated_ocr_smoke
 from app.indexer.local_embedding_provider import (
     health_snapshot as embedding_health_snapshot,
+)
+from app.indexer.local_embedding_provider import (
     test_embedding as onnx_test_embedding,
 )
+from app.indexer.ocr_service import accelerated_ocr_health, accelerated_ocr_smoke
 from app.llm.local_provider import health_snapshot
 from app.llm.onnx_provider import (
     health_snapshot as onnx_health_snapshot,
+)
+from app.llm.onnx_provider import (
     test_generate as onnx_test_generate,
+)
+from app.llm.onnx_provider import (
     warmup as onnx_warmup,
 )
 from app.llm.registry import get_effective_settings
-from app.policy.redaction import redact_public_text
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
+from app.policy.redaction import redact_public_text
 from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.middleware import reject_audit_fail_closed_websocket
 from app.security.sensitive_confirmation import (
     create_permission_policy_confirmation,
     create_settings_confirmation,
@@ -32,6 +39,7 @@ from app.security.sensitive_confirmation import (
 )
 from app.services import ollama_service
 from app.services.settings_service import (
+    coerce_settings_patch,
     get_llm_cost_summary,
     get_llm_health,
     get_llm_profile,
@@ -41,7 +49,6 @@ from app.services.settings_service import (
     update_settings,
 )
 from app.tools.vision_tools import image_embedding_health, test_image_embedding
-
 
 router = APIRouter()
 ws_router = APIRouter()
@@ -61,7 +68,7 @@ def update(payload: dict):
 
 @router.post("/settings/confirm-sensitive-change")
 def confirm_sensitive_change(payload: dict):
-    return create_settings_confirmation(payload)
+    return create_settings_confirmation(payload, confirmed_payload=coerce_settings_patch(payload))
 
 
 @router.post("/settings/test-llm-provider")
@@ -264,6 +271,7 @@ async def install_local_model(payload: InstallLocalModelRequest = InstallLocalMo
 async def install_local_model_stream(websocket: WebSocket, model: str | None = None):
     if await close_unauthorized_desktop_websocket(websocket):
         return
+    await reject_audit_fail_closed_websocket(websocket)
     try:
         model = _allowed_install_model(model)
     except ValueError:

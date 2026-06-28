@@ -18,6 +18,7 @@ from app.policy.risk import RiskLevel
 from app.services.cleanup_planner_service import CleanupPlannerService
 from app.tools.managed_backups import create_managed_backup
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".ts", ".tsx", ".js", ".css", ".yaml", ".yml"}
@@ -314,7 +315,8 @@ def create_folder(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     path = resolve_authorized(args["path"], allowed)
     if args.get("dry_run", True):
         return {"dry_run": True, "would_create": str(path)}
-    _safe_mkdir(path, allowed)
+    raise_if_tool_aborted(context)
+    _safe_mkdir(path, allowed, context)
     return {"changed_paths": [str(path)], "rollback_info": {"delete_folder_if_empty": str(path)}}
 
 
@@ -328,8 +330,9 @@ def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "diff_preview": [{"action": "copy", "from": str(src), "to": str(dst)}],
             "_resource_state": _resource_states(src, dst),
         }
+    raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed)
+    _prepare_parent_for_mutation(dst, allowed, context)
     _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
     shutil.copy2(src, dst)
     return {"changed_paths": [str(dst)], "rollback_info": {"trash_created_file": str(dst)}}
@@ -345,8 +348,9 @@ def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "diff_preview": [{"action": "move", "from": str(src), "to": str(dst)}],
             "_resource_state": _resource_states(src, dst),
         }
+    raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed)
+    _prepare_parent_for_mutation(dst, allowed, context)
     _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
     shutil.move(str(src), str(dst))
     return {"changed_paths": [str(dst)], "rollback_info": {"move_back": {"from": str(dst), "to": str(src)}}}
@@ -363,8 +367,9 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
             "diff_preview": [{"action": "rename", "from": str(src), "to": str(dst)}],
             "_resource_state": _resource_states(src, dst),
         }
+    raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed)
+    _prepare_parent_for_mutation(dst, allowed, context)
     _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
     src.rename(dst)
     return {"changed_paths": [str(dst)], "rollback_info": {"rename_back": {"from": str(dst), "to": str(src)}}}
@@ -380,6 +385,7 @@ def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         }
     if send2trash is None:
         raise RuntimeError("send2trash is not installed; permanent deletion is forbidden.")
+    raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(path, _allowed(context), include_self=True)
     send2trash(str(path))
     return {"changed_paths": [str(path)], "rollback_info": {"restore_from_recycle_bin": str(path)}}
@@ -403,7 +409,8 @@ def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if path.exists():
         _ensure_mutation_path_safe(path, allowed, include_self=True)
         backup = create_managed_backup(path)
-    _safe_write_text(path, text, allowed)
+    raise_if_tool_aborted(context)
+    _safe_write_text(path, text, allowed, context)
     return {"changed_paths": [str(path)], "rollback_info": {"backup": backup}}
 
 
@@ -463,7 +470,8 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         }
 
     backup = create_managed_backup(path)
-    _safe_write_text(path, edited, allowed)
+    raise_if_tool_aborted(context)
+    _safe_write_text(path, edited, allowed, context)
     return {
         "ok": True,
         "changed_paths": [str(path)],
@@ -485,25 +493,34 @@ def generate_markdown_report(args: dict[str, Any], context: dict[str, Any]) -> d
             "diff_preview": [{"action": "generate_markdown_report", "path": str(path)}],
             "_resource_state": _resource_states(path),
         }
-    _safe_write_text(path, text, allowed)
+    raise_if_tool_aborted(context)
+    _safe_write_text(path, text, allowed, context)
     return {"changed_paths": [str(path)], "rollback_info": {"trash_created_file": str(path)}}
 
 
-def _safe_mkdir(path: Path, allowed: list[str]) -> None:
+def _safe_mkdir(path: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:
+    raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(path, allowed, include_self=True)
     path.mkdir(parents=True, exist_ok=True)
     _ensure_mutation_path_safe(path, allowed, include_self=True)
 
 
-def _safe_copy_existing_file(src: Path, dst: Path, allowed: list[str]) -> None:
+def _safe_copy_existing_file(
+    src: Path,
+    dst: Path,
+    allowed: list[str],
+    context: dict[str, Any] | None = None,
+) -> None:
+    raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed)
+    _prepare_parent_for_mutation(dst, allowed, context)
     _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
     shutil.copy2(src, dst)
 
 
-def _safe_write_text(path: Path, text: str, allowed: list[str]) -> None:
-    _prepare_parent_for_mutation(path, allowed)
+def _safe_write_text(path: Path, text: str, allowed: list[str], context: dict[str, Any] | None = None) -> None:
+    raise_if_tool_aborted(context)
+    _prepare_parent_for_mutation(path, allowed, context)
     _ensure_mutation_path_safe(path, allowed, include_self=_path_exists_or_reparse_point(path))
     if _supports_dir_fd_no_follow():
         _write_text_with_dir_fd_no_follow(path, text)
@@ -511,7 +528,8 @@ def _safe_write_text(path: Path, text: str, allowed: list[str]) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _prepare_parent_for_mutation(path: Path, allowed: list[str]) -> None:
+def _prepare_parent_for_mutation(path: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:
+    raise_if_tool_aborted(context)
     _ensure_mutation_path_safe(path.parent, allowed, include_self=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     _ensure_mutation_path_safe(path.parent, allowed, include_self=True)

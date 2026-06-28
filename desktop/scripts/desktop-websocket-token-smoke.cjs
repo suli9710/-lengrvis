@@ -109,6 +109,19 @@ assert.match(
   "renderer fallback must be web-only dev gated"
 );
 
+assert.match(
+  transportSource,
+  /dev:web only: VITE_LENGRVIS_DESKTOP_API_TOKEN/,
+  "dev:web desktop token bypass must document the security risk"
+);
+
+const viteConfig = fs.readFileSync(path.join(__dirname, "..", "vite.config.ts"), "utf8");
+assert.match(
+  viteConfig,
+  /import\.meta\.env\.VITE_LENGRVIS_DESKTOP_API_TOKEN.*production|isProduction[\s\S]*VITE_LENGRVIS_DESKTOP_API_TOKEN/,
+  "production renderer build must strip VITE_LENGRVIS_DESKTOP_API_TOKEN"
+);
+
 const settingsSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "components", "SettingsPanel.tsx"), "utf8");
 assert.match(settingsSource, /subscribeInstallModelProgressSocket/, "install progress should use the shared subscribe helper");
 assert.doesNotMatch(settingsSource, /new WebSocket\(buildInstallModelWebSocketUrl/, "install progress must not directly create protected WebSockets");

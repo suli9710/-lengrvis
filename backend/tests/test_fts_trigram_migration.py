@@ -85,7 +85,7 @@ def test_fts_search_short_cjk_query_falls_back_to_like(tmp_path: Path) -> None:
     FTSIndex().rebuild([str(workspace)])
     db.init_db()
 
-    results = FTSIndex().search("汽车", limit=5)
+    results = FTSIndex().search("汽车", limit=5, allowed_directories=[str(workspace)])
 
     assert results
     assert any("汽车" in str(item.get("snippet") or "") for item in results)

@@ -25,6 +25,8 @@ from app.main import app
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
+    MOBILE_REMOTE_VIEW_TTL_SECONDS,
+    MOBILE_TOKEN_TTL_SECONDS,
     REMOTE_INPUT_SCOPE,
     REMOTE_VIEW_SCOPE,
     TOKEN_SCOPE,
@@ -62,8 +64,21 @@ def test_pair_request_generates_code(monkeypatch, tmp_path):
     assert payload["server"]["scheme"] == "https"
     assert payload["server"]["transport_security"]["status"] == "https_ready"
     assert payload["server"]["transport_security"]["tls_ready"] is True
+    assert len(payload["claim_secret"]) >= 32
+    stored = db.fetch_one("mobile_pairings", payload["code"])
+    assert stored is not None
+    assert stored["claim_secret_hash"]
+    assert payload["claim_secret"] not in json.dumps(stored, ensure_ascii=False)
     assert "token" not in payload
     assert "token_type" not in payload
+
+
+def _disable_remote_desktop() -> None:
+    patch = {"remote_desktop_enabled": False}
+    confirmation = create_settings_confirmation(patch)
+    if confirmation.get("required"):
+        patch["confirmation_nonce"] = confirmation["nonce"]
+    update_settings(patch)
 
 
 def test_pair_request_blocks_default_http_lan_pairing(monkeypatch, tmp_path):
@@ -182,10 +197,15 @@ def test_pair_confirm_valid_code(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     client = TestClient(app)
-    code = client.post("/api/pair/request").json()["code"]
+    pairing = client.post("/api/pair/request").json()
 
-    response = client.post("/api/pair/confirm", json={"code": code, "device_name": "Pixel"})
+    stolen_code = client.post("/api/pair/confirm", json={"code": pairing["code"], "device_name": "Attacker"})
+    response = client.post(
+        "/api/pair/confirm",
+        json={"code": pairing["code"], "claim_secret": pairing["claim_secret"], "device_name": "Pixel"},
+    )
 
+    assert stolen_code.status_code == 401
     assert response.status_code == 200
     payload = response.json()
     assert payload["expires_in"] == mobile_pairing_service.TOKEN_TTL_SECONDS
@@ -207,7 +227,8 @@ def test_pair_confirm_expired_code(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     client = TestClient(app)
-    code = client.post("/api/pair/request").json()["code"]
+    pairing = client.post("/api/pair/request").json()
+    code = pairing["code"]
     expired_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     with db.connect() as conn:
         row = conn.execute("SELECT data FROM mobile_pairings WHERE id = ?", (code,)).fetchone()
@@ -223,7 +244,10 @@ def test_pair_confirm_expired_code(monkeypatch, tmp_path):
             (expired_at, json.dumps(data), code),
         )
 
-    response = client.post("/api/pair/confirm", json={"code": code, "device_name": "Pixel"})
+    response = client.post(
+        "/api/pair/confirm",
+        json={"code": code, "claim_secret": pairing["claim_secret"], "device_name": "Pixel"},
+    )
 
     assert response.status_code == 401
 
@@ -929,17 +953,27 @@ def test_pair_code_can_be_redeemed_once_for_mobile_jwt(monkeypatch, tmp_path):
 
     code_response = client.post("/api/pair/code")
     assert code_response.status_code == 200
-    code = code_response.json()["code"]
+    pairing = code_response.json()
+    code = pairing["code"]
     assert len(code) == mobile_pairing_service.PAIR_CODE_HEX_LENGTH * 2
 
-    pair_response = client.post("/api/pair", json={"code": code, "device_name": "Pixel"})
+    stolen_code_response = client.post("/api/pair", json={"code": code, "device_name": "Attacker"})
+    assert stolen_code_response.status_code == 401
+
+    pair_response = client.post(
+        "/api/pair",
+        json={"code": code, "claim_secret": pairing["claim_secret"], "device_name": "Pixel"},
+    )
     assert pair_response.status_code == 200
     token = pair_response.json()["token"]
     claims = decode_mobile_token(token)
     assert claims["device_name"] == "Pixel"
     assert claims["scope"] == "mobile:approval"
 
-    replay_response = client.post("/api/pair", json={"code": code, "device_name": "Replay"})
+    replay_response = client.post(
+        "/api/pair",
+        json={"code": code, "claim_secret": pairing["claim_secret"], "device_name": "Replay"},
+    )
     assert replay_response.status_code == 401
 
 
@@ -958,6 +992,13 @@ def test_pair_code_includes_remote_view_scope_only_when_remote_desktop_enabled(m
 
     assert set(claims["scope"].split()) == {"mobile:approval", "remote:view"}
     assert REMOTE_INPUT_SCOPE not in claims["scope"].split()
+    view_exp = datetime.fromtimestamp(claims["scope_exp"][REMOTE_VIEW_SCOPE], timezone.utc)
+    main_exp = datetime.fromtimestamp(claims["exp"], timezone.utc)
+    issued_at = datetime.fromtimestamp(claims["iat"], timezone.utc)
+    view_ttl = (view_exp - issued_at).total_seconds()
+    assert MOBILE_REMOTE_VIEW_TTL_SECONDS - 2 <= view_ttl <= MOBILE_REMOTE_VIEW_TTL_SECONDS + 2
+    assert view_exp <= main_exp
+    assert main_exp - issued_at >= timedelta(seconds=MOBILE_TOKEN_TTL_SECONDS - 2)
 
 
 def test_mobile_token_survives_backend_process_restart(tmp_path):
@@ -994,7 +1035,8 @@ def test_pair_code_redeem_is_atomic_under_concurrent_submitters(monkeypatch, tmp
     monkeypatch.setenv("LENGRVIS_LAN_TLS_KEY_FILE", str(key))
     db.init_db()
     _clear_pairing_failures()
-    code = mobile_pairing_service.create_pairing_request()["code"]
+    pairing = mobile_pairing_service.create_pairing_request()
+    code = pairing["code"]
     barrier = threading.Barrier(2)
 
     def redeem(index: int) -> tuple[str, str | int]:
@@ -1002,6 +1044,7 @@ def test_pair_code_redeem_is_atomic_under_concurrent_submitters(monkeypatch, tmp
         try:
             payload = mobile_pairing_service.confirm_pairing(
                 code=code,
+                claim_secret=pairing["claim_secret"],
                 device_name=f"Phone {index}",
                 client_host=f"198.51.100.{index}",
             )
@@ -1113,8 +1156,13 @@ def test_successful_pairing_clears_host_confirm_failure_bucket(monkeypatch, tmp_
             mobile_pairing_service.confirm_pairing(code=invalid_code, device_name="Phone", client_host=host)
         assert exc.value.status_code == 401
 
-    code = mobile_pairing_service.create_pairing_request()["code"]
-    payload = mobile_pairing_service.confirm_pairing(code=code, device_name="Owner Phone", client_host=host)
+    pairing = mobile_pairing_service.create_pairing_request()
+    payload = mobile_pairing_service.confirm_pairing(
+        code=pairing["code"],
+        claim_secret=pairing["claim_secret"],
+        device_name="Owner Phone",
+        client_host=host,
+    )
     assert payload["token"]
 
     for _ in range(mobile_pairing_service.PAIR_CONFIRM_FAILURE_LIMIT):
@@ -1438,6 +1486,91 @@ def test_paired_mobile_can_read_but_not_decide_grant_bound_remote_input(monkeypa
     assert grant_decision_response.json()["status"] == "rejected"
 
 
+def test_remote_view_scope_expires_before_paired_approval_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    claims = decode_mobile_token(paired_token, allowed_scopes={TOKEN_SCOPE, REMOTE_VIEW_SCOPE})
+    expired_at = datetime.fromtimestamp(claims["scope_exp"][REMOTE_VIEW_SCOPE], timezone.utc) + timedelta(seconds=1)
+
+    class ExpiredViewScopeClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            moment = expired_at if tz is not None else expired_at.replace(tzinfo=None)
+            return moment
+
+    monkeypatch.setattr(mobile_jwt, "datetime", ExpiredViewScopeClock)
+    with pytest.raises(HTTPException) as view_exc:
+        decode_mobile_token(paired_token, allowed_scopes={REMOTE_VIEW_SCOPE})
+    assert view_exc.value.status_code == 401
+    assert view_exc.value.detail == "Mobile token scope expired"
+    assert decode_mobile_token(paired_token, allowed_scopes={TOKEN_SCOPE})
+
+    monkeypatch.setattr(mobile_jwt, "datetime", datetime)
+    refreshed = mobile_pairing_service.refresh_mobile_session_token(claims)
+    refreshed_claims = decode_mobile_token(refreshed["token"], allowed_scopes={REMOTE_VIEW_SCOPE})
+    assert refreshed_claims["scope_exp"][REMOTE_VIEW_SCOPE] >= claims["scope_exp"][REMOTE_VIEW_SCOPE]
+    assert refreshed["view_expires_in"] == MOBILE_REMOTE_VIEW_TTL_SECONDS
+
+
+def test_mobile_session_refresh_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+
+    response = client.post(
+        "/api/mobile/session/refresh",
+        headers={"Authorization": f"Bearer {paired_token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_type"] == "Bearer"
+    assert decode_mobile_token(body["token"], allowed_scopes={TOKEN_SCOPE, REMOTE_VIEW_SCOPE})
+
+
+def test_remote_input_grant_token_cannot_self_approve_bound_approval(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
+    grant_token = _claim_remote_input_token(client, paired_token, grant)
+    approval = Approval(
+        task_id="task_mobile_remote_input_self_approve",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="Approve remote input from same grant",
+        source_device_id=device_id,
+        source_grant_id=grant["grant_id"],
+        allowed_device_ids=[device_id],
+        required_mobile_scopes=[REMOTE_INPUT_SCOPE],
+    )
+    db.upsert_model("approvals", approval)
+
+    approve_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {grant_token}"},
+        json={"decision": "approved"},
+    )
+    reject_response = client.post(
+        f"/api/mobile/approvals/{approval.id}/decision",
+        headers={"Authorization": f"Bearer {grant_token}"},
+        json={"decision": "denied"},
+    )
+
+    assert approve_response.status_code == 403
+    assert approve_response.json()["detail"] == "Remote input grant token cannot approve its own input request."
+    assert reject_response.status_code == 200
+    assert reject_response.json()["status"] == "rejected"
+
+
 def test_active_remote_input_grant_does_not_pollute_regular_mobile_approval(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
@@ -1627,7 +1760,7 @@ def test_remote_input_scope_cannot_decide_after_remote_desktop_disabled(monkeypa
         required_mobile_scopes=[REMOTE_INPUT_SCOPE],
     )
     db.upsert_model("approvals", approval)
-    update_settings({"remote_desktop_enabled": False})
+    _disable_remote_desktop()
 
     response = client.post(
         f"/api/mobile/approvals/{approval.id}/decision",
@@ -1795,7 +1928,7 @@ def test_remote_input_grant_claim_requires_remote_desktop_enabled(monkeypatch, t
     paired_token = _paired_token(client)
     device_id = decode_mobile_token(paired_token)["device_id"]
     grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
-    update_settings({"remote_desktop_enabled": False})
+    _disable_remote_desktop()
 
     response = client.post(
         f"/api/mobile/remote-input-grants/{grant['grant_id']}/token",
@@ -3155,9 +3288,16 @@ def _paired_token(client: TestClient) -> str:
     device_name = "Test Phone"
     mobile_pairing_service._upsert_mobile_device(device_id=device_id, device_name=device_name)
     scopes = [TOKEN_SCOPE]
+    scope_ttl: dict[str, int] | None = None
     if get_effective_settings().remote_desktop_enabled:
         scopes.append(REMOTE_VIEW_SCOPE)
-    return issue_mobile_token(device_id=device_id, device_name=device_name, scope=scopes)
+        scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
+    return issue_mobile_token(
+        device_id=device_id,
+        device_name=device_name,
+        scope=scopes,
+        scope_ttl=scope_ttl,
+    )
 
 
 def _mobile_task_metadata(token: str) -> dict:

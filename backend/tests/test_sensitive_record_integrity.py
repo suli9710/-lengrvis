@@ -88,3 +88,38 @@ def test_tampered_audit_chain_head_fails_integrity_check() -> None:
     assert result["failures"][0]["table"] == "audit_chain_heads"
     with pytest.raises(db.SensitiveRecordIntegrityError):
         db.verify_audit_log()
+
+
+def test_set_setting_rolls_back_when_integrity_store_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    db.set_setting("integrity_atomic_key", {"version": 1})
+
+    real_store = db._store_sensitive_record_integrity
+
+    def failing_store(conn, table, record_id, data):  # type: ignore[no-untyped-def]
+        if table == "app_settings" and record_id == "integrity_atomic_key":
+            raise RuntimeError("integrity store failed")
+        real_store(conn, table, record_id, data)
+
+    monkeypatch.setattr(db, "_store_sensitive_record_integrity", failing_store)
+
+    with pytest.raises(RuntimeError, match="integrity store failed"):
+        db.set_setting("integrity_atomic_key", {"version": 2})
+
+    assert db.get_settings_overrides()["integrity_atomic_key"] == {"version": 1}
+
+
+def test_bootstrap_fails_when_integrity_proof_deleted_after_initial_bootstrap() -> None:
+    db.set_setting("allow_cloud_context", False)
+
+    with db.connect() as conn:
+        conn.execute(
+            """
+            DELETE FROM sensitive_record_integrity
+            WHERE table_name = 'app_settings' AND record_id = ?
+            """,
+            ("allow_cloud_context",),
+        )
+
+    result = db.bootstrap_sensitive_record_integrity()
+    assert result["ok"] is False
+    assert any(item["table"] == "app_settings" for item in result["failures"])

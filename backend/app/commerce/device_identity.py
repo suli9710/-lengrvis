@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import socket
 import sys
@@ -13,9 +14,16 @@ from pathlib import Path
 from typing import Any
 
 from app.core.errors import AppError
-from app.security.local_secret import load_or_create_local_secret
+from app.security.local_secret import (
+    LOCAL_SECRET_DPAPI_PREFIX,
+    LOCAL_SECRET_KEYRING_PREFIX,
+    load_or_create_local_secret,
+)
 
 ACTIVATION_INSTALL_SECRET_FILE = "activation_install.secret"  # noqa: S105 - file name, not a secret value.
+
+COMMERCIAL_RELEASE_ENV_VAR = "LENGRVIS_COMMERCIAL_RELEASE"
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 _HASH_PREFIX = "lengrvis-device-v1:"
 
@@ -42,8 +50,12 @@ class LocalDeviceIdentity:
 
 def local_activation_device_id(settings: Any) -> str:
     """Return a stable install-bound id without exposing local host details."""
-    secret = _activation_install_secret(settings)
-    return f"dev_{sha256(secret.encode('utf-8')).hexdigest()[:32]}"
+    return collect_activation_device_identity(settings).device_id
+
+
+def local_activation_device_fingerprint(settings: Any) -> str:
+    """Return a stable machine-bound fingerprint for license verification."""
+    return collect_activation_device_identity(settings).fingerprint
 
 
 def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
@@ -72,6 +84,12 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
         if key in signals
     }
     if not fingerprint_inputs:
+        if _commercial_release_enabled():
+            raise DeviceIdentityError(
+                "Commercial release requires a hardware-backed device fingerprint.",
+                code="activation_device_fingerprint_weak",
+                status_code=503,
+            )
         fingerprint_inputs["install_hash"] = install_hash
     fingerprint_inputs["os"] = _safe_label(platform.system().lower() or sys.platform, max_length=24)
     fingerprint_inputs["arch"] = _safe_label(platform.machine().lower(), max_length=32)
@@ -93,18 +111,50 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
     return LocalDeviceIdentity(device_id=device_id, fingerprint=fingerprint, profile=profile)
 
 
-def _activation_install_secret(settings: Any) -> str:
+def activation_install_secret_path(settings: Any) -> Path:
     data_dir = Path(str(getattr(settings, "data_dir", "") or "")).expanduser()
     if not data_dir:
         raise DeviceIdentityError(
-            "Activation storage directory is unavailable.",
+            "激活存储目录不可用。",
             code="activation_storage_unavailable",
             status_code=503,
         )
-    return load_or_create_local_secret(
-        data_dir / ACTIVATION_INSTALL_SECRET_FILE,
-        unavailable_message="Activation install secret is unavailable.",
+    return data_dir / ACTIVATION_INSTALL_SECRET_FILE
+
+
+def _activation_install_secret(settings: Any) -> str:
+    path = activation_install_secret_path(settings)
+    secret = load_or_create_local_secret(
+        path,
+        unavailable_message="激活安装密钥不可用。",
     )
+    _assert_restrictive_secret_file_permissions(path)
+    return secret
+
+
+def _assert_restrictive_secret_file_permissions(path: Path) -> None:
+    """Reject world-readable activation secrets and commercial plaintext storage."""
+    if not path.exists():
+        return
+    if os.name == "nt":
+        if _commercial_release_enabled():
+            stored = path.read_text(encoding="utf-8").strip()
+            if stored and not (
+                stored.startswith(LOCAL_SECRET_DPAPI_PREFIX) or stored.startswith(LOCAL_SECRET_KEYRING_PREFIX)
+            ):
+                raise DeviceIdentityError(
+                    "商业发行版要求激活安装密钥使用 DPAPI 或系统密钥环存储。",
+                    code="activation_secret_insecure_permissions",
+                    status_code=403,
+                )
+        return
+    mode = path.stat().st_mode
+    if mode & 0o077:
+        raise DeviceIdentityError(
+            "激活安装密钥文件权限过宽。",
+            code="activation_secret_insecure_permissions",
+            status_code=403,
+        )
 
 
 def _digest_signal(value: str) -> str:
@@ -152,3 +202,7 @@ def _safe_node_id() -> str:
 def _safe_label(value: Any, *, max_length: int) -> str:
     text = str(value or "").strip()
     return text[:max_length]
+
+
+def _commercial_release_enabled() -> bool:
+    return str(os.getenv(COMMERCIAL_RELEASE_ENV_VAR, "")).strip().lower() in _TRUE_VALUES

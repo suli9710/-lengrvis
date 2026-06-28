@@ -16,6 +16,8 @@ Design notes:
   returns a non-zero exit code. Remaining stages are skipped unless --keep-going.
 - A release candidate must run with --strict so the readiness dashboard enforces
   that every P0 stop-ship blocker is passed or explicitly waived.
+- Non-strict delivery:run still runs signed-artifacts unless
+  --skip-signature-verify is passed (explicit dev opt-out; emits warnings).
 """
 
 from __future__ import annotations
@@ -52,11 +54,46 @@ class StageResult:
     detail: str = ""
 
 
-def default_stages(*, strict: bool) -> List[Stage]:
+def signed_artifacts_stage() -> Stage:
+    return Stage(
+        "signed-artifacts",
+        [
+            "npm",
+            "--prefix",
+            "desktop",
+            "run",
+            "verify:windows-release-signatures",
+        ],
+        True,
+        "Verify Windows release artifact signatures",
+    )
+
+
+def release_artifact_preflight_stage() -> Stage:
+    return Stage(
+        "release-artifact-preflight",
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; from pathlib import Path; "
+                "missing = [str(p) for p in (Path('dist/backend.exe'),) if not p.is_file()]; "
+                "sys.exit(1 if missing else 0)"
+            ),
+        ],
+        True,
+        "Ensure dist/backend.exe exists before signature verification",
+    )
+
+
+def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List[Stage]:
     """Return the ordered delivery stages.
 
     The readiness stage gains --strict for release candidates so blocked P0
     rows fail the pipeline instead of only warning.
+
+    Non-strict runs still verify Windows release signatures unless
+    ``skip_signature_verify`` is set (explicit dev opt-out only).
     """
     readiness_cmd = [
         sys.executable,
@@ -120,6 +157,10 @@ def default_stages(*, strict: bool) -> List[Stage]:
             "Collect release evidence packet",
         ),
     ]
+    if not strict and not skip_signature_verify:
+        insert_at = next(i for i, stage in enumerate(stages) if stage.name == "market-readiness")
+        stages.insert(insert_at, release_artifact_preflight_stage())
+        stages.insert(insert_at + 1, signed_artifacts_stage())
     if strict:
         stages = [
             stages[0],
@@ -149,18 +190,7 @@ def default_stages(*, strict: bool) -> List[Stage]:
                 True,
                 "Verify release artifacts and run executable smoke",
             ),
-            Stage(
-                "signed-artifacts",
-                [
-                    "npm",
-                    "--prefix",
-                    "desktop",
-                    "run",
-                    "verify:windows-release-signatures",
-                ],
-                True,
-                "Verify Windows release artifact signatures",
-            ),
+            signed_artifacts_stage(),
             Stage(
                 "distribution-evidence",
                 ["npm", "run", "evidence:distribution-verify"],
@@ -267,12 +297,38 @@ def run_pipeline(
     return results
 
 
+def build_signature_verify_warnings(
+    *,
+    strict: bool,
+    skip_signature_verify_requested: bool,
+) -> tuple[bool, list[str]]:
+    """Return effective skip flag and warning lines for the delivery verdict."""
+    effective_skip = skip_signature_verify_requested and not strict
+    warnings: list[str] = []
+    if skip_signature_verify_requested and strict:
+        warnings.append("--skip-signature-verify is ignored in strict RC mode")
+    if effective_skip:
+        warnings.append(
+            "signed-artifacts skipped via --skip-signature-verify; "
+            "non-strict delivery:run does not verify release signatures"
+        )
+    return effective_skip, warnings
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the Lengrvis delivery pipeline.")
     parser.add_argument(
         "--strict",
         action="store_true",
         help="Enforce strict release readiness (RC mode).",
+    )
+    parser.add_argument(
+        "--skip-signature-verify",
+        action="store_true",
+        help=(
+            "Skip the signed-artifacts stage in non-strict runs (dev opt-out only; "
+            "ignored with --strict)."
+        ),
     )
     parser.add_argument(
         "--plan-only",
@@ -292,12 +348,26 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    stages = default_stages(strict=args.strict)
+    skip_signature_verify_requested = bool(args.skip_signature_verify)
+    skip_signature_verify, signature_verify_warnings = build_signature_verify_warnings(
+        strict=args.strict,
+        skip_signature_verify_requested=skip_signature_verify_requested,
+    )
+    for line in signature_verify_warnings:
+        print(f"warning: {line}", file=sys.stderr)
+    stages = default_stages(
+        strict=args.strict, skip_signature_verify=skip_signature_verify
+    )
 
     if args.plan_only:
         print(
             json.dumps(
-                {"strict": args.strict, "plan": build_plan(stages)},
+                {
+                    "strict": args.strict,
+                    "skip_signature_verify": skip_signature_verify,
+                    "warnings": signature_verify_warnings,
+                    "plan": build_plan(stages),
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -307,7 +377,12 @@ def main() -> int:
     repo_root = Path(args.repo_root).resolve()
     results = run_pipeline(stages, cwd=repo_root, keep_going=args.keep_going)
     verdict = aggregate_verdict(results)
-    payload = {"strict": args.strict, **verdict}
+    payload = {
+        "strict": args.strict,
+        "skip_signature_verify": skip_signature_verify,
+        "warnings": signature_verify_warnings,
+        **verdict,
+    }
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     print(text)
     if args.output:

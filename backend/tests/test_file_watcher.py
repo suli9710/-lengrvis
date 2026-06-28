@@ -42,7 +42,7 @@ def test_index_file_appears_in_search(allowed_dir: Path):
     result = fts.index_file(str(test_file), [str(allowed_dir)])
     assert result is True
 
-    hits = fts.search("quick brown fox")
+    hits = fts.search("quick brown fox", allowed_directories=[str(allowed_dir)])
     assert len(hits) > 0
     found_paths = [h.get("path", "") for h in hits]
     assert any(str(allowed_dir) in p for p in found_paths)
@@ -73,7 +73,7 @@ def test_index_file_keeps_fts_available_when_embeddings_fail(allowed_dir: Path):
     result = fts.index_file(str(test_file), [str(allowed_dir)])
 
     assert result is True
-    assert fts.search("lexical fallback content remains searchable")
+    assert fts.search("lexical fallback content remains searchable", allowed_directories=[str(allowed_dir)])
     with db.connect() as conn:
         count = conn.execute(
             "SELECT COUNT(*) AS count FROM document_chunk_embeddings"
@@ -116,7 +116,7 @@ def test_remove_file_clears_from_index(allowed_dir: Path):
     fts.index_file(str(test_file), [str(allowed_dir)])
 
     # Verify it is present
-    hits = fts.search("unique removable content zxywvu")
+    hits = fts.search("unique removable content zxywvu", allowed_directories=[str(allowed_dir)])
     assert len(hits) > 0
 
     # Remove
@@ -125,7 +125,7 @@ def test_remove_file_clears_from_index(allowed_dir: Path):
     assert removed is True
 
     # Verify it is gone
-    hits_after = fts.search("unique removable content zxywvu")
+    hits_after = fts.search("unique removable content zxywvu", allowed_directories=[str(allowed_dir)])
     assert len(hits_after) == 0
 
 
@@ -221,7 +221,7 @@ def test_file_watcher_debounce(allowed_dir: Path):
 
             # Verify the file got indexed
             fts = FTSIndex()
-            hits = fts.search("debounce watcher test content abcxyz123")
+            hits = fts.search("debounce watcher test content abcxyz123", allowed_directories=[str(allowed_dir)])
             assert len(hits) > 0
         finally:
             await watcher.stop()

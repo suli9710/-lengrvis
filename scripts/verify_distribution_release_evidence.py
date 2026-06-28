@@ -19,9 +19,11 @@ from evidence_contracts import (
     require_iso_datetime,
     require_nonempty,
     require_passed,
+    require_sha256_hex,
     require_true,
     result_payload,
     reviewed_evidence_contract_status,
+    validate_dist_artifact_sha256_cross_check,
     validate_redacted_payload,
 )
 
@@ -30,11 +32,15 @@ DEFAULT_EVIDENCE = "build/distribution-release-evidence-reviewed.json"
 ENV_VAR = "LENGRVIS_DISTRIBUTION_EVIDENCE_PATH"
 
 
-def validate_payload(payload: dict[str, Any]) -> list[str]:
-    return validate_payload_with_contract(payload)[0]
+def validate_payload(payload: dict[str, Any], *, repo_root: Path | None = None) -> list[str]:
+    return validate_payload_with_contract(payload, repo_root=repo_root)[0]
 
 
-def validate_payload_with_contract(payload: dict[str, Any]) -> tuple[list[str], dict[str, bool]]:
+def validate_payload_with_contract(
+    payload: dict[str, Any],
+    *,
+    repo_root: Path | None = None,
+) -> tuple[list[str], dict[str, bool]]:
     errors: list[str] = []
     require_artifact_type(payload, ARTIFACT_TYPE, errors)
     require_nonempty(payload, "candidate.commit", errors)
@@ -65,9 +71,8 @@ def validate_payload_with_contract(payload: dict[str, Any]) -> tuple[list[str], 
     require_iso_datetime(payload, "review.reviewed_at_utc", errors)
     require_true(payload, "summary.distribution_pass", errors)
     require_false(payload, "summary.release_signoff", errors)
-    sha = get_path(payload, "candidate.artifact_sha256")
-    if isinstance(sha, str) and (len(sha.strip()) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in sha.strip())):
-        errors.append("candidate.artifact_sha256 must be a 64-character SHA256 hex digest")
+    require_sha256_hex(payload, "candidate.artifact_sha256", errors)
+    validate_dist_artifact_sha256_cross_check(payload, errors, repo_root=repo_root)
     contract = reviewed_evidence_contract_status(payload, release_signoff_path="summary.release_signoff", errors=errors)
     errors.extend(validate_redacted_payload(payload))
     return errors, contract
@@ -82,7 +87,10 @@ def main() -> int:
     payload, errors = load_json(evidence_path)
     contract: dict[str, bool] | None = None
     if payload is not None:
-        payload_errors, contract = validate_payload_with_contract(payload)
+        payload_errors, contract = validate_payload_with_contract(
+            payload,
+            repo_root=Path(__file__).resolve().parent.parent,
+        )
         errors.extend(payload_errors)
     print_result(result_payload(evidence_path, ARTIFACT_TYPE, errors, contract=contract))
     return 1 if errors else 0

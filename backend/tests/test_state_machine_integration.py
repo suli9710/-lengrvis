@@ -88,6 +88,33 @@ def test_safe_transition_strict_raises_invalid_transition():
     assert persisted.status == TaskPhase.CREATED
 
 
+def test_set_status_writes_summary_only_after_successful_transition(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    from app.agents.orchestrator_agent import OrchestratorAgent
+
+    monkeypatch.setenv("LENGRVIS_STRICT_STATE_MACHINE", "false")
+    task = _make_task(TaskStatus.CREATED)
+    task.final_summary = "initial"
+    db.upsert_model("tasks", task)
+
+    OrchestratorAgent()._set_status(task, TaskStatus.COMPLETED, final_summary="must not persist")
+
+    persisted = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert persisted.status == TaskPhase.CREATED
+    assert persisted.final_summary == "initial"
+
+
+def test_set_status_persists_summary_after_valid_transition():
+    from app.agents.orchestrator_agent import OrchestratorAgent
+
+    task = _make_task(TaskStatus.PLANNING)
+
+    OrchestratorAgent()._set_status(task, TaskStatus.FAILED, final_summary="done")
+
+    persisted = Task.model_validate(db.fetch_one("tasks", task.id))
+    assert persisted.status == TaskPhase.FAILED
+    assert persisted.final_summary == "done"
+
+
 def test_same_status_transition_syncs_phase():
     task = _make_task(TaskStatus.PLANNING)
     task.phase = TaskPhase.CREATED

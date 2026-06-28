@@ -441,6 +441,38 @@ def test_runtime_allows_requires_authorized_path_tool_inside_allowed_directories
     assert task.status == TaskStatus.COMPLETED
 
 
+def test_file_trash_does_not_expand_empty_allowlist(tmp_path: Path):
+    orchestrator = OrchestratorAgent()
+    target = tmp_path / "target.txt"
+    task, _, step = _task_plan_step("file.trash", {"path": str(target)})
+    runtime = orchestrator.step_execution_handler._runtime_context_for_step(
+        task, step, context={"allowed_directories": []}
+    )
+    assert runtime.allowed_directories == []
+
+
+def test_file_trash_blocks_empty_allowed_directories(tmp_path: Path):
+    orchestrator = OrchestratorAgent()
+    tool = orchestrator.registry.get("file.trash")
+    runtime_helper = ToolRuntime(orchestrator)
+    target = tmp_path / "target.txt"
+    error = runtime_helper._authorized_path_error(tool, {"path": str(target)}, {"allowed_directories": []})
+    assert "file.trash path argument 'path' is not authorized" in error
+    assert "No authorized directories configured" in error
+
+
+def test_file_trash_blocks_path_outside_allowed_directories(tmp_path: Path):
+    orchestrator = OrchestratorAgent()
+    tool = orchestrator.registry.get("file.trash")
+    runtime_helper = ToolRuntime(orchestrator)
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside" / "target.txt"
+    error = runtime_helper._authorized_path_error(
+        tool, {"path": str(outside)}, {"allowed_directories": [str(workspace)]}
+    )
+    assert "file.trash path argument 'path' is not authorized" in error
+
+
 def test_file_edit_text_requires_prior_read_state(tmp_path: Path):
     target = tmp_path / "workspace" / "edit.txt"
     target.write_text("alpha beta", encoding="utf-8")
@@ -811,6 +843,133 @@ async def test_timed_out_open_only_side_effect_blocks_followup_until_worker_fini
 
     assert second_result["ok"] is True
     assert events == ["A:start", "A:end", "B:start", "B:end"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_tool_worker_aborts_cooperatively(tmp_path: Path):
+    import time
+
+    events: list[str] = []
+    side_effect_done = threading.Event()
+    release = threading.Event()
+    target = tmp_path / "workspace" / "cancel-cooperative.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        label = str(args["label"])
+        events.append(f"{label}:start")
+        abort = context.get("_tool_abort_event")
+        while not release.is_set():
+            if abort is not None and abort.is_set():
+                events.append(f"{label}:aborted")
+                return {"cancelled": True}
+            time.sleep(0.01)
+        target.write_text(label, encoding="utf-8")
+        side_effect_done.set()
+        events.append(f"{label}:end")
+        return {"ok": True}
+
+    tool = ToolDefinition(
+        name="test.cancel_cooperative",
+        description="cancel cooperative",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=execute,
+        concurrency_key="cancel-cooperative",
+        trust_tier="builtin",
+        effects=["write"],
+    )
+    orchestrator = OrchestratorAgent()
+    runtime = ToolRuntime(orchestrator)
+    task_a, _plan_a, step_a = _task_plan_step("test.cancel_cooperative", {"label": "A", "path": str(target)})
+    context = orchestrator.step_execution_handler._runtime_context(task_a).tool_context()
+
+    execution = asyncio.create_task(
+        runtime.execute_tool_with_locks(tool, step_a, step_a.args, context, threaded=True)
+    )
+    await asyncio.sleep(0.05)
+    assert events == ["A:start"]
+
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    await asyncio.sleep(0.1)
+    assert "A:aborted" in events
+    assert "A:end" not in events
+    assert not side_effect_done.is_set()
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_tool_worker_does_not_register_pending_completion(tmp_path: Path):
+    import time
+
+    events: list[str] = []
+    first_started = threading.Event()
+    target = tmp_path / "workspace" / "cancel-pending.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    def execute(args, context):  # noqa: ANN001, ANN202, ARG001
+        label = str(args["label"])
+        events.append(f"{label}:start")
+        abort = context.get("_tool_abort_event")
+        if label == "A":
+            first_started.set()
+            while True:
+                if abort is not None and abort.is_set():
+                    events.append(f"{label}:aborted")
+                    return {"cancelled": True}
+                time.sleep(0.01)
+        events.append(f"{label}:end")
+        return {"ok": True}
+
+    tool = ToolDefinition(
+        name="test.cancel_pending_barrier",
+        description="cancel pending barrier",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R2_REVERSIBLE_MODIFY,
+        agent_owner="FileAgent",
+        supports_dry_run=True,
+        requires_authorized_path=False,
+        execute=execute,
+        concurrency_key="cancel-pending-barrier",
+        trust_tier="builtin",
+        effects=["write"],
+    )
+    orchestrator = OrchestratorAgent()
+    runtime = ToolRuntime(orchestrator)
+    task_a, _plan_a, step_a = _task_plan_step("test.cancel_pending_barrier", {"label": "A", "path": str(target)})
+    task_b, _plan_b, step_b = _task_plan_step("test.cancel_pending_barrier", {"label": "B", "path": str(target)})
+    first_context = orchestrator.step_execution_handler._runtime_context(task_a).tool_context()
+
+    first_task = asyncio.create_task(
+        runtime.execute_tool_with_locks(tool, step_a, step_a.args, first_context, threaded=True)
+    )
+    await asyncio.sleep(0.05)
+    assert first_started.is_set()
+
+    first_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_task
+
+    pending = runtime._pending_tool_completions_for_current_loop()
+    assert pending == {}
+
+    second_context = orchestrator.step_execution_handler._runtime_context(task_b).tool_context()
+    second_result = await runtime.execute_tool_with_locks(
+        tool, step_b, step_b.args, second_context, threaded=True
+    )
+
+    assert second_result["ok"] is True
+    assert "A:aborted" in events
+    assert "A:end" not in events
+    assert events == ["A:start", "A:aborted", "B:start", "B:end"]
 
 
 def test_dry_run_preview_serializes_with_real_write_on_same_path(tmp_path: Path):

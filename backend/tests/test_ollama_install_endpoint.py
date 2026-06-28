@@ -1,6 +1,8 @@
 """Tests for the install-local-model endpoint and streaming pull."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -259,6 +261,37 @@ def test_install_local_model_websocket_restricts_model_name(monkeypatch):
             assert websocket.receive_json()["status"] == "error"
 
     assert exc_info.value.code == 1008
+
+
+def test_install_local_model_websocket_audit_fail_closed(monkeypatch, tmp_path):
+    """Mutating install WS must honor audit fail-closed like HTTP POST."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    from app.main import create_app
+    from app.core.audit import record
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_AUDIT_FAIL_CLOSED", "true")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    db.init_db()
+    record("security.ws_install_gate", "pytest", {"ok": True})
+
+    anchor_path = db.audit_anchor_path()
+    payload = json.loads(anchor_path.read_text(encoding="utf-8"))
+    payload["event_hash"] = "0" * 64
+    anchor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/settings/install-local-model?model=qwen2.5:3b",
+            subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}desktop-secret"],
+        ):
+            raise AssertionError("install-local-model websocket should honor audit fail-closed")
+
+    assert exc_info.value.code == 1013
 
 
 def test_install_local_model_endpoint_rejects_unsupported_model():

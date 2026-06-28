@@ -5,8 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from app.core.paths import resolve_authorized
+from app.commerce.entitlements import Feature, active_plan, has_feature, require_feature
+from app.commerce.licensing import commercial_release_enabled
 from app.indexer.ocr_service import extract_pdf_text_with_ocr_fallback
-from app.llm.registry import LOCAL_PROVIDERS
+from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
 from app.policy.privacy import can_upload_file_content
 from app.policy.risk import RiskLevel
 from app.services import document_service
@@ -21,6 +23,23 @@ _CHUNK_CHARS = document_service.DEFAULT_CHUNK_CHARS
 
 def _allowed(context: dict[str, Any]) -> list[str]:
     return list(context.get("allowed_directories") or [])
+
+
+def _document_disabled() -> dict[str, Any]:
+    return {"error": "Document AI is not available on this plan."}
+
+
+def _require_document_ai_tool(fn):
+    def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        settings = context.get("settings") or get_effective_settings()
+        plan = active_plan(settings)
+        if commercial_release_enabled():
+            require_feature(plan, Feature.DOCUMENT_AI)
+        elif not has_feature(plan, Feature.DOCUMENT_AI):
+            return _document_disabled()
+        return fn(args, context)
+
+    return execute
 
 
 def _document_max_chars_to_llm(context: dict[str, Any]) -> int:
@@ -122,6 +141,7 @@ def extract_text_from_path(path: Path) -> str:
     return "[Unsupported document type]"
 
 
+@_require_document_ai_tool
 def extract_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = extract_text_from_path(path)
@@ -132,6 +152,7 @@ def extract_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     }
 
 
+@_require_document_ai_tool
 def summarize(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = extract_text_from_path(path)
@@ -144,6 +165,7 @@ def summarize(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return {"path": str(path), **result}
 
 
+@_require_document_ai_tool
 def qa(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     question = str(args.get("question") or "").strip()
@@ -158,24 +180,28 @@ def qa(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return {"path": str(path), **result}
 
 
+@_require_document_ai_tool
 def convert_to_markdown(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = extract_text_from_path(path)
     return {"markdown": f"# {path.name}\n\n{text}"[:_EXTRACT_TEXT_LIMIT]}
 
 
+@_require_document_ai_tool
 def analyze_csv(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     rows = list(csv.DictReader(path.open("r", encoding="utf-8", errors="ignore")))
     return {"path": str(path), "rows": len(rows), "columns": list(rows[0].keys()) if rows else []}
 
 
+@_require_document_ai_tool
 def analyze_xlsx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     text = extract_text_from_path(path)
     return {"path": str(path), "preview": text[:2000]}
 
 
+@_require_document_ai_tool
 def generate_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     content = str(args.get("content") or "").strip()
     title = str(args.get("title") or "Report").strip() or "Report"
@@ -187,17 +213,20 @@ def generate_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, 
     )
 
 
+@_require_document_ai_tool
 def parse_advanced(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     result = document_intelligence_service.parse_advanced(path, settings=context.get("settings"))
     return result.as_dict()
 
 
+@_require_document_ai_tool
 def extract_tables(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     return document_intelligence_service.extract_tables(path, settings=context.get("settings"))
 
 
+@_require_document_ai_tool
 def ask_with_citations(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     return document_intelligence_service.ask_with_citations(
@@ -209,6 +238,7 @@ def ask_with_citations(args: dict[str, Any], context: dict[str, Any]) -> dict[st
     )
 
 
+@_require_document_ai_tool
 def compare(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     left_raw, right_raw = _compare_path_pair(args)
     left_path = resolve_authorized(left_raw, _allowed(context))
@@ -220,6 +250,7 @@ def compare(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+@_require_document_ai_tool
 def redact_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     custom_patterns = args.get("custom_patterns") if isinstance(args.get("custom_patterns"), dict) else None
@@ -231,6 +262,7 @@ def redact_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     )
 
 
+@_require_document_ai_tool
 def generate_cited_report(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     return document_intelligence_service.generate_cited_report(
@@ -243,6 +275,7 @@ def generate_cited_report(args: dict[str, Any], context: dict[str, Any]) -> dict
     )
 
 
+@_require_document_ai_tool
 def edit_docx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     return document_intelligence_service.edit_docx(
@@ -253,6 +286,7 @@ def edit_docx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+@_require_document_ai_tool
 def edit_xlsx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     return document_intelligence_service.edit_xlsx(
@@ -264,6 +298,7 @@ def edit_xlsx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+@_require_document_ai_tool
 def edit_pptx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     return document_intelligence_service.edit_pptx(
@@ -274,6 +309,7 @@ def edit_pptx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+@_require_document_ai_tool
 def apply_redaction(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     custom_patterns = args.get("custom_patterns") if isinstance(args.get("custom_patterns"), dict) else None

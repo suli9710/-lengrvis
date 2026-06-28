@@ -211,6 +211,7 @@ class PermissionStore:
         model.updated_at = now_iso()
         serialized = model.model_dump_json()
         with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
                 INSERT INTO permission_policies (id, data, updated_at)
@@ -219,7 +220,9 @@ class PermissionStore:
                 """,
                 (self.policy_id, serialized, model.updated_at),
             )
-        db.store_sensitive_record_integrity("permission_policies", self.policy_id, serialized)
+            db.store_sensitive_record_integrity(
+                "permission_policies", self.policy_id, serialized, conn=conn
+            )
         return model
 
     def add_rule(self, rule: PermissionRule | dict[str, Any]) -> PermissionPolicy:
@@ -254,7 +257,9 @@ class PermissionStore:
                 """,
                 (self.policy_id, serialized, policy.updated_at),
             )
-        db.store_sensitive_record_integrity("permission_policies", self.policy_id, serialized)
+            db.store_sensitive_record_integrity(
+                "permission_policies", self.policy_id, serialized, conn=conn
+            )
         return policy
 
     def upsert_rule(self, rule: PermissionRule | dict[str, Any]) -> PermissionPolicy:

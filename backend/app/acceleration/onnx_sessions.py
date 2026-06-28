@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib
 import importlib.metadata
+import json
 import os
 import platform
 import threading
@@ -281,21 +284,178 @@ def runtime_package_for_provider(execution_provider: str) -> str:
 def resolve_onnx_model_path(raw: str | Path | None) -> Path | None:
     if raw is None:
         return None
-    path = Path(raw).expanduser()
+    literal = Path(raw).expanduser()
+    allowed_roots = _onnx_containment_roots(literal)
     try:
-        path = path.resolve(strict=False)
+        path = literal.resolve(strict=False)
     except OSError:
         return None
+    candidate: Path | None
     if path.is_file() and path.suffix.lower() in {".onnx", ".ort"}:
-        return path
-    if path.is_dir():
+        candidate = path
+    elif path.is_dir():
+        candidate = None
         for name in ("model.onnx", "embedding.onnx", "vision_model.onnx", "encoder_model.onnx", "det_model.onnx"):
-            candidate = path / name
-            if candidate.is_file():
-                return candidate
-        candidates = sorted(candidate for candidate in path.rglob("*.onnx") if candidate.is_file())
-        return candidates[0] if candidates else None
-    return None
+            nested = path / name
+            if nested.is_file():
+                candidate = nested
+                break
+        if candidate is None:
+            candidates = sorted(item for item in path.rglob("*.onnx") if item.is_file())
+            candidate = candidates[0] if candidates else None
+    else:
+        candidate = None
+    if candidate is None:
+        return None
+    if allowed_roots and _symlink_escapes_containment(literal, candidate, allowed_roots):
+        return None
+    if not _verify_optional_manifest_sha256(candidate):
+        return None
+    return candidate
+
+
+def _onnx_containment_roots(raw: Path) -> list[Path]:
+    roots: list[Path] = []
+    sandbox = _resolve_sandbox_root(raw)
+    if sandbox is not None:
+        _append_unique_root(roots, sandbox)
+    for env_key in ("LENGRVIS_ONNX_MODELS_DIR", "LENGRVIS_MODELS_DIR"):
+        configured = str(get_env(env_key) or "").strip()
+        if configured:
+            _append_unique_root(roots, Path(configured).expanduser())
+    try:
+        from app.config import get_base_settings
+
+        settings = get_base_settings()
+        if settings.data_dir:
+            data_dir = Path(settings.data_dir).expanduser()
+            _append_unique_root(roots, data_dir / "models")
+            _append_unique_root(roots, data_dir)
+    except Exception:  # noqa: BLE001 - optional settings lookup must not block model resolution.
+        pass
+    return roots
+
+
+def _resolve_sandbox_root(raw: Path) -> Path | None:
+    current = raw if raw.is_dir() else raw.parent
+    while current != current.parent:
+        if current.exists() and os.path.islink(current):
+            return current.parent
+        current = current.parent
+    return raw if raw.is_dir() else raw.parent
+
+
+def _append_unique_root(roots: list[Path], raw: Path) -> None:
+    try:
+        resolved = raw.resolve(strict=False)
+    except OSError:
+        return
+    if resolved not in roots:
+        roots.append(resolved)
+
+
+def _symlink_escapes_containment(literal: Path, candidate: Path, allowed_roots: list[Path]) -> bool:
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return True
+    contained = False
+    for root in allowed_roots:
+        try:
+            root_resolved = root.resolve(strict=False)
+        except OSError:
+            continue
+        try:
+            if resolved == root_resolved or resolved.is_relative_to(root_resolved):
+                contained = True
+                if _symlink_escape_in_literal_path(literal, root_resolved):
+                    return True
+        except ValueError:
+            continue
+    return not contained
+
+
+def _symlink_escape_in_literal_path(literal: Path, root: Path) -> bool:
+    current = literal if literal.is_dir() else literal.parent
+    while current != root and current != current.parent:
+        if current.exists() and os.path.islink(current):
+            try:
+                target = current.resolve(strict=True)
+            except OSError:
+                return True
+            try:
+                if not (target == root or target.is_relative_to(root)):
+                    return True
+            except ValueError:
+                return True
+        current = current.parent
+    return False
+
+
+def _verify_optional_manifest_sha256(model_path: Path) -> bool:
+    manifest_path = str(get_env("LENGRVIS_MODEL_MANIFEST") or "").strip()
+    if not manifest_path:
+        manifest_path = str(Path(__file__).with_name("model_manifest.json"))
+    path = Path(manifest_path).expanduser()
+    if not path.is_file():
+        return True
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    expected = _expected_manifest_sha256(manifest, model_path, manifest_path=path)
+    if not expected:
+        return True
+    try:
+        actual = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    normalized = expected.lower().removeprefix("sha256:")
+    return hmac.compare_digest(actual.lower(), normalized)
+
+
+def _expected_manifest_sha256(manifest: dict[str, Any], model_path: Path, *, manifest_path: Path) -> str:
+    models = manifest.get("models")
+    if not isinstance(models, list):
+        return ""
+    search_roots = _manifest_model_roots(model_path, manifest, manifest_path)
+    try:
+        resolved_model = model_path.resolve(strict=False)
+    except OSError:
+        return ""
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        expected = str(item.get("model_sha256") or item.get("sha256") or "").strip()
+        if not expected:
+            continue
+        rel_path = str(item.get("path") or "").strip()
+        if not rel_path:
+            continue
+        for root in search_roots:
+            try:
+                model_dir = (root / rel_path).resolve(strict=False)
+            except OSError:
+                continue
+            try:
+                if resolved_model == model_dir or resolved_model.is_relative_to(model_dir):
+                    return expected
+            except ValueError:
+                continue
+    return ""
+
+
+def _manifest_model_roots(model_path: Path, manifest: dict[str, Any], manifest_path: Path) -> list[Path]:
+    anchor = model_path if model_path.is_dir() else model_path.parent
+    roots = _onnx_containment_roots(anchor)
+    raw_root = str(manifest.get("models_root") or "").strip()
+    if raw_root:
+        candidate = Path(raw_root).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        _append_unique_root(roots, candidate)
+    _append_unique_root(roots, manifest_path.parent)
+    return roots
 
 
 def create_inference_session(backend: OnnxSessionBackend) -> Any:

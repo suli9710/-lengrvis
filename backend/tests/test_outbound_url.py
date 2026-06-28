@@ -47,6 +47,23 @@ def test_validate_outbound_http_url_allows_private_when_opted_in() -> None:
     assert validate_outbound_http_url(url, allow_private=True) == url
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+    ],
+)
+def test_validate_outbound_http_url_blocks_metadata_even_with_allow_private(url: str) -> None:
+    with pytest.raises(ValueError, match="blocked to prevent SSRF"):
+        validate_outbound_http_url(url, allow_private=True)
+
+
+def test_pin_outbound_http_url_blocks_metadata_even_with_allow_private() -> None:
+    with pytest.raises(ValueError, match="blocked to prevent SSRF"):
+        pin_outbound_http_url("http://169.254.169.254/latest/meta-data/", allow_private=True)
+
+
 def test_validate_outbound_http_url_allows_public_hosts() -> None:
     url = "https://api.openai.com/v1"
     assert validate_outbound_http_url(url, allow_private=False) == url

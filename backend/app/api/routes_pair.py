@@ -23,6 +23,7 @@ class PairRedeemRequest(BaseModel):
         pattern=r"^[a-f0-9]+$",
     )
     device_name: str = Field(default="Android device", max_length=80)
+    claim_secret: str = Field(default="", max_length=128)
 
 
 class RemoteInputGrantRequest(BaseModel):
@@ -41,6 +42,7 @@ def confirm_pairing(payload: PairRedeemRequest, request: Request) -> dict:
         mobile_pairing_service.confirm_pairing(
             code=payload.code,
             device_name=payload.device_name,
+            claim_secret=payload.claim_secret,
             client_host=client_host,
         )
     )
@@ -86,6 +88,7 @@ def pair(payload: PairRedeemRequest, request: Request) -> dict:
         mobile_pairing_service.confirm_pairing(
             code=payload.code,
             device_name=payload.device_name,
+            claim_secret=payload.claim_secret,
             client_host=client_host,
         )
     )

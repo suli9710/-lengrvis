@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
 from app.core.schemas import AgentMessage, ChatMessage, ChatRequest, ChatResponse
 from app.orchestration.agent_bus import AgentBus

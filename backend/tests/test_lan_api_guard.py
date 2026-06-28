@@ -68,18 +68,33 @@ def test_remote_lan_client_needs_https_for_mobile_token_paths(monkeypatch, tmp_p
     assert code_response.status_code == 403
     assert remote.get("/api/tasks").status_code == 403
 
-    code = loopback.post("/api/pair/code").json()["code"]
-    pair_response = remote.post("/api/pair", json={"code": code, "device_name": "LAN phone"})
+    pairing = loopback.post("/api/pair/code").json()
+    pair_response = remote.post(
+        "/api/pair",
+        json={"code": pairing["code"], "claim_secret": pairing["claim_secret"], "device_name": "LAN phone"},
+    )
     assert pair_response.status_code == 403
 
-    code = loopback.post("/api/pair/code").json()["code"]
-    pair_response = secure_remote.post("/api/pair", json={"code": code, "device_name": "LAN phone"})
+    pairing = loopback.post("/api/pair/code").json()
+    pair_response = secure_remote.post(
+        "/api/pair",
+        json={"code": pairing["code"], "claim_secret": pairing["claim_secret"], "device_name": "LAN phone"},
+    )
     assert pair_response.status_code == 200
     token = pair_response.json()["token"]
     assert token
-    code = loopback.post("/api/pair/code").json()["code"]
-    assert remote.post("/api/pair/confirm", json={"code": code, "device_name": "LAN phone"}).status_code == 403
-    confirm_response = secure_remote.post("/api/pair/confirm", json={"code": code, "device_name": "LAN phone"})
+    pairing = loopback.post("/api/pair/code").json()
+    assert (
+        remote.post(
+            "/api/pair/confirm",
+            json={"code": pairing["code"], "claim_secret": pairing["claim_secret"], "device_name": "LAN phone"},
+        ).status_code
+        == 403
+    )
+    confirm_response = secure_remote.post(
+        "/api/pair/confirm",
+        json={"code": pairing["code"], "claim_secret": pairing["claim_secret"], "device_name": "LAN phone"},
+    )
     assert confirm_response.status_code == 200
     assert remote.get("/api/mobile/devices", headers={"Authorization": f"Bearer {token}"}).status_code == 403
     assert secure_remote.get("/api/mobile/devices", headers={"Authorization": f"Bearer {token}"}).status_code == 200
@@ -97,11 +112,24 @@ def test_guardian_remote_lan_client_needs_https_for_mobile_token_paths(monkeypat
 
     assert remote.post("/api/pair/code").status_code == 403
     assert remote.post("/api/pair/request").status_code == 403
-    code = loopback.post("/api/pair/code").json()["code"]
-    assert remote.post("/api/pair", json={"code": code, "device_name": "Guardian LAN phone"}).status_code == 403
+    pairing = loopback.post("/api/pair/code").json()
+    assert (
+        remote.post(
+            "/api/pair",
+            json={
+                "code": pairing["code"],
+                "claim_secret": pairing["claim_secret"],
+                "device_name": "Guardian LAN phone",
+            },
+        ).status_code
+        == 403
+    )
 
-    code = loopback.post("/api/pair/code").json()["code"]
-    pair_response = secure_remote.post("/api/pair", json={"code": code, "device_name": "Guardian LAN phone"})
+    pairing = loopback.post("/api/pair/code").json()
+    pair_response = secure_remote.post(
+        "/api/pair",
+        json={"code": pairing["code"], "claim_secret": pairing["claim_secret"], "device_name": "Guardian LAN phone"},
+    )
     assert pair_response.status_code == 200
     token = pair_response.json()["token"]
     assert remote.get("/api/mobile/devices", headers={"Authorization": f"Bearer {token}"}).status_code == 403
@@ -172,6 +200,54 @@ def test_remote_lan_mobile_and_remote_websockets_require_wss(monkeypatch, tmp_pa
         subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{remote_input_token}"],
     ) as websocket:
         assert websocket.receive_json()["type"] == "connected"
+
+
+def test_mobile_websockets_reject_untrusted_origin(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_origin_ws", device_name="Origin Phone")
+    mobile_token = issue_mobile_token(
+        device_id="mobile_origin_ws",
+        device_name="Origin Phone",
+        scope=[TOKEN_SCOPE, REMOTE_VIEW_SCOPE],
+    )
+    client = TestClient(app, client=("127.0.0.1", 50100))
+
+    for path in ("/ws/mobile/approvals", "/ws/remote/screen"):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                path,
+                headers={"Origin": "https://evil.example"},
+                subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{mobile_token}"],
+            ):
+                raise AssertionError(f"mobile websocket {path} should reject untrusted browser origins")
+        assert exc_info.value.code == 1008
+
+
+def test_strict_mobile_websocket_allows_missing_origin_only_with_token_protocol(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_STRICT_WEBSOCKET_ORIGIN", "true")
+    db.init_db()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_strict_ws", device_name="Strict Phone")
+    mobile_token = issue_mobile_token(
+        device_id="mobile_strict_ws",
+        device_name="Strict Phone",
+        scope=[TOKEN_SCOPE],
+    )
+    client = TestClient(app, client=("127.0.0.1", 50100))
+
+    with client.websocket_connect(
+        "/ws/mobile/approvals",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{mobile_token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/mobile/approvals"):
+            raise AssertionError("strict mobile websocket should reject missing origin without token proof")
+
+    assert exc_info.value.code == 1008
 
 
 def test_guardian_remote_lan_mobile_and_remote_websockets_are_not_desktop_proxied(monkeypatch, tmp_path):
@@ -603,7 +679,11 @@ def test_loopback_state_changes_require_desktop_token_when_configured(monkeypatc
 
     blocked = client.post("/api/pair/code")
     allowed = client.post("/api/pair/code", headers={"X-Lengrvis-Desktop-Token": "desktop-secret"})
-    redeem = client.post("/api/pair", json={"code": allowed.json()["code"], "device_name": "Phone"})
+    pairing = allowed.json()
+    redeem = client.post(
+        "/api/pair",
+        json={"code": pairing["code"], "claim_secret": pairing["claim_secret"], "device_name": "Phone"},
+    )
 
     assert blocked.status_code == 401
     assert allowed.status_code == 200

@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from app.config import get_env
+from app.core.audit import record
 from app.security.desktop_api import (
     DESKTOP_API_TOKEN_HEADER,
     desktop_api_token_headers,
@@ -23,6 +26,17 @@ FULL_BACKEND_HOST = "127.0.0.1"
 FULL_BACKEND_PORT = int(get_env("LENGRVIS_FULL_BACKEND_PORT") or "8001")
 FULL_BACKEND_URL = get_env("LENGRVIS_FULL_BACKEND_URL") or f"http://{FULL_BACKEND_HOST}:{FULL_BACKEND_PORT}"
 FULL_BACKEND_IDLE_TIMEOUT_SECONDS = int(get_env("LENGRVIS_FULL_BACKEND_IDLE_TIMEOUT_SECONDS") or "300")
+_DISALLOWED_FULL_BACKEND_EXECUTABLES = {
+    "bash",
+    "bash.exe",
+    "cmd",
+    "cmd.exe",
+    "cscript.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "sh",
+    "wscript.exe",
+}
 
 
 class ForegroundKind(StrEnum):
@@ -177,7 +191,14 @@ class GuardianRuntime:
     def _full_backend_command(self) -> list[str]:
         raw = get_env("LENGRVIS_FULL_BACKEND_COMMAND")
         if raw:
-            return _split_command(raw)
+            command = _split_command(raw)
+            _validate_custom_full_backend_command(command)
+            record(
+                "guardian.full_backend_command",
+                "GuardianRuntime",
+                {"executable": command[0], "argv_len": len(command)},
+            )
+            return command
         if getattr(sys, "frozen", False):
             return [sys.executable]
         return [sys.executable, "-m", "uvicorn", "backend.main:full_app", "--host", FULL_BACKEND_HOST, "--port", str(FULL_BACKEND_PORT)]
@@ -243,6 +264,40 @@ class GuardianRuntime:
             return False
         active = data.get("activeRunIds") if isinstance(data, dict) else None
         return bool(active)
+
+
+def _resolve_full_backend_executable(executable: str) -> Path:
+    candidate = Path(executable).expanduser()
+    if not candidate.is_absolute():
+        found = shutil.which(executable)
+        if not found:
+            raise RuntimeError(f"Full backend executable not found: {executable}")
+        candidate = Path(found)
+    resolved = candidate.resolve(strict=False)
+    if not resolved.is_file():
+        raise RuntimeError(f"Full backend executable is not a file: {executable}")
+    return resolved
+
+
+def _full_backend_executable_allowlist() -> set[Path]:
+    allowed = {Path(sys.executable).expanduser().resolve(strict=False)}
+    raw_allowlist = get_env("LENGRVIS_FULL_BACKEND_COMMAND_ALLOWLIST") or ""
+    for entry in raw_allowlist.split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        allowed.add(Path(entry).expanduser().resolve(strict=False))
+    return allowed
+
+
+def _validate_custom_full_backend_command(command: list[str]) -> None:
+    if not command:
+        raise RuntimeError("Full backend command must not be empty.")
+    executable = _resolve_full_backend_executable(command[0])
+    if executable.name.lower() in _DISALLOWED_FULL_BACKEND_EXECUTABLES:
+        raise RuntimeError("Shell interpreters are not allowed for LENGRVIS_FULL_BACKEND_COMMAND.")
+    if executable not in _full_backend_executable_allowlist():
+        raise RuntimeError("LENGRVIS_FULL_BACKEND_COMMAND executable is not allowed.")
 
 
 def _split_command(raw: str) -> list[str]:

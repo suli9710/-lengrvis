@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import threading
@@ -10,11 +11,15 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from native_confirmation_helpers import native_confirmation_headers
 from starlette.websockets import WebSocketDisconnect
 from tls_test_material import write_lan_tls_material
 
+from app.api import routes_approvals
 from app.core import db
 from app.core.schemas import Approval, Plan, PlanStep, StepStatus, Task, TaskStatus, Wakeup
 from app.guardian import create_guardian_app
@@ -28,6 +33,12 @@ from app.security.mobile_jwt import (
     REMOTE_INPUT_SCOPE,
     decode_mobile_token,
     issue_mobile_token,
+)
+from app.security.native_confirmation import (
+    NATIVE_CONFIRMATION_ID_HEADER,
+    NATIVE_CONFIRMATION_PUBLIC_KEY_ENV,
+    NATIVE_CONFIRMATION_SIGNATURE_HEADER,
+    NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
 )
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import guardian_scheduler, mobile_pairing_service, scheduler_service, wakeup_service
@@ -73,6 +84,27 @@ def test_guardian_health_is_lightweight(monkeypatch, tmp_path: Path):
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["mode"] == "guardian"
+
+
+def test_guardian_schedules_require_scheduling_entitlement(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PLAN", "free")
+    db.init_db()
+
+    response = TestClient(create_guardian_app()).get("/api/schedules")
+
+    assert response.status_code == 402
+    assert response.json()["error"]["code"] == "entitlement_required"
+
+
+def test_guardian_refuses_production_test_escape_hatches(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_ENV", "production")
+    monkeypatch.setenv("LENGRVIS_TEST", "1")
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+
+    with pytest.raises(RuntimeError, match="test/dev security escape hatches"):
+        create_guardian_app()
 
 
 def test_guardian_pairing_routes_are_single_sourced_from_routes_pair(monkeypatch, tmp_path: Path):
@@ -465,6 +497,7 @@ def test_mobile_wakeup_payload_redacts_sensitive_fields(monkeypatch, tmp_path: P
         body="Run Authorization Bearer body-secret-1234567890",
         goal="Use api_key=goal-secret-1234567890",
         error="password=error-secret-1234567890",
+        allowed_device_ids=["mobile_wakeup"],
     )
     db.upsert_model("wakeups", wakeup)
 
@@ -524,13 +557,42 @@ def test_guardian_wakeup_approve_returns_refreshed_failed_payload(monkeypatch, t
     monkeypatch.setattr(routes_guardian, "_execute_wakeup", fake_execute_wakeup)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/wakeups/{wakeup.id}/approve")
+        response = client.post(
+            f"/api/wakeups/{wakeup.id}/approve",
+            headers=native_confirmation_headers("approve", wakeup.id),
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"]["wakeup"]["status"] == "failed"
     stored = wakeup_service.get_wakeup(wakeup.id)
     assert stored.status == "failed"
     assert stored.error == "backend execute failed"
+
+
+def test_guardian_wakeup_approve_requires_native_confirmation(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
+    db.upsert_model("wakeups", wakeup)
+
+    with TestClient(create_guardian_app()) as client:
+        response = client.post(f"/api/wakeups/{wakeup.id}/approve")
+
+    assert response.status_code == 403
+    assert "Native confirmation proof is required" in response.json()["detail"]
+
+
+def test_guardian_wakeup_reject_requires_native_confirmation(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
+    db.upsert_model("wakeups", wakeup)
+
+    with TestClient(create_guardian_app()) as client:
+        response = client.post(f"/api/wakeups/{wakeup.id}/reject")
+
+    assert response.status_code == 403
+    assert "Native confirmation proof is required" in response.json()["detail"]
 
 
 def test_guardian_wakeup_run_response_without_run_id_fails(monkeypatch, tmp_path: Path):
@@ -568,7 +630,10 @@ def test_guardian_wakeup_run_response_without_run_id_fails(monkeypatch, tmp_path
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/wakeups/{wakeup.id}/approve")
+        response = client.post(
+            f"/api/wakeups/{wakeup.id}/approve",
+            headers=native_confirmation_headers("approve", wakeup.id),
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"]["wakeup"]["status"] == "failed"
@@ -610,7 +675,10 @@ def test_guardian_wakeup_run_failure_redacts_persisted_upstream_error(monkeypatc
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/wakeups/{wakeup.id}/approve")
+        response = client.post(
+            f"/api/wakeups/{wakeup.id}/approve",
+            headers=native_confirmation_headers("approve", wakeup.id),
+        )
 
     assert response.status_code == 503
     payload_text = json.dumps(response.json(), ensure_ascii=False)
@@ -657,7 +725,10 @@ def test_guardian_wakeup_approve_returns_completed_payload_with_run_id(monkeypat
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/wakeups/{wakeup.id}/approve")
+        response = client.post(
+            f"/api/wakeups/{wakeup.id}/approve",
+            headers=native_confirmation_headers("approve", wakeup.id),
+        )
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -727,7 +798,7 @@ def test_guardian_mobile_wakeup_reject_returns_refreshed_payload(monkeypatch, tm
     db.init_db()
     mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup_guardian", device_name="Wakeup Guardian")
     token = issue_mobile_token(device_id="mobile_wakeup_guardian", device_name="Wakeup Guardian")
-    wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
+    wakeup = Wakeup(title="Wake up", body="Run", goal="Do something", allowed_device_ids=["mobile_wakeup_guardian"])
     db.upsert_model("wakeups", wakeup)
 
     with TestClient(create_guardian_app()) as client:
@@ -740,6 +811,124 @@ def test_guardian_mobile_wakeup_reject_returns_refreshed_payload(monkeypatch, tm
     assert response.json()["status"] == "rejected"
     stored = wakeup_service.get_wakeup(wakeup.id)
     assert stored.status == "rejected"
+
+
+def test_mobile_wakeup_pending_list_filters_by_device_binding(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup_a", device_name="Phone A")
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup_b", device_name="Phone B")
+    token_a = issue_mobile_token(device_id="mobile_wakeup_a", device_name="Phone A")
+    owned = Wakeup(title="Owned", body="Run", goal="Owned goal", allowed_device_ids=["mobile_wakeup_a"])
+    foreign = Wakeup(title="Foreign", body="Run", goal="Foreign goal", allowed_device_ids=["mobile_wakeup_b"])
+    db.upsert_model("wakeups", owned)
+    db.upsert_model("wakeups", foreign)
+
+    with TestClient(create_guardian_app()) as client:
+        response = client.get(
+            "/api/mobile/wakeups/pending",
+            headers={"Authorization": f"Bearer {token_a}"},
+        )
+
+    assert response.status_code == 200
+    ids = {item["id"] for item in response.json()}
+    assert ids == {owned.id}
+
+
+def test_mobile_wakeup_rejects_other_device_binding(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup_owner", device_name="Owner")
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_wakeup_intruder", device_name="Intruder")
+    owner_token = issue_mobile_token(device_id="mobile_wakeup_owner", device_name="Owner")
+    intruder_token = issue_mobile_token(device_id="mobile_wakeup_intruder", device_name="Intruder")
+    wakeup = Wakeup(
+        title="Wake up",
+        body="Run",
+        goal="Do something",
+        allowed_device_ids=["mobile_wakeup_owner"],
+    )
+    db.upsert_model("wakeups", wakeup)
+
+    with TestClient(create_guardian_app()) as client:
+        approve = client.post(
+            f"/api/mobile/wakeups/{wakeup.id}/approve",
+            headers={"Authorization": f"Bearer {intruder_token}"},
+        )
+        reject = client.post(
+            f"/api/mobile/wakeups/{wakeup.id}/reject",
+            headers={"Authorization": f"Bearer {intruder_token}"},
+        )
+        owner_reject = client.post(
+            f"/api/mobile/wakeups/{wakeup.id}/reject",
+            headers={"Authorization": f"Bearer {owner_token}"},
+        )
+
+    assert approve.status_code == 403
+    assert reject.status_code == 403
+    assert owner_reject.status_code == 200
+    assert wakeup_service.get_wakeup(wakeup.id).status == "rejected"
+
+
+def test_schedule_wakeup_binds_active_mobile_devices(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    scheduler_service._scheduler = None
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_schedule_wakeup", device_name="Schedule Phone")
+    schedule = Scheduler().schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    wakeup = wakeup_service.create_schedule_wakeup(schedule, due_at=_utc_now().isoformat())
+
+    assert "mobile_schedule_wakeup" in wakeup.allowed_device_ids
+
+
+def test_schedule_wakeup_allows_mobile_paired_after_creation(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    scheduler_service._scheduler = None
+    schedule = Scheduler().schedule("*/5 * * * *", "scan downloads", mode="hybrid")
+    wakeup = wakeup_service.create_schedule_wakeup(schedule, due_at=_utc_now().isoformat())
+    assert wakeup.allowed_device_ids == []
+
+    mobile_pairing_service._upsert_mobile_device(device_id="mobile_late_pair", device_name="Late Phone")
+    claims = decode_mobile_token(issue_mobile_token(device_id="mobile_late_pair", device_name="Late Phone"))
+    pending = wakeup_service.list_pending_mobile_wakeups(claims)
+    assert any(item["id"] == wakeup.id for item in pending)
+
+
+def test_guardian_wakeup_native_confirmation_challenge_returns_signing_payload(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    wakeup = Wakeup(title="Wake up", body="Run", goal="Do something")
+    db.upsert_model("wakeups", wakeup)
+
+    with TestClient(create_guardian_app()) as client:
+        response = client.post(
+            f"/api/wakeups/{wakeup.id}/native-confirmation-challenge",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["confirmation_id"]
+    assert payload["action"] == "approve"
+    assert payload["approval_id"] == wakeup.id
+    assert payload["signing_payload"]
+
+
+def test_guardian_wakeup_native_confirmation_challenge_rejects_non_pending(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    wakeup = Wakeup(title="Wake up", body="Run", goal="Do something", status="approved")
+    db.upsert_model("wakeups", wakeup)
+
+    with TestClient(create_guardian_app()) as client:
+        response = client.post(
+            f"/api/wakeups/{wakeup.id}/native-confirmation-challenge",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 409
+    assert "already approved" in str(response.json()["detail"]).lower()
 
 
 def test_wakeup_approval_requires_enabled_source_schedule(monkeypatch, tmp_path: Path):
@@ -775,6 +964,91 @@ def test_wakeup_approval_requires_existing_source_schedule(monkeypatch, tmp_path
     assert "no longer available" in str(exc_info.value.detail)
     rejected = wakeup_service.reject_wakeup(wakeup.id)
     assert rejected.status == "rejected"
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _signed_native_challenge_headers(
+    client: TestClient,
+    approval: Approval,
+    action: str,
+    private_key: Ed25519PrivateKey,
+) -> dict[str, str]:
+    response = client.post(
+        f"/api/approvals/{approval.id}/native-confirmation-challenge",
+        json={"action": action, "expected_preview_hmac": approval.preview_hmac},
+    )
+    assert response.status_code == 200, response.text
+    challenge = response.json()
+    signing_payload = str(challenge["signing_payload"])
+    signature = private_key.sign(signing_payload.encode("utf-8"))
+    return {
+        NATIVE_CONFIRMATION_ID_HEADER: str(challenge["confirmation_id"]),
+        NATIVE_CONFIRMATION_TIMESTAMP_HEADER: str(challenge["expires_at_epoch"]),
+        NATIVE_CONFIRMATION_SIGNATURE_HEADER: _b64url(signature),
+    }
+
+
+def test_guardian_accepts_native_confirmation_challenge_created_on_full_backend(
+    monkeypatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_NATIVE_CONFIRMATION_SECRET", raising=False)
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _b64url(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
+    db.init_db()
+    task = Task(
+        id="task_guardian_native_confirmation",
+        user_goal="approve with shared challenge",
+        status=TaskPhase.EXECUTION,
+        phase=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.AWAITING_APPROVAL,
+    )
+    step = PlanStep(
+        id="step_guardian_native_confirmation",
+        task_id=task.id,
+        order=1,
+        agent_name="FileAgent",
+        tool_name="file.read",
+        description="Read file",
+        status="waiting_user_approval",
+        step_phase=StepPhase.TOOL_REVIEW,
+    )
+    plan = Plan(task_id=task.id, goal=task.user_goal, steps=[step])
+    approval = Approval(task_id=task.id, step_id=step.id, message="Approve read")
+    db.upsert_model("tasks", task)
+    db.upsert_model("plans", plan)
+    db.upsert_model("approvals", approval, status=approval.status)
+
+    full_backend = FastAPI()
+    full_backend.include_router(routes_approvals.router, prefix="/api")
+    import app.api.routes_guardian as routes_guardian
+
+    async def fake_wake_full_backend(_approval):
+        approved = Approval.model_validate(db.fetch_one("approvals", approval.id))
+        approved.consumed_at = "2026-06-01T00:00:00+00:00"
+        db.upsert_model("approvals", approved, status=approved.status)
+        return approved
+
+    monkeypatch.setattr(routes_guardian, "_wake_full_backend_for_approval", fake_wake_full_backend)
+
+    with TestClient(full_backend) as challenge_client, TestClient(create_guardian_app()) as guardian_client:
+        headers = _signed_native_challenge_headers(challenge_client, approval, "approve", private_key)
+        response = guardian_client.post(f"/api/approvals/{approval.id}/approve", headers=headers)
+
+    assert response.status_code == 200
+    stored = db.fetch_one("approvals", approval.id)
+    assert stored is not None
+    assert stored["status"] == "approved"
 
 
 def test_guardian_approval_does_not_execute_step(monkeypatch, tmp_path: Path):
@@ -814,7 +1088,7 @@ def test_guardian_approval_does_not_execute_step(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(routes_guardian, "_wake_full_backend_for_approval", fake_wake_full_backend)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     assert response.status_code == 200
     stored = db.fetch_one("approvals", approval.id)
@@ -869,7 +1143,7 @@ def test_guardian_approval_surfaces_full_backend_failure(monkeypatch, tmp_path: 
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     assert response.status_code == 503
     assert response.json()["detail"]["approval_id"] == approval.id
@@ -929,7 +1203,7 @@ def test_guardian_approval_surfaces_full_backend_continue_transport_failure(monk
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     assert response.status_code == 503
     assert response.json()["detail"]["message"] == "Full backend is not ready to continue the approval."
@@ -1082,7 +1356,7 @@ def test_guardian_approval_wraps_non_json_full_backend_continue_failure(monkeypa
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert response.status_code == 502
@@ -1160,7 +1434,7 @@ def test_guardian_approval_redacts_json_full_backend_continue_failure_detail(mon
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert response.status_code == 503
@@ -1239,7 +1513,7 @@ def test_guardian_approval_redacts_nested_backend_approval_preview(monkeypatch, 
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert response.status_code == 503
@@ -1319,8 +1593,8 @@ def test_guardian_approval_can_retry_after_transient_execute_failure(monkeypatch
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        first = client.post(f"/api/approvals/{approval.id}/approve")
-        second = client.post(f"/api/approvals/{approval.id}/approve")
+        first = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        second = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     assert first.status_code == 409
     assert second.status_code == 200
@@ -1384,7 +1658,7 @@ def test_guardian_approval_requires_full_backend_to_consume_approval(monkeypatch
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
 
     assert response.status_code == 503
     assert response.json()["detail"]["approval"]["id"] == approval.id
@@ -1433,10 +1707,24 @@ def test_guardian_mobile_device_list_only_returns_calling_device(monkeypatch, tm
     db.init_db()
 
     with TestClient(create_guardian_app()) as client:
-        first_code = client.post("/api/pair/code").json()["code"]
-        first_pair = client.post("/api/pair", json={"code": first_code, "device_name": "First"})
-        second_code = client.post("/api/pair/code").json()["code"]
-        second_pair = client.post("/api/pair", json={"code": second_code, "device_name": "Second"})
+        first_pairing = client.post("/api/pair/code").json()
+        first_pair = client.post(
+            "/api/pair",
+            json={
+                "code": first_pairing["code"],
+                "claim_secret": first_pairing["claim_secret"],
+                "device_name": "First",
+            },
+        )
+        second_pairing = client.post("/api/pair/code").json()
+        second_pair = client.post(
+            "/api/pair",
+            json={
+                "code": second_pairing["code"],
+                "claim_secret": second_pairing["claim_secret"],
+                "device_name": "Second",
+            },
+        )
         first_token = first_pair.json()["token"]
         second_token = second_pair.json()["token"]
         first_device_id = decode_mobile_token(first_token)["device_id"]
@@ -1582,7 +1870,7 @@ def test_guardian_desktop_reject_denies_step_and_cancels_task(monkeypatch, tmp_p
     db.upsert_model("approvals", approval)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/reject")
+        response = client.post(f"/api/approvals/{approval.id}/reject", headers=native_confirmation_headers("reject", approval.id))
 
     refreshed_task = Task.model_validate(db.fetch_one("tasks", task.id))
     refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
@@ -1636,8 +1924,15 @@ def test_guardian_mobile_websocket_streams_grant_events_and_closes_on_revoke(mon
     _enable_remote_desktop()
 
     with TestClient(create_guardian_app()) as client:
-        code = client.post("/api/pair/code").json()["code"]
-        pair = client.post("/api/pair", json={"code": code, "device_name": "Guardian Phone"})
+        pairing = client.post("/api/pair/code").json()
+        pair = client.post(
+            "/api/pair",
+            json={
+                "code": pairing["code"],
+                "claim_secret": pairing["claim_secret"],
+                "device_name": "Guardian Phone",
+            },
+        )
         token = pair.json()["token"]
         device_id = decode_mobile_token(token)["device_id"]
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import httpx
 import pytest
@@ -678,6 +679,105 @@ def test_vision_rejects_malformed_success_payload(monkeypatch, tmp_path, payload
 
     with pytest.raises(LLMApiResponseError):
         asyncio.run(provider.vision(str(image), "describe"))
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable on this platform: {exc}")
+
+
+def test_prepare_vision_image_path_rejects_resolved_non_image_suffix(monkeypatch, tmp_path):
+    secret = tmp_path / "secret.env"
+    secret.write_text("TOPSECRET", encoding="utf-8")
+    bait = tmp_path / "photo.png"
+
+    def fake_resolve_authorized(path, allowed_directories):  # noqa: ANN001
+        if Path(path) == bait:
+            return secret
+        from app.core.paths import resolve_authorized
+
+        return resolve_authorized(path, allowed_directories)
+
+    monkeypatch.setattr("app.core.paths.resolve_authorized", fake_resolve_authorized)
+    provider = OpenAICompatibleProvider(_settings())
+
+    _, error = provider._prepare_vision_image_path(str(bait), allowed_directories=[str(tmp_path)])
+
+    assert error is not None
+    assert "unsupported image format" in error
+
+
+def test_vision_rejects_symlink_extension_bypass_without_reading_secret(monkeypatch, tmp_path):
+    secret = tmp_path / "secret.env"
+    secret.write_text("TOPSECRET", encoding="utf-8")
+    bait = tmp_path / "photo.png"
+    _symlink_or_skip(bait, secret)
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "unused"}}]})]
+    provider = OpenAICompatibleProvider(_settings())
+
+    result = asyncio.run(
+        provider.vision(str(bait), "describe", allowed_directories=[str(tmp_path)])
+    )
+
+    assert "unsupported image format" in result
+    assert FakeAsyncClient.calls == 0
+
+
+def test_vision_rejects_symlink_without_authorized_directories(monkeypatch, tmp_path):
+    secret = tmp_path / "secret.env"
+    secret.write_text("TOPSECRET", encoding="utf-8")
+    bait = tmp_path / "photo.png"
+    _symlink_or_skip(bait, secret)
+    _patch_shared_client(monkeypatch)
+    provider = OpenAICompatibleProvider(_settings())
+
+    result = asyncio.run(provider.vision(str(bait), "describe"))
+
+    assert "symbolic links require authorized directories" in result
+    assert FakeAsyncClient.calls == 0
+
+
+def test_vision_rejects_symlink_escape_with_allowed_directories(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    real_image = outside / "real.png"
+    real_image.write_bytes(b"png-bytes")
+    bait = workspace / "photo.png"
+    _symlink_or_skip(bait, real_image)
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "unused"}}]})]
+    provider = OpenAICompatibleProvider(_settings())
+
+    result = asyncio.run(
+        provider.vision(str(bait), "describe", allowed_directories=[str(workspace)])
+    )
+
+    assert "invalid image path" in result
+    assert FakeAsyncClient.calls == 0
+
+
+def test_vision_reads_authorized_symlink_to_image_inside_sandbox(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    real_image = workspace / "real.png"
+    real_image.write_bytes(b"png-bytes")
+    bait = workspace / "link.png"
+    _symlink_or_skip(bait, real_image)
+    _patch_shared_client(monkeypatch)
+    FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "ok"}}]})]
+    provider = OpenAICompatibleProvider(_settings())
+
+    result = asyncio.run(
+        provider.vision(str(bait), "describe", allowed_directories=[str(workspace)])
+    )
+
+    assert result == "ok"
+    assert FakeAsyncClient.calls == 1
 
 
 @pytest.mark.parametrize(

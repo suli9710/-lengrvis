@@ -145,6 +145,7 @@ On the next settings resolution or application restart:
 - a matching `license_id` becomes `revoked` and paid features fall back to Free;
 - a tampered or malformed manifest becomes `revocation_data_invalid` and paid features fail closed;
 - a legacy license without `license_id` remains readable for compatibility but is marked not revocation-capable and must be replaced before production sale.
+- a legacy device-bound license without `device_fingerprint` is rejected when `LENGRVIS_COMMERCIAL_RELEASE=true`; customers must re-activate or refresh online to receive a fingerprint-bound replacement token.
 
 Offline revocation is not instantaneous. The customer or deployment administrator must receive and install the updated signed manifest. Do not describe this as online real-time revocation.
 

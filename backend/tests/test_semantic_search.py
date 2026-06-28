@@ -270,3 +270,14 @@ def test_vector_search_without_allowed_directories_is_fail_closed(tmp_path: Path
 
     assert result["results"] == []
     assert result["count"] == 0
+
+
+def test_fts_search_without_allowed_directories_is_fail_closed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "garage.txt").write_text("Vehicle automobile garage notes.", encoding="utf-8")
+    FTSIndex(embedder=semantic_embedder).rebuild([str(workspace)])
+
+    assert FTSIndex().search("automobile") == []
+    assert FTSIndex().search("automobile", allowed_directories=[]) == []
+    assert FTSIndex().search("automobile", allowed_directories=[str(workspace)])

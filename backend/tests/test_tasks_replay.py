@@ -178,6 +178,7 @@ def test_task_replay_summarizes_tool_result_errors_without_raw_detail(monkeypatc
 
 def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
     db.init_db()
     task = Task(id="task_boundary_events", user_goal="Expose boundary events")
     db.upsert_model("tasks", task)
@@ -226,8 +227,25 @@ def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
     assert listed["evidence_summary"]["counts"] == summary["counts"]
 
 
+def test_task_timeline_omits_audit_boundary_events_without_audit_export(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PLAN", "free")
+    db.init_db()
+    task = Task(id="task_boundary_audit_gate", user_goal="Gate audit boundary events")
+    db.upsert_model("tasks", task)
+    record("context.projected", "ContextAwareProvider", {"strategy": "auto_compact", "tokens_saved": 42}, task_id=task.id)
+
+    client = TestClient(app)
+    timeline = client.get(f"/api/tasks/{task.id}/timeline")
+
+    assert timeline.status_code == 200
+    kinds = {event["kind"] for event in timeline.json()["boundary_events"]}
+    assert "context_projection" not in kinds
+
+
 def test_task_evidence_summary_and_boundary_payloads_are_public_safe(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
     db.init_db()
     secret_token = "super-secret-token-1234567890"
     hidden_prompt = "hidden system prompt should stay private"
@@ -746,6 +764,7 @@ def test_task_payload_completion_evidence_verifies_tool_result_with_final_summar
 
 def test_tasks_list_batches_boundary_events(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
     db.init_db()
     task_ids = [f"task_boundary_batch_{index}" for index in range(3)]
     for task_id in task_ids:

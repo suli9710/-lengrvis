@@ -72,7 +72,7 @@ class SupervisorAgent:
         fallback = self.quick_decision(message)
 
         try:
-            provider = get_provider()
+            provider = get_provider(task="supervisor")
             payload = await asyncio.wait_for(
                 provider.structured_chat(self._supervisor_messages(message, mode), SUPERVISOR_SCHEMA),
                 timeout=SUPERVISOR_TIMEOUT_SECONDS,

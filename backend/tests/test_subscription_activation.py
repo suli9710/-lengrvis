@@ -16,14 +16,24 @@ from app.api.routes_activation import router as activation_router
 from app.commerce.activation import (
     ACTIVATION_BASE_URL_ENV_VAR,
     ACTIVATION_KEY_PEPPER_ENV_VAR,
+    ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR,
     ACTIVATION_SIGNING_PRIVATE_KEY_ENV_VAR,
     ActivationError,
+    ActivationRefreshRequest,
     ActivationRequest,
     activate_license_with_server,
     activate_subscription_key,
+    refresh_subscription_license,
+    revoke_subscription_key,
     upsert_subscription_key,
 )
-from app.commerce.licensing import LICENSE_PUBLIC_KEY_ENV_VAR, parse_license, sign_license
+from app.commerce.licensing import (
+    LICENSE_PUBLIC_KEY_ENV_VAR,
+    license_status,
+    load_license,
+    parse_license,
+    sign_license,
+)
 from app.core.errors import register_error_handlers
 from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
 from app.security.middleware import register_security_middleware
@@ -54,6 +64,7 @@ def _future() -> datetime:
 
 def _configure_server(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
     monkeypatch.setenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "pepper-redacted")
+    monkeypatch.setenv(ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR, "server-device-secret-redacted")
     monkeypatch.setenv(ACTIVATION_SIGNING_PRIVATE_KEY_ENV_VAR, PRIVATE_KEY)
     monkeypatch.setenv(LICENSE_PUBLIC_KEY_ENV_VAR, PUBLIC_KEY)
     monkeypatch.setenv("LENGRVIS_ACTIVATION_DB", str(db_path))
@@ -181,17 +192,18 @@ def test_activation_device_fingerprint_mismatch_fails_closed(
         )
 
     assert excinfo.value.code == "activation_device_fingerprint_mismatch"
-    with pytest.raises(ActivationError) as rebind_excinfo:
-        activate_subscription_key(
-            ActivationRequest(
-                activation_key="key-fingerprint",
-                device_id="dev_reinstalled",
-                device_fingerprint="fp_one",
-                device_profile={"os": "windows", "arch": "x64"},
-            ),
-            db_path=db_path,
-        )
-    assert rebind_excinfo.value.code == "activation_device_rebind_requires_unbind"
+    reinstalled = activate_subscription_key(
+        ActivationRequest(
+            activation_key="key-fingerprint",
+            device_id="dev_reinstalled",
+            device_fingerprint="fp_one",
+            device_profile={"os": "windows", "arch": "x64"},
+        ),
+        db_path=db_path,
+    )
+    assert reinstalled.reused_device is True
+    assert reinstalled.license_id == first.license_id
+    assert parse_license(reinstalled.license_token, PUBLIC_KEY).device_id == "dev_reinstalled"
     assert first.license_id
 
 
@@ -208,7 +220,10 @@ def test_activation_rejects_inactive_subscription(monkeypatch: pytest.MonkeyPatc
     )
 
     with pytest.raises(ActivationError) as excinfo:
-        activate_subscription_key(ActivationRequest("key-past-due", "dev_one"), db_path=db_path)
+        activate_subscription_key(
+            ActivationRequest("key-past-due", "dev_one", device_fingerprint="fp_due"),
+            db_path=db_path,
+        )
 
     assert excinfo.value.code == "subscription_past_due"
 
@@ -356,6 +371,94 @@ def test_activation_only_app_exposes_activation_issuance_route(
     assert "key-activation-only" not in str(body)
 
 
+def test_activation_refresh_route_issues_new_signed_license(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "activation.sqlite"
+    _configure_server(monkeypatch, db_path)
+    monkeypatch.setenv("LENGRVIS_ACTIVATION_RATE_LIMIT_MAX", "0")
+    upsert_subscription_key(
+        activation_key="key-refresh-route",
+        plan="pro",
+        subscription_id="sub_refresh_route",
+        status="active",
+        expires_at=_future(),
+        db_path=db_path,
+    )
+    activated = activate_subscription_key(
+        ActivationRequest(
+            activation_key="key-refresh-route",
+            device_id="dev_refresh_route",
+            device_fingerprint="fp_refresh_route",
+            app_version="desktop-old",
+        ),
+        db_path=db_path,
+    )
+    app = FastAPI()
+    register_error_handlers(app)
+    app.include_router(activation_router, prefix="/api")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/licenses/refresh",
+        json={
+            "license_token": activated.license_token,
+            "device_id": "dev_refresh_route",
+            "device_fingerprint": "fp_refresh_route",
+            "app_version": "desktop-new",
+            "nonce": "nonce-refresh-route",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    refreshed = parse_license(body["license_token"], PUBLIC_KEY)
+    assert body["license_id"] == activated.license_id
+    assert body["subscription_id"] == "sub_refresh_route"
+    assert refreshed.license_id == activated.license_id
+    assert refreshed.subscription_status == "active"
+    assert refreshed.payload["activation"]["source"] == "activation_server"
+
+
+def test_activation_refresh_rejects_revoked_subscription(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "activation.sqlite"
+    _configure_server(monkeypatch, db_path)
+    created = upsert_subscription_key(
+        activation_key="key-refresh-revoked",
+        plan="pro",
+        subscription_id="sub_refresh_revoked",
+        status="active",
+        expires_at=_future(),
+        db_path=db_path,
+    )
+    activated = activate_subscription_key(
+        ActivationRequest(
+            activation_key="key-refresh-revoked",
+            device_id="dev_refresh_revoked",
+            device_fingerprint="fp_refresh_revoked",
+        ),
+        db_path=db_path,
+    )
+    revoke_subscription_key(key_hash=created["key_hash"], db_path=db_path)
+
+    with pytest.raises(ActivationError) as excinfo:
+        refresh_subscription_license(
+            ActivationRefreshRequest(
+                license_token=activated.license_token,
+                device_id="dev_refresh_revoked",
+                device_fingerprint="fp_refresh_revoked",
+            ),
+            db_path=db_path,
+        )
+
+    assert excinfo.value.code == "subscription_revoked"
+    assert excinfo.value.status_code == 402
+
+
 def test_client_activation_verifies_and_persists_license(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv(ACTIVATION_BASE_URL_ENV_VAR, "https://activation.example")
     monkeypatch.setenv(LICENSE_PUBLIC_KEY_ENV_VAR, PUBLIC_KEY)
@@ -368,7 +471,9 @@ def test_client_activation_verifies_and_persists_license(monkeypatch: pytest.Mon
             "subject": "subject-redacted",
             "subscription_id": "sub_client",
             "subscription_status": "active",
+            "issued_at": datetime.now(UTC).isoformat(),
             "expires_at": _future().isoformat(),
+            "activation": {"source": "activation_server"},
         },
         PRIVATE_KEY,
     )
@@ -398,6 +503,115 @@ def test_client_activation_verifies_and_persists_license(monkeypatch: pytest.Mon
     assert seen["json"]["device_fingerprint"].startswith("fp_")
     assert seen["json"]["device_profile"]["fingerprint"] == seen["json"]["device_fingerprint"]
     assert "device_name" not in seen["json"]["device_profile"]
+
+
+def test_subscription_license_stale_refresh_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    issued_at = datetime.now(UTC) - timedelta(days=3)
+    monkeypatch.setenv(ACTIVATION_BASE_URL_ENV_VAR, "https://activation.example")
+    monkeypatch.setenv(LICENSE_PUBLIC_KEY_ENV_VAR, PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS", "60")
+    token = sign_license(
+        {
+            "schema": 1,
+            "license_id": "lic_stale",
+            "plan": "pro",
+            "subject": "subject-redacted",
+            "subscription_id": "sub_stale",
+            "subscription_status": "active",
+            "issued_at": issued_at.isoformat(),
+            "expires_at": _future().isoformat(),
+            "activation": {"source": "activation_server"},
+        },
+        PRIVATE_KEY,
+    )
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+
+    class _Client:
+        def post(self, url: str, *, json: dict[str, Any]) -> httpx.Response:
+            return httpx.Response(
+                402,
+                json={"error": {"code": "subscription_revoked", "message": "Subscription is not active."}},
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr("app.commerce.activation.httpx.Client", lambda timeout: _Client())
+
+    assert load_license(_Settings(tmp_path)) is None
+    status = license_status(_Settings(tmp_path))
+    assert status["state"] == "subscription_confirmation_failed"
+    assert status["active"] is False
+    assert status["error_code"] == "subscription_revoked"
+
+
+def test_subscription_license_stale_refresh_success_persists_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    issued_at = datetime.now(UTC) - timedelta(days=3)
+    refreshed_issued_at = datetime.now(UTC)
+    monkeypatch.setenv(ACTIVATION_BASE_URL_ENV_VAR, "https://activation.example")
+    monkeypatch.setenv(LICENSE_PUBLIC_KEY_ENV_VAR, PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS", "60")
+    token = sign_license(
+        {
+            "schema": 1,
+            "license_id": "lic_refresh_success",
+            "plan": "pro",
+            "subject": "subject-redacted",
+            "subscription_id": "sub_refresh_success",
+            "subscription_status": "active",
+            "issued_at": issued_at.isoformat(),
+            "expires_at": _future().isoformat(),
+            "activation": {"source": "activation_server"},
+        },
+        PRIVATE_KEY,
+    )
+    refreshed_token = sign_license(
+        {
+            "schema": 1,
+            "license_id": "lic_refresh_success",
+            "plan": "pro",
+            "subject": "subject-redacted",
+            "subscription_id": "sub_refresh_success",
+            "subscription_status": "active",
+            "issued_at": refreshed_issued_at.isoformat(),
+            "expires_at": _future().isoformat(),
+            "activation": {"source": "activation_server"},
+        },
+        PRIVATE_KEY,
+    )
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+    seen: dict[str, Any] = {}
+
+    class _Client:
+        def post(self, url: str, *, json: dict[str, Any]) -> httpx.Response:
+            seen["url"] = url
+            seen["json"] = json
+            return httpx.Response(
+                200,
+                json={"license_token": refreshed_token},
+                request=httpx.Request("POST", url),
+            )
+
+        def close(self) -> None:
+            seen["closed"] = True
+
+    monkeypatch.setattr("app.commerce.activation.httpx.Client", lambda timeout: _Client())
+
+    license_ = load_license(_Settings(tmp_path))
+
+    assert license_ is not None
+    assert license_.license_id == "lic_refresh_success"
+    assert (tmp_path / "license.key").read_text(encoding="utf-8").strip() == refreshed_token
+    assert seen["url"] == "https://activation.example/api/v1/licenses/refresh"
+    assert seen["json"]["license_token"] == token
+    assert seen["json"]["device_id"].startswith("dev_")
+    status = license_status(_Settings(tmp_path))
+    assert status["state"] == "active"
+    assert status["subscription_confirmation_fresh"] is True
 
 
 def test_client_activation_rejects_http_non_localhost(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

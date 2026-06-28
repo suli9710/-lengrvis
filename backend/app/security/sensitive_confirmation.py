@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from typing import Any
 
@@ -12,7 +12,6 @@ from app.core.audit import record
 from app.core.errors import AppError
 from app.llm.registry import get_effective_settings
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionTimeWindow
-
 
 CONFIRMATION_FIELD = "confirmation_nonce"
 CONFIRMATION_TTL_SECONDS = 120
@@ -55,11 +54,16 @@ CREATE TABLE IF NOT EXISTS sensitive_confirmations (
 """
 
 
-def create_settings_confirmation(payload: dict[str, Any]) -> dict[str, Any]:
-    changes = settings_confirmation_changes(payload)
+def create_settings_confirmation(
+    payload: dict[str, Any],
+    *,
+    confirmed_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_payload = confirmed_payload if confirmed_payload is not None else payload
+    changes = settings_confirmation_changes(normalized_payload)
     if not changes:
         return {"required": False, "nonce": "", "changes": []}
-    return _create_confirmation("settings", changes, payload=_confirmation_payload(payload))
+    return _create_confirmation("settings", changes, payload=_confirmation_payload(normalized_payload))
 
 
 def require_settings_confirmation(payload: dict[str, Any]) -> None:
@@ -529,4 +533,4 @@ def _invalid_confirmation() -> AppError:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)

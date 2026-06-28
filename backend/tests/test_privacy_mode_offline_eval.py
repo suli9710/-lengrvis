@@ -305,6 +305,7 @@ def test_privacy_mode_offline_document_summary_and_qa_use_deterministic_fallback
         api_key="sk-document-secret",
         allow_mock_fallback=True,
         allowed_directories=[str(workspace)],
+        plan="pro",
     )
     context = {"allowed_directories": [str(workspace)], "settings": settings}
 

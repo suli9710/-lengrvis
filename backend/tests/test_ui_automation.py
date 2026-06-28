@@ -381,3 +381,19 @@ def test_policy_blocks_sensitive_gui_text_and_targets():
     assert password_target.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
     assert token_text.verdict == SafetyVerdict.DENY
     assert "sensitive" in " ".join(token_text.reasons).lower()
+
+
+def test_policy_blocks_sensitive_remote_type_text():
+    policy = PolicyEngine()
+
+    review = policy.review_tool_call(
+        "task_sensitive_remote",
+        "step_1",
+        "remote.type_text",
+        {"text": "token=abcdef1234567890", "dry_run": True},
+        RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+    assert "sensitive" in " ".join(review.reasons).lower()

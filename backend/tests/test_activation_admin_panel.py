@@ -129,6 +129,46 @@ def test_admin_requires_login_and_csrf(monkeypatch, tmp_path: Path) -> None:
     assert csrf
 
 
+def test_admin_login_rate_limits_failed_attempts(monkeypatch, tmp_path: Path) -> None:
+    _configure(monkeypatch, tmp_path)
+    monkeypatch.setenv("LENGRVIS_ACTIVATION_RATE_LIMIT_MAX", "0")
+    client = TestClient(_app())
+
+    for _ in range(10):
+        assert client.post("/api/admin/login", json={"password": "wrong"}).status_code == 401
+
+    blocked = client.post("/api/admin/login", json={"password": "wrong"})
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "admin_rate_limited"
+
+
+def test_admin_mutation_rate_limits_state_changing_endpoints(monkeypatch, tmp_path: Path) -> None:
+    import app.api.routes_activation_admin as admin_routes
+
+    _configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(admin_routes, "_ADMIN_MUTATION_RATE_LIMIT_MAX", 2)
+    client = TestClient(_app())
+    csrf = _login(client)
+
+    assert _create_key(client, csrf, subscription_id="sub_rate_001")["record"]["subscription_id"] == "sub_rate_001"
+    assert _create_key(client, csrf, subscription_id="sub_rate_002")["record"]["subscription_id"] == "sub_rate_002"
+
+    blocked = client.post(
+        "/api/admin/subscriptions",
+        headers={"x-lengrvis-admin-csrf": csrf},
+        json={
+            "plan": "pro",
+            "subscription_id": "sub_rate_003",
+            "status": "active",
+            "expires_at": _future(),
+        },
+    )
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "admin_rate_limited"
+
+    assert client.get("/api/admin/subscriptions").status_code == 200
+
+
 def test_admin_create_list_renew_revoke_and_unbind(monkeypatch, tmp_path: Path) -> None:
     db_path = _configure(monkeypatch, tmp_path)
     client = TestClient(_app())
@@ -196,26 +236,53 @@ def test_admin_create_list_renew_revoke_and_unbind(monkeypatch, tmp_path: Path) 
     assert listed[0]["device_count"] == 0
 
 
-def test_admin_can_issue_free_key_without_paid_unlock(monkeypatch, tmp_path: Path) -> None:
-    db_path = _configure(monkeypatch, tmp_path)
+def test_admin_create_generates_subscription_id_when_blank(monkeypatch, tmp_path: Path) -> None:
+    _configure(monkeypatch, tmp_path)
     client = TestClient(_app())
     csrf = _login(client)
 
     created = _create_key(
         client,
         csrf,
-        plan="free",
-        subscription_id="sub_free_001",
+        plan="max",
+        subscription_id="",
         expires_at=_future(),
     )
-    result = activate_subscription_key(
-        ActivationRequest(created["activation_key"], "dev_free_one", device_fingerprint="fp_free_one"),
-        db_path=db_path,
-    )
-    license_ = parse_license(result.license_token, PUBLIC_KEY)
 
-    assert result.plan.value == "free"
-    assert license_.plan.value == "free"
+    subscription_id = created["record"]["subscription_id"]
+    assert subscription_id.startswith("sub_max_")
+    assert len(subscription_id.split("_")) == 4
+
+    listed = client.get("/api/admin/subscriptions").json()["items"]
+    assert listed[0]["subscription_id"] == subscription_id
+    assert created["activation_key"] not in str(listed)
+
+
+def test_admin_can_issue_free_pro_max_keys(monkeypatch, tmp_path: Path) -> None:
+    db_path = _configure(monkeypatch, tmp_path)
+    client = TestClient(_app())
+    csrf = _login(client)
+
+    for plan in ("free", "pro", "max"):
+        created = _create_key(
+            client,
+            csrf,
+            plan=plan,
+            subscription_id=f"sub_{plan}_001",
+            expires_at=_future(),
+        )
+        result = activate_subscription_key(
+            ActivationRequest(
+                created["activation_key"],
+                f"dev_{plan}_one",
+                device_fingerprint=f"fp_{plan}_one",
+            ),
+            db_path=db_path,
+        )
+        license_ = parse_license(result.license_token, PUBLIC_KEY)
+
+        assert result.plan.value == plan
+        assert license_.plan.value == plan
 
 
 def test_admin_page_uses_expiry_presets_and_renew_panel() -> None:
@@ -223,7 +290,21 @@ def test_admin_page_uses_expiry_presets_and_renew_panel() -> None:
 
     html = client.get("/admin").text
 
+    assert 'id="planSegment"' in html
+    assert "Free" in html
+    assert "Pro" in html
+    assert "Max" in html
     assert 'id="expiresPreset"' in html
+    assert "7 天试用" in html
     assert "30 天月付" in html
+    assert 'id="searchBox"' in html
+    assert 'id="planFilter"' in html
+    assert 'id="statusFilter"' in html
+    assert "详情与操作" in html
+    assert "输入 撤销" in html
+    assert "下载交接文本" in html
+    assert "我已把授权码交接到安全位置" in html
     assert 'id="renewPanel"' in html
+    assert "从当前到期日或今天较晚者起算" in html
+    assert "expires_at: null, renews_at: null" in html
     assert "新的到期时间 ISO 时间戳" not in html

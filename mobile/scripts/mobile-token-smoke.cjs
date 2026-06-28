@@ -433,7 +433,7 @@ async function main() {
       assertJsonRequest(request, {
         method: "POST",
         path: "/api/pair/confirm",
-        body: { code: "abcd1234ef567890", device_name: "Phone" },
+        body: { code: "abcd1234ef567890", device_name: "Phone", claim_secret: "claim-secret-for-mobile-smoke-123456" },
       });
       assert.match(String(request.headers.accept), /application\/json/);
       assert.match(String(request.headers["content-type"]), /application\/json/);
@@ -475,6 +475,7 @@ async function main() {
     const parsedJsonPayload = pairingPayload.parsePairingPayload(
       JSON.stringify({
         code: "ABCD-1234-EF56-7890",
+        claim_secret: "claim-secret-from-json-payload-123456",
         server: { scheme: "https", host: "lengrvis.local", port: 8443 },
         expires_at: "2026-06-01T00:05:00.000Z",
       }),
@@ -485,8 +486,10 @@ async function main() {
       expiresAt: "2026-06-01T00:05:00.000Z",
       source: "json",
     });
+    assert.equal(parsedJsonPayload.claimSecret, "claim-secret-from-json-payload-123456");
     const desktopGeneratedPayload = desktopPairingPayload.serializeMobilePairingPayload({
       code: "ZX81-QP12-LM34-RT56",
+      claim_secret: "claim-secret-from-desktop-payload-123456",
       expires_at: "2026-06-01T00:05:00.000Z",
       expires_in: 300,
       server: {
@@ -505,6 +508,7 @@ async function main() {
       version: 1,
       base_url: "http://192.168.1.20:8000",
       code: "ZX81-QP12-LM34-RT56",
+      claim_secret: "claim-secret-from-desktop-payload-123456",
       expires_at: "2026-06-01T00:05:00.000Z",
       expires_in: 300,
       server: {
@@ -524,14 +528,19 @@ async function main() {
       expiresAt: "2026-06-01T00:05:00.000Z",
       source: "json",
     });
+    assert.equal(pairingPayload.parsePairingPayload(desktopGeneratedPayload).claimSecret, "claim-secret-from-desktop-payload-123456");
+    const urlPayload = pairingPayload.parsePairingPayload(
+      "lengrvis://pair?base_url=http%3A%2F%2F192.168.1.20%3A8000&code=def45678abc90123&claim_secret=claim-secret-from-url-payload-123456",
+    );
     assert.deepEqual(
-      plain(pairingPayload.parsePairingPayload("lengrvis://pair?base_url=http%3A%2F%2F192.168.1.20%3A8000&code=def45678abc90123")),
+      plain(urlPayload),
       {
         baseUrl: "http://192.168.1.20:8000",
         code: "def45678abc90123",
         source: "url",
       },
     );
+    assert.equal(urlPayload.claimSecret, "claim-secret-from-url-payload-123456");
     const queryBearingQrPayload = pairingPayload.parsePairingPayload(
       `lengrvis://pair?base_url=${encodeURIComponent("https://mobile-token:secret@example.test:8443/copied/path?token=secret-token#pair")}&code=ABCD1234EF567890&tls_enabled=true&websocket_scheme=wss`,
     );
@@ -790,14 +799,26 @@ async function main() {
     assert.equal(unclearedOrphanStorage.secureMap.has("lengrvis.mobile.session.token"), true);
 
     expectedPairToken = "query-stripped-token";
-    const queryStrippedPaired = await client.pairWithBackend(`${server.origin}/copied/path?token=secret-token#pair`, "abcd1234ef567890", "Phone");
+    const queryStrippedPaired = await client.pairWithBackend(
+      `${server.origin}/copied/path?token=secret-token#pair`,
+      "abcd1234ef567890",
+      "Phone",
+      undefined,
+      "claim-secret-for-mobile-smoke-123456",
+    );
     assert.equal(server.requests.length, 1, "query-bearing pasted addresses must still call only the pair-confirm endpoint");
     assert.equal(queryStrippedPaired.baseUrl, server.origin);
     assert.equal(queryStrippedPaired.token, "query-stripped-token");
     assert.doesNotMatch(queryStrippedPaired.baseUrl, /secret-token|[?&]token=/);
 
     expectedPairToken = "paired-token";
-    const paired = await client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone");
+    const paired = await client.pairWithBackend(
+      `${server.origin}/`,
+      "abcd1234ef567890",
+      "Phone",
+      undefined,
+      "claim-secret-for-mobile-smoke-123456",
+    );
     assert.equal(server.requests.length, 2, "pairing must reach the local HTTP smoke service");
     assert.equal(paired.baseUrl, server.origin);
     assert.equal(paired.token, expectedPairToken);
@@ -858,7 +879,13 @@ async function main() {
     assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /legacy-token/);
 
     expectedPairToken = "stored-token";
-    const storedSession = await client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone");
+    const storedSession = await client.pairWithBackend(
+      `${server.origin}/`,
+      "abcd1234ef567890",
+      "Phone",
+      undefined,
+      "claim-secret-for-mobile-smoke-123456",
+    );
     await migratedAuth.saveSession(storedSession);
     const storedMetadata = JSON.parse(migratedStorage.asyncMap.get("lengrvis.mobile.session"));
     assert.equal(storedMetadata.baseUrl, server.origin);
@@ -869,7 +896,13 @@ async function main() {
     expectedPairToken = "expired-pair-token";
     pairResponseOverrides = { expires_in: 0 };
     await assert.rejects(
-      () => client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone"),
+      () => client.pairWithBackend(
+        `${server.origin}/`,
+        "abcd1234ef567890",
+        "Phone",
+        undefined,
+        "claim-secret-for-mobile-smoke-123456",
+      ),
       (error) => error.name === "AuthExpiredError",
     );
     assert.equal(server.requests.length, beforeExpiredPairRequests + 1);
@@ -877,7 +910,13 @@ async function main() {
     expectedPairToken = "invalid-pair-token";
     pairResponseOverrides = { token: "bad token" };
     await assert.rejects(
-      () => client.pairWithBackend(`${server.origin}/`, "abcd1234ef567890", "Phone"),
+      () => client.pairWithBackend(
+        `${server.origin}/`,
+        "abcd1234ef567890",
+        "Phone",
+        undefined,
+        "claim-secret-for-mobile-smoke-123456",
+      ),
       (error) => error.name === "BackendHttpError" && error.code === "invalid_pairing_response",
     );
     assert.equal(server.requests.length, beforeExpiredPairRequests + 2);

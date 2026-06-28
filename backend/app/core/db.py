@@ -25,9 +25,19 @@ _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_overr
 AUDIT_GENESIS_HASH = "0" * 64
 AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"  # noqa: S105
 AUDIT_HMAC_SECRET_DIR = "secrets"  # noqa: S105
+AUDIT_FAIL_CLOSED_ENV_VAR = "LENGRVIS_AUDIT_FAIL_CLOSED"
+AUDIT_ANCHOR_FILE = "audit_chain.anchor.json"
 SENSITIVE_RECORD_INTEGRITY_VERSION = 1
 SENSITIVE_RECORD_INTEGRITY_TABLE = "sensitive_record_integrity"
 SENSITIVE_RECORD_INTEGRITY_KINDS = frozenset({"approvals", "app_settings", "permission_policies", "audit_chain_heads"})
+AUDIT_APPEND_ONLY_TRIGGERS = frozenset(
+    {
+        "audit_events_no_update",
+        "audit_events_no_delete",
+        "audit_chain_heads_no_update",
+        "audit_chain_heads_no_delete",
+    }
+)
 
 # Audit hot-path caches (2-H2): avoid re-reading the HMAC secret file and
 # re-querying the chain tail on every event. Single-writer assumption: failed
@@ -161,6 +171,13 @@ WHERE_ALLOWED_COLUMNS: dict[str, frozenset[str]] = {
 # P1-6 fix: Validate column names in _ensure_columns to prevent SQL injection.
 # ALTER TABLE ... ADD COLUMN does not support parameterized identifiers in SQLite.
 # We validate the column name and definition against strict whitelists instead.
+_ENSURE_COLUMNS_TABLES = frozenset(
+    {
+        "audit_events",
+        "llm_usage_events",
+        "perception_suggestions",
+    }
+)
 _SAFE_COLUMN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SAFE_COLUMN_DEFINITION_RE = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(\s+NOT\s+NULL)?(\s+DEFAULT\s+('(?:[^']|'')*'|[0-9.-]+|NULL))?(\s+NOT\s+NULL)?$",
@@ -261,6 +278,12 @@ def close_thread_connection() -> None:
     state = _thread_connection_state()
     if state is not None:
         _close_thread_connection(state)
+
+
+def reset_connection_state() -> None:
+    """Drop thread-local DB handles before tests or runtime data-dir switches."""
+    close_thread_connection()
+    reset_audit_caches()
 
 
 def _json(data: Any) -> str:
@@ -555,6 +578,8 @@ def upsert_model(table: str, model: BaseModel, *, task_id: str | None = None, st
     if handler is None:
         raise ValueError(f"Unsupported table: {table}")
     with connect() as conn:
+        if table in SENSITIVE_RECORD_INTEGRITY_KINDS:
+            _begin_immediate_transaction(conn)
         handler(conn, data, now, status)
 
 
@@ -586,6 +611,8 @@ def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    if table not in _ENSURE_COLUMNS_TABLES:
+        return
     existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     for name, definition in columns.items():
         if name not in existing:
@@ -973,6 +1000,7 @@ def insert_audit_event(model: BaseModel | dict[str, Any]) -> dict[str, Any]:
 
 
 def _insert_audit_event_record(data: dict[str, Any]) -> dict[str, Any]:
+    init_db()
     try:
         with _EVENT_WRITE_LOCK, connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1025,10 +1053,14 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
     last_event_id: str | None = None
     last_sequence = 0
     persisted_head: dict[str, Any] | None = None
+    external_anchor: dict[str, Any] | None = None
+    missing_triggers: list[str] = []
     with connect() as conn:
         rows = conn.execute(query, args).fetchall()
         if limit is None:
+            missing_triggers = _missing_audit_append_only_triggers(conn)
             persisted_head = _latest_persisted_audit_chain_head(conn)
+            external_anchor = _read_audit_anchor()
 
     for index, row in enumerate(rows, start=1):
         row_id = str(row["id"] or "")
@@ -1100,6 +1132,32 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
                 }
             )
 
+    if limit is None and missing_triggers:
+        failures.append(
+            {
+                "index": checked + 1,
+                "id": last_event_id,
+                "sequence": last_sequence,
+                "reason": "append_only_trigger_missing",
+                "missing_triggers": missing_triggers,
+            }
+        )
+
+    if not failures and limit is None and external_anchor is not None:
+        anchored_sequence = int(external_anchor.get("sequence") or 0)
+        anchored_hash = str(external_anchor.get("event_hash") or "")
+        if anchored_sequence != last_sequence or anchored_hash != last_hash:
+            failures.append(
+                {
+                    "index": checked + 1,
+                    "id": external_anchor.get("event_id") or None,
+                    "sequence": anchored_sequence,
+                    "reason": "external_anchor_mismatch",
+                    "expected_last_sequence": anchored_sequence,
+                    "actual_last_sequence": last_sequence,
+                }
+            )
+
     failure = failures[0] if failures else {}
     return {
         "ok": not failures,
@@ -1112,6 +1170,7 @@ def verify_audit_log(*, limit: int | None = None) -> dict[str, Any]:
         "failure_sequence": failure.get("sequence"),
         "failure_reason": str(failure.get("reason") or ""),
         "failures": failures,
+        "anchor": external_anchor,
     }
 
 
@@ -1131,6 +1190,20 @@ def _audit_column_mismatch(row: sqlite3.Row, data: dict[str, Any]) -> list[str]:
         if str(data_value or "") != str(row_value or ""):
             mismatched.append(field)
     return mismatched
+
+
+def _missing_audit_append_only_triggers(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'trigger'
+          AND name IN (?, ?, ?, ?)
+        """,
+        tuple(sorted(AUDIT_APPEND_ONLY_TRIGGERS)),
+    ).fetchall()
+    present = {str(row["name"]) for row in rows}
+    return sorted(AUDIT_APPEND_ONLY_TRIGGERS - present)
 
 
 PERSONAL_DATA_TABLES: tuple[str, ...] = (
@@ -1259,6 +1332,7 @@ def _store_audit_chain_head(sequence: int, event_hash: str, *, event_id: str = "
     with _AUDIT_CACHE_LOCK:
         _AUDIT_CHAIN_HEADS[str(db_path())] = (int(sequence), str(event_hash))
     with connect() as conn:
+        _begin_immediate_transaction(conn)
         conn.execute(
             """
             INSERT INTO audit_chain_heads (id, sequence, event_hash, event_id, created_at)
@@ -1267,6 +1341,7 @@ def _store_audit_chain_head(sequence: int, event_hash: str, *, event_id: str = "
             (record_id, int(sequence), str(event_hash), str(event_id or ""), created_at),
         )
         _store_sensitive_record_integrity(conn, "audit_chain_heads", record_id, payload)
+    _write_audit_anchor(sequence, event_hash, event_id=event_id)
 
 
 def _invalidate_audit_chain_head() -> None:
@@ -1327,6 +1402,41 @@ def _audit_chain_head_integrity_payload(
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def audit_anchor_path() -> Path:
+    return Path(get_base_settings().data_dir) / AUDIT_ANCHOR_FILE
+
+
+def _write_audit_anchor(sequence: int, event_hash: str, *, event_id: str = "") -> None:
+    payload = {
+        "schema": 1,
+        "sequence": int(sequence),
+        "event_hash": str(event_hash),
+        "event_id": str(event_id or ""),
+        "updated_at": _now_iso(),
+    }
+    payload["anchor_sha256"] = sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    path = audit_anchor_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _read_audit_anchor() -> dict[str, Any] | None:
+    path = audit_anchor_path()
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"sequence": 0, "event_hash": "", "event_id": "", "invalid": True}
+    if not isinstance(payload, dict):
+        return {"sequence": 0, "event_hash": "", "event_id": "", "invalid": True}
+    return payload
 
 
 def _audit_event_hash(event: dict[str, Any]) -> str:
@@ -1552,6 +1662,7 @@ def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -
 def set_setting(key: str, value: Any) -> None:
     stored = _json(value)
     with connect() as conn:
+        _begin_immediate_transaction(conn)
         conn.execute(
             """
             INSERT INTO app_settings (key, value, updated_at)
@@ -1575,8 +1686,18 @@ def get_settings_overrides() -> dict[str, Any]:
     return result
 
 
-def store_sensitive_record_integrity(table: str, record_id: str, data: str) -> None:
+def store_sensitive_record_integrity(
+    table: str,
+    record_id: str,
+    data: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    if conn is not None:
+        _store_sensitive_record_integrity(conn, table, record_id, data)
+        return
     with connect() as conn:
+        _begin_immediate_transaction(conn)
         _store_sensitive_record_integrity(conn, table, record_id, data)
 
 
@@ -1628,8 +1749,11 @@ def bootstrap_sensitive_record_integrity() -> dict[str, Any]:
     """Sign pre-existing local sensitive records once during startup migration."""
     failures: list[dict[str, str]] = []
     checked = 0
+    bootstrap_completed = False
     with connect() as conn:
         _ensure_sensitive_record_integrity_schema(conn)
+        _begin_immediate_transaction(conn)
+        bootstrap_completed = _sensitive_integrity_bootstrap_completed(conn)
         for table, row, data in _iter_sensitive_record_rows(conn):
             checked += 1
             record_id = str(row["id"])
@@ -1638,8 +1762,18 @@ def bootstrap_sensitive_record_integrity() -> dict[str, Any]:
                     _require_sensitive_record_integrity(conn, table, record_id, data)
                 except SensitiveRecordIntegrityError as exc:
                     failures.append({"table": table, "id": record_id, "reason": str(exc)})
+            elif bootstrap_completed:
+                failures.append(
+                    {
+                        "table": table,
+                        "id": record_id,
+                        "reason": "Sensitive local record integrity proof missing",
+                    }
+                )
             else:
                 _store_sensitive_record_integrity(conn, table, record_id, data)
+        if not failures and not bootstrap_completed:
+            _mark_sensitive_integrity_bootstrap_completed(conn)
     status = {"ok": not failures, "checked": checked, "failures": failures}
     set_startup_sensitive_integrity_status(status)
     return status
@@ -1665,6 +1799,51 @@ def require_sensitive_integrity_ok() -> None:
         raise SensitiveRecordIntegrityError(
             f"Sensitive local record integrity check failed for {failure.get('table')}:{failure.get('id')}"
         )
+
+
+def audit_fail_closed_enabled() -> bool:
+    raw = str(get_env(AUDIT_FAIL_CLOSED_ENV_VAR) or "").strip().lower()
+    commercial = str(get_env("LENGRVIS_COMMERCIAL_RELEASE") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"} or commercial in {"1", "true", "yes", "on"}
+
+
+def audit_fail_closed_status() -> dict[str, Any]:
+    audit_status = verify_audit_log()
+    sensitive_status = sensitive_integrity_check()
+    failures: list[dict[str, Any]] = []
+    if not audit_status.get("ok"):
+        failures.append(
+            {
+                "kind": "audit_chain",
+                "reason": audit_status.get("failure_reason") or "audit_chain_invalid",
+            }
+        )
+    if not sensitive_status.get("ok"):
+        failure = (sensitive_status.get("failures") or [{}])[0]
+        failures.append(
+            {
+                "kind": "sensitive_record_integrity",
+                "table": failure.get("table"),
+                "id": failure.get("id"),
+                "reason": failure.get("reason") or "sensitive_record_integrity_invalid",
+            }
+        )
+    return {
+        "ok": not failures,
+        "audit": audit_status,
+        "sensitive_records": sensitive_status,
+        "failures": failures,
+    }
+
+
+def require_audit_fail_closed_ok() -> None:
+    status = audit_fail_closed_status()
+    if status.get("ok"):
+        return
+    failure = (status.get("failures") or [{}])[0]
+    raise SensitiveRecordIntegrityError(
+        f"Audit fail-closed gate blocked local writes: {failure.get('kind')}:{failure.get('reason')}"
+    )
 
 
 def _iter_sensitive_record_rows(conn: sqlite3.Connection) -> Iterator[tuple[str, sqlite3.Row, str]]:
@@ -1697,6 +1876,11 @@ def _iter_sensitive_record_rows(conn: sqlite3.Connection) -> Iterator[tuple[str,
             yield table, row, data
 
 
+def _begin_immediate_transaction(conn: sqlite3.Connection) -> None:
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+
+
 def _ensure_sensitive_record_integrity_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"""
@@ -1718,8 +1902,8 @@ def _store_sensitive_record_integrity(conn: sqlite3.Connection, table: str, reco
     _ensure_sensitive_record_integrity_schema(conn)
     digest = _sensitive_record_digest(table, record_id, data)
     conn.execute(
-        f"""
-        INSERT INTO {SENSITIVE_RECORD_INTEGRITY_TABLE} (table_name, record_id, version, digest, updated_at)
+        """
+        INSERT INTO sensitive_record_integrity (table_name, record_id, version, digest, updated_at)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(table_name, record_id) DO UPDATE SET
             version=excluded.version,
@@ -1732,9 +1916,9 @@ def _store_sensitive_record_integrity(conn: sqlite3.Connection, table: str, reco
 
 def _sensitive_record_integrity_row_exists(conn: sqlite3.Connection, table: str, record_id: str) -> bool:
     row = conn.execute(
-        f"""
+        """
         SELECT 1
-        FROM {SENSITIVE_RECORD_INTEGRITY_TABLE}
+        FROM sensitive_record_integrity
         WHERE table_name = ? AND record_id = ?
         """,
         (table, record_id),
@@ -1742,14 +1926,55 @@ def _sensitive_record_integrity_row_exists(conn: sqlite3.Connection, table: str,
     return row is not None
 
 
+def _sensitive_integrity_bootstrap_payload() -> str:
+    return json.dumps({"version": SENSITIVE_RECORD_INTEGRITY_VERSION, "bootstrapped": True})
+
+
+def _sensitive_integrity_bootstrap_digest() -> str:
+    return hmac.new(
+        _audit_hmac_secret().encode("utf-8"),
+        _sensitive_integrity_bootstrap_payload().encode("utf-8"),
+        sha256,
+    ).hexdigest()
+
+
+def _sensitive_integrity_bootstrap_completed(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        """
+        SELECT digest
+        FROM sensitive_record_integrity
+        WHERE table_name = '__meta__' AND record_id = 'bootstrap'
+        """,
+    ).fetchone()
+    if not row:
+        return False
+    expected = _sensitive_integrity_bootstrap_digest()
+    return hmac.compare_digest(str(row["digest"] or ""), expected)
+
+
+def _mark_sensitive_integrity_bootstrap_completed(conn: sqlite3.Connection) -> None:
+    _ensure_sensitive_record_integrity_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO sensitive_record_integrity (table_name, record_id, version, digest, updated_at)
+        VALUES ('__meta__', 'bootstrap', ?, ?, ?)
+        ON CONFLICT(table_name, record_id) DO UPDATE SET
+            version=excluded.version,
+            digest=excluded.digest,
+            updated_at=excluded.updated_at
+        """,
+        (SENSITIVE_RECORD_INTEGRITY_VERSION, _sensitive_integrity_bootstrap_digest(), _now_iso()),
+    )
+
+
 def _require_sensitive_record_integrity(conn: sqlite3.Connection, table: str, record_id: str, data: str) -> None:
     if table not in SENSITIVE_RECORD_INTEGRITY_KINDS or not record_id:
         return
     _ensure_sensitive_record_integrity_schema(conn)
     row = conn.execute(
-        f"""
+        """
         SELECT digest
-        FROM {SENSITIVE_RECORD_INTEGRITY_TABLE}
+        FROM sensitive_record_integrity
         WHERE table_name = ? AND record_id = ?
         """,
         (table, record_id),

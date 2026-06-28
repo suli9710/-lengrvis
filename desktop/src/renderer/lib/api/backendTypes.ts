@@ -1012,6 +1012,8 @@ export interface BackendCommerceLicenseStatus {
   revoked?: boolean;
   verifier_configured: boolean;
   managed_by?: "environment" | "file" | null;
+  requested_env_plan?: "free" | "pro" | "max" | "team";
+  plan_env_ignored?: boolean;
   license_id?: string | null;
   issuer?: string | null;
   replaces?: string | null;

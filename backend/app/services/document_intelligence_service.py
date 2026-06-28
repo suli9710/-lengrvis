@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from app.config import get_env
 from app.indexer.ocr_service import IMAGE_EXTENSIONS, extract_pdf_text_with_ocr_fallback, ocr_image_result
 from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.resource_state import resource_states
@@ -30,7 +31,12 @@ SUPPORTED_EXTENSIONS = (
 DEFAULT_TOP_K = 4
 DEFAULT_REPORT_BLOCKS = 8
 DEFAULT_PREVIEW_CHARS = 20000
+DEFAULT_MAX_PARSE_BYTES = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
+
+
+class DocumentTooLargeError(ValueError):
+    """Raised when a document exceeds the parse size budget."""
 
 
 class AdvancedParserUnavailable(RuntimeError):
@@ -134,6 +140,28 @@ def _redacted_error(exc: BaseException) -> str:
     return str(redact_value(str(exc)))
 
 
+def _max_parse_bytes() -> int:
+    raw = get_env("LENGRVIS_DOCUMENT_MAX_PARSE_BYTES")
+    if not raw:
+        return DEFAULT_MAX_PARSE_BYTES
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_PARSE_BYTES
+
+
+def _ensure_parseable_file_size(document_path: Path) -> None:
+    try:
+        size = document_path.stat().st_size
+    except OSError as exc:
+        raise FileNotFoundError(f"Document not found: {document_path}") from exc
+    max_bytes = _max_parse_bytes()
+    if size > max_bytes:
+        raise DocumentTooLargeError(
+            f"Document exceeds parse size limit ({size} bytes; max {max_bytes})."
+        )
+
+
 def parse_advanced(
     path: str | Path,
     *,
@@ -143,6 +171,7 @@ def parse_advanced(
     document_path = Path(path)
     if not document_path.exists():
         raise FileNotFoundError(f"Document not found: {document_path}")
+    _ensure_parseable_file_size(document_path)
 
     warnings: list[str] = []
     if try_advanced:
@@ -1178,6 +1207,7 @@ def edit_pptx(
     needle = str(find or "")
     if not needle:
         raise ValueError("document.edit_pptx requires a non-empty 'find' string.")
+    _ensure_parseable_file_size(path_obj)
     replacement = str(replace or "")
     prs = Presentation(str(path_obj))
     match_count = _pptx_replace_text(prs, needle, replacement, dry_run=True)
@@ -1276,6 +1306,7 @@ def edit_docx(
     needle = str(find or "")
     if not needle:
         raise ValueError("document.edit_docx requires a non-empty 'find' string.")
+    _ensure_parseable_file_size(path_obj)
     replacement = str(replace or "")
     doc = Document(str(path_obj))
     match_count = _docx_replace_text(doc, needle, replacement, dry_run=True)
@@ -1327,6 +1358,7 @@ def edit_xlsx(
     cell_ref = str(cell or "").strip().upper()
     if not sheet_name or not cell_ref:
         raise ValueError("document.edit_xlsx requires non-empty 'sheet' and 'cell'.")
+    _ensure_parseable_file_size(path_obj)
     workbook = load_workbook(path_obj)
     if sheet_name not in workbook.sheetnames:
         raise ValueError(f"Sheet not found: {sheet_name}")

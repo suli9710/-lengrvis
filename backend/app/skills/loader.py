@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from app.config import AppSettings
 from app.core.audit import record
 from app.policy.risk import RISK_ORDER, RiskLevel
-from app.skills.sandbox import SkillSandbox, SkillSandboxError, is_loopback_http_url
+from app.skills.sandbox import SkillSandbox, SkillSandboxError, is_allowed_loopback_http_url, is_loopback_http_url
 from app.skills.schemas import (
     LEGACY_PERMISSION,
     SkillDefinition,
@@ -435,6 +435,14 @@ def review_skill_definition(definition: SkillDefinition, root: str | Path) -> Sk
                         severity="error",
                         location=f"{location}.execution.entry",
                         message="http execution entries must use a loopback host.",
+                    )
+                )
+            elif not is_allowed_loopback_http_url(execution.entry):
+                issues.append(
+                    SkillSafetyIssue(
+                        severity="error",
+                        location=f"{location}.execution.entry",
+                        message="http execution entries must not target protected local service ports.",
                     )
                 )
             for key, value in execution.headers.items():

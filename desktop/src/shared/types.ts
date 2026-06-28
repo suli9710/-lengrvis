@@ -209,6 +209,8 @@ export interface CommerceLicenseStatus {
   revoked?: boolean;
   verifierConfigured: boolean;
   managedBy?: "environment" | "file";
+  requestedEnvPlan?: CommercePlan;
+  planEnvIgnored?: boolean;
   licenseId?: string;
   issuer?: string;
   replaces?: string;

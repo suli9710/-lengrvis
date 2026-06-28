@@ -319,13 +319,13 @@ def test_rebuild_without_valid_roots_preserves_existing_index(monkeypatch: pytes
 
     index = FTSIndex(embedder=lambda texts: [[1.0] for _ in texts])
     assert index.rebuild([str(workspace)])["files_indexed"] == 1
-    assert index.search("preserve searchable index content")
+    assert index.search("preserve searchable index content", allowed_directories=[str(workspace)])
 
     result = FTSIndex().rebuild([])
 
     assert result["files_indexed"] == 0
     assert result["files_failed"] == 0
-    assert FTSIndex().search("preserve searchable index content")
+    assert FTSIndex().search("preserve searchable index content", allowed_directories=[str(workspace)])
 
 
 def test_rebuild_keeps_lexical_index_when_embeddings_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -349,7 +349,7 @@ def test_rebuild_keeps_lexical_index_when_embeddings_fail(monkeypatch: pytest.Mo
     assert result["chunks_indexed"] >= 1
     assert result["embeddings_indexed"] == 0
     assert result["files_failed"] == 0
-    assert FTSIndex().search("lexical rebuild fallback remains searchable")
+    assert FTSIndex().search("lexical rebuild fallback remains searchable", allowed_directories=[str(workspace)])
     with db.connect() as conn:
         embedding_count = conn.execute("SELECT COUNT(*) AS count FROM document_chunk_embeddings").fetchone()["count"]
         failure_rows = conn.execute(

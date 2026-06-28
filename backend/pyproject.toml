@@ -67,6 +67,8 @@ pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
   "slow: tests that are intentionally slower or rely on subprocess/thread timeout behavior or full local diagnostic/evaluation flows; exclude with -m 'not slow' in short runner budgets and run explicitly for full sign-off.",
+  "desktop_api_token_optional: opt-in bypass for desktop API token guard in TestClient tests.",
+  "requires_desktop_api_token: enforce desktop API token guard; excludes desktop_api_token_optional marker.",
 ]
 
 [tool.ruff]

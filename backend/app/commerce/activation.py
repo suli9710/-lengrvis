@@ -43,6 +43,8 @@ from app.commerce.licensing import (
     License,
     LicenseError,
     install_license,
+    load_revocation_manifest,
+    parse_license,
     sign_license,
     verify_license,
 )
@@ -61,6 +63,7 @@ ACTIVATION_SIGNING_PASSPHRASE_FILE_ENV_VAR = "LENGRVIS_ACTIVATION_SIGNING_PASSPH
 ACTIVATION_ISSUER_ENV_VAR = "LENGRVIS_ACTIVATION_ISSUER"
 ACTIVATION_RATE_LIMIT_MAX_ENV_VAR = "LENGRVIS_ACTIVATION_RATE_LIMIT_MAX"
 ACTIVATION_RATE_LIMIT_WINDOW_SECONDS_ENV_VAR = "LENGRVIS_ACTIVATION_RATE_LIMIT_WINDOW_SECONDS"
+ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR = "LENGRVIS_ACTIVATION_SERVER_DEVICE_SECRET"  # noqa: S105
 
 MAX_ACTIVATION_KEY_CHARS = 256
 MAX_DEVICE_ID_CHARS = 128
@@ -89,10 +92,45 @@ _ALLOWED_DEVICE_PROFILE_KEYS = {
     "node_hash",
 }
 
-_RATE_LIMIT_BUCKETS: dict[str, list[float]] = {}
-
 _UNSET = object()
 """Sentinel distinguishing "field omitted" from an explicit ``None`` (clear)."""
+
+_ACTIVATION_ERROR_MESSAGES = {
+    "activation_failed": "激活失败。",
+    "activation_service_unavailable": "激活服务暂时不可用，请稍后重试。",
+    "activation_malformed_response": "激活服务返回的数据不完整。",
+    "activation_unconfigured": "尚未配置激活服务器。",
+    "activation_url_invalid": "激活服务器地址无效。",
+    "activation_https_required": "激活服务器必须使用 HTTPS。",
+    "activation_server_unconfigured": "激活服务器配置不完整。",
+    "activation_storage_unavailable": "激活存储目录不可用。",
+    "activation_device_identity_unavailable": "暂时无法读取本机设备身份。",
+    "activation_key_required": "请输入订阅授权码。",
+    "activation_key_invalid": "订阅授权码无效。",
+    "activation_key_not_found": "订阅授权码不存在或已失效。",
+    "activation_rate_limited": "激活尝试次数过多，请稍后再试。",
+    "activation_device_required": "设备标识不能为空。",
+    "activation_device_invalid": "设备标识无效。",
+    "activation_device_limit": "已达到该订阅允许绑定的设备数量。",
+    "activation_device_not_found": "未找到该激活设备。",
+    "activation_device_mismatch": "设备与该许可证不匹配。",
+    "activation_device_rebind_requires_unbind": "该设备指纹已绑定到其他激活记录，请先在后台解绑旧设备。",
+    "activation_device_fingerprint_invalid": "设备指纹无效。",
+    "activation_device_fingerprint_mismatch": "设备指纹与本次激活记录不一致。",
+    "activation_fingerprint_required": "新设备激活必须提交设备指纹。",
+    "license_token_required": "许可证令牌不能为空。",
+    "license_public_key_missing": "当前构建未配置许可证验签公钥。",
+    "license_id_required": "许可证编号不能为空。",
+    "license_device_mismatch": "许可证绑定到另一台设备。",
+    "subscription_required": "该许可证不是订阅许可证。",
+    "subscription_mismatch": "许可证订阅与激活记录不一致。",
+    "subscription_active": "订阅当前可用。",
+    "subscription_trialing": "订阅当前处于试用期。",
+    "subscription_past_due": "订阅已逾期，请处理付款后重试。",
+    "subscription_canceled": "订阅已取消。",
+    "subscription_expired": "订阅已过期。",
+    "subscription_revoked": "订阅已被撤销。",
+}
 
 
 class HttpClient(Protocol):
@@ -115,6 +153,16 @@ class ActivationError(AppError):
 @dataclass(frozen=True)
 class ActivationRequest:
     activation_key: str
+    device_id: str
+    app_version: str = ""
+    nonce: str = ""
+    device_fingerprint: str = ""
+    device_profile: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ActivationRefreshRequest:
+    license_token: str
     device_id: str
     app_version: str = ""
     nonce: str = ""
@@ -189,7 +237,7 @@ def activate_license_with_server(
         ) from exc
     except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError) as exc:
         raise ActivationError(
-            "Activation service is unavailable.",
+            _activation_message_for_code("activation_service_unavailable"),
             code="activation_service_unavailable",
             status_code=503,
         ) from exc
@@ -199,7 +247,7 @@ def activate_license_with_server(
     token = str(body.get("license_token") or "").strip() if isinstance(body, dict) else ""
     if not token:
         raise ActivationError(
-            "Activation service returned no license.",
+            _activation_message_for_code("activation_malformed_response"),
             code="activation_malformed_response",
             status_code=502,
         )
@@ -207,7 +255,101 @@ def activate_license_with_server(
         return install_license(token, settings, now=now)
     except LicenseError as exc:
         raise ActivationError(
-            "Activation service returned a license that could not be verified.",
+            "激活服务返回的许可证未通过验签。",
+            code=exc.code,
+            status_code=exc.status_code,
+        ) from exc
+
+
+def refresh_license_with_server(
+    license_token: str,
+    settings: Any,
+    *,
+    app_version: str = "",
+    client: HttpClient | None = None,
+    now: datetime | None = None,
+    persist: bool = True,
+) -> License:
+    """Refresh a subscription license online and return a newly signed token.
+
+    Subscription licenses must periodically prove that the activation server
+    still considers the subscription active. The server response is a full
+    Ed25519-signed replacement license; unsigned status JSON is never enough to
+    extend local paid entitlements.
+    """
+    token = str(license_token or "").strip()
+    if not token:
+        raise ActivationError(
+            _activation_message_for_code("license_token_required"), code="license_token_required", status_code=422
+        )
+    base_url = _activation_base_url()
+    identity = _collect_local_identity(settings)
+    nonce = secrets.token_urlsafe(24)
+    payload = {
+        "license_token": token,
+        "device_id": identity.device_id,
+        "device_fingerprint": identity.fingerprint,
+        "device_profile": identity.profile,
+        "app_version": str(app_version or "")[:MAX_APP_VERSION_CHARS],
+        "nonce": nonce,
+    }
+    endpoint = _license_refresh_endpoint(base_url)
+    http_client = client or httpx.Client(timeout=_activation_timeout_seconds())
+    close_client = client is None
+    try:
+        response = http_client.post(endpoint, json=payload)
+        response.raise_for_status()
+        body = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise ActivationError(
+            _safe_activation_error_message(exc.response),
+            code=_safe_activation_error_code(exc.response),
+            status_code=exc.response.status_code,
+        ) from exc
+    except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ActivationError(
+            _activation_message_for_code("activation_service_unavailable"),
+            code="activation_service_unavailable",
+            status_code=503,
+        ) from exc
+    finally:
+        if close_client and hasattr(http_client, "close"):
+            http_client.close()
+    refreshed_token = str(body.get("license_token") or "").strip() if isinstance(body, dict) else ""
+    if not refreshed_token:
+        raise ActivationError(
+            _activation_message_for_code("activation_malformed_response"),
+            code="activation_malformed_response",
+            status_code=502,
+        )
+    if persist:
+        try:
+            return install_license(refreshed_token, settings, now=now)
+        except LicenseError as exc:
+            raise ActivationError(
+                "激活服务返回的许可证未通过验签。",
+                code=exc.code,
+                status_code=exc.status_code,
+            ) from exc
+    public_key = _activation_public_key_for_self_check()
+    if not public_key:
+        raise ActivationError(
+            _activation_message_for_code("license_public_key_missing"),
+            code="license_public_key_missing",
+            status_code=503,
+        )
+    try:
+        revocations, _ = load_revocation_manifest(settings, public_key=public_key)
+        return verify_license(
+            refreshed_token,
+            public_key,
+            now=now,
+            revocations=revocations,
+            expected_device_id=identity.device_id,
+        )
+    except LicenseError as exc:
+        raise ActivationError(
+            "激活服务返回的许可证未通过验签。",
             code=exc.code,
             status_code=exc.status_code,
         ) from exc
@@ -228,7 +370,7 @@ def _collect_local_identity(settings: Any) -> LocalDeviceIdentity:
         raise ActivationError(exc.message, code=exc.code, status_code=exc.status_code) from exc
     except Exception as exc:  # noqa: BLE001 - keep raw host/device details out of API errors.
         raise ActivationError(
-            "Activation device identity is unavailable.",
+            _activation_message_for_code("activation_device_identity_unavailable"),
             code="activation_device_identity_unavailable",
             status_code=503,
         ) from exc
@@ -239,6 +381,7 @@ def initialize_activation_db(path: Path | None = None) -> Path:
     db_path = _activation_db_path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(
             """
@@ -265,6 +408,7 @@ def initialize_activation_db(path: Path | None = None) -> Path:
                 id TEXT PRIMARY KEY,
                 key_hash TEXT NOT NULL,
                 device_id TEXT NOT NULL,
+                server_device_ref TEXT NOT NULL DEFAULT '',
                 device_fingerprint TEXT NOT NULL DEFAULT '',
                 device_profile TEXT NOT NULL DEFAULT '{}',
                 first_activated_at TEXT NOT NULL,
@@ -276,6 +420,8 @@ def initialize_activation_db(path: Path | None = None) -> Path:
             """
         )
         _ensure_activation_device_columns(conn)
+        _backfill_activation_server_device_refs(conn)
+        _ensure_activation_rate_limit_table(conn)
     return db_path
 
 
@@ -373,6 +519,7 @@ def activate_subscription_key(
     app_version = _safe_label(request.app_version, max_length=MAX_APP_VERSION_CHARS)
     nonce = _safe_label(request.nonce, max_length=MAX_NONCE_CHARS)
     key_hash = hash_activation_key(key)
+    server_device_ref = _server_device_ref(key_hash=key_hash, device_fingerprint=device_fingerprint)
     path = initialize_activation_db(db_path)
     with sqlite3.connect(path, isolation_level=None) as conn:
         conn.row_factory = sqlite3.Row
@@ -389,47 +536,57 @@ def activate_subscription_key(
         conn.execute("BEGIN IMMEDIATE")
         record = _load_subscription_record(conn, key_hash)
         if record is None:
-            raise ActivationError("Activation key was not accepted.", code="activation_key_not_found", status_code=404)
+            raise ActivationError(
+                _activation_message_for_code("activation_key_not_found"),
+                code="activation_key_not_found",
+                status_code=404,
+            )
         _ensure_subscription_can_activate(record, now=moment)
         device_row = conn.execute(
             """
-            SELECT id, device_id, device_fingerprint
+            SELECT id, device_id, server_device_ref, device_fingerprint
             FROM activation_devices
-            WHERE key_hash = ? AND device_id = ?
+            WHERE key_hash = ? AND server_device_ref = ?
             """,
-            (key_hash, device_id),
+            (key_hash, server_device_ref),
         ).fetchone()
-        if device_fingerprint:
-            fingerprint_row = conn.execute(
+        legacy_device_row = None
+        if device_row is None:
+            legacy_device_row = conn.execute(
                 """
-                SELECT id, device_id, device_fingerprint
+                SELECT id, device_id, server_device_ref, device_fingerprint
                 FROM activation_devices
-                WHERE key_hash = ? AND device_fingerprint = ?
+                WHERE key_hash = ? AND device_id = ?
                 """,
-                (key_hash, device_fingerprint),
+                (key_hash, device_id),
             ).fetchone()
-            if fingerprint_row is not None and str(fingerprint_row["device_id"] or "") != device_id:
-                raise ActivationError(
-                    "Device fingerprint is already bound to another activation; unbind the old device first.",
-                    code="activation_device_rebind_requires_unbind",
-                    status_code=409,
-                )
+            device_row = legacy_device_row
         reused_device = device_row is not None
         if reused_device:
             license_id = str(device_row["id"])
-            stored_device_id = str(device_row["device_id"] or "")
+            stored_server_device_ref = str(_row_value(device_row, "server_device_ref") or "")
             stored_fingerprint = str(device_row["device_fingerprint"] or "")
-            if stored_device_id == device_id and stored_fingerprint and device_fingerprint:
-                if not hmac.compare_digest(stored_fingerprint, device_fingerprint):
-                    raise ActivationError(
-                        "Device fingerprint did not match this activation.",
-                        code="activation_device_fingerprint_mismatch",
-                        status_code=409,
-                    )
+            if (
+                stored_fingerprint
+                and device_fingerprint
+                and not hmac.compare_digest(stored_fingerprint, device_fingerprint)
+            ):
+                raise ActivationError(
+                    _activation_message_for_code("activation_device_fingerprint_mismatch"),
+                    code="activation_device_fingerprint_mismatch",
+                    status_code=409,
+                )
+            if stored_server_device_ref and not hmac.compare_digest(stored_server_device_ref, server_device_ref):
+                raise ActivationError(
+                    _activation_message_for_code("activation_device_fingerprint_mismatch"),
+                    code="activation_device_fingerprint_mismatch",
+                    status_code=409,
+                )
             conn.execute(
                 """
                 UPDATE activation_devices
                 SET device_id = ?,
+                    server_device_ref = ?,
                     device_fingerprint = CASE
                         WHEN ? != '' THEN ?
                         ELSE device_fingerprint
@@ -444,6 +601,7 @@ def activate_subscription_key(
                 """,
                 (
                     device_id,
+                    server_device_ref,
                     device_fingerprint,
                     device_fingerprint,
                     device_profile,
@@ -456,19 +614,17 @@ def activate_subscription_key(
         else:
             # New device activations must present a non-trivial device
             # fingerprint. The client still self-reports it (no attestation),
-            # but a required, charset-validated, per-key-unique fingerprint
-            # raises the cost of seat squatting with forged device_ids: each
-            # seat now needs a distinct fingerprint (the rebind guard above
-            # blocks reusing one fingerprint across device_ids).
+            # but the seat key is server-derived from key_hash + fingerprint,
+            # so swapping a client device_id does not consume another seat.
             if not device_fingerprint:
                 raise ActivationError(
-                    "Device fingerprint is required to activate a new device.",
+                    _activation_message_for_code("activation_fingerprint_required"),
                     code="activation_fingerprint_required",
                     status_code=422,
                 )
             if len(device_fingerprint) < MIN_DEVICE_FINGERPRINT_CHARS:
                 raise ActivationError(
-                    "Device fingerprint is too short.",
+                    _activation_message_for_code("activation_device_fingerprint_invalid"),
                     code="activation_device_fingerprint_invalid",
                     status_code=422,
                 )
@@ -480,23 +636,24 @@ def activate_subscription_key(
             )
             if count >= record.device_limit:
                 raise ActivationError(
-                    "Activation device limit reached.",
+                    _activation_message_for_code("activation_device_limit"),
                     code="activation_device_limit",
                     status_code=409,
                 )
-            license_id = _license_id_for_device(key_hash, device_id)
+            license_id = _license_id_for_device_ref(key_hash, server_device_ref)
             conn.execute(
                 """
                 INSERT INTO activation_devices (
-                    id, key_hash, device_id, device_fingerprint, device_profile,
+                    id, key_hash, device_id, server_device_ref, device_fingerprint, device_profile,
                     first_activated_at, last_activated_at, app_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     license_id,
                     key_hash,
                     device_id,
+                    server_device_ref,
                     device_fingerprint,
                     device_profile,
                     _iso(moment),
@@ -531,21 +688,219 @@ def activate_subscription_key(
     )
 
 
-def enforce_activation_rate_limit(scope: str, *, now: float | None = None) -> None:
-    """Simple per-process rate limit for activation attempts."""
+def refresh_subscription_license(
+    request: ActivationRefreshRequest,
+    *,
+    db_path: Path | None = None,
+    private_key: str | None = None,
+    private_key_password: bytes | None = None,
+    issuer: str | None = None,
+    now: datetime | None = None,
+) -> ActivationResult:
+    """Server-side subscription status refresh for an existing device license."""
+    moment = now or _utc_now()
+    public_key = _activation_public_key_for_self_check()
+    if not public_key:
+        raise ActivationError(
+            _activation_message_for_code("activation_server_unconfigured"),
+            code="activation_server_unconfigured",
+            status_code=503,
+        )
+    try:
+        current_license = parse_license(request.license_token, public_key)
+    except LicenseError as exc:
+        raise ActivationError("许可证令牌未通过验签。", code=exc.code, status_code=402) from exc
+    if not current_license.license_id:
+        raise ActivationError(
+            _activation_message_for_code("license_id_required"), code="license_id_required", status_code=422
+        )
+    if not current_license.subscription_id:
+        raise ActivationError(
+            _activation_message_for_code("subscription_required"), code="subscription_required", status_code=422
+        )
+
+    device_id = _clean_device_id(request.device_id)
+    if current_license.device_id and not hmac.compare_digest(current_license.device_id, device_id):
+        raise ActivationError(
+            _activation_message_for_code("license_device_mismatch"),
+            code="license_device_mismatch",
+            status_code=402,
+        )
+    device_fingerprint = _clean_device_fingerprint(request.device_fingerprint)
+    device_profile = _clean_device_profile(request.device_profile)
+    app_version = _safe_label(request.app_version, max_length=MAX_APP_VERSION_CHARS)
+    nonce = _safe_label(request.nonce, max_length=MAX_NONCE_CHARS)
+
+    path = initialize_activation_db(db_path)
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        row = conn.execute(
+            """
+            SELECT id, key_hash, device_id, server_device_ref, device_fingerprint
+            FROM activation_devices
+            WHERE id = ?
+            """,
+            (current_license.license_id,),
+        ).fetchone()
+        if row is None:
+            raise ActivationError(
+                _activation_message_for_code("activation_device_not_found"),
+                code="activation_device_not_found",
+                status_code=402,
+            )
+        stored_device_id = str(row["device_id"] or "")
+        if not hmac.compare_digest(stored_device_id, device_id):
+            raise ActivationError(
+                _activation_message_for_code("activation_device_mismatch"),
+                code="activation_device_mismatch",
+                status_code=402,
+            )
+        stored_fingerprint = str(row["device_fingerprint"] or "")
+        stored_server_device_ref = str(_row_value(row, "server_device_ref") or "")
+        if (
+            stored_fingerprint
+            and device_fingerprint
+            and not hmac.compare_digest(stored_fingerprint, device_fingerprint)
+        ):
+            raise ActivationError(
+                _activation_message_for_code("activation_device_fingerprint_mismatch"),
+                code="activation_device_fingerprint_mismatch",
+                status_code=409,
+            )
+        next_fingerprint = device_fingerprint or stored_fingerprint or current_license.device_fingerprint
+        next_server_device_ref = (
+            _server_device_ref(key_hash=str(row["key_hash"] or ""), device_fingerprint=next_fingerprint)
+            if next_fingerprint
+            else stored_server_device_ref
+        )
+        if (
+            stored_server_device_ref
+            and next_server_device_ref
+            and not hmac.compare_digest(stored_server_device_ref, next_server_device_ref)
+        ):
+            raise ActivationError(
+                _activation_message_for_code("activation_device_fingerprint_mismatch"),
+                code="activation_device_fingerprint_mismatch",
+                status_code=409,
+            )
+        record = _load_subscription_record(conn, str(row["key_hash"] or ""))
+        if record is None:
+            raise ActivationError(
+                _activation_message_for_code("activation_key_not_found"),
+                code="activation_key_not_found",
+                status_code=402,
+            )
+        if not hmac.compare_digest(record.subscription_id, current_license.subscription_id):
+            raise ActivationError(
+                _activation_message_for_code("subscription_mismatch"),
+                code="subscription_mismatch",
+                status_code=402,
+            )
+        _ensure_subscription_can_activate(record, now=moment)
+        conn.execute(
+            """
+            UPDATE activation_devices
+            SET server_device_ref = CASE
+                    WHEN ? != '' THEN ?
+                    ELSE server_device_ref
+                END,
+                device_fingerprint = CASE
+                    WHEN ? != '' THEN ?
+                    ELSE device_fingerprint
+                END,
+                device_profile = CASE
+                    WHEN ? != '{}' THEN ?
+                    ELSE device_profile
+                END,
+                last_activated_at = ?,
+                app_version = ?
+            WHERE id = ?
+            """,
+            (
+                next_server_device_ref,
+                next_server_device_ref,
+                next_fingerprint,
+                next_fingerprint,
+                device_profile,
+                device_profile,
+                _iso(moment),
+                app_version,
+                current_license.license_id,
+            ),
+        )
+
+    refreshed_token = _sign_activation_license(
+        record,
+        license_id=current_license.license_id,
+        device_id=device_id,
+        device_fingerprint=next_fingerprint,
+        app_version=app_version,
+        nonce=nonce,
+        private_key=private_key,
+        private_key_password=private_key_password,
+        issuer=issuer,
+        now=moment,
+    )
+    refreshed_license = verify_license(refreshed_token, public_key, now=moment)
+    return ActivationResult(
+        license_token=refreshed_token,
+        license=refreshed_license,
+        license_id=current_license.license_id,
+        plan=record.plan,
+        subscription_id=record.subscription_id,
+        expires_at=record.expires_at,
+        renews_at=record.renews_at,
+        reused_device=True,
+    )
+
+
+def enforce_activation_rate_limit(
+    scope: str,
+    *,
+    now: float | None = None,
+    db_path: Path | None = None,
+    maximum: int | None = None,
+    window_seconds: int | None = None,
+) -> None:
+    """Cross-process activation rate limit backed by the activation SQLite DB."""
     current = time.time() if now is None else now
-    window = _env_int(ACTIVATION_RATE_LIMIT_WINDOW_SECONDS_ENV_VAR, _DEFAULT_RATE_LIMIT_WINDOW_SECONDS)
-    maximum = _env_int(ACTIVATION_RATE_LIMIT_MAX_ENV_VAR, _DEFAULT_RATE_LIMIT_MAX)
-    if maximum <= 0:
+    window = (
+        window_seconds
+        if window_seconds is not None
+        else _env_int(ACTIVATION_RATE_LIMIT_WINDOW_SECONDS_ENV_VAR, _DEFAULT_RATE_LIMIT_WINDOW_SECONDS)
+    )
+    max_val = maximum if maximum is not None else _env_int(ACTIVATION_RATE_LIMIT_MAX_ENV_VAR, _DEFAULT_RATE_LIMIT_MAX)
+    if max_val <= 0:
         return
-    key = scope or "unknown"
+    key = (scope or "unknown").strip() or "unknown"
     cutoff = current - max(1, window)
-    bucket = [value for value in _RATE_LIMIT_BUCKETS.get(key, []) if value > cutoff]
-    if len(bucket) >= maximum:
-        _RATE_LIMIT_BUCKETS[key] = bucket
-        raise ActivationError("Too many activation attempts.", code="activation_rate_limited", status_code=429)
-    bucket.append(current)
-    _RATE_LIMIT_BUCKETS[key] = bucket
+    path = initialize_activation_db(db_path)
+    with sqlite3.connect(path, isolation_level=None) as conn:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        _ensure_activation_rate_limit_table(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM activation_rate_limits WHERE attempted_at <= ?", (cutoff,))
+        count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM activation_rate_limits
+            WHERE scope = ? AND attempted_at > ?
+            """,
+            (key, cutoff),
+        ).fetchone()[0]
+        if int(count) >= max_val:
+            conn.rollback()
+            raise ActivationError(
+                _activation_message_for_code("activation_rate_limited"),
+                code="activation_rate_limited",
+                status_code=429,
+            )
+        conn.execute(
+            "INSERT INTO activation_rate_limits(scope, attempted_at) VALUES (?, ?)",
+            (key, current),
+        )
+        conn.commit()
 
 
 def hash_activation_key(activation_key: str, *, pepper: str | None = None) -> str:
@@ -553,7 +908,7 @@ def hash_activation_key(activation_key: str, *, pepper: str | None = None) -> st
     secret = str(pepper if pepper is not None else os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip()
     if not secret:
         raise ActivationError(
-            "Activation key pepper is not configured.",
+            _activation_message_for_code("activation_server_unconfigured"),
             code="activation_server_unconfigured",
             status_code=503,
         )
@@ -562,17 +917,68 @@ def hash_activation_key(activation_key: str, *, pepper: str | None = None) -> st
 
 def activation_server_configured() -> bool:
     return bool(
-        str(os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip()
-        and _read_activation_private_key(required=False)
+        str(os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip() and _read_activation_private_key(required=False)
     )
 
 
 def _ensure_activation_device_columns(conn: sqlite3.Connection) -> None:
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(activation_devices)").fetchall()}
+    if "server_device_ref" not in columns:
+        conn.execute("ALTER TABLE activation_devices ADD COLUMN server_device_ref TEXT NOT NULL DEFAULT ''")
     if "device_fingerprint" not in columns:
         conn.execute("ALTER TABLE activation_devices ADD COLUMN device_fingerprint TEXT NOT NULL DEFAULT ''")
     if "device_profile" not in columns:
         conn.execute("ALTER TABLE activation_devices ADD COLUMN device_profile TEXT NOT NULL DEFAULT '{}'")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_activation_devices_key_server_ref
+        ON activation_devices(key_hash, server_device_ref)
+        WHERE server_device_ref != ''
+        """
+    )
+
+
+def _backfill_activation_server_device_refs(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, key_hash, device_id, device_fingerprint, server_device_ref
+        FROM activation_devices
+        WHERE server_device_ref = ''
+        """
+    ).fetchall()
+    for row in rows:
+        key_hash = str(row["key_hash"] or "")
+        fingerprint = str(row["device_fingerprint"] or "")
+        device_id = str(row["device_id"] or "")
+        try:
+            server_ref = _server_device_ref(
+                key_hash=key_hash,
+                device_fingerprint=fingerprint,
+                legacy_device_id=device_id,
+            )
+        except ActivationError:
+            continue
+        conn.execute(
+            "UPDATE activation_devices SET server_device_ref = ? WHERE id = ?",
+            (server_ref, str(row["id"] or "")),
+        )
+
+
+def _ensure_activation_rate_limit_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activation_rate_limits (
+            scope TEXT NOT NULL,
+            attempted_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_activation_rate_limits_scope_time
+        ON activation_rate_limits(scope, attempted_at)
+        """
+    )
 
 
 def _sign_activation_license(
@@ -638,30 +1044,42 @@ def _load_subscription_record(conn: sqlite3.Connection, key_hash: str) -> Subscr
 def _ensure_subscription_can_activate(record: SubscriptionRecord, *, now: datetime) -> None:
     if record.status not in _ALLOWED_SUBSCRIPTION_STATES:
         raise ActivationError(
-            "Subscription is not active.",
+            _activation_message_for_code(f"subscription_{record.status}"),
             code=f"subscription_{record.status}",
             status_code=402,
         )
     if record.expires_at is not None and now >= record.expires_at:
-        raise ActivationError("Subscription has expired.", code="subscription_expired", status_code=402)
+        raise ActivationError(
+            _activation_message_for_code("subscription_expired"), code="subscription_expired", status_code=402
+        )
 
 
 def _activation_base_url() -> str:
     raw = str(os.getenv(ACTIVATION_BASE_URL_ENV_VAR, "")).strip()
     if not raw:
-        raise ActivationError("Activation server is not configured.", code="activation_unconfigured", status_code=503)
+        raise ActivationError(
+            _activation_message_for_code("activation_unconfigured"), code="activation_unconfigured", status_code=503
+        )
     parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ActivationError("Activation server URL is invalid.", code="activation_url_invalid", status_code=503)
+        raise ActivationError(
+            _activation_message_for_code("activation_url_invalid"), code="activation_url_invalid", status_code=503
+        )
     host = (parsed.hostname or "").lower()
     insecure_allowed = str(os.getenv(ACTIVATION_ALLOW_INSECURE_HTTP_ENV_VAR, "")).strip().lower() in _TRUE_VALUES
     if parsed.scheme != "https" and host not in {"127.0.0.1", "localhost", "::1"} and not insecure_allowed:
-        raise ActivationError("Activation server must use HTTPS.", code="activation_https_required", status_code=503)
+        raise ActivationError(
+            _activation_message_for_code("activation_https_required"), code="activation_https_required", status_code=503
+        )
     return raw.rstrip("/")
 
 
 def _activation_endpoint(base_url: str) -> str:
     return f"{base_url}/api/v1/activations"
+
+
+def _license_refresh_endpoint(base_url: str) -> str:
+    return f"{base_url}/api/v1/licenses/refresh"
 
 
 def _activation_timeout_seconds() -> float:
@@ -678,7 +1096,7 @@ def _activation_db_path(path: Path | None = None) -> Path:
     raw = str(os.getenv(ACTIVATION_DB_ENV_VAR, "")).strip()
     if not raw:
         raise ActivationError(
-            "Activation database is not configured.",
+            _activation_message_for_code("activation_server_unconfigured"),
             code="activation_server_unconfigured",
             status_code=503,
         )
@@ -695,13 +1113,13 @@ def _read_activation_private_key(*, required: bool) -> str:
             return Path(path).expanduser().read_text(encoding="utf-8").strip()
         except OSError as exc:
             raise ActivationError(
-                "Activation signing key is unavailable.",
+                _activation_message_for_code("activation_server_unconfigured"),
                 code="activation_server_unconfigured",
                 status_code=503,
             ) from exc
     if required:
         raise ActivationError(
-            "Activation signing key is not configured.",
+            _activation_message_for_code("activation_server_unconfigured"),
             code="activation_server_unconfigured",
             status_code=503,
         )
@@ -719,7 +1137,7 @@ def _read_activation_private_key_password() -> bytes | None:
         text = Path(path).expanduser().read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise ActivationError(
-            "Activation signing passphrase is unavailable.",
+            _activation_message_for_code("activation_server_unconfigured"),
             code="activation_server_unconfigured",
             status_code=503,
         ) from exc
@@ -733,20 +1151,32 @@ def _activation_public_key_for_self_check() -> str:
 def _clean_activation_key(value: str) -> str:
     text = str(value or "").strip()
     if not text:
-        raise ActivationError("Activation key is required.", code="activation_key_required", status_code=422)
+        raise ActivationError(
+            _activation_message_for_code("activation_key_required"), code="activation_key_required", status_code=422
+        )
     if len(text) > MAX_ACTIVATION_KEY_CHARS:
-        raise ActivationError("Activation key is too long.", code="activation_key_invalid", status_code=422)
+        raise ActivationError(
+            _activation_message_for_code("activation_key_invalid"), code="activation_key_invalid", status_code=422
+        )
     return text
 
 
 def _clean_device_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
-        raise ActivationError("Device id is required.", code="activation_device_required", status_code=422)
+        raise ActivationError(
+            _activation_message_for_code("activation_device_required"),
+            code="activation_device_required",
+            status_code=422,
+        )
     if len(text) > MAX_DEVICE_ID_CHARS:
-        raise ActivationError("Device id is too long.", code="activation_device_invalid", status_code=422)
+        raise ActivationError(
+            _activation_message_for_code("activation_device_invalid"), code="activation_device_invalid", status_code=422
+        )
     if any(char.isspace() for char in text):
-        raise ActivationError("Device id is invalid.", code="activation_device_invalid", status_code=422)
+        raise ActivationError(
+            _activation_message_for_code("activation_device_invalid"), code="activation_device_invalid", status_code=422
+        )
     return text
 
 
@@ -756,14 +1186,14 @@ def _clean_device_fingerprint(value: str) -> str:
         return ""
     if len(text) > MAX_DEVICE_FINGERPRINT_CHARS:
         raise ActivationError(
-            "Device fingerprint is too long.",
+            _activation_message_for_code("activation_device_fingerprint_invalid"),
             code="activation_device_fingerprint_invalid",
             status_code=422,
         )
     allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-:.")
     if any(char not in allowed for char in text):
         raise ActivationError(
-            "Device fingerprint is invalid.",
+            _activation_message_for_code("activation_device_fingerprint_invalid"),
             code="activation_device_fingerprint_invalid",
             status_code=422,
         )
@@ -808,8 +1238,45 @@ def _safe_device_profile(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _license_id_for_device(key_hash: str, device_id: str) -> str:
-    digest = sha256(f"{key_hash}:{device_id}".encode()).hexdigest()[:24]
+def _server_device_ref(
+    *,
+    key_hash: str,
+    device_fingerprint: str,
+    legacy_device_id: str = "",
+) -> str:
+    fingerprint = str(device_fingerprint or "").strip()
+    if not fingerprint and not legacy_device_id:
+        raise ActivationError(
+            _activation_message_for_code("activation_fingerprint_required"),
+            code="activation_fingerprint_required",
+            status_code=422,
+        )
+    subject = fingerprint if fingerprint else f"legacy-device-id:{legacy_device_id}"
+    secret = _activation_server_device_secret()
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        f"{key_hash}\n{subject}".encode(),
+        sha256,
+    ).hexdigest()
+    return f"sdev_{digest[:48]}"
+
+
+def _activation_server_device_secret() -> str:
+    configured = str(os.getenv(ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR, "")).strip()
+    if configured:
+        return configured
+    fallback = str(os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip()
+    if fallback:
+        return fallback
+    raise ActivationError(
+        _activation_message_for_code("activation_server_unconfigured"),
+        code="activation_server_unconfigured",
+        status_code=503,
+    )
+
+
+def _license_id_for_device_ref(key_hash: str, server_device_ref: str) -> str:
+    digest = sha256(f"{key_hash}:{server_device_ref}".encode()).hexdigest()[:24]
     return f"lic_{digest}"
 
 
@@ -817,7 +1284,7 @@ def _normalize_subscription_status(value: Any) -> str:
     text = str(value or "").strip().lower()
     allowed = {"active", "trialing", "past_due", "canceled", "expired", "revoked"}
     if text not in allowed:
-        raise ValueError("subscription status must be one of active, trialing, past_due, canceled, expired, revoked")
+        raise ValueError("订阅状态必须是 active、trialing、past_due、canceled、expired 或 revoked。")
     return text
 
 
@@ -869,20 +1336,35 @@ def _safe_activation_error_code(response: httpx.Response) -> str:
 
 
 def _safe_activation_error_message(response: httpx.Response) -> str:
+    code = _safe_activation_error_code(response)
+    mapped = _activation_message_for_code(code)
+    if mapped:
+        return mapped
     try:
         data = response.json()
     except ValueError:
-        return "Activation failed."
+        return _activation_message_for_code("activation_failed")
     if isinstance(data, dict):
         error = data.get("error")
         if isinstance(error, dict) and error.get("message"):
-            return str(error["message"])
+            return _safe_message(str(error["message"]), fallback=_activation_message_for_code("activation_failed"))
         detail = data.get("detail")
         if isinstance(detail, dict) and detail.get("message"):
-            return str(detail["message"])
+            return _safe_message(str(detail["message"]), fallback=_activation_message_for_code("activation_failed"))
         if isinstance(detail, str) and detail:
-            return detail
-    return "Activation failed."
+            return _safe_message(detail, fallback=_activation_message_for_code("activation_failed"))
+    return _activation_message_for_code("activation_failed")
+
+
+def _activation_message_for_code(code: str, fallback: str = "激活失败。") -> str:
+    return _ACTIVATION_ERROR_MESSAGES.get(str(code or "").strip(), fallback)
+
+
+def _safe_message(message: str, *, fallback: str) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return fallback
+    return text if any("\u4e00" <= char <= "\u9fff" for char in text) else fallback
 
 
 def _env_int(name: str, default: int) -> int:
@@ -906,7 +1388,7 @@ def write_activation_key_once(path: Path, activation_key: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         if target.exists():
-            raise FileExistsError(f"Refusing to overwrite activation key handoff file: {target}")
+            raise FileExistsError(f"拒绝覆盖已有授权码交接文件：{target}")
         os.replace(temp_path, target)
         try:
             os.chmod(target, 0o600)
@@ -966,10 +1448,7 @@ def revoke_subscription_key(
     if revoked_license_ids:
         record["revoked_license_ids"] = revoked_license_ids
         record["revocation_manifest_required"] = True
-        record["revocation_manifest_note"] = (
-            "Existing activated devices require a signed license revocation manifest "
-            "or replacement-license handoff before paid features are disabled."
-        )
+        record["revocation_manifest_note"] = "已有激活设备需要发布签名吊销清单或交接替换许可证后，付费能力才会被停用。"
     else:
         record["revoked_license_ids"] = []
         record["revocation_manifest_required"] = False
@@ -1057,10 +1536,18 @@ def update_subscription_key(
             tuple(values),
         )
         if result.rowcount == 0:
-            raise ActivationError("Subscription key was not found.", code="activation_key_not_found", status_code=404)
+            raise ActivationError(
+                _activation_message_for_code("activation_key_not_found"),
+                code="activation_key_not_found",
+                status_code=404,
+            )
         row = conn.execute("SELECT * FROM subscription_keys WHERE key_hash = ?", (normalized_hash,)).fetchone()
         if row is None:
-            raise ActivationError("Subscription key was not found.", code="activation_key_not_found", status_code=404)
+            raise ActivationError(
+                _activation_message_for_code("activation_key_not_found"),
+                code="activation_key_not_found",
+                status_code=404,
+            )
         return _subscription_admin_payload(conn, row)
 
 
@@ -1068,7 +1555,9 @@ def unbind_activation_device(*, license_id: str, db_path: Path | None = None) ->
     """Remove one activated device so the seat can be reused."""
     normalized = _safe_label(license_id, max_length=128)
     if not normalized:
-        raise ActivationError("License id is required.", code="activation_device_required", status_code=422)
+        raise ActivationError(
+            _activation_message_for_code("license_id_required"), code="activation_device_required", status_code=422
+        )
     path = initialize_activation_db(db_path)
     with sqlite3.connect(path) as conn:
         row = conn.execute(
@@ -1077,7 +1566,7 @@ def unbind_activation_device(*, license_id: str, db_path: Path | None = None) ->
         ).fetchone()
         if row is None:
             raise ActivationError(
-                "Activation device was not found.",
+                _activation_message_for_code("activation_device_not_found"),
                 code="activation_device_not_found",
                 status_code=404,
             )
@@ -1089,7 +1578,7 @@ def _subscription_admin_payload(conn: sqlite3.Connection, row: sqlite3.Row) -> d
     key_hash = str(row["key_hash"] or "")
     devices = conn.execute(
         """
-        SELECT id, device_id, device_fingerprint, device_profile,
+        SELECT id, device_id, server_device_ref, device_fingerprint, device_profile,
                first_activated_at, last_activated_at, app_version
         FROM activation_devices
         WHERE key_hash = ?
@@ -1122,14 +1611,16 @@ def _subscription_admin_payload(conn: sqlite3.Connection, row: sqlite3.Row) -> d
 
 def _device_admin_payload(row: sqlite3.Row) -> dict[str, Any]:
     device_id = str(row["device_id"] or "")
+    server_device_ref = str(_row_value(row, "server_device_ref") or "")
     fingerprint = str(_row_value(row, "device_fingerprint") or "")
     profile = _device_profile_payload(_row_value(row, "device_profile"))
     return {
         "license_id": str(row["id"] or ""),
         "device_label": _redact_identifier(device_id),
+        "server_device_ref_label": _redact_identifier(server_device_ref) if server_device_ref else "",
         "device_fingerprint_label": _redact_identifier(fingerprint) if fingerprint else "",
         "device_profile": profile,
-        "risk_label": "fingerprint_bound" if fingerprint else "legacy_device_id_only",
+        "risk_label": "server_fingerprint_bound" if server_device_ref and fingerprint else "legacy_device_id_only",
         "first_activated_at": row["first_activated_at"],
         "last_activated_at": row["last_activated_at"],
         "app_version": str(row["app_version"] or ""),
@@ -1171,5 +1662,7 @@ def _row_value(row: sqlite3.Row, key: str) -> Any:
 def _clean_key_hash(value: str) -> str:
     text = str(value or "").strip().lower()
     if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
-        raise ActivationError("Subscription key id is invalid.", code="activation_key_invalid", status_code=422)
+        raise ActivationError(
+            _activation_message_for_code("activation_key_invalid"), code="activation_key_invalid", status_code=422
+        )
     return text

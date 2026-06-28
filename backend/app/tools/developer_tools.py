@@ -128,15 +128,41 @@ def _workspace_root(args: dict[str, Any], context: dict[str, Any]) -> Path:
     raise SecurityError("No authorized directories configured.")
 
 
+def _authorized_rglob_paths(
+    root: Path,
+    allowed: list[str],
+    *,
+    pattern: str = "*",
+    files_only: bool = False,
+) -> list[Path]:
+    """Walk under root while rejecting symlink escapes outside the workspace."""
+    root_resolved = root.resolve()
+    matches: list[Path] = []
+    for path in root.rglob("*"):
+        rel = path.relative_to(root).as_posix()
+        if not (fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern)):
+            continue
+        if files_only and not path.is_file():
+            continue
+        try:
+            resolved = path.resolve()
+            if not resolved.is_relative_to(root_resolved):
+                continue
+            authorized = resolve_authorized(str(path), allowed)
+        except (OSError, SecurityError, ValueError):
+            continue
+        matches.append(authorized)
+    return matches
+
+
 def glob_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
     pattern = str(args.get("pattern") or "*")
     limit = max(1, min(int(args.get("limit") or 100), 500))
     matches: list[dict[str, Any]] = []
-    for path in root.rglob("*"):
+    for path in _authorized_rglob_paths(root, _allowed(context), pattern=pattern):
         rel = path.relative_to(root).as_posix()
-        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern):
-            matches.append({"path": str(path), "relative_path": rel, "is_dir": path.is_dir()})
+        matches.append({"path": str(path), "relative_path": rel, "is_dir": path.is_dir()})
         if len(matches) >= limit:
             break
     return {"ok": True, "root": str(root), "pattern": pattern, "matches": matches, "count": len(matches)}
@@ -152,11 +178,8 @@ def grep_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     if not query:
         return {"ok": False, "error": "Missing query.", "results": []}
-    for path in root.rglob("*"):
-        if not path.is_file() or not (
-            fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern) or fnmatch.fnmatch(path.name, pattern)
-        ):
-            continue
+    for path in _authorized_rglob_paths(root, _allowed(context), pattern=pattern, files_only=True):
+        rel = path.relative_to(root).as_posix()
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
@@ -233,10 +256,8 @@ def pytest_inventory(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     errors: list[dict[str, str]] = []
     test_count = 0
 
-    for path in root.rglob("*"):
+    for path in _authorized_rglob_paths(root, _allowed(context), pattern=pattern, files_only=True):
         rel = path.relative_to(root).as_posix()
-        if not path.is_file() or not (fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern)):
-            continue
         try:
             source = path.read_text(encoding="utf-8", errors="ignore")
             tests = _pytest_tests_from_source(source)
