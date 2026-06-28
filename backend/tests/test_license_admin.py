@@ -80,7 +80,7 @@ def test_issue_revoke_and_inspect_offline_lifecycle(tmp_path: Path) -> None:
                 "--subject",
                 "ACME",
                 "--plan",
-                "team",
+                "max",
                 "--seats",
                 "10",
                 "--expires-at",
@@ -89,6 +89,10 @@ def test_issue_revoke_and_inspect_offline_lifecycle(tmp_path: Path) -> None:
                 "lic_acme_001",
                 "--order-ref",
                 "order-redacted-001",
+                "--subscription-id",
+                "sub-redacted-001",
+                "--subscription-status",
+                "active",
                 "--output",
                 str(license_file),
                 "--ledger",
@@ -103,6 +107,8 @@ def test_issue_revoke_and_inspect_offline_lifecycle(tmp_path: Path) -> None:
     assert len(events) == 1
     assert events[0]["event"] == "issued"
     assert events[0]["license_id"] == "lic_acme_001"
+    assert events[0]["plan"] == "max"
+    assert events[0]["subscription_id"] == "sub-redacted-001"
     assert "token" not in events[0]
 
     assert (

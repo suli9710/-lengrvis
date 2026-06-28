@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hmac
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+from app.commerce.device_identity import DeviceIdentityError, local_activation_device_id
 from app.commerce.entitlements import Plan, normalize_plan
 from app.core.errors import AppError
 
@@ -47,6 +49,7 @@ COMMERCIAL_RELEASE_ENV_VAR = "LENGRVIS_COMMERCIAL_RELEASE"
 MAX_LICENSE_TOKEN_BYTES = 64 * 1024
 MAX_REVOCATION_TOKEN_BYTES = 1024 * 1024
 _TRUE_VALUES = {"1", "true", "yes", "on"}
+_DEVICE_ID_NOT_CHECKED = object()
 
 
 class LicenseError(AppError):
@@ -63,6 +66,13 @@ class License:
     subject: str = ""
     issuer: str = ""
     replaces: str = ""
+    subscription_id: str = ""
+    subscription_status: str = ""
+    renews_at: datetime | None = None
+    cancel_at_period_end: bool = False
+    device_id: str = ""
+    device_fingerprint: str = ""
+    order_ref: str = ""
     issued_at: datetime | None = None
     expires_at: datetime | None = None
     seats: int = 0
@@ -256,6 +266,13 @@ def parse_license(token: str, public_key: str) -> License:
         subject=str(payload.get("subject") or payload.get("sub") or ""),
         issuer=str(payload.get("issuer") or payload.get("iss") or ""),
         replaces=str(payload.get("replaces") or "").strip(),
+        subscription_id=str(payload.get("subscription_id") or "").strip(),
+        subscription_status=str(payload.get("subscription_status") or "").strip().lower(),
+        renews_at=_parse_datetime(payload.get("renews_at")),
+        cancel_at_period_end=bool(payload.get("cancel_at_period_end")),
+        device_id=str(payload.get("device_id") or "").strip(),
+        device_fingerprint=str(payload.get("device_fingerprint") or "").strip(),
+        order_ref=str(payload.get("order_ref") or "").strip(),
         issued_at=_parse_datetime(payload.get("issued_at") or payload.get("iat")),
         expires_at=_parse_datetime(payload.get("expires_at") or payload.get("exp")),
         seats=seats,
@@ -307,11 +324,27 @@ def verify_license(
     *,
     now: datetime | None = None,
     revocations: RevocationManifest | None = None,
+    expected_device_id: str | None | object = _DEVICE_ID_NOT_CHECKED,
 ) -> License:
     """Parse and ensure the license is currently active (raises on expiry)."""
     license_ = parse_license(token, public_key)
+    if license_.device_id and expected_device_id is not _DEVICE_ID_NOT_CHECKED:
+        if not expected_device_id:
+            raise LicenseError(
+                "License device binding could not be verified",
+                code="license_device_unverified",
+                status_code=402,
+            )
+        if not hmac.compare_digest(license_.device_id, str(expected_device_id)):
+            raise LicenseError("License is bound to another device", code="license_device_mismatch", status_code=402)
     if license_.is_expired(now=now):
         raise LicenseError("License has expired", code="license_expired", status_code=402)
+    if license_.subscription_status and license_.subscription_status not in {"active", "trialing"}:
+        raise LicenseError(
+            "Subscription is not active",
+            code=f"subscription_{license_.subscription_status}",
+            status_code=402,
+        )
     if revocations is not None and revocations.is_revoked(license_.license_id):
         raise LicenseError("License has been revoked", code="license_revoked", status_code=402)
     return license_
@@ -323,6 +356,15 @@ def _read_license_token(settings: Any | None) -> str:
 
 def _read_public_key() -> str:
     return (os.getenv(LICENSE_PUBLIC_KEY_ENV_VAR) or "").strip()
+
+
+def _expected_device_id(settings: Any | None) -> str | None:
+    if settings is None:
+        return None
+    try:
+        return local_activation_device_id(settings)
+    except (DeviceIdentityError, RuntimeError, OSError):
+        return None
 
 
 def commercial_release_enabled() -> bool:
@@ -376,13 +418,36 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
             "license_id": license_.license_id or None,
             "revocation_capable": bool(license_.license_id),
         }
+    expected_device_id = _expected_device_id(settings)
     expired = license_.is_expired(now=now)
     revoked = bool(revocations and revocations.is_revoked(license_.license_id))
-    state = "revoked" if revoked else "expired" if expired else "active"
+    device_unverified = bool(license_.device_id and not expected_device_id)
+    device_mismatch = bool(
+        license_.device_id
+        and expected_device_id
+        and not hmac.compare_digest(license_.device_id, expected_device_id)
+    )
+    subscription_inactive = bool(
+        license_.subscription_status and license_.subscription_status not in {"active", "trialing"}
+    )
+    state = (
+        "revoked"
+        if revoked
+        else "expired"
+        if expired
+        else "device_mismatch"
+        if device_mismatch
+        else "device_unverified"
+        if device_unverified
+        else "subscription_inactive"
+        if subscription_inactive
+        else "active"
+    )
+    active = not any((expired, revoked, device_mismatch, device_unverified, subscription_inactive))
     return {
         **base,
         "state": state,
-        "active": not expired and not revoked,
+        "active": active,
         "expired": expired,
         "revoked": revoked,
         "license_id": license_.license_id or None,
@@ -396,8 +461,23 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
         "plan": license_.plan.value,
         "subject": license_.subject,
         "seats": license_.seats,
+        "subscription_id": license_.subscription_id or None,
+        "subscription_status": license_.subscription_status or None,
+        "renews_at": license_.renews_at.isoformat() if license_.renews_at else None,
+        "cancel_at_period_end": license_.cancel_at_period_end,
+        "device_id": license_.device_id or None,
+        "order_ref": license_.order_ref or None,
         "issued_at": license_.issued_at.isoformat() if license_.issued_at else None,
         "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
+        "error_code": (
+            "license_device_mismatch"
+            if device_mismatch
+            else "license_device_unverified"
+            if device_unverified
+            else f"subscription_{license_.subscription_status}"
+            if subscription_inactive
+            else None
+        ),
     }
 
 
@@ -416,7 +496,13 @@ def install_license(token: str, settings: Any, *, now: datetime | None = None) -
         raise LicenseError("License token is too large", code="license_token_too_large", status_code=413)
     public_key = _read_public_key()
     revocations, _ = load_revocation_manifest(settings, public_key=public_key)
-    license_ = verify_license(normalized, public_key, now=now, revocations=revocations)
+    license_ = verify_license(
+        normalized,
+        public_key,
+        now=now,
+        revocations=revocations,
+        expected_device_id=_expected_device_id(settings),
+    )
     path = _license_file_path(settings)
     if path is None:
         raise LicenseError(
@@ -465,7 +551,13 @@ def load_license(settings: Any | None = None, *, now: datetime | None = None) ->
         return None
     try:
         revocations, _ = load_revocation_manifest(settings, public_key=public_key)
-        license_ = verify_license(token, public_key, now=now, revocations=revocations)
+        license_ = verify_license(
+            token,
+            public_key,
+            now=now,
+            revocations=revocations,
+            expected_device_id=_expected_device_id(settings),
+        )
     except LicenseError as exc:
         logger.warning("Ignoring invalid license: %s", exc.message)
         return None

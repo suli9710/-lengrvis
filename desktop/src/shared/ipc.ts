@@ -7,6 +7,8 @@ export const IPC_CHANNELS = {
   backendForeground: "lengrvis:backend:foreground",
   backendBackground: "lengrvis:backend:background",
   commandsExecute: "lengrvis:commands:execute",
+  approvalApprove: "lengrvis:approvals:approve",
+  approvalReject: "lengrvis:approvals:reject",
   taskRollback: "lengrvis:tasks:rollback",
   cleanupExecute: "lengrvis:cleanup:execute",
   cleanupRollback: "lengrvis:cleanup:rollback",
@@ -88,6 +90,8 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   backendForeground: { schema: "none", capability: "trusted-renderer", risk: "write" },
   backendBackground: { schema: "none", capability: "trusted-renderer", risk: "write" },
   commandsExecute: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
+  approvalApprove: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
+  approvalReject: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
   taskRollback: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
   cleanupExecute: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
   cleanupRollback: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
@@ -196,6 +200,8 @@ export const API_REQUEST_DENIED_EXACT_PATHS = [
 ] as const;
 
 export const API_REQUEST_DENIED_METHOD_PATHS = [
+  { method: "POST", pathPrefix: "/api/approvals/", pathSuffix: "/approve" },
+  { method: "POST", pathPrefix: "/api/approvals/", pathSuffix: "/reject" },
   { method: "POST", pathPrefix: "/api/runs" },
   { method: "POST", pathPrefix: "/api/tasks/", pathSuffix: "/rollback" },
   { method: "POST", path: "/api/settings" },

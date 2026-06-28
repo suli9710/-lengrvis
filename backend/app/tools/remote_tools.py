@@ -110,7 +110,7 @@ def _remote_enabled(context: dict[str, Any]) -> bool:
     # checks) as the control, instead of failing closed and disabling remote
     # input for every caller, since no tool context populates it yet.
     entitlement = str(context.get("user_entitlement") or "").strip().lower()
-    if entitlement and entitlement not in ("pro", "team"):
+    if entitlement and entitlement not in ("pro", "max", "team"):
         return False
     return True
 

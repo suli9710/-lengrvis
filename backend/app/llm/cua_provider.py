@@ -6,6 +6,7 @@ from typing import Any, Protocol
 import httpx
 
 from app.config import AppSettings
+from app.core.outbound_url import is_local_base_url, pin_outbound_http_url, validate_outbound_http_url
 from app.llm.openai_compatible import normalize_openai_base_url
 from app.policy.redaction import redact_value
 
@@ -17,7 +18,14 @@ class CUAUnavailable(RuntimeError):
 
 
 class _AsyncPostClient(Protocol):
-    async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> httpx.Response: ...
+    async def post(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        extensions: dict[str, Any] | None = None,
+    ) -> httpx.Response: ...
 
 
 @dataclass(slots=True)
@@ -59,7 +67,17 @@ class CUAProvider:
         )
         try:
             async with self.client_factory(timeout=self.settings.timeout) as client:
-                response = await client.post(self._responses_endpoint(), headers=self._headers(), json=payload)
+                # Re-pin per call (DNS-rebinding TOCTOU): connect to the IP that
+                # passed SSRF validation; Host/SNI keep the real hostname so TLS
+                # certificate verification is unchanged.
+                endpoint = self._responses_endpoint()
+                pinned = pin_outbound_http_url(endpoint, allow_private=self._allow_private_base(endpoint))
+                response = await client.post(
+                    pinned.url,
+                    headers={**self._headers(), **pinned.headers},
+                    json=payload,
+                    extensions=dict(pinned.extensions),
+                )
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:  # noqa: BLE001
@@ -117,8 +135,24 @@ class CUAProvider:
             "output": redact_value(data.get("output") or []),
         }
 
+    def _api_base_url(self) -> str:
+        base = normalize_openai_base_url(self.settings.base_url)
+        if base:
+            # SSRF guard: reject CUA "responses" calls aimed at loopback /
+            # private / link-local / cloud-metadata hosts. DNS resolution here
+            # (mirrors openai_compatible) also blocks hostnames that resolve to
+            # internal addresses; pinning at request time closes the rebinding
+            # TOCTOU window.
+            validate_outbound_http_url(base, allow_private=self._allow_private_base(base))
+        return base
+
+    def _allow_private_base(self, base: str) -> bool:
+        from app.llm.registry import LOCAL_PROVIDERS
+
+        return is_local_base_url(base) and self.settings.provider_name.lower() in LOCAL_PROVIDERS
+
     def _responses_endpoint(self) -> str:
-        return f"{normalize_openai_base_url(self.settings.base_url)}/responses"
+        return f"{self._api_base_url()}/responses"
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -162,7 +196,14 @@ async def probe_cua_provider(provider: CUAProvider) -> dict[str, Any]:
     }
     try:
         async with provider.client_factory(timeout=provider.settings.timeout) as client:
-            response = await client.post(provider._responses_endpoint(), headers=provider._headers(), json=payload)
+            endpoint = provider._responses_endpoint()
+            pinned = pin_outbound_http_url(endpoint, allow_private=provider._allow_private_base(endpoint))
+            response = await client.post(
+                pinned.url,
+                headers={**provider._headers(), **pinned.headers},
+                json=payload,
+                extensions=dict(pinned.extensions),
+            )
             if response.status_code in {400, 404, 422}:
                 return {
                     "available": False,

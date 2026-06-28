@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel as PydanticBaseModel
 
+from app.commerce.entitlements import Feature, active_plan, require_feature
 from app.indexer.ocr_service import accelerated_ocr_health, accelerated_ocr_smoke
 from app.indexer.local_embedding_provider import (
     health_snapshot as embedding_health_snapshot,
@@ -75,6 +76,7 @@ def permission_policy():
 
 @router.put("/settings/permission-policy")
 def update_permission_policy(payload: PermissionPolicy, confirmation_nonce: str = Query("")):
+    require_feature(active_plan(get_effective_settings()), Feature.POLICY_MANAGEMENT)
     store = PermissionStore()
     relaxations = permission_policy_relaxations(store.get_policy(), payload)
     require_permission_policy_confirmation(relaxations, confirmation_nonce)
@@ -83,6 +85,7 @@ def update_permission_policy(payload: PermissionPolicy, confirmation_nonce: str 
 
 @router.post("/settings/permission-policy/rules")
 def upsert_permission_rule(payload: PermissionRule, confirmation_nonce: str = Query("")):
+    require_feature(active_plan(get_effective_settings()), Feature.POLICY_MANAGEMENT)
     store = PermissionStore()
     relaxations = permission_rule_relaxations(store.get_policy(), payload)
     require_permission_policy_confirmation(relaxations, confirmation_nonce)
@@ -91,6 +94,7 @@ def upsert_permission_rule(payload: PermissionRule, confirmation_nonce: str = Qu
 
 @router.delete("/settings/permission-policy/rules/{rule_id}")
 def delete_permission_rule(rule_id: str, confirmation_nonce: str = Query("")):
+    require_feature(active_plan(get_effective_settings()), Feature.POLICY_MANAGEMENT)
     store = PermissionStore()
     relaxations = permission_delete_relaxations(store.get_policy(), rule_id)
     require_permission_policy_confirmation(relaxations, confirmation_nonce)

@@ -37,7 +37,7 @@ Lengrvis 是一个 Windows 优先的本地电脑助手。你用一句话描述�
 ## 配置、隐私与诊断
 
 - AI Provider、隐私模式、本地模型、硬件加速和手机配对优先在桌面“设置”里配置。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
-- “设置 -> 套餐与授权”显示 Free / Pro / Team 能力、云端额度、许可证主体和到期时间。离线许可证可以本机验签；在线购买、订阅、退款自动降级和吊销同步仍在建设中。
+- “设置 -> 套餐与授权”显示 Free / Pro / Max 能力、云端额度窗口、许可证主体和到期时间。默认 token 护栏为 Free 滚动 5 小时 500 万 + 7 天 2,000 万、Pro 滚动 24 小时 1,000 万、Max 滚动 24 小时 1 亿。离线许可证可以本机验签；在线购买、订阅、退款自动降级和吊销同步仍在建设中。
 - “设置 -> 本机数据与隐私”可以删除本机数据。删除前需要确认短语和系统确认；任务、对话、录屏、配对、索引和已导出诊断包会被清掉，防篡改审计链会保留删除事件。日志目录仍需手动清理。
 - “系统信息”显示桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明。
 - “导出诊断包”用于支持排查。诊断包写入本机数据目录下的 `diagnostic-packages`，会尽量脱敏路径、用户名、密钥、任务正文、设备名、配对码、grant id 和模型路径。
@@ -256,6 +256,8 @@ npm run golden:gate
 npm run audit:deps
 npm run market:readiness
 npm run market:readiness:strict
+npm run market:readiness:paid # required before taking payment or publishing paid pricing
+npm run evidence:commercial-loop # required reviewed commercial-loop evidence; not legal/payment sign-off
 npm run deps:verify
 npm run sbom:generate
 npm run release:check
@@ -497,7 +499,7 @@ Windows GUI automation 通过 UIAutomation COM、截图、窗口聚焦、语义�
 - 手机端默认只读远程屏幕。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的点击、文字和常用按键输入，并支持缩放、平移和横屏查看。批准 remote-input approval 前必须匹配当前手机 active grant；公开给手机和截图材料的是 HMAC 派生的 `binding_ref` / redacted active-grant label，raw `deviceId` / `grantId` 只留在本地复现记录里。
 - mobile/desktop remote-input smoke、source contract 和后端字段断言只支撑真实设备前的契约证据。真实手机/WSS 弱网、锁屏、后台、错误态截图、证书信任路径、键盘弹出/横竖屏可用性和 artifact redaction review 仍需补证据。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
-- 付费商业闭环尚未完成：没有在线 checkout、订单/税务/发票、订阅续费、在线吊销同步或正式客服工单系统；离线退款吊销需要部署签名清单。在 `market:readiness:strict` 通过前不得对外收款或宣称付费套餐已正式可用。
+- 付费商业闭环尚未完成：没有在线 checkout、订单/税务/发票、订阅续费、在线吊销同步或正式客服工单系统；离线退款吊销需要部署签名清单。在 `market:readiness:paid` 和 `evidence:commercial-loop` 通过前不得对外收款、开票、发布付费价格，或宣称付费套餐已正式可用。
 
 ## Phase 5 AI OS Loop
 

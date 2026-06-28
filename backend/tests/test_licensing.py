@@ -58,7 +58,7 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
-def _make_token(plan: str = "team", expires_at: str | None = None, **extra: object) -> str:
+def _make_token(plan: str = "max", expires_at: str | None = None, **extra: object) -> str:
     payload: dict[str, object] = {"plan": plan, "subject": "ACME", **extra}
     if expires_at is not None:
         payload["expires_at"] = expires_at
@@ -74,7 +74,7 @@ def _legacy_hmac_token(payload: dict[str, object], signing_key: str) -> str:
 def test_sign_and_parse_roundtrip() -> None:
     lic = parse_license(
         _make_token(
-            plan="team",
+            plan="max",
             seats=5,
             license_id="lic_acme",
             issuer="Lengrvis Sales",
@@ -82,7 +82,7 @@ def test_sign_and_parse_roundtrip() -> None:
         ),
         PUBLIC_KEY,
     )
-    assert lic.plan is Plan.TEAM
+    assert lic.plan is Plan.MAX
     assert lic.license_id == "lic_acme"
     assert lic.subject == "ACME"
     assert lic.issuer == "Lengrvis Sales"
@@ -93,7 +93,42 @@ def test_sign_and_parse_roundtrip() -> None:
 
 def test_plan_alias_normalized() -> None:
     lic = parse_license(_make_token(plan="self-hosted"), PUBLIC_KEY)
-    assert lic.plan is Plan.TEAM
+    assert lic.plan is Plan.MAX
+
+
+def test_legacy_team_license_normalizes_to_max() -> None:
+    lic = parse_license(_make_token(plan="team"), PUBLIC_KEY)
+    assert lic.plan is Plan.MAX
+    assert lic.plan.value == "max"
+
+
+def test_subscription_status_must_be_active_or_trialing() -> None:
+    token = _make_token(plan="max", subscription_id="sub_1", subscription_status="past_due")
+    parsed = parse_license(token, PUBLIC_KEY)
+    assert parsed.subscription_id == "sub_1"
+    assert parsed.subscription_status == "past_due"
+    with pytest.raises(LicenseError) as excinfo:
+        verify_license(token, PUBLIC_KEY)
+    assert excinfo.value.code == "subscription_past_due"
+
+
+def test_license_status_reports_inactive_subscription(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    (tmp_path / "license.key").write_text(
+        _make_token(plan="max", subscription_id="sub_1", subscription_status="canceled"),
+        encoding="utf-8",
+    )
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    status = license_status(_S())
+
+    assert status["state"] == "subscription_inactive"
+    assert status["active"] is False
+    assert status["plan"] == "max"
+    assert status["subscription_status"] == "canceled"
 
 
 def test_tampered_signature_rejected() -> None:
@@ -172,16 +207,16 @@ def test_deprecated_hmac_signing_key_is_not_a_runtime_verifier(monkeypatch: pyte
 
 
 def test_load_and_apply_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LENGRVIS_LICENSE_KEY", _make_token(plan="team"))
+    monkeypatch.setenv("LENGRVIS_LICENSE_KEY", _make_token(plan="max"))
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
-    assert resolve_licensed_plan() is Plan.TEAM
+    assert resolve_licensed_plan() is Plan.MAX
 
     class _S:
         plan = "free"
 
     settings = _S()
     applied = apply_licensed_plan(settings)
-    assert applied.plan == "team"
+    assert applied.plan == "max"
 
 
 def test_apply_plan_noop_without_license(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,7 +238,7 @@ def test_commercial_release_ignores_paid_plan_override_without_license(
     monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
 
     class _S:
-        plan = "team"
+        plan = "max"
         data_dir = ""
 
     settings = apply_licensed_plan(_S())
@@ -221,7 +256,7 @@ def test_commercial_release_uses_verified_license_plan(
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
 
     class _S:
-        plan = "team"
+        plan = "max"
         data_dir = ""
 
     settings = apply_licensed_plan(_S())
@@ -273,7 +308,7 @@ def test_install_license_refuses_environment_managed_license(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    monkeypatch.setenv("LENGRVIS_LICENSE_KEY", _make_token(plan="team"))
+    monkeypatch.setenv("LENGRVIS_LICENSE_KEY", _make_token(plan="max"))
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
 
     class _S:
@@ -284,6 +319,57 @@ def test_install_license_refuses_environment_managed_license(
 
     assert excinfo.value.code == "license_managed_externally"
     assert license_status(_S())["managed_by"] == "environment"
+
+
+def test_device_bound_license_rejects_other_machine(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    token = _make_token(plan="pro", license_id="lic_bound", device_id="dev_other_machine")
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(token, _S())
+
+    assert excinfo.value.code == "license_device_mismatch"
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+    status = license_status(_S())
+    assert status["state"] == "device_mismatch"
+    assert status["active"] is False
+    assert status["error_code"] == "license_device_mismatch"
+
+
+def test_device_bound_license_fails_closed_when_device_id_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setattr(
+        "app.commerce.licensing.local_activation_device_id",
+        lambda settings: (_ for _ in ()).throw(RuntimeError("device unavailable")),
+    )
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    token = _make_token(plan="pro", license_id="lic_bound_unverified", device_id="dev_bound")
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(token, _S())
+
+    assert excinfo.value.code == "license_device_unverified"
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+    assert load_license(_S()) is None
+    status = license_status(_S())
+    assert status["state"] == "device_unverified"
+    assert status["active"] is False
+    assert status["error_code"] == "license_device_unverified"
 
 
 def test_runtime_revocation_file_disables_installed_license(
@@ -332,7 +418,7 @@ def test_invalid_revocation_file_fails_closed(
     monkeypatch.delenv("LENGRVIS_LICENSE_REVOCATIONS", raising=False)
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
     (tmp_path / "license.key").write_text(
-        _make_token(plan="team", license_id="lic_team"),
+        _make_token(plan="max", license_id="lic_max"),
         encoding="utf-8",
     )
     (tmp_path / "license-revocations.key").write_text("invalid.manifest", encoding="utf-8")
@@ -387,4 +473,55 @@ def test_commerce_api_import_records_audit_and_returns_status(
             },
         )
     ]
+    assert invalidations == [True]
+
+
+def test_commerce_api_activation_records_safe_audit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+
+    class _S:
+        data_dir = str(tmp_path)
+        plan = "free"
+
+    token = _make_token(
+        plan="max",
+        seats=1,
+        license_id="lic_activated",
+        subscription_id="sub_activated",
+        subscription_status="active",
+    )
+    audit_events: list[tuple[str, str, dict[str, object]]] = []
+    invalidations: list[bool] = []
+
+    def _fake_activate(activation_key: str, settings: object, *, app_version: str = ""):
+        assert activation_key == "activation-key-redacted"
+        assert app_version == "desktop-test"
+        return install_license(token, settings)
+
+    monkeypatch.setattr(routes_commerce, "get_effective_settings", lambda: _S())
+    monkeypatch.setattr(routes_commerce, "activate_license_with_server", _fake_activate)
+    monkeypatch.setattr(
+        routes_commerce.audit_core,
+        "record",
+        lambda event_type, actor, payload: audit_events.append((event_type, actor, payload)),
+    )
+    monkeypatch.setattr(routes_commerce, "invalidate_settings_cache", lambda: invalidations.append(True))
+
+    response = routes_commerce.commerce_license_activate(
+        routes_commerce.LicenseActivationRequest(
+            activation_key="activation-key-redacted",
+            app_version="desktop-test",
+        )
+    )
+
+    assert response["state"] == "active"
+    assert response["plan"] == "max"
+    assert response["subscription_id"] == "sub_activated"
+    assert audit_events[0][0] == "commerce.license.activated"
+    assert audit_events[0][2]["subscription_id"] == "sub_activated"
+    assert "activation-key-redacted" not in str(audit_events)
     assert invalidations == [True]

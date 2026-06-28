@@ -1,10 +1,9 @@
 """Plan-based cloud usage metering and limiting (cloud_quota).
 
 This builds on the existing LLM usage ledger (:mod:`app.llm.usage`) rather than
-introducing a second accounting system. Each plan gets a rolling monthly cloud
-budget; paid tiers are unlimited. Enforcement is opt-in via
-``LENGRVIS_CLOUD_QUOTA_ENFORCED`` so simply shipping this code never changes
-existing free-tier cloud behavior by surprise.
+introducing a second accounting system. Each plan gets rolling token budgets
+that are enforced by default; ``LENGRVIS_CLOUD_QUOTA_ENFORCED=false`` is the
+explicit local-development escape hatch.
 """
 
 from __future__ import annotations
@@ -25,8 +24,10 @@ CLOUD_QUOTA_TOKENS_ENV_VAR = "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS"
 CLOUD_QUOTA_CALLS_ENV_VAR = "LENGRVIS_CLOUD_QUOTA_MAX_CALLS"
 CLOUD_QUOTA_COST_ENV_VAR = "LENGRVIS_CLOUD_QUOTA_MAX_COST_USD"
 
-_DEFAULT_WINDOW_HOURS = 720  # rolling 30-day window
-_TRUE_VALUES = {"1", "true", "yes", "on"}
+_DEFAULT_WINDOW_HOURS = 24
+_FREE_BURST_WINDOW_HOURS = 5
+_WEEKLY_WINDOW_HOURS = 24 * 7
+_FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 class QuotaExceededError(AppError):
@@ -39,22 +40,40 @@ class QuotaExceededError(AppError):
 
 @dataclass(frozen=True)
 class CloudQuota:
-    """Monthly cloud LLM budget for a plan. ``None`` means unlimited."""
+    """Rolling cloud LLM budget for a plan. ``None`` means unlimited."""
 
     max_total_tokens: int | None
     max_calls: int | None
     max_cost_usd: float | None
     window_hours: int = _DEFAULT_WINDOW_HOURS
+    key: str = "rolling"
 
     @property
     def is_unlimited(self) -> bool:
         return self.max_total_tokens is None and self.max_calls is None and self.max_cost_usd is None
 
 
-_PLAN_QUOTAS: dict[Plan, CloudQuota] = {
-    Plan.FREE: CloudQuota(max_total_tokens=1_000_000, max_calls=2_000, max_cost_usd=5.0),
-    Plan.PRO: CloudQuota(max_total_tokens=None, max_calls=None, max_cost_usd=None),
-    Plan.TEAM: CloudQuota(max_total_tokens=None, max_calls=None, max_cost_usd=None),
+_PLAN_QUOTAS: dict[Plan, tuple[CloudQuota, ...]] = {
+    Plan.FREE: (
+        CloudQuota(
+            max_total_tokens=5_000_000,
+            max_calls=None,
+            max_cost_usd=None,
+            window_hours=_FREE_BURST_WINDOW_HOURS,
+            key="5h",
+        ),
+        CloudQuota(
+            max_total_tokens=20_000_000,
+            max_calls=None,
+            max_cost_usd=None,
+            window_hours=_WEEKLY_WINDOW_HOURS,
+            key="7d",
+        ),
+    ),
+    Plan.PRO: (CloudQuota(max_total_tokens=10_000_000, max_calls=None, max_cost_usd=None, window_hours=24, key="24h"),),
+    Plan.MAX: (
+        CloudQuota(max_total_tokens=100_000_000, max_calls=None, max_cost_usd=None, window_hours=24, key="24h"),
+    ),
 }
 
 
@@ -78,8 +97,24 @@ def _env_float(name: str) -> float | None:
         return None
 
 
-def quota_for_plan(plan: Plan) -> CloudQuota:
-    base = _PLAN_QUOTAS.get(plan, _PLAN_QUOTAS[Plan.FREE])
+def _env_present(name: str) -> bool:
+    raw = os.getenv(name)
+    return raw is not None and bool(raw.strip())
+
+
+def _quota_override_present() -> bool:
+    return any(
+        _env_present(name)
+        for name in (
+            CLOUD_QUOTA_WINDOW_ENV_VAR,
+            CLOUD_QUOTA_TOKENS_ENV_VAR,
+            CLOUD_QUOTA_CALLS_ENV_VAR,
+            CLOUD_QUOTA_COST_ENV_VAR,
+        )
+    )
+
+
+def _with_env_overrides(base: CloudQuota) -> CloudQuota:
     window = _env_int(CLOUD_QUOTA_WINDOW_ENV_VAR) or base.window_hours or _DEFAULT_WINDOW_HOURS
     tokens = base.max_total_tokens
     calls = base.max_calls
@@ -93,11 +128,35 @@ def quota_for_plan(plan: Plan) -> CloudQuota:
         calls = override_calls
     if override_cost is not None:
         cost = override_cost
-    return CloudQuota(max_total_tokens=tokens, max_calls=calls, max_cost_usd=cost, window_hours=max(1, window))
+    return CloudQuota(
+        max_total_tokens=tokens,
+        max_calls=calls,
+        max_cost_usd=cost,
+        window_hours=max(1, window),
+        key="env",
+    )
+
+
+def quota_windows_for_plan(plan: Plan) -> tuple[CloudQuota, ...]:
+    base = _PLAN_QUOTAS.get(plan, _PLAN_QUOTAS[Plan.FREE])
+    if _quota_override_present():
+        # Legacy env overrides are a local-dev escape hatch and collapse to one explicit window.
+        return (_with_env_overrides(base[0]),)
+    return base
+
+
+def quota_for_plan(plan: Plan) -> CloudQuota:
+    return quota_windows_for_plan(plan)[0]
 
 
 def quota_enforcement_enabled() -> bool:
-    return str(os.getenv(CLOUD_QUOTA_ENFORCED_ENV_VAR, "")).strip().lower() in _TRUE_VALUES
+    raw = os.getenv(CLOUD_QUOTA_ENFORCED_ENV_VAR)
+    if raw is None or not raw.strip():
+        return True
+    normalized = raw.strip().lower()
+    if normalized in _FALSE_VALUES:
+        return False
+    return True
 
 
 def _current_usage(window_hours: int) -> dict[str, Any]:
@@ -129,65 +188,119 @@ def _empty_usage(window_hours: int) -> dict[str, Any]:
     return {"calls": 0, "total_tokens": 0, "total_cost_usd": 0.0, "window_hours": window_hours, "last_event_at": ""}
 
 
-def quota_status(settings: Any | None = None) -> dict[str, Any]:
-    plan = active_plan(settings) if settings is not None else normalize_plan(None)
-    quota = quota_for_plan(plan)
-    status: dict[str, Any] = {
-        "plan": plan.value,
-        "enforced": quota_enforcement_enabled(),
-        "unlimited": quota.is_unlimited,
-        "window_hours": quota.window_hours,
-        "limits": {
-            "total_tokens": quota.max_total_tokens,
-            "calls": quota.max_calls,
-            "total_cost_usd": quota.max_cost_usd,
-        },
+def _limits(quota: CloudQuota) -> dict[str, Any]:
+    return {
+        "total_tokens": quota.max_total_tokens,
+        "calls": quota.max_calls,
+        "total_cost_usd": quota.max_cost_usd,
     }
-    if quota.is_unlimited:
-        status["usage"] = None
-        status["exceeded"] = []
-        return status
+
+
+def _status_for_window(quota: CloudQuota) -> dict[str, Any]:
     try:
         usage = _current_usage(quota.window_hours)
     except Exception as exc:  # noqa: BLE001 - usage telemetry must never break the API
         logger.warning("Failed to read cloud usage for quota status: %s", exc)
         usage = _empty_usage(quota.window_hours)
-    status["usage"] = usage
-    status["exceeded"] = _exceeded(quota, usage)
+    return {
+        "key": quota.key,
+        "window_hours": quota.window_hours,
+        "limits": _limits(quota),
+        "usage": usage,
+        "exceeded": _exceeded(quota, usage),
+    }
+
+
+def _aggregate_exceeded(windows: list[dict[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+    for window in windows:
+        for reason in window["exceeded"]:
+            if reason not in reasons:
+                reasons.append(reason)
+    return reasons
+
+
+def quota_status(settings: Any | None = None) -> dict[str, Any]:
+    plan = active_plan(settings) if settings is not None else normalize_plan(None)
+    quotas = quota_windows_for_plan(plan)
+    unlimited = all(quota.is_unlimited for quota in quotas)
+    status: dict[str, Any] = {
+        "plan": plan.value,
+        "enforced": quota_enforcement_enabled(),
+        "unlimited": unlimited,
+        "window_hours": quotas[0].window_hours,
+        "limits": _limits(quotas[0]),
+    }
+    if unlimited:
+        status["usage"] = None
+        status["exceeded"] = []
+        status["windows"] = []
+        return status
+    windows = [_status_for_window(quota) for quota in quotas if not quota.is_unlimited]
+    primary = next((window for window in windows if window["exceeded"]), windows[0])
+    status["window_hours"] = primary["window_hours"]
+    status["limits"] = primary["limits"]
+    status["usage"] = primary["usage"]
+    status["exceeded"] = _aggregate_exceeded(windows)
+    status["windows"] = windows
     return status
 
 
 def enforce_cloud_quota(settings: Any | None = None) -> None:
     """Raise :class:`QuotaExceededError` when the active plan's cloud budget is spent.
 
-    No-op unless enforcement is explicitly enabled and the plan has a finite
-    quota, so enabling metering never silently changes free-tier cloud behavior.
+    No-op only when enforcement is explicitly disabled or the plan has no finite
+    quota.
     """
     if not quota_enforcement_enabled():
         return
     plan = active_plan(settings)
-    quota = quota_for_plan(plan)
-    if quota.is_unlimited:
+    quotas = tuple(quota for quota in quota_windows_for_plan(plan) if not quota.is_unlimited)
+    if not quotas:
         return
-    try:
-        usage = _current_usage(quota.window_hours)
-    except Exception as exc:  # noqa: BLE001 - never block an LLM call on telemetry failure
-        logger.warning("Skipping cloud quota enforcement; usage read failed: %s", exc)
+    exceeded_windows: list[dict[str, Any]] = []
+    usage_errors: list[dict[str, Any]] = []
+    for quota in quotas:
+        try:
+            usage = _current_usage(quota.window_hours)
+        except Exception as exc:  # noqa: BLE001 - fail closed when quota usage is unreadable
+            logger.warning("Cloud quota enforcement failed closed for %sh window: %s", quota.window_hours, exc)
+            usage_errors.append({"key": quota.key, "window_hours": quota.window_hours})
+            continue
+        reasons = _exceeded(quota, usage)
+        if reasons:
+            exceeded_windows.append(
+                {
+                    "key": quota.key,
+                    "window_hours": quota.window_hours,
+                    "limits": _limits(quota),
+                    "usage": usage,
+                    "exceeded": reasons,
+                }
+            )
+    if usage_errors:
+        raise QuotaExceededError(
+            f"Cloud usage quota unavailable for plan '{plan.value}'; refusing cloud call until usage is readable.",
+            details={
+                "plan": plan.value,
+                "reasons": ["usage_unavailable"],
+                "windows": usage_errors,
+            },
+        )
+    if not exceeded_windows:
         return
-    reasons = _exceeded(quota, usage)
-    if not reasons:
-        return
+    reasons = _aggregate_exceeded(exceeded_windows)
+    reason_labels = [
+        f"{reason} in {window['window_hours']}h" for window in exceeded_windows for reason in window["exceeded"]
+    ]
     raise QuotaExceededError(
-        f"Cloud usage quota exceeded for plan '{plan.value}': {', '.join(reasons)}.",
+        f"Cloud usage quota exceeded for plan '{plan.value}': {', '.join(reason_labels)}.",
         details={
             "plan": plan.value,
             "reasons": reasons,
-            "window_hours": quota.window_hours,
-            "limits": {
-                "total_tokens": quota.max_total_tokens,
-                "calls": quota.max_calls,
-                "total_cost_usd": quota.max_cost_usd,
-            },
-            "usage": usage,
+            "window_hours": exceeded_windows[0]["window_hours"],
+            "limits": exceeded_windows[0]["limits"],
+            "usage": exceeded_windows[0]["usage"],
+            "windows": exceeded_windows,
         },
     )

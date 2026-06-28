@@ -251,6 +251,8 @@ def test_shell_readonly_executes_readonly_builtins(tmp_path: Path, command: str,
         "python -m pytest backend/tests/test_developer_tools.py",
         "npm test",
         "pnpm run test",
+        "pytest -c backend/pytest.ini backend/tests",
+        "pytest -q --maxfail=1 -k expr -m marker",
     ],
 )
 def test_validate_test_command_allows_controlled_test_commands(command: str) -> None:
@@ -270,6 +272,9 @@ def test_validate_test_command_allows_controlled_test_commands(command: str) -> 
         "pytest --watch",
         "npm run build",
         "pytest tests > out.txt",
+        "pytest -o addopts=--rootdir=C:\\outside",
+        "pytest -oaddopts=--rootdir=C:\\outside",
+        "pytest --override-ini=addopts=--rootdir=C:\\outside",
     ],
 )
 def test_validate_test_command_rejects_uncontrolled_commands(command: str) -> None:
@@ -277,6 +282,94 @@ def test_validate_test_command_rejects_uncontrolled_commands(command: str) -> No
 
     assert allowed is False
     assert reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest --rootdir=..\\evil",
+        "pytest --rootdir=../evil",
+        "pytest -c..\\evil\\pytest.ini",
+        "pytest --confcutdir=..\\evil",
+    ],
+)
+def test_validate_test_command_rejects_flag_value_path_traversal(command: str) -> None:
+    allowed, reason = developer_tools.validate_test_command(command)
+
+    assert allowed is False
+    assert reason
+
+
+def test_validate_test_command_rejects_rootdir_outside_allowed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "evil"
+    outside.mkdir()
+
+    allowed, reason = developer_tools.validate_test_command(
+        f"pytest --rootdir={outside}", allowed_directories=[str(workspace)]
+    )
+
+    assert allowed is False
+    assert "outside authorized directories" in reason.lower()
+
+
+def test_validate_test_command_allows_rootdir_inside_allowed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    sub = workspace / "pkg"
+    sub.mkdir(parents=True)
+
+    allowed, reason = developer_tools.validate_test_command(
+        f"pytest --rootdir={sub}", allowed_directories=[str(workspace)]
+    )
+
+    assert allowed is True
+    assert reason == ""
+
+
+def test_diff_preview_rejects_pathspec_traversal(tmp_path: Path) -> None:
+    result = developer_tools.diff_preview(
+        {"cwd": str(tmp_path), "pathspec": "../../secret"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is False
+    assert result["error"]
+
+
+def test_test_run_allows_relative_path_with_sensitive_filename(tmp_path: Path) -> None:
+    # containment-only symlink check must NOT reject legitimate files whose name
+    # merely contains words like "password" (resolve_authorized would).
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_password.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+
+    result = developer_tools.test_run(
+        {"cwd": str(tmp_path), "command": "pytest tests/test_password.py", "dry_run": True},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is True
+
+
+def test_diff_preview_rejects_symlinked_pathspec_escaping_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform/session")
+
+    result = developer_tools.diff_preview(
+        {"cwd": str(workspace), "pathspec": "link/secret.txt"},
+        {"allowed_directories": [str(workspace)]},
+    )
+
+    assert result["ok"] is False
+    assert "outside the authorized workspace" in result["error"].lower()
 
 
 def test_shell_readonly_rejects_without_allowed_directories(monkeypatch: pytest.MonkeyPatch) -> None:

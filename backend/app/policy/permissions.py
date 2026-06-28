@@ -192,6 +192,7 @@ class PermissionStore:
             row = conn.execute("SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)).fetchone()
         if not row:
             return PermissionPolicy(id=self.policy_id)
+        db.require_sensitive_record_integrity("permission_policies", self.policy_id, str(row["data"]))
         try:
             return PermissionPolicy.model_validate(json.loads(row["data"]))
         except Exception:  # noqa: BLE001
@@ -208,6 +209,7 @@ class PermissionStore:
         model = PermissionPolicy.model_validate(policy)
         model.id = self.policy_id
         model.updated_at = now_iso()
+        serialized = model.model_dump_json()
         with db.connect() as conn:
             conn.execute(
                 """
@@ -215,8 +217,9 @@ class PermissionStore:
                 VALUES (?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
                 """,
-                (self.policy_id, model.model_dump_json(), model.updated_at),
+                (self.policy_id, serialized, model.updated_at),
             )
+        db.store_sensitive_record_integrity("permission_policies", self.policy_id, serialized)
         return model
 
     def add_rule(self, rule: PermissionRule | dict[str, Any]) -> PermissionPolicy:
@@ -231,6 +234,7 @@ class PermissionStore:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT data FROM permission_policies WHERE id = ?", (self.policy_id,)).fetchone()
             if row:
+                db.require_sensitive_record_integrity("permission_policies", self.policy_id, str(row["data"]))
                 try:
                     policy = PermissionPolicy.model_validate(json.loads(row["data"]))
                 except Exception:  # noqa: BLE001
@@ -241,14 +245,16 @@ class PermissionStore:
             policy.rules = [existing for existing in policy.rules if existing.id != model.id]
             policy.rules.append(model)
             policy.updated_at = now_iso()
+            serialized = policy.model_dump_json()
             conn.execute(
                 """
                 INSERT INTO permission_policies (id, data, updated_at)
                 VALUES (?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at
                 """,
-                (self.policy_id, policy.model_dump_json(), policy.updated_at),
+                (self.policy_id, serialized, policy.updated_at),
             )
+        db.store_sensitive_record_integrity("permission_policies", self.policy_id, serialized)
         return policy
 
     def upsert_rule(self, rule: PermissionRule | dict[str, Any]) -> PermissionPolicy:

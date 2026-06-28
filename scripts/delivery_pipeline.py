@@ -121,17 +121,18 @@ def default_stages(*, strict: bool) -> List[Stage]:
         ),
     ]
     if strict:
-        stages.insert(
-            2,
+        stages = [
+            stages[0],
+            stages[1],
             Stage(
                 "real-llm-eval",
                 [sys.executable, "scripts/run_real_llm_eval.py", "--quality-gate"],
                 True,
                 "Real provider golden replay quality gate",
             ),
-        )
-        stages.insert(
-            7,
+            stages[2],
+            stages[3],
+            stages[4],
             Stage(
                 "packaging-verify",
                 [
@@ -148,9 +149,6 @@ def default_stages(*, strict: bool) -> List[Stage]:
                 True,
                 "Verify release artifacts and run executable smoke",
             ),
-        )
-        stages.insert(
-            8,
             Stage(
                 "signed-artifacts",
                 [
@@ -163,7 +161,44 @@ def default_stages(*, strict: bool) -> List[Stage]:
                 True,
                 "Verify Windows release artifact signatures",
             ),
-        )
+            Stage(
+                "distribution-evidence",
+                ["npm", "run", "evidence:distribution-verify"],
+                True,
+                "Reviewed signing/distribution evidence",
+            ),
+            Stage(
+                "clean-machine-evidence",
+                ["npm", "run", "evidence:clean-machine-verify"],
+                True,
+                "Reviewed clean-machine install/runtime evidence",
+            ),
+            Stage(
+                "android-strict-gate",
+                [
+                    "powershell",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    (
+                        "& ./scripts/verify_android_release_gate.ps1 "
+                        "-ArtifactPath $env:LENGRVIS_ANDROID_APK_PATH "
+                        "-RealDeviceEvidencePath $env:LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH"
+                    ),
+                ],
+                True,
+                "Strict Android APK plus reviewed LAN/WSS evidence gate",
+            ),
+            Stage(
+                "commercial-loop",
+                ["npm", "run", "evidence:commercial-loop"],
+                True,
+                "Reviewed Free/Pro/Max subscription activation commercial loop evidence",
+            ),
+            stages[5],
+            stages[6],
+            stages[7],
+        ]
     return stages
 
 

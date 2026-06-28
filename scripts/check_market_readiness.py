@@ -9,6 +9,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 ALLOWED_STATUSES = {"blocked", "in_progress", "passed", "waived"}
 STRICT_ALLOWED_STATUSES = {"passed", "waived"}
@@ -50,9 +51,12 @@ def parse_rows(markdown: str) -> list[MarketRow]:
     return rows
 
 
-def validate(rows: list[MarketRow], *, strict: bool) -> tuple[list[str], list[str]]:
+def validate(
+    rows: list[MarketRow], *, strict: bool, paid_launch: bool = False, artifact_root: Path | None = None
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+    artifact_root = artifact_root or Path.cwd()
     if not rows:
         return ["No MR-P0 stop-sell rows found."], warnings
 
@@ -75,13 +79,43 @@ def validate(rows: list[MarketRow], *, strict: bool) -> tuple[list[str], list[st
             r"\b(expiry|expires|until)\b|到期", row.notes, re.IGNORECASE
         ):
             errors.append(f"{row.row_id}: waived row notes require an expiry.")
+        if strict and row.status == "passed" and not _artifact_is_verifiable(row.artifact, artifact_root):
+            errors.append(
+                f"{row.row_id}: strict market readiness requires passed rows to point to an existing "
+                "repo-relative artifact path or HTTPS URL."
+            )
         if row.status not in STRICT_ALLOWED_STATUSES:
             warnings.append(f"{row.row_id}: stop-sell row is {row.status}.")
             if strict:
                 errors.append(
                     f"{row.row_id}: strict market readiness requires passed or waived, got {row.status}."
                 )
+        if paid_launch and row.status != "passed":
+            errors.append(
+                f"{row.row_id}: paid launch requires passed commercial evidence; "
+                f"{row.status} is only allowed for no-sale maintenance packaging."
+            )
     return errors, warnings
+
+
+def _artifact_is_verifiable(artifact: str, artifact_root: Path) -> bool:
+    value = artifact.strip()
+    if not value or value.upper() == "TBD":
+        return False
+    markdown_link = re.search(r"\[[^\]]+\]\(([^)]+)\)", value)
+    if markdown_link:
+        value = markdown_link.group(1).strip()
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and parsed.netloc:
+        return True
+    if parsed.scheme:
+        return False
+    candidate = (artifact_root / value).resolve()
+    try:
+        candidate.relative_to(artifact_root.resolve())
+    except ValueError:
+        return False
+    return candidate.exists()
 
 
 def validate_sources(repo_root: Path) -> list[str]:
@@ -151,6 +185,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dashboard", default="docs/business/market-readiness.md")
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--paid-launch",
+        action="store_true",
+        help="Require every MR-P0 row to be passed; waivers are allowed only for no-sale maintenance releases.",
+    )
     args = parser.parse_args()
 
     dashboard_path = Path(args.dashboard)
@@ -165,11 +204,17 @@ def main() -> int:
         return 2
 
     rows = parse_rows(dashboard_path.read_text(encoding="utf-8"))
-    errors, warnings = validate(rows, strict=args.strict)
+    errors, warnings = validate(
+        rows,
+        strict=args.strict or args.paid_launch,
+        paid_launch=args.paid_launch,
+        artifact_root=Path.cwd(),
+    )
     errors.extend(validate_sources(Path.cwd()))
     summary = {
         "ok": not errors,
         "strict": args.strict,
+        "paid_launch": args.paid_launch,
         "dashboard": str(dashboard_path),
         "p0_total": len(rows),
         "p0_passed": sum(row.status == "passed" for row in rows),

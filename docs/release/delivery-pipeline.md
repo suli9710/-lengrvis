@@ -9,12 +9,19 @@ exposed through npm scripts.
 | Order | Stage | Required | Backing command | Purpose |
 | ---: | --- | :---: | --- | --- |
 | 1 | qa-gate | yes | `npm run qa:gate` | Backend tests, desktop/mobile typecheck, desktop smoke. |
-| 2 | supply-chain | yes | `npm run supply-chain:verify` | Dependency lock verification + SBOM. |
-| 3 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
-| 4 | release-safety | yes | `npm run release:safety` | Release safety checks. |
-| 5 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (strict in RC mode). |
-| 6 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (strict in RC mode). |
-| 7 | evidence | no | `npm run evidence:release` | Collect the release evidence packet. |
+| 2 | golden-gate | yes | `npm run golden:gate` | Deterministic golden-task regression gate. |
+| 3 | supply-chain | yes | `npm run supply-chain:verify` | Dependency lock verification + SBOM. |
+| 4 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
+| 5 | release-safety | yes | `npm run release:safety` | Release safety checks. |
+| 6 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (strict in RC mode). |
+| 7 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (strict in RC mode). |
+| 8 | evidence | no | `npm run evidence:release` | Collect the release evidence packet. |
+
+Strict RC mode inserts additional required stages after golden/safety/artifact checks:
+`real-llm-eval`, `packaging-verify`, `signed-artifacts`, `distribution-evidence`,
+`clean-machine-evidence`, `android-strict-gate`, and `commercial-loop`. These stages
+require reviewed evidence JSON and real Android APK/device evidence; template/preflight
+outputs intentionally fail them.
 
 ## Commands
 
@@ -56,11 +63,14 @@ The orchestrator prints and optionally writes a JSON verdict:
    day-to-day development and never authorize a tag or announcement.
 2. The pipeline does not replace manual evidence. `RR-P0` engineering rows and
    `MR-P0` commercial rows still require their named real-world artifacts and owners.
-3. The JSON verdict should be attached to the RC handoff and the release evidence
+3. Strict Android evidence is supplied through `LENGRVIS_ANDROID_APK_PATH` and
+   `LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH`; strict reviewed evidence checkers use
+   their default build paths or `LENGRVIS_*_EVIDENCE_PATH` overrides.
+4. The JSON verdict should be attached to the RC handoff and the release evidence
    packet.
-4. Do not weaken a required stage to optional to make the pipeline pass. Use an
+5. Do not weaken a required stage to optional to make the pipeline pass. Use an
    explicit, owner-approved waiver row in the dashboard instead.
-5. CI should run `delivery:plan` plus both readiness validators on every PR. A
+6. CI should run `delivery:plan` plus both readiness validators on every PR. A
    real release runs `delivery:rc` on the candidate build host.
 
 ## What this closes and what it does not
@@ -70,5 +80,5 @@ mapping from gates to release decision.
 
 Does not close on its own: real-world execution evidence (clean-machine, Android
 device, result-quality and diagnostics review) or commercial operations (legal
-entity, payment/tax, live license issuer, support ownership). Those remain manual
+entity, payment/tax, live activation/license issuer, support ownership). Those remain manual
 P0 rows and must be satisfied before `delivery:rc` can pass in strict mode.

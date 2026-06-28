@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
+from app.commerce.activation import activate_license_with_server
 from app.commerce.entitlements import (
     Feature,
     active_plan,
@@ -40,6 +41,11 @@ router = APIRouter()
 
 class LicenseInstallRequest(BaseModel):
     token: str = Field(min_length=1, max_length=65536)
+
+
+class LicenseActivationRequest(BaseModel):
+    activation_key: str = Field(min_length=1, max_length=256)
+    app_version: str = Field(default="", max_length=64)
 
 
 @router.get("/commerce/plan")
@@ -73,6 +79,32 @@ def commerce_license_install(payload: LicenseInstallRequest) -> dict[str, Any]:
             "issuer": license_.issuer,
             "seats": license_.seats,
             "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
+        },
+    )
+    invalidate_settings_cache()
+    return license_status(settings)
+
+
+@router.post("/commerce/license/activate")
+def commerce_license_activate(payload: LicenseActivationRequest) -> dict[str, Any]:
+    settings = get_effective_settings()
+    license_ = activate_license_with_server(
+        payload.activation_key,
+        settings,
+        app_version=payload.app_version,
+    )
+    audit_core.record(
+        "commerce.license.activated",
+        "desktop",
+        {
+            "license_id": license_.license_id,
+            "plan": license_.plan.value,
+            "subject": license_.subject,
+            "issuer": license_.issuer,
+            "seats": license_.seats,
+            "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
+            "subscription_id": str(license_.payload.get("subscription_id") or ""),
+            "subscription_status": str(license_.payload.get("subscription_status") or ""),
         },
     )
     invalidate_settings_cache()

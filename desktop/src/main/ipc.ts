@@ -256,6 +256,42 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     });
   });
 
+  ipcMain.handle(IPC_CHANNELS.approvalApprove, async (event, approvalId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeApprovalId = validateBridgeIdentifier(approvalId, "approval id");
+    const approvalResponse = await proxyExplicitDesktopBridgeRequest<Record<string, unknown>>(backend, {
+      endpoint: `/api/approvals/${encodeURIComponent(safeApprovalId)}`,
+      method: "GET"
+    });
+    if (!approvalResponse.ok) {
+      throw new ApiRequestValidationError("Approval details are unavailable for native confirmation");
+    }
+    await confirmNativeDesktopAction(event, approvalConfirmationDialogOptions(safeApprovalId, approvalResponse.data, "approve"));
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/approvals/${encodeURIComponent(safeApprovalId)}/approve`,
+      method: "POST",
+      query: { desktop_native_confirmed: true }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.approvalReject, async (event, approvalId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeApprovalId = validateBridgeIdentifier(approvalId, "approval id");
+    const approvalResponse = await proxyExplicitDesktopBridgeRequest<Record<string, unknown>>(backend, {
+      endpoint: `/api/approvals/${encodeURIComponent(safeApprovalId)}`,
+      method: "GET"
+    });
+    if (!approvalResponse.ok) {
+      throw new ApiRequestValidationError("Approval details are unavailable for native confirmation");
+    }
+    await confirmNativeDesktopAction(event, approvalConfirmationDialogOptions(safeApprovalId, approvalResponse.data, "reject"));
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/approvals/${encodeURIComponent(safeApprovalId)}/reject`,
+      method: "POST",
+      query: { desktop_native_confirmed: true }
+    });
+  });
+
   ipcMain.handle(IPC_CHANNELS.taskRollback, async (event, taskId: unknown) => {
     assertTrustedRenderer(event);
     const safeTaskId = validateBridgeIdentifier(taskId, "task id");
@@ -484,8 +520,11 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
   ipcMain.handle(IPC_CHANNELS.settingsSave, async (event, patch: unknown) => {
     assertTrustedRenderer(event);
     const safePatch = validateSettingsPatchRequest(patch);
-    if (settingsEgressChangeRequiresConfirmation(safePatch) && !safePatch.confirmation_nonce) {
-      throw new ApiRequestValidationError("Sensitive LLM endpoint settings require a prior confirmation");
+    if (
+      (settingsEgressChangeRequiresConfirmation(safePatch) || settingsNativeChangeRequiresConfirmation(safePatch))
+      && !safePatch.confirmation_nonce
+    ) {
+      throw new ApiRequestValidationError("Sensitive settings require a prior confirmation");
     }
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/settings",
@@ -737,6 +776,50 @@ export async function confirmNativeDesktopAction(
   if (result.response !== 0) {
     throw new ApiRequestValidationError("Sensitive desktop action was not confirmed");
   }
+}
+
+function approvalConfirmationDialogOptions(
+  approvalId: string,
+  payload: unknown,
+  action: "approve" | "reject"
+): Parameters<typeof confirmNativeDesktopAction>[1] {
+  const detail = isPlainRecord(payload) ? payload : {};
+  const approval = isPlainRecord(detail.approval) ? detail.approval : detail;
+  const task = isPlainRecord(detail.task) ? detail.task : {};
+  const taskSummary = stringField(task, "user_goal") || stringField(task, "userGoal") || stringField(task, "title");
+  const toolName = stringField(approval, "tool_name") || stringField(approval, "toolName") || "unknown";
+  const riskLevel = stringField(approval, "risk_level") || stringField(approval, "riskLevel") || "unknown";
+  const dryRunSummary = stringField(approval, "dry_run_summary") || stringField(approval, "dryRunSummary");
+  const message = stringField(approval, "message") || stringField(approval, "reason") || "No approval summary was provided.";
+  const lines = [
+    `Approval id: ${approvalId}`,
+    `Task: ${taskSummary || "unknown"}`,
+    `Tool: ${toolName}`,
+    `Risk: ${riskLevel}`,
+    "",
+    "Request:",
+    truncateForDialog(message),
+    "",
+    "Dry-run preview:",
+    truncateForDialog(dryRunSummary || "No dry-run summary was provided.")
+  ];
+  return {
+    type: action === "approve" ? "warning" : "question",
+    confirmLabel: action === "approve" ? "Approve once" : "Reject",
+    title: action === "approve" ? "Confirm approval" : "Confirm rejection",
+    message: action === "approve" ? "Approve this pending agent action?" : "Reject this pending agent action?",
+    detail: lines.join("\n")
+  };
+}
+
+function stringField(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function truncateForDialog(value: string): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 1200 ? `${normalized.slice(0, 1200)}...` : normalized;
 }
 
 function normalizeGrantPath(filePath: string): string {

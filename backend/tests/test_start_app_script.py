@@ -95,10 +95,19 @@ def _run_release_safety(
     env = os.environ.copy()
     for key in (
         "LENGRVIS_ALLOW_MOCK_FALLBACK",
+        "LENGRVIS_CLOUD_QUOTA_ENFORCED",
+        "LENGRVIS_CLOUD_QUOTA_MAX_CALLS",
+        "LENGRVIS_CLOUD_QUOTA_MAX_COST_USD",
+        "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS",
+        "LENGRVIS_CLOUD_QUOTA_WINDOW_HOURS",
         "LENGRVIS_CONFIG_FILE",
         "LENGRVIS_COMMERCIAL_RELEASE",
         "LENGRVIS_ENV_FILE",
         "LENGRVIS_LICENSE_KEY",
+        "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE",
+        "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE_FILE",
+        "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY",
+        "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY_FILE",
         "LENGRVIS_LICENSE_PRIVATE_KEY",
         "LENGRVIS_LICENSE_PUBLIC_KEY",
         "LENGRVIS_LICENSE_REVOCATIONS",
@@ -995,6 +1004,47 @@ def test_release_safety_accepts_valid_public_key_for_commercial_release(
     assert "Commercial license secrets are offline-only" in output
 
 
+def test_release_safety_rejects_commercial_quota_disable(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_CLOUD_QUOTA_ENFORCED": "false",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial release profiles must not set LENGRVIS_CLOUD_QUOTA_ENFORCED=false" in output
+
+
+def test_release_safety_rejects_commercial_quota_overrides(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS": "999999999",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial release profiles must not use LENGRVIS_CLOUD_QUOTA_* limit overrides" in output
+    assert "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS" in output
+
+
 def test_release_safety_rejects_runtime_license_private_key(
     project_root: Path,
     tmp_path: Path,
@@ -1011,6 +1061,24 @@ def test_release_safety_rejects_runtime_license_private_key(
 
     assert result.returncode == 1, output
     assert "Release runtime must not contain LENGRVIS_LICENSE_PRIVATE_KEY" in output
+
+
+def test_release_safety_rejects_runtime_activation_private_key(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY": "must-not-ship",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Release runtime must not contain LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY" in output
 
 
 def test_release_safety_default_strict_state_machine_is_documented_as_fail_closed(

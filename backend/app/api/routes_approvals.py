@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, Plan, StepStatus, Task, TaskStatus
+from app.core.audit import record
+from app.core.schemas import Approval, ApprovalStatus, Plan, StepStatus, Task, TaskStatus, now_iso
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.policy.redaction import redact_public_text
@@ -14,6 +15,7 @@ from app.services.mobile_pairing_service import (
     raise_if_mobile_claims_disallowed,
     safe_approval_payload,
 )
+from app.services.mobile_pairing_service import get_approval_detail
 from app.services.mobile_pairing_service import reject_approval as reject_mobile_approval
 from app.services.task_service import set_task_status
 
@@ -25,22 +27,60 @@ def pending():
     return list_pending_approvals()
 
 
+@router.get("/approvals/{approval_id}")
+def detail(approval_id: str):
+    return get_approval_detail(approval_id)
+
+
 @router.post("/approvals/{approval_id}/approve")
-async def approve(approval_id: str):
+async def approve(approval_id: str, desktop_native_confirmed: bool = Query(False)):
     approval = approval_for_execution(approval_id)
+    _record_desktop_native_confirmation(approval, "approve", desktop_native_confirmed)
     approval = await _execute_approved_step(approval)
     return approval_execution_response(approval)
 
 
 @router.post("/approvals/{approval_id}/reject")
-def reject(approval_id: str):
+def reject(approval_id: str, desktop_native_confirmed: bool = Query(False)):
+    before = db.fetch_one("approvals", approval_id)
     approval = reject_mobile_approval(approval_id)
+    _record_desktop_native_confirmation(Approval.model_validate(before) if before else approval, "reject", desktop_native_confirmed)
     _deny_rejected_step(approval)
     _reconcile_runs(approval.task_id)
     return safe_approval_payload(approval)
 
 
+def _record_desktop_native_confirmation(approval: Approval, decision: str, confirmed: bool) -> None:
+    if not confirmed:
+        return
+    record(
+        "approval.desktop_native_confirmed",
+        "DesktopMain",
+        {
+            "approval_id": approval.id,
+            "task_id": approval.task_id,
+            "step_id": approval.step_id,
+            "decision": decision,
+            "desktop_native_confirmed": True,
+            "desktop_native_confirmed_at": now_iso(),
+            "tool_name": approval.tool_name,
+            "risk_level": approval.risk_level,
+            "dry_run_summary_present": bool(approval.dry_run_summary),
+            "confirmation_evidence": {
+                "approval_id": approval.id,
+                "task_id": approval.task_id,
+                "step_id": approval.step_id,
+                "tool_name": approval.tool_name,
+                "risk_level": approval.risk_level,
+                "dry_run_summary": redact_public_text(approval.dry_run_summary or ""),
+            },
+        },
+        task_id=approval.task_id,
+    )
+
+
 async def _execute_approved_step(approval: Approval) -> Approval:
+    db.require_sensitive_integrity_ok()
     try:
         await OrchestratorAgent().execute_approved_step(approval)
     except Exception as exc:
@@ -96,6 +136,7 @@ def _restore_retryable_approval_state(approval: Approval) -> None:
 
 
 def approval_for_execution(approval_id: str, claims: dict | None = None) -> Approval:
+    db.require_sensitive_integrity_ok()
     data = db.fetch_one("approvals", approval_id)
     if not data:
         raise HTTPException(status_code=404, detail="Approval not found")

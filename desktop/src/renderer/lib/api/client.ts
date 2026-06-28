@@ -31,6 +31,7 @@ import type {
   CleanupScanRequest,
   CommerceFeature,
   CommerceLicenseStatus,
+  CommercePlan,
   CommercePlanStatus,
   CommerceQuotaStatus,
   ContextUsage,
@@ -185,6 +186,14 @@ export class LengrvisApiClient {
       endpoint: "/api/commerce/license/install",
       method: "POST",
       body: { token }
+    }).then((response) => mapResponse(response, mapCommerceLicenseStatus));
+  }
+
+  async activateCommerceLicense(activationKey: string, appVersion = "desktop"): Promise<ApiResponse<CommerceLicenseStatus>> {
+    return this.request<BackendCommerceLicenseStatus, { activation_key: string; app_version: string }>({
+      endpoint: "/api/commerce/license/activate",
+      method: "POST",
+      body: { activation_key: activationKey, app_version: appVersion }
     }).then((response) => mapResponse(response, mapCommerceLicenseStatus));
   }
 
@@ -595,6 +604,12 @@ export class LengrvisApiClient {
 
   submitApprovalDecision(decision: ApprovalDecision): Promise<ApiResponse<ApprovalRequest>> {
     const action = decision.decision === "approved" ? "approve" : "reject";
+    if (window.lengrvis?.approvals) {
+      const request = action === "approve"
+        ? window.lengrvis.approvals.approve(decision.approvalId)
+        : window.lengrvis.approvals.reject(decision.approvalId);
+      return request.then((response) => mapResponse(response, mapApproval));
+    }
     return this.request<BackendApproval>({
       endpoint: `/api/approvals/${decision.approvalId}/${action}`,
       method: "POST"
@@ -1663,7 +1678,7 @@ export class LengrvisApiClient {
 
 function mapCommercePlanStatus(data: BackendCommercePlanStatus): CommercePlanStatus {
   return {
-    plan: data.plan,
+    plan: normalizeCommercePlan(data.plan),
     remoteDesktopEnabled: Boolean(data.remote_desktop_enabled),
     features: data.features as Record<CommerceFeature, boolean>,
     highRiskFeatures: data.high_risk_features as CommerceFeature[]
@@ -1685,9 +1700,15 @@ function mapCommerceLicenseStatus(data: BackendCommerceLicenseStatus): CommerceL
     revocationCapable: Boolean(data.revocation_capable),
     revocationSource: data.revocation_source ?? undefined,
     revocationGeneratedAt: data.revocation_generated_at ?? undefined,
-    plan: data.plan,
+    plan: data.plan ? normalizeCommercePlan(data.plan) : undefined,
     subject: data.subject || undefined,
     seats: data.seats,
+    subscriptionId: data.subscription_id ?? undefined,
+    subscriptionStatus: data.subscription_status ?? undefined,
+    renewsAt: data.renews_at ?? undefined,
+    cancelAtPeriodEnd: Boolean(data.cancel_at_period_end),
+    deviceId: data.device_id ?? undefined,
+    orderRef: data.order_ref ?? undefined,
     issuedAt: data.issued_at ?? undefined,
     expiresAt: data.expires_at ?? undefined,
     errorCode: data.error_code
@@ -1695,8 +1716,38 @@ function mapCommerceLicenseStatus(data: BackendCommerceLicenseStatus): CommerceL
 }
 
 function mapCommerceQuotaStatus(data: BackendCommerceQuotaStatus): CommerceQuotaStatus {
+  const usage = data.usage
+    ? {
+        calls: Number(data.usage.calls || 0),
+        totalTokens: Number(data.usage.total_tokens || 0),
+        totalCostUsd: Number(data.usage.total_cost_usd || 0),
+        windowHours: Number(data.usage.window_hours || data.window_hours || 0),
+        lastEventAt: data.usage.last_event_at || undefined
+      }
+    : undefined;
+  const windows = Array.isArray(data.windows)
+    ? data.windows.map((window) => ({
+        key: window.key || `${Number(window.window_hours || 0)}h`,
+        windowHours: Number(window.window_hours || 0),
+        limits: {
+          totalTokens: window.limits.total_tokens,
+          calls: window.limits.calls,
+          totalCostUsd: window.limits.total_cost_usd
+        },
+        usage: window.usage
+          ? {
+              calls: Number(window.usage.calls || 0),
+              totalTokens: Number(window.usage.total_tokens || 0),
+              totalCostUsd: Number(window.usage.total_cost_usd || 0),
+              windowHours: Number(window.usage.window_hours || window.window_hours || 0),
+              lastEventAt: window.usage.last_event_at || undefined
+            }
+          : undefined,
+        exceeded: Array.isArray(window.exceeded) ? window.exceeded.map(String) : []
+      }))
+    : [];
   return {
-    plan: data.plan,
+    plan: normalizeCommercePlan(data.plan),
     enforced: Boolean(data.enforced),
     unlimited: Boolean(data.unlimited),
     windowHours: Number(data.window_hours || 0),
@@ -1705,15 +1756,27 @@ function mapCommerceQuotaStatus(data: BackendCommerceQuotaStatus): CommerceQuota
       calls: data.limits.calls,
       totalCostUsd: data.limits.total_cost_usd
     },
-    usage: data.usage
-      ? {
-          calls: Number(data.usage.calls || 0),
-          totalTokens: Number(data.usage.total_tokens || 0),
-          totalCostUsd: Number(data.usage.total_cost_usd || 0),
-          windowHours: Number(data.usage.window_hours || data.window_hours || 0),
-          lastEventAt: data.usage.last_event_at || undefined
-        }
-      : undefined,
-    exceeded: Array.isArray(data.exceeded) ? data.exceeded.map(String) : []
+    usage,
+    exceeded: Array.isArray(data.exceeded) ? data.exceeded.map(String) : [],
+    windows:
+      windows.length > 0
+        ? windows
+        : [
+            {
+              key: `${Number(data.window_hours || 0)}h`,
+              windowHours: Number(data.window_hours || 0),
+              limits: {
+                totalTokens: data.limits.total_tokens,
+                calls: data.limits.calls,
+                totalCostUsd: data.limits.total_cost_usd
+              },
+              usage,
+              exceeded: Array.isArray(data.exceeded) ? data.exceeded.map(String) : []
+            }
+          ]
   };
+}
+
+function normalizeCommercePlan(plan: "free" | "pro" | "max" | "team"): CommercePlan {
+  return plan === "team" ? "max" : plan;
 }

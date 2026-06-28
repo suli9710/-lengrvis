@@ -28,6 +28,14 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _entitle_policy_management(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Policy management (PUT/upsert/delete permission-policy) is a Max-tier
+    entitlement (Feature.POLICY_MANAGEMENT). Grant Max so the route round-trip
+    tests exercise the gated endpoints instead of being rejected at 402."""
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
+
+
 def weekend_delete_rule() -> PermissionRule:
     return PermissionRule(
         id="weekend_delete",

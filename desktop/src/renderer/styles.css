@@ -11256,6 +11256,28 @@ select:focus-visible,
   display: none;
 }
 
+.commerce-settings__activation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.commerce-settings__activation label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.commerce-settings__activation label > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.commerce-settings__activation input {
+  width: 100%;
+}
+
 .commerce-settings__features {
   display: flex;
   flex-wrap: wrap;
@@ -11342,6 +11364,10 @@ select:focus-visible,
 
   .commerce-settings__actions {
     justify-content: flex-start;
+  }
+
+  .commerce-settings__activation {
+    grid-template-columns: 1fr;
   }
 
   .commerce-settings__facts {

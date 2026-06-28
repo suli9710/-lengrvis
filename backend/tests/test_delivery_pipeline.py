@@ -48,13 +48,30 @@ def test_default_stages_order_and_membership():
 
 def test_strict_adds_strict_flag_to_readiness():
     names = [s.name for s in mod.default_stages(strict=True)]
-    assert "real-llm-eval" in names
-    assert "packaging-verify" in names
-    assert "signed-artifacts" in names
+    assert names == [
+        "qa-gate",
+        "golden-gate",
+        "real-llm-eval",
+        "supply-chain",
+        "security-extensions",
+        "release-safety",
+        "packaging-verify",
+        "signed-artifacts",
+        "distribution-evidence",
+        "clean-machine-evidence",
+        "android-strict-gate",
+        "commercial-loop",
+        "market-readiness",
+        "readiness",
+        "evidence",
+    ]
     readiness = next(s for s in mod.default_stages(strict=True) if s.name == "readiness")
     assert "--strict" in readiness.command
     market = next(s for s in mod.default_stages(strict=True) if s.name == "market-readiness")
     assert "--strict" in market.command
+    android = next(s for s in mod.default_stages(strict=True) if s.name == "android-strict-gate")
+    assert "LENGRVIS_ANDROID_APK_PATH" in android.command[-1]
+    assert "LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH" in android.command[-1]
 
 
 def test_non_strict_readiness_has_no_strict_flag():

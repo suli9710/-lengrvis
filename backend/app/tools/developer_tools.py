@@ -187,7 +187,11 @@ def git_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 def diff_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
-    result = _run_command(_guarded_git_command(["diff", "--", str(args.get("pathspec") or ".")]), cwd=root)
+    pathspec = str(args.get("pathspec") or ".")
+    pathspec_error = _path_candidate_error(pathspec, _allowed(context), root=root)
+    if pathspec_error:
+        return {"ok": False, "cwd": str(root), "error": pathspec_error}
+    result = _run_command(_guarded_git_command(["diff", "--", pathspec]), cwd=root)
     diff, diff_truncated = _truncate_text(str(result.get("stdout") or ""), DIFF_PREVIEW_LIMIT)
     payload = {
         "ok": result["returncode"] == 0,
@@ -206,13 +210,13 @@ def shell_readonly(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     if not command:
         return {"ok": False, "error": "Missing command."}
     allowed_directories = _allowed(context)
-    tokens, reason = _parse_readonly_shell(command, allowed_directories=allowed_directories)
-    if tokens is None:
-        return {"ok": False, "error": reason, "readonly": False}
     try:
         root = _workspace_root(args, context)
     except SecurityError as exc:
         return {"ok": False, "error": str(exc), "readonly": False}
+    tokens, reason = _parse_readonly_shell(command, allowed_directories=allowed_directories, root=root)
+    if tokens is None:
+        return {"ok": False, "error": reason, "readonly": False}
     result = _run_local_readonly_builtin(tokens, root, allowed_directories)
     if result is None:
         result = _run_command(tokens, cwd=root, shell=False)
@@ -281,13 +285,13 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     command = str(args.get("command") or "").strip()
     if not command:
         return {"ok": False, "error": "Missing command."}
-    tokens, reason = _parse_test_command(command, allowed_directories=_allowed(context))
-    if tokens is None:
-        return {"ok": False, "error": reason, "controlled": False}
     try:
         root = _workspace_root(args, context)
     except SecurityError as exc:
         return {"ok": False, "error": str(exc), "controlled": False}
+    tokens, reason = _parse_test_command(command, allowed_directories=_allowed(context), root=root)
+    if tokens is None:
+        return {"ok": False, "error": reason, "controlled": False}
 
     timeout_seconds = _bounded_timeout(args.get("timeout_seconds"), background=bool(args.get("background", False)))
     output_dir = _test_output_dir(context)
@@ -340,7 +344,7 @@ def validate_readonly_shell(command: str, *, allowed_directories: list[str] | No
 
 
 def _parse_readonly_shell(
-    command: str, *, allowed_directories: list[str] | None = None
+    command: str, *, allowed_directories: list[str] | None = None, root: Path | None = None
 ) -> tuple[list[str] | None, str]:
     try:
         tokens = shlex.split(command, posix=False)
@@ -355,7 +359,7 @@ def _parse_readonly_shell(
         return None, f"Command '{tokens[0]}' is not in the read-only allowlist."
     if any(token in SHELL_WRITE_TOKENS or any(char in token for char in SHELL_METACHARS) for token in lowered):
         return None, "Command contains a write-like shell token."
-    path_error = _shell_path_error(tokens, allowed_directories or [])
+    path_error = _shell_path_error(tokens, allowed_directories or [], root=root)
     if path_error:
         return None, path_error
     if executable == "git":
@@ -443,7 +447,9 @@ def validate_test_command(command: str, *, allowed_directories: list[str] | None
     return (tokens is not None, reason)
 
 
-def _parse_test_command(command: str, *, allowed_directories: list[str] | None = None) -> tuple[list[str] | None, str]:
+def _parse_test_command(
+    command: str, *, allowed_directories: list[str] | None = None, root: Path | None = None
+) -> tuple[list[str] | None, str]:
     try:
         tokens = shlex.split(command, posix=False)
     except ValueError as exc:
@@ -459,7 +465,7 @@ def _parse_test_command(command: str, *, allowed_directories: list[str] | None =
         return None, "Test command contains a write-like shell token."
     if any(token in TEST_WATCH_FLAGS for token in lowered):
         return None, "Watch/looping test modes are not allowed."
-    path_error = _shell_path_error(tokens, allowed_directories or [])
+    path_error = _shell_path_error(tokens, allowed_directories or [], root=root)
     if path_error:
         return None, path_error
     shape_error = _test_command_shape_error(lowered)
@@ -494,11 +500,11 @@ def _test_flag_error(lowered: list[str]) -> str:
         if flag in PYTEST_WRITE_FLAGS:
             return f"pytest option {flag} writes files and is not allowed through dev.test_run."
         if _pytest_override_writes(token):
-            return "pytest override writes files and is not allowed through dev.test_run."
+            return "pytest -o/--override-ini may not set addopts or file-writing options through dev.test_run."
         if token in {"-o", "--override-ini"} and index + 1 < len(lowered):
             value = lowered[index + 1]
             if _pytest_override_value_writes(value):
-                return "pytest override writes files and is not allowed through dev.test_run."
+                return "pytest -o/--override-ini may not set addopts or file-writing options through dev.test_run."
     return ""
 
 
@@ -512,7 +518,10 @@ def _pytest_override_writes(token: str) -> bool:
 
 
 def _pytest_override_value_writes(value: str) -> bool:
-    return any(item in value for item in ("cache_dir=", "junit", "log_file"))
+    # ``addopts`` injects arbitrary extra CLI options (e.g. --rootdir / -p / -c),
+    # which would re-open the path-sandbox bypass that _shell_path_error closes,
+    # so it is rejected outright alongside ini keys that cause file writes.
+    return any(item in value for item in ("cache_dir=", "junit", "log_file", "addopts="))
 
 
 def _strip_matching_quotes(token: str) -> str:
@@ -521,22 +530,91 @@ def _strip_matching_quotes(token: str) -> str:
     return token
 
 
-def _shell_path_error(tokens: list[str], allowed_directories: list[str]) -> str:
-    for token in tokens[1:]:
-        text = token.strip().strip("\"'")
-        if not text or text.startswith("-"):
-            continue
-        path = Path(text)
-        if ".." in path.parts:
-            return "Command path arguments may not contain '..'."
-        if not path.is_absolute():
-            continue
+# Short option flags whose value may be attached directly to the flag token
+# (e.g. ``-cFILE``). pytest's ``-c`` selects a config file (and thus an
+# autoloaded ``conftest.py``); npm/git ``-C`` selects a working directory.
+_SHORT_PATH_VALUE_FLAGS = ("-c", "-C")
+
+
+def _flag_path_value(token: str) -> str:
+    """Return a candidate path carried *inside* a single ``-`` flag token.
+
+    Handles ``--flag=VALUE`` / ``-c=VALUE`` (value after ``=``) and the attached
+    short form ``-cVALUE``. Space-separated flag values are a separate token and
+    are validated as positional arguments by :func:`_shell_path_error`. This
+    closes the bypass where ``pytest --rootdir=C:\\outside`` or
+    ``pytest --rootdir=..\\evil`` smuggled an out-of-sandbox path (and thus an
+    attacker-controlled ``conftest.py`` → code execution) through a token that
+    the old check skipped purely because it started with ``-``.
+    """
+    _, sep, inline = token.partition("=")
+    if sep:
+        return inline
+    for short in _SHORT_PATH_VALUE_FLAGS:
+        if token.startswith(short) and len(token) > len(short):
+            return token[len(short) :]
+    return ""
+
+
+def _resolve_quietly(path: Path) -> Path | None:
+    try:
+        return path.resolve(strict=False)
+    except OSError:
+        return None
+
+
+def _relative_symlink_escape_error(relative: Path, root: Path | None) -> str:
+    """Reject a relative path whose ancestors symlink/junction out of ``root``.
+
+    Containment-only (no sensitive/system-path checks) so legitimate filenames
+    that merely contain words like ``password`` or ``.env`` are not rejected;
+    we only care whether the path still resolves inside the authorized
+    workspace the subprocess runs in.
+    """
+    if root is None:
+        return ""
+    resolved = _resolve_quietly(root / relative)
+    root_resolved = _resolve_quietly(root)
+    if resolved is None or root_resolved is None:
+        return ""
+    try:
+        if resolved == root_resolved or resolved.is_relative_to(root_resolved):
+            return ""
+    except ValueError:
+        pass
+    return "Command path argument resolves outside the authorized workspace (symlink/junction)."
+
+
+def _path_candidate_error(value: str, allowed_directories: list[str], *, root: Path | None = None) -> str:
+    text = _strip_matching_quotes(value.strip())
+    if not text:
+        return ""
+    path = Path(text)
+    if ".." in path.parts:
+        return "Command path arguments may not contain '..'."
+    if path.is_absolute():
         if not allowed_directories:
             return "Absolute shell path arguments require configured allowed_directories."
         try:
             resolve_authorized(path, allowed_directories)
         except Exception as exc:  # noqa: BLE001
             return f"Shell path argument is outside authorized directories: {exc}"
+        return ""
+    # Relative paths without ``..`` stay inside the subprocess cwd (the
+    # authorized workspace root) unless a symlink/junction ancestor redirects
+    # them outside it; the containment check below catches that case.
+    return _relative_symlink_escape_error(path, root)
+
+
+def _shell_path_error(tokens: list[str], allowed_directories: list[str], *, root: Path | None = None) -> str:
+    for token in tokens[1:]:
+        text = _strip_matching_quotes(token.strip())
+        if not text:
+            continue
+        candidate = _flag_path_value(text) if text.startswith("-") else text
+        error = _path_candidate_error(candidate, allowed_directories, root=root)
+        if error:
+            return error
     return ""
 
 

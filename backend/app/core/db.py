@@ -25,6 +25,9 @@ _DATA_DIR_OVERRIDE: ContextVar[str | None] = ContextVar("lengrvis_data_dir_overr
 AUDIT_GENESIS_HASH = "0" * 64
 AUDIT_HMAC_SECRET_FILE = "audit_hmac.secret"  # noqa: S105
 AUDIT_HMAC_SECRET_DIR = "secrets"  # noqa: S105
+SENSITIVE_RECORD_INTEGRITY_VERSION = 1
+SENSITIVE_RECORD_INTEGRITY_TABLE = "sensitive_record_integrity"
+SENSITIVE_RECORD_INTEGRITY_KINDS = frozenset({"approvals", "app_settings", "permission_policies", "audit_chain_heads"})
 
 # Audit hot-path caches (2-H2): avoid re-reading the HMAC secret file and
 # re-querying the chain tail on every event. Single-writer assumption: failed
@@ -42,6 +45,13 @@ _AUDIT_CHAIN_HEADS: dict[str, tuple[int, str]] = {}
 # WAL + busy_timeout. RLock so a path that already holds the lock can audit
 # its own failure without self-deadlocking.
 _EVENT_WRITE_LOCK = threading.RLock()
+
+
+class SensitiveRecordIntegrityError(RuntimeError):
+    """Raised when a locally stored sensitive record fails HMAC verification."""
+
+
+_STARTUP_SENSITIVE_INTEGRITY_STATUS: dict[str, Any] = {"ok": True, "checked": 0, "failures": []}
 
 
 @dataclass
@@ -288,6 +298,7 @@ def init_db() -> None:
 def _init_db_schema() -> None:
     with connect() as conn:
         initialize_schema(conn, _ensure_columns)
+        _ensure_sensitive_record_integrity_schema(conn)
 
 
 def _upsert_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
@@ -413,6 +424,7 @@ def _upsert_approvals(conn: sqlite3.Connection, data: dict[str, Any], now: str, 
             data.get("created_at", now),
         ),
     )
+    _store_sensitive_record_integrity(conn, "approvals", data["id"], _json(data))
 
 
 def _upsert_scheduled_tasks(conn: sqlite3.Connection, data: dict[str, Any], now: str, status: str | None) -> None:
@@ -568,6 +580,8 @@ def fetch_one(table: str, record_id: str) -> dict[str, Any] | None:
     _apply_read_barrier(table_name)
     with connect() as conn:
         row = conn.execute(f"SELECT data FROM {table_name} WHERE id = ?", (record_id,)).fetchone()  # noqa: S608
+        if row and table_name in SENSITIVE_RECORD_INTEGRITY_KINDS:
+            _require_sensitive_record_integrity(conn, table_name, record_id, row["data"])
     return json.loads(row["data"]) if row else None
 
 
@@ -637,6 +651,12 @@ def _fetch_many_data(
     query += " ORDER BY created_at DESC LIMIT ?"
     with connect() as conn:
         rows = conn.execute(query, (*args, _query_limit(limit))).fetchall()
+        if table_name in SENSITIVE_RECORD_INTEGRITY_KINDS:
+            for row in rows:
+                data = json.loads(row["data"])
+                record_id = str(data.get("id") or "")
+                if record_id:
+                    _require_sensitive_record_integrity(conn, table_name, record_id, row["data"])
     return [json.loads(row["data"]) for row in rows]
 
 
@@ -1227,6 +1247,15 @@ def _prepare_audit_event_locked(conn: sqlite3.Connection, data: dict[str, Any]) 
 
 
 def _store_audit_chain_head(sequence: int, event_hash: str, *, event_id: str = "") -> None:
+    record_id = f"audit_head_{uuid4().hex}"
+    created_at = _now_iso()
+    payload = _audit_chain_head_integrity_payload(
+        record_id=record_id,
+        sequence=int(sequence),
+        event_hash=str(event_hash),
+        event_id=str(event_id or ""),
+        created_at=created_at,
+    )
     with _AUDIT_CACHE_LOCK:
         _AUDIT_CHAIN_HEADS[str(db_path())] = (int(sequence), str(event_hash))
     with connect() as conn:
@@ -1235,8 +1264,9 @@ def _store_audit_chain_head(sequence: int, event_hash: str, *, event_id: str = "
             INSERT INTO audit_chain_heads (id, sequence, event_hash, event_id, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (f"audit_head_{uuid4().hex}", int(sequence), str(event_hash), str(event_id or ""), _now_iso()),
+            (record_id, int(sequence), str(event_hash), str(event_id or ""), created_at),
         )
+        _store_sensitive_record_integrity(conn, "audit_chain_heads", record_id, payload)
 
 
 def _invalidate_audit_chain_head() -> None:
@@ -1248,7 +1278,7 @@ def _latest_persisted_audit_chain_head(conn: sqlite3.Connection) -> dict[str, An
     try:
         row = conn.execute(
             """
-            SELECT sequence, event_hash, event_id
+            SELECT id, sequence, event_hash, event_id, created_at
             FROM audit_chain_heads
             ORDER BY sequence DESC, created_at DESC, id DESC
             LIMIT 1
@@ -1262,7 +1292,41 @@ def _latest_persisted_audit_chain_head(conn: sqlite3.Connection) -> dict[str, An
     event_hash = str(row["event_hash"] or "")
     if sequence <= 0 or not event_hash:
         return None
+    _require_sensitive_record_integrity(
+        conn,
+        "audit_chain_heads",
+        str(row["id"]),
+        _audit_chain_head_integrity_payload(
+            record_id=str(row["id"]),
+            sequence=sequence,
+            event_hash=event_hash,
+            event_id=str(row["event_id"] or ""),
+            created_at=str(row["created_at"] or ""),
+        ),
+    )
     return {"sequence": sequence, "event_hash": event_hash, "event_id": str(row["event_id"] or "")}
+
+
+def _audit_chain_head_integrity_payload(
+    *,
+    record_id: str,
+    sequence: int,
+    event_hash: str,
+    event_id: str,
+    created_at: str,
+) -> str:
+    return json.dumps(
+        {
+            "id": record_id,
+            "sequence": int(sequence),
+            "event_hash": event_hash,
+            "event_id": event_id,
+            "created_at": created_at,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _audit_event_hash(event: dict[str, Any]) -> str:
@@ -1341,6 +1405,7 @@ def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str
         ).fetchone()
         if not row:
             return None
+        _require_sensitive_record_integrity(conn, "approvals", approval_id, row["data"])
         data = json.loads(row["data"])
         if data.get("consumed_at"):
             return None
@@ -1357,6 +1422,7 @@ def claim_approval_for_execution(approval_id: str, consumed_at: str) -> dict[str
         )
         if cursor.rowcount != 1:
             return None
+        _store_sensitive_record_integrity(conn, "approvals", approval_id, _json(data))
     return data
 
 
@@ -1382,6 +1448,7 @@ def expire_approval_if_unconsumed(
         ).fetchone()
         if not row:
             return None
+        _require_sensitive_record_integrity(conn, "approvals", approval_id, row["data"])
         data = json.loads(row["data"])
         current_status = str(data.get("status") or "")
         if current_status not in allowed_statuses or data.get("consumed_at"):
@@ -1406,6 +1473,7 @@ def expire_approval_if_unconsumed(
         )
         if cursor.rowcount != 1:
             return None
+        _store_sensitive_record_integrity(conn, "approvals", approval_id, _json(data))
     return data
 
 
@@ -1419,6 +1487,7 @@ def expire_pending_approvals_for_task(task_id: str, expired_at: str, reason: str
             (task_id, "pending"),
         ).fetchall()
         for row in rows:
+            _require_sensitive_record_integrity(conn, "approvals", row["id"], row["data"])
             data = json.loads(row["data"])
             if data.get("status") != "pending" or data.get("consumed_at"):
                 continue
@@ -1439,6 +1508,7 @@ def expire_pending_approvals_for_task(task_id: str, expired_at: str, reason: str
                 (_json(data), "expired", row["id"], "pending", "pending"),
             )
             if cursor.rowcount == 1:
+                _store_sensitive_record_integrity(conn, "approvals", row["id"], _json(data))
                 expired.append(data)
     return expired
 
@@ -1455,6 +1525,7 @@ def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -
         ).fetchone()
         if not row:
             return None
+        _require_sensitive_record_integrity(conn, "approvals", approval_id, row["data"])
         data = json.loads(row["data"])
         if data.get("status") != "pending" or data.get("consumed_at"):
             return None
@@ -1474,10 +1545,12 @@ def decide_approval_atomically(approval_id: str, status: str, decided_at: str) -
         )
         if cursor.rowcount != 1:
             return None
+        _store_sensitive_record_integrity(conn, "approvals", approval_id, _json(data))
     return data
 
 
 def set_setting(key: str, value: Any) -> None:
+    stored = _json(value)
     with connect() as conn:
         conn.execute(
             """
@@ -1485,18 +1558,223 @@ def set_setting(key: str, value: Any) -> None:
             VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
             """,
-            (key, _json(value), _now_iso()),
+            (key, stored, _now_iso()),
         )
+        _store_sensitive_record_integrity(conn, "app_settings", key, stored)
     _notify_settings_invalidated()
 
 
 def get_settings_overrides() -> dict[str, Any]:
     with connect() as conn:
         rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
+        for row in rows:
+            _require_sensitive_record_integrity(conn, "app_settings", str(row["key"]), row["value"])
     result: dict[str, Any] = {}
     for row in rows:
         result[row["key"]] = json.loads(row["value"])
     return result
+
+
+def store_sensitive_record_integrity(table: str, record_id: str, data: str) -> None:
+    with connect() as conn:
+        _store_sensitive_record_integrity(conn, table, record_id, data)
+
+
+def require_sensitive_record_integrity(table: str, record_id: str, data: str) -> None:
+    with connect() as conn:
+        _require_sensitive_record_integrity(conn, table, record_id, data)
+
+
+def sensitive_integrity_check() -> dict[str, Any]:
+    failures: list[dict[str, str]] = []
+    checked = 0
+    with connect() as conn:
+        _ensure_sensitive_record_integrity_schema(conn)
+        checks = (
+            ("approvals", "SELECT id, data FROM approvals"),
+            ("app_settings", "SELECT key AS id, value AS data FROM app_settings"),
+            ("permission_policies", "SELECT id, data FROM permission_policies"),
+            (
+                "audit_chain_heads",
+                "SELECT id, sequence, event_hash, event_id, created_at FROM audit_chain_heads",
+            ),
+        )
+        for table, query in checks:
+            try:
+                rows = conn.execute(query).fetchall()
+            except sqlite3.Error:
+                continue
+            for row in rows:
+                checked += 1
+                data = (
+                    _audit_chain_head_integrity_payload(
+                        record_id=str(row["id"]),
+                        sequence=int(row["sequence"] or 0),
+                        event_hash=str(row["event_hash"] or ""),
+                        event_id=str(row["event_id"] or ""),
+                        created_at=str(row["created_at"] or ""),
+                    )
+                    if table == "audit_chain_heads"
+                    else str(row["data"])
+                )
+                try:
+                    _require_sensitive_record_integrity(conn, table, str(row["id"]), data)
+                except SensitiveRecordIntegrityError as exc:
+                    failures.append({"table": table, "id": str(row["id"]), "reason": str(exc)})
+    return {"ok": not failures, "checked": checked, "failures": failures}
+
+
+def bootstrap_sensitive_record_integrity() -> dict[str, Any]:
+    """Sign pre-existing local sensitive records once during startup migration."""
+    failures: list[dict[str, str]] = []
+    checked = 0
+    with connect() as conn:
+        _ensure_sensitive_record_integrity_schema(conn)
+        for table, row, data in _iter_sensitive_record_rows(conn):
+            checked += 1
+            record_id = str(row["id"])
+            if _sensitive_record_integrity_row_exists(conn, table, record_id):
+                try:
+                    _require_sensitive_record_integrity(conn, table, record_id, data)
+                except SensitiveRecordIntegrityError as exc:
+                    failures.append({"table": table, "id": record_id, "reason": str(exc)})
+            else:
+                _store_sensitive_record_integrity(conn, table, record_id, data)
+    status = {"ok": not failures, "checked": checked, "failures": failures}
+    set_startup_sensitive_integrity_status(status)
+    return status
+
+
+def set_startup_sensitive_integrity_status(status: dict[str, Any]) -> None:
+    global _STARTUP_SENSITIVE_INTEGRITY_STATUS
+    _STARTUP_SENSITIVE_INTEGRITY_STATUS = dict(status)
+
+
+def get_startup_sensitive_integrity_status() -> dict[str, Any]:
+    return dict(_STARTUP_SENSITIVE_INTEGRITY_STATUS)
+
+
+def require_sensitive_integrity_ok() -> None:
+    startup = get_startup_sensitive_integrity_status()
+    if startup and startup.get("ok") is False:
+        raise SensitiveRecordIntegrityError("Sensitive local record integrity check failed at startup")
+    current = sensitive_integrity_check()
+    set_startup_sensitive_integrity_status(current)
+    if not current.get("ok"):
+        failure = (current.get("failures") or [{}])[0]
+        raise SensitiveRecordIntegrityError(
+            f"Sensitive local record integrity check failed for {failure.get('table')}:{failure.get('id')}"
+        )
+
+
+def _iter_sensitive_record_rows(conn: sqlite3.Connection) -> Iterator[tuple[str, sqlite3.Row, str]]:
+    checks = (
+        ("approvals", "SELECT id, data FROM approvals"),
+        ("app_settings", "SELECT key AS id, value AS data FROM app_settings"),
+        ("permission_policies", "SELECT id, data FROM permission_policies"),
+        (
+            "audit_chain_heads",
+            "SELECT id, sequence, event_hash, event_id, created_at FROM audit_chain_heads",
+        ),
+    )
+    for table, query in checks:
+        try:
+            rows = conn.execute(query).fetchall()
+        except sqlite3.Error:
+            continue
+        for row in rows:
+            data = (
+                _audit_chain_head_integrity_payload(
+                    record_id=str(row["id"]),
+                    sequence=int(row["sequence"] or 0),
+                    event_hash=str(row["event_hash"] or ""),
+                    event_id=str(row["event_id"] or ""),
+                    created_at=str(row["created_at"] or ""),
+                )
+                if table == "audit_chain_heads"
+                else str(row["data"])
+            )
+            yield table, row, data
+
+
+def _ensure_sensitive_record_integrity_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SENSITIVE_RECORD_INTEGRITY_TABLE} (
+            table_name TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            digest TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (table_name, record_id)
+        )
+        """
+    )
+
+
+def _store_sensitive_record_integrity(conn: sqlite3.Connection, table: str, record_id: str, data: str) -> None:
+    if table not in SENSITIVE_RECORD_INTEGRITY_KINDS or not record_id:
+        return
+    _ensure_sensitive_record_integrity_schema(conn)
+    digest = _sensitive_record_digest(table, record_id, data)
+    conn.execute(
+        f"""
+        INSERT INTO {SENSITIVE_RECORD_INTEGRITY_TABLE} (table_name, record_id, version, digest, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(table_name, record_id) DO UPDATE SET
+            version=excluded.version,
+            digest=excluded.digest,
+            updated_at=excluded.updated_at
+        """,
+        (table, record_id, SENSITIVE_RECORD_INTEGRITY_VERSION, digest, _now_iso()),
+    )
+
+
+def _sensitive_record_integrity_row_exists(conn: sqlite3.Connection, table: str, record_id: str) -> bool:
+    row = conn.execute(
+        f"""
+        SELECT 1
+        FROM {SENSITIVE_RECORD_INTEGRITY_TABLE}
+        WHERE table_name = ? AND record_id = ?
+        """,
+        (table, record_id),
+    ).fetchone()
+    return row is not None
+
+
+def _require_sensitive_record_integrity(conn: sqlite3.Connection, table: str, record_id: str, data: str) -> None:
+    if table not in SENSITIVE_RECORD_INTEGRITY_KINDS or not record_id:
+        return
+    _ensure_sensitive_record_integrity_schema(conn)
+    row = conn.execute(
+        f"""
+        SELECT digest
+        FROM {SENSITIVE_RECORD_INTEGRITY_TABLE}
+        WHERE table_name = ? AND record_id = ?
+        """,
+        (table, record_id),
+    ).fetchone()
+    expected = _sensitive_record_digest(table, record_id, data)
+    if not row:
+        raise SensitiveRecordIntegrityError(f"Sensitive local record integrity proof missing for {table}:{record_id}")
+    actual = str(row["digest"] or "")
+    if not hmac.compare_digest(actual, expected):
+        raise SensitiveRecordIntegrityError(f"Sensitive local record integrity check failed for {table}:{record_id}")
+
+
+def _sensitive_record_digest(table: str, record_id: str, data: str) -> str:
+    body = json.dumps(
+        {
+            "version": SENSITIVE_RECORD_INTEGRITY_VERSION,
+            "table": table,
+            "record_id": record_id,
+            "data": data,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hmac.new(_audit_hmac_secret().encode("utf-8"), body.encode("utf-8"), sha256).hexdigest()
 
 
 def upsert_memory(payload: dict[str, Any]) -> None:

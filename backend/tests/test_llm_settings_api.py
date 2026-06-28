@@ -191,16 +191,52 @@ def test_sensitive_settings_require_bound_confirmation(tmp_path, monkeypatch):
     assert reused_for_other_risk.json()["error"]["code"] == "sensitive_confirmation_invalid"
 
 
-def test_sensitive_settings_confirmation_not_required_when_disabling(tmp_path, monkeypatch):
+def test_sensitive_settings_confirmation_required_when_disabling_native_sensitive_setting(tmp_path, monkeypatch):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     db.set_setting("remote_desktop_enabled", True)
     client = TestClient(create_app())
 
-    response = client.post("/api/settings", json={"remote_desktop_enabled": False})
+    blocked = client.post("/api/settings", json={"remote_desktop_enabled": False})
+    confirmation = client.post(
+        "/api/settings/confirm-sensitive-change",
+        json={"remote_desktop_enabled": False},
+    )
+    allowed = client.post(
+        "/api/settings",
+        json={"remote_desktop_enabled": False, "confirmation_nonce": confirmation.json()["nonce"]},
+    )
 
-    assert response.status_code == 200
-    assert response.json()["remote_desktop_enabled"] is False
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "sensitive_confirmation_required"
+    assert confirmation.status_code == 200
+    assert confirmation.json()["required"] is True
+    assert allowed.status_code == 200
+    assert allowed.json()["remote_desktop_enabled"] is False
+
+
+def test_sensitive_settings_confirmation_nonce_allows_same_or_narrower_patch(tmp_path, monkeypatch):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    client = TestClient(create_app())
+    patch = {"remote_desktop_enabled": True, "allow_cloud_context": True}
+
+    confirmation = client.post("/api/settings/confirm-sensitive-change", json=patch)
+    nonce = confirmation.json()["nonce"]
+    tampered = client.post(
+        "/api/settings",
+        json={"remote_desktop_enabled": False, "confirmation_nonce": nonce},
+    )
+    allowed = client.post(
+        "/api/settings",
+        json={"remote_desktop_enabled": True, "confirmation_nonce": nonce},
+    )
+
+    assert confirmation.status_code == 200
+    assert tampered.status_code == 409
+    assert tampered.json()["error"]["code"] == "sensitive_confirmation_invalid"
+    assert allowed.status_code == 200
+    assert allowed.json()["remote_desktop_enabled"] is True
+    assert allowed.json()["allow_cloud_context"] is False
 
 
 def test_sensitive_settings_require_confirmation_for_auth_scope_and_mcp_expansion(tmp_path, monkeypatch):

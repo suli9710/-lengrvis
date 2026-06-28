@@ -168,7 +168,7 @@ export interface BackendStatus {
   };
 }
 
-export type CommercePlan = "free" | "pro" | "team";
+export type CommercePlan = "free" | "pro" | "max";
 
 export type CommerceFeature =
   | "local_read_only"
@@ -194,6 +194,9 @@ export type CommerceLicenseState =
   | "active"
   | "expired"
   | "revoked"
+  | "device_mismatch"
+  | "device_unverified"
+  | "subscription_inactive"
   | "invalid"
   | "revocation_data_invalid"
   | "verifier_unconfigured";
@@ -215,9 +218,33 @@ export interface CommerceLicenseStatus {
   plan?: CommercePlan;
   subject?: string;
   seats?: number;
+  subscriptionId?: string;
+  subscriptionStatus?: "active" | "trialing" | "past_due" | "canceled" | "expired" | "revoked";
+  renewsAt?: string;
+  cancelAtPeriodEnd?: boolean;
+  deviceId?: string;
+  orderRef?: string;
   issuedAt?: string;
   expiresAt?: string;
   errorCode?: string;
+}
+
+export interface CommerceQuotaWindow {
+  key: string;
+  windowHours: number;
+  limits: {
+    totalTokens: number | null;
+    calls: number | null;
+    totalCostUsd: number | null;
+  };
+  usage?: {
+    calls: number;
+    totalTokens: number;
+    totalCostUsd: number;
+    windowHours: number;
+    lastEventAt?: string;
+  };
+  exceeded: string[];
 }
 
 export interface CommerceQuotaStatus {
@@ -238,6 +265,7 @@ export interface CommerceQuotaStatus {
     lastEventAt?: string;
   };
   exceeded: string[];
+  windows: CommerceQuotaWindow[];
 }
 
 export interface LocalLLMBackend {
@@ -912,6 +940,29 @@ export interface ApprovalRequest {
   modelAction?: Record<string, unknown>;
   runtimeControlFields?: Record<string, unknown>;
   engineeringBoundary?: Record<string, unknown>;
+}
+
+export interface BackendApprovalPayload {
+  id: string;
+  task_id?: string | null;
+  step_id?: string | null;
+  approval_type: string;
+  message: string;
+  diff_preview: unknown;
+  tool_name?: string;
+  risk_level?: string;
+  tool_trust_tier?: string;
+  tool_effects?: string[];
+  resource_kinds?: string[];
+  policy_mode?: string;
+  permission_mode?: string;
+  dry_run_summary?: string;
+  model_action?: unknown;
+  runtime_control_fields?: unknown;
+  runtime_fields?: unknown;
+  engineering_boundary?: unknown;
+  status: string;
+  created_at: string;
 }
 
 export interface ApprovalDecision {
@@ -1717,6 +1768,10 @@ export interface LengrvisDesktopBridge {
   };
   commands: {
     execute: (request: { name: string; args?: Record<string, unknown> }) => Promise<ApiResponse<unknown>>;
+  };
+  approvals: {
+    approve: (approvalId: string) => Promise<ApiResponse<BackendApprovalPayload>>;
+    reject: (approvalId: string) => Promise<ApiResponse<BackendApprovalPayload>>;
   };
   tasks: {
     rollback: (taskId: string) => Promise<ApiResponse<unknown>>;
