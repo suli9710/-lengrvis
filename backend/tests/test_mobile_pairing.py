@@ -3071,13 +3071,13 @@ def test_mobile_detail_redacts_task_and_omits_plan_args(monkeypatch, tmp_path):
     db.init_db()
     client = TestClient(app)
     token = _paired_token(client)
-    task = Task(user_goal="Use token super-secret-token-1234567890", final_summary="password=abc1234567890")
+    task = Task(user_goal="Use token fixture", final_summary="password=fixture")
     step = PlanStep(
         task_id=task.id,
         order=1,
         agent_name="FileAgent",
         tool_name="file.write",
-        description="Write Authorization Bearer secret-token-1234567890",
+        description="Write Authorization Bearer fixture",
         args={"value": "token should not leak", "path": "notes.txt"},
         expected_observation="password should not leak",
     )
@@ -3145,9 +3145,9 @@ def test_mobile_notification_websocket_connected_tasks_are_redacted(monkeypatch,
     client = TestClient(app)
     token = _paired_token(client)
     task = Task(
-        user_goal="检查 C:/Users/example/private-contract.txt token=secret-token-ws-task-1234567890",
+        user_goal="检查 C:/Users/example/private-contract.txt token=fixture",
         mode="hybrid",
-        final_summary="password=abc1234567890",
+        final_summary="password=fixture",
         status=TaskPhase.EXECUTION,
         execution_stage=ExecutionStage.PAUSED,
         metadata=_mobile_task_metadata(token),

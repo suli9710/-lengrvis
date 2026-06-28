@@ -921,6 +921,7 @@ async def test_cancelled_tool_worker_does_not_register_pending_completion(tmp_pa
 
     events: list[str] = []
     first_started = threading.Event()
+    first_aborted = threading.Event()
     target = tmp_path / "workspace" / "cancel-pending.txt"
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -933,6 +934,7 @@ async def test_cancelled_tool_worker_does_not_register_pending_completion(tmp_pa
             while True:
                 if abort is not None and abort.is_set():
                     events.append(f"{label}:aborted")
+                    first_aborted.set()
                     return {"cancelled": True}
                 time.sleep(0.01)
         events.append(f"{label}:end")
@@ -968,6 +970,7 @@ async def test_cancelled_tool_worker_does_not_register_pending_completion(tmp_pa
     with pytest.raises(asyncio.CancelledError):
         await first_task
 
+    assert first_aborted.wait(2)
     pending = runtime._pending_tool_completions_for_current_loop()
     assert pending == {}
 

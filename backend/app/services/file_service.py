@@ -18,11 +18,13 @@ def _validate_index_directory(path: str) -> str:
     raw = (path or "").strip()
     if not raw:
         raise SecurityError("Directory path is required.", code="invalid_directory")
-    if ".." in Path(raw).parts:
+    if ".." in raw.replace("\\", "/").split("/"):
         raise SecurityError("Path traversal is not allowed.")
     parts = Path(raw).parts
     if any(":" in part for part in parts[1:]):
         raise SecurityError("Windows alternate data streams are not allowed.")
+    if is_system_path(raw):
+        raise SecurityError("Sensitive or system paths are not allowed.")
     try:
         resolved = normalize_path(raw)
     except OSError as exc:

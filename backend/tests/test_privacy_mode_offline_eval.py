@@ -356,7 +356,7 @@ def test_local_ai_status_redacts_snapshot_error_details(monkeypatch):
         return {
             "available": False,
             "selected_backend": {"kind": "ollama", "model": r"C:\models\private\model.onnx"},
-            "error": r"failed C:\models\private\model.onnx https://localhost:11434/api?token=secret-token-1234567890 password=abc1234567890",
+            "error": r"failed C:\models\private\model.onnx https://localhost:11434/api?token=fixture password=fixture",
             "readiness": {
                 "can_install": True,
                 "recommended_model": r"C:\models\private\other.onnx",

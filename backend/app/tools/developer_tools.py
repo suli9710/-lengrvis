@@ -5,7 +5,7 @@ import fnmatch
 import shlex
 import subprocess
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from app.config import DEFAULT_DATA_DIR
@@ -614,9 +614,9 @@ def _path_candidate_error(value: str, allowed_directories: list[str], *, root: P
     if not text:
         return ""
     path = Path(text)
-    if ".." in path.parts:
+    if _has_parent_path_part(text):
         return "Command path arguments may not contain '..'."
-    if path.is_absolute():
+    if path.is_absolute() or _is_windows_absolute_path(text):
         if not allowed_directories:
             return "Absolute shell path arguments require configured allowed_directories."
         try:
@@ -628,6 +628,15 @@ def _path_candidate_error(value: str, allowed_directories: list[str], *, root: P
     # authorized workspace root) unless a symlink/junction ancestor redirects
     # them outside it; the containment check below catches that case.
     return _relative_symlink_escape_error(path, root)
+
+
+def _has_parent_path_part(text: str) -> bool:
+    return any(part == ".." for part in text.replace("\\", "/").split("/"))
+
+
+def _is_windows_absolute_path(text: str) -> bool:
+    parsed = PureWindowsPath(text)
+    return bool(parsed.drive and parsed.root)
 
 
 def _shell_path_error(tokens: list[str], allowed_directories: list[str], *, root: Path | None = None) -> str:

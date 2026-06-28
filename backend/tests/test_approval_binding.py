@@ -704,7 +704,7 @@ def test_tool_call_agent_message_redacts_sensitive_args():
         agent_name="FileAgent",
         tool_name=tool.name,
         description="call secret tool",
-        args={"custom_secret": "super-secret-value", "url": "https://example.com/?secret=abc1234567890"},
+        args={"custom_secret": "super-secret-value", "url": "https://example.com/?secret=fixture"},
         risk_level=RiskLevel.R0_READ_ONLY,
     )
     runtime = orchestrator.step_execution_handler._runtime_context(task)
@@ -715,7 +715,7 @@ def test_tool_call_agent_message_redacts_sensitive_args():
     messages = db.fetch_many("agent_messages", "task_id = ?", (task.id,), limit=20)
     serialized = json.dumps(messages, ensure_ascii=False)
     assert "super-secret-value" not in serialized
-    assert "abc1234567890" not in serialized
+    assert "fixture" not in serialized
 
 
 def test_approval_secret_is_generated_in_data_dir(tmp_path: Path):

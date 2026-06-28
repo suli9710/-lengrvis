@@ -1327,7 +1327,7 @@ def test_guardian_approval_wraps_non_json_full_backend_continue_failure(monkeypa
     approval = Approval(
         task_id=task.id,
         step_id=step.id,
-        message="Approve token=approval-secret-1234567890",
+        message="Approve token=fixture",
     )
     db.upsert_model("tasks", task)
     db.upsert_model("plans", plan)
@@ -1337,7 +1337,7 @@ def test_guardian_approval_wraps_non_json_full_backend_continue_failure(monkeypa
 
     class FakeResponse:
         status_code = 502
-        text = "upstream token=upstream-secret-1234567890"
+        text = "upstream token=fixture"
 
         def json(self):
             raise ValueError("not json")

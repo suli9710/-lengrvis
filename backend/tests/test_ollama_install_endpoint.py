@@ -518,7 +518,7 @@ def test_local_llm_health_endpoint_redacts_paths_urls_and_tokens(monkeypatch):
                 },
                 "bundle": {"manifest_path": r"C:\Users\Suli\models\manifest.json"},
             },
-            "error": r"Tried http://127.0.0.1:11434/api/tags with token=sk-1234567890abcdef at C:\Users\Suli\.ollama",
+            "error": r"Tried http://127.0.0.1:11434/api/tags with token=fixture at C:\Users\Suli\.ollama",
         },
     )
 

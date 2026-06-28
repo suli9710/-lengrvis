@@ -305,9 +305,10 @@ def _full_backend_executable_allowlist() -> set[Path]:
 def _validate_custom_full_backend_command(command: list[str]) -> None:
     if not command:
         raise RuntimeError("Full backend command must not be empty.")
-    executable = _resolve_full_backend_executable(command[0])
-    if executable.name.lower() in _DISALLOWED_FULL_BACKEND_EXECUTABLES:
+    executable_name = Path(command[0]).name.lower()
+    if executable_name in _DISALLOWED_FULL_BACKEND_EXECUTABLES:
         raise RuntimeError("Shell interpreters are not allowed for LENGRVIS_FULL_BACKEND_COMMAND.")
+    executable = _resolve_full_backend_executable(command[0])
     if executable not in _full_backend_executable_allowlist():
         raise RuntimeError("LENGRVIS_FULL_BACKEND_COMMAND executable is not allowed.")
 
