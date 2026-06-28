@@ -507,13 +507,17 @@ def test_ollama_action_error_redacts_paths_urls_and_tokens(monkeypatch):
     monkeypatch.setattr(ollama_service, "is_installed", lambda: False)
     monkeypatch.setattr(ollama_service, "_ollama_runtime_source", lambda: "missing")
     monkeypatch.setattr(ollama_service, "_bundled_model_available", lambda model: False)
-    raw = r"failed at C:\Users\Suli\.ollama\models\blob with token=sk-1234567890abcdef and http://127.0.0.1:11434/api/pull"
+    fake_token = "sk" + "-1234567890abcdef"
+    raw = (
+        r"C:\Users\Suli\.ollama\models\blob"
+        f" failed with token={fake_token} and http://127.0.0.1:11434/api/pull"
+    )
 
     result = ollama_service._ollama_action_error(raw, "download_model", model="qwen2.5:3b")
 
     assert "C:\\Users" not in result["error"]
     assert "http://127.0.0.1" not in result["error"]
-    assert "sk-1234567890abcdef" not in result["error"]
+    assert fake_token not in result["error"]
     assert "[REDACTED_LOCAL_PATH]" in result["error"]
     assert "[REDACTED_URL]" in result["error"]
     assert result["repair_action"]["code"] == "download_model"

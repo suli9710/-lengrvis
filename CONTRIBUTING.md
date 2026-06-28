@@ -20,7 +20,9 @@ python -m pip install -r requirements-dev.txt
 - Desktop: `npm --prefix desktop run typecheck`, `npm --prefix desktop test`, and relevant smokes.
 - Mobile: `npm --prefix mobile run typecheck` and relevant smokes.
 - Supply chain: `npm run deps:verify` after dependency changes.
-- Security: run pre-commit hooks, including gitleaks, before pushing.
+- Security: run pre-commit hooks before pushing. Secret scanning uses
+  `scripts/secret_scan.ps1` with `.gitleaks-ci.toml`, scans a Git source
+  snapshot, and requires either a `gitleaks` binary or Go.
 
 ## Release-Sensitive Changes
 

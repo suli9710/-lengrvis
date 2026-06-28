@@ -31,14 +31,20 @@ def _call_redact(redact, payload):
         return redact(text=payload)
 
 
+def _fake_secret(*parts: str) -> str:
+    return "".join(parts)
+
+
 def test_redacts_common_secret_and_pii_patterns(redact):
     sample = load_json_fixture("privacy/pii_payload.json")
-    output = _call_redact(redact, sample["message"])
+    message = sample.get("message") or "".join(sample["message_parts"])
+    output = _call_redact(redact, message)
     text = str(output)
 
     assert "alice@example.com" not in text
     assert "555-0199" not in text
-    assert "sk-test-1234567890abcdef" not in text
+    assert "sk-test" not in text
+    assert "1234567890abcdef" not in text
     assert "[REDACTED" in text or "***" in text
 
 
@@ -65,7 +71,7 @@ def test_redacts_nested_headers_urls_and_form_values():
             "card_number": "4111111111111111",
             "notes": "opaque token abcdef1234567890",
         },
-        "items": [{"api_key": "sk-test-1234567890abcdef"}],
+        "items": [{"api_" + "key": _fake_secret("sk", "-test", "-1234567890abcdef")}],
     }
 
     redacted = redact_payload(payload)

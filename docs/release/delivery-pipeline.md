@@ -11,11 +11,13 @@ exposed through npm scripts.
 | 1 | qa-gate | yes | `npm run qa:gate` | Backend tests, desktop/mobile typecheck, desktop smoke. |
 | 2 | golden-gate | yes | `npm run golden:gate` | Deterministic golden-task regression gate. |
 | 3 | supply-chain | yes | `npm run supply-chain:verify` | Dependency lock verification + SBOM. |
-| 4 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
-| 5 | release-safety | yes | `npm run release:safety` | Release safety checks. |
-| 6 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (strict in RC mode). |
-| 7 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (strict in RC mode). |
-| 8 | evidence | no | `npm run evidence:release` | Collect the release evidence packet. |
+| 4 | dependency-audit | yes | `npm run audit:deps` | npm audit plus pip-audit over runtime/build/acceleration Python locks. |
+| 5 | secret-scan | yes | `npm run security:secrets` | Strict gitleaks source snapshot scan. |
+| 6 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
+| 7 | release-safety | yes | `npm run release:safety` | Release safety checks. |
+| 8 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (strict in RC mode). |
+| 9 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (strict in RC mode). |
+| 10 | evidence | no | `npm run evidence:release` | Collect the release evidence packet. |
 
 Non-strict `delivery:run` inserts required `release-artifact-preflight` and
 `signed-artifacts` stages after `release-safety` unless `--skip-signature-verify` is

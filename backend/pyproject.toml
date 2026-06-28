@@ -46,8 +46,9 @@ ocr = [
 ]
 acceleration = [
   "tokenizers>=0.20,<1.0",
-  "transformers>=4.45,<5.0",
+  "transformers>=5.0,<6.0",
   "onnxruntime>=1.18,<2.0",
+  "onnxruntime-genai>=0.8,<1.0",
 ]
 winml = [
   "onnxruntime-windowsml>=1.22,<2.0; platform_system == 'Windows'",

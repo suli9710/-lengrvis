@@ -25,12 +25,21 @@ import {
   validateBridgeIdentifier,
   validateBridgePathValue,
   validateBridgePositiveInteger,
+  validateBrowserSessionRequest,
   validateCommandExecuteRequest,
+  validateCommerceLicenseActivateRequest,
+  validateCommerceLicenseInstallRequest,
+  validateCommercePolicyImportRequest,
   validateDocumentAskRequest,
   validateDocumentCompareRequest,
   validateDocumentParseRequest,
+  validateHardwareAccelerationSmokeRequest,
+  validateMemoryRecallRequest,
+  validateMemorySaveRequest,
+  validateNoPayloadBridgeRequest,
   validateOptionalModelRequest,
   validateOpenSettingsRequest,
+  validatePerceptionSuggestionLaunchRequest,
   validatePermissionPolicyRelaxationRequest,
   validatePermissionRuleDeleteRequest,
   validatePermissionRuleUpsertRequest,
@@ -511,6 +520,182 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     });
   });
 
+  ipcMain.handle(IPC_CHANNELS.perceptionSuggestionLaunch, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validatePerceptionSuggestionLaunchRequest(request);
+    const backendNotReady = await ensureBackendReadyForRendererSubmission(backend);
+    if (backendNotReady) {
+      return backendNotReady;
+    }
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm suggested agent run",
+      message: "Start this suggested task?",
+      detail: [
+        `Suggestion id: ${body.suggestionId}`,
+        `Mode: ${body.mode ?? "efficiency"}`,
+        "",
+        "Suggested runs can use tools, access authorized files, and request further approvals."
+      ].join("\n")
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/perception/suggestions/${encodeURIComponent(body.suggestionId)}/launch`,
+      method: "POST",
+      body: {
+        suggestion_id: body.suggestionId,
+        mode: body.mode ?? "efficiency"
+      }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.hardwareAccelerationSmoke, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateHardwareAccelerationSmokeRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm local model smoke test",
+      message: "Run this local hardware acceleration test?",
+      detail: `Operation: ${body.operation}\n\nThis may load local ONNX/OCR models and use CPU, GPU, disk, or memory resources.`
+    });
+    const endpointByOperation = {
+      warmup: "/api/settings/onnx/warmup",
+      test_generate: "/api/settings/onnx/test-generate",
+      test_embedding: "/api/settings/onnx/test-embedding",
+      test_ocr: "/api/settings/onnx/test-ocr",
+      test_image_embedding: "/api/settings/onnx/test-image-embedding"
+    } as const;
+    const requestBody =
+      body.operation === "test_generate"
+        ? { prompt: body.prompt || undefined, max_tokens: body.maxTokens, model_path: body.modelPath }
+        : body.operation === "test_embedding"
+          ? { texts: body.texts.length ? body.texts : undefined, model_path: body.modelPath }
+          : body.operation === "test_image_embedding"
+            ? { image_path: body.imagePath, model_path: body.modelPath }
+            : { model_path: body.modelPath };
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: endpointByOperation[body.operation],
+      method: "POST",
+      body: requestBody
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.browserObserve, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const { sessionId } = validateBrowserSessionRequest(request);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/browser/observe",
+      method: "POST",
+      body: { session_id: sessionId }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.browserReplayExport, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const { sessionId } = validateBrowserSessionRequest(request);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/browser/replay-export",
+      method: "POST",
+      body: { session_id: sessionId }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.commerceLicenseInstall, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateCommerceLicenseInstallRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm license installation",
+      message: "Install this commerce license?",
+      detail: `License token length: ${body.token.length} characters\n\nOnly install license tokens from a trusted Lengrvis source. The token itself is not displayed here.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/commerce/license/install",
+      method: "POST",
+      body
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.commerceLicenseActivate, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateCommerceLicenseActivateRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm license activation",
+      message: "Activate this commerce license?",
+      detail: `App version: ${body.appVersion ?? "desktop"}\nActivation key length: ${body.activationKey.length} characters\n\nThis may contact the configured activation service.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/commerce/license/activate",
+      method: "POST",
+      body: {
+        activation_key: body.activationKey,
+        app_version: body.appVersion ?? "desktop"
+      }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.commercePolicyImport, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateCommercePolicyImportRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm commerce policy import",
+      message: "Import this commerce permission policy?",
+      detail: `Rules: ${body.policy.rules?.length ?? 0}\n\nThis can change what tools the agent may use under a paid policy management entitlement.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/commerce/policy/import",
+      method: "POST",
+      query: body.confirmationNonce ? { confirmation_nonce: body.confirmationNonce } : undefined,
+      body: { policy: body.policy }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.memoriesSave, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateMemorySaveRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm memory write",
+      message: "Save this memory for future agent context?",
+      detail: `Kind: ${body.kind ?? "fact"}\n\nMemory text:\n${truncateForDialog(body.content)}`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/memories",
+      method: "POST",
+      body: {
+        content: body.content,
+        tags: body.tags ?? [],
+        task_id: body.taskId ?? "",
+        kind: body.kind ?? "fact"
+      }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.memoriesRecall, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateMemoryRecallRequest(request);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/memories/recall",
+      method: "POST",
+      body: {
+        query: body.query,
+        k: body.k ?? 5,
+        tags: body.tags ?? []
+      }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.memoriesForget, async (event, memoryId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeMemoryId = validateBridgeIdentifier(memoryId, "memory id");
+    await confirmNativeDesktopAction(event, {
+      type: "warning",
+      confirmLabel: "Forget memory",
+      title: "Confirm memory deletion",
+      message: "Forget this saved memory?",
+      detail: `Memory id: ${safeMemoryId}`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/memories/${encodeURIComponent(safeMemoryId)}`,
+      method: "DELETE"
+    });
+  });
+
   ipcMain.handle(IPC_CHANNELS.schedulesList, async (event) => {
     assertTrustedRenderer(event);
     return proxyExplicitDesktopBridgeRequest(backend, {
@@ -670,6 +855,20 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
       endpoint: "/api/settings/confirm-sensitive-change",
       method: "POST",
       body: safePatch
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsTestLlmProvider, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    validateNoPayloadBridgeRequest(request, "LLM provider test request");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm LLM provider test",
+      message: "Test the configured LLM provider?",
+      detail: "This may call a local or cloud LLM provider and can consume quota or incur cost depending on your settings."
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/settings/test-llm-provider",
+      method: "POST"
     });
   });
 

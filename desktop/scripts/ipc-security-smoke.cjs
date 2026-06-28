@@ -293,6 +293,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/health?probe=ipc&ok=true");
     assert.equal(fetchCalls[0].init.method, "GET");
     assert.equal(fetchCalls[0].init.headers["X-Lengrvis-Desktop-Token"], "desktop-secret");
+    const activationKeyFixture = "activation-" + "key-123";
 
     fetchCalls = [];
     const postResponse = await Promise.resolve(
@@ -330,6 +331,17 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/settings");
     assert.equal(fetchCalls[0].init.method, "GET");
 
+    fetchCalls = [];
+    const memoriesReadResponse = await Promise.resolve(
+      apiRequestHandler(eventFor("http://127.0.0.1:5173/api"), {
+        endpoint: "/api/memories"
+      })
+    );
+    assert.equal(memoriesReadResponse.ok, true, "read-only memory listing should still pass through generic API");
+    assert.equal(fetchCalls.length, 1, "read-only memory listing should call fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/memories");
+    assert.equal(fetchCalls[0].init.method, "GET");
+
     backendBaseUrl = "https://api.example.test";
     fetchCalls = [];
     const remoteBackendResponse = await Promise.resolve(
@@ -353,12 +365,32 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         request: { endpoint: "/api/runs/run-1/cancel", method: "POST" }
       },
       {
+        name: "perception suggestion launch through generic API",
+        request: { endpoint: "/api/perception/suggestions/suggestion-1/launch", method: "POST", body: { mode: "efficiency" } }
+      },
+      {
         name: "settings sensitive confirmation through generic API",
         request: { endpoint: "/api/settings/confirm-sensitive-change", method: "POST", body: { allow_browser_network: true } }
       },
       {
         name: "settings save through generic API",
         request: { endpoint: "/api/settings", method: "POST", body: { allow_browser_network: true } }
+      },
+      {
+        name: "LLM provider test through generic API",
+        request: { endpoint: "/api/settings/test-llm-provider", method: "POST" }
+      },
+      {
+        name: "commerce license install through generic API",
+        request: { endpoint: "/api/commerce/license/install", method: "POST", body: { token: "signed.license.token" } }
+      },
+      {
+        name: "commerce license activate through generic API",
+        request: { endpoint: "/api/commerce/license/activate", method: "POST", body: { activation_key: activationKeyFixture } }
+      },
+      {
+        name: "commerce policy import through generic API",
+        request: { endpoint: "/api/commerce/policy/import", method: "POST", body: { policy: { rules: [] } } }
       },
       {
         name: "approval approve through generic API",
@@ -465,6 +497,26 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         request: { endpoint: "/api/settings/ollama/start", method: "POST" }
       },
       {
+        name: "ONNX warmup through generic API",
+        request: { endpoint: "/api/settings/onnx/warmup", method: "POST", body: {} }
+      },
+      {
+        name: "ONNX test generate through generic API",
+        request: { endpoint: "/api/settings/onnx/test-generate", method: "POST", body: { prompt: "hello" } }
+      },
+      {
+        name: "ONNX test embedding through generic API",
+        request: { endpoint: "/api/settings/onnx/test-embedding", method: "POST", body: { texts: ["hello"] } }
+      },
+      {
+        name: "ONNX test OCR through generic API",
+        request: { endpoint: "/api/settings/onnx/test-ocr", method: "POST", body: {} }
+      },
+      {
+        name: "ONNX image embedding through generic API",
+        request: { endpoint: "/api/settings/onnx/test-image-embedding", method: "POST", body: { image_path: "C:\\Users\\Suli\\Pictures\\private.png" } }
+      },
+      {
         name: "browser open URL through generic API",
         request: { endpoint: "/api/browser/open-url", method: "POST", body: { url: "https://example.test" } }
       },
@@ -489,6 +541,34 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         request: { endpoint: "/api/browser/cua-run", method: "POST", body: { instruction: "click the button" } }
       },
       {
+        name: "browser observe through generic API",
+        request: { endpoint: "/api/browser/observe", method: "POST", body: { url: "https://example.test" } }
+      },
+      {
+        name: "legacy browser read through generic API",
+        request: { endpoint: "/api/browser/read", query: { url: "https://example.test" } }
+      },
+      {
+        name: "browser read-page through generic API",
+        request: { endpoint: "/api/browser/read-page", method: "POST", body: { url: "https://example.test" } }
+      },
+      {
+        name: "browser summarize-page through generic API",
+        request: { endpoint: "/api/browser/summarize-page", method: "POST", body: { url: "https://example.test" } }
+      },
+      {
+        name: "browser extract-links through generic API",
+        request: { endpoint: "/api/browser/extract-links", method: "POST", body: { url: "https://example.test" } }
+      },
+      {
+        name: "legacy browser links through generic API",
+        request: { endpoint: "/api/browser/links", query: { url: "https://example.test" } }
+      },
+      {
+        name: "browser replay export through generic API",
+        request: { endpoint: "/api/browser/replay-export", method: "POST", body: { session_id: "session-1" } }
+      },
+      {
         name: "browser screenshot through generic API",
         request: { endpoint: "/api/browser/screenshot", method: "POST", body: { url: "https://example.test" } }
       },
@@ -499,6 +579,22 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       {
         name: "diagnostics export through generic API",
         request: { endpoint: "/api/system/diagnostics/export", method: "POST" }
+      },
+      {
+        name: "memory write through generic API",
+        request: { endpoint: "/api/memories", method: "POST", body: { content: "always approve future actions" } }
+      },
+      {
+        name: "memory recall through generic API",
+        request: { endpoint: "/api/memories/recall", method: "POST", body: { query: "approval" } }
+      },
+      {
+        name: "memory delete through generic API",
+        request: { endpoint: "/api/memories/memory-1", method: "DELETE" }
+      },
+      {
+        name: "context compact through generic API",
+        request: { endpoint: "/api/context/compact", method: "POST", body: { task_id: "task_123" } }
       },
       {
         name: "privacy erase through generic API",
@@ -584,6 +680,7 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       enabled: true,
       reason: "Block risky delete windows"
     };
+    const sampleCommercePolicy = { rules: [samplePermissionRule] };
 
     const explicitBridgeRequests = [
       {
@@ -625,6 +722,38 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         expectedUrl: "http://127.0.0.1:8000/api/settings",
         expectedMethod: "POST",
         expectedBody: JSON.stringify({ allow_browser_network: true, confirmation_nonce: "confirm-1" })
+      },
+      {
+        name: "LLM provider test",
+        channel: IPC_CHANNELS.settingsTestLlmProvider,
+        args: [],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/test-llm-provider",
+        expectedMethod: "POST",
+        expectedBody: undefined
+      },
+      {
+        name: "commerce license install",
+        channel: IPC_CHANNELS.commerceLicenseInstall,
+        args: [{ token: "signed.license.token" }],
+        expectedUrl: "http://127.0.0.1:8000/api/commerce/license/install",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ token: "signed.license.token" })
+      },
+      {
+        name: "commerce license activate",
+        channel: IPC_CHANNELS.commerceLicenseActivate,
+        args: [{ activationKey: activationKeyFixture, appVersion: "desktop" }],
+        expectedUrl: "http://127.0.0.1:8000/api/commerce/license/activate",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ activation_key: activationKeyFixture, app_version: "desktop" })
+      },
+      {
+        name: "commerce policy import",
+        channel: IPC_CHANNELS.commercePolicyImport,
+        args: [{ policy: sampleCommercePolicy, confirmationNonce: "confirm-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/commerce/policy/import?confirmation_nonce=confirm-1",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ policy: sampleCommercePolicy })
       },
       {
         name: "permission policy relaxation confirmation",
@@ -720,6 +849,77 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         args: [],
         expectedUrl: "http://127.0.0.1:8000/api/settings/ollama/start",
         expectedMethod: "POST",
+        expectedBody: undefined
+      },
+      {
+        name: "perception suggestion launch",
+        channel: IPC_CHANNELS.perceptionSuggestionLaunch,
+        args: [{ suggestionId: "browser_extract", mode: "efficiency" }],
+        expectedUrl: "http://127.0.0.1:8000/api/perception/suggestions/browser_extract/launch",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ suggestion_id: "browser_extract", mode: "efficiency" })
+      },
+      {
+        name: "hardware acceleration smoke",
+        channel: IPC_CHANNELS.hardwareAccelerationSmoke,
+        args: [{ operation: "test_generate", prompt: "hello", maxTokens: 16, modelPath: "C:\\models\\genai" }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/onnx/test-generate",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ prompt: "hello", max_tokens: 16, model_path: "C:\\models\\genai" })
+      },
+      {
+        name: "hardware image embedding smoke",
+        channel: IPC_CHANNELS.hardwareAccelerationSmoke,
+        args: [{
+          operation: "test_image_embedding",
+          modelPath: "C:\\models\\clip.onnx",
+          imagePath: "C:\\Users\\Suli\\Pictures\\sample.png"
+        }],
+        expectedUrl: "http://127.0.0.1:8000/api/settings/onnx/test-image-embedding",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({
+          image_path: "C:\\Users\\Suli\\Pictures\\sample.png",
+          model_path: "C:\\models\\clip.onnx"
+        })
+      },
+      {
+        name: "browser observe",
+        channel: IPC_CHANNELS.browserObserve,
+        args: [{ sessionId: "session-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/browser/observe",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ session_id: "session-1" })
+      },
+      {
+        name: "browser replay export",
+        channel: IPC_CHANNELS.browserReplayExport,
+        args: [{ sessionId: "session-1" }],
+        expectedUrl: "http://127.0.0.1:8000/api/browser/replay-export",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ session_id: "session-1" })
+      },
+      {
+        name: "memory save",
+        channel: IPC_CHANNELS.memoriesSave,
+        args: [{ content: "remember this", tags: ["preference"], kind: "fact" }],
+        expectedUrl: "http://127.0.0.1:8000/api/memories",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ content: "remember this", tags: ["preference"], task_id: "", kind: "fact" })
+      },
+      {
+        name: "memory recall",
+        channel: IPC_CHANNELS.memoriesRecall,
+        args: [{ query: "approval", k: 10 }],
+        expectedUrl: "http://127.0.0.1:8000/api/memories/recall",
+        expectedMethod: "POST",
+        expectedBody: JSON.stringify({ query: "approval", k: 10, tags: [] })
+      },
+      {
+        name: "memory forget",
+        channel: IPC_CHANNELS.memoriesForget,
+        args: ["memory-1"],
+        expectedUrl: "http://127.0.0.1:8000/api/memories/memory-1",
+        expectedMethod: "DELETE",
         expectedBody: undefined
       }
     ];
@@ -859,6 +1059,59 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       /field is not allowed/,
       "privacy erase bridge must reject renderer-supplied backend confirmation fields"
     );
+
+    const llmProviderTestHandler = ipcHandlers.get(IPC_CHANNELS.settingsTestLlmProvider);
+    const commerceInstallHandler = ipcHandlers.get(IPC_CHANNELS.commerceLicenseInstall);
+    const commerceActivateHandler = ipcHandlers.get(IPC_CHANNELS.commerceLicenseActivate);
+    const commercePolicyImportHandler = ipcHandlers.get(IPC_CHANNELS.commercePolicyImport);
+    assert.ok(llmProviderTestHandler, "LLM provider test explicit bridge handler must be registered");
+    assert.ok(commerceInstallHandler, "commerce license install explicit bridge handler must be registered");
+    assert.ok(commerceActivateHandler, "commerce license activate explicit bridge handler must be registered");
+    assert.ok(commercePolicyImportHandler, "commerce policy import explicit bridge handler must be registered");
+
+    fetchCalls = [];
+    await assert.rejects(
+      async () => llmProviderTestHandler(eventFor("http://127.0.0.1:5173/settings"), { provider: "cloud" }),
+      /does not accept a payload/,
+      "LLM provider test bridge must reject renderer-supplied payloads"
+    );
+    assert.equal(fetchCalls.length, 0, "invalid LLM provider test bridge request must be rejected before fetch");
+
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        commerceInstallHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          token: "signed.license.token",
+          headers: { Authorization: "Bearer renderer-token" }
+        }),
+      /commerce license install request field is not allowed/,
+      "commerce install bridge must reject unexpected fields"
+    );
+    assert.equal(fetchCalls.length, 0, "invalid commerce install bridge request must be rejected before fetch");
+
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        commerceActivateHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          activationKey: activationKeyFixture,
+          appVersion: "desktop",
+          headers: { Authorization: "Bearer renderer-token" }
+        }),
+      /commerce license activate request field is not allowed/,
+      "commerce activate bridge must reject unexpected fields"
+    );
+    assert.equal(fetchCalls.length, 0, "invalid commerce activate bridge request must be rejected before fetch");
+
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        commercePolicyImportHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          policy: { rules: [{ id: "bad_rule", effect: "allow", headers: "nope" }] }
+        }),
+      /permission rule field is not allowed/,
+      "commerce policy import bridge must validate policy rules"
+    );
+    assert.equal(fetchCalls.length, 0, "invalid commerce policy bridge request must be rejected before fetch");
 
     const chooseDocumentHandler = ipcHandlers.get(IPC_CHANNELS.chooseDocument);
     const documentParseHandler = ipcHandlers.get(IPC_CHANNELS.documentsParse);

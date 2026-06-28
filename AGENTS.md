@@ -30,7 +30,8 @@ clean local Linux run will show a small set of Windows-only failures (see backen
   `./.lengrvis_data/desktop_api.secret` (auto-generated on first backend start). `/api/health` is exempt.
 
 ### Backend tests / lint
-- Tests: `LENGRVIS_AUDIT_HMAC_SECRET=ci-audit-hmac-secret python -m pytest backend/tests` (config in `pytest.ini`).
+- Tests: set `LENGRVIS_AUDIT_HMAC_SECRET` to a local test-only value, then run
+  `python -m pytest backend/tests` (config in `pytest.ini`).
 - IMPORTANT: put the venv on `PATH` (e.g. `export PATH="$PWD/.venv/bin:$PATH"` or activate it) before running
   pytest. Some code/tests spawn a bare `python` subprocess (golden tasks, developer/code engine); this VM only
   has `python3`, so without `.venv/bin` on PATH those tests fail with `FileNotFoundError: 'python'`.

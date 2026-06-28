@@ -40,6 +40,9 @@ def test_default_stages_order_and_membership():
     assert "signed-artifacts" in names
     assert names.index("release-safety") < names.index("signed-artifacts")
     assert names.index("signed-artifacts") < names.index("market-readiness")
+    assert names.index("supply-chain") < names.index("dependency-audit")
+    assert names.index("dependency-audit") < names.index("secret-scan")
+    assert names.index("secret-scan") < names.index("security-extensions")
     assert "market-readiness" in names
     assert "readiness" in names
     assert "real-llm-eval" not in names
@@ -107,6 +110,8 @@ def test_strict_adds_strict_flag_to_readiness():
         "golden-gate",
         "real-llm-eval",
         "supply-chain",
+        "dependency-audit",
+        "secret-scan",
         "security-extensions",
         "release-safety",
         "packaging-verify",

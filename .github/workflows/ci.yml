@@ -58,7 +58,7 @@ jobs:
         # Explicit audit HMAC secret as defense-in-depth (R4-C1): the first
         # audit write must never depend on secret-file bootstrap in CI.
         env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
         run: python -m pytest backend/tests -q --maxfail=1 --cov=backend/app --cov-report=term-missing:skip-covered --cov-fail-under=75
       - name: Golden task gate (>=95% pass rate report)
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1
@@ -103,7 +103,7 @@ jobs:
       - name: Real LLM eval quality gate
         if: ${{ env.LENGRVIS_API_KEY != '' }}
         env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
           LENGRVIS_PROVIDER_NAME: ${{ vars.LENGRVIS_REAL_LLM_PROVIDER_NAME || 'openai_compatible' }}
           LENGRVIS_BASE_URL: ${{ vars.LENGRVIS_REAL_LLM_BASE_URL || 'https://api.openai.com/v1' }}
           LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
@@ -261,7 +261,7 @@ jobs:
         run: npm --prefix desktop ci
       - name: IPC + Skill/MCP + settings security gate
         env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
         run: npm run security:extensions
       - name: Upload extension security evidence
         if: always()

@@ -36,9 +36,9 @@ jobs:
           mkdir -p "$tracked_dir"
           git archive --format=tar HEAD | tar -x -C "$tracked_dir"
           cd "$tracked_dir"
-          go run github.com/zricethezav/gitleaks/v8@v8.28.0 dir --config .gitleaks-ci.toml --gitleaks-ignore-path "$empty_ignore" --redact --no-banner .
+          go run github.com/zricethezav/gitleaks/v8@v8.30.1 dir --config .gitleaks-ci.toml --gitleaks-ignore-path "$empty_ignore" --redact --no-banner .
           cd "$GITHUB_WORKSPACE"
-          go run github.com/zricethezav/gitleaks/v8@v8.28.0 git --config .gitleaks-ci.toml --gitleaks-ignore-path "$empty_ignore" --redact --no-banner --log-opts="--all" .
+          go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --config .gitleaks-ci.toml --gitleaks-ignore-path "$empty_ignore" --redact --no-banner --log-opts="--all" .
 
   sca:
     name: npm audit + pip-audit

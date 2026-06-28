@@ -1,7 +1,7 @@
 # Direct dependency set for scripts/install_acceleration.ps1 (supply-chain audit B-3).
 #
 # Optional acceleration packages are intentionally tracked separately from the
-# core backend hash lock. Keep this file aligned with backend/pyproject.toml
+# core backend hash lock. Keep runtime packages aligned with backend/pyproject.toml
 # optional extras, and regenerate scripts/acceleration-requirements-lock.txt with:
 #
 #   uv pip compile --generate-hashes --python-version 3.12 --universal --output-file scripts/acceleration-requirements-lock.txt scripts/acceleration-requirements.txt
@@ -10,12 +10,9 @@
 # packages plus the selected runtime flavor with --require-hashes.
 
 # Common packages
-pip==25.2
-setuptools==81.0.0
-wheel==0.45.1
 tokenizers==0.22.2
-transformers==5.11.0
-huggingface_hub==1.18.0
+transformers==5.12.1
+huggingface_hub==1.21.0
 numpy==2.2.6
 Pillow==12.2.0
 

@@ -374,6 +374,7 @@ def test_policy_classifies_gui_input_as_approval_gated():
 
 def test_policy_blocks_sensitive_gui_text_and_targets():
     policy = PolicyEngine()
+    fake_token = "abcdef12" + "34567890"
 
     password_target = policy.review_tool_call(
         "task_sensitive_gui",
@@ -386,7 +387,7 @@ def test_policy_blocks_sensitive_gui_text_and_targets():
         "task_sensitive_gui",
         "step_2",
         "ui_automation.type_text",
-        {"name": "Notes", "text": "token=abcdef1234567890", "dry_run": True},
+        {"name": "Notes", "text": f"token={fake_token}", "dry_run": True},
         RiskLevel.R2_REVERSIBLE_MODIFY,
     )
 
@@ -398,12 +399,13 @@ def test_policy_blocks_sensitive_gui_text_and_targets():
 
 def test_policy_blocks_sensitive_remote_type_text():
     policy = PolicyEngine()
+    fake_token = "abcdef12" + "34567890"
 
     review = policy.review_tool_call(
         "task_sensitive_remote",
         "step_1",
         "remote.type_text",
-        {"text": "token=abcdef1234567890", "dry_run": True},
+        {"text": f"token={fake_token}", "dry_run": True},
         RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
     )
 

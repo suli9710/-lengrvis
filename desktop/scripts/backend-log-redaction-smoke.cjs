@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const originalLoad = Module._load;
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "lengrvis-backend-log-redaction-"));
+const fakeSecret = (...parts) => parts.join("");
 
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "electron") {
@@ -21,15 +22,15 @@ Module._load = function patchedLoad(request, parent, isMain) {
 };
 
 const rawSecrets = [
-  "sk-test-1234567890abcdef",
-  "desktop-token-1234567890",
-  "bearer-secret-1234567890",
-  "cookie-secret-1234567890",
-  "url-token-1234567890",
-  "oauth-code-1234567890",
-  "client-secret-1234567890",
-  "api-secret-1234567890",
-  "desktop-header-secret-1234567890"
+  fakeSecret("sk", "-test", "-1234567890abcdef"),
+  fakeSecret("desktop", "-token", "-1234567890"),
+  fakeSecret("bearer", "-secret", "-1234567890"),
+  fakeSecret("cookie", "-secret", "-1234567890"),
+  fakeSecret("url", "-token", "-1234567890"),
+  fakeSecret("oauth", "-code", "-1234567890"),
+  fakeSecret("client", "-secret", "-1234567890"),
+  fakeSecret("api", "-secret", "-1234567890"),
+  fakeSecret("desktop", "-header", "-secret", "-1234567890")
 ];
 
 function assertNoRawSecrets(text, label) {

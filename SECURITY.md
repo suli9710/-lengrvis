@@ -42,7 +42,7 @@ Lengrvis 是一个本机优先的 OS Agent：它可以读取文件、执行系�
 
 ## 自查与依赖审计
 
-- 依赖漏洞扫描入口：`npm run audit:deps`（desktop/mobile `npm audit` + backend `pip-audit`，高危即失败）。
+- 依赖漏洞扫描入口：`npm run audit:deps`（desktop/mobile `npm audit` + Python lock `pip-audit`；Python 审计按当前平台 environment markers 解析，finding/error 即失败）。
 - 安全相关回归：`npm run qa:gate`（含黄金任务回归 `npm run golden:gate`：R3 删除必须停在审批、R4 禁区必须拒绝、越权路径必须抛 `SecurityError`）。
 - 发布前安全检查：`npm run release:safety`。
 

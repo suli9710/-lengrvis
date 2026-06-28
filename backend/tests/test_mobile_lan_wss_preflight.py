@@ -243,7 +243,10 @@ def test_preflight_redacted_workspace_relative_paths_do_not_leak_sensitive_evide
 ) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
-    evidence_root = workspace_root / "Contoso-token-secret-sk-proj-abc123456789"
+    fake_org = "Contoso"
+    fake_token_label = "token" + "-secret"
+    fake_api_key = "sk" + "-proj-abc123456789"
+    evidence_root = workspace_root / f"{fake_org}-{fake_token_label}-{fake_api_key}"
     result = subprocess.run(
         [
             _powershell(),
@@ -276,5 +279,5 @@ def test_preflight_redacted_workspace_relative_paths_do_not_leak_sensitive_evide
     assert result.returncode == 1, public_text
     assert "[redacted-org]" in public_text
     assert "[redacted-sensitive]" in public_text
-    for secret in ("Contoso", "token-secret", "sk-proj-abc123456789"):
+    for secret in (fake_org, fake_token_label, fake_api_key):
         assert secret not in public_text

@@ -240,6 +240,17 @@ def test_package_json_exposes_evidence_checker_scripts() -> None:
         "python scripts/check_market_readiness.py --dashboard docs/business/market-readiness.md --paid-launch"
     )
     assert "npm run evidence:commercial-loop" in scripts["release:check"]
+    assert "npm run audit:deps" in scripts["release:check"]
+    assert "npm run security:secrets" in scripts["release:check"]
+    assert scripts["release:check"].index("npm run supply-chain:verify") < scripts["release:check"].index(
+        "npm run audit:deps"
+    )
+    assert scripts["release:check"].index("npm run audit:deps") < scripts["release:check"].index(
+        "npm run security:secrets"
+    )
+    assert scripts["release:check"].index("npm run security:secrets") < scripts["release:check"].index(
+        "npm run security:extensions"
+    )
     assert scripts["release:check"].index("npm run evidence:commercial-loop") < scripts["release:check"].index(
         "npm run market:readiness:strict"
     )

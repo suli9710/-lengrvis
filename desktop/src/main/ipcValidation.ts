@@ -13,6 +13,13 @@ import type {
   DocumentAskRequest,
   DocumentCompareRequest,
   DocumentParseRequest,
+  DesktopCommerceLicenseActivateRequest,
+  DesktopCommerceLicenseInstallRequest,
+  DesktopCommercePolicyImportRequest,
+  DesktopHardwareAccelerationSmokeRequest,
+  DesktopMemoryRecallRequest,
+  DesktopMemorySaveRequest,
+  DesktopPerceptionSuggestionLaunchRequest,
   DesktopPermissionPolicyRelaxationRequest,
   DesktopPermissionRule,
   DesktopPermissionRuleDeleteRequest,
@@ -37,6 +44,9 @@ const API_REQUEST_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototyp
 const DOCUMENT_PARSE_ALLOWED_KEYS = new Set(["path", "includeText", "include_text"]);
 const DOCUMENT_ASK_ALLOWED_KEYS = new Set(["path", "question", "topK", "top_k"]);
 const DOCUMENT_COMPARE_ALLOWED_KEYS = new Set(["paths", "focus"]);
+const COMMERCE_LICENSE_INSTALL_ALLOWED_KEYS = new Set(["token"]);
+const COMMERCE_LICENSE_ACTIVATE_ALLOWED_KEYS = new Set(["activationKey", "activation_key", "appVersion", "app_version"]);
+const COMMERCE_POLICY_IMPORT_ALLOWED_KEYS = new Set(["policy", "confirmationNonce", "confirmation_nonce"]);
 const PRIVACY_ERASE_ALLOWED_KEYS = new Set(["confirmationText", "includeSettings"]);
 const SETTINGS_EGRESS_CONFIRMATION_FIELDS = new Set(["base_url", "wire_api"]);
 const SETTINGS_NATIVE_CONFIRMATION_FIELDS = new Set([
@@ -50,6 +60,7 @@ const SETTINGS_NATIVE_CONFIRMATION_FIELDS = new Set([
 ]);
 const RUN_MODES = new Set(["privacy", "efficiency", "hybrid"]);
 const RUN_ENGINES = new Set(["auto", "os", "developer"]);
+const HARDWARE_SMOKE_OPERATIONS = new Set(["warmup", "test_generate", "test_embedding", "test_ocr", "test_image_embedding"]);
 const SETTINGS_URI_ALLOWLIST = new Set([
   "ms-settings:",
   "ms-settings:appsfeatures",
@@ -457,6 +468,129 @@ export function validateRunStartRequest(value: unknown): DesktopRunStartRequest 
   return { message, mode, engine };
 }
 
+export function validatePerceptionSuggestionLaunchRequest(value: unknown): DesktopPerceptionSuggestionLaunchRequest {
+  const request = validatePlainBridgeBody(value, "perception suggestion launch request");
+  rejectUnexpectedBridgeKeys(request, new Set(["suggestionId", "suggestion_id", "mode"]), "perception suggestion launch request");
+  const suggestionId = validateBridgeIdentifier(request.suggestionId ?? request.suggestion_id, "suggestion id");
+  const mode = validateBridgeEnum<DesktopPerceptionSuggestionLaunchRequest["mode"] & string>(
+    request.mode,
+    "suggestion launch mode",
+    RUN_MODES,
+    "efficiency"
+  );
+  return { suggestionId, mode };
+}
+
+export function validateHardwareAccelerationSmokeRequest(value: unknown): Required<Pick<DesktopHardwareAccelerationSmokeRequest, "operation" | "prompt" | "maxTokens" | "texts">> &
+  Pick<DesktopHardwareAccelerationSmokeRequest, "modelPath" | "imagePath"> {
+  const request = value === undefined || value === null
+    ? {}
+    : validatePlainBridgeBody(value, "hardware acceleration smoke request");
+  rejectUnexpectedBridgeKeys(
+    request,
+    new Set(["operation", "prompt", "maxTokens", "max_tokens", "texts", "modelPath", "model_path", "imagePath", "image_path"]),
+    "hardware acceleration smoke request"
+  );
+  const operation = validateBridgeEnum<Required<DesktopHardwareAccelerationSmokeRequest>["operation"]>(
+    request.operation,
+    "hardware smoke operation",
+    HARDWARE_SMOKE_OPERATIONS,
+    "warmup"
+  );
+  const prompt = request.prompt === undefined || request.prompt === null
+    ? ""
+    : validateBridgeStringValue(request.prompt, "hardware smoke prompt", 512, { allowEmpty: true, trim: true });
+  const maxTokens = validateBridgePositiveInteger(request.maxTokens ?? request.max_tokens, "hardware smoke max tokens", 16, 1, 64);
+  const rawTexts = request.texts === undefined || request.texts === null ? [] : request.texts;
+  if (!Array.isArray(rawTexts) || rawTexts.length > 4) {
+    throw new ApiRequestValidationError("hardware smoke texts are invalid");
+  }
+  const texts = rawTexts.map((item, index) =>
+    validateBridgeStringValue(item, `hardware smoke texts[${index}]`, 512, { allowEmpty: false, trim: true })
+  );
+  const modelPath = request.modelPath === undefined && request.model_path === undefined
+    ? undefined
+    : validateBridgePathValue(request.modelPath ?? request.model_path, "hardware smoke model path");
+  const imagePath = request.imagePath === undefined && request.image_path === undefined
+    ? undefined
+    : validateBridgePathValue(request.imagePath ?? request.image_path, "hardware smoke image path");
+  return { operation, prompt, maxTokens, texts, modelPath, imagePath };
+}
+
+export function validateCommerceLicenseInstallRequest(value: unknown): DesktopCommerceLicenseInstallRequest {
+  const request = validatePlainBridgeBody(value, "commerce license install request");
+  rejectUnexpectedBridgeKeys(request, COMMERCE_LICENSE_INSTALL_ALLOWED_KEYS, "commerce license install request");
+  return {
+    token: validateBridgeStringValue(request.token, "license token", 65_536, { allowEmpty: false, trim: true })
+  };
+}
+
+export function validateCommerceLicenseActivateRequest(value: unknown): DesktopCommerceLicenseActivateRequest {
+  const request = validatePlainBridgeBody(value, "commerce license activate request");
+  rejectUnexpectedBridgeKeys(request, COMMERCE_LICENSE_ACTIVATE_ALLOWED_KEYS, "commerce license activate request");
+  return {
+    activationKey: validateBridgeStringValue(request.activationKey ?? request.activation_key, "activation key", 256, {
+      allowEmpty: false,
+      trim: true
+    }),
+    appVersion: request.appVersion === undefined && request.app_version === undefined
+      ? undefined
+      : validateBridgeStringValue(request.appVersion ?? request.app_version, "app version", 64, {
+          allowEmpty: true,
+          trim: true
+        })
+  };
+}
+
+export function validateCommercePolicyImportRequest(value: unknown): DesktopCommercePolicyImportRequest {
+  const request = validatePlainBridgeBody(value, "commerce policy import request");
+  rejectUnexpectedBridgeKeys(request, COMMERCE_POLICY_IMPORT_ALLOWED_KEYS, "commerce policy import request");
+  return {
+    policy: validatePermissionPolicy(request.policy),
+    confirmationNonce: validateOptionalConfirmationNonce(request.confirmationNonce ?? request.confirmation_nonce)
+  };
+}
+
+export function validateNoPayloadBridgeRequest(value: unknown, label: string): void {
+  if (value !== undefined && value !== null) {
+    throw new ApiRequestValidationError(`${label} does not accept a payload`);
+  }
+}
+
+export function validateBrowserSessionRequest(value: unknown): { sessionId: string } {
+  const request = validatePlainBridgeBody(value, "browser session request");
+  rejectUnexpectedBridgeKeys(request, new Set(["sessionId", "session_id"]), "browser session request");
+  return {
+    sessionId: validateBridgeIdentifier(request.sessionId ?? request.session_id, "browser session id")
+  };
+}
+
+export function validateMemorySaveRequest(value: unknown): DesktopMemorySaveRequest {
+  const request = validatePlainBridgeBody(value, "memory save request");
+  rejectUnexpectedBridgeKeys(request, new Set(["content", "tags", "taskId", "task_id", "kind"]), "memory save request");
+  const content = validateBridgeStringValue(request.content, "memory content", 8_000, { allowEmpty: false, trim: true });
+  return {
+    content,
+    tags: validateOptionalStringList(request.tags, "memory tags", 20, 64),
+    taskId: request.taskId === undefined && request.task_id === undefined
+      ? undefined
+      : validateOptionalBridgeIdentifier(request.taskId ?? request.task_id, "memory task id"),
+    kind: request.kind === undefined || request.kind === null || request.kind === ""
+      ? undefined
+      : validateBridgeStringValue(request.kind, "memory kind", 64, { allowEmpty: false, trim: true })
+  };
+}
+
+export function validateMemoryRecallRequest(value: unknown): DesktopMemoryRecallRequest {
+  const request = validatePlainBridgeBody(value, "memory recall request");
+  rejectUnexpectedBridgeKeys(request, new Set(["query", "k", "tags"]), "memory recall request");
+  return {
+    query: validateBridgeStringValue(request.query, "memory recall query", 2_000, { allowEmpty: false, trim: true }),
+    k: validateBridgePositiveInteger(request.k, "memory recall k", 5, 1, 50),
+    tags: validateOptionalStringList(request.tags, "memory recall tags", 20, 64)
+  };
+}
+
 export function validateScheduleCreateRequest(value: unknown): DesktopScheduleCreateRequest {
   const request = validatePlainBridgeBody(value, "schedule create request");
   rejectUnexpectedBridgeKeys(request, new Set(["cron", "goal", "mode", "note"]), "schedule create request");
@@ -790,6 +924,20 @@ function validateOptionalConfirmationNonce(value: unknown): string | undefined {
     return undefined;
   }
   return validateBridgeIdentifier(value, "confirmation nonce");
+}
+
+function validateOptionalBridgeIdentifier(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  return validateBridgeIdentifier(value, label);
+}
+
+function validateOptionalStringList(value: unknown, label: string, maxItems: number, maxChars: number): string[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return validateBridgeStringArray(value, label, maxItems, maxChars);
 }
 
 function validateBridgeEnum<T extends string>(

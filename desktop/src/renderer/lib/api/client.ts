@@ -183,19 +183,25 @@ export class LengrvisApiClient {
   }
 
   async installCommerceLicense(token: string): Promise<ApiResponse<CommerceLicenseStatus>> {
-    return this.request<BackendCommerceLicenseStatus, { token: string }>({
-      endpoint: "/api/commerce/license/install",
-      method: "POST",
-      body: { token }
-    }).then((response) => mapResponse(response, mapCommerceLicenseStatus));
+    const response = window.lengrvis?.commerce
+      ? await window.lengrvis.commerce.installLicense({ token }) as ApiResponse<BackendCommerceLicenseStatus>
+      : await this.request<BackendCommerceLicenseStatus, { token: string }>({
+          endpoint: "/api/commerce/license/install",
+          method: "POST",
+          body: { token }
+        });
+    return mapResponse(response, mapCommerceLicenseStatus);
   }
 
   async activateCommerceLicense(activationKey: string, appVersion = "desktop"): Promise<ApiResponse<CommerceLicenseStatus>> {
-    return this.request<BackendCommerceLicenseStatus, { activation_key: string; app_version: string }>({
-      endpoint: "/api/commerce/license/activate",
-      method: "POST",
-      body: { activation_key: activationKey, app_version: appVersion }
-    }).then((response) => mapResponse(response, mapCommerceLicenseStatus));
+    const response = window.lengrvis?.commerce
+      ? await window.lengrvis.commerce.activateLicense({ activationKey, appVersion }) as ApiResponse<BackendCommerceLicenseStatus>
+      : await this.request<BackendCommerceLicenseStatus, { activation_key: string; app_version: string }>({
+          endpoint: "/api/commerce/license/activate",
+          method: "POST",
+          body: { activation_key: activationKey, app_version: appVersion }
+        });
+    return mapResponse(response, mapCommerceLicenseStatus);
   }
 
   async probeBackendHealth(baseUrl?: string): Promise<BackendStatus | null> {
@@ -282,16 +288,22 @@ export class LengrvisApiClient {
   async launchPerceptionSuggestion(
     body: PerceptionSuggestionLaunchRequest
   ): Promise<ApiResponse<PerceptionSuggestionLaunchResponse>> {
-    const response = await this.request<BackendSuggestionLaunchResponse, BackendSuggestionLaunchRequest>({
-      endpoint: `/api/perception/suggestions/${encodeURIComponent(body.suggestionId)}/launch`,
-      method: "POST",
-      body: {
-        suggestion_id: body.suggestionId,
-        prompt: body.prompt,
-        mode: body.mode ?? "efficiency"
-      },
-      timeoutMs: 10_000
-    });
+    const requestBody: BackendSuggestionLaunchRequest = {
+      suggestion_id: body.suggestionId,
+      prompt: body.prompt,
+      mode: body.mode ?? "efficiency"
+    };
+    const response = window.lengrvis?.perception
+      ? await window.lengrvis.perception.launchSuggestion({
+          suggestionId: body.suggestionId,
+          mode: body.mode ?? "efficiency"
+        }) as ApiResponse<BackendSuggestionLaunchResponse>
+      : await this.request<BackendSuggestionLaunchResponse, BackendSuggestionLaunchRequest>({
+          endpoint: `/api/perception/suggestions/${encodeURIComponent(body.suggestionId)}/launch`,
+          method: "POST",
+          body: requestBody,
+          timeoutMs: 10_000
+        });
 
     return mapResponse(response, (data) => mapSuggestionLaunchResponse(data, body.prompt ?? body.suggestionId));
   }
@@ -872,12 +884,21 @@ export class LengrvisApiClient {
         };
     const method = "POST";
     const endpoint = endpointByOperation[operation];
-    const response = await this.request<BackendHardwareAccelerationSmoke, HardwareAccelerationSmokeRequestBody>({
-      endpoint,
-      method,
-      body,
-      timeoutMs: 10_000
-    });
+    const response = window.lengrvis?.hardwareAcceleration
+      ? await window.lengrvis.hardwareAcceleration.smoke({
+          operation,
+          prompt: payload.prompt,
+          maxTokens: payload.maxTokens,
+          texts: payload.texts,
+          modelPath: payload.modelPath,
+          imagePath: payload.imagePath
+        }) as ApiResponse<BackendHardwareAccelerationSmoke>
+      : await this.request<BackendHardwareAccelerationSmoke, HardwareAccelerationSmokeRequestBody>({
+          endpoint,
+          method,
+          body,
+          timeoutMs: 10_000
+        });
     return mapResponse(response, mapHardwareAccelerationSmoke);
   }
 
@@ -1291,12 +1312,14 @@ export class LengrvisApiClient {
       };
     }
 
-    const response = await this.request<BackendBrowserActivityEnvelope, { session_id: string }>({
-      endpoint: "/api/browser/observe",
-      method: "POST",
-      body: { session_id: sessionId },
-      timeoutMs: 10_000
-    });
+    const response = window.lengrvis?.browserBackend
+      ? await window.lengrvis.browserBackend.observe({ sessionId }) as ApiResponse<BackendBrowserActivityEnvelope>
+      : await this.request<BackendBrowserActivityEnvelope, { session_id: string }>({
+          endpoint: "/api/browser/observe",
+          method: "POST",
+          body: { session_id: sessionId },
+          timeoutMs: 10_000
+        });
     const mapped = mapResponse(response, mapBrowserActivityEnvelope);
     if (mapped.ok && mapped.data?.ok === false) {
       return {
@@ -1348,12 +1371,14 @@ export class LengrvisApiClient {
     const hostReplay = await this.exportBrowserHostReplay(sessionId);
     if (hostReplay) return hostReplay;
 
-    const response = await this.request<BackendBrowserReplayExport, { session_id: string }>({
-      endpoint: "/api/browser/replay-export",
-      method: "POST",
-      body: { session_id: sessionId },
-      timeoutMs: 20_000
-    });
+    const response = window.lengrvis?.browserBackend
+      ? await window.lengrvis.browserBackend.replayExport({ sessionId }) as ApiResponse<BackendBrowserReplayExport>
+      : await this.request<BackendBrowserReplayExport, { session_id: string }>({
+          endpoint: "/api/browser/replay-export",
+          method: "POST",
+          body: { session_id: sessionId },
+          timeoutMs: 20_000
+        });
     const mapped = mapResponse(response, mapBrowserReplayExport);
     if (mapped.ok && mapped.data?.ok === false) {
       return {
@@ -1563,6 +1588,14 @@ export class LengrvisApiClient {
   }
 
   saveMemory(content: string, options: { tags?: string[]; taskId?: string; kind?: string } = {}): Promise<ApiResponse<BackendMemory>> {
+    if (window.lengrvis?.memories) {
+      return window.lengrvis.memories.save({
+        content,
+        tags: options.tags ?? [],
+        taskId: options.taskId ?? "",
+        kind: options.kind ?? "fact"
+      }) as Promise<ApiResponse<BackendMemory>>;
+    }
     return this.request<BackendMemory, { content: string; tags: string[]; task_id: string; kind: string }>({
       endpoint: "/api/memories",
       method: "POST",
@@ -1576,6 +1609,13 @@ export class LengrvisApiClient {
   }
 
   recallMemory(query: string, options: { k?: number; tags?: string[] } = {}): Promise<ApiResponse<BackendMemory[]>> {
+    if (window.lengrvis?.memories) {
+      return window.lengrvis.memories.recall({
+        query,
+        k: options.k ?? 5,
+        tags: options.tags ?? []
+      }) as Promise<ApiResponse<BackendMemory[]>>;
+    }
     return this.request<BackendMemory[], { query: string; k: number; tags: string[] }>({
       endpoint: "/api/memories/recall",
       method: "POST",
@@ -1584,6 +1624,9 @@ export class LengrvisApiClient {
   }
 
   forgetMemory(memoryId: string): Promise<ApiResponse<{ ok: boolean; id: string }>> {
+    if (window.lengrvis?.memories) {
+      return window.lengrvis.memories.forget(memoryId) as Promise<ApiResponse<{ ok: boolean; id: string }>>;
+    }
     return this.request({ endpoint: `/api/memories/${memoryId}`, method: "DELETE" });
   }
 

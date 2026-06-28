@@ -7,7 +7,10 @@ repos:
         files: ^backend/
       - id: ruff-format
         files: ^backend/
-  - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.28.0
+  - repo: local
     hooks:
-      - id: gitleaks
+      - id: gitleaks-strict
+        name: gitleaks strict source scan
+        entry: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/secret_scan.ps1 -Staged
+        language: system
+        pass_filenames: false

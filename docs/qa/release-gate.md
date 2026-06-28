@@ -261,7 +261,7 @@ Run the independent portable launcher/backend diagnostics smoke when Windows por
 npm run smoke:portable-first-screen
 ```
 
-`release:check`, `release:gate`, `release:smoke`, and `release:quick` all include `release:safety`. `release:check`, `release:gate`, and `release:smoke` also include `supply-chain:verify` and `security:extensions` so the formal local gate matches the CI supply-chain and IPC/Skill/MCP/settings security gates. Enable the strict state machine through `config.yaml` or the shell environment before running them:
+`release:check`, `release:gate`, `release:smoke`, and `release:quick` all include `release:safety`. `release:check`, `release:gate`, and `release:smoke` also include `supply-chain:verify`, `audit:deps`, `security:secrets`, and `security:extensions` so the formal local gate matches the CI supply-chain, vulnerability, secret, and IPC/Skill/MCP/settings security gates. Enable the strict state machine through `config.yaml` or the shell environment before running them:
 
 ```powershell
 $env:LENGRVIS_STRICT_STATE_MACHINE = "true"
@@ -275,6 +275,8 @@ Equivalent expanded command:
 ```powershell
 npm run qa:gate
 npm run supply-chain:verify
+npm run audit:deps
+npm run security:secrets
 npm run security:extensions
 .\scripts\verify_release_safety.ps1
 .\scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45
@@ -283,10 +285,10 @@ npm run security:extensions
 Pass criteria:
 
 - The preflight gate passes on the same candidate.
-- Supply-chain verification passes: `npm run supply-chain:verify` completes dependency lock verification and CycloneDX SBOM generation.
+- Supply-chain verification passes: `npm run supply-chain:verify` completes dependency lock verification and CycloneDX SBOM generation; `npm run audit:deps` and `npm run security:secrets` complete vulnerability and strict source secret scanning.
 - Extension security verification passes: `npm run security:extensions` completes the IPC policy/openExternal smoke plus targeted Skill/MCP/settings security tests and records or references the `extension-security-gate` evidence artifact.
 - Release safety verification passes: `LENGRVIS_ALLOW_MOCK_FALLBACK` resolves to false, and `strict_state_machine` resolves to true through `LENGRVIS_STRICT_STATE_MACHINE=true` or `privacy.strict_state_machine: true` in `config.yaml`.
-- `release:check` is the default formal release gate. It runs `qa:gate`, `golden:gate`, real-LLM eval, `supply-chain:verify`, `security:extensions`, `scripts\verify_release_safety.ps1`, `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`, Windows signature verification, `evidence:commercial-loop`, market readiness, and release readiness. Packaged backend executables must start and answer `/health`, and missing reviewed commercial-loop evidence keeps the gate failed.
+- `release:check` is the default formal release gate. It runs `qa:gate`, `golden:gate`, real-LLM eval, `supply-chain:verify`, `audit:deps`, `security:secrets`, `security:extensions`, `scripts\verify_release_safety.ps1`, `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`, Windows signature verification, `evidence:commercial-loop`, market readiness, and release readiness. Packaged backend executables must start and answer `/health`, and missing reviewed commercial-loop evidence keeps the gate failed.
 - `release:gate` and `release:smoke` are aliases for `release:check`, preserving the explicit gate/smoke command names without allowing a structural-only release pass.
 - `release:quick` is the structural-only artifact check. Use it for fast artifact validation, not for release-candidate sign-off.
 - The structural packaging verification performed by `scripts\verify_packaging.ps1` requires `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-<version>-x64-self-extracting.exe` (version sourced from `desktop\package.json`) unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
@@ -306,7 +308,7 @@ Pass criteria:
 
 Evidence discipline:
 
-- Record `release:check` as passing only when the whole command exits 0. If `qa:gate`, `supply-chain:verify`, `security:extensions`, `release:safety`, structural checks, runnable backend smoke, signature verification, or commercial-loop evidence pass before a later failure, record those as partial sub-gate evidence and keep the artifact gate failed.
+- Record `release:check` as passing only when the whole command exits 0. If `qa:gate`, `supply-chain:verify`, `audit:deps`, `security:secrets`, `security:extensions`, `release:safety`, structural checks, runnable backend smoke, signature verification, or commercial-loop evidence pass before a later failure, record those as partial sub-gate evidence and keep the artifact gate failed.
 - Dirty-worktree release checks may guide development, but a release-candidate handoff must include the commit or build id, platform, exact command, strict-state-machine source, and full exit status.
 - Historical workspace note, 2026-06-08/2026-06-09: strict `npm run release:check` completed with exit 0 earlier in this workspace. After later product-hardening tests were added, an earlier `npm run qa:gate` also completed with exit 0 plus desktop/mobile typecheck, mobile behavior smoke, and desktop smoke. Targeted development integration in that dirty workspace recorded desktop/mobile typecheck, named desktop/mobile smokes, and a backend mobile+remote targeted combined run; those cover mobile approval redaction, token scope, device binding, companion task boundaries, LAN TLS metadata, remote screen/input auth and redacted error branches, revoke/expiry/disable behavior, text/key remote-input approval contracts, and active remote-input approval matching through phone-facing HMAC `binding_ref`/redacted active-grant labels rather than raw ids in shareable evidence. Scheduler/preflight targeted checks are support-only development notes unless their exact command and run log are attached; do not cite an unbound count from this gate. The prior P1/P2 review findings plus public task text bare-filename/hidden-prompt leakage, realtime raw malformed-message sampling, mobile QR transport metadata bypass, and remote-input active-grant mismatch findings are closed at contract/source-smoke level. `git diff --check` exited 0 and emitted only LF-to-CRLF working-copy conversion warnings. Treat these as dirty-worktree development/formatting evidence, not release-candidate sign-off. The strict `release:check` run additionally covered `release:safety`, structural packaging checks, portable directory/zip source-map checks, and backend/portable backend `/health` smoke. A later `npm run smoke:portable-first-screen` run exited 0 with evidence in `.tmp\portable-first-screen-smoke\run-20260608-154045-41396-6013e259\portable.status.log`: the packaged renderer clicked "检查电脑状态", observed `/api/system/diagnostics` plus read-only diagnostics copy, allowed only scoped known read-only GET calls, and reported `tasks=0`, `runs=0`, `chat messages=0`, and `diagnostic-packages=0` after the read-only click. The same run then filled `帮我检查这台电脑`, observed a packaged renderer `POST /api/runs`, and recorded backend read-only/system diagnostics task evidence `task_99963aecac4841d2af25feb2f675c2ad` with `tasks=1`, `runs=1`, `chat messages=0`, and `diagnostic-packages=0`. Record this as packaged natural-language command-dock submission plus read-only/system diagnostics task evidence, not as clean-machine validation, real-device validation, full release-candidate sign-off, completed task-result sign-off, true local model install/start/pull evidence, or external diagnostics public-safety review. The portable smoke records explain `completion_evidence.level` and `result_verified`; only `completed_result` with `result_verified=true` may be labeled completed-result evidence, and that still is not result quality review, Task Workspace sign-off, RC sign-off, or release sign-off. Diagnostics helpers, source/client smokes, typechecks, and automated tests only prove the export/redaction contract, client/backend contracts, and handoff fields; they do not review exported package contents and cannot replace real-device LAN/WSS artifacts or turn a later human content review into public-safe approval/sign-off. For current release state, use `docs/release/current-release-evidence.md`.
 
@@ -413,6 +415,8 @@ Demo-before-release gate:
 
 Artifact gate:
 - supply-chain:verify:
+- audit:deps:
+- security:secrets:
 - security:extensions:
 - release safety verification:
 - release:quick / build_all -VerifyOnly, if run:

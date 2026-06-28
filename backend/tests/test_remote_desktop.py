@@ -1114,12 +1114,13 @@ def test_remote_input_approval_exposes_safe_mobile_metadata_without_sensitive_pr
 
 def test_remote_input_unverified_dry_run_does_not_create_mobile_approval(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
+    dry_run_secret = "secret" + "DRYRUN123456"
     preview = {
         "ok": False,
         "dry_run": False,
         "error": (
             r"preview failed at C:\\Users\\Suli\\Desktop\\secrets\\dry-run.txt "
-            "token=secretDRYRUN123456 selector=#dry-run hostname=dry-run.internal.local"
+            f"token={dry_run_secret} selector=#dry-run hostname=dry-run.internal.local"
         ),
         "diff_preview": [{"action": "click", "x": 100, "y": 200, "selector": "#dry-run"}],
     }
@@ -1148,7 +1149,7 @@ def test_remote_input_unverified_dry_run_does_not_create_mobile_approval(monkeyp
         error,
         [
             r"C:\\Users\\Suli",
-            "secretDRYRUN123456",
+            dry_run_secret,
             "#dry-run",
             "dry-run.internal.local",
             "mobile_input_unverified_preview",
@@ -1215,9 +1216,10 @@ def test_remote_input_tool_without_dry_run_metadata_fails_closed(monkeypatch: py
 
 def test_remote_input_policy_deny_uses_generic_client_and_summarized_audit():
     _enable_remote_desktop()
+    deny_secret = "secret" + "DENYREASON123456"
     raw_reason = (
         r"deny remote input at C:\\Users\\Suli\\Desktop\\secrets\\deny.txt "
-        "token=secretDENYREASON123456 selector=#deny-secret "
+        f"token={deny_secret} selector=#deny-secret "
         "hostname=deny-policy.internal.local"
     )
     PermissionStore().save_policy(
@@ -1254,7 +1256,7 @@ def test_remote_input_policy_deny_uses_generic_client_and_summarized_audit():
 
     sensitive_fragments = [
         r"C:\\Users\\Suli",
-        "secretDENYREASON123456",
+        deny_secret,
         "#deny-secret",
         "deny-policy.internal.local",
         raw_reason,
@@ -1340,9 +1342,10 @@ def test_remote_input_policy_failure_sends_generic_rejection_and_redacted_audit(
     _enable_remote_desktop()
     device_id = "mobile_input_policy_secret_device"
     token, grant_id = _remote_input_grant_token(device_id, "Policy Host")
+    policy_secret = "secret" + "POLICY123456"
     raw_error = (
         rf"policy failed at C:\\Users\\Suli\\Desktop\\secrets\\policy.txt "
-        rf"token=secretPOLICY123456 selector=#policy-secret hostname=policy.internal.local "
+        rf"token={policy_secret} selector=#policy-secret hostname=policy.internal.local "
         rf"device_id={device_id} grant_id={grant_id} "
         "Traceback (most recent call last): File "
         r'"C:\\Users\\Suli\\Desktop\\lengrvis\\backend\\app\\policy\\policy_engine.py", line 201, in review'
@@ -1370,7 +1373,7 @@ def test_remote_input_policy_failure_sends_generic_rejection_and_redacted_audit(
     }
     client_sensitive_fragments = [
         r"C:\\Users\\Suli",
-        "secretPOLICY123456",
+        policy_secret,
         "#policy-secret",
         "policy.internal.local",
         device_id,

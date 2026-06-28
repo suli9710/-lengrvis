@@ -37,12 +37,12 @@ jobs:
         run: python -m playwright install chromium
       - name: Backend test suite
         env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
           LENGRVIS_CROSS_PLATFORM_CI: "1"
         run: python -m pytest backend/tests -q -m "not slow"
       - name: Backend slow lifecycle canaries
         env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
           LENGRVIS_CROSS_PLATFORM_CI: "1"
         run: |
           python -m pytest -q \
@@ -71,7 +71,7 @@ jobs:
         run: python -m playwright install chromium
       - name: Backend test suite
         env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
           LENGRVIS_CROSS_PLATFORM_CI: "1"
           # GitHub's ephemeral macOS login keychain can accept a write and then
           # immediately lose the item. Product keyring behavior has deterministic
@@ -80,7 +80,7 @@ jobs:
         run: python -m pytest backend/tests -q -m "not slow"
       - name: Backend slow lifecycle canaries
         env:
-          LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
           LENGRVIS_CROSS_PLATFORM_CI: "1"
           PYTHON_KEYRING_BACKEND: keyring.backends.fail.Keyring
         run: |

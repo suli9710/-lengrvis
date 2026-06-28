@@ -1,15 +1,41 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-
-CERT_PEM = "-----BEGIN CERTIFICATE-----\nMIIC3TCCAcWgAwIBAgIUNQ+WbGmkMmImKVnxDAo+HXqsOtgwDQYJKoZIhvcNAQEL\nBQAwGTEXMBUGA1UEAwwObGVuZ3J2aXMubG9jYWwwHhcNMjYwNjA3MDgxNzA1WhcN\nMjcwNjA4MDgxNzA1WjAZMRcwFQYDVQQDDA5sZW5ncnZpcy5sb2NhbDCCASIwDQYJ\nKoZIhvcNAQEBBQADggEPADCCAQoCggEBALLDs2rnLFElnh6TUrjMInGEFNHMDFFh\nG18iTiy+ECpKtDVs9/5T9rXJM7IR6Wwh8KkIgsyD2B5Kbjq2RLAdzdFXZZFMOz6q\nURiEY3ZY+qTcTiJQc0cZeJ896b/pyYfsn8/vyRHrjC1E/0DoQNgKk4aEUo4p+UHe\nRSjMzJXQE5q6liKB8WAg5Uatic7E/6EDbORFj/HQBcw+ufU2O6e5e6sFiR5736lv\nhHMAhEI9kYkV9UKdipLCg9wwlANfBGRzUBuaXBvQcfGeiTtjgZR4M+g4n87deQed\na6hcjKaM751iKOxpEDbUIqDs4EYJC2OMYrHSzA4u56ESpxXimtpEez8CAwEAAaMd\nMBswGQYDVR0RBBIwEIIObGVuZ3J2aXMubG9jYWwwDQYJKoZIhvcNAQELBQADggEB\nAEUz2pU+F85geGPmrunN51/cj0J1HfLuLtclRoIm5uVb7H56Bd1JB9NgMLcmNBlk\nqSmJLakTC3WrRvyqk5f4A9lCkQmy3widUufVi137frHJReIyA0kq+iFOWf0g6jkB\nXTGf+uOuhvUnPXbo28S2En1hZ8zE74Q5YIsbs6ss8tPxibqty2UylIPJnpP+8qBP\nmFeInw4T/gPYMuj4/x6EnfzAD3OlMnFljiE6Pj9K2b5Vh8WHPNnsmkdQ1TpGmPdw\ntSdW+OcumJNHOG+sPVUJGahrKeIswnX+L5RUYY98FszygrFZ/7LQsUbuEnVrlWkm\nnK8eeakS0iq2Px41zDvOfKM=\n-----END CERTIFICATE-----\n"
-KEY_PEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAssOzaucsUSWeHpNSuMwicYQU0cwMUWEbXyJOLL4QKkq0NWz3\n/lP2tckzshHpbCHwqQiCzIPYHkpuOrZEsB3N0VdlkUw7PqpRGIRjdlj6pNxOIlBz\nRxl4nz3pv+nJh+yfz+/JEeuMLUT/QOhA2AqThoRSjin5Qd5FKMzMldATmrqWIoHx\nYCDlRq2JzsT/oQNs5EWP8dAFzD659TY7p7l7qwWJHnvfqW+EcwCEQj2RiRX1Qp2K\nksKD3DCUA18EZHNQG5pcG9Bx8Z6JO2OBlHgz6Difzt15B51rqFyMpozvnWIo7GkQ\nNtQioOzgRgkLY4xisdLMDi7noRKnFeKa2kR7PwIDAQABAoIBAEuactYCgP6svyvF\nONYJF4QUzU1RU+BTBmV8t706gNGyGHcD5/o6/nsxZdiotKTT0dlbTR47oHpnFilk\njrZBVJt1r/H8YI4HMBcDXqFdzltNBQqEJczrG9WVNLfCo0YGMCycB9i5WuaGaMHF\nuC7mgjAA5H1ViSJvY6Z2vwuZHcFw8ur2HfQQAUmiW7g0Fg0454lOV3/P3rap7x/r\n07OeOwtGoDpv5hEemQJvSU2M/PEWGpjezeuk4NavOlEUBJBBBIQrrNiCVn1qtUzI\nXRhdz2ZOKJ7BJkeDUXXjlEoEpv2DkeQ1aBG8GnGQmpKm6sXK5QDfOSVpkm3+Tex9\nUR7nHzECgYEA+woPpSRiJ6JKTwr42ijWI+C//4yAFv46gd2LCHAnu3Lxo0evleh/\nJ3Vt/K49FTzuFepGvOGLE5/RCvG5UC4adGb+yJxMpGTNWt+CB1blnDy0K6iKM+mu\niOSCIZBAkUjkGFbUwsxV0c3v9LHZs4dJoVm1auaisbS2yOJ5ck8cG2cCgYEAtkwF\nabRXt4WY7PQtsmSFzEuXzq7uPu7kMvoYSH5BMh2Edsz/SSmR3cxjB7tmn80AHQ1r\npG4SOKWqVIovmpaqiUCLM0FOqsJw0oTM32XhXGssPUc3sLsqM3NeVmIcEn/OGh48\nSbq8axhS4V7XX6Yx8CC0ZC/0i1gABhzFRlGwEmkCgYEA1LEzjDGFUBs6Zjnfmcbb\nl85GHdgGdnSzUXBI6b9Mio7amAKWi6ZOhToDFAD0E9hpx/uUL1fQo7HWRTWEUqCd\nHV5eI835SZd2PbX8zwcaxwLPi+XiIhWtIKKqdpFngzCEwPJglSLW20lmMqW001ye\nT6xX/tilo3Z/HzhyuRy5raUCgYASTvREN36PyfUf5y4nunzNldH7SgpXe7qjfAaw\nUS3PELPbEp+ZA3nI4twXTLTz26zlPhHPg9aEpe7DatV5GySpgDf6v9ZcxAZ8viWt\nUhgeJg1dYievsjx8yltxJY1YNknGyb6YUQ7XWqwIQnQzAQgG6+HyJfbTf9UQyBbw\nBwg98QKBgEq7Lk1sgeOip+Q1RG00SzTHQ5+geeGppejhgl0dGpnufPBwlCoYojAV\nkRVP0DhCx3iUgcz7m9g/rLvdQVgnVGJZRQ26UBXvtYFUhO6/1vrchPNwqU/y9wzx\nzj7JWUE+PNooUTtmzyMEeAVvuZ2Pv8K3vbCIlVuie90Guw7XuHcB\n-----END RSA PRIVATE KEY-----\n"
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 
 def write_lan_tls_material(tmp_path: Path) -> tuple[Path, Path]:
     cert = tmp_path / "lan.crt"
     key = tmp_path / "lan.key"
-    cert.write_text(CERT_PEM, encoding="ascii")
-    key.write_text(KEY_PEM, encoding="ascii")
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "lengrvis.local")])
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=7))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName("lengrvis.local")]),
+            critical=False,
+        )
+        .sign(private_key, hashes.SHA256())
+    )
+
+    cert.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key.write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
     return cert, key

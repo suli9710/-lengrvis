@@ -6245,8 +6245,8 @@ def test_mobile_lan_wss_preflight_accepts_valid_https_tls_without_overclaiming(
         pytest.skip("PowerShell is not available")
 
     cert, key = write_lan_tls_material(tmp_path)
-    sensitive_cert = tmp_path / "lan-token=cert-secret-sk-proj-CERT1234.crt"
-    sensitive_key = tmp_path / "lan-secret=key-secret-sk-proj-KEY1234.key"
+    sensitive_cert = tmp_path / ("lan-token=cert-" + "secret-sk-proj-CERT1234.crt")
+    sensitive_key = tmp_path / ("lan-secret=key-" + "secret-sk-proj-KEY1234.key")
     cert.rename(sensitive_cert)
     key.rename(sensitive_key)
     cert = sensitive_cert

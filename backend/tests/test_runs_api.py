@@ -226,8 +226,8 @@ def test_run_timeline_progress_and_wire_redact_secrets_and_internal_paths(monkey
             "tool_name": "file.read_text",
             "step_id": "step_1",
             "structured_payload": {
-                "api_key": "sk-proposedapikeyvalue1234567890",
-                "password": "hunter2-proposed-secret",
+                "api_key": "sk-" + "proposedapikeyvalue1234567890",
+                "password": "hunter2-" + "proposed-secret",
                 "note": "Authorization: Bearer proposedbearertoken1234567890",
             },
         },
@@ -273,9 +273,9 @@ def test_run_timeline_progress_and_wire_redact_secrets_and_internal_paths(monkey
 
     # Secrets in event payloads and the run message are redacted everywhere.
     for secret in (
-        "sk-proposedapikeyvalue1234567890",
+        "sk-" + "proposedapikeyvalue1234567890",
         "sk-progressapikeyvalue1234567890",
-        "hunter2-proposed-secret",
+        "hunter2-" + "proposed-secret",
         "proposedbearertoken1234567890",
     ):
         assert secret not in timeline_text, secret

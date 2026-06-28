@@ -30,17 +30,26 @@ tags = ["lengrvis", "android", "secret"]
 
 # --- Allowlist ---
 
-[allowlist]
+[[allowlists]]
 description = "Allowed source-level test fixtures only"
+condition = "AND"
 regexTarget = "match"
-regexes = [
-  '''ci-audit-hmac-secret''',
-  '''lan-token=cert-secret-sk-proj-CERT1234\.crt''',
-  '''lan-secret=key-secret-sk-proj-KEY1234\.key''',
-  '''token=abcdef1234567890''',
-  '''sk-proposedapikeyvalue1234567890''',
-  '''hunter2-proposed-secret''',
-  '''token=secretDRYRUN123456''',
-  '''token=secretDENYREASON123456''',
-  '''token=secretPOLICY123456''',
+paths = [
+  '''^backend/tests/''',
+  '''^desktop/scripts/.*smoke.*\.cjs$''',
+  '''^test_data/''',
 ]
+regexes = [
+  '''__LENGRVIS_ALLOWED_TEST_SECRET_FIXTURE__''',
+]
+
+[[allowlists]]
+description = "Historical test-only TLS fixture private key before runtime generation"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "770d0fca61c2b09b8c3f9e4fc90140be1d9e3b87",
+  "2e9a37efaf9f995097455e032e4b752ad2311fee",
+]
+paths = ['''^backend/tests/tls_test_material\.py$''']
+regexes = ['''-----BEGIN RSA PRIVATE KEY-----''']

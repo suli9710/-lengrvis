@@ -38,6 +38,53 @@ export interface DesktopRunStartRequest {
   engine?: DesktopRunEngine;
 }
 
+export interface DesktopPerceptionSuggestionLaunchRequest {
+  suggestionId: string;
+  mode?: DesktopRunMode;
+}
+
+export interface DesktopHardwareAccelerationSmokeRequest {
+  operation?: "warmup" | "test_generate" | "test_embedding" | "test_ocr" | "test_image_embedding";
+  prompt?: string;
+  maxTokens?: number;
+  texts?: string[];
+  modelPath?: string;
+  imagePath?: string;
+}
+
+export interface DesktopCommerceLicenseInstallRequest {
+  token: string;
+}
+
+export interface DesktopCommerceLicenseActivateRequest {
+  activationKey: string;
+  appVersion?: string;
+}
+
+export interface DesktopCommercePolicyImportRequest {
+  policy: {
+    rules?: DesktopPermissionRule[];
+  };
+  confirmationNonce?: string;
+}
+
+export interface DesktopBrowserSessionRequest {
+  sessionId: string;
+}
+
+export interface DesktopMemorySaveRequest {
+  content: string;
+  tags?: string[];
+  taskId?: string;
+  kind?: string;
+}
+
+export interface DesktopMemoryRecallRequest {
+  query: string;
+  k?: number;
+  tags?: string[];
+}
+
 export interface DesktopScheduleCreateRequest {
   cron: string;
   goal: string;
@@ -1816,6 +1863,26 @@ export interface LengrvisDesktopBridge {
   runs: {
     start: (request: DesktopRunStartRequest) => Promise<ApiResponse<unknown>>;
   };
+  perception: {
+    launchSuggestion: (request: DesktopPerceptionSuggestionLaunchRequest) => Promise<ApiResponse<unknown>>;
+  };
+  hardwareAcceleration: {
+    smoke: (request: DesktopHardwareAccelerationSmokeRequest) => Promise<ApiResponse<unknown>>;
+  };
+  browserBackend: {
+    observe: (request: DesktopBrowserSessionRequest) => Promise<ApiResponse<unknown>>;
+    replayExport: (request: DesktopBrowserSessionRequest) => Promise<ApiResponse<unknown>>;
+  };
+  commerce: {
+    installLicense: (request: DesktopCommerceLicenseInstallRequest) => Promise<ApiResponse<unknown>>;
+    activateLicense: (request: DesktopCommerceLicenseActivateRequest) => Promise<ApiResponse<unknown>>;
+    importPolicy: (request: DesktopCommercePolicyImportRequest) => Promise<ApiResponse<unknown>>;
+  };
+  memories: {
+    save: (request: DesktopMemorySaveRequest) => Promise<ApiResponse<unknown>>;
+    recall: (request: DesktopMemoryRecallRequest) => Promise<ApiResponse<unknown>>;
+    forget: (memoryId: string) => Promise<ApiResponse<unknown>>;
+  };
   schedules: {
     list: () => Promise<ApiResponse<unknown>>;
     create: (request: DesktopScheduleCreateRequest) => Promise<ApiResponse<unknown>>;
@@ -1838,6 +1905,7 @@ export interface LengrvisDesktopBridge {
   };
   settings: {
     confirmSensitiveChange: (patch: DesktopSettingsPatch) => Promise<ApiResponse<DesktopSensitiveChangeConfirmation>>;
+    testLlmProvider: () => Promise<ApiResponse<unknown>>;
     save: (patch: DesktopSettingsPatch) => Promise<ApiResponse<unknown>>;
   };
   permissionPolicy: {

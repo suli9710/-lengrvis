@@ -130,6 +130,18 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
             "Dependency locks + SBOM",
         ),
         Stage(
+            "dependency-audit",
+            ["npm", "run", "audit:deps"],
+            True,
+            "npm audit + pip-audit vulnerability gate",
+        ),
+        Stage(
+            "secret-scan",
+            ["npm", "run", "security:secrets"],
+            True,
+            "Strict gitleaks source scan",
+        ),
+        Stage(
             "security-extensions",
             ["npm", "run", "security:extensions"],
             True,
@@ -162,18 +174,21 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
         stages.insert(insert_at, release_artifact_preflight_stage())
         stages.insert(insert_at + 1, signed_artifacts_stage())
     if strict:
+        by_name = {stage.name: stage for stage in stages}
         stages = [
-            stages[0],
-            stages[1],
+            by_name["qa-gate"],
+            by_name["golden-gate"],
             Stage(
                 "real-llm-eval",
                 [sys.executable, "scripts/run_real_llm_eval.py", "--quality-gate"],
                 True,
                 "Real provider golden replay quality gate",
             ),
-            stages[2],
-            stages[3],
-            stages[4],
+            by_name["supply-chain"],
+            by_name["dependency-audit"],
+            by_name["secret-scan"],
+            by_name["security-extensions"],
+            by_name["release-safety"],
             Stage(
                 "packaging-verify",
                 [
@@ -225,9 +240,9 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
                 True,
                 "Reviewed Free/Pro/Max subscription activation commercial loop evidence",
             ),
-            stages[5],
-            stages[6],
-            stages[7],
+            by_name["market-readiness"],
+            by_name["readiness"],
+            by_name["evidence"],
         ]
     return stages
 

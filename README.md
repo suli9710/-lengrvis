@@ -145,6 +145,14 @@ python -m pip install pre-commit
 pre-commit install
 ```
 
+密钥扫描使用严格配置 `.gitleaks-ci.toml`，扫描 Git source snapshot，并显式绕过
+`.gitleaksignore` 行号指纹；本机需安装 `gitleaks` 或 Go（脚本会用
+`go run github.com/zricethezav/gitleaks/v8@v8.28.0`）：
+
+```powershell
+npm run security:secrets
+```
+
 手动排查时，可以按下面的等价命令来：
 
 ```powershell

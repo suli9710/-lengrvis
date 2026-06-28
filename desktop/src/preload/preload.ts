@@ -8,10 +8,18 @@ import type {
   BrowserHostBounds,
   BrowserHostOpenRequest,
   BrowserHostSnapshot,
+  DesktopBrowserSessionRequest,
+  DesktopCommerceLicenseActivateRequest,
+  DesktopCommerceLicenseInstallRequest,
+  DesktopCommercePolicyImportRequest,
+  DesktopHardwareAccelerationSmokeRequest,
+  DesktopMemoryRecallRequest,
+  DesktopMemorySaveRequest,
   DocumentAskRequest,
   DocumentCompareRequest,
   DocumentParseRequest,
   LengrvisDesktopBridge,
+  DesktopPerceptionSuggestionLaunchRequest,
   DesktopPermissionPolicyRelaxationRequest,
   DesktopPermissionRuleDeleteRequest,
   DesktopPermissionRuleUpsertRequest,
@@ -100,6 +108,31 @@ const bridge: LengrvisDesktopBridge = {
   runs: {
     start: (request: DesktopRunStartRequest) => ipcRenderer.invoke(IPC_CHANNELS.runsStart, request)
   },
+  perception: {
+    launchSuggestion: (request: DesktopPerceptionSuggestionLaunchRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.perceptionSuggestionLaunch, request)
+  },
+  hardwareAcceleration: {
+    smoke: (request: DesktopHardwareAccelerationSmokeRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.hardwareAccelerationSmoke, request)
+  },
+  browserBackend: {
+    observe: (request: DesktopBrowserSessionRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserObserve, request),
+    replayExport: (request: DesktopBrowserSessionRequest) => ipcRenderer.invoke(IPC_CHANNELS.browserReplayExport, request)
+  },
+  commerce: {
+    installLicense: (request: DesktopCommerceLicenseInstallRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.commerceLicenseInstall, request),
+    activateLicense: (request: DesktopCommerceLicenseActivateRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.commerceLicenseActivate, request),
+    importPolicy: (request: DesktopCommercePolicyImportRequest) =>
+      ipcRenderer.invoke(IPC_CHANNELS.commercePolicyImport, request)
+  },
+  memories: {
+    save: (request: DesktopMemorySaveRequest) => ipcRenderer.invoke(IPC_CHANNELS.memoriesSave, request),
+    recall: (request: DesktopMemoryRecallRequest) => ipcRenderer.invoke(IPC_CHANNELS.memoriesRecall, request),
+    forget: (memoryId: string) => ipcRenderer.invoke(IPC_CHANNELS.memoriesForget, memoryId)
+  },
   schedules: {
     list: () => ipcRenderer.invoke(IPC_CHANNELS.schedulesList),
     create: (request: DesktopScheduleCreateRequest) => ipcRenderer.invoke(IPC_CHANNELS.schedulesCreate, request),
@@ -122,6 +155,7 @@ const bridge: LengrvisDesktopBridge = {
   settings: {
     confirmSensitiveChange: (patch: DesktopSettingsPatch) =>
       ipcRenderer.invoke(IPC_CHANNELS.settingsConfirmSensitiveChange, patch),
+    testLlmProvider: () => ipcRenderer.invoke(IPC_CHANNELS.settingsTestLlmProvider),
     save: (patch: DesktopSettingsPatch) => ipcRenderer.invoke(IPC_CHANNELS.settingsSave, patch)
   },
   permissionPolicy: {

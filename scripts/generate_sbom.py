@@ -18,6 +18,15 @@ PYTHON_REQUIREMENT_RE = re.compile(
     r"^\s*(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^\]]+\])?\s*==\s*(?P<version>[^\s;]+)"
 )
 PYTHON_HASH_RE = re.compile(r"--hash\s*=\s*sha256:(?P<hash>[a-fA-F0-9]{64})")
+PYTHON_LOCK_SOURCES = (
+    "backend/requirements-lock.txt",
+    "backend/requirements-build-lock.txt",
+    "scripts/acceleration-requirements-lock.txt",
+)
+NPM_LOCK_SOURCES = (
+    ("desktop/package-lock.json", "desktop"),
+    ("mobile/package-lock.json", "mobile"),
+)
 
 
 def main() -> int:
@@ -34,9 +43,10 @@ def main() -> int:
     timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     components: dict[str, dict[str, Any]] = {}
 
-    add_python_requirements(root / "backend" / "requirements-lock.txt", components)
-    add_npm_lock(root / "desktop" / "package-lock.json", "desktop", components)
-    add_npm_lock(root / "mobile" / "package-lock.json", "mobile", components)
+    for source in PYTHON_LOCK_SOURCES:
+        add_python_requirements(root / source, source, components)
+    for source, project in NPM_LOCK_SOURCES:
+        add_npm_lock(root / source, project, components)
 
     component_list = sorted(
         components.values(),
@@ -68,7 +78,10 @@ def main() -> int:
             },
             "properties": [
                 {"name": "lengrvis:commit_sha", "value": commit_sha},
-                {"name": "lengrvis:source_files", "value": "backend/requirements-lock.txt;desktop/package-lock.json;mobile/package-lock.json"},
+                {
+                    "name": "lengrvis:source_files",
+                    "value": ";".join([*PYTHON_LOCK_SOURCES, *(source for source, _project in NPM_LOCK_SOURCES)]),
+                },
             ],
         },
         "components": component_list,
@@ -89,7 +102,7 @@ def main() -> int:
     return 0
 
 
-def add_python_requirements(path: Path, components: dict[str, dict[str, Any]]) -> None:
+def add_python_requirements(path: Path, source_label: str, components: dict[str, dict[str, Any]]) -> None:
     if not path.exists():
         raise FileNotFoundError(f"Missing Python lock file: {path}")
 
@@ -126,7 +139,7 @@ def add_python_requirements(path: Path, components: dict[str, dict[str, Any]]) -
             "bom-ref": purl,
             "properties": [
                 {"name": "lengrvis:ecosystem", "value": "python"},
-                {"name": "lengrvis:source", "value": "backend/requirements-lock.txt"},
+                {"name": "lengrvis:source", "value": source_label},
             ],
         }
 

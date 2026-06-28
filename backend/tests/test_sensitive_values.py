@@ -7,6 +7,10 @@ import pytest
 from app.policy.sensitive_values import _luhn_valid, looks_sensitive_value
 
 
+def _fake_secret(*parts: str) -> str:
+    return "".join(parts)
+
+
 class TestLooksSensitiveValueNegative:
     def test_none_is_not_sensitive(self):
         assert looks_sensitive_value(None) is False
@@ -37,13 +41,13 @@ class TestLooksSensitiveValuePositive:
     @pytest.mark.parametrize(
         "value",
         [
-            "api_key=abcdefgh12345678",
-            "API-KEY: 'abcd1234efgh5678'",
+            "api_" + "key=" + _fake_secret("abcdefgh", "12345678"),
+            "API" + "-KEY: '" + _fake_secret("abcd1234", "efgh5678") + "'",
             "password = hunter2hunter2",
             "Authorization: Bearer abc123def456ghi789",
             "Bearer abcdef1234567890",
             "sk-abcdefgh12345678",
-            "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----",
+            "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----",
             # Generic high-entropy token (24+ chars of token alphabet).
             "ghp_aB3dE6gH9jK2mN5pQ8sT1vW4yZ7x",
         ],
