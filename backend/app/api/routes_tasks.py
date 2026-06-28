@@ -48,9 +48,11 @@ from app.api.task_public_views import (
 from app.api.task_public_views import (
     tool_progress_detail as _tool_progress_detail,
 )
+from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.core import db
 from app.core.errors import StateTransitionError
 from app.core.schemas import Task, TaskStatus
+from app.llm.registry import get_effective_settings
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.services import task_artifact_service, task_recording_service
@@ -64,6 +66,16 @@ from app.tools import rollback_tools
 router = APIRouter()
 BOUNDARY_EVENT_SOURCE_LIMIT = 500
 BOUNDARY_EVENT_QUERY_CHUNK_SIZE = 400
+
+
+def _audit_export_enabled() -> bool:
+    return has_feature(active_plan(get_effective_settings()), Feature.AUDIT_EXPORT)
+
+
+def _audits_for_task(task_id: str, *, limit: int = BOUNDARY_EVENT_SOURCE_LIMIT) -> list[dict]:
+    if not _audit_export_enabled():
+        return []
+    return db.fetch_many_by_fields("audit_events", {"task_id": task_id}, limit=limit)
 
 
 @router.get("/tasks")
@@ -99,7 +111,12 @@ def timeline(task_id: str):
     reviews = db.fetch_many_by_fields("safety_reviews", {"task_id": task_id})
     boundary_events = _boundary_events(task_id, messages=messages, reviews=reviews)
     completion_evidence = (
-        build_task_completion_evidence(task_model, messages=messages, reviews=reviews)
+        build_task_completion_evidence(
+            task_model,
+            messages=messages,
+            reviews=reviews,
+            audits=_audits_for_task(task_id),
+        )
         if task_model
         else _empty_completion_evidence()
     )
@@ -126,7 +143,11 @@ def _task_payload(
     payload["final_summary"] = _public_detail(str(payload.get("final_summary") or ""), limit=2000)
     payload["metadata"] = _redacted_public_field(payload.get("metadata") or {})
     events = boundary_events if boundary_events is not None else _boundary_events(task.id)
-    completion = completion_evidence if completion_evidence is not None else build_task_completion_evidence(task)
+    completion = (
+        completion_evidence
+        if completion_evidence is not None
+        else build_task_completion_evidence(task, audits=_audits_for_task(task.id))
+    )
     payload["boundary_events"] = events
     payload["completion_evidence"] = completion
     payload["evidence_summary"] = _task_evidence_summary(task, events, completion_evidence=completion)
@@ -146,10 +167,13 @@ def _boundary_source_records_for_tasks(task_ids: list[str]) -> dict[str, dict[st
     unique_task_ids = [task_id for task_id in dict.fromkeys(task_ids) if task_id]
     if not unique_task_ids:
         return {"messages": {}, "reviews": {}, "audits": {}}
+    audits: dict[str, list[dict]] = {}
+    if _audit_export_enabled():
+        audits = _recent_records_by_task("audit_events", unique_task_ids)
     return {
         "messages": _recent_records_by_task("agent_messages", unique_task_ids),
         "reviews": _recent_records_by_task("safety_reviews", unique_task_ids),
-        "audits": _recent_records_by_task("audit_events", unique_task_ids),
+        "audits": audits,
     }
 
 
@@ -245,7 +269,10 @@ def _boundary_events(
     reviews = (
         reviews if reviews is not None else db.fetch_many_by_fields("safety_reviews", {"task_id": task_id}, limit=500)
     )
-    audits = audits if audits is not None else db.fetch_many_by_fields("audit_events", {"task_id": task_id}, limit=500)
+    if not _audit_export_enabled():
+        audits = []
+    elif audits is None:
+        audits = db.fetch_many_by_fields("audit_events", {"task_id": task_id}, limit=500)
     events: list[dict] = []
 
     for message in messages:
@@ -451,7 +478,7 @@ def artifacts(task_id: str):
 @router.get("/tasks/{task_id}/explain")
 def explain(task_id: str):
     try:
-        return build_task_explain(task_id)
+        return build_task_explain(task_id, audits=_audits_for_task(task_id))
     except KeyError:
         raise HTTPException(status_code=404, detail="Task not found") from None
 

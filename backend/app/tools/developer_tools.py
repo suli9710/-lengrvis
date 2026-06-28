@@ -5,7 +5,7 @@ import fnmatch
 import shlex
 import subprocess
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from app.config import DEFAULT_DATA_DIR
@@ -16,6 +16,7 @@ from app.core.subprocess_output import decode_process_output
 from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
 READONLY_SHELL_COMMANDS = {
@@ -128,15 +129,41 @@ def _workspace_root(args: dict[str, Any], context: dict[str, Any]) -> Path:
     raise SecurityError("No authorized directories configured.")
 
 
+def _authorized_rglob_paths(
+    root: Path,
+    allowed: list[str],
+    *,
+    pattern: str = "*",
+    files_only: bool = False,
+) -> list[Path]:
+    """Walk under root while rejecting symlink escapes outside the workspace."""
+    root_resolved = root.resolve()
+    matches: list[Path] = []
+    for path in root.rglob("*"):
+        rel = path.relative_to(root).as_posix()
+        if not (fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern)):
+            continue
+        if files_only and not path.is_file():
+            continue
+        try:
+            resolved = path.resolve()
+            if not resolved.is_relative_to(root_resolved):
+                continue
+            authorized = resolve_authorized(str(path), allowed)
+        except (OSError, SecurityError, ValueError):
+            continue
+        matches.append(authorized)
+    return matches
+
+
 def glob_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
     pattern = str(args.get("pattern") or "*")
     limit = max(1, min(int(args.get("limit") or 100), 500))
     matches: list[dict[str, Any]] = []
-    for path in root.rglob("*"):
+    for path in _authorized_rglob_paths(root, _allowed(context), pattern=pattern):
         rel = path.relative_to(root).as_posix()
-        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern):
-            matches.append({"path": str(path), "relative_path": rel, "is_dir": path.is_dir()})
+        matches.append({"path": str(path), "relative_path": rel, "is_dir": path.is_dir()})
         if len(matches) >= limit:
             break
     return {"ok": True, "root": str(root), "pattern": pattern, "matches": matches, "count": len(matches)}
@@ -152,11 +179,7 @@ def grep_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     if not query:
         return {"ok": False, "error": "Missing query.", "results": []}
-    for path in root.rglob("*"):
-        if not path.is_file() or not (
-            fnmatch.fnmatch(path.relative_to(root).as_posix(), pattern) or fnmatch.fnmatch(path.name, pattern)
-        ):
-            continue
+    for path in _authorized_rglob_paths(root, _allowed(context), pattern=pattern, files_only=True):
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
@@ -187,7 +210,11 @@ def git_status(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 
 def diff_preview(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     root = _workspace_root(args, context)
-    result = _run_command(_guarded_git_command(["diff", "--", str(args.get("pathspec") or ".")]), cwd=root)
+    pathspec = str(args.get("pathspec") or ".")
+    pathspec_error = _path_candidate_error(pathspec, _allowed(context), root=root)
+    if pathspec_error:
+        return {"ok": False, "cwd": str(root), "error": pathspec_error}
+    result = _run_command(_guarded_git_command(["diff", "--", pathspec]), cwd=root)
     diff, diff_truncated = _truncate_text(str(result.get("stdout") or ""), DIFF_PREVIEW_LIMIT)
     payload = {
         "ok": result["returncode"] == 0,
@@ -206,13 +233,13 @@ def shell_readonly(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
     if not command:
         return {"ok": False, "error": "Missing command."}
     allowed_directories = _allowed(context)
-    tokens, reason = _parse_readonly_shell(command, allowed_directories=allowed_directories)
-    if tokens is None:
-        return {"ok": False, "error": reason, "readonly": False}
     try:
         root = _workspace_root(args, context)
     except SecurityError as exc:
         return {"ok": False, "error": str(exc), "readonly": False}
+    tokens, reason = _parse_readonly_shell(command, allowed_directories=allowed_directories, root=root)
+    if tokens is None:
+        return {"ok": False, "error": reason, "readonly": False}
     result = _run_local_readonly_builtin(tokens, root, allowed_directories)
     if result is None:
         result = _run_command(tokens, cwd=root, shell=False)
@@ -229,10 +256,8 @@ def pytest_inventory(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     errors: list[dict[str, str]] = []
     test_count = 0
 
-    for path in root.rglob("*"):
+    for path in _authorized_rglob_paths(root, _allowed(context), pattern=pattern, files_only=True):
         rel = path.relative_to(root).as_posix()
-        if not path.is_file() or not (fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(path.name, pattern)):
-            continue
         try:
             source = path.read_text(encoding="utf-8", errors="ignore")
             tests = _pytest_tests_from_source(source)
@@ -281,19 +306,20 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     command = str(args.get("command") or "").strip()
     if not command:
         return {"ok": False, "error": "Missing command."}
-    tokens, reason = _parse_test_command(command, allowed_directories=_allowed(context))
-    if tokens is None:
-        return {"ok": False, "error": reason, "controlled": False}
     try:
         root = _workspace_root(args, context)
     except SecurityError as exc:
         return {"ok": False, "error": str(exc), "controlled": False}
+    tokens, reason = _parse_test_command(command, allowed_directories=_allowed(context), root=root)
+    if tokens is None:
+        return {"ok": False, "error": reason, "controlled": False}
 
     timeout_seconds = _bounded_timeout(args.get("timeout_seconds"), background=bool(args.get("background", False)))
     output_dir = _test_output_dir(context)
     if args.get("dry_run", False):
         return _test_run_dry_run_preview(tokens, cwd=root, command_text=command, timeout_seconds=timeout_seconds)
     if args.get("background", False):
+        raise_if_tool_aborted(context)
         try:
             task = start_background_process(
                 tokens,
@@ -314,6 +340,7 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "summary": f"Started background test run {task.id}: {command}",
         }
 
+    raise_if_tool_aborted(context)
     return _run_test_foreground(
         tokens,
         cwd=root,
@@ -321,6 +348,7 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds=timeout_seconds,
         output_dir=output_dir,
         preview_chars=_preview_limit(args),
+        abort_context=context,
     )
 
 
@@ -340,7 +368,7 @@ def validate_readonly_shell(command: str, *, allowed_directories: list[str] | No
 
 
 def _parse_readonly_shell(
-    command: str, *, allowed_directories: list[str] | None = None
+    command: str, *, allowed_directories: list[str] | None = None, root: Path | None = None
 ) -> tuple[list[str] | None, str]:
     try:
         tokens = shlex.split(command, posix=False)
@@ -355,7 +383,7 @@ def _parse_readonly_shell(
         return None, f"Command '{tokens[0]}' is not in the read-only allowlist."
     if any(token in SHELL_WRITE_TOKENS or any(char in token for char in SHELL_METACHARS) for token in lowered):
         return None, "Command contains a write-like shell token."
-    path_error = _shell_path_error(tokens, allowed_directories or [])
+    path_error = _shell_path_error(tokens, allowed_directories or [], root=root)
     if path_error:
         return None, path_error
     if executable == "git":
@@ -443,7 +471,9 @@ def validate_test_command(command: str, *, allowed_directories: list[str] | None
     return (tokens is not None, reason)
 
 
-def _parse_test_command(command: str, *, allowed_directories: list[str] | None = None) -> tuple[list[str] | None, str]:
+def _parse_test_command(
+    command: str, *, allowed_directories: list[str] | None = None, root: Path | None = None
+) -> tuple[list[str] | None, str]:
     try:
         tokens = shlex.split(command, posix=False)
     except ValueError as exc:
@@ -459,7 +489,7 @@ def _parse_test_command(command: str, *, allowed_directories: list[str] | None =
         return None, "Test command contains a write-like shell token."
     if any(token in TEST_WATCH_FLAGS for token in lowered):
         return None, "Watch/looping test modes are not allowed."
-    path_error = _shell_path_error(tokens, allowed_directories or [])
+    path_error = _shell_path_error(tokens, allowed_directories or [], root=root)
     if path_error:
         return None, path_error
     shape_error = _test_command_shape_error(lowered)
@@ -494,11 +524,11 @@ def _test_flag_error(lowered: list[str]) -> str:
         if flag in PYTEST_WRITE_FLAGS:
             return f"pytest option {flag} writes files and is not allowed through dev.test_run."
         if _pytest_override_writes(token):
-            return "pytest override writes files and is not allowed through dev.test_run."
+            return "pytest -o/--override-ini may not set addopts or file-writing options through dev.test_run."
         if token in {"-o", "--override-ini"} and index + 1 < len(lowered):
             value = lowered[index + 1]
             if _pytest_override_value_writes(value):
-                return "pytest override writes files and is not allowed through dev.test_run."
+                return "pytest -o/--override-ini may not set addopts or file-writing options through dev.test_run."
     return ""
 
 
@@ -512,7 +542,10 @@ def _pytest_override_writes(token: str) -> bool:
 
 
 def _pytest_override_value_writes(value: str) -> bool:
-    return any(item in value for item in ("cache_dir=", "junit", "log_file"))
+    # ``addopts`` injects arbitrary extra CLI options (e.g. --rootdir / -p / -c),
+    # which would re-open the path-sandbox bypass that _shell_path_error closes,
+    # so it is rejected outright alongside ini keys that cause file writes.
+    return any(item in value for item in ("cache_dir=", "junit", "log_file", "addopts="))
 
 
 def _strip_matching_quotes(token: str) -> str:
@@ -521,22 +554,100 @@ def _strip_matching_quotes(token: str) -> str:
     return token
 
 
-def _shell_path_error(tokens: list[str], allowed_directories: list[str]) -> str:
-    for token in tokens[1:]:
-        text = token.strip().strip("\"'")
-        if not text or text.startswith("-"):
-            continue
-        path = Path(text)
-        if ".." in path.parts:
-            return "Command path arguments may not contain '..'."
-        if not path.is_absolute():
-            continue
+# Short option flags whose value may be attached directly to the flag token
+# (e.g. ``-cFILE``). pytest's ``-c`` selects a config file (and thus an
+# autoloaded ``conftest.py``); npm/git ``-C`` selects a working directory.
+_SHORT_PATH_VALUE_FLAGS = ("-c", "-C")
+
+
+def _flag_path_value(token: str) -> str:
+    """Return a candidate path carried *inside* a single ``-`` flag token.
+
+    Handles ``--flag=VALUE`` / ``-c=VALUE`` (value after ``=``) and the attached
+    short form ``-cVALUE``. Space-separated flag values are a separate token and
+    are validated as positional arguments by :func:`_shell_path_error`. This
+    closes the bypass where ``pytest --rootdir=C:\\outside`` or
+    ``pytest --rootdir=..\\evil`` smuggled an out-of-sandbox path (and thus an
+    attacker-controlled ``conftest.py`` → code execution) through a token that
+    the old check skipped purely because it started with ``-``.
+    """
+    _, sep, inline = token.partition("=")
+    if sep:
+        return inline
+    for short in _SHORT_PATH_VALUE_FLAGS:
+        if token.startswith(short) and len(token) > len(short):
+            return token[len(short) :]
+    return ""
+
+
+def _resolve_quietly(path: Path) -> Path | None:
+    try:
+        return path.resolve(strict=False)
+    except OSError:
+        return None
+
+
+def _relative_symlink_escape_error(relative: Path, root: Path | None) -> str:
+    """Reject a relative path whose ancestors symlink/junction out of ``root``.
+
+    Containment-only (no sensitive/system-path checks) so legitimate filenames
+    that merely contain words like ``password`` or ``.env`` are not rejected;
+    we only care whether the path still resolves inside the authorized
+    workspace the subprocess runs in.
+    """
+    if root is None:
+        return ""
+    resolved = _resolve_quietly(root / relative)
+    root_resolved = _resolve_quietly(root)
+    if resolved is None or root_resolved is None:
+        return ""
+    try:
+        if resolved == root_resolved or resolved.is_relative_to(root_resolved):
+            return ""
+    except ValueError:
+        pass
+    return "Command path argument resolves outside the authorized workspace (symlink/junction)."
+
+
+def _path_candidate_error(value: str, allowed_directories: list[str], *, root: Path | None = None) -> str:
+    text = _strip_matching_quotes(value.strip())
+    if not text:
+        return ""
+    path = Path(text)
+    if _has_parent_path_part(text):
+        return "Command path arguments may not contain '..'."
+    if path.is_absolute() or _is_windows_absolute_path(text):
         if not allowed_directories:
             return "Absolute shell path arguments require configured allowed_directories."
         try:
             resolve_authorized(path, allowed_directories)
         except Exception as exc:  # noqa: BLE001
             return f"Shell path argument is outside authorized directories: {exc}"
+        return ""
+    # Relative paths without ``..`` stay inside the subprocess cwd (the
+    # authorized workspace root) unless a symlink/junction ancestor redirects
+    # them outside it; the containment check below catches that case.
+    return _relative_symlink_escape_error(path, root)
+
+
+def _has_parent_path_part(text: str) -> bool:
+    return any(part == ".." for part in text.replace("\\", "/").split("/"))
+
+
+def _is_windows_absolute_path(text: str) -> bool:
+    parsed = PureWindowsPath(text)
+    return bool(parsed.drive and parsed.root)
+
+
+def _shell_path_error(tokens: list[str], allowed_directories: list[str], *, root: Path | None = None) -> str:
+    for token in tokens[1:]:
+        text = _strip_matching_quotes(token.strip())
+        if not text:
+            continue
+        candidate = _flag_path_value(text) if text.startswith("-") else text
+        error = _path_candidate_error(candidate, allowed_directories, root=root)
+        if error:
+            return error
     return ""
 
 
@@ -597,9 +708,11 @@ def _run_test_foreground(
     timeout_seconds: int,
     output_dir: Path,
     preview_chars: int,
+    abort_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started_at = time.time()
     try:
+        raise_if_tool_aborted(abort_context)
         completed = run_process_tree(
             command,
             cwd=str(cwd),
@@ -621,7 +734,8 @@ def _run_test_foreground(
         timed_out = True
         error = f"Test run exceeded {min(timeout_seconds, TEST_FOREGROUND_TIMEOUT_MAX_SECONDS)}s timeout."
 
-    stdout_path, stderr_path = _persist_test_output(output_dir, stdout, stderr)
+    raise_if_tool_aborted(abort_context)
+    stdout_path, stderr_path = _persist_test_output(output_dir, stdout, stderr, abort_context=abort_context)
     stdout_preview, stdout_truncated = _truncate_text(stdout, preview_chars)
     stderr_preview, stderr_truncated = _truncate_text(stderr, preview_chars)
     ok = returncode == 0 and not timed_out
@@ -690,12 +804,21 @@ def _test_output_dir(context: dict[str, Any]) -> Path:
     return root / "developer_test_runs"
 
 
-def _persist_test_output(output_dir: Path, stdout: str, stderr: str) -> tuple[Path, Path]:
+def _persist_test_output(
+    output_dir: Path,
+    stdout: str,
+    stderr: str,
+    *,
+    abort_context: dict[str, Any] | None = None,
+) -> tuple[Path, Path]:
+    raise_if_tool_aborted(abort_context)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"testrun_{int(time.time() * 1000)}"
     stdout_path = output_dir / f"{stem}.stdout.log"
     stderr_path = output_dir / f"{stem}.stderr.log"
+    raise_if_tool_aborted(abort_context)
     stdout_path.write_text(stdout, encoding="utf-8", errors="replace")
+    raise_if_tool_aborted(abort_context)
     stderr_path.write_text(stderr, encoding="utf-8", errors="replace")
     return stdout_path, stderr_path
 

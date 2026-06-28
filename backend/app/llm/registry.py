@@ -81,14 +81,13 @@ def get_effective_settings() -> AppSettings:
 def _enforce_plan_entitlements(settings: AppSettings) -> AppSettings:
     """Bind high-risk paid-tier capabilities to the active commercialization plan.
 
-    Remote desktop control (手机远控) is a Pro/Team capability. When the active
-    plan is not entitled to it we force ``remote_desktop_enabled`` off at this
-    settings chokepoint, which deactivates every downstream remote-control gate
-    (WebSocket authorization, input handling, session keepalive) without
-    weakening the per-action strong-approval flow that still governs entitled
-    plans.
+    Remote desktop viewing is a Pro/Team capability. When the active plan is not
+    entitled to it we force ``remote_desktop_enabled`` off at this settings
+    chokepoint, which deactivates every downstream remote gate (WebSocket
+    authorization, input handling, session keepalive) without weakening the
+    per-action strong-approval flow that still governs remote control.
     """
-    if settings.remote_desktop_enabled and not has_feature(active_plan(settings), Feature.REMOTE_CONTROL):
+    if settings.remote_desktop_enabled and not has_feature(active_plan(settings), Feature.REMOTE_VIEW):
         return settings.model_copy(update={"remote_desktop_enabled": False})
     return settings
 

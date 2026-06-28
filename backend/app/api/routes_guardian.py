@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import suppress
 from typing import Any
 
 import httpx
 import websockets
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from app.api.routes_approvals import _deny_rejected_step, _reconcile_runs, approval_execution_response, approval_for_execution
+from app.api.routes_approvals import (
+    _approval_native_confirmation,
+    _deny_rejected_step,
+    _reconcile_runs,
+    _record_desktop_native_confirmation,
+    _rejection_native_confirmation,
+    approval_execution_response,
+    approval_for_execution,
+)
+from app.api.routes_schedules import _require_scheduling
 from app.core import db
-from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup
+from app.core.audit import record
+from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup, WakeupStatus, now_iso
 from app.orchestration.agent_bus import GLOBAL_TASK_ID
 from app.policy.redaction import redact_value
 from app.security.desktop_api import (
@@ -29,12 +38,19 @@ from app.security.mobile_jwt import (
     require_mobile_token,
     validate_mobile_claims_active,
 )
+from app.security.native_confirmation import (
+    NATIVE_CONFIRMATION_ID_HEADER,
+    NATIVE_CONFIRMATION_SIGNATURE_HEADER,
+    NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
+    create_native_confirmation_challenge,
+    enforce_native_confirmation_challenge_rate_limit,
+    require_native_confirmation,
+)
 from app.services import mobile_pairing_service, wakeup_service
 from app.services.approval_event_service import get_approval_event_bus
 from app.services.guardian_runtime import runtime
 from app.services.notification_service import SYSTEM_TASK_ID
 from app.services.scheduler_service import get_scheduler
-
 
 router = APIRouter()
 proxy_router = APIRouter()
@@ -43,6 +59,73 @@ ws_router = APIRouter()
 
 class MobileApprovalDecision(BaseModel):
     decision: str = Field(pattern="^(approved|rejected|denied)$")
+
+
+class WakeupNativeConfirmationChallengeRequest(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+
+
+def _client_scope(request: Request) -> str:
+    client = request.client
+    host = client.host if client else "unknown"
+    return (host or "unknown").strip().lower() or "unknown"
+
+
+def _wakeup_native_confirmation(
+    wakeup_id: str,
+    confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
+    timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
+    signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+) -> dict[str, Any]:
+    return require_native_confirmation(
+        action="approve",
+        approval_id=wakeup_id,
+        confirmation_id=confirmation_id,
+        timestamp=timestamp,
+        signature=signature,
+    )
+
+
+def _wakeup_rejection_native_confirmation(
+    wakeup_id: str,
+    confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
+    timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
+    signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+) -> dict[str, Any]:
+    return require_native_confirmation(
+        action="reject",
+        approval_id=wakeup_id,
+        confirmation_id=confirmation_id,
+        timestamp=timestamp,
+        signature=signature,
+    )
+
+
+def _record_desktop_wakeup_native_confirmation(
+    wakeup: Wakeup,
+    native_confirmation: dict[str, Any],
+    *,
+    decision: str,
+) -> None:
+    record(
+        "wakeup.desktop_native_confirmed",
+        "DesktopMain",
+        {
+            "wakeup_id": wakeup.id,
+            "source": wakeup.source,
+            "source_id": wakeup.source_id,
+            "decision": decision,
+            "desktop_native_confirmed": True,
+            "desktop_native_confirmed_at": now_iso(),
+            "desktop_native_confirmation_id": native_confirmation.get("confirmation_id"),
+            "confirmation_evidence": {
+                "wakeup_id": wakeup.id,
+                "goal": redact_value(wakeup.goal or ""),
+                "mode": wakeup.mode,
+            },
+        },
+        task_id=wakeup.source_id or wakeup.id,
+    )
 
 
 @router.get("/health")
@@ -72,15 +155,26 @@ def pending_approvals() -> list[dict]:
 
 
 @router.post("/api/approvals/{approval_id}/approve")
-async def approve_approval(approval_id: str) -> dict:
+async def approve_approval(
+    approval_id: str,
+    native_confirmation: dict[str, Any] = Depends(_approval_native_confirmation),
+) -> dict:
     approval = approval_for_execution(approval_id)
+    _record_desktop_native_confirmation(approval, "approve", native_confirmation)
     approval = await _wake_full_backend_for_approval(approval) or approval
     return approval_execution_response(approval)
 
 
 @router.post("/api/approvals/{approval_id}/reject")
-def reject_approval(approval_id: str) -> dict:
+def reject_approval(
+    approval_id: str,
+    native_confirmation: dict[str, Any] = Depends(_rejection_native_confirmation),
+) -> dict:
+    before = db.fetch_one("approvals", approval_id)
     approval = mobile_pairing_service.reject_approval(approval_id)
+    _record_desktop_native_confirmation(
+        Approval.model_validate(before) if before else approval, "reject", native_confirmation
+    )
     _deny_rejected_step(approval)
     _reconcile_runs(approval.task_id)
     return mobile_pairing_service.safe_approval_payload(approval)
@@ -134,11 +228,13 @@ def claim_remote_input_grant_token(grant_id: str, token: dict = Depends(require_
 
 @router.get("/api/schedules")
 def list_schedules() -> list[Any]:
+    _require_scheduling()
     return get_scheduler().list()
 
 
 @router.get("/api/schedules/status")
 def schedules_status() -> dict[str, Any]:
+    _require_scheduling()
     from app.services.guardian_scheduler import get_guardian_scheduler
 
     sched = get_scheduler()
@@ -151,6 +247,7 @@ def schedules_status() -> dict[str, Any]:
 
 @router.post("/api/schedules")
 def create_schedule(payload: dict[str, Any] = Body(...)) -> Any:
+    _require_scheduling()
     return get_scheduler().schedule(
         str(payload.get("cron") or ""),
         str(payload.get("goal") or ""),
@@ -161,6 +258,7 @@ def create_schedule(payload: dict[str, Any] = Body(...)) -> Any:
 
 @router.delete("/api/schedules/{schedule_id}")
 def delete_schedule(schedule_id: str) -> dict:
+    _require_scheduling()
     ok = get_scheduler().cancel(schedule_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -169,6 +267,7 @@ def delete_schedule(schedule_id: str) -> dict:
 
 @router.post("/api/schedules/{schedule_id}/enable")
 def enable_schedule(schedule_id: str, payload: dict[str, Any] = Body(...)) -> Any:
+    _require_scheduling()
     item = get_scheduler().enable(schedule_id, bool(payload.get("enabled", True)))
     if item is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -180,8 +279,30 @@ def pending_wakeups() -> list[dict[str, Any]]:
     return [wakeup_service.safe_wakeup_payload(item) for item in wakeup_service.list_pending_wakeups()]
 
 
+@router.post("/api/wakeups/{wakeup_id}/native-confirmation-challenge")
+def wakeup_native_confirmation_challenge(
+    wakeup_id: str,
+    payload: WakeupNativeConfirmationChallengeRequest,
+    request: Request,
+) -> dict[str, Any]:
+    enforce_native_confirmation_challenge_rate_limit(_client_scope(request))
+    db.require_sensitive_integrity_ok()
+    wakeup = wakeup_service.get_wakeup(wakeup_id)
+    if wakeup.status != WakeupStatus.PENDING:
+        raise HTTPException(status_code=409, detail=f"Wakeup is already {wakeup.status}.")
+    return create_native_confirmation_challenge(
+        action=payload.action,
+        approval_id=wakeup.id,
+    )
+
+
 @router.post("/api/wakeups/{wakeup_id}/approve")
-async def approve_wakeup(wakeup_id: str) -> dict[str, Any]:
+async def approve_wakeup(
+    wakeup_id: str,
+    native_confirmation: dict[str, Any] = Depends(_wakeup_native_confirmation),
+) -> dict[str, Any]:
+    wakeup = wakeup_service.get_wakeup(wakeup_id)
+    _record_desktop_wakeup_native_confirmation(wakeup, native_confirmation, decision="approve")
     wakeup = wakeup_service.approve_wakeup(wakeup_id)
     try:
         await _execute_wakeup(wakeup)
@@ -200,19 +321,24 @@ async def approve_wakeup(wakeup_id: str) -> dict[str, Any]:
 
 
 @router.post("/api/wakeups/{wakeup_id}/reject")
-def reject_wakeup(wakeup_id: str) -> dict[str, Any]:
+def reject_wakeup(
+    wakeup_id: str,
+    native_confirmation: dict[str, Any] = Depends(_wakeup_rejection_native_confirmation),
+) -> dict[str, Any]:
+    wakeup = wakeup_service.get_wakeup(wakeup_id)
+    _record_desktop_wakeup_native_confirmation(wakeup, native_confirmation, decision="reject")
     wakeup = wakeup_service.reject_wakeup(wakeup_id)
     return wakeup_service.safe_wakeup_payload(wakeup_service.get_wakeup(wakeup.id))
 
 
 @router.get("/api/mobile/wakeups/pending")
-def pending_mobile_wakeups(_token: dict = Depends(require_mobile_token)) -> list[dict[str, Any]]:
-    return wakeup_service.list_pending_mobile_wakeups()
+def pending_mobile_wakeups(token: dict = Depends(require_mobile_token)) -> list[dict[str, Any]]:
+    return wakeup_service.list_pending_mobile_wakeups(token)
 
 
 @router.post("/api/mobile/wakeups/{wakeup_id}/approve")
-async def approve_mobile_wakeup(wakeup_id: str, _token: dict = Depends(require_mobile_token)) -> dict[str, Any]:
-    wakeup = wakeup_service.approve_wakeup(wakeup_id)
+async def approve_mobile_wakeup(wakeup_id: str, token: dict = Depends(require_mobile_token)) -> dict[str, Any]:
+    wakeup = wakeup_service.approve_wakeup(wakeup_id, token)
     try:
         await _execute_wakeup(wakeup)
     except Exception as exc:  # noqa: BLE001 - wakeup execution should settle into a failed wakeup instead of surfacing a stale approval.
@@ -230,8 +356,8 @@ async def approve_mobile_wakeup(wakeup_id: str, _token: dict = Depends(require_m
 
 
 @router.post("/api/mobile/wakeups/{wakeup_id}/reject")
-def reject_mobile_wakeup(wakeup_id: str, _token: dict = Depends(require_mobile_token)) -> dict[str, Any]:
-    wakeup = wakeup_service.reject_wakeup(wakeup_id)
+def reject_mobile_wakeup(wakeup_id: str, token: dict = Depends(require_mobile_token)) -> dict[str, Any]:
+    wakeup = wakeup_service.reject_wakeup(wakeup_id, token)
     return wakeup_service.safe_wakeup_payload(wakeup_service.get_wakeup(wakeup.id))
 
 
@@ -249,7 +375,9 @@ async def notification_messages(websocket: WebSocket):
                 if message.id in seen:
                     continue
                 seen.add(message.id)
-                await websocket.send_json({"type": "agent_message", "task_id": message.task_id, "message": message.to_openai_dict()})
+                await websocket.send_json(
+                    {"type": "agent_message", "task_id": message.task_id, "message": message.to_openai_dict()}
+                )
             await asyncio.sleep(2.0)
     except WebSocketDisconnect:
         return
@@ -288,7 +416,7 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
             await _send_guardian_pending_mobile_approvals(websocket, claims, seen)
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=25.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
                 await websocket.send_json({"type": "heartbeat"})
@@ -305,8 +433,12 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
                 approval = event.get("approval")
                 if isinstance(approval, dict):
                     seen.add(str(approval.get("id") or ""))
-                payload_type = "approval_notification" if event.get("type") == "approval_created" else "approval_decided"
-                safe_approval = mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+                payload_type = (
+                    "approval_notification" if event.get("type") == "approval_created" else "approval_decided"
+                )
+                safe_approval = (
+                    mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+                )
                 await websocket.send_json({"type": payload_type, "approval": safe_approval})
             else:
                 await websocket.send_json(event)
@@ -376,7 +508,7 @@ async def proxy_websocket(websocket: WebSocket, path: str):
             )
     except WebSocketDisconnect:
         return
-    except Exception:
+    except Exception:  # noqa: BLE001 - websocket proxy errors are reported by closing the client socket.
         with suppress(RuntimeError):
             await websocket.close(code=1011)
 
@@ -384,7 +516,9 @@ async def proxy_websocket(websocket: WebSocket, path: str):
 @proxy_router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def proxy_full_backend(path: str, request: Request) -> Response:
     if _is_mobile_or_remote_proxy_path(path):
-        raise HTTPException(status_code=404, detail="Mobile and remote routes are handled by Guardian and are not proxied.")
+        raise HTTPException(
+            status_code=404, detail="Mobile and remote routes are handled by Guardian and are not proxied."
+        )
     raw_body = await request.body()
     response = await runtime.proxy(
         request.method,
@@ -416,7 +550,9 @@ async def _wake_full_backend_for_approval(approval: Approval) -> Approval | None
             detail=_approval_continue_unavailable_detail(approval, exc),
         ) from exc
     if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_approval_continue_response_error_detail(approval, response))
+        raise HTTPException(
+            status_code=response.status_code, detail=_approval_continue_response_error_detail(approval, response)
+        )
     refreshed = db.fetch_one("approvals", approval.id)
     return Approval.model_validate(refreshed) if refreshed else approval
 
@@ -470,7 +606,7 @@ def _safe_backend_detail(value: Any) -> Any:
 
 
 def _safe_backend_detail_value(key: str, value: Any) -> Any:
-    if isinstance(value, (dict, list, tuple, set)):
+    if isinstance(value, dict | list | tuple | set):
         return _safe_backend_detail(value)
     redacted = redact_value({key: value})
     return redacted.get(key) if isinstance(redacted, dict) else redact_value(value)
@@ -516,7 +652,7 @@ def full_backend_url() -> str:
 def _response_detail(response: Any, *, include_text: bool = True) -> Any:
     try:
         payload = response.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - backend error bodies are best-effort JSON.
         return response.text if include_text else ""
     if isinstance(payload, dict) and "detail" in payload:
         return payload["detail"]
@@ -577,7 +713,7 @@ def _notification_messages() -> list[AgentMessage]:
         for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=200):
             try:
                 message = AgentMessage.model_validate(item)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 - malformed notification rows are skipped.
                 continue
             if message.message_type == MessageType.NOTIFICATION:
                 messages.append(message)

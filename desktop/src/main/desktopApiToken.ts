@@ -14,6 +14,7 @@ const TOKEN_BYTES = 32;
 const DEFAULT_DATA_DIR_NAME = ".lengrvis_data";
 
 type DesktopApiTokenSource = "file" | "env" | "created";
+type LocalSecretSource = "file" | "env" | "created";
 
 export class DesktopApiTokenPersistError extends Error {
   constructor(message: string) {
@@ -28,6 +29,12 @@ export interface DesktopApiTokenResolution {
   dataDir: string;
   configDir: string;
   source: DesktopApiTokenSource;
+}
+
+export interface LocalSecretResolution {
+  secret: string;
+  secretPath: string;
+  source: LocalSecretSource;
 }
 
 export interface DesktopApiTokenOptions {
@@ -45,7 +52,7 @@ export function resolveDesktopApiToken(options: DesktopApiTokenOptions = {}): De
     : resolveBackendConfigDir({ command: options.command, env });
   const dataDir = resolveBackendDataDir({ configDir, dataDir: options.dataDir, env });
   const tokenPath = join(dataDir, DESKTOP_API_TOKEN_FILE);
-  const fileToken = readTokenFile(tokenPath);
+  const fileToken = readLocalSecretFile(tokenPath);
 
   if (fileToken) {
     return { token: fileToken, tokenPath, dataDir, configDir, source: "file" };
@@ -110,19 +117,28 @@ function persistTokenIfAbsent(
   token: string,
   source: Exclude<DesktopApiTokenSource, "file">
 ): Pick<DesktopApiTokenResolution, "token" | "source"> {
+  const persisted = persistLocalSecretIfAbsent(tokenPath, token, source);
+  return { token: persisted.secret, source: persisted.source };
+}
+
+function persistLocalSecretIfAbsent(
+  tokenPath: string,
+  token: string,
+  source: Exclude<LocalSecretSource, "file">
+): Pick<LocalSecretResolution, "secret" | "source"> {
   try {
     mkdirSync(dirname(tokenPath), { recursive: true });
     writeTokenFile(tokenPath, token);
-    return { token, source };
+    return { secret: token, source };
   } catch (error) {
     if (isFileAlreadyExistsError(error)) {
-      const existing = readTokenFile(tokenPath);
+      const existing = readLocalSecretFile(tokenPath);
       if (existing) {
-        return { token: existing, source: "file" };
+        return { secret: existing, source: "file" };
       }
       try {
         writeTokenFile(tokenPath, token);
-        return { token, source };
+        return { secret: token, source };
       } catch (persistError) {
         throw new DesktopApiTokenPersistError(
           `Desktop API token file exists but could not be read or rewritten at ${tokenPath}: ${
@@ -132,7 +148,7 @@ function persistTokenIfAbsent(
       }
     }
     throw new DesktopApiTokenPersistError(
-      `Desktop API token could not be persisted to ${tokenPath}: ${
+      `Local secret could not be persisted to ${tokenPath}: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
@@ -165,7 +181,7 @@ function writeSecretFileAtomic(tokenPath: string, stored: string): void {
   }
 }
 
-function readTokenFile(tokenPath: string): string | null {
+function readLocalSecretFile(tokenPath: string): string | null {
   if (!existsSync(tokenPath)) {
     return null;
   }

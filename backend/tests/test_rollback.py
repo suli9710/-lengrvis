@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.tools import rollback_tools
 from app.tools.managed_backups import create_managed_backup
+from app.tools.tool_abort import ToolAbortedError
 
 
 @pytest.fixture(autouse=True)
@@ -91,6 +93,29 @@ def test_rollback_restore_backup(tmp_path: Path):
     assert outcome["ok"] is True
     assert original.read_text(encoding="utf-8") == "original-content"
     assert not backup.exists()
+
+
+def test_rollback_restore_backup_aborts_before_copy(tmp_path: Path):
+    original = tmp_path / "config.json"
+    original.write_text("changed-content", encoding="utf-8")
+    backup = tmp_path / "config.json.bak"
+    backup.write_text("original-content", encoding="utf-8")
+    abort = threading.Event()
+    abort.set()
+    result = ToolResult(
+        tool_call_id="call-abort",
+        ok=True,
+        rollback_info={"backup": str(backup)},
+    )
+
+    with pytest.raises(ToolAbortedError):
+        rollback_tools.rollback_tool_result(
+            result,
+            {"allowed_directories": [str(tmp_path)], "_tool_abort_event": abort},
+        )
+
+    assert original.read_text(encoding="utf-8") == "changed-content"
+    assert backup.exists()
 
 
 def test_rollback_restore_managed_backup(tmp_path: Path):

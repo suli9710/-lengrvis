@@ -3,11 +3,16 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.commerce.entitlements import Feature, active_plan, require_feature
 from app.core.schemas import ScheduledTask
+from app.llm.registry import get_effective_settings
 from app.services import scheduler_service
 
-
 router = APIRouter()
+
+
+def _require_scheduling() -> None:
+    require_feature(active_plan(get_effective_settings()), Feature.SCHEDULING)
 
 
 class CreateScheduleRequest(BaseModel):
@@ -23,11 +28,13 @@ class EnableScheduleRequest(BaseModel):
 
 @router.get("/schedules")
 def list_schedules() -> list[ScheduledTask]:
+    _require_scheduling()
     return scheduler_service.get_scheduler().list()
 
 
 @router.post("/schedules")
 def create_schedule(payload: CreateScheduleRequest) -> ScheduledTask:
+    _require_scheduling()
     try:
         return scheduler_service.get_scheduler().schedule(
             payload.cron,
@@ -43,6 +50,7 @@ def create_schedule(payload: CreateScheduleRequest) -> ScheduledTask:
 
 @router.delete("/schedules/{schedule_id}")
 def delete_schedule(schedule_id: str) -> dict:
+    _require_scheduling()
     ok = scheduler_service.get_scheduler().cancel(schedule_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -51,6 +59,7 @@ def delete_schedule(schedule_id: str) -> dict:
 
 @router.post("/schedules/{schedule_id}/enable")
 def enable_schedule(schedule_id: str, payload: EnableScheduleRequest) -> ScheduledTask:
+    _require_scheduling()
     item = scheduler_service.get_scheduler().enable(schedule_id, payload.enabled)
     if item is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -59,4 +68,5 @@ def enable_schedule(schedule_id: str, payload: EnableScheduleRequest) -> Schedul
 
 @router.get("/schedules/status")
 def scheduler_status() -> dict:
+    _require_scheduling()
     return scheduler_service.status()

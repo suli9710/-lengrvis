@@ -24,6 +24,7 @@ from app.policy.approval_binding import args_binding_hmac, permission_policy_ver
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.tools.managed_backups import resolve_managed_backup_path
+from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
 
 try:
     from send2trash import send2trash
@@ -40,20 +41,20 @@ def rollback_tool_result(result: ToolResult, _context: dict[str, Any] | None = N
 
     if "move_back" in info:
         spec = info["move_back"]
-        return _move_back(spec.get("from"), spec.get("to"), allowed)
+        return _move_back(spec.get("from"), spec.get("to"), allowed, context)
 
     if "rename_back" in info:
         spec = info["rename_back"]
-        return _move_back(spec.get("from"), spec.get("to"), allowed)
+        return _move_back(spec.get("from"), spec.get("to"), allowed, context)
 
     if "trash_created_file" in info:
-        return _trash(info["trash_created_file"], allowed)
+        return _trash(info["trash_created_file"], allowed, context)
 
     if "delete_folder_if_empty" in info:
-        return _delete_if_empty(info["delete_folder_if_empty"], allowed)
+        return _delete_if_empty(info["delete_folder_if_empty"], allowed, context)
 
     if info.get("backup"):
-        return _restore_backup(info["backup"], allowed)
+        return _restore_backup(info["backup"], allowed, context)
 
     if "restore_from_recycle_bin" in info:
         target = info["restore_from_recycle_bin"]
@@ -302,7 +303,12 @@ def _as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def _move_back(src: str | None, dst: str | None, allowed: list[str] | None = None) -> dict[str, Any]:
+def _move_back(
+    src: str | None,
+    dst: str | None,
+    allowed: list[str] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not src or not dst:
         return {"ok": False, "action": "move_back", "detail": "missing src/dst"}
     try:
@@ -313,14 +319,22 @@ def _move_back(src: str | None, dst: str | None, allowed: list[str] | None = Non
     if not source.exists():
         return {"ok": False, "action": "move_back", "detail": f"source path missing: {source}"}
     try:
+        raise_if_tool_aborted(context)
         target.parent.mkdir(parents=True, exist_ok=True)
+        raise_if_tool_aborted(context)
         shutil.move(str(source), str(target))
         return {"ok": True, "action": "move_back", "from": str(source), "to": str(target)}
+    except ToolAbortedError:
+        raise
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "action": "move_back", "detail": str(exc)}
 
 
-def _trash(path_str: str, allowed: list[str] | None = None) -> dict[str, Any]:
+def _trash(
+    path_str: str,
+    allowed: list[str] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         path = _authorize_rollback_path(path_str, allowed)
     except SecurityError as exc:
@@ -330,13 +344,20 @@ def _trash(path_str: str, allowed: list[str] | None = None) -> dict[str, Any]:
     if send2trash is None:
         return {"ok": False, "action": "trash", "detail": "send2trash not installed"}
     try:
+        raise_if_tool_aborted(context)
         send2trash(str(path))
         return {"ok": True, "action": "trash", "path": str(path)}
+    except ToolAbortedError:
+        raise
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "action": "trash", "detail": str(exc)}
 
 
-def _delete_if_empty(path_str: str, allowed: list[str] | None = None) -> dict[str, Any]:
+def _delete_if_empty(
+    path_str: str,
+    allowed: list[str] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         path = _authorize_rollback_path(path_str, allowed)
     except SecurityError as exc:
@@ -348,13 +369,20 @@ def _delete_if_empty(path_str: str, allowed: list[str] | None = None) -> dict[st
     if any(path.iterdir()):
         return {"ok": False, "action": "delete_folder_if_empty", "detail": "directory not empty"}
     try:
+        raise_if_tool_aborted(context)
         path.rmdir()
         return {"ok": True, "action": "delete_folder_if_empty", "path": str(path)}
+    except ToolAbortedError:
+        raise
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "action": "delete_folder_if_empty", "detail": str(exc)}
 
 
-def _restore_backup(backup_spec: Any, allowed: list[str] | None = None) -> dict[str, Any]:
+def _restore_backup(
+    backup_spec: Any,
+    allowed: list[str] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         backup, original = _resolve_backup_restore_paths(backup_spec, allowed)
     except (SecurityError, ValueError) as exc:
@@ -364,10 +392,15 @@ def _restore_backup(backup_spec: Any, allowed: list[str] | None = None) -> dict[
     if not backup.is_file():
         return {"ok": False, "action": "restore_backup", "detail": "backup is not a file"}
     try:
+        raise_if_tool_aborted(context)
         original.parent.mkdir(parents=True, exist_ok=True)
+        raise_if_tool_aborted(context)
         shutil.copy2(backup, original)
+        raise_if_tool_aborted(context)
         backup.unlink()
         return {"ok": True, "action": "restore_backup", "restored": str(original)}
+    except ToolAbortedError:
+        raise
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "action": "restore_backup", "detail": str(exc)}
 

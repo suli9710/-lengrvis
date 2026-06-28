@@ -103,7 +103,7 @@ def test_pairing_responses_include_tls_transport_metadata_when_files_exist(monke
     request_payload = client.post("/api/pair/request").json()
     confirm_response = client.post(
         "/api/pair/confirm",
-        json={"code": request_payload["code"], "device_name": "Pixel"},
+        json={"code": request_payload["code"], "claim_secret": request_payload["claim_secret"], "device_name": "Pixel"},
     )
 
     assert confirm_response.status_code == 200

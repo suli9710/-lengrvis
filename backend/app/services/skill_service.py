@@ -10,6 +10,7 @@ from typing import Any
 from app.config import AppSettings
 from app.core.audit import record
 from app.core.errors import AppError, SecurityError
+from app.core.paths import is_sensitive_path, is_system_path, normalize_path
 from app.llm.registry import get_effective_settings
 from app.mcp import get_mcp_registry
 from app.observability.best_effort import log_best_effort_failure
@@ -74,7 +75,16 @@ def list_installed_skills(settings: AppSettings | None = None) -> dict[str, Any]
 
 async def import_skill(source_path: str, settings: AppSettings | None = None) -> dict[str, Any]:
     effective = settings or get_effective_settings()
-    source = Path(source_path).expanduser().resolve(strict=False)
+    raw_path = str(source_path or "").strip()
+    if not raw_path:
+        raise SkillServiceError("Skill import path must not be empty.", code="skill_import_path_denied")
+    if any(char in raw_path for char in ("\x00", "\n", "\r")):
+        raise SkillServiceError(
+            "Skill import path must not contain control characters.",
+            code="skill_import_path_denied",
+        )
+    source = Path(raw_path).expanduser().resolve(strict=False)
+    _validate_skill_import_source(source, effective)
     if not source.exists():
         raise SkillServiceError(f"Skill source does not exist: {source}")
 
@@ -345,6 +355,59 @@ def _package_upgrade_diff(previous: LoadedSkillPackage | None, current: LoadedSk
 def _install_directory(settings: AppSettings) -> Path:
     directories = skill_directories_from_settings(settings)
     return directories[0]
+
+
+def _validate_skill_import_source(source: Path, settings: AppSettings) -> None:
+    if is_system_path(source) or is_sensitive_path(source):
+        raise SkillServiceError(
+            "Skill import source must not be a system or sensitive path.",
+            code="skill_import_path_denied",
+        )
+    if _is_downloads_skill_import_source(source):
+        return
+    whitelist_roots = _skill_import_whitelist_roots(settings)
+    if not whitelist_roots:
+        raise SkillServiceError(
+            "Skill import requires configured allowed_directories or skill_directories.",
+            code="skill_import_path_denied",
+        )
+    for base in whitelist_roots:
+        try:
+            if source == base or source.is_relative_to(base):
+                return
+        except ValueError:
+            continue
+    raise SkillServiceError(
+        "Skill import source is outside authorized directories.",
+        code="skill_import_path_denied",
+    )
+
+
+def _is_downloads_skill_import_source(source: Path) -> bool:
+    downloads = (Path.home() / "Downloads").expanduser().resolve(strict=False)
+    try:
+        if not (source == downloads or source.is_relative_to(downloads)):
+            return False
+    except ValueError:
+        return False
+    if source.suffix.lower() == ".zip":
+        return True
+    return _manifest_path(source) is not None
+
+
+def _skill_import_whitelist_roots(settings: AppSettings) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in (*settings.allowed_directories, *skill_directories_from_settings(settings)):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        normalized = str(normalize_path(text))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        roots.append(Path(normalized))
+    return roots
 
 
 def _iter_skill_roots(directory: Path) -> list[Path]:

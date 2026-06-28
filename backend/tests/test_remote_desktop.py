@@ -13,8 +13,10 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.api import routes_remote
 from app.core import db
-from app.core.schemas import Approval
+from app.core.schemas import Approval, ApprovalStatus
 from app.llm.registry import get_effective_settings
+from app.policy.approval_binding import args_binding_hmac
+from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
 from app.policy.risk import RiskLevel
 from app.security import mobile_jwt
@@ -81,6 +83,14 @@ def _enable_remote_desktop() -> None:
     update_settings(patch)
 
 
+def _disable_remote_desktop() -> None:
+    patch = {"remote_desktop_enabled": False}
+    confirmation = create_settings_confirmation(patch)
+    if confirmation.get("required"):
+        patch["confirmation_nonce"] = confirmation["nonce"]
+    update_settings(patch)
+
+
 def _assert_no_sensitive_details(payload: dict, fragments: list[str]) -> None:
     serialized = json.dumps(payload, ensure_ascii=False).replace("\\\\", "\\")
     for fragment in fragments:
@@ -127,20 +137,65 @@ def test_capture_screen_frame_includes_virtual_desktop_origin(monkeypatch: pytes
     assert frame.screen_origin_y == -120
 
 
+def _live_remote_click_approval(x: int = 1, y: int = 2) -> Approval:
+    device_id = "mobile_remote_live_click"
+    mobile_pairing_service._upsert_mobile_device(device_id=device_id, device_name="Live Click Phone")
+    grant = mobile_pairing_service.create_remote_input_grant(device_id)
+    task_id = f"task_{device_id}"
+    step_id = "step_1"
+    tool_name = "remote.click"
+    approval = Approval(
+        task_id=task_id,
+        step_id=step_id,
+        approval_type="remote_input",
+        message="Approve remote click",
+        status=ApprovalStatus.APPROVED,
+        source="remote_input",
+        tool_name=tool_name,
+        source_device_id=device_id,
+        source_grant_id=grant["grant_id"],
+        required_mobile_scopes=[mobile_jwt.REMOTE_INPUT_SCOPE],
+    )
+    approval.args_binding_hmac = args_binding_hmac(
+        tool_name,
+        {"x": x, "y": y},
+        task_id=task_id,
+        step_id=step_id,
+    )
+    db.upsert_model("approvals", approval, status=approval.status)
+    return approval
+
+
 def test_remote_tools_require_approval():
     registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
 
-    assert registry.get("remote.view_screen").risk_level == RiskLevel.R1_OPEN_ONLY
-    for tool_name in ("remote.click", "remote.type_text", "remote.key_press"):
+    for tool_name in ("remote.view_screen", "remote.click", "remote.type_text", "remote.key_press"):
         tool = registry.get(tool_name)
-        assert tool.risk_level == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
         assert tool.supports_dry_run is True
+    assert registry.get("remote.view_screen").risk_level == RiskLevel.R2_REVERSIBLE_MODIFY
+    for tool_name in ("remote.click", "remote.type_text", "remote.key_press"):
+        assert registry.get(tool_name).risk_level == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
 
     _enable_remote_desktop()
     enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    screen = registry.get("remote.view_screen").execute({"quality": 50, "dry_run": False}, enabled)
+    assert screen["ok"] is False
+    assert "approval_id" in screen["error"]
     result = registry.get("remote.click").execute({"x": 1, "y": 2, "dry_run": False}, enabled)
     assert result["ok"] is False
     assert "approval_id" in result["error"]
+
+
+def test_remote_tools_require_entitled_plan_even_with_enabled_flag(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LENGRVIS_PLAN", "free")
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled_settings = get_effective_settings().model_copy(update={"remote_desktop_enabled": True, "plan": "free"})
+    enabled = {"settings": enabled_settings, "allowed_directories": []}
+
+    result = registry.get("remote.view_screen").execute({"quality": 50, "dry_run": True}, enabled)
+
+    assert result["ok"] is False
+    assert "disabled" in result["error"].lower()
 
 
 def test_remote_tools_reject_forged_live_approval(monkeypatch: pytest.MonkeyPatch):
@@ -160,6 +215,83 @@ def test_remote_tools_reject_forged_live_approval(monkeypatch: pytest.MonkeyPatc
     assert calls == []
 
 
+def test_remote_tools_execute_after_orchestrator_claim(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+    db.claim_approval_for_execution(approval.id, datetime.now(UTC).isoformat())
+    mark_execution_approved(enabled)
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    assert result["ok"] is True
+    assert calls == [(1, 2)]
+
+
+def test_remote_tools_reject_replay_without_execution_marker(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+    db.claim_approval_for_execution(approval.id, datetime.now(UTC).isoformat())
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    assert result["ok"] is False
+    assert "approval_id" in result["error"]
+    assert calls == []
+
+
+def test_remote_tools_direct_path_claims_before_execution(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+
+    result = registry.get("remote.click").execute(
+        {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id},
+        enabled,
+    )
+
+    assert result["ok"] is True
+    assert calls == [(1, 2)]
+    refreshed = db.fetch_one("approvals", approval.id)
+    assert refreshed is not None
+    assert refreshed.get("consumed_at")
+
+
+def test_remote_tools_direct_path_rejects_double_execution(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
+    enabled = {"settings": get_effective_settings(), "allowed_directories": []}
+    approval = _live_remote_click_approval()
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("app.tools.remote_tools._click_at", lambda x, y: calls.append((x, y)))
+    click_tool = registry.get("remote.click")
+    live_args = {"x": 1, "y": 2, "dry_run": False, "approved": True, "approval_id": approval.id}
+
+    first = click_tool.execute(live_args, enabled)
+    second = click_tool.execute(live_args, enabled)
+
+    assert first["ok"] is True
+    assert second["ok"] is False
+    assert "approval_id" in second["error"]
+    assert calls == [(1, 2)]
+
+
 def test_remote_disabled_by_default():
     client = TestClient(_test_app())
 
@@ -177,7 +309,7 @@ def test_remote_view_token_cannot_open_remote_screen_after_remote_desktop_disabl
     _enable_remote_desktop()
     monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (100, 100), "blue"))
     token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
-    update_settings({"remote_desktop_enabled": False})
+    _disable_remote_desktop()
     client = TestClient(_test_app())
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
@@ -186,6 +318,22 @@ def test_remote_view_token_cannot_open_remote_screen_after_remote_desktop_disabl
             subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
         ):
             raise AssertionError("Remote view token should not open screen after remote desktop is disabled")
+
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
+
+
+def test_remote_view_token_cannot_open_remote_screen_without_entitled_plan(monkeypatch: pytest.MonkeyPatch):
+    free_enabled_settings = get_effective_settings().model_copy(update={"remote_desktop_enabled": True, "plan": "free"})
+    monkeypatch.setattr(routes_remote, "get_effective_settings", lambda: free_enabled_settings)
+    client = TestClient(_test_app())
+    token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/remote/screen",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ):
+            raise AssertionError("Remote view token should not open screen without an entitled plan")
 
     assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
 
@@ -558,7 +706,32 @@ def test_connected_remote_screen_closes_after_remote_desktop_disabled(monkeypatc
         assert websocket.receive_json()["type"] == "connected"
         first = websocket.receive_json()
         assert first["type"] == "frame"
-        update_settings({"remote_desktop_enabled": False})
+        _disable_remote_desktop()
+        websocket.send_json({"type": "frame_ack", "sequence": first["sequence"]})
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_json()
+
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
+
+
+def test_connected_remote_screen_closes_after_plan_loses_remote_view(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (100, 100), "blue"))
+    entitled_settings = get_effective_settings().model_copy(update={"remote_desktop_enabled": True, "plan": "pro"})
+    free_settings = entitled_settings.model_copy(update={"plan": "free"})
+    current_settings = {"value": entitled_settings}
+    monkeypatch.setattr(routes_remote, "get_effective_settings", lambda: current_settings["value"])
+    client = TestClient(_test_app())
+    token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
+
+    with client.websocket_connect(
+        "/ws/remote/screen",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        first = websocket.receive_json()
+        assert first["type"] == "frame"
+        current_settings["value"] = free_settings
         websocket.send_json({"type": "frame_ack", "sequence": first["sequence"]})
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
@@ -1497,7 +1670,7 @@ def test_idle_remote_input_closes_after_remote_desktop_disabled(monkeypatch: pyt
         subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{claimed['token']}"],
     ) as websocket:
         assert websocket.receive_json()["type"] == "connected"
-        update_settings({"remote_desktop_enabled": False})
+        _disable_remote_desktop()
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()
 

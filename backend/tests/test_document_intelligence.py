@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from app.config import AppSettings
 from app.services import document_intelligence_service as svc
 from app.tools import document_tools
 from app.tools.registry import ToolRegistry
+from app.tools.tool_abort import ToolAbortedError
 
 
 @pytest.fixture(autouse=True)
@@ -190,6 +193,15 @@ def test_edit_docx_dry_run_counts_matches_without_writing(tmp_path: Path):
     assert after == "Quarterly memo for ada@example.com"
 
 
+def test_edit_docx_rejects_oversized_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LENGRVIS_DOCUMENT_MAX_PARSE_BYTES", "16")
+    path = tmp_path / "large.docx"
+    path.write_bytes(b"x" * 32)
+
+    with pytest.raises(svc.DocumentTooLargeError):
+        svc.edit_docx(path, find="x", replace="y", dry_run=True)
+
+
 def test_edit_docx_writes_replacement_when_dry_run_false(tmp_path: Path):
     path = tmp_path / "memo.docx"
     from docx import Document
@@ -317,6 +329,45 @@ def test_apply_redaction_preview_then_write(tmp_path: Path):
     assert result["rollback_info"]["backup"]
 
 
+def test_apply_redaction_aborts_before_writing_or_backup(tmp_path: Path):
+    path = tmp_path / "contacts.txt"
+    path.write_text("Email ada@example.com", encoding="utf-8")
+    abort = threading.Event()
+    abort.set()
+
+    with pytest.raises(ToolAbortedError):
+        svc.apply_redaction(path, dry_run=False, abort_context={"_tool_abort_event": abort})
+
+    assert path.read_text(encoding="utf-8") == "Email ada@example.com"
+    assert not path.with_suffix(path.suffix + ".bak").exists()
+
+
+def test_document_tool_write_aborts_before_service_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    path = tmp_path / "contacts.txt"
+    path.write_text("Email ada@example.com", encoding="utf-8")
+    abort = threading.Event()
+    abort.set()
+    calls: list[object] = []
+
+    def fake_apply_redaction(*args: object, **kwargs: object) -> dict[str, Any]:
+        calls.append((args, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(svc, "apply_redaction", fake_apply_redaction)
+
+    with pytest.raises(ToolAbortedError):
+        document_tools.apply_redaction(
+            {"path": str(path), "dry_run": False},
+            {
+                "allowed_directories": [str(tmp_path)],
+                "settings": AppSettings(allowed_directories=[str(tmp_path)], provider_name="mock", plan="pro"),
+                "_tool_abort_event": abort,
+            },
+        )
+
+    assert calls == []
+
+
 def test_edit_docx_preserves_run_formatting_when_match_is_single_run(tmp_path: Path):
     from docx import Document
 
@@ -389,7 +440,8 @@ def test_document_intelligence_tools_are_registered_readonly():
         assert tool.requires_authorized_path is True
 
 
-def test_document_tool_parse_advanced_authorizes_path(tmp_path: Path):
+def test_document_tool_parse_advanced_authorizes_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LENGRVIS_PLAN", "pro")
     path = tmp_path / "memo.txt"
     path.write_text("Authorized document text", encoding="utf-8")
     context = {"allowed_directories": [str(tmp_path)]}

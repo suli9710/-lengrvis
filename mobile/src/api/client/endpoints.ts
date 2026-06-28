@@ -12,6 +12,7 @@ export async function pairWithBackend(
   code: string,
   deviceName: string,
   pairingMetadata?: unknown,
+  claimSecret = "",
 ): Promise<PairingSession> {
   const baseUrlSecurity = describeBaseUrlSecurity(baseUrl, pairingMetadata);
   if (baseUrlSecurity.isInsecureLan || sessionHasUnsafeRemoteTransport(baseUrlSecurity)) {
@@ -25,7 +26,7 @@ export async function pairWithBackend(
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ code, device_name: deviceName }),
+    body: JSON.stringify({ code, device_name: deviceName, claim_secret: claimSecret }),
   });
   const { payload, expiresAt } = validatePairResult(await parseJson<unknown>(response));
   const pairingSecurity = normalizePairingSecurityMetadata(payload, baseUrlSecurity);
@@ -38,6 +39,7 @@ export async function pairWithBackend(
     baseUrl: normalizedBaseUrl,
     token: payload.token,
     deviceId: payload.device_id,
+    ...(payload.device_trust ? { deviceTrust: payload.device_trust } : {}),
     expiresAt,
     baseUrlSecurity: mergedBaseUrlSecurity,
     server: normalizePairingServerInfo(payload.server),

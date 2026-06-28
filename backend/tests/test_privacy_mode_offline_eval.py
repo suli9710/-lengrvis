@@ -1,4 +1,5 @@
 """Offline privacy-mode evals for first-run local-model readiness."""
+
 from __future__ import annotations
 
 import json
@@ -305,6 +306,7 @@ def test_privacy_mode_offline_document_summary_and_qa_use_deterministic_fallback
         api_key="sk-document-secret",
         allow_mock_fallback=True,
         allowed_directories=[str(workspace)],
+        plan="pro",
     )
     context = {"allowed_directories": [str(workspace)], "settings": settings}
 
@@ -354,7 +356,7 @@ def test_local_ai_status_redacts_snapshot_error_details(monkeypatch):
         return {
             "available": False,
             "selected_backend": {"kind": "ollama", "model": r"C:\models\private\model.onnx"},
-            "error": r"failed C:\models\private\model.onnx https://localhost:11434/api?token=secret-token-1234567890 password=abc1234567890",
+            "error": r"failed C:\models\private\model.onnx https://localhost:11434/api?token=fixture password=fixture",
             "readiness": {
                 "can_install": True,
                 "recommended_model": r"C:\models\private\other.onnx",

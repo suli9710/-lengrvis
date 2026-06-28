@@ -25,7 +25,7 @@ def unified_error_body(detail: Any, *, code: str | None = None, message: str | N
     slugification unless explicitly provided.
     """
     if message is None:
-        message = detail if isinstance(detail, str) else "HTTP error"
+        message = detail if isinstance(detail, str) else "请求失败。"
     if code is None:
         code = _slugify_code(detail) if isinstance(detail, str) else _GENERIC_HTTP_CODE
     return {"detail": detail, "error": {"code": code, "message": message}}
@@ -78,6 +78,6 @@ def register_error_handlers(app: FastAPI) -> None:
             content=unified_error_body(
                 jsonable_encoder(exc.errors()),
                 code="validation_error",
-                message="Request validation failed",
+                message="请求参数校验失败。",
             ),
         )

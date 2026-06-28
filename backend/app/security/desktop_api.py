@@ -12,6 +12,7 @@ from fastapi import Request, WebSocket, WebSocketException, status
 from app.config import env_flag, get_base_settings, get_env
 from app.security.lan import allow_lan_desktop_api, is_loopback_host, is_secure_transport_scheme
 from app.security.local_secret import load_or_create_local_secret
+from app.security.websocket_origin import is_trusted_websocket_origin
 
 DESKTOP_API_TOKEN_HEADER = "x-lengrvis-desktop-token"  # noqa: S105 - header name, not a secret.
 DESKTOP_API_TOKEN_FILE = "desktop_api.secret"  # noqa: S105 - file name, not a secret.
@@ -69,13 +70,20 @@ def has_valid_desktop_websocket_token(websocket: WebSocket) -> bool:
 
 def is_authorized_desktop_websocket(websocket: WebSocket) -> bool:
     client_host = websocket.client.host if websocket.client else ""
+    token_ok = has_valid_desktop_websocket_token(websocket)
+    allow_missing_origin = token_ok or (_desktop_api_token_optional() and is_loopback_host(client_host))
+    if not is_trusted_websocket_origin(
+        websocket,
+        allow_missing_origin_with_token=allow_missing_origin,
+    ):
+        return False
     if not is_loopback_host(client_host):
         if not allow_lan_desktop_api() or not is_secure_transport_scheme(websocket.url.scheme):
             return False
         return has_valid_desktop_websocket_token(websocket)
     if _desktop_api_token_optional():
         return True
-    return has_valid_desktop_websocket_token(websocket)
+    return token_ok
 
 
 def signed_desktop_resource_query(

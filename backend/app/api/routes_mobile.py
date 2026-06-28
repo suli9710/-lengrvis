@@ -10,7 +10,12 @@ from app.agents.supervisor_agent import SupervisorDecision
 from app.api import routes_approvals
 from app.core import db
 from app.core.errors import StateTransitionError
+from app.core.schemas import ChatResponse, Task, TaskStatus
+from app.orchestration.execution_stage import ExecutionStage
+from app.orchestration.task_phase import TaskPhase
 from app.policy.redaction import redact_public_text, redact_value
+from app.product_task_templates import get_task_starter_template, task_starter_prompt
+from app.security.lan import is_secure_mobile_transport
 from app.security.mobile_jwt import (
     TOKEN_SCOPE,
     decode_mobile_token,
@@ -19,17 +24,11 @@ from app.security.mobile_jwt import (
     require_mobile_token,
     validate_mobile_claims_active,
 )
-from app.security.lan import is_secure_mobile_transport
-from app.core.schemas import ChatResponse, Task, TaskStatus
-from app.orchestration.execution_stage import ExecutionStage
-from app.orchestration.task_phase import TaskPhase
-from app.product_task_templates import get_task_starter_template, task_starter_prompt
 from app.services import mobile_pairing_service
 from app.services.approval_event_service import get_approval_event_bus
 from app.services.task_explain_service import build_task_completion_evidence
 from app.services.task_service import _delegate_task as delegate_task
 from app.services.task_service import get_task, list_tasks, resume_task, set_task_status
-
 
 router = APIRouter()
 ws_router = APIRouter()
@@ -60,12 +59,18 @@ MOBILE_TASK_TEMPLATES = {
     "organize_downloads": {
         "label": "整理下载目录",
         "agent_hint": "FileAgent",
-        "prompt": "整理下载目录或用户指定目录。先扫描、分组并提出清理建议；不要直接删除、移动或改名，任何修改都必须经过现有 dry-run 与审批策略。",
+        "prompt": (
+            "整理下载目录或用户指定目录。先扫描、分组并提出清理建议；不要直接删除、移动或改名，"
+            "任何修改都必须经过现有 dry-run 与审批策略。"
+        ),
     },
     "summarize_local_docs": {
         "label": "总结本地文档",
         "agent_hint": "DocumentAgent",
-        "prompt": "总结用户指定的本地文档或目录。保留引用线索；如果缺少文件范围，请先在任务中说明需要用户补充，不要猜测私人路径。",
+        "prompt": (
+            "总结用户指定的本地文档或目录。保留引用线索；如果缺少文件范围，"
+            "请先在任务中说明需要用户补充，不要猜测私人路径。"
+        ),
     },
     "find_large_files": {
         "label": "查找大文件",
@@ -126,6 +131,11 @@ MOBILE_TASK_STRUCTURED_EVIDENCE_RE = re.compile(
     r"tool_call(?:_id)?)\b['\"]?\s*[:=]"
 )
 MOBILE_TERMINAL_TASK_PHASES = {TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED}
+
+
+@router.post("/mobile/session/refresh")
+def refresh_mobile_session(token: dict = Depends(require_mobile_token)) -> dict:
+    return mobile_pairing_service.refresh_mobile_session_token(token)
 
 
 @router.get("/mobile/approvals/pending")
@@ -337,8 +347,10 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
                     return
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
-                await websocket.send_json(_safe_mobile_event(event, notification_alias=notification_alias, claims=claims))
-            except asyncio.TimeoutError:
+                await websocket.send_json(
+                    _safe_mobile_event(event, notification_alias=notification_alias, claims=claims)
+                )
+            except TimeoutError:
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
                 await websocket.send_json({"type": "heartbeat"})
@@ -350,7 +362,7 @@ async def _mobile_notifications(websocket: WebSocket, token: str = "", *, notifi
 
 async def _close_if_mobile_claims_inactive(websocket: WebSocket, claims: dict) -> bool:
     try:
-        validate_mobile_claims_active(claims)
+        validate_mobile_claims_active(claims, scope_exp_scopes={TOKEN_SCOPE})
     except HTTPException:
         await websocket.close(code=1008)
         return True
@@ -369,9 +381,13 @@ def _mobile_event_allowed(event: dict, claims: dict) -> bool:
 def _safe_mobile_event(event: dict, *, notification_alias: bool = False, claims: dict | None = None) -> dict:
     event_type = str(event.get("type") or "")
     if event_type in {"approval_created", "approval_decided"}:
-        payload_type = "approval_notification" if notification_alias and event_type == "approval_created" else event_type
+        payload_type = (
+            "approval_notification" if notification_alias and event_type == "approval_created" else event_type
+        )
         approval = event.get("approval")
-        safe_approval = mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+        safe_approval = (
+            mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+        )
         return {"type": payload_type, "approval": safe_approval}
     if event_type in {"remote_input_grant_created", "remote_input_grant_revoked"}:
         return {
@@ -445,9 +461,7 @@ def _mobile_task_completion_evidence(task: Task) -> dict:
     evidence = build_task_completion_evidence(task)
     level = str(evidence.get("level") or "submission")
     result_verified = (
-        level == "completed_result"
-        and evidence.get("result_verified") is True
-        and evidence.get("signoff") is False
+        level == "completed_result" and evidence.get("result_verified") is True and evidence.get("signoff") is False
     )
     missing = evidence.get("missing") if isinstance(evidence.get("missing"), list) else []
     return {
@@ -627,7 +641,9 @@ def _delegate_mobile_task(
     agent_hint: str,
     metadata: dict | None = None,
 ) -> ChatResponse:
-    return delegate_task(goal, mode, SupervisorDecision(delegate=True, reply=reply, agent_hint=agent_hint), metadata=metadata)
+    return delegate_task(
+        goal, mode, SupervisorDecision(delegate=True, reply=reply, agent_hint=agent_hint), metadata=metadata
+    )
 
 
 def _delegate_mobile_task_or_error(
@@ -656,11 +672,15 @@ def _mobile_task_created_response(
     source_task_id: str = "",
 ) -> dict:
     if not response.delegated or not response.task_id:
-        raise HTTPException(status_code=409, detail=response.message or "Mobile task request was not delegated to a computer task.")
+        raise HTTPException(
+            status_code=409, detail=response.message or "Mobile task request was not delegated to a computer task."
+        )
     try:
         task = get_task(response.task_id)
     except KeyError:
-        raise HTTPException(status_code=409, detail="Mobile task request was accepted but no computer task was created.") from None
+        raise HTTPException(
+            status_code=409, detail="Mobile task request was accepted but no computer task was created."
+        ) from None
     if metadata:
         task = _attach_mobile_task_metadata(task, metadata)
     return {
@@ -734,7 +754,7 @@ def _mobile_task_allowed(task: Task, claims: dict) -> bool:
 def _mobile_text_list(value: object) -> list[str]:
     if isinstance(value, str):
         return [item.strip() for item in value.replace(",", " ").split() if item.strip()]
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         items: list[str] = []
         for item in value:
             items.extend(_mobile_text_list(item))

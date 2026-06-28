@@ -98,6 +98,7 @@ def test_skill_routes_list_import_and_refresh(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.delenv("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", raising=False)
     db.init_db()
@@ -164,6 +165,7 @@ def test_skill_route_imports_product_manifest_showcase_into_real_catalog(
     install_dir = data_dir / "skills"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(install_dir))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(test_data_dir))
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.delenv("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", raising=False)
     db.init_db()
@@ -245,6 +247,7 @@ def test_skill_route_imports_zip(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
 
     source = _write_skill(tmp_path / "source", name="zip-demo")
@@ -259,10 +262,68 @@ def test_skill_route_imports_zip(monkeypatch, tmp_path: Path):
     assert response.json()["skill"]["name"] == "zip-demo"
 
 
+def test_skill_route_imports_skill_directory_from_downloads(monkeypatch, tmp_path: Path):
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    data_dir = tmp_path / "data"
+    source = _write_skill(downloads, name="downloaded-demo")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "allowed"))
+    db.init_db()
+
+    response = TestClient(create_app()).post("/api/skills/import", json={"path": str(source)})
+
+    assert response.status_code == 200
+    assert response.json()["skill"]["name"] == "downloaded-demo"
+
+
+def test_skill_route_imports_skill_zip_from_downloads(monkeypatch, tmp_path: Path):
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    source = _write_skill(tmp_path / "source", name="downloaded-zip-demo")
+    zip_path = downloads / "downloaded-zip-demo.zip"
+    zip_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        for path in source.rglob("*"):
+            archive.write(path, Path(source.name) / path.relative_to(source))
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "allowed"))
+    db.init_db()
+
+    response = TestClient(create_app()).post("/api/skills/import", json={"path": str(zip_path)})
+
+    assert response.status_code == 200
+    assert response.json()["skill"]["name"] == "downloaded-zip-demo"
+
+
+def test_skill_route_rejects_non_skill_directory_from_downloads(monkeypatch, tmp_path: Path):
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    plain_dir = downloads / "plain-folder"
+    plain_dir.mkdir(parents=True)
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "allowed"))
+    db.init_db()
+
+    response = TestClient(create_app()).post("/api/skills/import", json={"path": str(plain_dir)})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "skill_import_path_denied"
+
+
 def test_skill_route_reports_invalid_import(monkeypatch, tmp_path: Path):
     data_dir = tmp_path / "data"
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
 
     bad = tmp_path / "bad"
@@ -276,3 +337,45 @@ def test_skill_route_reports_invalid_import(monkeypatch, tmp_path: Path):
 
     assert response.status_code == 400
     assert "Invalid skill.yaml" in response.json()["error"]["message"]
+
+
+def test_skill_route_rejects_system_path_import(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
+    db.init_db()
+
+    response = TestClient(create_app()).post(
+        "/api/skills/import",
+        json={"path": "C:/Windows/System32/drivers/etc/hosts"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "skill_import_path_denied"
+
+
+def test_skill_route_rejects_import_outside_whitelist(monkeypatch, tmp_path: Path):
+    data_dir = tmp_path / "data"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    skill_root = outside / "outside-skill"
+    skill_root.mkdir()
+    (skill_root / "skill.yaml").write_text(
+        """
+name: outside-skill
+version: "1.0"
+agent_owner: FileAgent
+tools: []
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("LENGRVIS_SKILL_DIRECTORIES", str(data_dir / "skills"))
+    monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path / "allowed"))
+    db.init_db()
+
+    response = TestClient(create_app()).post("/api/skills/import", json={"path": str(skill_root)})
+
+    assert response.status_code == 400
+    assert "outside authorized directories" in response.json()["error"]["message"]

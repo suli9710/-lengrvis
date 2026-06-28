@@ -4,6 +4,7 @@ export interface PairResult {
   token: string;
   token_type: "Bearer";
   device_id: string;
+  device_trust?: MobileDeviceTrustMetadata;
   expires_in: number;
   expires_at?: string;
   expiresAt?: string;
@@ -184,10 +185,20 @@ export interface PairingSession {
   baseUrl: string;
   token: string;
   deviceId: string;
+  deviceTrust?: MobileDeviceTrustMetadata;
   expiresAt?: string;
   baseUrlSecurity: BaseUrlSecurity;
   server?: PairingServerInfo;
   security?: PairingSecurityMetadata;
+}
+
+export interface MobileDeviceTrustMetadata {
+  attestation_verified: false;
+  attestation_status: "not_verified" | "not_supported" | "unverified" | string;
+  attestation_provider?: "none" | string;
+  trust_basis?: "pairing_code_tls" | string;
+  hardware_backed?: false;
+  message?: string;
 }
 
 export interface PairingServerInfo {
@@ -225,6 +236,7 @@ export interface MobileDevice {
   device_id: string;
   device_name: string;
   status: string;
+  device_trust?: MobileDeviceTrustMetadata;
   revoked_at?: string;
   updated_at?: string;
 }
@@ -328,4 +340,3 @@ export const WEB_SOCKET_SUBPROTOCOL_TOKEN_PATTERN = /^[A-Za-z0-9!#$%&'*+\-.^_`|~
 export const INSECURE_LAN_HTTP_WARNING = "当前电脑地址使用非本机 HTTP，手机 token、远程输入授权和屏幕连接不能通过局域网明文传输。请在桌面端启用 HTTPS/WSS 或使用受信任证书后重新配对。";
 export const SELF_SIGNED_TLS_WARNING = "此服务器使用自签或未受系统信任的 HTTPS 证书。请在电脑端核对证书指纹；手机系统信任前，本应用不会安装证书。";
 export const BACKEND_TLS_DISABLED_WARNING = "后端当前未启用 TLS。请输入 HTTPS 地址；非本机局域网 HTTP 不能承载手机 token、屏幕或远程输入连接。";
-

@@ -173,6 +173,10 @@ class PolicyEngine:
         if cleanup_review is not None:
             return cleanup_review
 
+        browser_write_review = self.review_browser_write_call(task_id, step_id, tool_name, args)
+        if browser_write_review is not None:
+            return browser_write_review
+
         ui_review = self._review_ui_automation_call(task_id, step_id, tool_name, args, static_risk)
         if ui_review is not None:
             return ui_review
@@ -382,8 +386,14 @@ class PolicyEngine:
         tool_name: str,
         result: ToolResult,
         risk_level: RiskLevel,
+        tool_definition: Any | None = None,
     ) -> SafetyReview:
-        inspected_text = self._inspectable_text(result.output, result.error, result.changed_paths, result.rollback_info)
+        inspected_text = self._inspectable_text(
+            self._safe_tool_result_payload(result, tool_definition),
+            result.error,
+            result.changed_paths,
+            result.rollback_info,
+        )
         hits = self._unprotected_forbidden_hits(inspected_text)
         if risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF or hits:
             return SafetyReview(
@@ -405,6 +415,35 @@ class PolicyEngine:
             risk_level=risk_level,
             reasons=[f"Post-tool supervision cleared {tool_name} result."],
         )
+
+    def _safe_tool_result_payload(self, result: ToolResult, tool_definition: Any | None = None) -> Any:
+        if result.ok and result.error:
+            return result.output
+        if result.changed_paths or result.rollback_info:
+            return result.output
+        if result.ok and not self._low_risk_trusted_tool(tool_definition):
+            return result.output
+        summarizer = getattr(tool_definition, "result_summary", None)
+        if summarizer is None:
+            return result.output
+        try:
+            summary = summarizer(result.output if isinstance(result.output, dict) else {})
+        except Exception:  # noqa: BLE001 - fall back to fail-closed full-output review if a summarizer breaks.
+            return result.output
+        return {
+            "ok": result.ok,
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _low_risk_trusted_tool(tool_definition: Any | None) -> bool:
+        if tool_definition is None:
+            return False
+        risk = getattr(tool_definition, "risk_level", None)
+        if risk not in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
+            return False
+        trust_tier = str(getattr(tool_definition, "trust_tier", "") or "").casefold()
+        return trust_tier in FAST_PATH_TRUST_TIERS
 
     def final_review(self, plan: Plan, task_status: str, final_summary: str) -> SafetyReview:
         inspected_text = self._inspectable_text(plan.model_dump(), task_status, final_summary)
@@ -544,30 +583,53 @@ class PolicyEngine:
                     reasons=[decision.reason],
                     safe_alternative="Switch to efficiency mode or enable browser network to use this action.",
                 )
-        field_name = str(args.get("field_name") or args.get("selector") or "").lower()
-        value_text = str(args.get("value") or "").lower()
-        if any(term in field_name for term in SENSITIVE_FIELD_NAMES):
-            return SafetyReview(
-                task_id=task_id,
-                step_id=step_id,
-                target_type="tool_call",
-                verdict=SafetyVerdict.DENY,
-                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-                reasons=[f"Sensitive form field '{field_name}' is forbidden."],
-                safe_alternative="The user must enter credentials or payment data themselves.",
-            )
-        forbidden_in_value = self._forbidden_hits(value_text)
-        if forbidden_in_value:
-            return SafetyReview(
-                task_id=task_id,
-                step_id=step_id,
-                target_type="tool_call",
-                verdict=SafetyVerdict.DENY,
-                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-                reasons=[f"Restricted material in form value: {', '.join(sorted(forbidden_in_value))}"],
-                safe_alternative="Ask the user to fill sensitive fields manually.",
-            )
+        for field_name, value_text in self._iter_browser_write_field_values(args):
+            lowered_name = field_name.lower()
+            if any(term in lowered_name for term in SENSITIVE_FIELD_NAMES):
+                return SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type="tool_call",
+                    verdict=SafetyVerdict.DENY,
+                    risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                    reasons=[f"Sensitive form field '{field_name}' is forbidden."],
+                    safe_alternative="The user must enter credentials or payment data themselves.",
+                )
+            lowered_value = value_text.lower()
+            forbidden_in_value = self._forbidden_hits(lowered_value) if lowered_value else []
+            if value_text and (forbidden_in_value or looks_sensitive_value(value_text)):
+                if forbidden_in_value:
+                    reason = f"Restricted material in form value: {', '.join(sorted(forbidden_in_value))}"
+                else:
+                    reason = "Form value looks sensitive and must be entered by the user."
+                return SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type="tool_call",
+                    verdict=SafetyVerdict.DENY,
+                    risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                    reasons=[reason],
+                    safe_alternative="Ask the user to fill sensitive fields manually.",
+                )
         return None
+
+    def _iter_browser_write_field_values(self, args: dict[str, Any]) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        field_name = str(args.get("field_name") or args.get("selector") or "")
+        value_text = str(args.get("value") or "")
+        if field_name or value_text:
+            pairs.append((field_name, value_text))
+        fields = args.get("fields")
+        if isinstance(fields, dict):
+            for name, value in fields.items():
+                pairs.append((str(name), str(value)))
+        action = args.get("action")
+        if isinstance(action, dict):
+            nested_name = str(action.get("field_name") or action.get("selector") or "")
+            nested_value = str(action.get("value") or action.get("text") or "")
+            if nested_name or nested_value:
+                pairs.append((nested_name, nested_value))
+        return pairs
 
     def _review_ui_automation_call(
         self,
@@ -577,34 +639,37 @@ class PolicyEngine:
         args: dict[str, Any],
         static_risk: RiskLevel,
     ) -> SafetyReview | None:
-        if tool_name not in UI_AUTOMATION_WRITE_TOOLS:
+        is_remote_type_text = tool_name == "remote.type_text"
+        if not is_remote_type_text and tool_name not in UI_AUTOMATION_WRITE_TOOLS:
             return None
-        selector_text = _ui_selector_text(args)
-        if selector_text and any(term in selector_text for term in SENSITIVE_FIELD_NAMES):
-            return SafetyReview(
-                task_id=task_id,
-                step_id=step_id,
-                target_type="tool_call",
-                verdict=SafetyVerdict.DENY,
-                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-                reasons=[
-                    (
-                        "GUI automation target appears to be a sensitive credential, payment, token, "
-                        "or one-time-code field."
-                    )
-                ],
-                safe_alternative="Ask the user to handle sensitive UI fields manually.",
-            )
+        if not is_remote_type_text:
+            selector_text = _ui_selector_text(args)
+            if selector_text and any(term in selector_text for term in SENSITIVE_FIELD_NAMES):
+                return SafetyReview(
+                    task_id=task_id,
+                    step_id=step_id,
+                    target_type="tool_call",
+                    verdict=SafetyVerdict.DENY,
+                    risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+                    reasons=[
+                        (
+                            "GUI automation target appears to be a sensitive credential, payment, token, "
+                            "or one-time-code field."
+                        )
+                    ],
+                    safe_alternative="Ask the user to handle sensitive UI fields manually.",
+                )
         typed_text = str(args.get("text") or args.get("value") or "")
         forbidden_in_text = self._forbidden_hits(typed_text.lower()) if typed_text else []
         if typed_text and (forbidden_in_text or looks_sensitive_value(typed_text)):
+            input_label = "Remote desktop" if is_remote_type_text else "GUI automation"
             return SafetyReview(
                 task_id=task_id,
                 step_id=step_id,
                 target_type="tool_call",
                 verdict=SafetyVerdict.DENY,
                 risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-                reasons=["GUI automation text input looks sensitive and must be entered by the user."],
+                reasons=[f"{input_label} text input looks sensitive and must be entered by the user."],
                 safe_alternative="Leave the field focused and ask the user to type the sensitive value manually.",
             )
         return None

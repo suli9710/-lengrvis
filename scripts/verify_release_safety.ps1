@@ -89,12 +89,29 @@ strict_state_machine, strict_source = flag(
 license_issues = []
 plan = str(settings.plan or "free").strip().lower()
 commercial_release = coerce_bool(env_value(env, "LENGRVIS_COMMERCIAL_RELEASE") or False)
-paid_profile = commercial_release or plan in {"pro", "professional", "team", "team-self-hosted", "enterprise"}
+paid_profile = commercial_release or plan in {"pro", "professional", "max", "team", "team-self-hosted", "enterprise"}
 public_key = str(env_value(env, "LENGRVIS_LICENSE_PUBLIC_KEY") or "").strip()
 license_token = str(env_value(env, "LENGRVIS_LICENSE_KEY") or "").strip()
 revocations = str(env_value(env, "LENGRVIS_LICENSE_REVOCATIONS") or "").strip()
+cloud_quota_enforced = env_value(env, "LENGRVIS_CLOUD_QUOTA_ENFORCED")
+cloud_quota_overrides = [
+    name for name in (
+        "LENGRVIS_CLOUD_QUOTA_WINDOW_HOURS",
+        "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS",
+        "LENGRVIS_CLOUD_QUOTA_MAX_CALLS",
+        "LENGRVIS_CLOUD_QUOTA_MAX_COST_USD",
+    )
+    if env_value(env, name) not in (None, "")
+]
 
-for private_name in ("LENGRVIS_LICENSE_PRIVATE_KEY", "LENGRVIS_LICENSE_SIGNING_KEY"):
+for private_name in (
+    "LENGRVIS_LICENSE_PRIVATE_KEY",
+    "LENGRVIS_LICENSE_SIGNING_KEY",
+    "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY",
+    "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY_FILE",
+    "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE",
+    "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE_FILE",
+):
     if _configured(env_value(env, private_name)):
         license_issues.append(
             f"Release runtime must not contain {private_name}; keep issuer private keys offline."
@@ -104,7 +121,7 @@ if paid_profile and not public_key:
     license_issues.append(
         "Paid/commercial release profiles require LENGRVIS_LICENSE_PUBLIC_KEY."
     )
-if plan in {"pro", "professional", "team", "team-self-hosted", "enterprise"} and not commercial_release:
+if plan in {"pro", "professional", "max", "team", "team-self-hosted", "enterprise"} and not commercial_release:
     license_issues.append(
         "Paid plan release profiles must set LENGRVIS_COMMERCIAL_RELEASE=true so environment plan overrides cannot bypass licensing."
     )
@@ -137,6 +154,17 @@ if revocations:
             license_issues.append(
                 "LENGRVIS_LICENSE_REVOCATIONS did not pass Ed25519 verification."
             )
+
+if commercial_release:
+    if cloud_quota_enforced is not None and str(cloud_quota_enforced).strip().lower() in {"0", "false", "no", "off"}:
+        license_issues.append(
+            "Commercial release profiles must not set LENGRVIS_CLOUD_QUOTA_ENFORCED=false."
+        )
+    if cloud_quota_overrides:
+        license_issues.append(
+            "Commercial release profiles must not use LENGRVIS_CLOUD_QUOTA_* limit overrides: "
+            + ", ".join(cloud_quota_overrides)
+        )
 
 print(json.dumps({
     "allow_mock_fallback": allow_mock_fallback,

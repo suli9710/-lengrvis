@@ -243,3 +243,14 @@ def test_recovery_handler_zero_retries_rolls_back_without_consulting(monkeypatch
     assert orchestrator.executed_recovery_steps == []
     assert len(plan.steps) == 1
     assert rollback_calls == [task.id]
+
+
+def test_cleanup_task_removes_retry_entries_for_completed_task():
+    handler = RecoveryHandler(OrchestratorStub(None))
+    handler._increment_retry_count(("task_a", "step_1"))
+    handler._increment_retry_count(("task_b", "step_1"))
+
+    handler.cleanup_task("task_a")
+
+    assert handler._get_retry_count(("task_a", "step_1")) == 0
+    assert handler._get_retry_count(("task_b", "step_1")) == 1

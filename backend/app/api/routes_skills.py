@@ -4,7 +4,6 @@ from fastapi import APIRouter
 
 from app.services.skill_service import import_skill, list_installed_skills, refresh_runtime_registry
 
-
 router = APIRouter()
 
 
@@ -15,7 +14,8 @@ def list_skills() -> dict:
 
 @router.post("/skills/import")
 async def import_skill_package(payload: dict) -> dict:
-    return await import_skill(str(payload.get("path", "")))
+    source_path = str(payload.get("path") or "").strip()
+    return await import_skill(source_path)
 
 
 @router.post("/skills/refresh")

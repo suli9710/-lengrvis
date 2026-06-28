@@ -3,22 +3,20 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
 try:
     from send2trash import send2trash
-except Exception:  # pragma: no cover - optional dependency guard
+except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guard
     send2trash = None
 
-from app.core.audit import record
 from app.core import db
+from app.core.audit import record
 from app.core.errors import SecurityError
 from app.core.paths import is_sensitive_path, is_system_path, normalize_path, resolve_authorized
 from app.core.schemas import Approval, ApprovalStatus, now_iso
@@ -30,7 +28,7 @@ from app.policy.approval_binding import (
 )
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
-
+from app.tools.tool_abort import raise_if_tool_aborted
 
 CleanupAction = Literal["delete_direct", "trash_with_prompt", "review_only"]
 
@@ -123,7 +121,7 @@ class CleanupItem(BaseModel):
     is_dir: bool = False
 
     @model_validator(mode="after")
-    def _approval_matches_action(self) -> "CleanupItem":
+    def _approval_matches_action(self) -> CleanupItem:
         self.requires_approval = self.action in {"trash_with_prompt", "review_only"}
         return self
 
@@ -137,11 +135,11 @@ class CleanupPlan(BaseModel):
     trash_bytes: int = 0
     review_only_bytes: int = 0
     risk_summary: dict[str, Any] = Field(default_factory=dict)
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     content_hash: str = ""
 
     @model_validator(mode="after")
-    def _fill_hashes(self) -> "CleanupPlan":
+    def _fill_hashes(self) -> CleanupPlan:
         self.items = sorted(self.items, key=lambda item: (item.path.casefold(), item.action, item.id))
         self.roots = sorted(str(root) for root in self.roots)
         totals = _summarize_items(self.items)
@@ -173,7 +171,6 @@ class CleanupPlannerService:
         seen_paths: set[str] = set()
 
         for root in roots:
-            root_key = _normalized_key(root)
             if _is_source_repo_root(root):
                 item = _item_for_path(
                     root,
@@ -265,6 +262,7 @@ class CleanupPlannerService:
 
         for item in executable:
             path = resolve_authorized(item.path, _allowed(context))
+            raise_if_tool_aborted(context)
             if item.action == "delete_direct":
                 if not is_direct_delete_allowed(path):
                     raise SecurityError(f"Direct deletion is not allowed for non-whitelisted cleanup item: {path}")
@@ -279,6 +277,7 @@ class CleanupPlannerService:
             if item.action == "trash_with_prompt":
                 if send2trash is None:
                     raise RuntimeError("send2trash is not installed; recycle-bin cleanup is unavailable.")
+                raise_if_tool_aborted(context)
                 send2trash(str(path))
                 changed_paths.append(str(path))
                 recycle_restore_paths.append(str(path))
@@ -370,11 +369,7 @@ def compute_plan_hash(plan: CleanupPlan) -> str:
     payload = {
         "roots": sorted(str(root) for root in plan.roots),
         "items": [
-            {
-                key: value
-                for key, value in item.model_dump(mode="json").items()
-                if key not in {"confidence"}
-            }
+            {key: value for key, value in item.model_dump(mode="json").items() if key not in {"confidence"}}
             for item in sorted(plan.items, key=lambda value: (value.path.casefold(), value.action, value.id))
         ],
     }
@@ -488,7 +483,10 @@ def _classify_path(path: Path, options: dict[str, Any]) -> CleanupItem | None:
                 action="review_only",
                 risk="high",
                 confidence=0.99,
-                reason="Config, credential-like, browser profile, database, or source-control material requires manual review.",
+                reason=(
+                    "Config, credential-like, browser profile, database, or source-control material requires "
+                    "manual review."
+                ),
             )
 
         stat = path.stat()
@@ -734,7 +732,9 @@ def _is_source_repo_root(path: Path) -> bool:
 
 
 def _is_system_or_sensitive(path: Path) -> bool:
-    return is_system_path(path) or is_sensitive_path(path) or _is_sensitive_by_name(path) or _is_browser_profile_path(path)
+    return (
+        is_system_path(path) or is_sensitive_path(path) or _is_sensitive_by_name(path) or _is_browser_profile_path(path)
+    )
 
 
 def _is_sensitive_by_name(path: Path) -> bool:
@@ -767,7 +767,7 @@ def _sha256_file(path: Path) -> str:
 def _record_cleanup_event(event_type: str, payload: dict[str, Any], context: dict[str, Any]) -> None:
     try:
         record(event_type, "CleanupPlannerService", payload, task_id=context.get("task_id"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - cleanup audit recording must not block the cleanup response.
         return
 
 

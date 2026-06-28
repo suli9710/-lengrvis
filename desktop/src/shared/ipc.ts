@@ -7,6 +7,8 @@ export const IPC_CHANNELS = {
   backendForeground: "lengrvis:backend:foreground",
   backendBackground: "lengrvis:backend:background",
   commandsExecute: "lengrvis:commands:execute",
+  approvalApprove: "lengrvis:approvals:approve",
+  approvalReject: "lengrvis:approvals:reject",
   taskRollback: "lengrvis:tasks:rollback",
   cleanupExecute: "lengrvis:cleanup:execute",
   cleanupRollback: "lengrvis:cleanup:rollback",
@@ -73,7 +75,6 @@ export type IpcChannelSecurityPolicy = {
     | "file-picker-grant"
     | "safe-external-url"
     | "permission-nonce"
-    | "mobile-device-grant"
     | "browser-host-approval"
     | "desktop-ws-session";
   risk: "read" | "write" | "sensitive" | "external-navigation" | "event";
@@ -88,6 +89,8 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   backendForeground: { schema: "none", capability: "trusted-renderer", risk: "write" },
   backendBackground: { schema: "none", capability: "trusted-renderer", risk: "write" },
   commandsExecute: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
+  approvalApprove: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
+  approvalReject: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
   taskRollback: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
   cleanupExecute: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
   cleanupRollback: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
@@ -97,7 +100,7 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   ollamaInstall: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
   ollamaPull: { schema: "object", capability: "native-confirmation", risk: "sensitive" },
   ollamaStart: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
-  runsStart: { schema: "typedRequest", capability: "backend-token", risk: "write" },
+  runsStart: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   systemDiagnosticsExport: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
   privacyEraseLocalData: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   documentsParse: { schema: "typedRequest", capability: "file-picker-grant", risk: "sensitive" },
@@ -110,9 +113,9 @@ export const IPC_CHANNEL_SECURITY_POLICIES = {
   permissionPolicyDeleteRule: { schema: "typedRequest", capability: "permission-nonce", risk: "sensitive" },
   mobilePairingCreateCode: { schema: "none", capability: "native-confirmation", risk: "sensitive" },
   mobilePairingListDevices: { schema: "none", capability: "backend-token", risk: "read" },
-  mobilePairingRevokeDevice: { schema: "string", capability: "mobile-device-grant", risk: "sensitive" },
+  mobilePairingRevokeDevice: { schema: "string", capability: "native-confirmation", risk: "sensitive" },
   mobilePairingCreateRemoteInputGrant: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
-  mobilePairingRevokeRemoteInputGrant: { schema: "typedRequest", capability: "mobile-device-grant", risk: "sensitive" },
+  mobilePairingRevokeRemoteInputGrant: { schema: "typedRequest", capability: "native-confirmation", risk: "sensitive" },
   openExternal: { schema: "string", capability: "safe-external-url", risk: "external-navigation" },
   getFileIcon: { schema: "string", capability: "file-picker-grant", risk: "read" },
   showItemInFolder: { schema: "string", capability: "file-picker-grant", risk: "write" },
@@ -196,6 +199,8 @@ export const API_REQUEST_DENIED_EXACT_PATHS = [
 ] as const;
 
 export const API_REQUEST_DENIED_METHOD_PATHS = [
+  { method: "POST", pathPrefix: "/api/approvals/", pathSuffix: "/approve" },
+  { method: "POST", pathPrefix: "/api/approvals/", pathSuffix: "/reject" },
   { method: "POST", pathPrefix: "/api/runs" },
   { method: "POST", pathPrefix: "/api/tasks/", pathSuffix: "/rollback" },
   { method: "POST", path: "/api/settings" },

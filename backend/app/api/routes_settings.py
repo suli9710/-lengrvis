@@ -6,21 +6,29 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel as PydanticBaseModel
 
-from app.indexer.ocr_service import accelerated_ocr_health, accelerated_ocr_smoke
+from app.commerce.entitlements import Feature, active_plan, require_feature
 from app.indexer.local_embedding_provider import (
     health_snapshot as embedding_health_snapshot,
+)
+from app.indexer.local_embedding_provider import (
     test_embedding as onnx_test_embedding,
 )
+from app.indexer.ocr_service import accelerated_ocr_health, accelerated_ocr_smoke
 from app.llm.local_provider import health_snapshot
 from app.llm.onnx_provider import (
     health_snapshot as onnx_health_snapshot,
+)
+from app.llm.onnx_provider import (
     test_generate as onnx_test_generate,
+)
+from app.llm.onnx_provider import (
     warmup as onnx_warmup,
 )
 from app.llm.registry import get_effective_settings
-from app.policy.redaction import redact_public_text
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionStore
+from app.policy.redaction import redact_public_text
 from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.security.middleware import reject_audit_fail_closed_websocket
 from app.security.sensitive_confirmation import (
     create_permission_policy_confirmation,
     create_settings_confirmation,
@@ -31,6 +39,7 @@ from app.security.sensitive_confirmation import (
 )
 from app.services import ollama_service
 from app.services.settings_service import (
+    coerce_settings_patch,
     get_llm_cost_summary,
     get_llm_health,
     get_llm_profile,
@@ -41,12 +50,12 @@ from app.services.settings_service import (
 )
 from app.tools.vision_tools import image_embedding_health, test_image_embedding
 
-
 router = APIRouter()
 ws_router = APIRouter()
 _PUBLIC_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
 _PUBLIC_PATH_KEYS = {"path", "model_path", "models_path", "manifest_path", "bundle_manifest_path"}
 _PUBLIC_PATH_KEY_SUFFIXES = ("_path", "_dir", "_directory", "_file")
+
 
 @router.get("/settings")
 def settings():
@@ -60,7 +69,7 @@ def update(payload: dict):
 
 @router.post("/settings/confirm-sensitive-change")
 def confirm_sensitive_change(payload: dict):
-    return create_settings_confirmation(payload)
+    return create_settings_confirmation(payload, confirmed_payload=coerce_settings_patch(payload))
 
 
 @router.post("/settings/test-llm-provider")
@@ -75,6 +84,7 @@ def permission_policy():
 
 @router.put("/settings/permission-policy")
 def update_permission_policy(payload: PermissionPolicy, confirmation_nonce: str = Query("")):
+    require_feature(active_plan(get_effective_settings()), Feature.POLICY_MANAGEMENT)
     store = PermissionStore()
     relaxations = permission_policy_relaxations(store.get_policy(), payload)
     require_permission_policy_confirmation(relaxations, confirmation_nonce)
@@ -83,6 +93,7 @@ def update_permission_policy(payload: PermissionPolicy, confirmation_nonce: str 
 
 @router.post("/settings/permission-policy/rules")
 def upsert_permission_rule(payload: PermissionRule, confirmation_nonce: str = Query("")):
+    require_feature(active_plan(get_effective_settings()), Feature.POLICY_MANAGEMENT)
     store = PermissionStore()
     relaxations = permission_rule_relaxations(store.get_policy(), payload)
     require_permission_policy_confirmation(relaxations, confirmation_nonce)
@@ -91,6 +102,7 @@ def upsert_permission_rule(payload: PermissionRule, confirmation_nonce: str = Qu
 
 @router.delete("/settings/permission-policy/rules/{rule_id}")
 def delete_permission_rule(rule_id: str, confirmation_nonce: str = Query("")):
+    require_feature(active_plan(get_effective_settings()), Feature.POLICY_MANAGEMENT)
     store = PermissionStore()
     relaxations = permission_delete_relaxations(store.get_policy(), rule_id)
     require_permission_policy_confirmation(relaxations, confirmation_nonce)
@@ -103,11 +115,15 @@ def confirm_permission_policy_relaxation(payload: dict):
     store = PermissionStore()
     action = str(payload.get("action") or "").strip().lower()
     if action == "upsert_rule":
-        changes = permission_rule_relaxations(store.get_policy(), PermissionRule.model_validate(payload.get("rule") or {}))
+        changes = permission_rule_relaxations(
+            store.get_policy(), PermissionRule.model_validate(payload.get("rule") or {})
+        )
     elif action == "delete_rule":
         changes = permission_delete_relaxations(store.get_policy(), str(payload.get("rule_id") or ""))
     else:
-        changes = permission_policy_relaxations(store.get_policy(), PermissionPolicy.model_validate(payload.get("policy") or {}))
+        changes = permission_policy_relaxations(
+            store.get_policy(), PermissionPolicy.model_validate(payload.get("policy") or {})
+        )
     return create_permission_policy_confirmation(changes)
 
 
@@ -260,6 +276,7 @@ async def install_local_model(payload: InstallLocalModelRequest = InstallLocalMo
 async def install_local_model_stream(websocket: WebSocket, model: str | None = None):
     if await close_unauthorized_desktop_websocket(websocket):
         return
+    await reject_audit_fail_closed_websocket(websocket)
     try:
         model = _allowed_install_model(model)
     except ValueError:

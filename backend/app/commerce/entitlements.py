@@ -7,7 +7,7 @@ Tiers
 -----
 - ``Plan.FREE``  : 本机只读 + 基础任务
 - ``Plan.PRO``   : 云端额度 + 文档AI + 调度 + 手机远控(高风险)
-- ``Plan.TEAM``  : 审计导出 + 策略管控 + 私有部署 (Self-hosted)
+- ``Plan.MAX``   : 审计导出 + 策略管控 + 私有部署
 
 Entitlement gates *access* to a capability. It never replaces the per-action
 strong-approval flow: high-risk features (e.g. remote control) still require an
@@ -27,11 +27,13 @@ PLAN_ENV_VAR = "LENGRVIS_PLAN"
 
 
 class Plan(StrEnum):
-    """Commercialization tiers, ordered FREE < PRO < TEAM."""
+    """Commercialization tiers, ordered FREE < PRO < MAX."""
 
     FREE = "free"
     PRO = "pro"
-    TEAM = "team"
+    MAX = "max"
+    # Legacy alias: old licenses/configs used "team"; public APIs now emit "max".
+    TEAM = "max"
 
 
 class Feature(StrEnum):
@@ -46,13 +48,13 @@ class Feature(StrEnum):
     SCHEDULING = "scheduling"
     REMOTE_VIEW = "remote_view"
     REMOTE_CONTROL = "remote_control"
-    # Team tier
+    # Max tier
     AUDIT_EXPORT = "audit_export"
     POLICY_MANAGEMENT = "policy_management"
     PRIVATE_DEPLOYMENT = "private_deployment"
 
 
-_PLAN_RANK: dict[Plan, int] = {Plan.FREE: 0, Plan.PRO: 1, Plan.TEAM: 2}
+_PLAN_RANK: dict[Plan, int] = {Plan.FREE: 0, Plan.PRO: 1, Plan.MAX: 2}
 
 # Tolerant aliases so deployment configs / license strings normalize cleanly.
 _PLAN_ALIASES: dict[str, Plan] = {
@@ -65,12 +67,14 @@ _PLAN_ALIASES: dict[str, Plan] = {
     "professional": Plan.PRO,
     "plus": Plan.PRO,
     "premium": Plan.PRO,
-    "team": Plan.TEAM,
-    "team_self_hosted": Plan.TEAM,
-    "team-self-hosted": Plan.TEAM,
-    "self_hosted": Plan.TEAM,
-    "self-hosted": Plan.TEAM,
-    "enterprise": Plan.TEAM,
+    "max": Plan.MAX,
+    "maximum": Plan.MAX,
+    "team": Plan.MAX,
+    "team_self_hosted": Plan.MAX,
+    "team-self-hosted": Plan.MAX,
+    "self_hosted": Plan.MAX,
+    "self-hosted": Plan.MAX,
+    "enterprise": Plan.MAX,
 }
 
 # Minimum plan required to use each feature.
@@ -82,9 +86,9 @@ _FEATURE_MIN_PLAN: dict[Feature, Plan] = {
     Feature.SCHEDULING: Plan.PRO,
     Feature.REMOTE_VIEW: Plan.PRO,
     Feature.REMOTE_CONTROL: Plan.PRO,
-    Feature.AUDIT_EXPORT: Plan.TEAM,
-    Feature.POLICY_MANAGEMENT: Plan.TEAM,
-    Feature.PRIVATE_DEPLOYMENT: Plan.TEAM,
+    Feature.AUDIT_EXPORT: Plan.MAX,
+    Feature.POLICY_MANAGEMENT: Plan.MAX,
+    Feature.PRIVATE_DEPLOYMENT: Plan.MAX,
 }
 
 # High-risk features always require an explicit per-action user approval, even
@@ -116,7 +120,7 @@ def active_plan(settings: Any | None = None) -> Plan:
 
 def required_plan(feature: Feature) -> Plan:
     """Return the minimum plan that unlocks ``feature``."""
-    return _FEATURE_MIN_PLAN.get(feature, Plan.TEAM)
+    return _FEATURE_MIN_PLAN.get(feature, Plan.MAX)
 
 
 def has_feature(plan: Any, feature: Feature) -> bool:

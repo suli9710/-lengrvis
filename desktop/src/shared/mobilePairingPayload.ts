@@ -1,5 +1,6 @@
 export interface DesktopMobilePairingCode {
   code: string;
+  claim_secret?: string;
   expires_at: string;
   expires_in: number;
   server: {
@@ -20,6 +21,7 @@ export interface MobilePairingPayloadV1 {
   version: 1;
   base_url: string;
   code: string;
+  claim_secret: string;
   expires_at: string;
   expires_in: number;
   server: {
@@ -57,6 +59,7 @@ export function buildMobilePairingPayload(pairing: DesktopMobilePairingCode): Mo
     version: 1,
     base_url: baseUrl,
     code: pairing.code,
+    claim_secret: pairing.claim_secret ?? "",
     expires_at: pairing.expires_at,
     expires_in: pairing.expires_in,
     server: {

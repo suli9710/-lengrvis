@@ -7,8 +7,9 @@ from typing import Any
 
 import pytest
 
-from app.llm.mock_provider import MockProvider
+from app.commerce.entitlements import EntitlementError, Feature
 from app.config import AppSettings
+from app.llm.mock_provider import MockProvider
 from app.services import document_service
 from app.tools import document_tools
 
@@ -27,6 +28,11 @@ class _StubProvider:
             raise RuntimeError("provider unavailable")
         index = min(len(self.calls) - 1, len(self.replies) - 1)
         return self.replies[index]
+
+
+@pytest.fixture(autouse=True)
+def _entitle_document_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LENGRVIS_PLAN", "pro")
 
 
 @pytest.fixture
@@ -216,7 +222,7 @@ def test_tool_respects_document_llm_budget(monkeypatch, tmp_path: Path):
     path.write_text("A" * 5000, encoding="utf-8")
     context = {
         "allowed_directories": [str(tmp_path)],
-        "settings": AppSettings(provider_name="mock", document_max_chars_to_llm=1200),
+        "settings": AppSettings(provider_name="mock", document_max_chars_to_llm=1200, plan="pro"),
     }
     stub = _StubProvider(replies=["budgeted summary"])
     _inject_provider(monkeypatch, stub)
@@ -272,3 +278,32 @@ def test_validate_question_requires_non_empty_question(args):
 
 def test_validate_question_accepts_real_question():
     document_tools._validate_question({"question": "What is the payment term?"}, {})  # does not raise
+
+
+def test_document_tools_require_document_ai_plan(monkeypatch, sample_text, context):
+    monkeypatch.delenv("LENGRVIS_COMMERCIAL_RELEASE", raising=False)
+
+    settings = AppSettings(
+        allowed_directories=context["allowed_directories"],
+        plan="free",
+    )
+    result = document_tools.summarize({"path": str(sample_text)}, {**context, "settings": settings})
+
+    assert result["error"] == "Document AI is not available on this plan."
+
+
+def test_document_tools_require_document_ai_plan_fail_closed_in_commercial_mode(monkeypatch, sample_text, context):
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+
+    settings = AppSettings(
+        allowed_directories=context["allowed_directories"],
+        plan="free",
+    )
+
+    with pytest.raises(EntitlementError) as excinfo:
+        document_tools.summarize({"path": str(sample_text)}, {**context, "settings": settings})
+
+    error = excinfo.value
+    assert error.feature is Feature.DOCUMENT_AI
+    assert error.code == "entitlement_required"
+    assert error.status_code == 402

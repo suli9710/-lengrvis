@@ -46,14 +46,16 @@ from app.orchestration.handlers import (
 )
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.os_execution_engine import OSExecutionEngine
-from app.orchestration.state_machine import safe_transition
+from app.orchestration.state_machine import _phase_of, safe_transition
 from app.orchestration.step_phase import set_step_status
+from app.orchestration.task_phase import TaskPhase
 from app.perception.context_store import handle_perception_event
 from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error, strip_model_control_args
 from app.policy.risk import SafetyVerdict
 from app.services.task_recording_service import capture_step_screenshot, recording_enabled
 from app.tools.registry import register_all_tools
 
+_TERMINAL_TASK_PHASES = frozenset({TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED})
 _MAX_SUPERVISION_TASK_CACHES = 256
 _MAX_SUPERVISED_IDS_PER_TASK = 5000
 
@@ -107,9 +109,22 @@ class OrchestratorAgent:
         self.dispatcher.register("perception.screen_state", handle_perception_event)
 
     def _set_status(self, task: Task, status: TaskStatus, *, final_summary: str | None = None) -> Task:
+        target_phase = _phase_of(status)
+        original_summary = task.final_summary
         if final_summary is not None:
             task.final_summary = final_summary
-        return safe_transition(task, status, actor=self.name)
+        try:
+            task = safe_transition(task, status, actor=self.name)
+        except Exception:
+            task.final_summary = original_summary
+            raise
+        if final_summary is not None and task.status == target_phase:
+            db.upsert_model("tasks", task)
+        elif final_summary is not None:
+            task.final_summary = original_summary
+        if task.status in _TERMINAL_TASK_PHASES:
+            self.recovery_handler.cleanup_task(task.id)
+        return task
 
     def create_task_shell(self, goal: str, mode: str, *, metadata: dict[str, Any] | None = None) -> Task:
         task = Task(user_goal=goal, mode=mode, status=TaskStatus.PLANNING, metadata=dict(metadata or {}))

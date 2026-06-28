@@ -23,40 +23,48 @@ def test_normalize_plan_accepts_aliases_and_defaults_to_free():
     assert normalize_plan(None) is Plan.FREE
     assert normalize_plan("  PRO ") is Plan.PRO
     assert normalize_plan("professional") is Plan.PRO
-    assert normalize_plan("team") is Plan.TEAM
-    assert normalize_plan("team-self-hosted") is Plan.TEAM
-    assert normalize_plan("enterprise") is Plan.TEAM
+    assert normalize_plan("max") is Plan.MAX
+    assert normalize_plan("team") is Plan.MAX
+    assert normalize_plan("team-self-hosted") is Plan.MAX
+    assert normalize_plan("enterprise") is Plan.MAX
     assert normalize_plan("nonsense") is Plan.FREE
-    assert normalize_plan(Plan.TEAM) is Plan.TEAM
+    assert normalize_plan(Plan.MAX) is Plan.MAX
 
 
 def test_has_feature_matrix():
     # Free tier
     assert has_feature(Plan.FREE, Feature.BASIC_TASKS)
     assert has_feature(Plan.FREE, Feature.LOCAL_READ_ONLY)
+    assert not has_feature(Plan.FREE, Feature.REMOTE_VIEW)
     assert not has_feature(Plan.FREE, Feature.REMOTE_CONTROL)
     assert not has_feature(Plan.FREE, Feature.DOCUMENT_AI)
     assert not has_feature(Plan.FREE, Feature.AUDIT_EXPORT)
     # Pro tier inherits Free and unlocks cloud capabilities incl. remote control
     assert has_feature(Plan.PRO, Feature.BASIC_TASKS)
     assert has_feature(Plan.PRO, Feature.DOCUMENT_AI)
+    assert has_feature(Plan.PRO, Feature.REMOTE_VIEW)
     assert has_feature(Plan.PRO, Feature.REMOTE_CONTROL)
     assert not has_feature(Plan.PRO, Feature.AUDIT_EXPORT)
     assert not has_feature(Plan.PRO, Feature.PRIVATE_DEPLOYMENT)
-    # Team tier inherits everything
-    assert has_feature(Plan.TEAM, Feature.REMOTE_CONTROL)
-    assert has_feature(Plan.TEAM, Feature.AUDIT_EXPORT)
-    assert has_feature(Plan.TEAM, Feature.PRIVATE_DEPLOYMENT)
+    # Max tier inherits everything
+    assert has_feature(Plan.MAX, Feature.REMOTE_VIEW)
+    assert has_feature(Plan.MAX, Feature.REMOTE_CONTROL)
+    assert has_feature(Plan.MAX, Feature.AUDIT_EXPORT)
+    assert has_feature(Plan.MAX, Feature.PRIVATE_DEPLOYMENT)
 
 
 def test_has_feature_accepts_plan_strings():
+    assert has_feature("pro", Feature.REMOTE_VIEW)
     assert has_feature("pro", Feature.REMOTE_CONTROL)
+    assert not has_feature("free", Feature.REMOTE_VIEW)
     assert not has_feature("free", Feature.REMOTE_CONTROL)
 
 
 def test_required_plan_and_high_risk_flags():
+    assert required_plan(Feature.REMOTE_VIEW) is Plan.PRO
     assert required_plan(Feature.REMOTE_CONTROL) is Plan.PRO
-    assert required_plan(Feature.AUDIT_EXPORT) is Plan.TEAM
+    assert required_plan(Feature.AUDIT_EXPORT) is Plan.MAX
+    assert not is_high_risk(Feature.REMOTE_VIEW)
     assert is_high_risk(Feature.REMOTE_CONTROL)
     assert not is_high_risk(Feature.DOCUMENT_AI)
 
@@ -73,7 +81,7 @@ def test_require_feature_raises_for_unentitled_plan():
 
 def test_require_feature_returns_plan_for_entitled():
     assert require_feature(Plan.PRO, Feature.REMOTE_CONTROL) is Plan.PRO
-    assert require_feature("team", Feature.AUDIT_EXPORT) is Plan.TEAM
+    assert require_feature("team", Feature.AUDIT_EXPORT) is Plan.MAX
 
 
 def test_active_plan_reads_environment(monkeypatch):
@@ -82,7 +90,7 @@ def test_active_plan_reads_environment(monkeypatch):
     monkeypatch.setenv("LENGRVIS_PLAN", "pro")
     assert active_plan() is Plan.PRO
     monkeypatch.setenv("LENGRVIS_PLAN", "team-self-hosted")
-    assert active_plan() is Plan.TEAM
+    assert active_plan() is Plan.MAX
 
 
 def test_active_plan_prefers_explicit_settings_attribute(monkeypatch):
@@ -91,7 +99,7 @@ def test_active_plan_prefers_explicit_settings_attribute(monkeypatch):
     class _Settings:
         plan = "team"
 
-    assert active_plan(_Settings()) is Plan.TEAM
+    assert active_plan(_Settings()) is Plan.MAX
 
 
 def test_remote_desktop_gated_by_plan_in_effective_settings(monkeypatch):
@@ -114,8 +122,23 @@ def test_commercial_release_cannot_unlock_paid_plan_with_environment_only(monkey
     from app.llm import registry
 
     monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
-    monkeypatch.setenv("LENGRVIS_PLAN", "team")
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
     monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    registry.invalidate_settings_cache()
+
+    settings = registry.get_effective_settings()
+
+    assert settings.plan == "free"
+
+
+def test_non_commercial_cannot_unlock_paid_plan_with_environment_only(monkeypatch):
+    from app.llm import registry
+
+    monkeypatch.delenv("LENGRVIS_COMMERCIAL_RELEASE", raising=False)
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.delenv("LENGRVIS_TEST", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("LENGRVIS_PLAN", "max")
     registry.invalidate_settings_cache()
 
     settings = registry.get_effective_settings()

@@ -70,6 +70,23 @@ _RUNTIME_PACKAGE_MODULES = (
     "onnxruntime",
 )
 _WINML_PROVIDER = "WindowsMLExecutionProvider"
+_QWEN_IM_START = "<|im_start|>"
+_QWEN_IM_END = "<|im_" + "end|>"
+_QWEN_REDACTED_IM_START = "<|redacted_im_start|>"
+_QWEN_REDACTED_IM_END = "<|im_end|>"
+_QWEN_TEMPLATE_DELIMITERS: tuple[tuple[str, str], ...] = (
+    (_QWEN_REDACTED_IM_START, "<|redacted_redacted_im_start|>"),
+    (_QWEN_REDACTED_IM_END, "<|redacted_redacted_im_end|>"),
+    (_QWEN_IM_START, _QWEN_REDACTED_IM_START),
+    (_QWEN_IM_END, _QWEN_REDACTED_IM_END),
+)
+
+
+def _sanitize_qwen_message_content(content: str) -> str:
+    sanitized = content
+    for raw, safe in _QWEN_TEMPLATE_DELIMITERS:
+        sanitized = sanitized.replace(raw, safe)
+    return sanitized
 
 
 @dataclass(slots=True)
@@ -270,11 +287,14 @@ class OnnxProvider(LLMProvider):
             config.set_provider_option(key, value)
 
     def _format_messages(self, messages: list[dict[str, str]]) -> str:
-        if self.backend.model_family.startswith("qwen"):
+        model_family = self.backend.model_family or _infer_model_family(Path(self.backend.model_path))
+        if model_family.startswith("qwen"):
             return self._format_qwen_messages(messages)
         lines: list[str] = []
         for message in messages:
-            role = str(message.get("role") or "user")
+            role = str(message.get("role") or "user").strip().lower()
+            if role not in {"system", "user", "assistant"}:
+                role = "user"
             content = str(message.get("content") or "")
             if content:
                 lines.append(f"{role}: {content}")
@@ -290,7 +310,8 @@ class OnnxProvider(LLMProvider):
                 continue
             if role not in {"system", "user", "assistant"}:
                 role = "user"
-            parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+            content = _sanitize_qwen_message_content(content)
+            parts.append(f"<|im_start|>{role}\n{content}{_QWEN_IM_END}")
         parts.append("<|im_start|>assistant\n")
         return "\n".join(parts)
 

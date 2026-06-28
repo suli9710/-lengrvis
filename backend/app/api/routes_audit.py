@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.core import audit as audit_core, db
+from app.commerce.entitlements import Feature, active_plan, require_feature
+from app.core import audit as audit_core
+from app.core import db
 from app.core.schemas import AuditChainVerification
+from app.llm.registry import get_effective_settings
 from app.policy.redaction import redact_audit_payload
-
 
 router = APIRouter()
 
@@ -25,6 +27,7 @@ def _public_audit_events(events: list[dict]) -> list[dict]:
 
 @router.get("/audit")
 def audit():
+    require_feature(active_plan(get_effective_settings()), Feature.AUDIT_EXPORT)
     return _public_audit_events(db.fetch_many("audit_events", limit=500))
 
 
@@ -44,4 +47,5 @@ def plan_risk_consistency(limit: int = 500):
 
 @router.get("/audit/{task_id}")
 def audit_for_task(task_id: str):
+    require_feature(active_plan(get_effective_settings()), Feature.AUDIT_EXPORT)
     return _public_audit_events(db.fetch_many("audit_events", "task_id = ?", (task_id,), limit=500))

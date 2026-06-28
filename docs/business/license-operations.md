@@ -1,13 +1,15 @@
 # Commercial License Operations
 
-This runbook defines the offline issuer process for Lengrvis Pro and Team licenses. It is operational guidance, not proof that a production issuer key, commercial owner, or live customer workflow has been approved.
+This runbook defines the offline issuer and first-activation process for Lengrvis Pro and Max subscriptions. It is operational guidance, not proof that a production issuer key, commercial owner, or live customer workflow has been approved.
 
 ## Trust boundary
 
 - The Ed25519 private key stays on a dedicated offline/admin machine or approved HSM-backed signing environment.
 - Runtime builds receive only `LENGRVIS_LICENSE_PUBLIC_KEY`.
-- Packaged Electron launches force `LENGRVIS_COMMERCIAL_RELEASE=true`; managed Windows services must set it in their approved runtime configuration. In this mode `LENGRVIS_PLAN=pro/team` cannot unlock paid features without a valid, active, non-revoked signed license.
+- Packaged Electron launches force `LENGRVIS_COMMERCIAL_RELEASE=true`; managed Windows services must set it in their approved runtime configuration. In this mode `LENGRVIS_PLAN=pro/max` cannot unlock paid features without a valid, active, non-revoked signed license.
+- First online activation uses `LENGRVIS_ACTIVATION_BASE_URL` on the desktop client and `POST /api/v1/activations` on the activation server. The activation server stores only HMAC-SHA256 activation-key hashes and returns an Ed25519 signed license token.
 - Never place a private key, passphrase, `LENGRVIS_LICENSE_PRIVATE_KEY`, or deprecated `LENGRVIS_LICENSE_SIGNING_KEY` in `.env`, GitHub Actions runtime secrets, an installer, a diagnostic package, or a customer machine.
+- Never place `LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY`, `LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE`, activation keys, root passwords, database passwords, or raw customer data in tracked docs, installers, or diagnostics.
 - License files and revocation manifests may be shared with the licensed customer. The issuer ledger and private key are confidential operational records.
 - `order_ref` must be an opaque/redacted internal reference, not a payment card number or unnecessary personal data.
 
@@ -34,7 +36,7 @@ npm run license:admin -- issue `
   --private-key-passphrase-file C:\secure\issuer-passphrase.txt `
   --issuer "Approved contracting entity" `
   --subject "Customer display name" `
-  --plan team `
+  --plan max `
   --seats 25 `
   --expires-at 2027-06-30T23:59:59Z `
   --order-ref order-redacted-1042 `
@@ -52,7 +54,32 @@ The command:
 
 The customer imports the `.lic` file from “设置 → 套餐与授权”, or an administrator deploys it through `LENGRVIS_LICENSE_KEY` / `<data_dir>/license.key`.
 
-## 3. Replace or migrate a license
+## 3. Create a subscription activation key
+
+The activation server must be configured with:
+
+- `LENGRVIS_ACTIVATION_DB=<private sqlite path>`
+- `LENGRVIS_ACTIVATION_KEY_PEPPER=<server-only random secret>`
+- `LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY_FILE=<encrypted issuer private key path>`
+- `LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE_FILE=<private passphrase file>` when the key is encrypted
+- `LENGRVIS_LICENSE_PUBLIC_KEY=<production Ed25519 public key>` for local self-checks
+
+Create a Pro/Max activation key without storing the raw key:
+
+```powershell
+npm run activation:admin -- create-key `
+  --plan max `
+  --subscription-id sub-redacted-001 `
+  --status active `
+  --subject customer-redacted `
+  --max-devices 1 `
+  --expires-at 2026-12-31T00:00:00Z `
+  --activation-key-out C:\secure\handoff\customer-redacted.activation-key
+```
+
+The desktop app sends the key once to `LENGRVIS_ACTIVATION_BASE_URL/api/v1/activations`, stores the returned signed license, and then runs offline until expiry/revocation/refresh.
+
+## 4. Replace or migrate a license
 
 Issue the new license with `--replaces <old-license-id>`, then revoke the old license with a replacement reference:
 
@@ -75,7 +102,13 @@ npm run license:admin -- revoke `
 
 Do not revoke the old license until the replacement artifact has been delivered through the approved support channel.
 
-## 4. Refund, chargeback, or administrative revocation
+## 5. Refund, chargeback, or administrative revocation
+
+If the subscription was created through the activation server, first revoke the
+subscription key in the activation admin UI or with the activation database
+runbook. This blocks new activations and surfaces the already activated
+`license_id` values. It does not by itself disable already installed offline
+licenses; continue with the signed revocation manifest flow below.
 
 ```powershell
 npm run license:admin -- revoke `
@@ -100,7 +133,7 @@ npm run license:admin -- publish-revocations `
   --force
 ```
 
-## 5. Deploy revocations
+## 6. Deploy revocations
 
 Provision the signed manifest through either:
 
@@ -112,10 +145,11 @@ On the next settings resolution or application restart:
 - a matching `license_id` becomes `revoked` and paid features fall back to Free;
 - a tampered or malformed manifest becomes `revocation_data_invalid` and paid features fail closed;
 - a legacy license without `license_id` remains readable for compatibility but is marked not revocation-capable and must be replaced before production sale.
+- a legacy device-bound license without `device_fingerprint` is rejected when `LENGRVIS_COMMERCIAL_RELEASE=true`; customers must re-activate or refresh online to receive a fingerprint-bound replacement token.
 
 Offline revocation is not instantaneous. The customer or deployment administrator must receive and install the updated signed manifest. Do not describe this as online real-time revocation.
 
-## 6. Verify artifacts
+## 7. Verify artifacts
 
 ```powershell
 npm run license:admin -- inspect `
@@ -134,6 +168,7 @@ Inspection prints only safe metadata. A revoked, expired, malformed, or wrongly 
 - [ ] Public-key fingerprint recorded in RC evidence.
 - [ ] `LENGRVIS_COMMERCIAL_RELEASE=true` and public key pass `npm run release:safety`.
 - [ ] Test issue, import, replacement, refund revocation, manifest deployment, and Free fallback recorded.
+- [ ] Test activation key creation, first activation, repeated activation, device-limit rejection, renewal refresh, cancellation at period end, refund revocation, expiry downgrade, and rate limiting recorded.
 - [ ] Ledger backup and restore tested; tamper detection demonstrated.
 - [ ] Customer delivery and revocation-manifest update channel approved.
 

@@ -462,39 +462,23 @@ class FTSIndex:
     ) -> list[dict[str, Any]]:
         db.init_db()
         cleaned = str(query or "").strip()
-        allowed_roots = None
-        if allowed_directories is not None:
-            allowed_roots = _normalized_allowed_roots(allowed_directories)
-            if not allowed_roots:
-                return []
+        if allowed_directories is None:
+            return []
+        allowed_roots = _normalized_allowed_roots(allowed_directories)
+        if not allowed_roots:
+            return []
         with db.connect() as conn:
             try:
-                if allowed_roots is None:
-                    rows = conn.execute(
-                        """
-                        SELECT file_id, path,
-                               snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
-                        FROM document_chunks_fts
-                        WHERE document_chunks_fts MATCH ?
-                        LIMIT ?
-                        """,
-                        (fts_match_query(cleaned), limit),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        """
-                        SELECT file_id, path,
-                               snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
-                        FROM document_chunks_fts
-                        WHERE document_chunks_fts MATCH ?
-                        """,
-                        (fts_match_query(cleaned),),
-                    ).fetchall()
-                    rows = [
-                        row
-                        for row in rows
-                        if _path_within_roots(str(row["path"] or ""), allowed_roots)
-                    ][:limit]
+                rows = conn.execute(
+                    """
+                    SELECT file_id, path,
+                           snippet(document_chunks_fts, 2, '[', ']', '...', 12) AS snippet
+                    FROM document_chunks_fts
+                    WHERE document_chunks_fts MATCH ?
+                    """,
+                    (fts_match_query(cleaned),),
+                ).fetchall()
+                rows = [row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)][:limit]
                 if rows or len(cleaned) >= 3:
                     return [dict(row) for row in rows]
             except sqlite3.Error as exc:
@@ -506,34 +490,18 @@ class FTSIndex:
         conn,
         query: str,
         limit: int,
-        allowed_roots: list[Path] | None,
+        allowed_roots: list[Path],
     ) -> list[dict[str, Any]]:
-        if allowed_roots is None:
-            rows = conn.execute(
-                """
-                SELECT dc.file_id, dc.text, f.data, f.normalized_path
-                FROM document_chunks dc
-                JOIN indexed_files f ON f.id = dc.file_id
-                WHERE dc.text LIKE ?
-                LIMIT ?
-                """,
-                (f"%{query}%", limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT dc.file_id, dc.text, f.data, f.normalized_path
-                FROM document_chunks dc
-                JOIN indexed_files f ON f.id = dc.file_id
-                WHERE dc.text LIKE ?
-                """,
-                (f"%{query}%",),
-            ).fetchall()
-            rows = [
-                row
-                for row in rows
-                if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)
-            ][:limit]
+        rows = conn.execute(
+            """
+            SELECT dc.file_id, dc.text, f.data, f.normalized_path
+            FROM document_chunks dc
+            JOIN indexed_files f ON f.id = dc.file_id
+            WHERE dc.text LIKE ?
+            """,
+            (f"%{query}%",),
+        ).fetchall()
+        rows = [row for row in rows if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)][:limit]
         results = []
         for row in rows:
             file_data = json.loads(row["data"])

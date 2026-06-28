@@ -2,27 +2,40 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from app.config import get_env
+from app.core.audit import record
 from app.security.desktop_api import (
     DESKTOP_API_TOKEN_HEADER,
     desktop_api_token_headers,
 )
-
 
 GUARDIAN_PORT = int(get_env("LENGRVIS_GUARDIAN_PORT") or get_env("LENGRVIS_BACKEND_PORT") or "8000")
 FULL_BACKEND_HOST = "127.0.0.1"
 FULL_BACKEND_PORT = int(get_env("LENGRVIS_FULL_BACKEND_PORT") or "8001")
 FULL_BACKEND_URL = get_env("LENGRVIS_FULL_BACKEND_URL") or f"http://{FULL_BACKEND_HOST}:{FULL_BACKEND_PORT}"
 FULL_BACKEND_IDLE_TIMEOUT_SECONDS = int(get_env("LENGRVIS_FULL_BACKEND_IDLE_TIMEOUT_SECONDS") or "300")
+_DISALLOWED_FULL_BACKEND_EXECUTABLES = {
+    "bash",
+    "bash.exe",
+    "cmd",
+    "cmd.exe",
+    "cscript.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "sh",
+    "wscript.exe",
+}
 
 
 class ForegroundKind(StrEnum):
@@ -164,23 +177,39 @@ class GuardianRuntime:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/foreground", headers=desktop_api_token_headers())
-        except Exception:
+        except Exception:  # noqa: BLE001 - foreground notification is best-effort.
             return
 
     async def _notify_full_background(self) -> None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/background", headers=desktop_api_token_headers())
-        except Exception:
+        except Exception:  # noqa: BLE001 - background notification is best-effort.
             return
 
     def _full_backend_command(self) -> list[str]:
         raw = get_env("LENGRVIS_FULL_BACKEND_COMMAND")
         if raw:
-            return _split_command(raw)
+            command = _split_command(raw)
+            _validate_custom_full_backend_command(command)
+            record(
+                "guardian.full_backend_command",
+                "GuardianRuntime",
+                {"executable": command[0], "argv_len": len(command)},
+            )
+            return command
         if getattr(sys, "frozen", False):
             return [sys.executable]
-        return [sys.executable, "-m", "uvicorn", "backend.main:full_app", "--host", FULL_BACKEND_HOST, "--port", str(FULL_BACKEND_PORT)]
+        return [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "backend.main:full_app",
+            "--host",
+            FULL_BACKEND_HOST,
+            "--port",
+            str(FULL_BACKEND_PORT),
+        ]
 
     async def _wait_for_full_backend(self) -> None:
         deadline = time.monotonic() + 30
@@ -196,9 +225,11 @@ class GuardianRuntime:
     async def _is_full_backend_healthy(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=1.0) as client:
-                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers())
+                response = await client.get(
+                    f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers()
+                )
             return 200 <= response.status_code < 300
-        except Exception:
+        except Exception:  # noqa: BLE001 - health probes are best-effort.
             return False
 
     async def _stop_full_backend_locked(self) -> None:
@@ -211,7 +242,7 @@ class GuardianRuntime:
         process.terminate()
         try:
             await asyncio.wait_for(process.wait(), timeout=8)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()
 
@@ -235,14 +266,51 @@ class GuardianRuntime:
     async def _full_backend_has_active_runs(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=1.5) as client:
-                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers())
+                response = await client.get(
+                    f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers()
+                )
             if not 200 <= response.status_code < 300:
                 return False
             data = response.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 - active-run checks are best-effort.
             return False
         active = data.get("activeRunIds") if isinstance(data, dict) else None
         return bool(active)
+
+
+def _resolve_full_backend_executable(executable: str) -> Path:
+    candidate = Path(executable).expanduser()
+    if not candidate.is_absolute():
+        found = shutil.which(executable)
+        if not found:
+            raise RuntimeError(f"Full backend executable not found: {executable}")
+        candidate = Path(found)
+    resolved = candidate.resolve(strict=False)
+    if not resolved.is_file():
+        raise RuntimeError(f"Full backend executable is not a file: {executable}")
+    return resolved
+
+
+def _full_backend_executable_allowlist() -> set[Path]:
+    allowed = {Path(sys.executable).expanduser().resolve(strict=False)}
+    raw_allowlist = get_env("LENGRVIS_FULL_BACKEND_COMMAND_ALLOWLIST") or ""
+    for entry in raw_allowlist.split(";"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        allowed.add(Path(entry).expanduser().resolve(strict=False))
+    return allowed
+
+
+def _validate_custom_full_backend_command(command: list[str]) -> None:
+    if not command:
+        raise RuntimeError("Full backend command must not be empty.")
+    executable_name = Path(command[0]).name.lower()
+    if executable_name in _DISALLOWED_FULL_BACKEND_EXECUTABLES:
+        raise RuntimeError("Shell interpreters are not allowed for LENGRVIS_FULL_BACKEND_COMMAND.")
+    executable = _resolve_full_backend_executable(command[0])
+    if executable not in _full_backend_executable_allowlist():
+        raise RuntimeError("LENGRVIS_FULL_BACKEND_COMMAND executable is not allowed.")
 
 
 def _split_command(raw: str) -> list[str]:

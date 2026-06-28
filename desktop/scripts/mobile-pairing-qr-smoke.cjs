@@ -33,6 +33,7 @@ const {
 
 const pairing = {
   code: "A1B2C3",
+  claim_secret: "pair-claim-secret-visible-only-in-qr-123456",
   expires_at: "2026-06-01T00:05:00.000Z",
   expires_in: 300,
   token: "secret-pairing-token-must-not-render",
@@ -71,6 +72,7 @@ assert.equal(parsedQrValue.type, "lengrvis.mobile_pairing");
 assert.equal(parsedQrValue.version, 1);
 assert.equal(parsedQrValue.base_url, "https://desktop.example.test:8443");
 assert.equal(parsedQrValue.code, "A1B2C3");
+assert.equal(parsedQrValue.claim_secret, "pair-claim-secret-visible-only-in-qr-123456");
 assert.equal(parsedQrValue.expires_at, "2026-06-01T00:05:00.000Z");
 assert.equal(parsedQrValue.server.origin, parsedQrValue.base_url);
 assert.equal(parsedQrValue.server.scheme, "https");

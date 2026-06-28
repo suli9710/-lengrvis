@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
 from typing import Any
 
@@ -12,7 +12,6 @@ from app.core.audit import record
 from app.core.errors import AppError
 from app.llm.registry import get_effective_settings
 from app.policy.permissions import PermissionPolicy, PermissionRule, PermissionTimeWindow
-
 
 CONFIRMATION_FIELD = "confirmation_nonce"
 CONFIRMATION_TTL_SECONDS = 120
@@ -26,6 +25,15 @@ SENSITIVE_ENABLE_SETTINGS = {
     "remote_desktop_enabled",
 }
 LLM_EGRESS_SETTINGS = {"base_url", "provider_name", "wire_api"}
+NATIVE_CONFIRMATION_SETTINGS = {
+    "allowed_directories",
+    "allow_browser_network",
+    "allow_cloud_context",
+    "allow_file_content_upload",
+    "app_allowlist",
+    "mcp_servers",
+    "remote_desktop_enabled",
+}
 PERMISSION_MODE_RELAXATION_ORDER = {
     "plan": 0,
     "default": 1,
@@ -46,19 +54,39 @@ CREATE TABLE IF NOT EXISTS sensitive_confirmations (
 """
 
 
-def create_settings_confirmation(payload: dict[str, Any]) -> dict[str, Any]:
-    changes = sensitive_settings_changes(payload)
+def create_settings_confirmation(
+    payload: dict[str, Any],
+    *,
+    confirmed_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_payload = confirmed_payload if confirmed_payload is not None else payload
+    changes = settings_confirmation_changes(normalized_payload)
     if not changes:
         return {"required": False, "nonce": "", "changes": []}
-    return _create_confirmation("settings", changes)
+    return _create_confirmation("settings", changes, payload=_confirmation_payload(normalized_payload))
 
 
 def require_settings_confirmation(payload: dict[str, Any]) -> None:
-    changes = sensitive_settings_changes(payload)
+    changes = settings_confirmation_changes(payload)
     if not changes:
         return
-    _consume_confirmation(str(payload.get(CONFIRMATION_FIELD) or ""), "settings", changes)
+    _consume_confirmation(
+        str(payload.get(CONFIRMATION_FIELD) or ""),
+        "settings",
+        changes,
+        payload=_confirmation_payload(payload),
+        allow_payload_subset=True,
+    )
     record("settings.sensitive_confirmed", "SettingsService", {"changes": changes})
+
+
+def settings_confirmation_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    changes = sensitive_settings_changes(payload)
+    existing_keys = {str(key) for key in payload if key != CONFIRMATION_FIELD}
+    covered_keys = {str(change.get("key") or "") for change in changes}
+    for key in sorted((existing_keys & NATIVE_CONFIRMATION_SETTINGS) - covered_keys):
+        changes.append({"kind": "settings_native_sensitive_field", "key": key})
+    return changes
 
 
 def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -75,7 +103,9 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         old_value = bool(getattr(settings, "requires_openai_auth", True))
         new_value = _truthy(payload.get("requires_openai_auth"))
         if old_value and not new_value:
-            changes.append({"kind": "settings_disable_auth", "key": "requires_openai_auth", "from": old_value, "to": new_value})
+            changes.append(
+                {"kind": "settings_disable_auth", "key": "requires_openai_auth", "from": old_value, "to": new_value}
+            )
     if "developer_writes_require_verification" in payload:
         old_value = bool(getattr(settings, "developer_writes_require_verification", True))
         new_value = _truthy(payload.get("developer_writes_require_verification"))
@@ -104,7 +134,14 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         old_mode = _normalized_setting_value("permission_mode", getattr(settings, "permission_mode", "default"))
         new_mode = _normalized_setting_value("permission_mode", payload.get("permission_mode"))
         if _permission_mode_rank(new_mode) > _permission_mode_rank(old_mode):
-            changes.append({"kind": "settings_permission_mode_relaxation", "key": "permission_mode", "from": old_mode, "to": new_mode})
+            changes.append(
+                {
+                    "kind": "settings_permission_mode_relaxation",
+                    "key": "permission_mode",
+                    "from": old_mode,
+                    "to": new_mode,
+                }
+            )
     for key in sorted(LLM_EGRESS_SETTINGS):
         if key not in payload:
             continue
@@ -118,9 +155,13 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if old_mode != new_mode and new_mode != "privacy":
             changes.append({"kind": "settings_llm_egress_change", "key": "mode", "from": old_mode, "to": new_mode})
     if "allowed_directories" in payload:
-        additions = _added_values(getattr(settings, "allowed_directories", []) or [], payload.get("allowed_directories") or [])
+        additions = _added_values(
+            getattr(settings, "allowed_directories", []) or [], payload.get("allowed_directories") or []
+        )
         if additions:
-            changes.append({"kind": "settings_expand_allowed_directories", "key": "allowed_directories", "added": additions})
+            changes.append(
+                {"kind": "settings_expand_allowed_directories", "key": "allowed_directories", "added": additions}
+            )
     if "mcp_servers" in payload:
         additions = _enabled_mcp_additions(getattr(settings, "mcp_servers", []) or [], payload.get("mcp_servers") or [])
         if additions:
@@ -170,12 +211,14 @@ def permission_delete_relaxations(current_policy: PermissionPolicy, rule_id: str
     return permission_policy_relaxations(current_policy, next_policy)
 
 
-def _create_confirmation(scope: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
+def _create_confirmation(
+    scope: str, changes: list[dict[str, Any]], *, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
     _ensure_schema()
     now = _now()
     expires_at = now + timedelta(seconds=CONFIRMATION_TTL_SECONDS)
     nonce = secrets.token_urlsafe(24)
-    fingerprint = _fingerprint(changes)
+    fingerprint = _confirmation_fingerprint(changes, payload)
     with db.connect() as conn:
         conn.execute(
             """
@@ -186,7 +229,7 @@ def _create_confirmation(scope: str, changes: list[dict[str, Any]]) -> dict[str,
                 nonce,
                 scope,
                 fingerprint,
-                json.dumps({"changes": changes}, ensure_ascii=False, sort_keys=True),
+                json.dumps({"changes": changes, "payload": payload or {}}, ensure_ascii=False, sort_keys=True),
                 now.isoformat(),
                 expires_at.isoformat(),
             ),
@@ -219,7 +262,14 @@ def _permission_mode_rank(value: str) -> int:
     return PERMISSION_MODE_RELAXATION_ORDER.get(value, PERMISSION_MODE_RELAXATION_ORDER["default"])
 
 
-def _consume_confirmation(nonce: str, scope: str, changes: list[dict[str, Any]]) -> None:
+def _consume_confirmation(
+    nonce: str,
+    scope: str,
+    changes: list[dict[str, Any]],
+    *,
+    payload: dict[str, Any] | None = None,
+    allow_payload_subset: bool = False,
+) -> None:
     if not nonce:
         raise AppError(
             "sensitive_confirmation_required",
@@ -228,7 +278,7 @@ def _consume_confirmation(nonce: str, scope: str, changes: list[dict[str, Any]])
         )
     _ensure_schema()
     now = _now()
-    fingerprint = _fingerprint(changes)
+    fingerprint = _confirmation_fingerprint(changes, payload)
     with db.connect() as conn:
         conn.execute(
             "DELETE FROM sensitive_confirmations WHERE expires_at < ? OR used_at IS NOT NULL",
@@ -236,7 +286,7 @@ def _consume_confirmation(nonce: str, scope: str, changes: list[dict[str, Any]])
         )
         row = conn.execute(
             """
-            SELECT scope, fingerprint, expires_at, used_at
+            SELECT scope, fingerprint, expires_at, used_at, data
             FROM sensitive_confirmations
             WHERE nonce = ?
             """,
@@ -244,13 +294,18 @@ def _consume_confirmation(nonce: str, scope: str, changes: list[dict[str, Any]])
         ).fetchone()
         if not row:
             raise _invalid_confirmation()
-        if row["scope"] != scope or row["fingerprint"] != fingerprint:
+        if row["scope"] != scope:
             raise _invalid_confirmation()
+        if row["fingerprint"] != fingerprint:
+            if not (allow_payload_subset and _row_allows_payload_subset(row["data"], changes, payload or {})):
+                raise _invalid_confirmation()
         if row["used_at"]:
             raise _invalid_confirmation()
         expires_at = datetime.fromisoformat(str(row["expires_at"]))
         if expires_at < now:
-            raise AppError("sensitive_confirmation_expired", "The sensitive-change confirmation expired.", status_code=409)
+            raise AppError(
+                "sensitive_confirmation_expired", "The sensitive-change confirmation expired.", status_code=409
+            )
         result = conn.execute(
             """
             UPDATE sensitive_confirmations
@@ -258,10 +313,9 @@ def _consume_confirmation(nonce: str, scope: str, changes: list[dict[str, Any]])
             WHERE nonce = ?
               AND used_at IS NULL
               AND scope = ?
-              AND fingerprint = ?
               AND expires_at >= ?
             """,
-            (now.isoformat(), nonce, scope, fingerprint, now.isoformat()),
+            (now.isoformat(), nonce, scope, now.isoformat()),
         )
         if result.rowcount != 1:
             raise _invalid_confirmation()
@@ -276,6 +330,53 @@ def _ensure_schema() -> None:
 def _fingerprint(changes: list[dict[str, Any]]) -> str:
     normalized = json.dumps(changes, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _confirmation_fingerprint(changes: list[dict[str, Any]], payload: dict[str, Any] | None = None) -> str:
+    body = {
+        "changes": changes,
+        "payload": _stable_payload(payload or {}),
+    }
+    normalized = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _confirmation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return _stable_payload({key: value for key, value in payload.items() if key != CONFIRMATION_FIELD})
+
+
+def _stable_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {str(key): payload[key] for key in sorted(payload)}
+
+
+def _row_allows_payload_subset(row_data: str, changes: list[dict[str, Any]], payload: dict[str, Any]) -> bool:
+    try:
+        stored = json.loads(str(row_data or "{}"))
+    except json.JSONDecodeError:
+        return False
+    stored_payload = stored.get("payload")
+    if not isinstance(stored_payload, dict):
+        return False
+    candidate_payload = _stable_payload(payload)
+    if not candidate_payload:
+        return False
+    for key, value in candidate_payload.items():
+        if key not in stored_payload or stored_payload[key] != value:
+            return False
+    stored_changes = stored.get("changes")
+    if not isinstance(stored_changes, list):
+        return False
+    return _change_keys(changes).issubset(_change_keys(stored_changes))
+
+
+def _change_keys(changes: list[Any]) -> set[str]:
+    keys: set[str] = set()
+    for change in changes:
+        if isinstance(change, dict):
+            key = str(change.get("key") or "")
+            if key:
+                keys.add(key)
+    return keys
 
 
 def _rule_is_allow(rule: PermissionRule) -> bool:
@@ -329,7 +430,9 @@ def _patterns_are_wider(previous: list[str], candidate: list[str]) -> bool:
 
 
 def _normalized_patterns(patterns: list[str]) -> list[str]:
-    values = [str(pattern or "").replace("\\", "/").casefold().strip() for pattern in patterns if str(pattern or "").strip()]
+    values = [
+        str(pattern or "").replace("\\", "/").casefold().strip() for pattern in patterns if str(pattern or "").strip()
+    ]
     return values or ["*"]
 
 
@@ -422,7 +525,7 @@ def _mcp_target(server: dict[str, Any]) -> str:
 
 
 def _stable_text(value: Any) -> str:
-    if isinstance(value, (dict, list)):
+    if isinstance(value, dict | list):
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return str(value or "").strip()
 
@@ -449,4 +552,4 @@ def _invalid_confirmation() -> AppError:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)

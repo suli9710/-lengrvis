@@ -190,7 +190,9 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       return { state: "running" };
     },
     getBaseUrl: () => backendBaseUrl,
-    getDesktopApiToken: () => "desktop-secret"
+    getDesktopApiToken: () => "desktop-secret",
+    signNativeConfirmationPayload: (payload) =>
+      Buffer.from(`signed:${payload}`, "utf8").toString("base64url")
   };
   registerIpcHandlers(backend);
   const backendStartHandler = ipcHandlers.get(IPC_CHANNELS.backendStart);
@@ -241,7 +243,37 @@ async function assertRejectsUntrusted(listener, hostCalls) {
   const originalFetch = global.fetch;
   let fetchCalls = [];
   global.fetch = async (url, init) => {
-    fetchCalls.push({ url: url.toString(), init });
+    const requestUrl = url.toString();
+    const pathname = new URL(requestUrl).pathname;
+    fetchCalls.push({ url: requestUrl, init });
+    if (pathname === "/api/approvals/approval-1") {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          id: "approval-1",
+          preview_hmac: "preview:hmac-redacted",
+          tool_name: "file.write"
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
+    if (pathname === "/api/approvals/approval-1/native-confirmation-challenge") {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          confirmation_id: "11111111-1111-4111-8111-111111111111",
+          expires_at_epoch: 1893456000,
+          signing_payload: "approval-v2\napproval-1\npreview:hmac-redacted"
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }
+      );
+    }
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "content-type": "application/json" }
@@ -327,6 +359,14 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       {
         name: "settings save through generic API",
         request: { endpoint: "/api/settings", method: "POST", body: { allow_browser_network: true } }
+      },
+      {
+        name: "approval approve through generic API",
+        request: { endpoint: "/api/approvals/approval-1/approve", method: "POST" }
+      },
+      {
+        name: "approval reject through generic API",
+        request: { endpoint: "/api/approvals/approval-1/reject", method: "POST" }
       },
       {
         name: "permission policy replace through generic API",
@@ -679,6 +719,72 @@ async function assertRejectsUntrusted(listener, hostCalls) {
       );
     }
 
+    const approvalApproveHandler = ipcHandlers.get(IPC_CHANNELS.approvalApprove);
+    const approvalRejectHandler = ipcHandlers.get(IPC_CHANNELS.approvalReject);
+    assert.ok(approvalApproveHandler, "approval approve explicit bridge handler must be registered");
+    assert.ok(approvalRejectHandler, "approval reject explicit bridge handler must be registered");
+    for (const testCase of [
+      {
+        name: "approval approve",
+        handler: approvalApproveHandler,
+        expectedPostUrl: "http://127.0.0.1:8000/api/approvals/approval-1/approve"
+      },
+      {
+        name: "approval reject",
+        handler: approvalRejectHandler,
+        expectedPostUrl: "http://127.0.0.1:8000/api/approvals/approval-1/reject"
+      }
+    ]) {
+      messageBoxCalls = [];
+      fetchCalls = [];
+      const response = await Promise.resolve(testCase.handler(eventFor("http://127.0.0.1:5173/tasks"), "approval-1"));
+      assert.equal(response.ok, true, `${testCase.name} explicit bridge should call backend`);
+      assert.equal(messageBoxCalls.length, 1, `${testCase.name} should require native confirmation`);
+      assert.equal(fetchCalls.length, 3, `${testCase.name} should fetch detail and challenge before posting decision`);
+      assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/approvals/approval-1");
+      assert.equal(fetchCalls[0].init.method, "GET");
+      assert.equal(fetchCalls[1].url, "http://127.0.0.1:8000/api/approvals/approval-1/native-confirmation-challenge");
+      assert.equal(fetchCalls[1].init.method, "POST");
+      assert.equal(
+        fetchCalls[1].init.body,
+        JSON.stringify({
+          action: testCase.name.endsWith("approve") ? "approve" : "reject",
+          expected_preview_hmac: "preview:hmac-redacted"
+        })
+      );
+      assert.equal(fetchCalls[2].url, testCase.expectedPostUrl);
+      assert.equal(fetchCalls[2].init.method, "POST");
+      assert.match(
+        fetchCalls[2].init.headers["X-Lengrvis-Native-Confirmation-Id"],
+        /^[0-9a-f-]{36}$/i,
+        `${testCase.name} should bind a native confirmation id`
+      );
+      assert.match(
+        fetchCalls[2].init.headers["X-Lengrvis-Native-Confirmation-Timestamp"],
+        /^\d+$/,
+        `${testCase.name} should bind a native confirmation timestamp`
+      );
+      assert.match(
+        fetchCalls[2].init.headers["X-Lengrvis-Native-Confirmation-Signature"],
+        /^[A-Za-z0-9_-]+$/,
+        `${testCase.name} should bind a native confirmation signature`
+      );
+      messageBoxCalls = [];
+      messageBoxResponses = [1];
+      fetchCalls = [];
+      await assert.rejects(
+        async () => testCase.handler(eventFor("http://127.0.0.1:5173/tasks"), "approval-1"),
+        /not confirmed/,
+        `${testCase.name} should stop when native confirmation is denied`
+      );
+      assert.equal(
+        fetchCalls.length,
+        2,
+        `${testCase.name} denied path may fetch detail and challenge but must not post decision`
+      );
+      assert.equal(messageBoxCalls.length, 1, `${testCase.name} denied path should ask exactly once`);
+    }
+
     for (const testCase of explicitBridgeRequests) {
       const policyName = Object.entries(IPC_CHANNELS).find(([, channel]) => channel === testCase.channel)?.[0];
       if (!policyName || IPC_CHANNEL_SECURITY_POLICIES[policyName].capability !== "native-confirmation") {
@@ -871,6 +977,17 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     );
     assert.equal(fetchCalls.length, 0, "unconfirmed LLM endpoint settings must be rejected before fetch");
 
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        settingsSaveHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          remote_desktop_enabled: true
+        }),
+      /prior confirmation/,
+      "settings save bridge should reject native-sensitive settings without a bound confirmation"
+    );
+    assert.equal(fetchCalls.length, 0, "unconfirmed native-sensitive settings must be rejected before fetch");
+
     messageBoxCalls = [];
     messageBoxResponses = [1];
     fetchCalls = [];
@@ -949,6 +1066,61 @@ async function assertRejectsUntrusted(listener, hostCalls) {
     );
     assert.equal(fetchCalls.length, 0, "denied native remote-input confirmation must not call backend");
     assert.equal(messageBoxCalls.length, 1, "remote-input grant should ask exactly once");
+
+    const mobilePairingRevokeDeviceHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingRevokeDevice);
+    assert.ok(mobilePairingRevokeDeviceHandler, "mobile pairing revoke-device handler must be registered");
+    messageBoxCalls = [];
+    fetchCalls = [];
+    const revokeDeviceResponse = await Promise.resolve(
+      mobilePairingRevokeDeviceHandler(eventFor("http://127.0.0.1:5173/settings"), "phone-1")
+    );
+    assert.equal(revokeDeviceResponse.ok, true, "explicit mobile pairing revoke-device bridge should call backend");
+    assert.equal(messageBoxCalls.length, 1, "mobile pairing revoke-device should require native confirmation");
+    assert.equal(fetchCalls.length, 1, "explicit mobile pairing revoke-device bridge should use fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/pair/devices/phone-1");
+    assert.equal(fetchCalls[0].init.method, "DELETE");
+
+    messageBoxCalls = [];
+    messageBoxResponses = [1];
+    fetchCalls = [];
+    await assert.rejects(
+      async () => mobilePairingRevokeDeviceHandler(eventFor("http://127.0.0.1:5173/settings"), "phone-2"),
+      /not confirmed/,
+      "mobile pairing revoke-device bridge should require native confirmation"
+    );
+    assert.equal(fetchCalls.length, 0, "denied mobile pairing revoke-device confirmation must not call backend");
+    assert.equal(messageBoxCalls.length, 1, "denied mobile pairing revoke-device should ask exactly once");
+
+    const mobilePairingRevokeGrantHandler = ipcHandlers.get(IPC_CHANNELS.mobilePairingRevokeRemoteInputGrant);
+    assert.ok(mobilePairingRevokeGrantHandler, "mobile pairing revoke-remote-input-grant handler must be registered");
+    messageBoxCalls = [];
+    fetchCalls = [];
+    const revokeGrantResponse = await Promise.resolve(
+      mobilePairingRevokeGrantHandler(eventFor("http://127.0.0.1:5173/settings"), {
+        deviceId: "phone-1",
+        grantId: "grant-1"
+      })
+    );
+    assert.equal(revokeGrantResponse.ok, true, "explicit mobile pairing revoke-grant bridge should call backend");
+    assert.equal(messageBoxCalls.length, 1, "mobile pairing revoke-grant should require native confirmation");
+    assert.equal(fetchCalls.length, 1, "explicit mobile pairing revoke-grant bridge should use fetch once");
+    assert.equal(fetchCalls[0].url, "http://127.0.0.1:8000/api/pair/devices/phone-1/remote-input-grants/grant-1");
+    assert.equal(fetchCalls[0].init.method, "DELETE");
+
+    messageBoxCalls = [];
+    messageBoxResponses = [1];
+    fetchCalls = [];
+    await assert.rejects(
+      async () =>
+        mobilePairingRevokeGrantHandler(eventFor("http://127.0.0.1:5173/settings"), {
+          deviceId: "phone-2",
+          grantId: "grant-2"
+        }),
+      /not confirmed/,
+      "mobile pairing revoke-grant bridge should require native confirmation"
+    );
+    assert.equal(fetchCalls.length, 0, "denied mobile pairing revoke-grant confirmation must not call backend");
+    assert.equal(messageBoxCalls.length, 1, "denied mobile pairing revoke-grant should ask exactly once");
 
     const taskRollbackHandler = ipcHandlers.get(IPC_CHANNELS.taskRollback);
     assert.ok(taskRollbackHandler, "task rollback explicit bridge handler must be registered");

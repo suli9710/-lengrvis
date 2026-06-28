@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -690,31 +691,74 @@ class OpenAICompatibleProvider(LLMProvider):
     _ALLOWED_IMAGE_EXTENSIONS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff"})
     _MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 
-    async def vision(self, image_path: str, prompt: str, model: str | None = None) -> str:
-        import base64
-        from pathlib import Path
+    def _prepare_vision_image_path(
+        self,
+        image_path: str,
+        *,
+        allowed_directories: list[str] | None = None,
+    ) -> tuple[Path | None, str | None]:
+        import os
 
-        path = Path(image_path)
-        # P0-8 fix: Validate the image path before reading to prevent path traversal
-        # and reading arbitrary files as base64 (which could exfiltrate secrets).
-        if not path.exists():
-            return f"[vision] file not found: {image_path}"
-        # Reject paths with directory traversal components.
-        if ".." in path.parts:
-            return "[vision] invalid image path: directory traversal not allowed"
-        # Validate file extension against a strict whitelist.
-        suffix = path.suffix.lstrip(".").lower()
-        if suffix not in self._ALLOWED_IMAGE_EXTENSIONS:
-            return f"[vision] unsupported image format: .{suffix or 'unknown'}"
-        # Validate file size to prevent excessive memory usage.
+        from app.core.errors import SecurityError
+        from app.core.paths import is_sensitive_path, is_system_path, normalize_path, resolve_authorized
+
+        raw = Path(image_path)
+        if ".." in raw.parts:
+            return None, "[vision] invalid image path: directory traversal not allowed"
+
         try:
-            file_size = path.stat().st_size
+            if allowed_directories is not None:
+                path = resolve_authorized(image_path, [str(item) for item in allowed_directories])
+            else:
+                if not raw.exists():
+                    return None, f"[vision] file not found: {image_path}"
+                if raw.is_symlink() or os.path.islink(raw):
+                    return None, "[vision] invalid image path: symbolic links require authorized directories"
+                path = normalize_path(image_path)
+                if is_system_path(path) or is_sensitive_path(path):
+                    return None, "[vision] invalid image path: sensitive or system paths are not allowed"
+        except SecurityError as exc:
+            return None, f"[vision] invalid image path: {exc}"
         except OSError:
-            return f"[vision] cannot stat file: {image_path}"
+            return None, f"[vision] file not found: {image_path}"
+
+        if not path.is_file():
+            return None, f"[vision] file not found: {image_path}"
+
+        # P0-3 fix: validate the resolved real path, not the caller-supplied name.
+        resolved = path.resolve(strict=True)
+        if is_system_path(resolved) or is_sensitive_path(resolved):
+            return None, "[vision] invalid image path: sensitive or system paths are not allowed"
+
+        suffix = resolved.suffix.lstrip(".").lower()
+        if suffix not in self._ALLOWED_IMAGE_EXTENSIONS:
+            return None, f"[vision] unsupported image format: .{suffix or 'unknown'}"
+
+        try:
+            file_size = resolved.stat().st_size
+        except OSError:
+            return None, f"[vision] cannot stat file: {image_path}"
         if file_size > self._MAX_IMAGE_SIZE_BYTES:
-            return f"[vision] image file too large ({file_size} bytes; max {self._MAX_IMAGE_SIZE_BYTES})"
+            return None, (f"[vision] image file too large ({file_size} bytes; max {self._MAX_IMAGE_SIZE_BYTES})")
         if file_size == 0:
-            return "[vision] image file is empty"
+            return None, "[vision] image file is empty"
+        return resolved, None
+
+    async def vision(
+        self,
+        image_path: str,
+        prompt: str,
+        model: str | None = None,
+        *,
+        allowed_directories: list[str] | None = None,
+    ) -> str:
+        import base64
+
+        path, error = self._prepare_vision_image_path(image_path, allowed_directories=allowed_directories)
+        if error or path is None:
+            return error or f"[vision] file not found: {image_path}"
+
+        suffix = path.suffix.lstrip(".").lower()
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         mime = "image/jpeg" if suffix in {"jpg", "jpeg"} else f"image/{suffix}"
         data_url = f"data:{mime};base64,{encoded}"

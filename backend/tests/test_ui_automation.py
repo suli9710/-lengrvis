@@ -80,7 +80,7 @@ class FakeNative:
         name: str = "Send",
         automation_id: str = "send_button",
         control_type: str = "Button",
-        children: list["FakeNative"] | None = None,
+        children: list[FakeNative] | None = None,
     ) -> None:
         self.CurrentName = name
         self.CurrentAutomationId = automation_id
@@ -138,13 +138,19 @@ async def test_unavailable_target_gracefully_reports_actions():
     assert await target.get_children({"name": "Anything"}) == []
     assert await target.wait_for_element({"name": "Anything"}, timeout_seconds=0) is None
     assert await target.click({"name": "Anything"}) == {"ok": False, "error": "missing provider", "available": False}
-    assert await target.observe() == {"ok": False, "error": "missing provider", "available": False, "elements": [], "count": 0}
+    assert await target.observe() == {
+        "ok": False,
+        "error": "missing provider",
+        "available": False,
+        "elements": [],
+        "count": 0,
+    }
 
 
 def test_factory_returns_graceful_target_when_provider_missing():
     target = create_ui_automation_target(policy_engine=FakePolicy())
 
-    assert isinstance(target, (WindowsCOMUIAutomationTarget, UnavailableUIAutomationTarget))
+    assert isinstance(target, WindowsCOMUIAutomationTarget | UnavailableUIAutomationTarget)
 
 
 @pytest.mark.asyncio
@@ -204,7 +210,12 @@ async def test_observe_returns_tree_and_flat_elements(monkeypatch):
     child = FakeNative(name="Cancel", automation_id="cancel_button")
     root = FakeNative(name="Window", automation_id="root", control_type="Window", children=[child])
     target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(), automation=FakeAutomation(root))
-    monkeypatch.setattr("app.perception.ui_automation.get_current_app_context", lambda: type("FakeContext", (), {"available": True, "model_dump": lambda self, mode="json": {"available": True}})())
+    monkeypatch.setattr(
+        "app.perception.ui_automation.get_current_app_context",
+        lambda: type(
+            "FakeContext", (), {"available": True, "model_dump": lambda self, mode="json": {"available": True}}
+        )(),
+    )
 
     observed = await target.observe(max_depth=1, max_elements=10)
 
@@ -326,7 +337,9 @@ async def test_forged_ui_automation_approval_id_does_not_self_authorize(monkeypa
 @pytest.mark.asyncio
 async def test_approved_gui_action_still_honors_policy_denial():
     native = FakeNative()
-    target = WindowsCOMUIAutomationTarget(policy_engine=FakePolicy(SafetyVerdict.DENY), automation=FakeAutomation(native))
+    target = WindowsCOMUIAutomationTarget(
+        policy_engine=FakePolicy(SafetyVerdict.DENY), automation=FakeAutomation(native)
+    )
 
     result = await target.key_press("enter", approved=True, approval_id="approval_denied")
 
@@ -381,3 +394,19 @@ def test_policy_blocks_sensitive_gui_text_and_targets():
     assert password_target.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
     assert token_text.verdict == SafetyVerdict.DENY
     assert "sensitive" in " ".join(token_text.reasons).lower()
+
+
+def test_policy_blocks_sensitive_remote_type_text():
+    policy = PolicyEngine()
+
+    review = policy.review_tool_call(
+        "task_sensitive_remote",
+        "step_1",
+        "remote.type_text",
+        {"text": "token=abcdef1234567890", "dry_run": True},
+        RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+    assert "sensitive" in " ".join(review.reasons).lower()

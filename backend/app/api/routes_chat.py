@@ -7,12 +7,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.schemas import AgentMessage, ChatMessage, ChatRequest, ChatResponse
 from app.orchestration.agent_bus import AgentBus
 from app.orchestration.orchestrator_registry import orchestrator_registry
-from app.security.desktop_api import close_unauthorized_desktop_websocket
-from app.services.notification_service import SYSTEM_TASK_ID
-from app.services import perception_suggestion_service
-from app.services.task_service import handle_chat, list_chat_messages
 from app.perception.intent_predictor import IntentSuggestion
-
+from app.security.desktop_api import close_unauthorized_desktop_websocket
+from app.services import perception_suggestion_service
+from app.services.notification_service import SYSTEM_TASK_ID
+from app.services.task_service import handle_chat, list_chat_messages
 
 router = APIRouter()
 ws_router = APIRouter()
@@ -70,7 +69,7 @@ async def _stream_task_messages(websocket: WebSocket, task_id: str) -> None:
                     continue
                 sent_message_ids.add(message.id)
                 await websocket.send_json(_agent_message_event(task_id, message))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Clients can connect before the orchestrator binds its own bus
                 # into the registry; re-resolve on idle so this socket follows
                 # the live bus instead of the connect-time fallback (R4-M7).

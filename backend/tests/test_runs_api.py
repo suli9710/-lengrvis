@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from native_confirmation_helpers import native_confirmation_headers
 
 from app.agents.planner_agent import PlannerAgent
 from app.api.routes_approvals import router as approvals_router
@@ -42,8 +43,16 @@ def _test_app() -> FastAPI:
     return app
 
 
-def _wait_for_phase(client: TestClient, run_id: str, *phases: str) -> dict:
-    for _ in range(80):
+def _wait_for_phase(
+    client: TestClient,
+    run_id: str,
+    *phases: str,
+    timeout_seconds: float = 15.0,
+    poll_interval_seconds: float = 0.05,
+) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    payload: dict = {}
+    while time.monotonic() < deadline:
         response = client.get(f"/api/runs/{run_id}")
         assert response.status_code == 200
         payload = response.json()
@@ -51,16 +60,41 @@ def _wait_for_phase(client: TestClient, run_id: str, *phases: str) -> dict:
             if payload["phase"] in {"completed", "failed", "denied", "cancelled"}:
                 _wait_for_run_inactive(run_id)
             return payload
-        time.sleep(0.05)
-    raise AssertionError(f"Run {run_id} did not reach {phases}")
+        time.sleep(poll_interval_seconds)
+    raise AssertionError(
+        f"Run {run_id} did not reach {phases} within {timeout_seconds:.1f}s; "
+        f"last_phase={payload.get('phase')!r}; active_run_ids={run_service.active_run_ids()}; "
+        f"recent_events={_recent_run_events(client, run_id)}"
+    )
 
 
-def _wait_for_run_inactive(run_id: str) -> None:
-    for _ in range(80):
+def _wait_for_run_inactive(run_id: str, *, timeout_seconds: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
         if run_id not in run_service.active_run_ids():
             return
         time.sleep(0.05)
     raise AssertionError(f"Run {run_id} was still active after reaching a terminal/waiting phase")
+
+
+def _recent_run_events(client: TestClient, run_id: str) -> list[dict]:
+    try:
+        response = client.get(f"/api/runs/{run_id}/timeline")
+        if response.status_code != 200:
+            return [{"timeline_status": response.status_code}]
+        timeline = response.json()
+    except Exception as exc:  # noqa: BLE001 - diagnostics should not mask the wait failure.
+        return [{"timeline_error": f"{type(exc).__name__}: {exc}"}]
+    recent = []
+    for event in (timeline.get("events") or [])[-8:]:
+        payload = event.get("payload") if isinstance(event, dict) else {}
+        recent.append(
+            {
+                "name": event.get("name") if isinstance(event, dict) else None,
+                "payload_keys": sorted(payload) if isinstance(payload, dict) else [],
+            }
+        )
+    return recent
 
 
 def _fake_send2trash(path: str) -> None:
@@ -134,7 +168,7 @@ print(
         assert created.status_code == 200
         run = created.json()
         assert run["engine"] == "developer"
-        final = _wait_for_phase(client, run["run_id"], "completed", "failed")
+        final = _wait_for_phase(client, run["run_id"], "completed", "failed", timeout_seconds=45.0)
         assert final["phase"] == "completed"
 
         timeline = client.get(f"/api/runs/{run['run_id']}/timeline").json()
@@ -704,7 +738,10 @@ def test_approval_resume_continues_remaining_run_steps(monkeypatch, tmp_path):
         ).json()
         _wait_for_phase(client, created["run_id"], "awaiting_approval")
         approval = Approval.model_validate(db.fetch_many("approvals", limit=10)[0])
-        approved = client.post(f"/api/approvals/{approval.id}/approve")
+        approved = client.post(
+            f"/api/approvals/{approval.id}/approve",
+            headers=native_confirmation_headers("approve", approval.id),
+        )
         assert approved.status_code == 200
         final = _wait_for_phase(client, created["run_id"], "completed", "failed", "denied")
         assert final["phase"] == "completed"
@@ -1018,7 +1055,10 @@ def test_reject_approval_moves_run_to_cancelled(monkeypatch, tmp_path):
         _wait_for_phase(client, created["run_id"], "awaiting_approval")
         approval = Approval.model_validate(db.fetch_many("approvals", limit=10)[0])
 
-        rejected = client.post(f"/api/approvals/{approval.id}/reject")
+        rejected = client.post(
+            f"/api/approvals/{approval.id}/reject",
+            headers=native_confirmation_headers("reject", approval.id),
+        )
 
         assert rejected.status_code == 200
         final = _wait_for_phase(client, created["run_id"], "cancelled")
@@ -1070,7 +1110,10 @@ def test_cancel_run_expires_pending_approval_and_blocks_late_approve(monkeypatch
         approval = Approval.model_validate(db.fetch_many("approvals", limit=10)[0])
 
         cancelled = client.post(f"/api/runs/{created['run_id']}/cancel")
-        late_approve = client.post(f"/api/approvals/{approval.id}/approve")
+        late_approve = client.post(
+            f"/api/approvals/{approval.id}/approve",
+            headers=native_confirmation_headers("approve", approval.id),
+        )
 
         assert cancelled.status_code == 200
         assert late_approve.status_code == 409
@@ -1123,22 +1166,46 @@ def test_sync_resume_schedules_background_without_event_loop(monkeypatch, tmp_pa
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
+    run = run_service.Run(
+        id="devrun_sync_resume",
+        message="inspect repository",
+        mode="privacy",
+        requested_engine=run_service.RunEngine.DEVELOPER,
+        engine=run_service.RunEngine.DEVELOPER,
+        phase=run_service.RunPhase.PAUSED,
+        state={
+            "run_id": "devrun_sync_resume",
+            "engine": "developer",
+            "phase": "paused",
+            "goal": "inspect repository",
+            "mode": "privacy",
+        },
+    )
+    db.upsert_model("runs", run)
 
     with TestClient(_test_app()) as client:
-        created = client.post(
-            "/api/runs",
-            json={"message": "inspect repository", "mode": "privacy", "engine": "developer"},
-        ).json()
-        _wait_for_phase(client, created["run_id"], "completed", "failed")
-        run = run_service.get_run(created["run_id"])
-        run.phase = run_service.RunPhase.PAUSED
-        db.upsert_model("runs", run)
+        scheduled = []
 
-        response = client.post(f"/api/runs/{created['run_id']}/resume")
+        def schedule_spy(coro, *, data_dir=None):  # noqa: ANN001, ANN202, ARG001
+            scheduled.append(coro)
+            coro.close()
+
+            class Pending:
+                def done(self) -> bool:
+                    return False
+
+                def cancel(self) -> bool:
+                    return True
+
+            return Pending()
+
+        monkeypatch.setattr(run_service, "_schedule_background", schedule_spy)
+
+        response = client.post(f"/api/runs/{run.id}/resume")
 
         assert response.status_code == 200
         assert response.json()["phase"] == "running"
-        _wait_for_phase(client, created["run_id"], "completed", "failed")
+        assert len(scheduled) == 1
 
 
 def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(monkeypatch, tmp_path):

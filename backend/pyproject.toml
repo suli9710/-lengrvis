@@ -67,6 +67,8 @@ pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
   "slow: tests that are intentionally slower or rely on subprocess/thread timeout behavior or full local diagnostic/evaluation flows; exclude with -m 'not slow' in short runner budgets and run explicitly for full sign-off.",
+  "desktop_api_token_optional: opt-in bypass for desktop API token guard in TestClient tests.",
+  "requires_desktop_api_token: enforce desktop API token guard; excludes desktop_api_token_optional marker.",
 ]
 
 [tool.ruff]
@@ -77,4 +79,7 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "B", "UP", "BLE", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S404", "S603", "S607"]
+"app/api/routes_guardian.py" = ["B008"]
+"app/api/routes_mobile.py" = ["B008"]
+"app/api/routes_settings.py" = ["B008"]
+"tests/**" = ["E501", "S101", "S105", "S404", "S603", "S607"]

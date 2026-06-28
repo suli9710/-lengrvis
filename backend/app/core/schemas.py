@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -14,7 +14,7 @@ from app.policy.risk import RiskLevel, SafetyVerdict
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def new_id(prefix: str) -> str:
@@ -111,9 +111,12 @@ class ApprovalStatus(StrEnum):
     EXPIRED = "expired"
 
 
+MAX_USER_MESSAGE_CHARS = 16000
+
+
 class ChatRequest(BaseModel):
-    message: str
-    mode: str = "efficiency"
+    message: str = Field(min_length=1, max_length=MAX_USER_MESSAGE_CHARS)
+    mode: str = Field(default="efficiency", max_length=64)
 
 
 class ChatMessage(BaseModel):
@@ -183,10 +186,10 @@ class RunEvent(BaseModel):
 
 
 class RunCreateRequest(BaseModel):
-    message: str
-    mode: str = "efficiency"
+    message: str = Field(min_length=1, max_length=MAX_USER_MESSAGE_CHARS)
+    mode: str = Field(default="efficiency", max_length=64)
     engine: RunEngine = RunEngine.AUTO
-    agent_hint: str = ""
+    agent_hint: str = Field(default="", max_length=128)
 
 
 class RunCreateResponse(BaseModel):
@@ -552,6 +555,9 @@ class Wakeup(BaseModel):
     id: str = Field(default_factory=lambda: new_id("wakeup"))
     source: str = "schedule"
     source_id: str = ""
+    source_device_id: str = ""
+    source_grant_id: str = ""
+    allowed_device_ids: list[str] = Field(default_factory=list)
     title: str = ""
     body: str = ""
     goal: str = ""

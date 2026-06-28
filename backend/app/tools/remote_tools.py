@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import ctypes
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
+from app.commerce.entitlements import Feature, active_plan, has_feature
+from app.commerce.licensing import subscription_confirmation_fresh_for_high_risk
 from app.core import db
 from app.core.audit import record
+from app.core.schemas import now_iso
 from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac
+from app.policy.execution_marker import execution_is_marked_approved
 from app.policy.risk import RiskLevel
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
 from app.services.remote_desktop_service import capture_screen
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_catalog import tool_description, tool_search_hint
-
 
 _REMOTE_ACTOR = "RemoteDesktop"
 _INPUT_KEYBOARD = 1
@@ -39,22 +42,26 @@ _VK_CODES = {
 
 
 def view_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_VIEW):
         return {"ok": False, "error": "Remote desktop is disabled."}
     quality = int(args.get("quality") or 50)
+    if args.get("dry_run", True):
+        return _preview("view_screen", {"quality": quality})
+    if not _approval_allows_live_execution(args, context, "remote.view_screen"):
+        return _approval_error("view_screen")
     image = capture_screen(quality=quality)
     record("remote.view_screen", _REMOTE_ACTOR, {"quality": quality})
     return {"ok": True, "image": f"data:image/jpeg;base64,{image}", "mime_type": "image/jpeg"}
 
 
 def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_CONTROL):
         return {"ok": False, "error": "Remote desktop is disabled."}
     x = int(args.get("x") or 0)
     y = int(args.get("y") or 0)
     if args.get("dry_run", True):
         return _preview("click", {"x": x, "y": y})
-    if not _has_approval(args, "remote.click"):
+    if not _approval_allows_live_execution(args, context, "remote.click"):
         return _approval_error("click")
     _click_at(x, y)
     record("remote.click", _REMOTE_ACTOR, {"x": x, "y": y})
@@ -62,12 +69,12 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # n
 
 
 def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_CONTROL):
         return {"ok": False, "error": "Remote desktop is disabled."}
     text = str(args.get("text") or "")
     if args.get("dry_run", True):
         return _preview("type_text", {"characters": len(text)})
-    if not _has_approval(args, "remote.type_text"):
+    if not _approval_allows_live_execution(args, context, "remote.type_text"):
         return _approval_error("type_text")
     _type_text(text)
     record("remote.type_text", _REMOTE_ACTOR, {"characters": len(text)})
@@ -75,14 +82,14 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]: 
 
 
 def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_CONTROL):
         return {"ok": False, "error": "Remote desktop is disabled."}
     key = _normalize_key(str(args.get("key") or ""))
     if not key:
         return {"ok": False, "error": "Key is required."}
     if args.get("dry_run", True):
         return _preview("key_press", {"key": key})
-    if not _has_approval(args, "remote.key_press"):
+    if not _approval_allows_live_execution(args, context, "remote.key_press"):
         return _approval_error("key_press")
     _press_key(key)
     record("remote.key_press", _REMOTE_ACTOR, {"key": key})
@@ -98,44 +105,58 @@ def _preview(action: str, detail: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _remote_enabled(context: dict[str, Any]) -> bool:
+def _remote_enabled(context: dict[str, Any], feature: Feature) -> bool:
     settings = context.get("settings") or get_effective_settings()
     if not bool(getattr(settings, "remote_desktop_enabled", False)):
         return False
-    # P0-11: gate remote desktop control behind a paid entitlement so free-tier
-    # users cannot invoke remote input even when the feature flag is enabled.
-    # The entitlement is an optional context hint: when a caller resolves and
-    # provides it we require a paid tier, but when it is absent we fall back to
-    # the remote_desktop_enabled flag (plus the upstream mobile auth/grant
-    # checks) as the control, instead of failing closed and disabling remote
-    # input for every caller, since no tool context populates it yet.
-    entitlement = str(context.get("user_entitlement") or "").strip().lower()
-    if entitlement and entitlement not in ("pro", "team"):
+    if not has_feature(active_plan(settings), feature):
         return False
+    if feature == Feature.REMOTE_CONTROL:
+        return subscription_confirmation_fresh_for_high_risk(settings)
     return True
 
 
-def _has_approval(args: dict[str, Any], tool_name: str) -> bool:
-    """Check that a valid, unconsumed approval exists for this remote input call.
+def _approval_allows_live_execution(args: dict[str, Any], context: dict[str, Any], tool_name: str) -> bool:
+    """Authorize a live remote call only after claim or orchestrator execution marker.
 
-    P0-4 fix: The original logic required consumed_at to be NON-empty,
-    meaning only already-consumed approvals would pass — the exact opposite
-    of anti-replay. Now we correctly require consumed_at to be EMPTY.
+    Orchestrator/tool_runtime claims the approval and stamps the context before
+    side effects run, so consumed approvals must be accepted when the process
+    marker is present. Direct callers without the marker must atomically claim
+    before execution to prevent double-use races.
     """
     if args.get("approved") is not True:
         return False
     approval_id = str(args.get("approval_id") or "").strip()
     if not approval_id:
         return False
+    if execution_is_marked_approved(context):
+        approval = db.fetch_one("approvals", approval_id)
+        if not approval:
+            return False
+        return _approval_matches_live_execution(approval, tool_name, args, allow_consumed=True)
     approval = db.fetch_one("approvals", approval_id)
     if not approval:
         return False
+    if not _approval_matches_live_execution(approval, tool_name, args, allow_consumed=False):
+        return False
+    claimed = db.claim_approval_for_execution(approval_id, now_iso())
+    if not claimed:
+        return False
+    return _approval_matches_live_execution(claimed, tool_name, args, allow_consumed=True)
+
+
+def _approval_matches_live_execution(
+    approval: dict[str, Any],
+    tool_name: str,
+    args: dict[str, Any],
+    *,
+    allow_consumed: bool,
+) -> bool:
     if str(approval.get("status") or "") != "approved":
         return False
-    # P0-4 fix: consumed_at must be EMPTY (not yet consumed) to proceed.
-    # The old code used `not bool(...)` which inverted the check.
-    if bool(str(approval.get("consumed_at") or "").strip()):
-        return False  # Already consumed — reject replay.
+    consumed = bool(str(approval.get("consumed_at") or "").strip())
+    if consumed and not allow_consumed:
+        return False
     return _approval_matches_remote_input(approval, tool_name, args) and _approval_remote_input_grant_active(approval)
 
 
@@ -147,7 +168,10 @@ def _approval_error(action: str) -> dict[str, Any]:
 
 
 def _approval_matches_remote_input(approval: dict[str, Any], tool_name: str, args: dict[str, Any]) -> bool:
-    if str(approval.get("approval_type") or "") != "remote_input" and str(approval.get("source") or "") != "remote_input":
+    if (
+        str(approval.get("approval_type") or "") != "remote_input"
+        and str(approval.get("source") or "") != "remote_input"
+    ):
         return False
     if str(approval.get("tool_name") or "") != tool_name:
         return False
@@ -156,10 +180,14 @@ def _approval_matches_remote_input(approval: dict[str, Any], tool_name: str, arg
     expected_hmac = str(approval.get("args_binding_hmac") or "")
     if not task_id or not step_id or not expected_hmac:
         return False
-    return expected_hmac == args_binding_hmac(tool_name, _approval_bound_args(tool_name, args), task_id=task_id, step_id=step_id)
+    return expected_hmac == args_binding_hmac(
+        tool_name, _approval_bound_args(tool_name, args), task_id=task_id, step_id=step_id
+    )
 
 
 def _approval_bound_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if tool_name == "remote.view_screen":
+        return {"quality": int(args.get("quality") or 50)}
     if tool_name == "remote.click":
         return {"x": int(args.get("x") or 0), "y": int(args.get("y") or 0)}
     if tool_name == "remote.type_text":
@@ -182,7 +210,7 @@ def _approval_remote_input_grant_active(approval: dict[str, Any]) -> bool:
     grants = device.get("remote_input_grants") or []
     if not isinstance(grants, list):
         return False
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for grant in grants:
         if isinstance(grant, dict) and _remote_input_grant_active(grant, grant_id, now):
             return True
@@ -207,13 +235,13 @@ def _parse_remote_input_grant_expiry(value: Any) -> datetime | None:
         expires_at = datetime.fromisoformat(str(value or ""))
     except ValueError:
         return None
-    return expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+    return expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=UTC)
 
 
 def _text_list(value: Any) -> set[str]:
     if isinstance(value, str):
         return {item.strip() for item in value.replace(",", " ").split() if item.strip()}
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return {str(item or "").strip() for item in value if str(item or "").strip()}
     return set()
 
@@ -340,11 +368,11 @@ def register(registry) -> None:
         (
             "remote.view_screen",
             view_screen,
-            RiskLevel.R1_OPEN_ONLY,
-            False,
+            RiskLevel.R2_REVERSIBLE_MODIFY,
+            True,
             ["read"],
             ["remote_screen"],
-            True,
+            False,
         ),
         (
             "remote.click",

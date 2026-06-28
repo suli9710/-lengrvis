@@ -47,6 +47,7 @@ jobs:
       - name: Build release artifacts
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ci-release-evidence-hmac-secret
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -SkipTests
 
       - name: Verify signed Windows release configuration
@@ -71,6 +72,31 @@ jobs:
           AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161: ${{ vars.AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161 }}
         run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_backend.ps1
 
+      - name: Sign portable launcher
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161: ${{ vars.AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161 }}
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_portable_artifacts.ps1 -LauncherOnly
+
+      - name: Refresh portable release bundle
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/refresh_portable_release_bundle.ps1
+
+      - name: Sign self-extracting portable executable
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161: ${{ vars.AZURE_TRUSTED_SIGNING_TIMESTAMP_RFC3161 }}
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./scripts/sign_windows_portable_artifacts.ps1 -SelfExtractingOnly
+
       - name: Build signed Windows installer
         env:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -85,12 +111,16 @@ jobs:
       - name: Strict release artifact gate
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ci-release-evidence-hmac-secret
+          LENGRVIS_STRICT_STATE_MACHINE: "true"
         run: npm run release:check
 
       - name: Strict delivery verdict
         if: always()
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ci-audit-hmac-secret
+          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ci-release-evidence-hmac-secret
+          LENGRVIS_STRICT_STATE_MACHINE: "true"
         run: npm run delivery:rc
 
       - name: Upload release candidate evidence

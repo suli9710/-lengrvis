@@ -131,6 +131,24 @@ def test_audit_events_cannot_be_updated_or_deleted(monkeypatch, tmp_path):
     assert deleted is False
 
 
+def test_audit_verification_detects_missing_append_only_trigger(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    db.init_db()
+    event = record("security.trigger_deleted", "pytest", {"ok": True})
+
+    with sqlite3.connect(db.db_path()) as conn:
+        conn.execute("DROP TRIGGER audit_events_no_delete")
+
+    result = db.verify_audit_log()
+
+    assert result["ok"] is False
+    assert result["checked"] == 1
+    assert result["failure_event_id"] == event.id
+    assert result["failure_reason"] == "append_only_trigger_missing"
+    assert result["failures"][0]["missing_triggers"] == ["audit_events_no_delete"]
+
+
 def test_audit_verify_route(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
@@ -236,6 +254,41 @@ def test_audit_verification_detects_tail_truncation_after_restart(monkeypatch, t
     assert result["failure_sequence"] == 3
     assert result["failure_event_id"] == third.id
     assert first.sequence == 1
+
+
+def test_audit_verification_detects_external_anchor_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    db.init_db()
+    event = record("security.anchor_first", "pytest", {"ok": True})
+
+    anchor_path = db.audit_anchor_path()
+    payload = json.loads(anchor_path.read_text(encoding="utf-8"))
+    payload["event_hash"] = "f" * 64
+    anchor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = db.verify_audit_log()
+
+    assert result["ok"] is False
+    assert result["checked"] == 1
+    assert result["last_event_id"] == event.id
+    assert result["failure_reason"] == "external_anchor_mismatch"
+
+
+def test_audit_fail_closed_blocks_after_anchor_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_AUDIT_FAIL_CLOSED", "true")
+    db.init_db()
+    record("security.anchor_gate", "pytest", {"ok": True})
+
+    anchor_path = db.audit_anchor_path()
+    payload = json.loads(anchor_path.read_text(encoding="utf-8"))
+    payload["event_hash"] = "0" * 64
+    anchor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(db.SensitiveRecordIntegrityError, match="Audit fail-closed gate blocked"):
+        db.require_audit_fail_closed_ok()
 
 
 def test_audit_hmac_secret_read_once_per_process(monkeypatch, tmp_path):

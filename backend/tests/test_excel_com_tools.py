@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools import app_excel
 from app.tools.registry import register_all_tools
+from app.tools.tool_abort import ToolAbortedError
 
 
 @pytest.fixture(autouse=True)
@@ -146,12 +148,34 @@ def test_write_cell_executes_against_mock_client_after_approval(tmp_path):
     assert client.writes == [{"path": str(workbook.resolve()), "sheet": "Sheet1", "cell": "C3", "value": 123}]
 
 
+def test_write_cell_aborts_before_excel_client_write(tmp_path):
+    workbook = _workbook(tmp_path)
+    client = FakeExcelClient()
+    abort = threading.Event()
+    abort.set()
+
+    with pytest.raises(ToolAbortedError):
+        app_excel.write_cell(
+            {
+                "path": str(workbook),
+                "sheet": "Sheet1",
+                "cell": "C3",
+                "value": 123,
+                "dry_run": False,
+                "approved": True,
+            },
+            {**_context(tmp_path, client), "_tool_abort_event": abort},
+        )
+
+    assert client.writes == []
+
+
 def test_write_cell_rejects_non_allowlisted_formula(tmp_path):
     workbook = _workbook(tmp_path)
 
     with pytest.raises(ValueError, match="Formula writes"):
         app_excel.write_cell(
-            {"path": str(workbook), "sheet": "Sheet1", "cell": "A1", "value": "=HYPERLINK(\"https://example.com\")"},
+            {"path": str(workbook), "sheet": "Sheet1", "cell": "A1", "value": '=HYPERLINK("https://example.com")'},
             _context(tmp_path),
         )
 

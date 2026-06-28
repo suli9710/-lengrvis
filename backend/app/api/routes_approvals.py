@@ -1,15 +1,29 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+import hmac
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import Approval, ApprovalStatus, Plan, StepStatus, Task, TaskStatus
+from app.core.audit import record
+from app.core.schemas import Approval, ApprovalStatus, Plan, StepStatus, Task, TaskStatus, now_iso
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.policy.redaction import redact_public_text
+from app.security.native_confirmation import (
+    NATIVE_CONFIRMATION_ID_HEADER,
+    NATIVE_CONFIRMATION_SIGNATURE_HEADER,
+    NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
+    create_native_confirmation_challenge,
+    enforce_native_confirmation_challenge_rate_limit,
+    require_native_confirmation,
+)
 from app.services.mobile_pairing_service import approve_approval as approve_mobile_approval
 from app.services.mobile_pairing_service import (
+    get_approval_detail,
     list_pending_approvals,
     raise_if_mobile_claims_disallowed,
     safe_approval_payload,
@@ -20,27 +34,155 @@ from app.services.task_service import set_task_status
 router = APIRouter()
 
 
+class NativeConfirmationChallengeRequest(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+    expected_preview_hmac: str = ""
+
+
+def _approval_native_confirmation(
+    approval_id: str,
+    confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
+    timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
+    signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+) -> dict[str, Any]:
+    return require_native_confirmation(
+        action="approve",
+        approval_id=approval_id,
+        confirmation_id=confirmation_id,
+        timestamp=timestamp,
+        signature=signature,
+        preview_hmac=_approval_preview_hmac(approval_id),
+    )
+
+
+def _rejection_native_confirmation(
+    approval_id: str,
+    confirmation_id: str = Header("", alias=NATIVE_CONFIRMATION_ID_HEADER),
+    timestamp: str = Header("", alias=NATIVE_CONFIRMATION_TIMESTAMP_HEADER),
+    signature: str = Header("", alias=NATIVE_CONFIRMATION_SIGNATURE_HEADER),
+) -> dict[str, Any]:
+    return require_native_confirmation(
+        action="reject",
+        approval_id=approval_id,
+        confirmation_id=confirmation_id,
+        timestamp=timestamp,
+        signature=signature,
+        preview_hmac=_approval_preview_hmac(approval_id),
+    )
+
+
+ApprovalNativeConfirmation = Annotated[dict[str, Any], Depends(_approval_native_confirmation)]
+RejectionNativeConfirmation = Annotated[dict[str, Any], Depends(_rejection_native_confirmation)]
+
+
 @router.get("/approvals/pending")
 def pending():
     return list_pending_approvals()
 
 
+@router.get("/approvals/{approval_id}")
+def detail(approval_id: str):
+    return get_approval_detail(approval_id)
+
+
+@router.post("/approvals/{approval_id}/native-confirmation-challenge")
+def native_confirmation_challenge(
+    approval_id: str,
+    payload: NativeConfirmationChallengeRequest,
+    request: Request,
+) -> dict[str, Any]:
+    enforce_native_confirmation_challenge_rate_limit(_client_scope(request))
+    db.require_sensitive_integrity_ok()
+    approval = _approval_for_confirmation(approval_id)
+    expected_preview_hmac = str(payload.expected_preview_hmac or "").strip()
+    if expected_preview_hmac and not hmac.compare_digest(expected_preview_hmac, approval.preview_hmac):
+        raise HTTPException(status_code=409, detail="Approval preview changed; refresh before confirming.")
+    return create_native_confirmation_challenge(
+        action=payload.action,
+        approval_id=approval.id,
+        preview_hmac=approval.preview_hmac,
+    )
+
+
 @router.post("/approvals/{approval_id}/approve")
-async def approve(approval_id: str):
+async def approve(approval_id: str, native_confirmation: ApprovalNativeConfirmation):
     approval = approval_for_execution(approval_id)
+    _record_desktop_native_confirmation(approval, "approve", native_confirmation)
     approval = await _execute_approved_step(approval)
     return approval_execution_response(approval)
 
 
 @router.post("/approvals/{approval_id}/reject")
-def reject(approval_id: str):
+def reject(approval_id: str, native_confirmation: RejectionNativeConfirmation):
+    before = db.fetch_one("approvals", approval_id)
     approval = reject_mobile_approval(approval_id)
+    _record_desktop_native_confirmation(
+        Approval.model_validate(before) if before else approval, "reject", native_confirmation
+    )
     _deny_rejected_step(approval)
     _reconcile_runs(approval.task_id)
     return safe_approval_payload(approval)
 
 
+def _client_scope(request: Request) -> str:
+    client = request.client
+    host = client.host if client else "unknown"
+    return (host or "unknown").strip().lower() or "unknown"
+
+
+def _approval_for_confirmation(approval_id: str) -> Approval:
+    data = db.fetch_one("approvals", approval_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    approval = Approval.model_validate(data)
+    if approval.status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
+        raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}.")
+    if approval.consumed_at:
+        raise HTTPException(status_code=409, detail="Approval has already been consumed.")
+    return approval
+
+
+def _approval_preview_hmac(approval_id: str) -> str:
+    data = db.fetch_one("approvals", approval_id)
+    if not data:
+        return ""
+    return str(data.get("preview_hmac") or "")
+
+
+def _record_desktop_native_confirmation(
+    approval: Approval,
+    decision: str,
+    native_confirmation: dict[str, Any],
+) -> None:
+    record(
+        "approval.desktop_native_confirmed",
+        "DesktopMain",
+        {
+            "approval_id": approval.id,
+            "task_id": approval.task_id,
+            "step_id": approval.step_id,
+            "decision": decision,
+            "desktop_native_confirmed": True,
+            "desktop_native_confirmed_at": now_iso(),
+            "desktop_native_confirmation_id": native_confirmation.get("confirmation_id"),
+            "tool_name": approval.tool_name,
+            "risk_level": approval.risk_level,
+            "dry_run_summary_present": bool(approval.dry_run_summary),
+            "confirmation_evidence": {
+                "approval_id": approval.id,
+                "task_id": approval.task_id,
+                "step_id": approval.step_id,
+                "tool_name": approval.tool_name,
+                "risk_level": approval.risk_level,
+                "dry_run_summary": redact_public_text(approval.dry_run_summary or ""),
+            },
+        },
+        task_id=approval.task_id,
+    )
+
+
 async def _execute_approved_step(approval: Approval) -> Approval:
+    db.require_sensitive_integrity_ok()
     try:
         await OrchestratorAgent().execute_approved_step(approval)
     except Exception as exc:
@@ -96,6 +238,7 @@ def _restore_retryable_approval_state(approval: Approval) -> None:
 
 
 def approval_for_execution(approval_id: str, claims: dict | None = None) -> Approval:
+    db.require_sensitive_integrity_ok()
     data = db.fetch_one("approvals", approval_id)
     if not data:
         raise HTTPException(status_code=404, detail="Approval not found")

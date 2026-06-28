@@ -25,10 +25,15 @@ export class TlsTrustConfigurationError extends Error {
 
 export async function configureNativeTlsTrust(security: BaseUrlSecurity): Promise<void> {
   if (!security.requiresTlsTrust) return;
-  if (!isAndroidRuntime()) return;
   const fingerprint = security.serverTls?.fingerprintSha256?.trim();
   if (!fingerprint) {
-    throw new TlsTrustConfigurationError("LAN HTTPS requires a certificate SHA-256 fingerprint before Android can pair.");
+    throw new TlsTrustConfigurationError("LAN HTTPS requires a certificate SHA-256 fingerprint before mobile pairing can trust this computer.");
+  }
+  if (isIosRuntime()) {
+    throw new TlsTrustConfigurationError("iOS LAN certificate pinning is not available yet. Use a system-trusted HTTPS certificate before pairing this iPhone.");
+  }
+  if (!isAndroidRuntime()) {
+    throw new TlsTrustConfigurationError("This mobile runtime cannot configure LAN certificate pinning for local HTTPS pairing.");
   }
   const module = nativeTlsTrustModule();
   if (!module?.trustServerCertificate) {
@@ -44,6 +49,10 @@ export async function clearNativeTlsTrust(): Promise<void> {
 
 function isAndroidRuntime(): boolean {
   return reactNativeRuntime()?.Platform?.OS === "android";
+}
+
+function isIosRuntime(): boolean {
+  return reactNativeRuntime()?.Platform?.OS === "ios";
 }
 
 function nativeTlsTrustModule(): NativeTlsTrustModule | undefined {

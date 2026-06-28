@@ -68,6 +68,10 @@ const bridge: LengrvisDesktopBridge = {
   commands: {
     execute: (request) => ipcRenderer.invoke(IPC_CHANNELS.commandsExecute, request)
   },
+  approvals: {
+    approve: (approvalId: string) => ipcRenderer.invoke(IPC_CHANNELS.approvalApprove, approvalId),
+    reject: (approvalId: string) => ipcRenderer.invoke(IPC_CHANNELS.approvalReject, approvalId)
+  },
   tasks: {
     rollback: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.taskRollback, taskId)
   },

@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
     install_crash_handlers()
     assert_no_production_test_escape_hatches()
     db.init_db()
+    db.bootstrap_sensitive_record_integrity()
     settings = get_effective_settings()
     app = FastAPI(title="Lengrvis Agent EXE Backend", version="0.1.1", lifespan=full_backend_lifespan)
     # Hardened CORS shared with the guardian backend (app/guardian.py) via

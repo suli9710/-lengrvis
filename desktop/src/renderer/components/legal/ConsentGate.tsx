@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 
 import type { ConsentRecord, ConsentStatusResult } from "../../../shared/consent";
+import { isWebOnlyDevConsentGateBypassEnabled } from "../../lib/api/transport";
 import { PrivacyConsentModal } from "./PrivacyConsentModal";
 
 type ConsentBridge = {
@@ -26,6 +27,13 @@ export function ConsentGate({ children }: ConsentGateProps) {
     let isActive = true;
     const bridge = (window as unknown as { lengrvis?: ConsentBridge }).lengrvis;
     if (!bridge?.consent?.getStatus) {
+      if (isWebOnlyDevConsentGateBypassEnabled()) {
+        setLoading(false);
+        return;
+      }
+      setStatusError(
+        "无法连接桌面安全桥接，无法验证使用条款与隐私同意。请使用 Lengrvis 桌面客户端；若仅在 dev:web 本地调试，可显式设置 VITE_LENGRVIS_DEV_SKIP_CONSENT_GATE=true。"
+      );
       setLoading(false);
       return;
     }

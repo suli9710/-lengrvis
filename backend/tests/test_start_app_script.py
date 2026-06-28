@@ -41,15 +41,11 @@ def _release_evidence_packet_text(project_root: Path) -> str:
 
 
 def _current_release_evidence_script_text(project_root: Path) -> str:
-    return (
-        project_root / "scripts" / "generate_current_release_evidence.ps1"
-    ).read_text(encoding="utf-8")
+    return (project_root / "scripts" / "generate_current_release_evidence.ps1").read_text(encoding="utf-8")
 
 
 def _current_release_evidence_doc_text(project_root: Path) -> str:
-    return (
-        project_root / "docs" / "release" / "current-release-evidence.md"
-    ).read_text(encoding="utf-8")
+    return (project_root / "docs" / "release" / "current-release-evidence.md").read_text(encoding="utf-8")
 
 
 def _ci_workflow_text(project_root: Path) -> str:
@@ -57,15 +53,13 @@ def _ci_workflow_text(project_root: Path) -> str:
 
 
 def _diagnostics_external_review_packet_text(project_root: Path) -> str:
-    return (
-        project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1"
-    ).read_text(encoding="utf-8")
+    return (project_root / "scripts" / "collect_diagnostics_external_review_packet.ps1").read_text(encoding="utf-8")
 
 
 def _local_model_clean_machine_evidence_template_text(project_root: Path) -> str:
-    return (
-        project_root / "scripts" / "collect_local_model_clean_machine_evidence_template.ps1"
-    ).read_text(encoding="utf-8")
+    return (project_root / "scripts" / "collect_local_model_clean_machine_evidence_template.ps1").read_text(
+        encoding="utf-8"
+    )
 
 
 def _readme_text(project_root: Path) -> str:
@@ -95,10 +89,19 @@ def _run_release_safety(
     env = os.environ.copy()
     for key in (
         "LENGRVIS_ALLOW_MOCK_FALLBACK",
+        "LENGRVIS_CLOUD_QUOTA_ENFORCED",
+        "LENGRVIS_CLOUD_QUOTA_MAX_CALLS",
+        "LENGRVIS_CLOUD_QUOTA_MAX_COST_USD",
+        "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS",
+        "LENGRVIS_CLOUD_QUOTA_WINDOW_HOURS",
         "LENGRVIS_CONFIG_FILE",
         "LENGRVIS_COMMERCIAL_RELEASE",
         "LENGRVIS_ENV_FILE",
         "LENGRVIS_LICENSE_KEY",
+        "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE",
+        "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE_FILE",
+        "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY",
+        "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY_FILE",
         "LENGRVIS_LICENSE_PRIVATE_KEY",
         "LENGRVIS_LICENSE_PUBLIC_KEY",
         "LENGRVIS_LICENSE_REVOCATIONS",
@@ -536,11 +539,7 @@ def _markdown_section(text: str, heading: str) -> str:
 
 def test_start_app_defaults_lengrvis_env_once(project_root: Path) -> None:
     text = _start_app_text(project_root)
-    assignment_lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip().startswith("$env:LENGRVIS_ENV =")
-    ]
+    assignment_lines = [line.strip() for line in text.splitlines() if line.strip().startswith("$env:LENGRVIS_ENV =")]
 
     assert "elseif ($env:LENGRVIS_ENV)" not in text
     assert assignment_lines == ['$env:LENGRVIS_ENV = "development"']
@@ -572,7 +571,7 @@ def test_build_portable_initializes_electron_runtime_when_missing(project_root: 
     assert "npm --prefix desktop exec electron -- --version" in text
     assert "Run npm --prefix desktop install first" not in text
     assert text.index("Initialize-ElectronRuntime -ElectronDist $ElectronDist") < text.index(
-        'if (-not (Test-Path $ElectronDist))'
+        "if (-not (Test-Path $ElectronDist))"
     )
 
 
@@ -585,7 +584,7 @@ def test_start_app_does_not_stop_workspace_owned_full_backend(project_root: Path
     assert "Stop-Process" not in function_body
     assert "Stop-VerifiedListenProcess" not in function_body
     assert "为避免误关用户手动启动的服务" in function_body
-    assert ".Contains(\"backend.main:full_app\")" not in function_body
+    assert '.Contains("backend.main:full_app")' not in function_body
 
 
 def test_start_app_main_backend_reuses_or_blocks_existing_listener(project_root: Path) -> None:
@@ -594,7 +593,10 @@ def test_start_app_main_backend_reuses_or_blocks_existing_listener(project_root:
     function_end = text.index("function Start-DesktopShell", function_start)
     function_body = text[function_start:function_end]
 
-    assert "elseif ((Test-WorkspaceProcess $commandLine) -or (Test-UvicornLengrvisBackend $commandLine))" not in function_body
+    assert (
+        "elseif ((Test-WorkspaceProcess $commandLine) -or (Test-UvicornLengrvisBackend $commandLine))"
+        not in function_body
+    )
     assert "Stop-VerifiedListenProcess -Port $BackendPort -Process $existing" not in function_body
     assert "if (Test-Health)" in function_body
     assert "为避免误关用户手动启动的服务" in function_body
@@ -649,7 +651,9 @@ def test_start_app_frontend_reuses_only_lengrvis_frontend_listener(project_root:
     frontend_body = text[frontend_start:frontend_end]
 
     assert "if (Test-LengrvisFrontendProcess $commandLine)" in frontend_body
-    assert frontend_body.index("if (Test-LengrvisFrontendProcess $commandLine)") < frontend_body.index("Invoke-WebRequest -Uri $FrontendUrl")
+    assert frontend_body.index("if (Test-LengrvisFrontendProcess $commandLine)") < frontend_body.index(
+        "Invoke-WebRequest -Uri $FrontendUrl"
+    )
     assert "界面服务端口 $FrontendPort 已被占用，但无法复用" in frontend_body
 
 
@@ -707,9 +711,7 @@ def test_root_evidence_scripts_are_discoverable_and_non_signoff(project_root: Pa
     }
 
     for script_name, helper_name in expected_helpers.items():
-        assert scripts[script_name] == (
-            f"powershell -ExecutionPolicy Bypass -File ./scripts/{helper_name}"
-        )
+        assert scripts[script_name] == (f"powershell -ExecutionPolicy Bypass -File ./scripts/{helper_name}")
         assert "pass" not in script_name
         assert "signoff" not in script_name
         assert "ready" not in script_name
@@ -742,7 +744,7 @@ def test_current_release_evidence_is_single_ci_generated_summary(project_root: P
     assert "path: docs/release/current-release-evidence.md" in ci
 
     for marker in (
-        'docs\\release\\current-release-evidence.md',
+        "docs\\release\\current-release-evidence.md",
         "Commit SHA:",
         "Date (UTC):",
         "## Machine Environment",
@@ -887,7 +889,9 @@ def test_current_release_evidence_requires_every_ci_gate_success(
     assert "- CI status: machine_gates_failed_or_incomplete" in text
     assert "- Backend pytest + golden task gate: failure" in text
     assert "machine_gates_passed" not in text
-    assert "| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | failure |" in text
+    assert (
+        "| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | failure |" in text
+    )
 
 
 def test_release_safety_fails_closed_without_strict_state_machine(
@@ -995,6 +999,47 @@ def test_release_safety_accepts_valid_public_key_for_commercial_release(
     assert "Commercial license secrets are offline-only" in output
 
 
+def test_release_safety_rejects_commercial_quota_disable(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_CLOUD_QUOTA_ENFORCED": "false",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial release profiles must not set LENGRVIS_CLOUD_QUOTA_ENFORCED=false" in output
+
+
+def test_release_safety_rejects_commercial_quota_overrides(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS": "999999999",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial release profiles must not use LENGRVIS_CLOUD_QUOTA_* limit overrides" in output
+    assert "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS" in output
+
+
 def test_release_safety_rejects_runtime_license_private_key(
     project_root: Path,
     tmp_path: Path,
@@ -1011,6 +1056,24 @@ def test_release_safety_rejects_runtime_license_private_key(
 
     assert result.returncode == 1, output
     assert "Release runtime must not contain LENGRVIS_LICENSE_PRIVATE_KEY" in output
+
+
+def test_release_safety_rejects_runtime_activation_private_key(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY": "must-not-ship",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Release runtime must not contain LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY" in output
 
 
 def test_release_safety_default_strict_state_machine_is_documented_as_fail_closed(
@@ -1032,9 +1095,9 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     signed_config_path = project_root / "desktop" / "electron-builder.signed.js"
     signed_config = signed_config_path.read_text(encoding="utf-8")
     unsigned_config = (project_root / "desktop" / "electron-builder.yml").read_text(encoding="utf-8")
-    verify_script = (
-        project_root / "desktop" / "scripts" / "verify-signed-build-config.cjs"
-    ).read_text(encoding="utf-8")
+    verify_script = (project_root / "desktop" / "scripts" / "verify-signed-build-config.cjs").read_text(
+        encoding="utf-8"
+    )
 
     assert scripts["verify:signed-build-config"] == "node scripts/verify-signed-build-config.cjs"
     assert scripts["verify:signed-build-config:mac"] == "node scripts/verify-signed-build-config.cjs mac"
@@ -1086,6 +1149,29 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     assert "win.publisherName[0]" in verify_script
     assert "mac.notarize" in verify_script
     assert "APPLE_APP_SPECIFIC_PASSWORD" in verify_script
+
+
+def test_windows_release_signature_verification_covers_portable_artifacts(
+    project_root: Path,
+) -> None:
+    verify_script = (project_root / "desktop" / "scripts" / "verify-windows-release-signatures.cjs").read_text(
+        encoding="utf-8"
+    )
+    smoke_script = (project_root / "desktop" / "scripts" / "windows-release-signatures-smoke.cjs").read_text(
+        encoding="utf-8"
+    )
+    root_package = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+    normalized = verify_script.replace("\\", "/")
+
+    assert "Lengrvis-win-portable" in normalized
+    assert "x64-self-extracting.exe" in normalized
+    assert "Lengrvis.exe" in normalized
+    assert "portableBackendExe" in normalized
+    assert "Get-AuthenticodeSignature" in verify_script
+    assert 'status !== "Valid"' in verify_script
+    assert "verify:windows-release-signatures" in root_package["scripts"]["release:check"]
+    assert "Lengrvis-win-portable" in smoke_script
+    assert "x64-self-extracting.exe" in smoke_script
 
 
 def test_windows_signed_build_config_gate_rejects_missing_release_env(
@@ -1187,8 +1273,12 @@ def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
 
 
 def test_desktop_copy_exposes_settings_and_diagnostics_as_user_entrypoints(project_root: Path) -> None:
-    settings_text = (project_root / "desktop" / "src" / "renderer" / "components" / "SettingsPanel.tsx").read_text(encoding="utf-8")
-    system_info_text = (project_root / "desktop" / "src" / "renderer" / "components" / "SystemInfoPanel.tsx").read_text(encoding="utf-8")
+    settings_text = (project_root / "desktop" / "src" / "renderer" / "components" / "SettingsPanel.tsx").read_text(
+        encoding="utf-8"
+    )
+    system_info_text = (project_root / "desktop" / "src" / "renderer" / "components" / "SystemInfoPanel.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert "普通用户的统一配置入口" in settings_text
     assert ".env" in settings_text
@@ -1233,7 +1323,7 @@ def test_portable_first_screen_smoke_attempts_renderer_dom_read_only_task_eviden
     assert "function Test-RendererDomEvidence" in text
     assert "function Invoke-PortableRendererDomAutomation" in text
     assert "chromium.connectOverCDP" in text
-    assert "page.locator(\"button\").filter({ hasText: systemCheckPattern })" in text
+    assert 'page.locator("button").filter({ hasText: systemCheckPattern })' in text
     assert "portable renderer DOM read-only task evidence passed" in text
     assert "launcher/window/backend diagnostics pass remains limited" in text
     assert "renderer DOM evidence unavailable in strict portable smoke" in text
@@ -1255,7 +1345,7 @@ def test_portable_first_screen_smoke_forbids_renderer_export_and_write_side_effe
     assert '"/api/system/processes"' in text
     assert '"/api/system/startup-items"' in text
     assert '"/api/apps"' in text
-    assert 'function isApiEndpoint(endpoint)' in text
+    assert "function isApiEndpoint(endpoint)" in text
     assert "function isDisallowedReadOnlyApiCall(call)" in text
     assert 'if (method !== "GET") return true;' in text
     assert "return !allowedReadOnlyGetEndpoints.has(endpoint);" in text
@@ -1307,18 +1397,27 @@ def test_portable_first_screen_smoke_attempts_natural_language_read_only_task_ev
     assert "$taskId -and -not $baselineTaskIdSet.Contains($taskId)" in text
     assert "$runId -and -not $baselineRunIdSet.Contains($runId)" in text
     assert "could not capture natural-language backend baseline before packaged prompt submission" in text
-    assert "backend evidence observed after renderer bridge submission attempt, but no packaged /api/chat or /api/runs POST was observed; keeping natural-language evidence unsupported" in text
+    assert (
+        "backend evidence observed after renderer bridge submission attempt, but no packaged /api/chat or /api/runs POST was observed; keeping natural-language evidence unsupported"
+        in text
+    )
     assert "inferNaturalLanguagePostFromBackend" not in text
     assert "inferred: true" not in text
     assert "$messages.Count -gt 0 -or" not in text
-    assert "natural-language command dock displayed clear visible safe failure before submit; no packaged task submission was possible" in text
+    assert (
+        "natural-language command dock displayed clear visible safe failure before submit; no packaged task submission was possible"
+        in text
+    )
     assert "visible safe failure is not accepted as natural-language task evidence" in text
     assert "natural-language visible safe failure side-effect check failed" in text
     assert "function Get-CompletionEvidenceSummary" in text
     assert "function Get-ResultQualitySummary" in text
     assert 'Get-SmokeJson -Url "$BackendUrl/api/tasks/$taskId/explain"' in text
     assert 'Get-SmokeJson -Url "$BackendUrl/api/tasks/$runTaskId/explain"' in text
-    assert "completion_evidence.level=$level result_verified=$resultVerifiedText completion_evidence.signoff=$signoffText" in text
+    assert (
+        "completion_evidence.level=$level result_verified=$resultVerifiedText completion_evidence.signoff=$signoffText"
+        in text
+    )
     assert "result_quality.state=$state" in text
     assert "result_quality.result_verified=$resultVerifiedText" in text
     assert "result_quality.can_treat_as_done=$canTreatAsDoneText" in text
@@ -1336,7 +1435,10 @@ def test_portable_first_screen_smoke_attempts_natural_language_read_only_task_ev
     assert "natural-language renderer DOM evidence failed" in text
     assert "read-only entry evidence remains valid but must not be counted as natural-language task evidence" in text
     assert "natural-language prompt created read-only/system diagnostics task" in text
-    assert "natural-language prompt produced clear visible safe failure copy in the packaged command dock, but no /api/chat or /api/runs POST was observed" in text
+    assert (
+        "natural-language prompt produced clear visible safe failure copy in the packaged command dock, but no /api/chat or /api/runs POST was observed"
+        in text
+    )
     assert "safeFailureTask=$taskId status=$taskStatus" in text
     assert "safeFailureRun=$runId phase=$runPhase" in text
     assert "safeFailureChatWithoutTaskOrRun=true" in text
@@ -1358,15 +1460,30 @@ def test_portable_docs_do_not_overclaim_gui_task_automation(project_root: Path) 
     parity = _parity_text(project_root)
 
     assert "Only the explicit renderer DOM evidence line counts as packaged GUI-task automation" in release_gate
-    assert "Any POST/PUT/PATCH/DELETE, unknown API mutation, diagnostics export, or settings/files/apps mutation during the read-only click fails the smoke" in release_gate
-    assert "that pass requires a packaged renderer `/api/chat` or `/api/runs` POST plus backend read-only/system diagnostics task or run evidence" in release_gate
-    assert "Visible safe-failure copy is still useful safety evidence when paired with zero side effects, but it is not accepted as natural-language task evidence" in release_gate
+    assert (
+        "Any POST/PUT/PATCH/DELETE, unknown API mutation, diagnostics export, or settings/files/apps mutation during the read-only click fails the smoke"
+        in release_gate
+    )
+    assert (
+        "that pass requires a packaged renderer `/api/chat` or `/api/runs` POST plus backend read-only/system diagnostics task or run evidence"
+        in release_gate
+    )
+    assert (
+        "Visible safe-failure copy is still useful safety evidence when paired with zero side effects, but it is not accepted as natural-language task evidence"
+        in release_gate
+    )
     assert "This is submission/task-evidence coverage, not release-candidate completion sign-off" in release_gate
     assert "observes `/api/chat` or `/api/runs` and a related task/run" in release_gate
-    assert "If CDP or the packaged renderer cannot be automated, the strict script exits 2 with `[unsupported]`" in release_gate
+    assert (
+        "If CDP or the packaged renderer cannot be automated, the strict script exits 2 with `[unsupported]`"
+        in release_gate
+    )
     assert "packaged renderer DOM automation to click the read-only" in parity
     assert "observed packaged renderer `POST /api/runs`" in parity
-    assert "Record this as packaged natural-language command-dock submission plus read-only/system diagnostics task evidence" in parity
+    assert (
+        "Record this as packaged natural-language command-dock submission plus read-only/system diagnostics task evidence"
+        in parity
+    )
     assert "does not prove clean-machine release-candidate install" in parity
     assert "full natural-language agent task completion loop" in parity
     assert "separate manual release evidence" in parity
@@ -1382,7 +1499,9 @@ def test_portable_docs_route_completed_result_claims_through_completion_evidence
         assert "completed_result" in text
         assert "result_verified=true" in text
 
-    assert "`submission`, `task_created`, and `visible_progress` levels are not completed-result evidence" in release_gate
+    assert (
+        "`submission`, `task_created`, and `visible_progress` levels are not completed-result evidence" in release_gate
+    )
     assert "`completion_evidence.signoff` remains false" in release_gate
     assert "Product/API explain evidence should use `completion_evidence`" in matrix
     assert "`completed_result` with `result_verified=true` is still not RC sign-off" in matrix
@@ -1487,7 +1606,10 @@ def test_release_gate_recommends_mobile_lan_wss_preflight_without_overclaim(proj
     assert "grant revoke/expiry" in release_gate
     assert "screenshot/log review" in release_gate
     assert "blocked_reason_redacted" in release_gate
-    assert "does not replace a real phone/emulator camera/QR path, actual WSS connection, or explicit Android/emulator certificate trust evidence" in release_gate
+    assert (
+        "does not replace a real phone/emulator camera/QR path, actual WSS connection, or explicit Android/emulator certificate trust evidence"
+        in release_gate
+    )
     assert "Mobile LAN/WSS prerequisite preflight" in release_gate
     assert "it is not real-device pass evidence" in release_gate
     assert "mobile real-device redacted template" in release_gate
@@ -1502,9 +1624,9 @@ def test_mobile_remote_release_docs_keep_counts_command_bound(project_root: Path
         "docs/qa/real-device-mobile-matrix.md": _real_device_mobile_matrix_text(project_root),
         "docs/qa/agentic-product-evals.md": _agentic_product_evals_text(project_root),
         "PRODUCTIZATION_ISSUES.md": _productization_issues_text(project_root),
-        "docs/qa/backend-test-runtime.md": (
-            project_root / "docs" / "qa" / "backend-test-runtime.md"
-        ).read_text(encoding="utf-8"),
+        "docs/qa/backend-test-runtime.md": (project_root / "docs" / "qa" / "backend-test-runtime.md").read_text(
+            encoding="utf-8"
+        ),
         "docs/qa/remote-session-lan-tls-gate.md": (
             project_root / "docs" / "qa" / "remote-session-lan-tls-gate.md"
         ).read_text(encoding="utf-8"),
@@ -1570,6 +1692,9 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:local-model-template",
         "evidence:diagnostics-review",
         "evidence:distribution-template",
+        "evidence:distribution-verify",
+        "evidence:clean-machine-verify",
+        "evidence:commercial-loop",
     }
     forbidden_name_pattern = re.compile(
         r"pass|passed|signoff|sign-off|signed-off|approved|approval|public-safe|ready",
@@ -1622,7 +1747,7 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         text = doc_path.read_text(encoding="utf-8")
         for match in alias_mention_pattern.finditer(text):
             alias = match.group(1)
-            context = text[max(0, match.start() - 700): match.end() + 700].lower()
+            context = text[max(0, match.start() - 700) : match.end() + 700].lower()
             assert alias in expected_aliases
             assert any(phrase in context for phrase in no_overclaim_phrases), (
                 f"{doc_path} mentions npm run {alias} without nearby no-overclaim wording"
@@ -1703,7 +1828,7 @@ def test_release_evidence_packet_script_is_read_only_and_redacted(project_root: 
     assert "missing_real_device_artifacts" in text
     assert "missing_result_quality_signoff" in text
     assert "manual_content_review_required" in text
-    assert "must_not_claim = \"release-candidate pass\"" in text
+    assert 'must_not_claim = "release-candidate pass"' in text
     assert "rc_handoff_requirements" in text
     assert 'status = "manual_rc_handoff_required"' in text
     assert "packet_is_rc_signoff = $false" in text
@@ -1729,7 +1854,10 @@ def test_release_evidence_packet_script_is_read_only_and_redacted(project_root: 
     assert "changes_mobile_app = $false" in text
     assert "natural_language_completion_evidence" in text
     assert "completion_evidence\\.level" in text
-    assert '$naturalLanguageCompletionLevel -eq "completed_result" -and $naturalLanguageResultVerified -and -not $naturalLanguageSignoff' in text
+    assert (
+        '$naturalLanguageCompletionLevel -eq "completed_result" -and $naturalLanguageResultVerified -and -not $naturalLanguageSignoff'
+        in text
+    )
     assert "natural-language pass line reports result_verified without completed_result level" in text
     assert "natural-language pass line must not report completion_evidence signoff" in text
 
@@ -1746,9 +1874,7 @@ def test_release_evidence_packet_script_is_read_only_and_redacted(project_root: 
     assert "Set-Content -LiteralPath $markdownPath" in text
 
 
-def test_android_release_gate_preflight_is_not_release_pass(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_android_release_gate_preflight_is_not_release_pass(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -1780,11 +1906,7 @@ def test_android_release_gate_preflight_is_not_release_pass(
     assert result.returncode == 0, output
     assert "preflight_ready_not_release" in output
     assert "not an installable APK pass or real-device remote-control pass" in output
-    packet = json.loads(
-        next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
-    )
+    packet = json.loads(next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(encoding="utf-8-sig"))
     assert packet["status"] == "preflight_ready_not_release"
     assert packet["release_ready"] is False
     assert packet["preflight_only"] is True
@@ -1800,9 +1922,7 @@ def test_android_release_gate_preflight_is_not_release_pass(
     assert "installable Android app release pass" in packet["must_not_claim"]
 
 
-def test_android_release_gate_redacts_missing_private_paths(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_android_release_gate_redacts_missing_private_paths(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -1838,12 +1958,8 @@ def test_android_release_gate_redacts_missing_private_paths(
     output = result.stdout + result.stderr
 
     assert result.returncode == 1, output
-    packet_text = next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("android-release-gate.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("android-release-gate.redacted.md")).read_text(encoding="utf-8-sig")
     combined = "\n".join((output, packet_text, markdown_text))
     assert str(tmp_path) not in combined
     assert "private-token-secret" not in combined
@@ -1856,17 +1972,13 @@ def test_android_release_gate_redacts_missing_private_paths(
     assert packet["claim_controls"]["installable_android_app_claim_allowed"] is False
     assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
     issue_messages = "\n".join(
-        issue["message"]
-        for section in ("artifact_gate", "real_device_gate")
-        for issue in packet[section]["issues"]
+        issue["message"] for section in ("artifact_gate", "real_device_gate") for issue in packet[section]["issues"]
     )
     assert "missing.apk" in issue_messages
     assert "missing-evidence.json" in issue_messages
 
 
-def test_android_release_gate_rejects_fake_apk_even_with_reviewed_evidence(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_android_release_gate_rejects_fake_apk_even_with_reviewed_evidence(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -1906,11 +2018,7 @@ def test_android_release_gate_rejects_fake_apk_even_with_reviewed_evidence(
     output = result.stdout + result.stderr
 
     assert result.returncode == 1, output
-    packet = json.loads(
-        next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
-    )
+    packet = json.loads(next(evidence_root.rglob("android-release-gate.redacted.json")).read_text(encoding="utf-8-sig"))
     assert packet["status"] == "blocked"
     assert packet["release_ready"] is False
     assert packet["android_artifact"]["provided"] is True
@@ -1920,10 +2028,7 @@ def test_android_release_gate_rejects_fake_apk_even_with_reviewed_evidence(
     assert packet["real_device_gate"]["passed"] is True
     assert packet["claim_controls"]["installable_android_app_claim_allowed"] is False
     assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
-    assert any(
-        issue["code"] == "artifact_not_apk_zip"
-        for issue in packet["artifact_gate"]["issues"]
-    )
+    assert any(issue["code"] == "artifact_not_apk_zip" for issue in packet["artifact_gate"]["issues"])
 
 
 def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root: Path, tmp_path: Path) -> None:
@@ -2004,7 +2109,11 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
 
     packet = json.loads(packet_text)
     expected_ollama_contracts = sum(
-        len(re.findall(r"^(?:async\s+def|def)\s+test_", (project_root / path).read_text(encoding="utf-8"), flags=re.MULTILINE))
+        len(
+            re.findall(
+                r"^(?:async\s+def|def)\s+test_", (project_root / path).read_text(encoding="utf-8"), flags=re.MULTILINE
+            )
+        )
         for path in (
             "backend/tests/test_ollama_service.py",
             "backend/tests/test_ollama_install_endpoint.py",
@@ -2051,9 +2160,7 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     rc_template = packet["evidence"]["rc_handoff_template"]
     assert rc_template["status"] == "manual_rc_handoff_contract_present"
     assert rc_template["latest_redacted_handoff_template"]["found"] is False
-    assert rc_template["latest_redacted_handoff_template"]["handoff_status"] == (
-        "not_collected_by_this_packet"
-    )
+    assert rc_template["latest_redacted_handoff_template"]["handoff_status"] == ("not_collected_by_this_packet")
     assert rc_template["latest_redacted_handoff_template"]["release_candidate_signoff"] is False
     assert rc_template["latest_redacted_handoff_template"]["claim_allowed"] is False
     assert rc_template["expected_marker"] == "NOT_RELEASE_CANDIDATE_SIGNOFF"
@@ -2086,26 +2193,73 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert "mobile_real_device_lan_wss: status=missing_real_device_artifacts" in markdown_text
     active_grant_contract = packet["evidence"]["mobile_remote_input_active_grant_contract"]
     assert active_grant_contract["status"] == "fail_closed_source_contract_present"
-    assert active_grant_contract["automated_scope"] == "static source contract markers in mobile UI/client/smoke sources"
+    assert (
+        active_grant_contract["automated_scope"] == "static source contract markers in mobile UI/client/smoke sources"
+    )
     assert active_grant_contract["verify_command"] == "npm --prefix mobile run smoke:remote-input-grant"
     assert active_grant_contract["latest_execution_status"] == "not_run_by_this_packet"
     assert "not evidence that the smoke command was executed by this packet" in active_grant_contract["not_signoff"]
     assert "not proof of a live desktop-to-mobile remote input session" in active_grant_contract["not_signoff"]
-    assert "not backend TestClient, desktop smoke, packaged, or clean-machine evidence by itself" in active_grant_contract["not_signoff"]
+    assert (
+        "not backend TestClient, desktop smoke, packaged, or clean-machine evidence by itself"
+        in active_grant_contract["not_signoff"]
+    )
     assert "Mobile remote-input active-grant contract: fail_closed_source_contract_present" in markdown_text
     assert "latest_execution=not_run_by_this_packet" in markdown_text
     assert "not_signoff=source/client contract only, not live device/WSS" in markdown_text
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["result"] == "ready_for_manual_real_device_collection_only"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["real_device_evidence_status"] == "uncollected_fail_closed"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["real_device_evidence_collected"] is False
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["no_phone_preflight_claim"] == "not_real_device_pass"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["backend"]["public_base_url_redacted"] == "https://[redacted-host]:9443"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["backend"]["websocket_remote_screen_url_redacted"] == "wss://[redacted-host]:9443/ws/remote/screen"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"]["transport_security_status"] == "https_ready_preflight"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"]["websocket_approvals_url_redacted"] == "wss://[redacted-host]:9443/ws/mobile/approvals"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"]["websocket_remote_screen_url_redacted"] == "wss://[redacted-host]:9443/ws/remote/screen"
-    assert packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"]["websocket_remote_input_url_redacted"] == "wss://[redacted-host]:9443/ws/remote/input"
-    mobile_template = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["manual_real_device_evidence_template"]
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["result"]
+        == "ready_for_manual_real_device_collection_only"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["real_device_evidence_status"]
+        == "uncollected_fail_closed"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["real_device_evidence_collected"]
+        is False
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["no_phone_preflight_claim"]
+        == "not_real_device_pass"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["backend"]["public_base_url_redacted"]
+        == "https://[redacted-host]:9443"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["backend"][
+            "websocket_remote_screen_url_redacted"
+        ]
+        == "wss://[redacted-host]:9443/ws/remote/screen"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"][
+            "transport_security_status"
+        ]
+        == "https_ready_preflight"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"][
+            "websocket_approvals_url_redacted"
+        ]
+        == "wss://[redacted-host]:9443/ws/mobile/approvals"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"][
+            "websocket_remote_screen_url_redacted"
+        ]
+        == "wss://[redacted-host]:9443/ws/remote/screen"
+    )
+    assert (
+        packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]["qr_payload_shape"][
+            "websocket_remote_input_url_redacted"
+        ]
+        == "wss://[redacted-host]:9443/ws/remote/input"
+    )
+    mobile_template = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"][
+        "manual_real_device_evidence_template"
+    ]
     assert mobile_template["real_device_result"] == "uncollected"
     assert mobile_template["real_device_evidence_collected"] is False
     assert mobile_template["may_be_recorded_as"] == "preflight/config evidence only"
@@ -2138,12 +2292,17 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert android_latest["claim_controls"]["installable_android_app_claim_allowed"] is False
     assert android_latest["claim_controls"]["real_device_remote_control_claim_allowed"] is False
     assert "preflight is not an APK build" in android_gate["not_signoff"]
-    assert "strict gate remains blocked without installable APK and reviewed real-device evidence" in android_gate["not_signoff"]
+    assert (
+        "strict gate remains blocked without installable APK and reviewed real-device evidence"
+        in android_gate["not_signoff"]
+    )
     assert "Android release gate: entry_available; latest status=not_collected_by_this_packet" in markdown_text
     assert "not an APK/install/WSS pass created by this packet" in markdown_text
     assert packet["evidence"]["ollama_local_model_contracts"]["contract_count"] == expected_ollama_contracts
     assert packet["evidence"]["ollama_local_model_contracts"]["latest_execution_status"] == "not_run_by_this_packet"
-    local_model_template = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
+    local_model_template = packet["evidence"]["local_model_clean_machine_template"][
+        "latest_redacted_clean_machine_template"
+    ]
     assert local_model_template["found"] is False
     assert local_model_template["clean_machine_signoff"] is False
     assert local_model_template["local_model_install_pass"] is False
@@ -2152,18 +2311,27 @@ def test_release_evidence_packet_outputs_redacted_json_and_markdown(project_root
     assert local_model_template["local_model_task_smoke_pass"] is False
     assert local_model_template["template_is_clean_machine_pass"] is False
     assert local_model_template["dev_smoke_is_clean_machine_pass"] is False
-    assert packet["evidence"]["diagnostics_external_review"]["expected_external_review_status"] == "manual_review_required"
+    assert (
+        packet["evidence"]["diagnostics_external_review"]["expected_external_review_status"] == "manual_review_required"
+    )
     assert packet["evidence"]["diagnostics_external_review"]["expected_public_safe"] is False
     assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["found"] is False
     assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["public_safe"] is False
-    assert packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["external_sharing_allowed"] is False
-    assert packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["found"] is False
-    assert packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["result_quality_signoff"] is False
-    assert packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["completed_result_evidence"] is False
-    assert packet["evidence"]["settings_local_model_smoke"]["present_artifact_count"] == 4
     assert (
-        "It does not create installable Android APK pass or real-device Android remote-control pass"
-        in "\n".join(packet["not_clean_machine_or_signoff"])
+        packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]["external_sharing_allowed"]
+        is False
+    )
+    assert packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["found"] is False
+    assert (
+        packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["result_quality_signoff"] is False
+    )
+    assert (
+        packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]["completed_result_evidence"]
+        is False
+    )
+    assert packet["evidence"]["settings_local_model_smoke"]["present_artifact_count"] == 4
+    assert "It does not create installable Android APK pass or real-device Android remote-control pass" in "\n".join(
+        packet["not_clean_machine_or_signoff"]
     )
     assert "not release-candidate sign-off" in "\n".join(packet["not_clean_machine_or_signoff"]).lower()
     assert "It is not release-candidate sign-off" in markdown_text
@@ -2186,18 +2354,11 @@ def test_release_evidence_packet_consumes_android_preflight_without_release_clai
 
     assert result.returncode == 0, output
     assert str(tmp_path) not in output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     packet = json.loads(packet_text)
     latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
-    blocker = {
-        item["id"]: item
-        for item in packet["release_readiness_blockers"]
-    }["android_installable_remote_control"]
+    blocker = {item["id"]: item for item in packet["release_readiness_blockers"]}["android_installable_remote_control"]
 
     assert latest["found"] is True
     assert latest["source_contract_status"] == "valid_redacted_summary"
@@ -2260,15 +2421,10 @@ def test_release_evidence_packet_indexes_strict_android_gate_without_release_sig
 
     assert result.returncode == 0, output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
-    blocker = {
-        item["id"]: item
-        for item in packet["release_readiness_blockers"]
-    }["android_installable_remote_control"]
+    blocker = {item["id"]: item for item in packet["release_readiness_blockers"]}["android_installable_remote_control"]
 
     assert latest["source_contract_status"] == "valid_redacted_summary"
     assert latest["status"] == "passed"
@@ -2287,15 +2443,12 @@ def test_release_evidence_packet_indexes_strict_android_gate_without_release_sig
     assert packet["summary"]["release_ready"] is False
     assert packet["summary"]["release_candidate_signoff"] is False
     assert packet["summary"]["claimable_release_signoff"] is False
-    assert (
-        "It does not create installable Android APK pass or real-device Android remote-control pass"
-        in "\n".join(packet["not_clean_machine_or_signoff"])
+    assert "It does not create installable Android APK pass or real-device Android remote-control pass" in "\n".join(
+        packet["not_clean_machine_or_signoff"]
     )
 
 
-def test_release_evidence_packet_rejects_forged_passed_android_gate_summary(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_release_evidence_packet_rejects_forged_passed_android_gate_summary(project_root: Path, tmp_path: Path) -> None:
     android_root = tmp_path / "android-release-gate"
     forged_summary = _android_release_gate_summary(
         status="passed",
@@ -2334,15 +2487,10 @@ def test_release_evidence_packet_rejects_forged_passed_android_gate_summary(
 
     assert result.returncode == 1, output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
-    blocker = {
-        item["id"]: item
-        for item in packet["release_readiness_blockers"]
-    }["android_installable_remote_control"]
+    blocker = {item["id"]: item for item in packet["release_readiness_blockers"]}["android_installable_remote_control"]
     mismatch_reasons = "\n".join(latest["mismatch_reasons"])
 
     assert packet["summary"]["packet_status"] == "source_contract_failure"
@@ -2404,15 +2552,10 @@ def test_release_evidence_packet_fail_closes_android_gate_overclaim_artifact(
     assert "private-token.apk" not in output
     assert "private-evidence.json" not in output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     latest = packet["evidence"]["android_release_gate"]["latest_redacted_summary"]
-    blocker = {
-        item["id"]: item
-        for item in packet["release_readiness_blockers"]
-    }["android_installable_remote_control"]
+    blocker = {item["id"]: item for item in packet["release_readiness_blockers"]}["android_installable_remote_control"]
     mismatch_reasons = "\n".join(latest["mismatch_reasons"])
 
     assert packet["summary"]["packet_status"] == "source_contract_failure"
@@ -2433,8 +2576,14 @@ def test_release_evidence_packet_fail_closes_android_gate_overclaim_artifact(
     assert "non-passed Android gate must not set release_ready=true" in mismatch_reasons
     assert "non-passed Android gate must not allow installable Android app claims" in mismatch_reasons
     assert "non-passed Android gate must not allow real-device remote-control claims" in mismatch_reasons
-    assert "non-passed Android gate must include installable Android app release pass in must_not_claim" in mismatch_reasons
-    assert "non-passed Android gate must include real-device Android remote-control pass in must_not_claim" in mismatch_reasons
+    assert (
+        "non-passed Android gate must include installable Android app release pass in must_not_claim"
+        in mismatch_reasons
+    )
+    assert (
+        "non-passed Android gate must include real-device Android remote-control pass in must_not_claim"
+        in mismatch_reasons
+    )
     assert "preflight Android gate must not evaluate artifact_gate" in mismatch_reasons
     assert "preflight Android gate must not set artifact_gate.passed=true" in mismatch_reasons
     assert "preflight Android gate must not evaluate real_device_gate" in mismatch_reasons
@@ -2532,12 +2681,8 @@ def test_release_evidence_packet_consumes_rc_handoff_template_without_signoff(
 
     assert release_result.returncode == 0, release_output
     assert str(tmp_path) not in release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     packet = json.loads(packet_text)
     latest = packet["evidence"]["rc_handoff_template"]["latest_redacted_handoff_template"]
     assert latest["found"] is True
@@ -2562,9 +2707,7 @@ def test_release_evidence_packet_consumes_rc_handoff_template_without_signoff(
     assert "RC handoff template: found=True" in markdown_text
 
 
-def test_release_evidence_packet_fail_closes_malformed_rc_handoff_artifact(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_release_evidence_packet_fail_closes_malformed_rc_handoff_artifact(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -2665,9 +2808,7 @@ def test_release_evidence_packet_fail_closes_malformed_rc_handoff_artifact(
     assert "sk-proj-RCSECRET1234" not in release_output
     assert "rc-secret" not in release_output
     assert "Contoso" not in release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     assert "sk-proj-RCSECRET1234" not in packet_text
     assert "rc-secret" not in packet_text
     assert "Contoso" not in packet_text
@@ -2771,12 +2912,8 @@ def test_release_evidence_packet_fail_closes_unredacted_mobile_preflight_artifac
 
     assert result.returncode == 1, output
     assert "latest mobile LAN/WSS preflight artifact failed redacted contract validation" in output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     combined = "\n".join((output, packet_text, markdown_text))
     for raw in ("10.0.0.42", "mobile-secret", "?token="):
         assert raw not in combined
@@ -2810,8 +2947,12 @@ def test_release_evidence_packet_fail_closes_unredacted_mobile_preflight_artifac
     assert "backend.websocket_approvals_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
     assert "backend.websocket_remote_screen_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
     assert "qr_payload_shape.websocket_approvals_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
-    assert "qr_payload_shape.websocket_remote_screen_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
-    assert "qr_payload_shape.websocket_remote_input_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
+    assert (
+        "qr_payload_shape.websocket_remote_screen_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
+    )
+    assert (
+        "qr_payload_shape.websocket_remote_input_url_redacted is not a safe redacted websocket URL" in mismatch_reasons
+    )
     assert "lan_tls.enabled is not a JSON boolean" in mismatch_reasons
     assert "qr_payload_shape.transport_security_tls_ready is not a JSON boolean" in mismatch_reasons
 
@@ -2869,9 +3010,7 @@ def test_release_evidence_packet_fail_closes_unparseable_mobile_preflight_artifa
     assert result.returncode == 1, output
     assert "latest mobile LAN/WSS preflight artifact could not be parsed" in output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
 
     mobile_summary = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
@@ -2961,9 +3100,7 @@ def test_release_evidence_packet_fail_closes_ready_mobile_preflight_missing_reda
     assert result.returncode == 1, output
     assert "latest mobile LAN/WSS preflight artifact failed redacted contract validation" in output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
 
     mobile_summary = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
@@ -3042,9 +3179,7 @@ def test_release_evidence_packet_fail_closes_ready_mobile_preflight_missing_qr_r
     assert result.returncode == 1, output
     assert "latest mobile LAN/WSS preflight artifact failed redacted contract validation" in output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     latest = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
     assert latest["source_contract_status"] == "source_contract_mismatch"
@@ -3111,16 +3246,17 @@ def test_release_evidence_packet_fail_closes_mobile_preflight_with_collected_rea
     assert result.returncode == 1, output
     assert "latest mobile LAN/WSS preflight artifact failed redacted contract validation" in output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
 
     latest = packet["evidence"]["mobile_lan_wss_preflight"]["latest_redacted_summary"]
     assert packet["summary"]["packet_status"] == "source_contract_failure"
     assert latest["source_contract_status"] == "source_contract_mismatch"
     assert latest["result"] == "source_contract_mismatch"
-    assert latest["manual_real_device_evidence_template"]["collection_checklist_statuses"]["remote_input_wss"] == "invalid_redacted"
+    assert (
+        latest["manual_real_device_evidence_template"]["collection_checklist_statuses"]["remote_input_wss"]
+        == "invalid_redacted"
+    )
     mismatch_reasons = "\n".join(latest["mismatch_reasons"])
     assert (
         "manual_real_device_evidence_template.real_device_collection_checklist.remote_input_wss.status is not uncollected"
@@ -3128,9 +3264,7 @@ def test_release_evidence_packet_fail_closes_mobile_preflight_with_collected_rea
     )
 
 
-def test_release_evidence_packet_redacts_sensitive_evidence_root_labels(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_release_evidence_packet_redacts_sensitive_evidence_root_labels(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -3174,14 +3308,16 @@ def test_release_evidence_packet_redacts_sensitive_evidence_root_labels(
     output = result.stdout + result.stderr
 
     assert result.returncode == 0, output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     combined = "\n".join((output, packet_text, markdown_text))
-    for raw in ("192.168.56.10", "mobile-secret", "client-secret", "token=mobile-secret", "client_secret=client-secret"):
+    for raw in (
+        "192.168.56.10",
+        "mobile-secret",
+        "client-secret",
+        "token=mobile-secret",
+        "client_secret=client-secret",
+    ):
         assert raw not in combined
     assert "[redacted-host]" in packet_text
     assert "[redacted-sensitive]=[redacted]" in packet_text
@@ -3295,12 +3431,8 @@ def test_release_evidence_packet_consumes_local_model_clean_machine_template(
     release_output = release_result.stdout + release_result.stderr
 
     assert release_result.returncode == 0, release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     combined = "\n".join((template_output, release_output, packet_text, markdown_text))
     for raw in (
         str(tmp_path),
@@ -3358,24 +3490,35 @@ def test_release_evidence_packet_consumes_local_model_clean_machine_template(
         "version": "sha256:abc123",
         "status": "unverified_by_this_helper",
     }
-    assert local_summary["clean_machine_run"]["install"]["status"] == "manual_outcome_recorded_unverified_by_this_helper"
+    assert (
+        local_summary["clean_machine_run"]["install"]["status"] == "manual_outcome_recorded_unverified_by_this_helper"
+    )
     assert local_summary["clean_machine_run"]["start"]["status"] == "manual_outcome_recorded_unverified_by_this_helper"
     assert local_summary["clean_machine_run"]["pull"]["status"] == "manual_outcome_recorded_unverified_by_this_helper"
-    assert local_summary["clean_machine_run"]["task_smoke"]["status"] == "manual_outcome_recorded_unverified_by_this_helper"
+    assert (
+        local_summary["clean_machine_run"]["task_smoke"]["status"]
+        == "manual_outcome_recorded_unverified_by_this_helper"
+    )
     assert local_summary["clean_machine_run"]["task_smoke"]["clean_machine_pass"] is False
     assert local_summary["missing_required_fields_count"] == 0
     assert local_summary["blocked_reason_count"] == 1
     assert local_summary["observed_artifact_count"] == 1
-    assert "not true local model install pass" in packet["evidence"]["local_model_clean_machine_template"]["not_signoff"]
-    assert "not true local model task-smoke pass" in packet["evidence"]["local_model_clean_machine_template"]["not_signoff"]
-    assert "template/dev smoke must not be recorded as clean-machine pass" in packet["evidence"]["local_model_clean_machine_template"]["not_signoff"]
+    assert (
+        "not true local model install pass" in packet["evidence"]["local_model_clean_machine_template"]["not_signoff"]
+    )
+    assert (
+        "not true local model task-smoke pass"
+        in packet["evidence"]["local_model_clean_machine_template"]["not_signoff"]
+    )
+    assert (
+        "template/dev smoke must not be recorded as clean-machine pass"
+        in packet["evidence"]["local_model_clean_machine_template"]["not_signoff"]
+    )
     assert "Local model clean-machine template: found=True" in markdown_text
     assert "task_smoke=manual_outcome_recorded_unverified_by_this_helper" in markdown_text
 
 
-def test_release_evidence_packet_consumes_portable_first_screen_status_log(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_release_evidence_packet_consumes_portable_first_screen_status_log(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -3429,12 +3572,8 @@ def test_release_evidence_packet_consumes_portable_first_screen_status_log(
 
     assert release_result.returncode == 0, release_output
     assert str(tmp_path) not in release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     assert str(tmp_path) not in packet_text
     assert "task_99963aecac4841d2af25feb2f675c2ad" not in packet_text
     assert "task_99963aecac4841d2af25feb2f675c2ad" not in markdown_text
@@ -3445,7 +3584,10 @@ def test_release_evidence_packet_consumes_portable_first_screen_status_log(
     assert portable_summary["source_contract_status"] == "valid_limited_evidence_log"
     assert portable_summary["first_screen_read_only_pass"] is True
     assert portable_summary["renderer_dom_read_only_evidence"] == "passed"
-    assert portable_summary["natural_language_submission_evidence"] == "packaged_command_dock_submission_plus_read_only_task_evidence"
+    assert (
+        portable_summary["natural_language_submission_evidence"]
+        == "packaged_command_dock_submission_plus_read_only_task_evidence"
+    )
     assert portable_summary["observed_post_endpoint"] == "/api/runs"
     assert portable_summary["task_evidence_kind"] == "read_only_system_diagnostics_task_or_run"
     assert portable_summary["read_only_counts"] == {
@@ -3535,17 +3677,16 @@ def test_release_evidence_packet_records_completed_result_evidence_without_signo
     release_output = release_result.stdout + release_result.stderr
 
     assert release_result.returncode == 0, release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
 
     packet = json.loads(packet_text)
     portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
     assert portable_summary["source_contract_status"] == "valid_limited_evidence_log"
-    assert portable_summary["natural_language_submission_evidence"] == "packaged_command_dock_submission_plus_read_only_task_evidence"
+    assert (
+        portable_summary["natural_language_submission_evidence"]
+        == "packaged_command_dock_submission_plus_read_only_task_evidence"
+    )
     assert portable_summary["natural_language_completion_evidence"] == {
         "level": "completed_result",
         "result_verified": True,
@@ -3616,9 +3757,7 @@ def test_release_evidence_packet_does_not_mark_unverified_or_non_completed_level
 
     assert release_result.returncode == expected_returncode, release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
     completion_evidence = portable_summary["natural_language_completion_evidence"]
@@ -3694,12 +3833,8 @@ def test_release_evidence_packet_sanitizes_portable_status_log_and_does_not_over
     release_output = release_result.stdout + release_result.stderr
 
     assert release_result.returncode == 0, release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     combined = "\n".join((release_output, packet_text, markdown_text))
     for raw in (
         str(tmp_path),
@@ -3723,12 +3858,12 @@ def test_release_evidence_packet_sanitizes_portable_status_log_and_does_not_over
     assert packet["redaction"]["source_artifacts_read_for_summary"] is True
     assert packet["redaction"]["secrets_or_tokens_emitted"] is False
     assert "secrets_or_tokens_read" not in packet["redaction"]
-    assert "completed task-result sign-off" in "\n".join(packet["evidence"]["portable_first_screen_smoke"]["not_signoff"])
+    assert "completed task-result sign-off" in "\n".join(
+        packet["evidence"]["portable_first_screen_smoke"]["not_signoff"]
+    )
 
 
-def test_release_evidence_packet_fail_closes_empty_portable_status_log(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_release_evidence_packet_fail_closes_empty_portable_status_log(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -3774,9 +3909,7 @@ def test_release_evidence_packet_fail_closes_empty_portable_status_log(
     assert release_result.returncode == 1, release_output
     assert "latest portable first-screen status log could not be read or was empty" in release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
 
     portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
@@ -3847,9 +3980,7 @@ def test_release_evidence_packet_fail_closes_generic_natural_language_pass_log(
     assert release_result.returncode == 1, release_output
     assert "latest portable first-screen status log failed limited-evidence validation" in release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
 
     portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
@@ -3871,8 +4002,14 @@ def test_release_evidence_packet_fail_closes_generic_natural_language_pass_log(
     }
     mismatch_reasons = "\n".join(portable_summary["mismatch_reasons"])
     assert "natural-language pass line does not prove POST plus read-only task/run evidence" in mismatch_reasons
-    assert "natural-language pass line does not prove read-only/system diagnostics task or run semantics" in mismatch_reasons
-    assert "natural-language pass line does not prove related read-only/system diagnostics task or run evidence" in mismatch_reasons
+    assert (
+        "natural-language pass line does not prove read-only/system diagnostics task or run semantics"
+        in mismatch_reasons
+    )
+    assert (
+        "natural-language pass line does not prove related read-only/system diagnostics task or run evidence"
+        in mismatch_reasons
+    )
 
 
 def test_release_evidence_packet_fail_closes_natural_language_pass_without_related_counts(
@@ -3931,9 +4068,7 @@ def test_release_evidence_packet_fail_closes_natural_language_pass_without_relat
 
     assert release_result.returncode == 1, release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
 
     portable_summary = packet["evidence"]["portable_first_screen_smoke"]["latest_redacted_status_log"]
@@ -3952,13 +4087,17 @@ def test_release_evidence_packet_fail_closes_natural_language_pass_without_relat
     }
     mismatch_reasons = "\n".join(portable_summary["mismatch_reasons"])
     assert "natural-language pass line does not prove POST plus read-only task/run evidence" in mismatch_reasons
-    assert "natural-language pass line does not prove related read-only/system diagnostics task or run evidence" in mismatch_reasons
-    assert "natural-language pass line does not prove read-only/system diagnostics task or run semantics" not in mismatch_reasons
+    assert (
+        "natural-language pass line does not prove related read-only/system diagnostics task or run evidence"
+        in mismatch_reasons
+    )
+    assert (
+        "natural-language pass line does not prove read-only/system diagnostics task or run semantics"
+        not in mismatch_reasons
+    )
 
 
-def test_release_evidence_packet_fail_closes_malformed_portable_pass_log(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_release_evidence_packet_fail_closes_malformed_portable_pass_log(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -4012,9 +4151,7 @@ def test_release_evidence_packet_fail_closes_malformed_portable_pass_log(
 
     assert release_result.returncode == 1, release_output
     assert "latest portable first-screen status log failed limited-evidence validation" in release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     combined = "\n".join((release_output, packet_text))
     assert str(tmp_path) not in combined
     assert "portable-secret" not in combined
@@ -4126,9 +4263,7 @@ def test_release_evidence_packet_fail_closes_malformed_local_model_template_arti
 
     assert release_result.returncode == 1, release_output
     assert "latest local-model clean-machine helper artifact failed fail-closed validation" in release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     combined = "\n".join((release_output, packet_text))
     for raw in (
         str(tmp_path),
@@ -4305,9 +4440,7 @@ def test_release_evidence_packet_fail_closes_manual_review_ready_local_model_tem
     assert "latest local-model clean-machine helper artifact failed fail-closed validation" in release_output
     assert str(tmp_path) not in release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     local_summary = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
     assert packet["summary"]["packet_status"] == "source_contract_failure"
@@ -4437,9 +4570,7 @@ def test_release_evidence_packet_rejects_string_boolean_local_model_template_art
 
     assert release_result.returncode == 1, release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     local_summary = packet["evidence"]["local_model_clean_machine_template"]["latest_redacted_clean_machine_template"]
     assert local_summary["source_contract_status"] == "source_contract_mismatch"
@@ -4542,9 +4673,7 @@ def test_release_evidence_packet_consumes_diagnostics_external_review_template(
     assert release_result.returncode == 0, release_output
     assert str(tmp_path) not in release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
     assert review_summary["found"] is True
@@ -4678,9 +4807,7 @@ def test_release_evidence_packet_accepts_blocked_diagnostics_review_template(
 
     assert release_result.returncode == 0, release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
     assert packet["summary"]["packet_status"] == "redacted_partial_evidence_summary"
@@ -4700,9 +4827,7 @@ def test_release_evidence_packet_accepts_blocked_diagnostics_review_template(
     assert review_summary["separate_human_content_review_required"] is True
 
 
-def test_release_evidence_packet_consumes_result_quality_review_template(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_release_evidence_packet_consumes_result_quality_review_template(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -4787,9 +4912,7 @@ def test_release_evidence_packet_consumes_result_quality_review_template(
     assert release_result.returncode == 0, release_output
     assert str(tmp_path) not in release_output
     packet_path = next(evidence_root.rglob("release-evidence-packet.redacted.json"))
-    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    markdown_text = next(evidence_root.rglob("release-evidence-packet.redacted.md")).read_text(encoding="utf-8-sig")
     packet = json.loads(packet_path.read_text(encoding="utf-8-sig"))
     review_summary = packet["evidence"]["result_quality_review"]["latest_redacted_review_packet"]
     assert review_summary["found"] is True
@@ -4913,9 +5036,7 @@ def test_release_evidence_packet_fail_closes_malformed_result_quality_review_art
     assert "sk-proj-RESULTQUALITYSECRET1234" not in release_output
     assert "quality-secret" not in release_output
     assert "Contoso" not in release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     assert "sk-proj-RESULTQUALITYSECRET1234" not in packet_text
     assert "quality-secret" not in packet_text
     assert "Contoso" not in packet_text
@@ -5070,15 +5191,11 @@ def test_release_evidence_packet_fail_closes_malformed_diagnostics_review_artifa
     assert "sk-proj-RELEASESECRET1234" not in release_output
     assert "release-secret" not in release_output
     assert "Contoso" not in release_output
-    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     assert "sk-proj-RELEASESECRET1234" not in packet_text
     assert "release-secret" not in packet_text
     assert "Contoso" not in packet_text
-    packet = json.loads(
-        packet_text
-    )
+    packet = json.loads(packet_text)
     review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
     assert packet["summary"]["packet_status"] == "source_contract_failure"
     assert packet["summary"]["source_contract_failures"] == 1
@@ -5242,9 +5359,7 @@ def test_release_evidence_packet_rejects_string_boolean_diagnostics_review_artif
 
     assert release_result.returncode == 1, release_output
     packet = json.loads(
-        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("release-evidence-packet.redacted.json")).read_text(encoding="utf-8-sig")
     )
     review_summary = packet["evidence"]["diagnostics_external_review"]["latest_redacted_review_packet"]
     assert review_summary["source_contract_status"] == "source_contract_mismatch"
@@ -5465,9 +5580,7 @@ def test_diagnostics_external_review_packet_outputs_latest_redacted_template(
     assert "This template is not human reviewer approval" in markdown_text
 
 
-def test_diagnostics_external_review_packet_uses_specified_package_path(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_diagnostics_external_review_packet_uses_specified_package_path(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -5510,9 +5623,7 @@ def test_diagnostics_external_review_packet_uses_specified_package_path(
     assert result.returncode == 0, output
     assert str(tmp_path) not in output
     packet = json.loads(
-        next(evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(encoding="utf-8-sig")
     )
     assert packet["input_diagnostics_package"]["selection_mode"] == "specified"
     assert packet["input_diagnostics_package"]["package_label"] == "lengrvis-diagnostics-specified.json"
@@ -5528,11 +5639,7 @@ def test_diagnostics_external_review_packet_redacts_sensitive_package_basename(
     if not powershell:
         pytest.skip("PowerShell is not available")
 
-    specified_package = (
-        tmp_path
-        / "manual package"
-        / "Contoso-token-secret-sk-proj-ABCDEFGH.json"
-    )
+    specified_package = tmp_path / "manual package" / "Contoso-token-secret-sk-proj-ABCDEFGH.json"
     _write_diagnostics_support_package(specified_package, generated_at="2026-06-09T00:00:00+00:00")
 
     evidence_root = tmp_path / "sensitive-name-review"
@@ -5561,12 +5668,8 @@ def test_diagnostics_external_review_packet_redacts_sensitive_package_basename(
     output = result.stdout + result.stderr
 
     assert result.returncode == 0, output
-    packet_text = next(evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
-        encoding="utf-8-sig"
-    )
-    markdown_text = next(evidence_root.rglob("diagnostics-external-review.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    packet_text = next(evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(encoding="utf-8-sig")
+    markdown_text = next(evidence_root.rglob("diagnostics-external-review.redacted.md")).read_text(encoding="utf-8-sig")
     combined = "\n".join((output, packet_text, markdown_text))
     for raw in (
         str(tmp_path),
@@ -5623,9 +5726,7 @@ def test_diagnostics_external_review_packet_blocks_missing_latest_and_specified_
     assert "blocked_missing_diagnostics_package" in latest_output
     assert str(tmp_path) not in latest_output
     latest_packet = json.loads(
-        next(latest_evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(latest_evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(encoding="utf-8-sig")
     )
     assert latest_packet["summary"]["status"] == "blocked_missing_diagnostics_package"
     assert latest_packet["summary"]["public_safe"] is False
@@ -5664,9 +5765,7 @@ def test_diagnostics_external_review_packet_blocks_missing_latest_and_specified_
     assert str(tmp_path) not in specified_output
     assert "private-sk-diagnostics-secret" not in specified_output
     specified_packet = json.loads(
-        next(specified_evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(
-            encoding="utf-8-sig"
-        )
+        next(specified_evidence_root.rglob("diagnostics-external-review.redacted.json")).read_text(encoding="utf-8-sig")
     )
     assert specified_packet["summary"]["status"] == "blocked_missing_diagnostics_package"
     assert specified_packet["summary"]["public_safe"] is False
@@ -5792,15 +5891,14 @@ def test_local_model_clean_machine_evidence_template_default_output_is_actionabl
 
     missing = {item["field"]: item for item in handoff["missing_now"]}
     assert len(missing) == 11
-    assert missing["artifact_build_profile.artifact_under_test"]["helper_argument"].startswith(
-        "-ArtifactUnderTest"
+    assert missing["artifact_build_profile.artifact_under_test"]["helper_argument"].startswith("-ArtifactUnderTest")
+    assert (
+        "manual clean-machine install outcome"
+        in missing["clean_machine_run.install.outcome_or_blocked_reason"]["missing_artifact"]
     )
-    assert "manual clean-machine install outcome" in missing[
-        "clean_machine_run.install.outcome_or_blocked_reason"
-    ]["missing_artifact"]
-    assert "TaskSmokeBlockedReason" in missing[
-        "clean_machine_run.task_smoke.outcome_or_blocked_reason"
-    ]["helper_argument"]
+    assert (
+        "TaskSmokeBlockedReason" in missing["clean_machine_run.task_smoke.outcome_or_blocked_reason"]["helper_argument"]
+    )
     assert handoff["missing_evidence_artifacts"] == [
         "redacted screenshot/log labels for the manual clean-machine install/start/pull/task-smoke run; add with -Artifact <reviewed screenshot or log label>"
     ]
@@ -5945,9 +6043,7 @@ def test_local_model_clean_machine_evidence_template_outputs_redacted_json_and_m
         "Manual run blocked by proxy token=[redacted] and private path [redacted-path]"
     ]
     assert packet["evidence_template"]["blocked_reason_redacted"] == []
-    assert packet["evidence_template"]["observed_artifacts_redacted"] == [
-        "manual local model evidence.log"
-    ]
+    assert packet["evidence_template"]["observed_artifacts_redacted"] == ["manual local model evidence.log"]
     assert "true local model install pass" in packet["evidence_template"]["must_not_be_recorded_as"]
     assert "true local model task-smoke pass" in packet["evidence_template"]["must_not_be_recorded_as"]
     assert "template/dev smoke clean-machine pass" in packet["evidence_template"]["must_not_be_recorded_as"]
@@ -6081,7 +6177,10 @@ def test_release_gate_recommends_release_evidence_packet_without_overclaim(proje
     assert "support_package_redaction.external_review" in release_gate
     assert "public_safe=false" in release_gate
     assert "latest portable first-screen/read-only/natural-language status-log summary" in release_gate
-    assert "Portable status-log coverage is packaged window/backend/local-only diagnostics plus command-dock submission/task-evidence coverage only" in release_gate
+    assert (
+        "Portable status-log coverage is packaged window/backend/local-only diagnostics plus command-dock submission/task-evidence coverage only"
+        in release_gate
+    )
     assert "latest local-model clean-machine handoff template status" in release_gate
     assert "latest natural-language result-quality review packet status" in release_gate
     assert "Settings local-model smoke artifact paths" in release_gate
@@ -6098,9 +6197,13 @@ def test_release_gate_recommends_release_evidence_packet_without_overclaim(proje
     assert "exact release gate commands and full exit status" in release_gate
     assert "waivers with owner/reason/expiry/follow-up" in release_gate
     assert "Do not tag, publish, announce, or call an RC passed from `npm run evidence:release`" in release_gate
-    assert "release evidence packet RC handoff requirements (`manual_rc_handoff_required` is not sign-off)" in release_gate
+    assert (
+        "release evidence packet RC handoff requirements (`manual_rc_handoff_required` is not sign-off)" in release_gate
+    )
     assert r".\scripts\collect_local_model_clean_machine_evidence_template.ps1" in release_gate
-    assert r".tmp\local-model-clean-machine-evidence\...\local-model-clean-machine-evidence.redacted.json" in release_gate
+    assert (
+        r".tmp\local-model-clean-machine-evidence\...\local-model-clean-machine-evidence.redacted.json" in release_gate
+    )
     assert r".tmp\local-model-clean-machine-evidence\...\local-model-clean-machine-evidence.redacted.md" in release_gate
     assert "NOT_REAL_LOCAL_MODEL_INSTALL_START_PULL_PASS" in release_gate
     assert "artifact/build/profile, runtime/model/version/status" in release_gate
@@ -6242,7 +6345,10 @@ def test_mobile_lan_wss_preflight_accepts_valid_https_tls_without_overclaiming(
     assert template["artifact_collection_rules"]["review_required_before_pass_claim"] is True
     assert "Never paste token-bearing URLs" in template["artifact_collection_rules"]["token_bearing_urls"]
     assert "raw LAN IPs, hostnames, device names" in template["artifact_collection_rules"]["local_only_raw_values"]
-    assert any("Keep claim_controls.real_device_pass_claim_allowed=false" in step for step in template["operator_collection_order"])
+    assert any(
+        "Keep claim_controls.real_device_pass_claim_allowed=false" in step
+        for step in template["operator_collection_order"]
+    )
     assert "mobile token" in template["required_redactions"]
     assert "hostnames/IP addresses unless explicitly local-only" in template["required_redactions"]
     assert template["fields"]["https_origin_redacted"] == "https://[redacted-host]:9443"
@@ -6260,16 +6366,17 @@ def test_mobile_lan_wss_preflight_accepts_valid_https_tls_without_overclaiming(
     assert checklist["remote_input_grant_revoke_expiry"]["status"] == "uncollected"
     assert checklist["screenshot_log_review"]["status"] == "uncollected"
     assert "Remote screen WebSocket connected over WSS from the device" in checklist["actual_https_wss"]["must_attach"]
-    assert "Grant expiry disables input and cannot reconnect with the expired grant" in checklist["remote_input_grant_revoke_expiry"]["must_attach"]
+    assert (
+        "Grant expiry disables input and cannot reconnect with the expired grant"
+        in checklist["remote_input_grant_revoke_expiry"]["must_attach"]
+    )
     assert "real_device_result: uncollected" in checklist_text
     assert "real_device_pass_claim_allowed=false" in checklist_text
     assert "preflight_ready_is_pass=false" in checklist_text
     assert "This checklist is preflight/config evidence only" in checklist_text
 
 
-def test_mobile_lan_wss_preflight_blocks_certificate_host_mismatch(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_mobile_lan_wss_preflight_blocks_certificate_host_mismatch(project_root: Path, tmp_path: Path) -> None:
     powershell = shutil.which("powershell") or shutil.which("pwsh")
     if not powershell:
         pytest.skip("PowerShell is not available")
@@ -6333,8 +6440,7 @@ def test_mobile_lan_wss_preflight_blocks_certificate_host_mismatch(
     assert template["preflight_blocked"] is True
     assert template["claim_controls"]["real_device_pass_claim_allowed"] is False
     assert any(
-        "certificate does not cover advertised public host" in reason
-        for reason in template["blocked_reason_redacted"]
+        "certificate does not cover advertised public host" in reason for reason in template["blocked_reason_redacted"]
     )
     assert template["fields"]["actual_device_https_wss_evidence"] == "uncollected"
     assert template["real_device_collection_checklist"]["certificate_trust"]["status"] == "uncollected"

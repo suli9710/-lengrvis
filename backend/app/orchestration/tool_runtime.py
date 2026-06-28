@@ -15,12 +15,13 @@ from weakref import WeakKeyDictionary
 from app.core import db
 from app.core.audit import record
 from app.core.errors import SecurityError
-from app.core.paths import resolve_authorized
+from app.core.paths import resolve_task_path
 from app.core.schemas import (
     Approval,
     MessageType,
     OpenAIMessageRole,
     PlanStep,
+    SafetyReview,
     StepStatus,
     Task,
     TaskStatus,
@@ -89,6 +90,13 @@ def _exception_error_text(exc: BaseException, step: PlanStep) -> str:
 class RuntimeExecutionResult:
     kind: str
     result: ToolResult | None = None
+
+
+@dataclass(slots=True)
+class _ToolWorkerHandle:
+    future: asyncio.Future[Any]
+    abort_event: threading.Event
+    abandoned: bool = False
 
 
 _SHARED_PATH_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
@@ -353,11 +361,20 @@ class ToolRuntime:
             runtime=runtime,
         )
         db.upsert_model("tool_results", result)
-        denial = self._post_result_review_denial(task, step, tool, result)
-        if denial is not None:
-            return denial
+        post_tool_review = self._review_tool_result(task, step, tool, result)
+        if post_tool_review.verdict == SafetyVerdict.DENY:
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
+            return RuntimeExecutionResult("fatal_denied", result)
 
-        return await self._publish_result_and_finish(task, step, call, result, approval_id=approval_id)
+        return await self._publish_result_and_finish(
+            task,
+            step,
+            call,
+            result,
+            approval_id=approval_id,
+            post_tool_review=post_tool_review,
+        )
 
     def _publish_tool_call_proposal(
         self,
@@ -512,22 +529,20 @@ class ToolRuntime:
 
         return result
 
-    def _post_result_review_denial(
+    def _review_tool_result(
         self,
         task: Task,
         step: PlanStep,
         tool: ToolDefinition,
         result: ToolResult,
-    ) -> RuntimeExecutionResult | None:
+    ) -> SafetyReview:
         orchestrator = self.orchestrator
-        post_tool_review = orchestrator.safety.review_tool_result(
-            task.id, step.id, step.tool_name, result, tool.risk_level
-        )
-        if post_tool_review.verdict == SafetyVerdict.DENY:
-            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
-            orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
-            return RuntimeExecutionResult("fatal_denied", result)
-        return None
+        review_tool_result = orchestrator.safety.review_tool_result
+        kwargs: dict[str, Any] = {}
+        accepted_keywords = self._accepted_review_tool_call_keywords(review_tool_result)
+        if accepted_keywords is None or "tool_definition" in accepted_keywords:
+            kwargs["tool_definition"] = tool
+        return review_tool_result(task.id, step.id, step.tool_name, result, tool.risk_level, **kwargs)
 
     async def _publish_result_and_finish(
         self,
@@ -537,6 +552,7 @@ class ToolRuntime:
         result: ToolResult,
         *,
         approval_id: str | None,
+        post_tool_review: SafetyReview,
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         orchestrator.bus.publish_text(
@@ -548,6 +564,11 @@ class ToolRuntime:
             step_id=step.id,
             tool_call_id=call.id,
             structured_payload=result.model_dump(),
+            metadata={
+                "post_tool_review_id": post_tool_review.id,
+                "post_tool_review_verdict": post_tool_review.verdict.value,
+                "post_tool_review_target": post_tool_review.target_type,
+            },
         )
         stage = "approved_tool_observation" if approval_id else "tool_observation"
         if not orchestrator._supervise_new_agent_messages(task.id, stage):
@@ -747,6 +768,7 @@ class ToolRuntime:
             step.tool_name,
             preview_result,
             tool.risk_level,
+            tool_definition=tool,
         )
         if post_preview_review.verdict == SafetyVerdict.DENY:
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
@@ -991,11 +1013,15 @@ class ToolRuntime:
         if not tool.requires_authorized_path:
             return
         allowed_directories = [str(path) for path in context.get("allowed_directories") or []]
-        if tool.name == "file.trash" and not allowed_directories:
-            return
+        explicit_scope = context.get("explicit_path_scope")
+        explicit_scope_text = str(explicit_scope) if explicit_scope else None
         for arg_name, value in self._candidate_authorized_paths(args):
             try:
-                resolve_authorized(value, allowed_directories)
+                resolve_task_path(
+                    value,
+                    allowed_directories,
+                    explicit_scope_text=explicit_scope_text,
+                )
             except SecurityError as exc:
                 raise SecurityError(f"{tool.name} path argument '{arg_name}' is not authorized: {exc}") from exc
             except OSError as exc:
@@ -1157,10 +1183,10 @@ class ToolRuntime:
         except RuntimeError as exc:
             return {"error": str(exc), "resource_exhausted": True, "retry_after_pending_completion": True}
         try:
-            return await asyncio.wait_for(asyncio.shield(worker), timeout=timeout)
+            return await asyncio.wait_for(asyncio.shield(worker.future), timeout=timeout)
         except TimeoutError:
-            self._remember_pending_tool_completion(lock_keys, worker, tool=tool, reason="timeout")
-            pending_completion = bool(lock_keys and not worker.done())
+            self._remember_pending_tool_completion(lock_keys, worker.future, tool=tool, reason="timeout")
+            pending_completion = bool(lock_keys and not worker.future.done())
             error = f"{tool.name} timed out after {timeout:.0f}s"
             if pending_completion:
                 error = (
@@ -1174,7 +1200,7 @@ class ToolRuntime:
                 "retry_after_pending_completion": pending_completion,
             }
         except asyncio.CancelledError:
-            self._remember_pending_tool_completion(lock_keys, worker, tool=tool, reason="cancelled")
+            self._abort_tool_worker(worker, tool=tool, context=context)
             raise
 
     async def _await_pending_tool_completions(
@@ -1226,12 +1252,30 @@ class ToolRuntime:
 
         worker.add_done_callback(release_completion)
 
+    def _abort_tool_worker(
+        self,
+        worker: _ToolWorkerHandle,
+        *,
+        tool: ToolDefinition,
+        context: dict[str, Any],
+    ) -> None:
+        worker.abandoned = True
+        worker.abort_event.set()
+        runtime = context.get("runtime")
+        if runtime is not None and hasattr(runtime, "abort_requested"):
+            runtime.abort_requested = True
+        record(
+            "tool.worker_abort_requested",
+            "ToolRuntime",
+            {"tool": tool.name, "future_done": worker.future.done()},
+        )
+
     def _start_daemon_tool_worker(
         self,
         tool: ToolDefinition,
         args: dict[str, Any],
         context: dict[str, Any],
-    ) -> asyncio.Future[Any]:
+    ) -> _ToolWorkerHandle:
         if not _TOOL_THREAD_SLOTS.acquire(blocking=False):
             raise RuntimeError(
                 f"Tool worker capacity exhausted ({_MAX_DAEMON_TOOL_THREADS} in-flight sync tools); "
@@ -1239,12 +1283,19 @@ class ToolRuntime:
             )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Any] = loop.create_future()
+        abort_event = threading.Event()
+        context["_tool_abort_event"] = abort_event
+        handle = _ToolWorkerHandle(future=future, abort_event=abort_event)
 
         def complete_with_result(result: Any) -> None:
+            if handle.abandoned or abort_event.is_set():
+                return
             if not future.done():
                 future.set_result(result)
 
         def complete_with_error(exc: BaseException) -> None:
+            if handle.abandoned or abort_event.is_set():
+                return
             if not future.done():
                 future.set_exception(exc)
 
@@ -1256,17 +1307,27 @@ class ToolRuntime:
 
         def run_tool() -> None:
             try:
+                if handle.abandoned or abort_event.is_set():
+                    return
                 result = tool.execute(args, context)
-            except BaseException as exc:  # noqa: BLE001 - propagate tool crashes to the awaiting task.
-                finish(complete_with_error, exc)
-            else:
+                if handle.abandoned or abort_event.is_set():
+                    record(
+                        "tool.worker_result_discarded",
+                        "ToolRuntime",
+                        {"tool": tool.name},
+                    )
+                    return
                 finish(complete_with_result, result)
+            except BaseException as exc:  # noqa: BLE001 - propagate tool crashes to the awaiting task.
+                if handle.abandoned or abort_event.is_set():
+                    return
+                finish(complete_with_error, exc)
             finally:
                 _TOOL_THREAD_SLOTS.release()
 
         thread = threading.Thread(target=run_tool, name=f"tool-{tool.name}", daemon=True)
         thread.start()
-        return future
+        return handle
 
     def _tool_execution_timeout(self, context: dict[str, Any]) -> float:
         settings = context.get("settings")

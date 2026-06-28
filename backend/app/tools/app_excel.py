@@ -11,8 +11,8 @@ from app.core.audit import record
 from app.core.paths import resolve_authorized
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
-
 
 ALLOWED_OPERATIONS = frozenset(
     {
@@ -36,14 +36,11 @@ class ExcelUnavailableError(RuntimeError):
 class ExcelClient(Protocol):
     mode: str
 
-    def status(self) -> dict[str, Any]:
-        ...
+    def status(self) -> dict[str, Any]: ...
 
-    def read_workbook_summary(self, path: Path, *, max_rows: int, max_columns: int) -> dict[str, Any]:
-        ...
+    def read_workbook_summary(self, path: Path, *, max_rows: int, max_columns: int) -> dict[str, Any]: ...
 
-    def write_cell(self, path: Path, *, sheet: str, cell: str, value: Any) -> dict[str, Any]:
-        ...
+    def write_cell(self, path: Path, *, sheet: str, cell: str, value: Any) -> dict[str, Any]: ...
 
 
 @dataclass(slots=True)
@@ -180,6 +177,7 @@ def write_cell(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         }
 
     try:
+        raise_if_tool_aborted(context)
         result = _client(context).write_cell(path, sheet=sheet, cell=cell, value=value)
     except ExcelUnavailableError as exc:
         return _unavailable(str(exc))
@@ -279,7 +277,7 @@ def _configure_excel(excel: Any, *, visible: bool) -> None:
     excel.DisplayAlerts = False
     try:
         excel.AutomationSecurity = 3
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - COM property support varies across Excel installations.
         logger.debug("could not set Excel automation security: %s", exc, exc_info=True)
 
 
@@ -288,14 +286,14 @@ def _close_workbook(workbook: Any, *, save_changes: bool) -> None:
         return
     try:
         workbook.Close(SaveChanges=save_changes)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - COM shutdown is best-effort after operation completion.
         logger.debug("could not close Excel workbook cleanly: %s", exc, exc_info=True)
 
 
 def _quit_excel(excel: Any) -> None:
     try:
         excel.Quit()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - COM shutdown is best-effort after operation completion.
         logger.debug("could not quit Excel cleanly: %s", exc, exc_info=True)
 
 

@@ -36,10 +36,10 @@ def validate_outbound_http_url(url: str, *, allow_private: bool = False) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Only absolute http(s) URLs are allowed.")
     hostname = parsed.hostname or ""
+    if _is_cloud_metadata_host(hostname):
+        raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
     if not allow_private and _is_blocked_outbound_host(hostname):
-        raise ValueError(
-            "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
-        )
+        raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
     return raw
 
 
@@ -50,10 +50,10 @@ def validate_outbound_http_url_preview(url: str, *, allow_private: bool = False)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Only absolute http(s) URLs are allowed.")
     hostname = parsed.hostname or ""
+    if _is_cloud_metadata_host(hostname):
+        raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
     if not allow_private and _is_statically_blocked_host(hostname):
-        raise ValueError(
-            "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
-        )
+        raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
     return raw
 
 
@@ -90,12 +90,14 @@ def pin_outbound_http_url(url: str, *, allow_private: bool = False) -> PinnedOut
     except ValueError:
         pass
     if allow_private:
+        if _is_cloud_metadata_host(hostname):
+            raise ValueError(
+                "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
+            )
         return PinnedOutboundRequest(url=raw)
     pinned_ip = _resolve_pinned_outbound_ip(hostname)
     if pinned_ip is None:
-        raise ValueError(
-            "Outbound URL hostname could not be resolved; refusing unpinned connect to prevent SSRF."
-        )
+        raise ValueError("Outbound URL hostname could not be resolved; refusing unpinned connect to prevent SSRF.")
     host_for_url = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
     netloc = host_for_url if split.port is None else f"{host_for_url}:{split.port}"
     pinned_url = urlunsplit((split.scheme, netloc, split.path, split.query, split.fragment))
@@ -108,9 +110,7 @@ def _resolve_pinned_outbound_ip(hostname: str) -> str | None:
     try:
         infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
     except OSError as exc:
-        raise ValueError(
-            "Outbound URL hostname could not be resolved; refusing connect to prevent SSRF."
-        ) from exc
+        raise ValueError("Outbound URL hostname could not be resolved; refusing connect to prevent SSRF.") from exc
     for info in infos:
         addr = str(info[4][0]).split("%")[0]
         try:
@@ -126,17 +126,28 @@ def _resolve_pinned_outbound_ip(hostname: str) -> str | None:
         return str(ip)
     # The name resolved but only to blocked addresses: the benign answer seen
     # during validation was rebound underneath us. Fail closed.
-    raise ValueError(
-        "URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF."
-    )
+    raise ValueError("URLs targeting loopback, private, link-local, or metadata hosts are blocked to prevent SSRF.")
+
+
+def _is_cloud_metadata_host(hostname: str) -> bool:
+    if not hostname:
+        return False
+    lowered = hostname.lower().rstrip(".")
+    if lowered in _METADATA_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(lowered.split("%")[0])
+    except ValueError:
+        return False
+    return ip == ipaddress.ip_address("169.254.169.254")
 
 
 def _is_statically_blocked_host(hostname: str) -> bool:
     if not hostname:
         return True
-    lowered = hostname.lower().rstrip(".")
-    if lowered in _METADATA_HOSTS:
+    if _is_cloud_metadata_host(hostname):
         return True
+    lowered = hostname.lower().rstrip(".")
     try:
         return _is_blocked_ip(ipaddress.ip_address(lowered.split("%")[0]))
     except ValueError:
@@ -147,13 +158,10 @@ def _is_statically_blocked_host(hostname: str) -> bool:
 def _is_blocked_outbound_host(hostname: str) -> bool:
     if _is_statically_blocked_host(hostname):
         return True
-    lowered = hostname.lower().rstrip(".")
     try:
         infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
     except OSError as exc:
-        raise ValueError(
-            "Outbound URL hostname could not be resolved; refusing connect to prevent SSRF."
-        ) from exc
+        raise ValueError("Outbound URL hostname could not be resolved; refusing connect to prevent SSRF.") from exc
     for info in infos:
         addr = str(info[4][0]).split("%")[0]
         try:
@@ -168,11 +176,4 @@ def _is_blocked_outbound_host(hostname: str) -> bool:
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import SafetyVerdict
 from app.tools import developer_tools
 from app.tools.registry import ToolRegistry
+from app.tools.tool_abort import ToolAbortedError
 
 
 @pytest.mark.parametrize(
@@ -251,6 +253,8 @@ def test_shell_readonly_executes_readonly_builtins(tmp_path: Path, command: str,
         "python -m pytest backend/tests/test_developer_tools.py",
         "npm test",
         "pnpm run test",
+        "pytest -c backend/pytest.ini backend/tests",
+        "pytest -q --maxfail=1 -k expr -m marker",
     ],
 )
 def test_validate_test_command_allows_controlled_test_commands(command: str) -> None:
@@ -270,6 +274,9 @@ def test_validate_test_command_allows_controlled_test_commands(command: str) -> 
         "pytest --watch",
         "npm run build",
         "pytest tests > out.txt",
+        "pytest -o addopts=--rootdir=C:\\outside",
+        "pytest -oaddopts=--rootdir=C:\\outside",
+        "pytest --override-ini=addopts=--rootdir=C:\\outside",
     ],
 )
 def test_validate_test_command_rejects_uncontrolled_commands(command: str) -> None:
@@ -277,6 +284,177 @@ def test_validate_test_command_rejects_uncontrolled_commands(command: str) -> No
 
     assert allowed is False
     assert reason
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest --rootdir=..\\evil",
+        "pytest --rootdir=../evil",
+        "pytest -c..\\evil\\pytest.ini",
+        "pytest --confcutdir=..\\evil",
+    ],
+)
+def test_validate_test_command_rejects_flag_value_path_traversal(command: str) -> None:
+    allowed, reason = developer_tools.validate_test_command(command)
+
+    assert allowed is False
+    assert reason
+
+
+def test_validate_test_command_rejects_rootdir_outside_allowed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "evil"
+    outside.mkdir()
+
+    allowed, reason = developer_tools.validate_test_command(
+        f"pytest --rootdir={outside}", allowed_directories=[str(workspace)]
+    )
+
+    assert allowed is False
+    assert "outside authorized directories" in reason.lower()
+
+
+def test_validate_test_command_allows_rootdir_inside_allowed(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    sub = workspace / "pkg"
+    sub.mkdir(parents=True)
+
+    allowed, reason = developer_tools.validate_test_command(
+        f"pytest --rootdir={sub}", allowed_directories=[str(workspace)]
+    )
+
+    assert allowed is True
+    assert reason == ""
+
+
+def test_diff_preview_rejects_pathspec_traversal(tmp_path: Path) -> None:
+    result = developer_tools.diff_preview(
+        {"cwd": str(tmp_path), "pathspec": "../../secret"},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is False
+    assert result["error"]
+
+
+def test_test_run_allows_relative_path_with_sensitive_filename(tmp_path: Path) -> None:
+    # containment-only symlink check must NOT reject legitimate files whose name
+    # merely contains words like "password" (resolve_authorized would).
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_password.py").write_text("def test_x():\n    pass\n", encoding="utf-8")
+
+    result = developer_tools.test_run(
+        {"cwd": str(tmp_path), "command": "pytest tests/test_password.py", "dry_run": True},
+        {"allowed_directories": [str(tmp_path)]},
+    )
+
+    assert result["ok"] is True
+
+
+def test_diff_preview_rejects_symlinked_pathspec_escaping_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    link = workspace / "link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted on this platform/session")
+
+    result = developer_tools.diff_preview(
+        {"cwd": str(workspace), "pathspec": "link/secret.txt"},
+        {"allowed_directories": [str(workspace)]},
+    )
+
+    assert result["ok"] is False
+    assert "outside the authorized workspace" in result["error"].lower()
+
+
+def _create_directory_escape_link(link: Path, target: Path) -> None:
+    import os
+    import subprocess
+
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError as exc:
+        if os.name != "nt":
+            pytest.skip(f"symlink creation is unavailable on this platform: {exc}")
+
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation failed: {completed.stderr or completed.stdout}")
+
+
+def _remove_escape_link(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    elif hasattr(link, "is_junction") and link.is_junction():
+        link.rmdir()
+
+
+@pytest.mark.parametrize("tool_fn", [developer_tools.glob_files, developer_tools.grep_files])
+def test_rglob_tools_ignore_directory_escape_links(tmp_path: Path, tool_fn) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("outside-secret-token", encoding="utf-8")
+    link = workspace / "linked-outside"
+    _create_directory_escape_link(link, outside)
+
+    try:
+        if tool_fn is developer_tools.grep_files:
+            result = tool_fn(
+                {"path": str(workspace), "query": "outside-secret-token", "pattern": "*.txt"},
+                {"allowed_directories": [str(workspace)]},
+            )
+            assert result["ok"] is True
+            assert result["count"] == 0
+            assert result["results"] == []
+        else:
+            result = tool_fn(
+                {"path": str(workspace), "pattern": "**/secret.txt"},
+                {"allowed_directories": [str(workspace)]},
+            )
+            assert result["ok"] is True
+            assert result["count"] == 0
+            assert result["matches"] == []
+    finally:
+        _remove_escape_link(link)
+
+
+def test_pytest_inventory_ignores_directory_escape_links(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "test_escape.py").write_text(
+        "def test_outside():\n    assert False\n",
+        encoding="utf-8",
+    )
+    link = workspace / "linked-outside"
+    _create_directory_escape_link(link, outside)
+
+    try:
+        result = developer_tools.pytest_inventory(
+            {"path": str(workspace), "pattern": "test_*.py"},
+            {"allowed_directories": [str(workspace)]},
+        )
+        assert result["ok"] is True
+        assert result["file_count"] == 0
+        assert result["test_files"] == []
+    finally:
+        _remove_escape_link(link)
 
 
 def test_shell_readonly_rejects_without_allowed_directories(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -349,6 +527,21 @@ def test_dev_test_run_dry_run_does_not_execute(monkeypatch: pytest.MonkeyPatch, 
     assert calls == []
 
 
+def test_dev_test_run_aborts_before_foreground_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[Any] = []
+    abort = threading.Event()
+    abort.set()
+    monkeypatch.setattr(developer_tools, "run_process_tree", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    with pytest.raises(ToolAbortedError):
+        developer_tools.test_run(
+            {"cwd": str(tmp_path), "command": "pytest backend/tests", "timeout_seconds": 7},
+            {"allowed_directories": [str(tmp_path)], "_tool_abort_event": abort},
+        )
+
+    assert calls == []
+
+
 def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class Timeout:
         stdout = "partial stdout"
@@ -370,6 +563,21 @@ def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatc
     assert result["timed_out"] is True
     assert Path(result["stdout_path"]).read_text(encoding="utf-8") == "partial stdout"
     assert Path(result["stderr_path"]).read_text(encoding="utf-8") == "partial stderr"
+
+
+def test_dev_test_run_aborts_before_persisting_output(tmp_path: Path) -> None:
+    abort = threading.Event()
+    abort.set()
+
+    with pytest.raises(ToolAbortedError):
+        developer_tools._persist_test_output(
+            tmp_path / "runs",
+            "stdout",
+            "stderr",
+            abort_context={"_tool_abort_event": abort},
+        )
+
+    assert not (tmp_path / "runs").exists()
 
 
 def test_dev_test_run_background_returns_task_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

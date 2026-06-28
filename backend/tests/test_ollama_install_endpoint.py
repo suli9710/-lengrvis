@@ -1,8 +1,11 @@
 """Tests for the install-local-model endpoint and streaming pull."""
+
 from __future__ import annotations
 
+import json
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.core import db
 from app.security.desktop_api import DESKTOP_API_WS_PROTOCOL_PREFIX
@@ -28,6 +31,7 @@ def mock_ollama_not_installed(monkeypatch):
 def mock_ollama_running(monkeypatch):
     async def _running():
         return True
+
     monkeypatch.setattr("app.services.ollama_service.is_running", _running)
 
 
@@ -58,11 +62,13 @@ def _mock_ready_hardware(monkeypatch):
 async def test_install_local_model_already_installed():
     from app.services import ollama_service
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, side_effect=[[], ["qwen2.5:3b"]]), \
-         patch.object(ollama_service, "_bundled_model_available", return_value=False), \
-         patch.object(ollama_service, "pull_model_streaming") as mock_pull:
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, side_effect=[[], ["qwen2.5:3b"]]),
+        patch.object(ollama_service, "_bundled_model_available", return_value=False),
+        patch.object(ollama_service, "pull_model_streaming") as mock_pull,
+    ):
 
         async def fake_stream(model=None):
             yield {"status": "success", "model": model or "test"}
@@ -81,11 +87,13 @@ async def test_install_local_model_already_installed():
 async def test_install_local_model_needs_install():
     from app.services import ollama_service
 
-    with patch.object(ollama_service, "is_installed", return_value=False), \
-         patch.object(ollama_service, "install", new_callable=AsyncMock, return_value={"ok": True}), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, side_effect=[[], ["qwen2.5:3b"]]), \
-         patch.object(ollama_service, "pull_model_streaming") as mock_pull:
+    with (
+        patch.object(ollama_service, "is_installed", return_value=False),
+        patch.object(ollama_service, "install", new_callable=AsyncMock, return_value={"ok": True}),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, side_effect=[[], ["qwen2.5:3b"]]),
+        patch.object(ollama_service, "pull_model_streaming") as mock_pull,
+    ):
 
         async def fake_stream(model=None):
             yield {"status": "success", "model": model or "test"}
@@ -103,9 +111,12 @@ async def test_install_local_model_needs_install():
 async def test_install_local_model_install_fails():
     from app.services import ollama_service
 
-    with patch.object(ollama_service, "is_installed", return_value=False), \
-         patch.object(ollama_service, "install", new_callable=AsyncMock, return_value={"ok": False, "error": "no winget"}):
-
+    with (
+        patch.object(ollama_service, "is_installed", return_value=False),
+        patch.object(
+            ollama_service, "install", new_callable=AsyncMock, return_value={"ok": False, "error": "no winget"}
+        ),
+    ):
         results = []
         async for progress in ollama_service.install_local_model():
             results.append(progress)
@@ -118,7 +129,6 @@ async def test_install_local_model_install_fails():
 @pytest.mark.asyncio
 async def test_pull_model_streaming_success():
     from app.services import ollama_service
-    import httpx
 
     mock_lines = [
         '{"status":"downloading","total":1000,"completed":500}',
@@ -128,23 +138,30 @@ async def test_pull_model_streaming_success():
 
     class FakeResponse:
         status_code = 200
+
         async def aiter_lines(self):
             for line in mock_lines:
                 yield line
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *args):
             pass
+
         async def aclose(self):
             pass
 
     class FakeClient:
         def __init__(self, **kw):
             pass
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *args):
             pass
+
         def stream(self, *args, **kwargs):
             return FakeResponse()
 
@@ -160,14 +177,17 @@ async def test_pull_model_streaming_success():
 def test_install_local_model_endpoint():
     """Test the REST endpoint via TestClient."""
     from fastapi.testclient import TestClient
+
     from app.main import create_app
     from app.services import ollama_service
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, side_effect=[[], ["qwen2.5:3b"]]), \
-         patch.object(ollama_service, "_bundled_model_available", return_value=False), \
-         patch.object(ollama_service, "pull_model_streaming") as mock_pull:
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, side_effect=[[], ["qwen2.5:3b"]]),
+        patch.object(ollama_service, "_bundled_model_available", return_value=False),
+        patch.object(ollama_service, "pull_model_streaming") as mock_pull,
+    ):
 
         async def fake_stream(model=None):
             yield {"status": "success", "model": model or "test"}
@@ -184,6 +204,7 @@ def test_install_local_model_endpoint():
 def test_install_local_model_endpoint_does_not_claim_hidden_bundled_model_ready():
     """Bundled files alone are not enough; Ollama must list the model before success."""
     from fastapi.testclient import TestClient
+
     from app.main import create_app
     from app.services import ollama_service
 
@@ -192,13 +213,19 @@ def test_install_local_model_endpoint_does_not_claim_hidden_bundled_model_ready(
     async def _is_running():
         return next(running_states, True)
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", side_effect=_is_running), \
-         patch.object(ollama_service, "start_server", new_callable=AsyncMock, return_value={"ok": True, "models_dir_configured": True}), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]), \
-         patch.object(ollama_service, "_bundled_model_available", return_value=True), \
-         patch.object(ollama_service, "pull_model_streaming") as mock_pull:
-
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", side_effect=_is_running),
+        patch.object(
+            ollama_service,
+            "start_server",
+            new_callable=AsyncMock,
+            return_value={"ok": True, "models_dir_configured": True},
+        ),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]),
+        patch.object(ollama_service, "_bundled_model_available", return_value=True),
+        patch.object(ollama_service, "pull_model_streaming") as mock_pull,
+    ):
         client = TestClient(create_app())
         resp = client.post("/api/settings/install-local-model", json={"model": "qwen2.5:3b"})
 
@@ -215,6 +242,7 @@ def test_install_local_model_endpoint_does_not_claim_hidden_bundled_model_ready(
 def test_install_local_model_endpoint_restricts_model_name():
     """The install endpoint must not pass arbitrary model names to Ollama."""
     from fastapi.testclient import TestClient
+
     from app.main import create_app
 
     client = TestClient(create_app())
@@ -226,6 +254,7 @@ def test_install_local_model_websocket_requires_desktop_token(monkeypatch):
     """The streaming endpoint is a mutating desktop operation and needs WS auth."""
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
+
     from app.main import create_app
 
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
@@ -244,6 +273,7 @@ def test_install_local_model_websocket_restricts_model_name(monkeypatch):
     """Even authenticated WS clients can only install approved local models."""
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
+
     from app.main import create_app
 
     monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
@@ -261,8 +291,41 @@ def test_install_local_model_websocket_restricts_model_name(monkeypatch):
     assert exc_info.value.code == 1008
 
 
+def test_install_local_model_websocket_audit_fail_closed(monkeypatch, tmp_path):
+    """Mutating install WS must honor audit fail-closed like HTTP POST."""
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from app.core.audit import record
+    from app.main import create_app
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "audit-test-secret")
+    monkeypatch.setenv("LENGRVIS_AUDIT_FAIL_CLOSED", "true")
+    monkeypatch.setenv("LENGRVIS_DESKTOP_API_TOKEN", "desktop-secret")
+    monkeypatch.delenv("LENGRVIS_DESKTOP_API_TOKEN_OPTIONAL", raising=False)
+    db.init_db()
+    record("security.ws_install_gate", "pytest", {"ok": True})
+
+    anchor_path = db.audit_anchor_path()
+    payload = json.loads(anchor_path.read_text(encoding="utf-8"))
+    payload["event_hash"] = "0" * 64
+    anchor_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    client = TestClient(create_app(), client=("127.0.0.1", 50100))
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/settings/install-local-model?model=qwen2.5:3b",
+            subprotocols=[f"{DESKTOP_API_WS_PROTOCOL_PREFIX}desktop-secret"],
+        ):
+            raise AssertionError("install-local-model websocket should honor audit fail-closed")
+
+    assert exc_info.value.code == 1013
+
+
 def test_install_local_model_endpoint_rejects_unsupported_model():
     from fastapi.testclient import TestClient
+
     from app.main import create_app
 
     client = TestClient(create_app())
@@ -274,6 +337,7 @@ def test_install_local_model_endpoint_rejects_unsupported_model():
 
 def test_ollama_pull_endpoint_restricts_model_name():
     from fastapi.testclient import TestClient
+
     from app.main import create_app
 
     client = TestClient(create_app())
@@ -286,6 +350,7 @@ def test_ollama_pull_endpoint_restricts_model_name():
 def test_local_model_readiness_endpoint():
     """Test the hardware readiness endpoint used by the desktop setup UI."""
     from fastapi.testclient import TestClient
+
     from app.main import create_app
 
     client = TestClient(create_app())
@@ -301,6 +366,7 @@ def test_local_model_readiness_endpoint():
 def test_local_model_setup_plan_endpoint(mock_ollama_not_installed):
     """Test the privacy onboarding setup plan endpoint."""
     from fastapi.testclient import TestClient
+
     from app.main import create_app
 
     client = TestClient(create_app())
@@ -317,6 +383,7 @@ def test_local_model_setup_plan_endpoint(mock_ollama_not_installed):
 
 def test_local_model_setup_plan_endpoint_clean_machine_no_runtime_no_model(monkeypatch):
     from fastapi.testclient import TestClient
+
     from app.main import create_app
     from app.services import ollama_service
 
@@ -335,12 +402,14 @@ def test_local_model_setup_plan_endpoint_clean_machine_no_runtime_no_model(monke
         },
     )
 
-    with patch.object(ollama_service, "is_installed", return_value=False), \
-         patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"), \
-         patch.object(ollama_service, "_bundled_ollama_models_dir", return_value=None), \
-         patch.object(ollama_service, "_bundled_model_available", return_value=False), \
-         patch.object(ollama_service, "_bundled_model_configured", return_value=False), \
-         patch.object(ollama_service, "_ollama_bundle_manifest_summary", return_value={"present": False}):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=False),
+        patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"),
+        patch.object(ollama_service, "_bundled_ollama_models_dir", return_value=None),
+        patch.object(ollama_service, "_bundled_model_available", return_value=False),
+        patch.object(ollama_service, "_bundled_model_configured", return_value=False),
+        patch.object(ollama_service, "_ollama_bundle_manifest_summary", return_value={"present": False}),
+    ):
         client = TestClient(create_app())
         resp = client.get("/api/settings/local-model/setup-plan?model=qwen2.5:3b")
 
@@ -378,6 +447,7 @@ def test_local_model_setup_plan_endpoint_clean_machine_no_runtime_no_model(monke
 
 def test_local_model_setup_plan_endpoint_blocks_insufficient_resources(monkeypatch):
     from fastapi.testclient import TestClient
+
     from app.main import create_app
     from app.services import ollama_service
 
@@ -399,12 +469,14 @@ def test_local_model_setup_plan_endpoint_blocks_insufficient_resources(monkeypat
     }
     monkeypatch.setattr(ollama_service, "hardware_readiness", lambda model=None: blocked_readiness)
 
-    with patch.object(ollama_service, "is_installed", return_value=False), \
-         patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"), \
-         patch.object(ollama_service, "_bundled_ollama_models_dir", return_value=None), \
-         patch.object(ollama_service, "_bundled_model_available", return_value=False), \
-         patch.object(ollama_service, "_bundled_model_configured", return_value=False), \
-         patch.object(ollama_service, "_ollama_bundle_manifest_summary", return_value={"present": False}):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=False),
+        patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"),
+        patch.object(ollama_service, "_bundled_ollama_models_dir", return_value=None),
+        patch.object(ollama_service, "_bundled_model_available", return_value=False),
+        patch.object(ollama_service, "_bundled_model_configured", return_value=False),
+        patch.object(ollama_service, "_ollama_bundle_manifest_summary", return_value={"present": False}),
+    ):
         client = TestClient(create_app())
         resp = client.get("/api/settings/local-model/setup-plan?model=qwen2.5:3b")
 
@@ -428,6 +500,7 @@ def test_local_model_setup_plan_endpoint_blocks_insufficient_resources(monkeypat
 
 def test_local_llm_health_endpoint_redacts_paths_urls_and_tokens(monkeypatch):
     from fastapi.testclient import TestClient
+
     from app.api import routes_settings
     from app.main import create_app
 
@@ -445,7 +518,7 @@ def test_local_llm_health_endpoint_redacts_paths_urls_and_tokens(monkeypatch):
                 },
                 "bundle": {"manifest_path": r"C:\Users\Suli\models\manifest.json"},
             },
-            "error": r"Tried http://127.0.0.1:11434/api/tags with token=sk-1234567890abcdef at C:\Users\Suli\.ollama",
+            "error": r"Tried http://127.0.0.1:11434/api/tags with token=fixture at C:\Users\Suli\.ollama",
         },
     )
 

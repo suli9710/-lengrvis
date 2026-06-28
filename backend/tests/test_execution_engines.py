@@ -148,6 +148,45 @@ print(json.dumps(result_message), flush=True)
 
 
 @pytest.mark.asyncio
+async def test_developer_engine_run_turn_goes_through_tool_runtime(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    db.init_db()
+
+    async def spy_run_lengrvis_code(prompt, *, cwd, settings, config, run_id=""):  # noqa: ANN001, ARG001
+        from app.orchestration.lengrvis_code_runner import LengrvisCodeStreamSummary
+
+        return LengrvisCodeStreamSummary(
+            result={"is_error": False, "result": "ok"},
+            assistant_text=["done"],
+            tool_events=[{"name": "Read", "input": {"file_path": "README.md"}}],
+        )
+
+    monkeypatch.setattr("app.orchestration.developer_engine.run_lengrvis_code", spy_run_lengrvis_code)
+    engine = DeveloperExecutionEngine(
+        settings=AppSettings(
+            allowed_directories=[str(tmp_path)],
+            api_key="test-api-key",
+        ),
+        store=InMemoryRunStore(),
+        lengrvis_code_config=LengrvisCodeConfig(command=(sys.executable, "-c", "print('noop')"), max_turns=1),
+        use_lengrvis_code=True,
+    )
+
+    state = await engine.start_run("inspect repository", "efficiency", "developer")
+    result = await engine.run_turn(state)
+
+    reviews = db.fetch_many("safety_reviews", "task_id = ?", (state.task_id,), limit=20)
+    tool_calls = db.fetch_many("tool_calls", "task_id = ?", (state.task_id,), limit=20)
+    tool_results = db.fetch_many("tool_results", limit=20)
+
+    assert result.state.phase == RunPhase.COMPLETED
+    assert state.task_id
+    assert any(review["target_type"] == "tool_call" for review in reviews)
+    assert tool_calls and tool_calls[0]["tool_name"] == "developer.lengrvis_code"
+    assert any(item["tool_call_id"] == tool_calls[0]["id"] for item in tool_results)
+
+
+@pytest.mark.asyncio
 async def test_developer_engine_writes_enabled_expands_allowed_tools(tmp_path) -> None:
     engine = DeveloperExecutionEngine(
         settings=AppSettings(

@@ -13,6 +13,7 @@ from app.config import AppSettings
 from app.core import db
 from app.policy.risk import RiskLevel
 from app.skills.loader import load_skill_package, scan_skill_directories
+from app.skills.sandbox import blocked_loopback_http_ports
 from app.skills.schemas import LEGACY_PERMISSION, SkillLoadError
 from app.tools.registry import register_all_tools
 
@@ -121,7 +122,7 @@ print(json.dumps({"ok": True, "echo": text, "context": payload.get("context", {}
     else:
         shell_file = handlers / "shell_pid.sh"
         shell_file.write_text(
-            "cat >/dev/null\nprintf '{\"ok\":true,\"pid\":%s}\\n' \"$$\"\n",
+            'cat >/dev/null\nprintf \'{"ok":true,"pid":%s}\\n\' "$$"\n',
             encoding="utf-8",
         )
         shell_file.chmod(0o755)
@@ -193,7 +194,7 @@ def test_local_process_skill_handlers_are_blocked_by_default(monkeypatch: pytest
 
     for result in (python_result, shell_result):
         assert result["policy"] == "local_skill_execution_disabled"
-        assert "normal local subprocesses" in result["error"]
+        assert "local machine resources" in result["error"]
 
 
 def test_local_python_handler_can_be_enabled_with_env_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -331,6 +332,33 @@ tools:
     assert "timed out" in result["error"]
 
 
+def test_http_handler_skill_is_blocked_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, http_skill_server: str
+):
+    monkeypatch.delenv("LENGRVIS_ALLOW_UNSAFE_LOCAL_SKILL_EXECUTION", raising=False)
+    skill_root = tmp_path / "http_skill_blocked"
+    skill_root.mkdir()
+    (skill_root / "skill.yaml").write_text(
+        f"""
+name: http-skill-blocked
+version: "1.0"
+agent_owner: SearchAgent
+tools:
+  - name: skill.http.blocked
+    execution:
+      type: http
+      entry: {http_skill_server}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    package = load_skill_package(skill_root)
+    result = package.tool_definitions[0].execute({"text": "blocked"}, {})
+
+    assert result["policy"] == "local_skill_execution_disabled"
+    assert result["execution_type"] == "http"
+
+
 def test_http_handler_skill_executes_through_http_sandbox(tmp_path: Path, http_skill_server: str):
     skill_root = tmp_path / "http_skill"
     skill_root.mkdir()
@@ -348,10 +376,34 @@ tools:
         encoding="utf-8",
     )
 
-    package = load_skill_package(skill_root)
+    package = load_skill_package(skill_root, allow_unsafe_local_skill_execution=True)
     result = package.tool_definitions[0].execute({"text": "via http"}, {})
 
     assert result == {"ok": True, "echo": "via http", "saw_context": True}
+
+
+def test_http_handler_rejects_blocked_loopback_port(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.delenv("LENGRVIS_BACKEND_PORT", raising=False)
+    monkeypatch.delenv("LENGRVIS_GUARDIAN_PORT", raising=False)
+    assert 8000 in blocked_loopback_http_ports()
+    skill_root = tmp_path / "backend_http_skill"
+    skill_root.mkdir()
+    (skill_root / "skill.yaml").write_text(
+        """
+name: backend-http-skill
+version: "1.0"
+agent_owner: SearchAgent
+tools:
+  - name: skill.http.backend
+    execution:
+      type: http
+      entry: http://127.0.0.1:8000/skill
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillLoadError, match="protected local service ports"):
+        load_skill_package(skill_root)
 
 
 def test_http_handler_rejects_non_loopback_entry(tmp_path: Path):

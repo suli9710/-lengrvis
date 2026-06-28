@@ -8,6 +8,7 @@ from app.core.errors import register_error_handlers
 from app.lazy import LazyASGIApp
 from app.lifespan import guardian_lifespan
 from app.security.cors import configure_cors
+from app.security.desktop_api import assert_no_production_test_escape_hatches
 from app.security.middleware import register_security_middleware
 from app.security.mobile_jwt import decode_mobile_token
 
@@ -15,6 +16,7 @@ __all__ = ["app", "create_guardian_app", "decode_mobile_token", "pair_router"]
 
 
 def create_guardian_app() -> FastAPI:
+    assert_no_production_test_escape_hatches()
     app = FastAPI(title="Lengrvis Guardian Backend", version="0.1.1", lifespan=guardian_lifespan)
     # Hardened CORS shared with the full backend (app/main.py) via
     # app.security.cors.configure_cors so the two apps can never drift.

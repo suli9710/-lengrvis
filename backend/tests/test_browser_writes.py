@@ -184,6 +184,67 @@ def test_navigate_is_open_only_not_browser_write_gated():
     assert "secret-token" not in str(result)
 
 
+def test_review_browser_write_call_blocks_fill_form_password_field():
+    review = PolicyEngine().review_browser_write_call(
+        "task_fill",
+        "step_fill",
+        "browser.fill_form",
+        {"url": "https://example.com/login", "fields": {"password": "secret"}},
+    )
+
+    assert review is not None
+    assert review.verdict == SafetyVerdict.DENY
+    reason_text = " ".join(review.reasons).lower()
+    assert "sensitive" in reason_text or "restricted" in reason_text
+
+
+def test_review_tool_call_uses_browser_write_sensitive_field_gate():
+    policy = PolicyEngine(
+        settings=AppSettings(
+            provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+        )
+    )
+
+    review = policy.review_tool_call(
+        "task_fill",
+        "step_fill",
+        "browser.fill_form",
+        {
+            "url": "https://example.com/profile",
+            "fields": {"#notes": "temporary token abc1234567890"},
+            "dry_run": True,
+        },
+        RiskLevel.R2_REVERSIBLE_MODIFY,
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    reason_text = " ".join(review.reasons).lower()
+    assert "sensitive" in reason_text or "restricted" in reason_text
+
+
+def test_review_tool_call_denies_sensitive_browser_act_selector():
+    policy = PolicyEngine(
+        settings=AppSettings(
+            provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+        )
+    )
+
+    review = policy.review_tool_call(
+        "task_click",
+        "step_click",
+        "browser.act",
+        {
+            "action": {"kind": "click", "url": "https://example.com", "selector": "#password"},
+            "dry_run": True,
+        },
+        RiskLevel.R2_REVERSIBLE_MODIFY,
+    )
+
+    assert review.verdict == SafetyVerdict.DENY
+    reason_text = " ".join(review.reasons).lower()
+    assert "sensitive" in reason_text or "restricted" in reason_text
+
+
 def test_browser_act_is_classified_by_nested_action_kind():
     policy = PolicyEngine()
 

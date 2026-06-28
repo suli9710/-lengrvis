@@ -16,6 +16,12 @@ from app.policy.redaction import redact_text
 from app.security.sensitive_confirmation import CONFIRMATION_FIELD, require_settings_confirmation
 
 SENSITIVE_SETTINGS = {"api_key", "jwt_secret"}
+
+# License-derived fields that must never be persisted via the settings API.
+# ``plan`` is resolved at read time from ``LENGRVIS_PLAN`` / license tokens via
+# ``apply_licensed_plan``; accepting it on the write path would let a
+# desktop-token holder self-upgrade to Max without a valid license.
+NON_PERSISTABLE_SETTINGS = {"plan"}
 logger = logging.getLogger(__name__)
 
 
@@ -32,16 +38,26 @@ def update_settings(payload: dict[str, Any]) -> dict[str, Any]:
             f"Sensitive settings ({names}) must be configured through environment variables or external config.",
             status_code=400,
         )
-    allowed = set(type(get_effective_settings()).model_fields)
-    coerced: dict[str, Any] = {}
-    for key, value in payload.items():
-        if key in allowed:
-            coerced[key] = _coerce_setting_value(key, value)
+    # Silently strip license-derived fields: they are resolved from env/license
+    # at read time and must never be persisted through this write path. Stripping
+    # (rather than rejecting) keeps incidental payload fields from breaking
+    # unrelated settings updates the frontend may send alongside.
+    payload = {k: v for k, v in payload.items() if k not in NON_PERSISTABLE_SETTINGS}
+    coerced = coerce_settings_patch(payload)
     _validate_settings_patch(coerced)
     require_settings_confirmation({**coerced, CONFIRMATION_FIELD: payload.get(CONFIRMATION_FIELD)})
     for key, value in coerced.items():
         db.set_setting(key, value)
     return get_settings()
+
+
+def coerce_settings_patch(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = set(type(get_effective_settings()).model_fields)
+    coerced: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in allowed:
+            coerced[key] = _coerce_setting_value(key, value)
+    return coerced
 
 
 def get_llm_profile() -> dict[str, Any]:

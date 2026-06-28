@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from typing import Any
 
 import httpx
+import pytest
 
 from app.config import AppSettings
-from app.llm.cua_provider import DEFAULT_CUA_MODEL, CUAProvider, resolve_cua_provider
+from app.llm.cua_provider import DEFAULT_CUA_MODEL, CUAProvider, probe_cua_provider, resolve_cua_provider
+
+
+@pytest.fixture(autouse=True)
+def _mock_outbound_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve the test cloud hostnames to fixed public IPs so the outbound
+    SSRF validator (which performs real DNS) does not fail-closed on the
+    unroutable ``.test`` names, and so URL pinning has a stable IP to pin to."""
+
+    def fake_getaddrinfo(host: str, *args: Any, **kwargs: Any):  # noqa: ANN002, ANN003
+        mapping = {"api.example.test": "93.184.216.34", "api.openai.com": "93.184.216.35"}
+        ip = mapping.get(host)
+        if ip is None:
+            raise socket.gaierror(f"unmocked host {host}")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    monkeypatch.setattr("app.core.outbound_url.socket.getaddrinfo", fake_getaddrinfo)
 
 
 class FakeAsyncClient:
@@ -23,8 +41,10 @@ class FakeAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):  # noqa: ANN001
         return None
 
-    async def post(self, url, headers=None, json=None):  # noqa: ANN001, A002
-        FakeAsyncClient.requests.append({"url": url, "headers": headers or {}, "json": json or {}})
+    async def post(self, url, headers=None, json=None, extensions=None):  # noqa: ANN001, A002
+        FakeAsyncClient.requests.append(
+            {"url": url, "headers": headers or {}, "json": json or {}, "extensions": extensions or {}}
+        )
         if FakeAsyncClient.errors:
             raise FakeAsyncClient.errors.pop(0)
         return FakeAsyncClient.responses.pop(0)
@@ -63,7 +83,10 @@ def test_resolve_cua_provider_auto_probes_openai_compatible_first():
     assert isinstance(provider, CUAProvider)
     assert provider.source == "openai_compatible"
     assert provider.model == DEFAULT_CUA_MODEL
-    assert FakeAsyncClient.requests[0]["url"] == "https://api.example.test/v1/responses"
+    # URL is pinned to the resolved IP; the original host is preserved in Host/SNI.
+    assert FakeAsyncClient.requests[0]["url"] == "https://93.184.216.34/v1/responses"
+    assert FakeAsyncClient.requests[0]["headers"]["Host"] == "api.example.test"
+    assert FakeAsyncClient.requests[0]["extensions"]["sni_hostname"] == "api.example.test"
     assert FakeAsyncClient.requests[0]["json"]["tools"][0]["type"] == "computer_use_preview"
 
 
@@ -80,14 +103,16 @@ def test_resolve_cua_provider_returns_degraded_when_unsupported():
     assert result["degraded"] is True
     assert result["status"] == "unavailable"
     assert "unsupported" in result["reason"].lower() or "not supported" in result["reason"].lower()
-    assert FakeAsyncClient.requests[0]["url"] == "https://api.example.test/v1/responses"
-    assert FakeAsyncClient.requests[1]["url"] == "https://api.openai.com/v1/responses"
+    assert FakeAsyncClient.requests[0]["headers"]["Host"] == "api.example.test"
+    assert FakeAsyncClient.requests[1]["headers"]["Host"] == "api.openai.com"
 
 
 def test_cua_provider_uses_configurable_model_without_logging_secrets():
     settings = _settings()
     provider = CUAProvider(settings, model="custom-cua", client_factory=FakeAsyncClient)
-    FakeAsyncClient.responses = [_response(200, {"id": "resp_run", "status": "completed", "output": [{"type": "message"}]})]
+    FakeAsyncClient.responses = [
+        _response(200, {"id": "resp_run", "status": "completed", "output": [{"type": "message"}]})
+    ]
 
     result = asyncio.run(provider.run_step(instruction="Inspect the current page."))
 
@@ -153,3 +178,55 @@ def test_cua_provider_returns_unavailable_without_api_key():
     assert result["status"] == "unavailable"
     assert result["degraded"] is True
     assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_blocks_ssrf_to_metadata_host():
+    provider = CUAProvider(_settings(base_url="http://169.254.169.254/v1"), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect."))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_blocks_ssrf_to_loopback_host():
+    provider = CUAProvider(_settings(base_url="http://127.0.0.1:8000/v1"), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect."))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert FakeAsyncClient.requests == []
+
+
+def test_probe_cua_provider_blocks_ssrf_to_metadata_host():
+    provider = CUAProvider(_settings(base_url="http://169.254.169.254/v1"), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(probe_cua_provider(provider))
+
+    assert result["available"] is False
+    assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_unavailable_when_dns_resolution_fails():
+    provider = CUAProvider(_settings(base_url="https://unresolved.invalid/v1"), client_factory=FakeAsyncClient)
+
+    result = asyncio.run(provider.run_step(instruction="Inspect."))
+
+    assert result["ok"] is False
+    assert result["status"] == "unavailable"
+    assert FakeAsyncClient.requests == []
+
+
+def test_cua_provider_allows_local_base_for_local_provider():
+    provider = CUAProvider(
+        _settings(provider_name="ollama", base_url="http://127.0.0.1:11434/v1"),
+        client_factory=FakeAsyncClient,
+    )
+    FakeAsyncClient.responses = [_response(200, {"id": "resp_local", "status": "completed", "output": []})]
+
+    result = asyncio.run(provider.run_step(instruction="Inspect."))
+
+    assert result["ok"] is True
+    assert FakeAsyncClient.requests[0]["url"] == "http://127.0.0.1:11434/v1/responses"

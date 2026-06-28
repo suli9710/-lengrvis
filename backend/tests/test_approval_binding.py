@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from native_confirmation_helpers import TEST_NATIVE_CONFIRMATION_SECRET, native_confirmation_headers
 
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.api import routes_approvals, routes_runtime
@@ -28,6 +32,14 @@ from app.policy.approval_binding import (
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.security.mobile_jwt import REMOTE_INPUT_SCOPE
+from app.security.native_confirmation import (
+    NATIVE_CONFIRMATION_ID_HEADER,
+    NATIVE_CONFIRMATION_PUBLIC_KEY_ENV,
+    NATIVE_CONFIRMATION_SECRET_ENV,
+    NATIVE_CONFIRMATION_SIGNATURE_HEADER,
+    NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
+    require_native_confirmation,
+)
 from app.services import mobile_pairing_service
 from app.services.mobile_pairing_service import approve_approval
 from app.tools.schemas import ToolDefinition
@@ -39,6 +51,7 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setenv("LENGRVIS_PROVIDER_NAME", "mock")
     monkeypatch.setenv("LENGRVIS_API_KEY", "")
     monkeypatch.setenv("LENGRVIS_MODE", "efficiency")
+    monkeypatch.setenv(NATIVE_CONFIRMATION_SECRET_ENV, TEST_NATIVE_CONFIRMATION_SECRET)
     db.init_db()
     yield
 
@@ -127,6 +140,38 @@ def _setup_bound_approval(
     )
     db.upsert_model("approvals", approval, status=approval.status)
     return orchestrator, task, plan, step, approval, calls
+
+
+def _approve_via_desktop_route(client: TestClient, approval_id: str):
+    return client.post(
+        f"/api/approvals/{approval_id}/approve",
+        headers=native_confirmation_headers("approve", approval_id),
+    )
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _signed_native_challenge_headers(
+    client: TestClient,
+    approval: Approval,
+    action: str,
+    private_key: Ed25519PrivateKey,
+) -> dict[str, str]:
+    response = client.post(
+        f"/api/approvals/{approval.id}/native-confirmation-challenge",
+        json={"action": action, "expected_preview_hmac": approval.preview_hmac},
+    )
+    assert response.status_code == 200, response.text
+    challenge = response.json()
+    signing_payload = str(challenge["signing_payload"])
+    signature = private_key.sign(signing_payload.encode("utf-8"))
+    return {
+        NATIVE_CONFIRMATION_ID_HEADER: str(challenge["confirmation_id"]),
+        NATIVE_CONFIRMATION_TIMESTAMP_HEADER: str(challenge["expires_at_epoch"]),
+        NATIVE_CONFIRMATION_SIGNATURE_HEADER: _b64url(signature),
+    }
 
 
 def test_bound_approval_executes_once_and_marks_consumed():
@@ -261,7 +306,7 @@ def test_approval_route_returns_conflict_when_execution_expires_approval(monkeyp
     monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
 
     with TestClient(app) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = _approve_via_desktop_route(client, approval.id)
 
     assert response.status_code == 409
     assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.EXPIRED
@@ -269,6 +314,94 @@ def test_approval_route_returns_conflict_when_execution_expires_approval(monkeyp
     refreshed_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
     assert refreshed_approval.status == ApprovalStatus.EXPIRED
     assert refreshed_approval.consumed_at is None
+
+
+def test_approval_route_requires_valid_native_confirmation_proof():
+    _orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+
+    with TestClient(app) as client:
+        unsigned = client.post(f"/api/approvals/{approval.id}/approve?desktop_native_confirmed=true")
+        wrong_action = client.post(
+            f"/api/approvals/{approval.id}/approve",
+            headers=native_confirmation_headers("reject", approval.id),
+        )
+
+    assert unsigned.status_code == 403
+    assert wrong_action.status_code == 403
+    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.PENDING
+
+
+def test_approval_route_requires_signed_one_time_native_confirmation_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _b64url(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
+    _orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+
+    with TestClient(app) as client:
+        headers = _signed_native_challenge_headers(client, approval, "reject", private_key)
+        accepted = client.post(f"/api/approvals/{approval.id}/reject", headers=headers)
+        replay = client.post(f"/api/approvals/{approval.id}/reject", headers=headers)
+
+    assert accepted.status_code == 200
+    assert replay.status_code == 403
+    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.REJECTED
+
+
+def test_native_confirmation_challenge_binds_current_preview_hmac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = _b64url(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    monkeypatch.setenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, public_key)
+    _orchestrator, _task, _plan, _step, approval, _calls = _setup_bound_approval(status=ApprovalStatus.PENDING)
+
+    app = FastAPI()
+    app.include_router(routes_approvals.router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/approvals/{approval.id}/native-confirmation-challenge",
+            json={"action": "approve", "expected_preview_hmac": "preview:stale"},
+        )
+
+    assert response.status_code == 409
+    assert Approval.model_validate(db.fetch_one("approvals", approval.id)).status == ApprovalStatus.PENDING
+
+
+def test_legacy_native_confirmation_hmac_is_test_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LENGRVIS_TEST", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, raising=False)
+    monkeypatch.setenv(NATIVE_CONFIRMATION_SECRET_ENV, TEST_NATIVE_CONFIRMATION_SECRET)
+
+    with pytest.raises(HTTPException) as excinfo:
+        require_native_confirmation(
+            action="approve",
+            approval_id="approval_1",
+            confirmation_id="confirmation_1",
+            timestamp="1",
+            signature="bad",
+        )
+
+    assert excinfo.value.status_code == 403
 
 
 def test_approval_route_can_retry_approved_unconsumed_approval(monkeypatch: pytest.MonkeyPatch):
@@ -288,8 +421,8 @@ def test_approval_route_can_retry_approved_unconsumed_approval(monkeypatch: pyte
     monkeypatch.setattr(orchestrator, "execute_approved_step", execute_once_then_retry)
 
     with TestClient(app) as client:
-        first = client.post(f"/api/approvals/{approval.id}/approve")
-        second = client.post(f"/api/approvals/{approval.id}/approve")
+        first = _approve_via_desktop_route(client, approval.id)
+        second = _approve_via_desktop_route(client, approval.id)
 
     assert first.status_code == 503
     assert first.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
@@ -319,11 +452,11 @@ def test_approved_step_retry_keeps_waiting_state_when_execution_raises(monkeypat
     monkeypatch.setattr(orchestrator.step_execution_handler, "execute_approved_step", execute_once_then_retry)
 
     with TestClient(app) as client:
-        first = client.post(f"/api/approvals/{approval.id}/approve")
+        first = _approve_via_desktop_route(client, approval.id)
         retry_approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
         refreshed_task = Task.model_validate(db.fetch_one("tasks", task.id))
         refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])
-        second = client.post(f"/api/approvals/{approval.id}/approve")
+        second = _approve_via_desktop_route(client, approval.id)
 
     assert first.status_code == 503
     assert first.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
@@ -394,7 +527,7 @@ def test_approval_route_reports_consumed_execution_failure(monkeypatch: pytest.M
     monkeypatch.setattr(routes_approvals, "OrchestratorAgent", lambda: orchestrator)
 
     with TestClient(app) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve")
+        response = _approve_via_desktop_route(client, approval.id)
 
     assert response.status_code == 503
     assert response.json()["detail"]["approval"]["status"] == ApprovalStatus.APPROVED
@@ -571,7 +704,7 @@ def test_tool_call_agent_message_redacts_sensitive_args():
         agent_name="FileAgent",
         tool_name=tool.name,
         description="call secret tool",
-        args={"custom_secret": "super-secret-value", "url": "https://example.com/?secret=abc1234567890"},
+        args={"custom_secret": "super-secret-value", "url": "https://example.com/?secret=fixture"},
         risk_level=RiskLevel.R0_READ_ONLY,
     )
     runtime = orchestrator.step_execution_handler._runtime_context(task)
@@ -582,7 +715,7 @@ def test_tool_call_agent_message_redacts_sensitive_args():
     messages = db.fetch_many("agent_messages", "task_id = ?", (task.id,), limit=20)
     serialized = json.dumps(messages, ensure_ascii=False)
     assert "super-secret-value" not in serialized
-    assert "abc1234567890" not in serialized
+    assert "fixture" not in serialized
 
 
 def test_approval_secret_is_generated_in_data_dir(tmp_path: Path):
@@ -702,3 +835,19 @@ def test_approval_resource_state_mismatch_blocks_execution():
     assert "resource state" in (refreshed_approval_data.get("expired_reason") or "").lower()
     refreshed = Task.model_validate(db.fetch_one("tasks", task.id))
     assert "file state changed" in refreshed.final_summary.lower()
+
+
+def test_native_confirmation_public_key_reads_from_data_dir_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from app.security.native_confirmation import (
+        NATIVE_CONFIRMATION_PUBLIC_KEY_FILE,
+        native_confirmation_public_key,
+    )
+
+    monkeypatch.delenv(NATIVE_CONFIRMATION_PUBLIC_KEY_ENV, raising=False)
+    public_key = "test-native-confirmation-public-key"
+    (tmp_path / NATIVE_CONFIRMATION_PUBLIC_KEY_FILE).write_text(f"{public_key}\n", encoding="utf-8")
+
+    assert native_confirmation_public_key() == public_key

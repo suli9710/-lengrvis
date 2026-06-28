@@ -1,5 +1,6 @@
 import { app } from "electron";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { sign as signEd25519, type KeyObject } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -8,8 +9,11 @@ import { cwd as getCwd } from "node:process";
 import type { BackendStatus } from "../shared/types";
 import { assertLoopbackBackendUrl } from "./backendUrl";
 import { resolveDesktopApiToken } from "./desktopApiToken";
+import { resolveNativeConfirmationKey } from "./nativeConfirmationKey";
 
 const DEFAULT_BACKEND_URL = "http://127.0.0.1:8000";
+const DEFAULT_ACTIVATION_BASE_URL = "https://agent.lengzhehao.com";
+const DEFAULT_LICENSE_PUBLIC_KEY = "ed25519:0LY7FXJpX494464DDN_vqSbqgCMX4sAj2iwf5gmC5c4";
 const HEALTH_ENDPOINT = "/health";
 const RUNTIME_STATUS_ENDPOINT = "/api/runtime/status";
 const RUNTIME_FOREGROUND_ENDPOINT = "/api/runtime/foreground";
@@ -95,6 +99,8 @@ export class BackendProcessManager {
   private status: BackendStatus;
   private managedWindowsServiceName: string | null = null;
   private readonly desktopApiToken: string;
+  private readonly nativeConfirmationPrivateKey: KeyObject;
+  private readonly nativeConfirmationPublicKey: string;
   private readonly backendConfigDir: string;
   private readonly backendDataDir: string;
 
@@ -104,6 +110,9 @@ export class BackendProcessManager {
     this.desktopApiToken = tokenResolution.token;
     this.backendConfigDir = tokenResolution.configDir;
     this.backendDataDir = tokenResolution.dataDir;
+    const nativeConfirmationKey = resolveNativeConfirmationKey({ dataDir: this.backendDataDir });
+    this.nativeConfirmationPrivateKey = nativeConfirmationKey.privateKey;
+    this.nativeConfirmationPublicKey = nativeConfirmationKey.publicKey;
     for (const alias of envAliases("LENGRVIS_DESKTOP_API_TOKEN")) {
       process.env[alias] = process.env[alias] ?? this.desktopApiToken;
     }
@@ -126,6 +135,14 @@ export class BackendProcessManager {
 
   getDesktopApiToken(): string {
     return this.desktopApiToken;
+  }
+
+  getNativeConfirmationPublicKey(): string {
+    return this.nativeConfirmationPublicKey;
+  }
+
+  signNativeConfirmationPayload(payload: string): string {
+    return signEd25519(null, Buffer.from(payload, "utf-8"), this.nativeConfirmationPrivateKey).toString("base64url");
   }
 
   async start(): Promise<BackendStatus> {
@@ -173,8 +190,11 @@ export class BackendProcessManager {
           ...envWithAliases("LENGRVIS_DATA_DIR", this.backendDataDir),
           ...envWithAliases("LENGRVIS_FULL_BACKEND", "1"),
           ...(app.isPackaged ? envWithAliases("LENGRVIS_COMMERCIAL_RELEASE", "true") : {}),
+          ...(app.isPackaged ? envWithAliases("LENGRVIS_ACTIVATION_BASE_URL", DEFAULT_ACTIVATION_BASE_URL) : {}),
+          ...(app.isPackaged ? envWithAliases("LENGRVIS_LICENSE_PUBLIC_KEY", DEFAULT_LICENSE_PUBLIC_KEY) : {}),
           ...envWithAliases("LENGRVIS_BACKEND_URL", this.getBaseUrl()),
           ...envWithAliases("LENGRVIS_DESKTOP_API_TOKEN", this.desktopApiToken),
+          ...envWithAliases("LENGRVIS_NATIVE_CONFIRMATION_PUBLIC_KEY", this.nativeConfirmationPublicKey),
           ...bundledOllamaEnv
         },
         windowsHide: true

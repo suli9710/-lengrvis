@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from typing import Any
 
 from app.agents.delegation_metadata import developer_engine_capabilities
 from app.config import PROJECT_ROOT, AppSettings
+from app.core import db
+from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus
 from app.integrations.lengrvis_code import (
     allowed_tools_for_developer,
     validate_allowed_tools,
@@ -25,6 +29,12 @@ from app.orchestration.lengrvis_code_runner import (
     lengrvis_code_summary_to_turn_result,
     run_lengrvis_code,
 )
+from app.orchestration.runtime_context import TaskRuntimeContext
+from app.orchestration.tool_runtime import ToolRuntime
+from app.policy.risk import RiskLevel
+from app.tools.schemas import ToolDefinition
+
+DEVELOPER_TOOL_NAME = "developer.lengrvis_code"
 
 
 class DeveloperExecutionEngine(ExecutionEngine):
@@ -53,6 +63,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
         *,
         task_metadata: dict[str, Any] | None = None,
     ) -> RunState:  # noqa: ARG002
+        db.init_db()
         writes_enabled = bool(getattr(self.settings, "developer_writes_enabled", False))
         require_verification = bool(getattr(self.settings, "developer_writes_require_verification", True))
         tool_safety_error = ""
@@ -65,6 +76,22 @@ class DeveloperExecutionEngine(ExecutionEngine):
             allowed_tools = ()
             tool_safety_error = f"Developer engine tool allowlist rejected: {exc}"
         caps = developer_engine_capabilities(writes_enabled=writes_enabled and not tool_safety_error)
+        task = _create_developer_task_shell(goal, mode, run_id="", metadata=task_metadata)
+        step_status = StepStatus.FAILED if tool_safety_error else StepStatus.PENDING
+        step = _developer_plan_step(
+            task,
+            allowed_tools=allowed_tools,
+            writes_enabled=writes_enabled and not tool_safety_error,
+            status=step_status,
+        )
+        plan = Plan(
+            task_id=task.id,
+            goal=goal,
+            assumptions=[f"Executed through {LENGRVIS_CODE_DISPLAY_NAME} via ToolRuntime."],
+            steps=[step],
+            created_by_agent="DeveloperExecutionEngine",
+        )
+        db.upsert_model("plans", plan)
         phase = RunPhase.FAILED if tool_safety_error else RunPhase.PLANNING
         state = RunState(
             run_id=self.store.new_id("devrun"),
@@ -72,6 +99,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
             phase=phase,
             goal=goal,
             mode=mode,
+            task_id=task.id,
             transition_reason=tool_safety_error or f"developer {LENGRVIS_CODE_DISPLAY_NAME} run created",
             current_plan={
                 "summary": (
@@ -90,11 +118,14 @@ class DeveloperExecutionEngine(ExecutionEngine):
                 "writes_require_verification": require_verification and writes_enabled and not tool_safety_error,
                 "capability_mode": caps["mode"],
                 "capability_disclosure": caps["disclosure"],
+                "task_id": task.id,
+                "plan_id": plan.id,
                 **({"safety_error": tool_safety_error} if tool_safety_error else {}),
                 "steps": [
                     {
-                        "id": "lengrvis_code_run",
-                        "tool": "lengrvis_code",
+                        "id": step.id,
+                        "logical_id": "lengrvis_code_run",
+                        "tool": DEVELOPER_TOOL_NAME,
                         "status": "failed" if tool_safety_error else "pending",
                     },
                     *(
@@ -105,6 +136,8 @@ class DeveloperExecutionEngine(ExecutionEngine):
                 ],
             },
         )
+        task.metadata["run_id"] = state.run_id
+        db.upsert_model("tasks", task)
         return self.store.put(state)
 
     async def resume_run(self, run_id: str) -> RunState:
@@ -121,12 +154,23 @@ class DeveloperExecutionEngine(ExecutionEngine):
         return state
 
     async def cancel_run(self, run_id: str) -> RunState:
+        db.init_db()
         await cancel_lengrvis_code_run(run_id)
         state = self.store.get(run_id)
+        if state.task_id:
+            task_data = db.fetch_one("tasks", state.task_id)
+            if task_data:
+                task = Task.model_validate(task_data)
+                _DeveloperRuntimeAdapter(self.settings)._set_status(
+                    task,
+                    TaskStatus.CANCELLED,
+                    final_summary=f"developer {LENGRVIS_CODE_DISPLAY_NAME} run cancelled",
+                )
         updated = state.model_copy(
             update={
                 "phase": RunPhase.CANCELLED,
                 "transition_reason": f"developer {LENGRVIS_CODE_DISPLAY_NAME} run cancelled",
+                "current_plan": _mark_plan_steps_status(state.current_plan, "cancelled"),
             },
             deep=True,
         )
@@ -149,6 +193,7 @@ class DeveloperExecutionEngine(ExecutionEngine):
         return await self._run_lengrvis_code_turn(state)
 
     async def _run_lengrvis_code_turn(self, state: RunState) -> EngineTurnResult:
+        db.init_db()
         # Re-check live settings on every turn/resume; do not trust a stale plan snapshot.
         writes_enabled = bool(getattr(self.settings, "developer_writes_enabled", False))
         base_config = _config_for_settings(self.settings, self.lengrvis_code_config)
@@ -201,12 +246,10 @@ class DeveloperExecutionEngine(ExecutionEngine):
             env=base_config.env,
         )
         try:
-            summary = await run_lengrvis_code(
-                _prompt_from_goal(state.goal, writes_enabled=writes_enabled),
-                cwd=_default_workspace(self.settings),
-                settings=self.settings,
-                config=launch_config,
-                run_id=state.run_id,
+            summary = await self._run_lengrvis_code_via_tool_runtime(
+                state,
+                launch_config=launch_config,
+                writes_enabled=writes_enabled,
             )
         except Exception as exc:  # noqa: BLE001 - external CLI failures become run failures.
             result = lengrvis_code_summary_to_turn_result(
@@ -236,6 +279,71 @@ class DeveloperExecutionEngine(ExecutionEngine):
             )
         return result.model_copy(update={"state": self.store.put(result.state)}, deep=True)
 
+    async def _run_lengrvis_code_via_tool_runtime(
+        self,
+        state: RunState,
+        *,
+        launch_config: LengrvisCodeConfig,
+        writes_enabled: bool,
+    ) -> LengrvisCodeStreamSummary:
+        adapter = _DeveloperRuntimeAdapter(self.settings)
+        task, plan, step = _developer_runtime_models(
+            state,
+            settings=self.settings,
+            allowed_tools=launch_config.allowed_tools,
+            writes_enabled=writes_enabled,
+        )
+        runtime = TaskRuntimeContext.from_task(task, self.settings, adapter.bus)
+        runtime.allowed_directories = list(self.settings.allowed_directories or [_default_workspace(self.settings)])
+        runtime.extra_context.update(
+            {
+                "run_id": state.run_id,
+                "task_id": task.id,
+                "step_id": step.id,
+                "explicit_path_scope": state.goal,
+                "_developer_lengrvis_code_config": launch_config,
+            }
+        )
+        tool = _developer_lengrvis_code_tool()
+        review = await ToolRuntime(adapter).review_and_maybe_prepare_approval(task, step, tool, runtime)
+        if review.kind != "allowed":
+            db.upsert_model("plans", plan)
+            if review.kind in {"step_denied", "fatal_denied"}:
+                return LengrvisCodeStreamSummary(
+                    result={"is_error": True, "errors": [task.final_summary or f"{DEVELOPER_TOOL_NAME} denied."]},
+                )
+            return LengrvisCodeStreamSummary(
+                result={"is_error": True, "errors": [task.final_summary or f"{DEVELOPER_TOOL_NAME} unavailable."]},
+            )
+
+        execution = await ToolRuntime(adapter).execute_allowed(
+            task,
+            step,
+            tool,
+            runtime,
+            approved_args={
+                "prompt": _prompt_from_goal(state.goal, writes_enabled=writes_enabled),
+                "cwd": _default_workspace(self.settings),
+                "run_id": state.run_id,
+                "allowed_tools": list(launch_config.allowed_tools),
+                "max_turns": launch_config.max_turns,
+                "permission_mode": launch_config.permission_mode,
+            },
+        )
+        db.upsert_model("plans", plan)
+        output = execution.result.output if execution.result is not None else {}
+        summary_payload = output.get("summary")
+        if isinstance(summary_payload, LengrvisCodeStreamSummary):
+            return summary_payload
+        if isinstance(summary_payload, dict):
+            try:
+                return LengrvisCodeStreamSummary(**summary_payload)
+            except TypeError:
+                pass
+        if execution.result is not None and not execution.result.ok:
+            return LengrvisCodeStreamSummary(result={"is_error": True, "errors": [execution.result.error]})
+        return LengrvisCodeStreamSummary(result={"is_error": False, "result": "Developer run completed."})
+
 
 def readonly_developer_tool_names() -> tuple[str, ...]:
     """Compatibility alias; developer runs now use Lengrvis Code's controlled tool allowlist."""
@@ -257,6 +365,294 @@ def lengrvis_code_developer_tool_names(
             tools = tools + tuple(tool for tool in WRITE_CAPABLE_ALLOWED_TOOLS if tool not in tools)
         return validate_allowed_tools(tools, allow_write_tools=writes_enabled)
     return allowed_tools_for_developer(writes_enabled=writes_enabled)
+
+
+class _DeveloperRuntimeAdapter:
+    name = "DeveloperExecutionEngine"
+
+    def __init__(self, settings: AppSettings) -> None:
+        from app.agents.safety_review_agent import SafetyReviewAgent
+        from app.orchestration.agent_bus import AgentBus
+
+        self.settings = settings
+        self.bus = AgentBus()
+        self.safety = SafetyReviewAgent(self.bus, settings=settings)
+        self.browser_activity_review = None
+
+    def _set_status(self, task: Task, status: TaskStatus, *, final_summary: str | None = None) -> Task:
+        from app.orchestration.state_machine import safe_transition
+
+        task = safe_transition(task, status, actor=self.name)
+        if final_summary is not None:
+            task.final_summary = final_summary
+        db.upsert_model("tasks", task)
+        return task
+
+    def _supervise_new_agent_messages(self, task_id: str, stage: str) -> bool:
+        messages = [message for message in self.bus.get_messages(task_id) if message.from_agent != self.safety.name]
+        if not messages:
+            return True
+        return self.safety.review_agent_messages_batch(messages, stage).verdict.value != "deny"
+
+    async def _capture_step_frame(self, task: Task, step: PlanStep, phase: str) -> dict[str, Any]:  # noqa: ARG002
+        return {"enabled": False, "ok": True, "phase": phase, "reason": "developer_engine_no_screen_capture"}
+
+    def _publish_step_recording(
+        self,
+        task: Task,
+        step: PlanStep,
+        frames: list[dict[str, Any]],
+        *,
+        tool_name: str,
+        agent: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        return None
+
+    def _friendly_tool_error(self, error: str) -> str:
+        return f"Developer engine failed: {error}" if error else "Developer engine failed."
+
+    async def _reflect_on_step(self, task: Task, step: PlanStep, result) -> None:  # noqa: ANN001, ARG002
+        return None
+
+
+def _create_developer_task_shell(
+    goal: str,
+    mode: str,
+    *,
+    run_id: str,
+    metadata: dict[str, Any] | None = None,
+) -> Task:
+    task = Task(
+        user_goal=goal,
+        mode=mode,
+        status=TaskStatus.PLANNING,
+        metadata={"engine": "developer", "run_id": run_id, **dict(metadata or {})},
+    )
+    db.upsert_model("tasks", task)
+    return task
+
+
+def _developer_plan_step(
+    task: Task,
+    *,
+    allowed_tools: tuple[str, ...],
+    writes_enabled: bool,
+    status: StepStatus = StepStatus.PENDING,
+) -> PlanStep:
+    return PlanStep(
+        task_id=task.id,
+        order=1,
+        agent_name="DeveloperExecutionEngine",
+        tool_name=DEVELOPER_TOOL_NAME,
+        description=f"Run {LENGRVIS_CODE_DISPLAY_NAME} through ToolRuntime.",
+        args={
+            "workspace_path": _default_workspace(AppSettings()),
+            "allowed_tools": list(allowed_tools),
+            "writes_enabled": writes_enabled,
+        },
+        expected_observation=f"{LENGRVIS_CODE_DISPLAY_NAME} stream-json result captured.",
+        risk_level=RiskLevel.R1_OPEN_ONLY,
+        status=status,
+        tool_effects=["read", "execute_subprocess"],
+        resource_kinds=["workspace", "developer_runtime"],
+        trust_tier="builtin",
+    )
+
+
+def _developer_runtime_models(
+    state: RunState,
+    *,
+    settings: AppSettings,
+    allowed_tools: tuple[str, ...],
+    writes_enabled: bool,
+) -> tuple[Task, Plan, PlanStep]:
+    task = _task_for_developer_state(state)
+    step_id = _developer_step_id(state.current_plan)
+    plan = _plan_for_developer_task(task, state)
+    step = next((item for item in plan.steps if item.id == step_id), None)
+    if step is None:
+        step = _developer_plan_step(
+            task,
+            allowed_tools=allowed_tools,
+            writes_enabled=writes_enabled,
+        )
+        if step_id:
+            step.id = step_id
+        plan.steps.insert(0, step)
+    step.args = {
+        "workspace_path": _default_workspace(settings),
+        "allowed_tools": list(allowed_tools),
+        "writes_enabled": writes_enabled,
+    }
+    step.tool_name = DEVELOPER_TOOL_NAME
+    step.agent_name = "DeveloperExecutionEngine"
+    step.risk_level = RiskLevel.R1_OPEN_ONLY
+    step.tool_effects = ["read", "execute_subprocess"]
+    step.resource_kinds = ["workspace", "developer_runtime"]
+    step.trust_tier = "builtin"
+    db.upsert_model("tasks", task)
+    db.upsert_model("plans", plan)
+    return task, plan, step
+
+
+def _task_for_developer_state(state: RunState) -> Task:
+    if state.task_id:
+        row = db.fetch_one("tasks", state.task_id)
+        if row:
+            return Task.model_validate(row)
+    return _create_developer_task_shell(state.goal, state.mode, run_id=state.run_id)
+
+
+def _plan_for_developer_task(task: Task, state: RunState) -> Plan:
+    plan_id = str(state.current_plan.get("plan_id") or "")
+    if plan_id:
+        row = db.fetch_one("plans", plan_id)
+        if row:
+            return Plan.model_validate(row)
+    rows = db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)
+    if rows:
+        return Plan.model_validate(rows[0])
+    return Plan(
+        task_id=task.id,
+        goal=task.user_goal,
+        assumptions=[f"Executed through {LENGRVIS_CODE_DISPLAY_NAME} via ToolRuntime."],
+        created_by_agent="DeveloperExecutionEngine",
+    )
+
+
+def _developer_step_id(plan: dict[str, Any]) -> str:
+    for raw_step in plan.get("steps") or []:
+        if isinstance(raw_step, dict) and raw_step.get("logical_id") == "lengrvis_code_run":
+            return str(raw_step.get("id") or "")
+    return ""
+
+
+def _developer_lengrvis_code_tool() -> ToolDefinition:
+    return ToolDefinition(
+        name=DEVELOPER_TOOL_NAME,
+        description=f"Run {LENGRVIS_CODE_DISPLAY_NAME} headless inside the authorized workspace.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string"},
+                "cwd": {"type": "string"},
+                "run_id": {"type": "string"},
+            },
+            "required": ["prompt", "cwd", "run_id"],
+            "additionalProperties": True,
+        },
+        output_schema={},
+        risk_level=RiskLevel.R1_OPEN_ONLY,
+        agent_owner="DeveloperExecutionEngine",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=_execute_lengrvis_code_tool,
+        read_only=False,
+        concurrency_safe=False,
+        concurrency_key="developer.lengrvis_code",
+        destructive=False,
+        max_result_size=80000,
+        result_summary=_developer_tool_summary,
+        capabilities=["developer_runtime", "subprocess"],
+        effects=["read", "execute_subprocess"],
+        resource_kinds=["workspace", "developer_runtime"],
+        trust_tier="builtin",
+        sensitive_arg_keys=["prompt"],
+        tool_version="1",
+    )
+
+
+def _execute_lengrvis_code_tool(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    settings = context.get("settings")
+    if not isinstance(settings, AppSettings):
+        settings = AppSettings()
+    config = context.get("_developer_lengrvis_code_config")
+    if not isinstance(config, LengrvisCodeConfig):
+        config = LengrvisCodeConfig()
+    run_id = str(args.get("run_id") or context.get("run_id") or "")
+    abort_event = context.get("_tool_abort_event")
+    summary = _run_lengrvis_code_sync(
+        str(args.get("prompt") or ""),
+        cwd=str(args.get("cwd") or _default_workspace(settings)),
+        settings=settings,
+        config=config,
+        run_id=run_id,
+        abort_event=abort_event if isinstance(abort_event, threading.Event) else None,
+    )
+    output = _developer_summary_output(summary)
+    if summary.is_error:
+        output["error"] = output.get("error") or summary.error_classification or "developer_runtime_failed"
+    return output
+
+
+def _run_lengrvis_code_sync(
+    prompt: str,
+    *,
+    cwd: str,
+    settings: AppSettings,
+    config: LengrvisCodeConfig,
+    run_id: str,
+    abort_event: threading.Event | None,
+) -> LengrvisCodeStreamSummary:
+    async def _runner() -> LengrvisCodeStreamSummary:
+        cancel_task: asyncio.Task[None] | None = None
+
+        async def _poll_abort() -> None:
+            if abort_event is None:
+                return
+            while not abort_event.is_set():
+                await asyncio.sleep(0.05)
+            await cancel_lengrvis_code_run(run_id)
+
+        if abort_event is not None:
+            cancel_task = asyncio.create_task(_poll_abort())
+        try:
+            return await run_lengrvis_code(
+                prompt,
+                cwd=cwd,
+                settings=settings,
+                config=config,
+                run_id=run_id,
+            )
+        finally:
+            if cancel_task is not None:
+                cancel_task.cancel()
+                await asyncio.gather(cancel_task, return_exceptions=True)
+
+    return asyncio.run(_runner())
+
+
+def _developer_summary_output(summary: LengrvisCodeStreamSummary) -> dict[str, Any]:
+    payload = {
+        "summary": summary,
+        "ok": not summary.is_error,
+        "cancelled": summary.cancelled,
+        "assistant_text": summary.final_text,
+        "tool_events": list(summary.tool_events or []),
+        "system_events": list(summary.system_events or []),
+        "result": summary.result,
+        "permission_denials": summary.permission_denials,
+        "error_classification": summary.error_classification,
+        "returncode": summary.returncode,
+        "runtime_health": summary.runtime_health,
+    }
+    if summary.cancelled:
+        payload["error"] = "cancelled"
+    elif summary.is_error:
+        payload["error"] = summary.error_classification or "developer_runtime_failed"
+    return payload
+
+
+def _developer_tool_summary(output: dict[str, Any]) -> str:
+    text = str(output.get("assistant_text") or "").strip()
+    if text:
+        return text[:500]
+    if output.get("cancelled"):
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} run was cancelled."
+    if output.get("error"):
+        return f"{LENGRVIS_CODE_DISPLAY_NAME} run failed: {output.get('error')}"
+    return f"{LENGRVIS_CODE_DISPLAY_NAME} run completed."
 
 
 def _config_for_settings(settings: AppSettings, config: LengrvisCodeConfig | None) -> LengrvisCodeConfig:

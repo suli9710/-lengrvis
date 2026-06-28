@@ -40,6 +40,7 @@ from app.commerce.licensing import (  # noqa: E402
     sign_revocation_manifest,
     verify_license,
 )
+from app.commerce.entitlements import normalize_plan  # noqa: E402
 
 LEDGER_SCHEMA = 1
 MANIFEST_SCHEMA = 1
@@ -302,6 +303,9 @@ def command_issue(args: argparse.Namespace) -> dict[str, Any]:
     expires_at = None if args.perpetual else _parse_datetime(args.expires_at, field="expires-at")
     if expires_at is not None and expires_at <= now:
         raise ValueError("expires-at must be in the future")
+    plan = normalize_plan(args.plan)
+    if plan.value == "free":
+        raise ValueError("Only Pro or Max licenses can be issued")
     key, password = _load_private_key(args.private_key, args.private_key_passphrase_file)
     license_id = args.license_id or f"lic_{uuid.uuid4().hex}"
     payload: dict[str, Any] = {
@@ -309,11 +313,18 @@ def command_issue(args: argparse.Namespace) -> dict[str, Any]:
         "license_id": license_id,
         "issuer": args.issuer,
         "subject": args.subject,
-        "plan": args.plan,
+        "plan": plan.value,
         "seats": args.seats,
         "issued_at": _iso(now),
         "expires_at": _iso(expires_at) if expires_at else None,
     }
+    if args.subscription_id:
+        payload["subscription_id"] = args.subscription_id
+        payload["subscription_status"] = args.subscription_status
+    if args.renews_at:
+        payload["renews_at"] = _iso(_parse_datetime(args.renews_at, field="renews-at"))
+    if args.cancel_at_period_end:
+        payload["cancel_at_period_end"] = True
     if args.replaces:
         payload["replaces"] = args.replaces
     if args.order_ref:
@@ -337,11 +348,13 @@ def command_issue(args: argparse.Namespace) -> dict[str, Any]:
                 "license_id": license_id,
                 "issuer": args.issuer,
                 "subject": args.subject,
-                "plan": args.plan,
+                "plan": plan.value,
                 "seats": args.seats,
                 "expires_at": payload["expires_at"],
                 "replaces": args.replaces or None,
                 "order_ref": args.order_ref or None,
+                "subscription_id": args.subscription_id or None,
+                "subscription_status": args.subscription_status if args.subscription_id else None,
                 "public_key_fingerprint": _public_key_fingerprint(key.public_key()),
                 "artifact_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
             },
@@ -353,9 +366,11 @@ def command_issue(args: argparse.Namespace) -> dict[str, Any]:
         "license_id": license_id,
         "output": str(output.resolve()),
         "ledger": str(ledger.resolve()),
-        "plan": args.plan,
+        "plan": plan.value,
         "subject": args.subject,
         "expires_at": payload["expires_at"],
+        "subscription_id": args.subscription_id or None,
+        "subscription_status": args.subscription_status if args.subscription_id else None,
         "public_key_fingerprint": _public_key_fingerprint(key.public_key()),
     }
 
@@ -429,6 +444,10 @@ def command_inspect(args: argparse.Namespace) -> dict[str, Any]:
         "subject": license_.subject,
         "plan": license_.plan.value,
         "seats": license_.seats,
+        "subscription_id": license_.subscription_id or None,
+        "subscription_status": license_.subscription_status or None,
+        "renews_at": license_.renews_at.isoformat() if license_.renews_at else None,
+        "cancel_at_period_end": license_.cancel_at_period_end,
         "issued_at": license_.issued_at.isoformat() if license_.issued_at else None,
         "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
         "replaces": license_.replaces or None,
@@ -449,12 +468,12 @@ def build_parser() -> argparse.ArgumentParser:
     keygen.add_argument("--force", action="store_true")
     keygen.set_defaults(handler=command_keygen)
 
-    issue = subparsers.add_parser("issue", help="Issue a signed Pro or Team license")
+    issue = subparsers.add_parser("issue", help="Issue a signed Pro or Max license")
     issue.add_argument("--private-key", required=True)
     issue.add_argument("--private-key-passphrase-file")
     issue.add_argument("--issuer", required=True)
     issue.add_argument("--subject", required=True)
-    issue.add_argument("--plan", choices=("pro", "team"), required=True)
+    issue.add_argument("--plan", choices=("pro", "max", "team"), required=True)
     issue.add_argument("--seats", type=int, default=1)
     expiry = issue.add_mutually_exclusive_group(required=True)
     expiry.add_argument("--expires-at")
@@ -462,6 +481,14 @@ def build_parser() -> argparse.ArgumentParser:
     issue.add_argument("--license-id")
     issue.add_argument("--replaces")
     issue.add_argument("--order-ref")
+    issue.add_argument("--subscription-id")
+    issue.add_argument(
+        "--subscription-status",
+        choices=("active", "trialing", "past_due", "canceled", "expired", "revoked"),
+        default="active",
+    )
+    issue.add_argument("--renews-at")
+    issue.add_argument("--cancel-at-period-end", action="store_true")
     issue.add_argument("--output", required=True)
     issue.add_argument("--ledger", required=True)
     issue.add_argument("--force", action="store_true")

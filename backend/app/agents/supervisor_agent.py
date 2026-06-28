@@ -9,20 +9,21 @@ from typing import Any
 from app.agents.delegation_rules import (
     DELEGATION_RULES,
     FILE_ACTION_TERMS,
-    UNINSTALL_TERMS as APP_ACTION_TERMS,
     contains_any,
+)
+from app.agents.delegation_rules import (
+    UNINSTALL_TERMS as APP_ACTION_TERMS,
 )
 from app.agents.path_detection import has_explicit_path
 from app.agents.worker_agents import KNOWN_SUPERVISOR_WORKER_AGENTS, normalize_supervisor_agent_hint
+from app.core.session_context import SessionContext, get_session_context_store
 from app.llm.local_provider import LocalBackendUnavailable
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.registry import get_provider
-from app.core.session_context import SessionContext, get_session_context_store
 from app.perception.context_store import latest_perception_context
 from app.perception.intent_predictor import IntentPredictor, IntentSuggestion
 from app.perception.schemas import AppContext, ScreenState
 from app.perception.storage import is_sensitive_context
-
 
 SUPERVISOR_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -32,11 +33,7 @@ SUPERVISOR_SCHEMA: dict[str, Any] = {
         "reply": {"type": "string"},
         "agent_hint": {
             "type": "string",
-            "description": (
-                "One of "
-                + ", ".join(sorted(KNOWN_SUPERVISOR_WORKER_AGENTS))
-                + ", or empty."
-            ),
+            "description": ("One of " + ", ".join(sorted(KNOWN_SUPERVISOR_WORKER_AGENTS)) + ", or empty."),
         },
     },
 }
@@ -58,6 +55,7 @@ CHAT_ONLY_HINTS = (
     "旅途",
 )
 
+
 @dataclass(frozen=True, slots=True)
 class SupervisorDecision:
     delegate: bool
@@ -72,7 +70,7 @@ class SupervisorAgent:
         fallback = self.quick_decision(message)
 
         try:
-            provider = get_provider()
+            provider = get_provider(task="supervisor")
             payload = await asyncio.wait_for(
                 provider.structured_chat(self._supervisor_messages(message, mode), SUPERVISOR_SCHEMA),
                 timeout=SUPERVISOR_TIMEOUT_SECONDS,
@@ -80,7 +78,7 @@ class SupervisorAgent:
             decision = self._payload_to_decision(payload)
         except LocalBackendUnavailable:
             return fallback
-        except Exception:
+        except Exception:  # noqa: BLE001 - supervisor provider failures fall back to local delegation heuristics.
             return fallback
 
         if not decision.reply:
@@ -125,7 +123,7 @@ class SupervisorAgent:
         if history is None:
             try:
                 history = get_session_context_store().load_latest()
-            except Exception:
+            except Exception:  # noqa: BLE001 - context history is best-effort for proactive suggestions.
                 history = None
         return (predictor or IntentPredictor()).predict(
             screen_state=screen_state,
@@ -151,7 +149,9 @@ class SupervisorAgent:
             },
             {
                 "role": "user",
-                "content": render_prompt("supervisor_user.md", {"mode": mode, "message": f"{perception_hint}{message}"}),
+                "content": render_prompt(
+                    "supervisor_user.md", {"mode": mode, "message": f"{perception_hint}{message}"}
+                ),
             },
         ]
 
@@ -251,9 +251,15 @@ class SupervisorAgent:
         if "你会" in normalized or normalized in {"会啊", "会吗"}:
             return "会啊。我可以正常和你聊天，也可以在你明确要我做事时再调对应 Agent 去处理。"
         if "真人" in normalized:
-            return "不是真人，我是 Lengrvis 里的主管 Agent。你可以把我当成一个先陪你自然对话、再按需要调度其他 Agent 的 AI 助手。"
+            return (
+                "不是真人，我是 Lengrvis 里的主管 Agent。"
+                "你可以把我当成一个先陪你自然对话、再按需要调度其他 Agent 的 AI 助手。"
+            )
         if "模型" in normalized or "ai" in normalized or "人工智能" in normalized:
-            return "我是 Lengrvis 的主管 Agent，底层可以接不同模型。对你来说，我会先和你自然对话，需要实际操作时再调其他 Agent。"
+            return (
+                "我是 Lengrvis 的主管 Agent，底层可以接不同模型。"
+                "对你来说，我会先和你自然对话，需要实际操作时再调其他 Agent。"
+            )
         if "不是说" in normalized or "自然对话" in normalized or "对话" in normalized:
             return "对，这里应该先自然对话。我会先接住你的话，真的需要操作电脑、文件或网页时，再安排对应 Agent。"
         if "聊天" in normalized:
