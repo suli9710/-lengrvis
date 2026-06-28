@@ -108,6 +108,7 @@ def _golden_env(monkeypatch, tmp_path, task: dict[str, Any]):
     monkeypatch.setenv("LENGRVIS_API_KEY", "")
     monkeypatch.setenv("LENGRVIS_ALLOW_MOCK_FALLBACK", "true")
     monkeypatch.setenv("LENGRVIS_MODE", task.get("mode", "efficiency"))
+    monkeypatch.setenv("LENGRVIS_PLAN", "pro")
     if task.get("no_scope"):
         monkeypatch.delenv("LENGRVIS_ALLOWED_DIRECTORIES", raising=False)
     else:

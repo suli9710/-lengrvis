@@ -42,7 +42,7 @@ _VK_CODES = {
 
 
 def view_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_VIEW):
         return {"ok": False, "error": "Remote desktop is disabled."}
     quality = int(args.get("quality") or 50)
     if args.get("dry_run", True):
@@ -55,7 +55,7 @@ def view_screen(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 
 
 def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_CONTROL):
         return {"ok": False, "error": "Remote desktop is disabled."}
     x = int(args.get("x") or 0)
     y = int(args.get("y") or 0)
@@ -69,7 +69,7 @@ def click(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # n
 
 
 def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_CONTROL):
         return {"ok": False, "error": "Remote desktop is disabled."}
     text = str(args.get("text") or "")
     if args.get("dry_run", True):
@@ -82,7 +82,7 @@ def type_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]: 
 
 
 def key_press(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
-    if not _remote_enabled(context):
+    if not _remote_enabled(context, Feature.REMOTE_CONTROL):
         return {"ok": False, "error": "Remote desktop is disabled."}
     key = _normalize_key(str(args.get("key") or ""))
     if not key:
@@ -105,13 +105,15 @@ def _preview(action: str, detail: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _remote_enabled(context: dict[str, Any]) -> bool:
+def _remote_enabled(context: dict[str, Any], feature: Feature) -> bool:
     settings = context.get("settings") or get_effective_settings()
     if not bool(getattr(settings, "remote_desktop_enabled", False)):
         return False
-    return has_feature(active_plan(settings), Feature.REMOTE_CONTROL) and subscription_confirmation_fresh_for_high_risk(
-        settings
-    )
+    if not has_feature(active_plan(settings), feature):
+        return False
+    if feature == Feature.REMOTE_CONTROL:
+        return subscription_confirmation_fresh_for_high_risk(settings)
+    return True
 
 
 def _approval_allows_live_execution(args: dict[str, Any], context: dict[str, Any], tool_name: str) -> bool:

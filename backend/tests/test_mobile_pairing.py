@@ -1001,6 +1001,34 @@ def test_pair_code_includes_remote_view_scope_only_when_remote_desktop_enabled(m
     assert main_exp - issued_at >= timedelta(seconds=MOBILE_TOKEN_TTL_SECONDS - 2)
 
 
+def test_pair_code_does_not_include_remote_view_scope_without_entitled_plan(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    settings = get_effective_settings().model_copy(update={"remote_desktop_enabled": True, "plan": "free"})
+    monkeypatch.setattr(mobile_pairing_service, "get_effective_settings", lambda: settings)
+    monkeypatch.setattr(
+        mobile_pairing_service,
+        "lan_transport_security",
+        lambda settings=None: {
+            "tls_ready": True,
+            "status": "https_ready",
+            "scheme": "https",
+            "origin": "https://testserver",
+        },
+    )
+    pairing = mobile_pairing_service.create_pairing_request()
+
+    paired = mobile_pairing_service.confirm_pairing(
+        code=pairing["code"],
+        device_name="Android Phone",
+        claim_secret=pairing["claim_secret"],
+    )
+
+    claims = decode_mobile_token(paired["token"], allowed_scopes={TOKEN_SCOPE})
+    assert set(claims["scope"].split()) == {TOKEN_SCOPE}
+    assert REMOTE_VIEW_SCOPE not in claims.get("scope_exp", {})
+
+
 def test_mobile_token_survives_backend_process_restart(tmp_path):
     data_dir = tmp_path / "data"
     token = _run_mobile_jwt_subprocess(
@@ -1917,6 +1945,23 @@ def test_remote_input_grant_creation_requires_remote_desktop_enabled(monkeypatch
     response = client.post(f"/api/pair/devices/{device_id}/remote-input-grants")
 
     assert response.status_code == 403
+    assert db.fetch_one("mobile_devices", device_id)["remote_input_grants"] == []
+
+
+def test_remote_input_grant_creation_requires_remote_control_plan(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    db.init_db()
+    _enable_remote_desktop()
+    client = TestClient(app)
+    paired_token = _paired_token(client)
+    device_id = decode_mobile_token(paired_token)["device_id"]
+    settings = get_effective_settings().model_copy(update={"remote_desktop_enabled": True, "plan": "free"})
+    monkeypatch.setattr(mobile_pairing_service, "get_effective_settings", lambda: settings)
+
+    response = client.post(f"/api/pair/devices/{device_id}/remote-input-grants")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Remote desktop is disabled"
     assert db.fetch_one("mobile_devices", device_id)["remote_input_grants"] == []
 
 

@@ -322,6 +322,22 @@ def test_remote_view_token_cannot_open_remote_screen_after_remote_desktop_disabl
     assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
 
 
+def test_remote_view_token_cannot_open_remote_screen_without_entitled_plan(monkeypatch: pytest.MonkeyPatch):
+    free_enabled_settings = get_effective_settings().model_copy(update={"remote_desktop_enabled": True, "plan": "free"})
+    monkeypatch.setattr(routes_remote, "get_effective_settings", lambda: free_enabled_settings)
+    client = TestClient(_test_app())
+    token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/ws/remote/screen",
+            subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+        ):
+            raise AssertionError("Remote view token should not open screen without an entitled plan")
+
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
+
+
 def test_mobile_approval_token_cannot_open_remote_screen():
     _enable_remote_desktop()
     client = TestClient(_test_app())
@@ -691,6 +707,31 @@ def test_connected_remote_screen_closes_after_remote_desktop_disabled(monkeypatc
         first = websocket.receive_json()
         assert first["type"] == "frame"
         _disable_remote_desktop()
+        websocket.send_json({"type": "frame_ack", "sequence": first["sequence"]})
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            websocket.receive_json()
+
+    assert exc_info.value.code == REMOTE_WS_RETRY_CLOSE_CODE
+
+
+def test_connected_remote_screen_closes_after_plan_loses_remote_view(monkeypatch: pytest.MonkeyPatch):
+    _enable_remote_desktop()
+    monkeypatch.setattr(remote_desktop_service, "_grab_screen", lambda: Image.new("RGB", (100, 100), "blue"))
+    entitled_settings = get_effective_settings().model_copy(update={"remote_desktop_enabled": True, "plan": "pro"})
+    free_settings = entitled_settings.model_copy(update={"plan": "free"})
+    current_settings = {"value": entitled_settings}
+    monkeypatch.setattr(routes_remote, "get_effective_settings", lambda: current_settings["value"])
+    client = TestClient(_test_app())
+    token = _scoped_mobile_token(REMOTE_VIEW_SCOPE)
+
+    with client.websocket_connect(
+        "/ws/remote/screen",
+        subprotocols=[f"{MOBILE_AUTH_WS_PROTOCOL_PREFIX}{token}"],
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "connected"
+        first = websocket.receive_json()
+        assert first["type"] == "frame"
+        current_settings["value"] = free_settings
         websocket.send_json({"type": "frame_ack", "sequence": first["sequence"]})
         with pytest.raises(WebSocketDisconnect) as exc_info:
             websocket.receive_json()

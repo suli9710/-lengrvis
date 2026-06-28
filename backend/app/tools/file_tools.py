@@ -13,7 +13,7 @@ except Exception:  # noqa: BLE001  # pragma: no cover - optional dependency guar
     send2trash = None
 
 from app.core.errors import SecurityError
-from app.core.paths import resolve_authorized
+from app.core.paths import normalize_path, path_within_explicit_scope, resolve_authorized, resolve_task_path
 from app.policy.risk import RiskLevel
 from app.services.cleanup_planner_service import CleanupPlannerService
 from app.tools.managed_backups import create_managed_backup
@@ -34,6 +34,11 @@ FIND_DUPLICATES_DEFAULT_LIMIT = 100
 FIND_DUPLICATES_DEFAULT_MAX_SCANNED = 5000
 FIND_DUPLICATES_DEFAULT_MAX_FILE_BYTES = 100 * 1024 * 1024
 _cleanup_service = CleanupPlannerService()
+
+
+def _explicit_scope(context: dict[str, Any]) -> str | None:
+    value = context.get("explicit_path_scope")
+    return str(value) if value else None
 
 
 def _allowed(context: dict[str, Any]) -> list[str]:
@@ -386,13 +391,17 @@ def trash_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if send2trash is None:
         raise RuntimeError("send2trash is not installed; permanent deletion is forbidden.")
     raise_if_tool_aborted(context)
-    _ensure_mutation_path_safe(path, _allowed(context), include_self=True)
+    _ensure_mutation_path_safe(path, _allowed(context), include_self=True, context=context)
     send2trash(str(path))
     return {"changed_paths": [str(path)], "rollback_info": {"restore_from_recycle_bin": str(path)}}
 
 
 def _resolve_trash_target(path_value: str | Path, context: dict[str, Any]) -> Path:
-    return resolve_authorized(path_value, _allowed(context))
+    allowed = _allowed(context)
+    scope = _explicit_scope(context)
+    if allowed:
+        return resolve_authorized(path_value, allowed)
+    return resolve_task_path(path_value, allowed, explicit_scope_text=scope)
 
 
 def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -535,24 +544,45 @@ def _prepare_parent_for_mutation(path: Path, allowed: list[str], context: dict[s
     _ensure_mutation_path_safe(path.parent, allowed, include_self=True)
 
 
-def _ensure_mutation_path_safe(path: Path, allowed: list[str], *, include_self: bool) -> None:
+def _ensure_mutation_path_safe(
+    path: Path,
+    allowed: list[str],
+    *,
+    include_self: bool,
+    context: dict[str, Any] | None = None,
+) -> None:
     target = path if include_self else path.parent
     real_target = target.expanduser().resolve(strict=False)
-    base = _authorized_real_base(real_target, allowed)
+    scope = _explicit_scope(context) if context else None
+    base = _authorized_real_base(real_target, allowed, explicit_scope_text=scope)
     _reject_reparse_points(base, target)
 
 
-def _authorized_real_base(real_target: Path, allowed: list[str]) -> Path:
-    if not allowed:
-        raise SecurityError("No authorized directories configured.")
-    for raw_base in allowed:
-        base = Path(raw_base).expanduser().resolve(strict=False)
-        try:
-            if real_target == base or real_target.is_relative_to(base):
-                return base
-        except ValueError:
-            continue
-    raise SecurityError("Path resolves outside authorized directories.")
+def _authorized_real_base(
+    real_target: Path,
+    allowed: list[str],
+    *,
+    explicit_scope_text: str | None = None,
+) -> Path:
+    if allowed:
+        for raw_base in allowed:
+            base = Path(raw_base).expanduser().resolve(strict=False)
+            try:
+                if real_target == base or real_target.is_relative_to(base):
+                    return base
+            except ValueError:
+                continue
+        raise SecurityError("Path resolves outside authorized directories.")
+    if explicit_scope_text and path_within_explicit_scope(real_target, explicit_scope_text):
+        from app.agents.path_detection import find_explicit_path
+
+        explicit_raw = find_explicit_path(explicit_scope_text)
+        if explicit_raw:
+            explicit = normalize_path(explicit_raw)
+            if explicit.is_dir():
+                return explicit
+            return explicit.parent
+    raise SecurityError("No authorized directories configured.")
 
 
 def _reject_reparse_points(base: Path, target: Path) -> None:

@@ -35,29 +35,36 @@ def test_has_feature_matrix():
     # Free tier
     assert has_feature(Plan.FREE, Feature.BASIC_TASKS)
     assert has_feature(Plan.FREE, Feature.LOCAL_READ_ONLY)
+    assert not has_feature(Plan.FREE, Feature.REMOTE_VIEW)
     assert not has_feature(Plan.FREE, Feature.REMOTE_CONTROL)
     assert not has_feature(Plan.FREE, Feature.DOCUMENT_AI)
     assert not has_feature(Plan.FREE, Feature.AUDIT_EXPORT)
     # Pro tier inherits Free and unlocks cloud capabilities incl. remote control
     assert has_feature(Plan.PRO, Feature.BASIC_TASKS)
     assert has_feature(Plan.PRO, Feature.DOCUMENT_AI)
+    assert has_feature(Plan.PRO, Feature.REMOTE_VIEW)
     assert has_feature(Plan.PRO, Feature.REMOTE_CONTROL)
     assert not has_feature(Plan.PRO, Feature.AUDIT_EXPORT)
     assert not has_feature(Plan.PRO, Feature.PRIVATE_DEPLOYMENT)
     # Max tier inherits everything
+    assert has_feature(Plan.MAX, Feature.REMOTE_VIEW)
     assert has_feature(Plan.MAX, Feature.REMOTE_CONTROL)
     assert has_feature(Plan.MAX, Feature.AUDIT_EXPORT)
     assert has_feature(Plan.MAX, Feature.PRIVATE_DEPLOYMENT)
 
 
 def test_has_feature_accepts_plan_strings():
+    assert has_feature("pro", Feature.REMOTE_VIEW)
     assert has_feature("pro", Feature.REMOTE_CONTROL)
+    assert not has_feature("free", Feature.REMOTE_VIEW)
     assert not has_feature("free", Feature.REMOTE_CONTROL)
 
 
 def test_required_plan_and_high_risk_flags():
+    assert required_plan(Feature.REMOTE_VIEW) is Plan.PRO
     assert required_plan(Feature.REMOTE_CONTROL) is Plan.PRO
     assert required_plan(Feature.AUDIT_EXPORT) is Plan.MAX
+    assert not is_high_risk(Feature.REMOTE_VIEW)
     assert is_high_risk(Feature.REMOTE_CONTROL)
     assert not is_high_risk(Feature.DOCUMENT_AI)
 

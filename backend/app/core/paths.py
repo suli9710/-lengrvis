@@ -130,6 +130,51 @@ def _parsed_windows_system_path(text: str) -> bool:
     return bool(parts and parts[0] in WINDOWS_SYSTEM_ROOT_NAMES)
 
 
+def path_within_explicit_scope(path: str | Path, scope_text: str) -> bool:
+    from app.agents.path_detection import find_explicit_path
+
+    explicit_raw = find_explicit_path(scope_text)
+    if not explicit_raw:
+        return False
+    try:
+        explicit = normalize_path(explicit_raw)
+        candidate = normalize_path(path)
+    except OSError:
+        return False
+    if candidate == explicit:
+        return True
+    try:
+        return candidate.is_relative_to(explicit) or explicit.is_relative_to(candidate)
+    except ValueError:
+        return False
+
+
+def resolve_standalone_explicit_absolute(path: str | Path) -> Path:
+    if _has_windows_alternate_data_stream(path):
+        raise SecurityError("Windows alternate data streams are not allowed.")
+    candidate = normalize_path(path)
+    if ".." in Path(path).parts:
+        raise SecurityError("Path traversal is not allowed.")
+    if not candidate.is_absolute():
+        raise SecurityError("Relative paths require authorized directories.")
+    if is_system_path(candidate) or is_sensitive_path(candidate):
+        raise SecurityError("Sensitive or system paths are not allowed.")
+    return candidate
+
+
+def resolve_task_path(
+    path: str | Path,
+    allowed_directories: list[str],
+    *,
+    explicit_scope_text: str | None = None,
+) -> Path:
+    if allowed_directories:
+        return resolve_authorized(path, allowed_directories)
+    if explicit_scope_text and path_within_explicit_scope(path, explicit_scope_text):
+        return resolve_standalone_explicit_absolute(path)
+    raise SecurityError("No authorized directories configured.")
+
+
 def resolve_authorized(path: str | Path, allowed_directories: list[str]) -> Path:
     if _has_windows_alternate_data_stream(path):
         raise SecurityError("Windows alternate data streams are not allowed.")

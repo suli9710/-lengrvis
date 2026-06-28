@@ -13,6 +13,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.commerce.entitlements import Feature, active_plan, has_feature
+from app.commerce.licensing import subscription_confirmation_fresh_for_high_risk
 from app.config import AppSettings
 from app.core import db
 from app.core.audit import record
@@ -123,7 +125,8 @@ def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> di
     device_name = _safe_device_name(device_name)
     token_scopes = [TOKEN_SCOPE]
     scope_ttl: dict[str, int] | None = None
-    if get_effective_settings().remote_desktop_enabled:
+    settings = get_effective_settings()
+    if _remote_desktop_view_enabled(settings):
         token_scopes.append(REMOTE_VIEW_SCOPE)
         scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
     token = issue_mobile_token(
@@ -253,8 +256,7 @@ def create_remote_input_grant(
     *,
     expires_in_seconds: int = REMOTE_INPUT_GRANT_TTL_SECONDS,
 ) -> dict[str, Any]:
-    if not get_effective_settings().remote_desktop_enabled:
-        raise HTTPException(status_code=403, detail="Remote desktop is disabled")
+    _require_remote_control_enabled()
     normalized_id = _text(device_id)
     if not normalized_id:
         raise HTTPException(status_code=422, detail="Missing mobile device id")
@@ -319,8 +321,7 @@ def claim_remote_input_grant_token(grant_id: str, claims: dict[str, Any]) -> dic
         raise HTTPException(status_code=401, detail="Mobile token is missing a device binding")
     if not normalized_grant_id:
         raise HTTPException(status_code=422, detail="Missing remote input grant id")
-    if not get_effective_settings().remote_desktop_enabled:
-        raise HTTPException(status_code=403, detail="Remote desktop is disabled")
+    _require_remote_control_enabled()
 
     token_id = secrets.token_hex(16)
     grant, device_token_epoch = _bind_remote_input_grant_token_id(device_id, normalized_grant_id, token_id)
@@ -542,7 +543,8 @@ def refresh_mobile_session_token(claims: dict[str, Any]) -> dict[str, Any]:
 
     token_scopes = [TOKEN_SCOPE]
     scope_ttl: dict[str, int] | None = None
-    if get_effective_settings().remote_desktop_enabled:
+    settings = get_effective_settings()
+    if _remote_desktop_view_enabled(settings):
         token_scopes.append(REMOTE_VIEW_SCOPE)
         scope_ttl = {REMOTE_VIEW_SCOPE: MOBILE_REMOTE_VIEW_TTL_SECONDS}
 
@@ -567,6 +569,22 @@ def refresh_mobile_session_token(claims: dict[str, Any]) -> dict[str, Any]:
 
 def validate_mobile_token(token: str) -> dict[str, Any]:
     return decode_mobile_token(token)
+
+
+def _remote_desktop_view_enabled(settings: Any) -> bool:
+    return bool(getattr(settings, "remote_desktop_enabled", False)) and has_feature(
+        active_plan(settings), Feature.REMOTE_VIEW
+    )
+
+
+def _require_remote_control_enabled(settings: Any | None = None) -> None:
+    settings = settings or get_effective_settings()
+    if not bool(getattr(settings, "remote_desktop_enabled", False)):
+        raise HTTPException(status_code=403, detail="Remote desktop is disabled")
+    if not has_feature(active_plan(settings), Feature.REMOTE_CONTROL):
+        raise HTTPException(status_code=403, detail="Remote desktop is disabled")
+    if not subscription_confirmation_fresh_for_high_risk(settings):
+        raise HTTPException(status_code=403, detail="Remote input requires a fresh subscription confirmation")
 
 
 def _write_pairing_record(record: dict[str, Any]) -> None:

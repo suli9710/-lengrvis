@@ -99,7 +99,7 @@ async def test_supervisor_calls_provider_even_for_chat_only_turn(monkeypatch, tm
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider()
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat("agent how do you work", "privacy")
 
@@ -120,7 +120,7 @@ async def test_provider_delegation_can_start_task_without_frontend_run(monkeypat
             "agent_hint": "FileAgent",
         }
     )
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat("帮我看看 d 盘哪些文件可以清理", "efficiency")
 
@@ -143,7 +143,7 @@ async def test_provider_chat_decision_is_not_overridden_by_keyword_heuristic(mon
             "agent_hint": "",
         }
     )
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat("你是什么模型", "efficiency")
 
@@ -165,7 +165,7 @@ async def test_short_conversation_uses_natural_fallback_when_model_is_unhelpful(
             "agent_hint": "",
         }
     )
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat("你会啊", "efficiency")
 
@@ -187,7 +187,7 @@ async def test_identity_chat_stays_conversational(monkeypatch, tmp_path):
             "agent_hint": "",
         }
     )
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat("你是真人吗", "efficiency")
 
@@ -203,7 +203,7 @@ async def test_supervisor_uses_heuristic_when_provider_fails(monkeypatch, tmp_pa
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=TimeoutError("provider unavailable"))
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat(r"open C:\Temp\report.txt", "privacy")
 
@@ -242,7 +242,7 @@ async def test_executable_turn_uses_local_provider_when_available(monkeypatch, t
     monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     provider = RecordingPlanProvider()
-    monkeypatch.setattr(planner_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(planner_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat(r"open C:\Temp\report.txt", "privacy")
 
@@ -260,7 +260,7 @@ async def test_privacy_provider_runtime_failure_does_not_fallback_to_mock(monkey
     monkeypatch.setenv("LENGRVIS_API_KEY", "")
     db.init_db()
     provider = RecordingSupervisorProvider(error=TimeoutError("local provider timeout"))
-    monkeypatch.setattr(planner_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(planner_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat(r"open C:\Temp\report.txt", "privacy")
 
@@ -276,7 +276,7 @@ async def test_file_delete_turn_returns_immediate_file_agent_feedback(monkeypatc
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=AssertionError("provider should not block clear execution requests"))
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat(r"delete C:\Temp\old-folder", "privacy")
 
@@ -293,7 +293,7 @@ async def test_windows_path_delete_delegates_to_file_agent(monkeypatch, tmp_path
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=AssertionError("provider should not block clear execution requests"))
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat(r"delete C:\Users\Suli\Desktop\old-folder", "privacy")
 
@@ -308,7 +308,7 @@ async def test_uninstall_app_turn_delegates_to_app_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     provider = RecordingSupervisorProvider(error=AssertionError("provider should not block clear uninstall requests"))
-    monkeypatch.setattr(supervisor_module, "get_provider", lambda: provider)
+    monkeypatch.setattr(supervisor_module, "get_provider", lambda *args, **kwargs: provider)
 
     response = await handle_chat("uninstall bean app", "privacy")
 

@@ -346,6 +346,7 @@ def refresh_license_with_server(
             now=now,
             revocations=revocations,
             expected_device_id=identity.device_id,
+            expected_device_fingerprint=identity.fingerprint,
         )
     except LicenseError as exc:
         raise ActivationError(

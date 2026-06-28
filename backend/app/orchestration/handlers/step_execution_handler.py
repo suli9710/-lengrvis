@@ -67,6 +67,7 @@ class StepExecutionHandler:
         runtime = self._runtime_context(task, context)
         runtime.extra_context["task_id"] = task.id
         runtime.extra_context["step_id"] = step.id
+        runtime.extra_context["explicit_path_scope"] = task.user_goal
         return runtime
 
     async def execute_step(

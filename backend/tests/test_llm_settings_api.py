@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.config import AppSettings
@@ -335,6 +337,7 @@ def test_add_directory_route_requires_sensitive_confirmation(tmp_path, monkeypat
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     client = TestClient(create_app())
     scope = str(tmp_path / "workspace")
+    Path(scope).mkdir(parents=True, exist_ok=True)
 
     blocked = client.post("/api/index/add-directory", json={"path": scope})
     confirmation = client.post(

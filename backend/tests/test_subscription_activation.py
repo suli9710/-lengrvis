@@ -23,6 +23,7 @@ from app.commerce.activation import (
     ActivationRequest,
     activate_license_with_server,
     activate_subscription_key,
+    refresh_license_with_server,
     refresh_subscription_license,
     revoke_subscription_key,
     upsert_subscription_key,
@@ -503,6 +504,55 @@ def test_client_activation_verifies_and_persists_license(monkeypatch: pytest.Mon
     assert seen["json"]["device_fingerprint"].startswith("fp_")
     assert seen["json"]["device_profile"]["fingerprint"] == seen["json"]["device_fingerprint"]
     assert "device_name" not in seen["json"]["device_profile"]
+
+
+def test_client_refresh_without_persist_rejects_different_device_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(ACTIVATION_BASE_URL_ENV_VAR, "https://activation.example")
+    monkeypatch.setenv(LICENSE_PUBLIC_KEY_ENV_VAR, PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+    seen: dict[str, Any] = {}
+
+    class _Client:
+        def post(self, url: str, *, json: dict[str, Any]) -> httpx.Response:
+            seen["url"] = url
+            seen["json"] = json
+            refreshed_token = sign_license(
+                {
+                    "schema": 1,
+                    "license_id": "lic_refresh_fp_mismatch",
+                    "plan": "pro",
+                    "subject": "subject-redacted",
+                    "subscription_id": "sub_refresh_fp_mismatch",
+                    "subscription_status": "active",
+                    "device_id": json["device_id"],
+                    "device_fingerprint": "fp_other_machine",
+                    "issued_at": datetime.now(UTC).isoformat(),
+                    "expires_at": _future().isoformat(),
+                    "activation": {"source": "activation_server"},
+                },
+                PRIVATE_KEY,
+            )
+            return httpx.Response(200, json={"license_token": refreshed_token}, request=httpx.Request("POST", url))
+
+        def close(self) -> None:
+            seen["closed"] = True
+
+    with pytest.raises(ActivationError) as excinfo:
+        refresh_license_with_server(
+            "old-token-redacted",
+            _Settings(tmp_path),
+            client=_Client(),
+            persist=False,
+        )
+
+    assert excinfo.value.code == "license_device_fingerprint_mismatch"
+    assert seen["url"] == "https://activation.example/api/v1/licenses/refresh"
+    assert seen["json"]["device_fingerprint"].startswith("fp_")
+    assert seen["json"]["device_fingerprint"] != "fp_other_machine"
+    assert not (tmp_path / "license.key").exists()
 
 
 def test_subscription_license_stale_refresh_failure_fails_closed(

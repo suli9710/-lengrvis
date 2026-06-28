@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from app.commerce.entitlements import Feature, active_plan, has_feature
 from app.commerce.licensing import subscription_confirmation_fresh_for_high_risk
 from app.core import db
 from app.core.audit import record
@@ -264,6 +265,10 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     settings = get_effective_settings()
     if not settings.remote_desktop_enabled:
         raise HTTPException(status_code=403, detail="Remote desktop is disabled.")
+    if not has_feature(active_plan(settings), Feature.REMOTE_CONTROL):
+        raise HTTPException(status_code=403, detail="Remote desktop is disabled.")
+    if not subscription_confirmation_fresh_for_high_risk(settings):
+        raise HTTPException(status_code=403, detail="Remote input requires a fresh subscription confirmation.")
 
     tool_name, args = _event_to_tool_call(event)
     payload = {
@@ -469,14 +474,17 @@ async def _authorize_remote_websocket(websocket: WebSocket, token: str) -> dict[
             code=1008, reason="Remote mobile WebSockets require WSS unless the client is on this computer."
         )
         return None
-    if not get_effective_settings().remote_desktop_enabled:
+    settings = get_effective_settings()
+    if not settings.remote_desktop_enabled:
         await websocket.close(code=_REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, reason="Remote desktop is disabled.")
         return None
     try:
         required_scope = REMOTE_INPUT_SCOPE if websocket.url.path.endswith("/input") else REMOTE_VIEW_SCOPE
-        if required_scope == REMOTE_INPUT_SCOPE and not subscription_confirmation_fresh_for_high_risk(
-            get_effective_settings()
-        ):
+        required_feature = Feature.REMOTE_CONTROL if required_scope == REMOTE_INPUT_SCOPE else Feature.REMOTE_VIEW
+        if not has_feature(active_plan(settings), required_feature):
+            await websocket.close(code=_REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, reason="Remote desktop is disabled.")
+            return None
+        if required_scope == REMOTE_INPUT_SCOPE and not subscription_confirmation_fresh_for_high_risk(settings):
             await websocket.close(code=1008, reason="Remote input requires a fresh subscription confirmation.")
             return None
         return decode_mobile_token(mobile_token_from_websocket(websocket, token), allowed_scopes={required_scope})
@@ -905,10 +913,15 @@ async def _close_remote_websocket_if_inactive(websocket: WebSocket, claims: dict
 
 
 def _remote_session_close_state(claims: dict[str, Any]) -> tuple[bool, int, str]:
-    if not get_effective_settings().remote_desktop_enabled:
+    settings = get_effective_settings()
+    if not settings.remote_desktop_enabled:
         return False, _REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, "Remote desktop is disabled."
     scopes = mobile_token_scopes(claims)
-    if REMOTE_INPUT_SCOPE in scopes and not subscription_confirmation_fresh_for_high_risk(get_effective_settings()):
+    if REMOTE_VIEW_SCOPE in scopes and not has_feature(active_plan(settings), Feature.REMOTE_VIEW):
+        return False, _REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, "Remote desktop is disabled."
+    if REMOTE_INPUT_SCOPE in scopes and not has_feature(active_plan(settings), Feature.REMOTE_CONTROL):
+        return False, _REMOTE_WEBSOCKET_RETRY_CLOSE_CODE, "Remote desktop is disabled."
+    if REMOTE_INPUT_SCOPE in scopes and not subscription_confirmation_fresh_for_high_risk(settings):
         return False, 1008, "Remote input requires a fresh subscription confirmation."
     try:
         validate_mobile_claims_active(claims, scope_exp_scopes=scopes)

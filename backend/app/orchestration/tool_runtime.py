@@ -15,7 +15,7 @@ from weakref import WeakKeyDictionary
 from app.core import db
 from app.core.audit import record
 from app.core.errors import SecurityError
-from app.core.paths import resolve_authorized
+from app.core.paths import resolve_task_path
 from app.core.schemas import (
     Approval,
     MessageType,
@@ -998,9 +998,15 @@ class ToolRuntime:
         if not tool.requires_authorized_path:
             return
         allowed_directories = [str(path) for path in context.get("allowed_directories") or []]
+        explicit_scope = context.get("explicit_path_scope")
+        explicit_scope_text = str(explicit_scope) if explicit_scope else None
         for arg_name, value in self._candidate_authorized_paths(args):
             try:
-                resolve_authorized(value, allowed_directories)
+                resolve_task_path(
+                    value,
+                    allowed_directories,
+                    explicit_scope_text=explicit_scope_text,
+                )
             except SecurityError as exc:
                 raise SecurityError(f"{tool.name} path argument '{arg_name}' is not authorized: {exc}") from exc
             except OSError as exc:
