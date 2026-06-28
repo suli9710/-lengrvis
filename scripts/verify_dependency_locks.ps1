@@ -187,6 +187,59 @@ function Test-BackendPythonLocks {
     }
 }
 
+function Test-PythonHashLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RequirementsRelativePath,
+        [Parameter(Mandatory = $true)][string]$LockRelativePath,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [System.Collections.Generic.List[string]]$Issues
+    )
+
+    $requirementsPath = Join-Path $Root $RequirementsRelativePath
+    $lockPath = Join-Path $Root $LockRelativePath
+    if (-not (Test-Path -LiteralPath $requirementsPath)) {
+        $Issues.Add("Missing ${Label} requirements file: $RequirementsRelativePath")
+        return
+    }
+    if (-not (Test-Path -LiteralPath $lockPath)) {
+        $Issues.Add("Missing ${Label} hash lock: $LockRelativePath")
+        return
+    }
+
+    $lockResult = Get-PinnedPythonLockEntries -LockPath $lockPath
+    foreach ($unpinnedLine in $lockResult.Unpinned) {
+        $Issues.Add("${LockRelativePath} contains an unpinned dependency: $unpinnedLine")
+    }
+    foreach ($missingHashName in $lockResult.MissingHashes) {
+        $Issues.Add("${LockRelativePath} dependency '$missingHashName' is missing one or more --hash=sha256 pins; regenerate with uv pip compile --generate-hashes.")
+    }
+
+    $requirements = New-Object System.Collections.Generic.List[string]
+    foreach ($line in Get-Content -LiteralPath $requirementsPath) {
+        $name = Get-PythonRequirementName -Line $line
+        if ($null -eq $name) {
+            continue
+        }
+        $requirements.Add($name)
+    }
+
+    foreach ($name in $requirements) {
+        $normalizedName = Normalize-PythonPackageName -Name $name
+        if (-not $lockResult.Entries.ContainsKey($normalizedName)) {
+            $Issues.Add("$RequirementsRelativePath direct dependency '$name' is missing a pinned == entry in $LockRelativePath")
+        }
+    }
+
+    $lockText = Get-Content -Raw -LiteralPath $lockPath
+    if ($lockText -notmatch "(?im)--generate-hashes") {
+        $Issues.Add("$LockRelativePath header must document the --generate-hashes lock generation command.")
+    }
+    if ($lockResult.Unpinned.Count -eq 0 -and $lockResult.MissingHashes.Count -eq 0) {
+        Write-Host "Verified ${Label} hash lock in $LockRelativePath ($($lockResult.Entries.Count) pinned packages with sha256 hashes; $($requirements.Count) direct requirements)."
+    }
+}
+
 function Test-NpmPackageLock {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
@@ -278,6 +331,8 @@ $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
 $issues = New-Object System.Collections.Generic.List[string]
 
 Test-BackendPythonLocks -Root $resolvedRoot -Issues $issues
+Test-PythonHashLock -Root $resolvedRoot -RequirementsRelativePath "backend\requirements-build.txt" -LockRelativePath "backend\requirements-build-lock.txt" -Label "backend build dependency" -Issues $issues
+Test-PythonHashLock -Root $resolvedRoot -RequirementsRelativePath "scripts\acceleration-requirements.txt" -LockRelativePath "scripts\acceleration-requirements-lock.txt" -Label "acceleration dependency" -Issues $issues
 Test-NpmPackageLock -Root $resolvedRoot -PackageDir "desktop" -Issues $issues
 Test-NpmPackageLock -Root $resolvedRoot -PackageDir "mobile" -Issues $issues
 

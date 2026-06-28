@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config import get_base_settings
 from app.core.errors import SecurityError
+from app.tools.filesystem_safety import ensure_mutation_path_safe
 
 MANAGED_BACKUP_SCHEMA_VERSION = 1
 MANAGED_BACKUP_DIRNAME = "file-tool-backups"
@@ -17,10 +18,12 @@ MANAGED_BACKUP_DIRNAME = "file-tool-backups"
 def managed_backup_root() -> Path:
     data_dir = Path(get_base_settings().data_dir).expanduser().resolve(strict=False)
     root = data_dir / MANAGED_BACKUP_DIRNAME
+    ensure_mutation_path_safe(data_dir, [str(data_dir)], include_self=True)
     root.mkdir(parents=True, exist_ok=True)
     resolved = root.resolve(strict=False)
     try:
         if resolved == data_dir or resolved.is_relative_to(data_dir):
+            ensure_mutation_path_safe(root, [str(data_dir)], include_self=True)
             return resolved
     except ValueError:
         pass

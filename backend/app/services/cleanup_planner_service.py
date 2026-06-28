@@ -28,6 +28,7 @@ from app.policy.approval_binding import (
 )
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
+from app.tools.filesystem_safety import ensure_mutation_path_safe
 from app.tools.tool_abort import raise_if_tool_aborted
 
 CleanupAction = Literal["delete_direct", "trash_with_prompt", "review_only"]
@@ -119,6 +120,7 @@ class CleanupItem(BaseModel):
     modified_at: float = 0
     mtime_ns: int = 0
     is_dir: bool = False
+    identity: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _approval_matches_action(self) -> CleanupItem:
@@ -263,6 +265,8 @@ class CleanupPlannerService:
         for item in executable:
             path = resolve_authorized(item.path, _allowed(context))
             raise_if_tool_aborted(context)
+            ensure_mutation_path_safe(path, _allowed(context), include_self=True, context=context)
+            _validate_item_identity(item, path)
             if item.action == "delete_direct":
                 if not is_direct_delete_allowed(path):
                     raise SecurityError(f"Direct deletion is not allowed for non-whitelisted cleanup item: {path}")
@@ -278,6 +282,8 @@ class CleanupPlannerService:
                 if send2trash is None:
                     raise RuntimeError("send2trash is not installed; recycle-bin cleanup is unavailable.")
                 raise_if_tool_aborted(context)
+                ensure_mutation_path_safe(path, _allowed(context), include_self=True, context=context)
+                _validate_item_identity(item, path)
                 send2trash(str(path))
                 changed_paths.append(str(path))
                 recycle_restore_paths.append(str(path))
@@ -542,6 +548,7 @@ def _item_for_path(
         size_bytes = 0
         modified_at = 0
         mtime_ns = 0
+    identity = _path_identity(path, is_dir=bool(path.is_dir() if is_dir is None else is_dir))
     normalized = str(normalize_path(path))
     item_id = _stable_item_id(normalized, action, category, size_bytes, mtime_ns, duplicate_group_id)
     return CleanupItem(
@@ -558,6 +565,7 @@ def _item_for_path(
         modified_at=modified_at,
         mtime_ns=mtime_ns,
         is_dir=bool(path.is_dir() if is_dir is None else is_dir),
+        identity=identity,
     )
 
 
@@ -621,6 +629,7 @@ def _preview_item(item: CleanupItem) -> dict[str, Any]:
         "reason": item.reason,
         "requires_approval": item.requires_approval,
         "duplicate_group_id": item.duplicate_group_id,
+        "identity": item.identity,
     }
 
 
@@ -643,6 +652,60 @@ def _resource_state(path: Path) -> dict[str, Any]:
         }
     )
     return state
+
+
+def _path_identity(path: Path, *, is_dir: bool | None = None) -> dict[str, Any]:
+    resolved = path.resolve(strict=False)
+    identity: dict[str, Any] = {
+        "path": str(resolved),
+        "exists": resolved.exists(),
+        "is_symlink": resolved.is_symlink(),
+    }
+    try:
+        is_junction = getattr(resolved, "is_junction", None)
+        identity["is_junction"] = bool(is_junction and is_junction())
+    except OSError:
+        identity["is_junction"] = True
+    if not resolved.exists():
+        return identity
+    try:
+        stat = resolved.stat()
+    except OSError:
+        identity["stat_error"] = True
+        return identity
+    actual_is_dir = resolved.is_dir() if is_dir is None else bool(is_dir)
+    identity.update(
+        {
+            "is_dir": actual_is_dir,
+            "size_bytes": 0 if actual_is_dir else int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "inode": getattr(stat, "st_ino", 0),
+            "device": getattr(stat, "st_dev", 0),
+        }
+    )
+    if not actual_is_dir and stat.st_size <= 100 * 1024 * 1024:
+        identity["sha256"] = _sha256_file(resolved)
+    return identity
+
+
+def _validate_item_identity(item: CleanupItem, path: Path) -> None:
+    expected = item.identity or {}
+    current = _path_identity(path, is_dir=item.is_dir)
+    keys = {
+        "path",
+        "exists",
+        "is_symlink",
+        "is_junction",
+        "is_dir",
+        "size_bytes",
+        "mtime_ns",
+        "inode",
+        "device",
+        "sha256",
+    }
+    for key in keys:
+        if key in expected and expected.get(key) != current.get(key):
+            raise SecurityError(f"Cleanup item validation failed: file identity changed for {item.path}.")
 
 
 def _is_recreatable_artifact(path: Path) -> bool:

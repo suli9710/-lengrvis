@@ -38,6 +38,22 @@ export interface DesktopRunStartRequest {
   engine?: DesktopRunEngine;
 }
 
+export interface DesktopScheduleCreateRequest {
+  cron: string;
+  goal: string;
+  mode: DesktopRunMode;
+  note?: string;
+}
+
+export interface DesktopScheduleEnableRequest {
+  scheduleId: string;
+  enabled: boolean;
+}
+
+export interface DesktopOpenSettingsRequest {
+  uri: string;
+}
+
 export interface DesktopPrivacyEraseRequest {
   confirmationText: string;
   includeSettings: boolean;
@@ -1776,6 +1792,9 @@ export interface LengrvisDesktopBridge {
     reject: (approvalId: string) => Promise<ApiResponse<BackendApprovalPayload>>;
   };
   tasks: {
+    pause: (taskId: string) => Promise<ApiResponse<unknown>>;
+    resume: (taskId: string) => Promise<ApiResponse<unknown>>;
+    cancel: (taskId: string) => Promise<ApiResponse<unknown>>;
     rollback: (taskId: string) => Promise<ApiResponse<unknown>>;
   };
   cleanup: {
@@ -1797,7 +1816,14 @@ export interface LengrvisDesktopBridge {
   runs: {
     start: (request: DesktopRunStartRequest) => Promise<ApiResponse<unknown>>;
   };
+  schedules: {
+    list: () => Promise<ApiResponse<unknown>>;
+    create: (request: DesktopScheduleCreateRequest) => Promise<ApiResponse<unknown>>;
+    delete: (scheduleId: string) => Promise<ApiResponse<unknown>>;
+    enable: (request: DesktopScheduleEnableRequest) => Promise<ApiResponse<unknown>>;
+  };
   system: {
+    openSettings: (request: DesktopOpenSettingsRequest) => Promise<ApiResponse<unknown>>;
     exportDiagnosticsPackage: () => Promise<ApiResponse<unknown>>;
   };
   privacy: {

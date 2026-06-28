@@ -56,6 +56,41 @@ function Assert-FailsWith {
     Write-Host "[ok] $Label"
 }
 
+function Get-DirectorySummary {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return [ordered]@{
+            present = $false
+            files = 0
+            bytes = 0
+            sha256 = ""
+        }
+    }
+    $rootPath = (Resolve-Path -LiteralPath $Path).Path
+    $files = Get-ChildItem -LiteralPath $Path -File -Recurse -Force | Sort-Object FullName
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($file in $files) {
+            $relative = $file.FullName.Substring($rootPath.Length).TrimStart('\', '/')
+            $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($relative.ToLowerInvariant())
+            $hash.TransformBlock($nameBytes, 0, $nameBytes.Length, $null, 0) | Out-Null
+            $content = [System.IO.File]::ReadAllBytes($file.FullName)
+            $hash.TransformBlock($content, 0, $content.Length, $null, 0) | Out-Null
+        }
+        $hash.TransformFinalBlock([byte[]]::new(0), 0, 0) | Out-Null
+        $digest = -join ($hash.Hash | ForEach-Object { $_.ToString("x2") })
+    }
+    finally {
+        $hash.Dispose()
+    }
+    return [ordered]@{
+        present = $true
+        files = @($files).Count
+        bytes = [int64](($files | Measure-Object -Property Length -Sum).Sum)
+        sha256 = $digest
+    }
+}
+
 $workspacePath = Resolve-SmokePath $Workspace
 if (Test-Path -LiteralPath $workspacePath) {
     Remove-Item -LiteralPath $workspacePath -Recurse -Force
@@ -70,6 +105,8 @@ $modelManifest = Join-Path $models "manifests\registry.ollama.ai\library\qwen2.5
 New-Item -ItemType Directory -Path $runtime,(Split-Path -Parent $modelManifest) -Force | Out-Null
 Set-Content -LiteralPath (Join-Path $runtime "ollama.exe") -Value "fake runtime" -Encoding ASCII
 Set-Content -LiteralPath $modelManifest -Value "{}" -Encoding ASCII
+$runtimeSummary = Get-DirectorySummary -Path $runtime
+$modelsSummary = Get-DirectorySummary -Path $models
 
 Assert-FailsWith -Label "license confirmation required" -Arguments @(
     "-OllamaRuntimeDir", $runtime,
@@ -82,6 +119,8 @@ Assert-Passes -Label "prepare release resources and verify packaging gate" -Argu
     "-OllamaRuntimeDir", $runtime,
     "-OllamaModelsDir", $models,
     "-OutputRoot", $outputRoot,
+    "-ExpectedRuntimeSha256", $runtimeSummary.sha256,
+    "-ExpectedModelsSha256", "sha256:$($modelsSummary.sha256)",
     "-Model", "qwen2.5:3b"
 )
 
@@ -94,6 +133,24 @@ if (-not (Test-Path -LiteralPath (Join-Path $outputRoot "ollama-models\manifests
 if (-not (Test-Path -LiteralPath (Join-Path $outputRoot "ollama-bundle-manifest.json"))) {
     throw "Prepared bundle manifest missing."
 }
+$manifest = Get-Content -LiteralPath (Join-Path $outputRoot "ollama-bundle-manifest.json") -Raw | ConvertFrom-Json
+if ([string]$manifest.provenance.runtime.expected_sha256 -ne [string]$runtimeSummary.sha256) {
+    throw "Prepared bundle manifest did not record expected runtime sha256."
+}
+if ([string]$manifest.provenance.models.expected_sha256 -ne [string]$modelsSummary.sha256) {
+    throw "Prepared bundle manifest did not record expected models sha256."
+}
+
+Assert-FailsWith -Label "prepare release refuses expected models sha256 mismatch" -Arguments @(
+    "-AcceptLicenses",
+    "-OllamaRuntimeDir", $runtime,
+    "-OllamaModelsDir", $models,
+    "-OutputRoot", (Join-Path $workspacePath "vendor-bad-hash"),
+    "-ExpectedRuntimeSha256", $runtimeSummary.sha256,
+    "-ExpectedModelsSha256", "2222222222222222222222222222222222222222222222222222222222222222",
+    "-Model", "qwen2.5:3b",
+    "-SkipVerify"
+) -Expected "Models sha256 mismatch"
 
 Write-Host ""
 Write-Host "Prepare Ollama release smoke passed." -ForegroundColor Green

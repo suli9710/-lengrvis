@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 import re
-import shutil
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +18,13 @@ from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.resource_state import resource_states
 from app.policy.redaction import redact_value
 from app.services import document_service
+from app.tools.filesystem_safety import (
+    ensure_mutation_path_safe,
+    path_exists_or_reparse_point,
+    prepare_parent_for_mutation,
+    safe_write_text,
+)
+from app.tools.managed_backups import create_managed_backup
 from app.tools.tool_abort import raise_if_tool_aborted
 
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".log", ".rst"}
@@ -1131,13 +1137,37 @@ def _meaningful_diff_tokens(text: str) -> set[str]:
     return {token for token in re.findall(r"[\w\u4e00-\u9fff]+", text, flags=re.UNICODE) if token not in stop_words}
 
 
-def _backup_document(path: Path, abort_context: dict[str, Any] | None = None) -> str | None:
+def _backup_document(path: Path, abort_context: dict[str, Any] | None = None) -> dict[str, str | int | bool] | None:
     if not path.is_file():
         return None
-    backup = path.with_suffix(path.suffix + ".bak")
+    _ensure_document_mutation_safe(path, abort_context)
     raise_if_tool_aborted(abort_context)
-    shutil.copy2(path, backup)
-    return str(backup)
+    return create_managed_backup(path)
+
+
+def _document_allowed_directories(context: dict[str, Any] | None, path: Path | None = None) -> list[str]:
+    allowed = [str(path) for path in (context or {}).get("allowed_directories") or []]
+    if allowed or path is None:
+        return allowed
+    return [str(path.parent)]
+
+
+def _ensure_document_mutation_safe(path: Path, context: dict[str, Any] | None) -> None:
+    allowed = _document_allowed_directories(context, path)
+    ensure_mutation_path_safe(path, allowed, include_self=True, context=context)
+
+
+def _prepare_document_save(path: Path, context: dict[str, Any] | None) -> None:
+    allowed = _document_allowed_directories(context, path)
+    prepare_parent_for_mutation(path, allowed, context)
+    ensure_mutation_path_safe(path, allowed, include_self=path_exists_or_reparse_point(path), context=context)
+
+
+def _safe_save_office_document(path: Path, save: Callable[[], None], context: dict[str, Any] | None) -> None:
+    _prepare_document_save(path, context)
+    raise_if_tool_aborted(context)
+    save()
+    ensure_mutation_path_safe(path, _document_allowed_directories(context, path), include_self=True, context=context)
 
 
 def _document_resource_state(path: Path) -> list[dict[str, Any]]:
@@ -1235,8 +1265,7 @@ def edit_pptx(
     backup = _backup_document(path_obj, abort_context)
     prs = Presentation(str(path_obj))
     _pptx_replace_text(prs, needle, replacement, dry_run=False)
-    raise_if_tool_aborted(abort_context)
-    prs.save(str(path_obj))
+    _safe_save_office_document(path_obj, lambda: prs.save(str(path_obj)), abort_context)
     return {
         "ok": True,
         "path": str(path_obj),
@@ -1283,8 +1312,12 @@ def apply_redaction(
     backup = _backup_document(path_obj, abort_context)
     ext = path_obj.suffix.lower()
     if ext in {".txt", ".md", ".csv", ".json"}:
-        raise_if_tool_aborted(abort_context)
-        path_obj.write_text(str(preview.get("redacted_text") or ""), encoding="utf-8")
+        safe_write_text(
+            path_obj,
+            str(preview.get("redacted_text") or ""),
+            _document_allowed_directories(abort_context, path_obj),
+            abort_context,
+        )
     elif ext == ".docx":
         _apply_redaction_docx(path_obj, custom_patterns, abort_context=abort_context)
     else:
@@ -1340,8 +1373,7 @@ def edit_docx(
     backup = _backup_document(path_obj, abort_context)
     doc = Document(str(path_obj))
     _docx_replace_text(doc, needle, replacement, dry_run=False)
-    raise_if_tool_aborted(abort_context)
-    doc.save(str(path_obj))
+    _safe_save_office_document(path_obj, lambda: doc.save(str(path_obj)), abort_context)
     return {
         "ok": True,
         "path": str(path_obj),
@@ -1396,8 +1428,7 @@ def edit_xlsx(
     raise_if_tool_aborted(abort_context)
     backup = _backup_document(path_obj, abort_context)
     worksheet[cell_ref].value = value
-    raise_if_tool_aborted(abort_context)
-    workbook.save(path_obj)
+    _safe_save_office_document(path_obj, lambda: workbook.save(path_obj), abort_context)
     return {
         "ok": True,
         "path": str(path_obj),
@@ -1424,8 +1455,7 @@ def _apply_redaction_docx(
         for label, pattern in patterns.items():
             text = re.compile(pattern).sub(f"[REDACTED:{label}]", text)
         paragraph.text = text
-    raise_if_tool_aborted(abort_context)
-    doc.save(str(path))
+    _safe_save_office_document(path, lambda: doc.save(str(path)), abort_context)
 
 
 def _redaction_patterns(custom_patterns: dict[str, str] | None) -> dict[str, str]:

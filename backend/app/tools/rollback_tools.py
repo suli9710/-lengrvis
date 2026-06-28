@@ -23,7 +23,12 @@ from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
-from app.tools.managed_backups import resolve_managed_backup_path
+from app.tools.filesystem_safety import (
+    ensure_mutation_path_safe,
+    path_exists_or_reparse_point,
+    prepare_parent_for_mutation,
+)
+from app.tools.managed_backups import managed_backup_root, resolve_managed_backup_path
 from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
 
 try:
@@ -320,7 +325,14 @@ def _move_back(
         return {"ok": False, "action": "move_back", "detail": f"source path missing: {source}"}
     try:
         raise_if_tool_aborted(context)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        ensure_mutation_path_safe(source, allowed or [], include_self=True, context=context)
+        prepare_parent_for_mutation(target, allowed or [], context)
+        ensure_mutation_path_safe(
+            target,
+            allowed or [],
+            include_self=path_exists_or_reparse_point(target),
+            context=context,
+        )
         raise_if_tool_aborted(context)
         shutil.move(str(source), str(target))
         return {"ok": True, "action": "move_back", "from": str(source), "to": str(target)}
@@ -345,6 +357,7 @@ def _trash(
         return {"ok": False, "action": "trash", "detail": "send2trash not installed"}
     try:
         raise_if_tool_aborted(context)
+        ensure_mutation_path_safe(path, allowed or [], include_self=True, context=context)
         send2trash(str(path))
         return {"ok": True, "action": "trash", "path": str(path)}
     except ToolAbortedError:
@@ -370,6 +383,7 @@ def _delete_if_empty(
         return {"ok": False, "action": "delete_folder_if_empty", "detail": "directory not empty"}
     try:
         raise_if_tool_aborted(context)
+        ensure_mutation_path_safe(path, allowed or [], include_self=True, context=context)
         path.rmdir()
         return {"ok": True, "action": "delete_folder_if_empty", "path": str(path)}
     except ToolAbortedError:
@@ -383,6 +397,7 @@ def _restore_backup(
     allowed: list[str] | None = None,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    managed_backup = isinstance(backup_spec, dict)
     try:
         backup, original = _resolve_backup_restore_paths(backup_spec, allowed)
     except (SecurityError, ValueError) as exc:
@@ -393,10 +408,19 @@ def _restore_backup(
         return {"ok": False, "action": "restore_backup", "detail": "backup is not a file"}
     try:
         raise_if_tool_aborted(context)
-        original.parent.mkdir(parents=True, exist_ok=True)
+        backup_allowed = [str(managed_backup_root())] if managed_backup else list(allowed or [])
+        ensure_mutation_path_safe(backup, backup_allowed, include_self=True, context=context)
+        prepare_parent_for_mutation(original, allowed or [], context)
+        ensure_mutation_path_safe(
+            original,
+            allowed or [],
+            include_self=path_exists_or_reparse_point(original),
+            context=context,
+        )
         raise_if_tool_aborted(context)
         shutil.copy2(backup, original)
         raise_if_tool_aborted(context)
+        ensure_mutation_path_safe(original, allowed or [], include_self=True, context=context)
         backup.unlink()
         return {"ok": True, "action": "restore_backup", "restored": str(original)}
     except ToolAbortedError:

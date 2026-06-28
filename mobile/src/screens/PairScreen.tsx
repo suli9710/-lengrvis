@@ -329,6 +329,12 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
       }
 
       try {
+        if (requiresServerTrustConfirmation(baseUrlSecurity)) {
+          const confirmed = await confirmServerTrust(baseUrlSecurity);
+          if (!confirmed) {
+            return;
+          }
+        }
         const nextSession = await pairWithBackend(
           baseUrlSecurity.normalizedBaseUrl,
           code,
@@ -336,13 +342,6 @@ export function PairScreen({ onPaired }: { onPaired: (session: PairingSession) =
           nextPayload?.security,
           nextPayload?.claimSecret,
         );
-        if (requiresServerTrustConfirmation(nextSession)) {
-          Alert.alert("确认这是你的电脑", serverTrustConfirmationMessage(nextSession), [
-            { text: "取消", style: "cancel" },
-            { text: "确认并保存", onPress: () => void persistPairedSession(nextSession) },
-          ], { cancelable: true });
-          return;
-        }
         await persistPairedSession(nextSession);
       } catch (currentError) {
         setFailure(pairingFailureNotice(currentError, baseUrlSecurity));
@@ -681,18 +680,32 @@ function baseUrlSecurityHint(value: string, metadata?: PairingPayload["security"
   }
 }
 
-function requiresServerTrustConfirmation(session: PairingSession): boolean {
-  return Boolean(session.baseUrlSecurity.serverTls?.requiresTrust);
+function requiresServerTrustConfirmation(security: BaseUrlSecurity): boolean {
+  return Boolean(security.serverTls?.requiresTrust);
 }
 
-function serverTrustConfirmationMessage(session: PairingSession): string {
-  const tls = session.baseUrlSecurity.serverTls;
+function serverTrustConfirmationMessage(security: BaseUrlSecurity): string {
+  const tls = security.serverTls;
   const fingerprint = formatTlsFingerprint(tls?.fingerprintSha256);
   return [
     "这台电脑使用了本地安全设置，手机需要你确认一次。",
     fingerprint ? `电脑指纹：${fingerprint}` : "如果你不确定，请先取消，并在电脑端重新生成配对信息。",
     "确认它和电脑端显示的一致后再保存；不确定时请取消。",
   ].join("\n\n");
+}
+
+function confirmServerTrust(security: BaseUrlSecurity): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      "确认这是你的电脑",
+      serverTrustConfirmationMessage(security),
+      [
+        { text: "取消", style: "cancel", onPress: () => resolve(false) },
+        { text: "确认并连接", onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    );
+  });
 }
 
 function payloadValidityText(payload: PairingPayload): string {

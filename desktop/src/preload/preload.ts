@@ -15,8 +15,11 @@ import type {
   DesktopPermissionPolicyRelaxationRequest,
   DesktopPermissionRuleDeleteRequest,
   DesktopPermissionRuleUpsertRequest,
+  DesktopOpenSettingsRequest,
   DesktopPrivacyEraseRequest,
   DesktopRunStartRequest,
+  DesktopScheduleCreateRequest,
+  DesktopScheduleEnableRequest,
   DesktopSettingsPatch,
   MobilePairingRemoteInputGrantRequest,
   MobilePairingRevokeRemoteInputGrantRequest,
@@ -73,6 +76,9 @@ const bridge: LengrvisDesktopBridge = {
     reject: (approvalId: string) => ipcRenderer.invoke(IPC_CHANNELS.approvalReject, approvalId)
   },
   tasks: {
+    pause: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.taskPause, taskId),
+    resume: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.taskResume, taskId),
+    cancel: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.taskCancel, taskId),
     rollback: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.taskRollback, taskId)
   },
   cleanup: {
@@ -94,7 +100,14 @@ const bridge: LengrvisDesktopBridge = {
   runs: {
     start: (request: DesktopRunStartRequest) => ipcRenderer.invoke(IPC_CHANNELS.runsStart, request)
   },
+  schedules: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.schedulesList),
+    create: (request: DesktopScheduleCreateRequest) => ipcRenderer.invoke(IPC_CHANNELS.schedulesCreate, request),
+    delete: (scheduleId: string) => ipcRenderer.invoke(IPC_CHANNELS.schedulesDelete, scheduleId),
+    enable: (request: DesktopScheduleEnableRequest) => ipcRenderer.invoke(IPC_CHANNELS.schedulesEnable, request)
+  },
   system: {
+    openSettings: (request: DesktopOpenSettingsRequest) => ipcRenderer.invoke(IPC_CHANNELS.systemOpenSettings, request),
     exportDiagnosticsPackage: () => ipcRenderer.invoke(IPC_CHANNELS.systemDiagnosticsExport)
   },
   privacy: {

@@ -409,6 +409,38 @@ async function assertRejectsUntrusted(listener, hostCalls) {
         request: { endpoint: "/api/tasks/task_123/rollback", method: "POST" }
       },
       {
+        name: "task pause through generic API",
+        request: { endpoint: "/api/tasks/task_123/pause", method: "POST" }
+      },
+      {
+        name: "task resume through generic API",
+        request: { endpoint: "/api/tasks/task_123/resume", method: "POST" }
+      },
+      {
+        name: "task cancel through generic API",
+        request: { endpoint: "/api/tasks/task_123/cancel", method: "POST" }
+      },
+      {
+        name: "schedule create through generic API",
+        request: { endpoint: "/api/schedules", method: "POST", body: { cron: "*/5 * * * *", goal: "run", mode: "efficiency" } }
+      },
+      {
+        name: "schedule enable through generic API",
+        request: { endpoint: "/api/schedules/schedule_123/enable", method: "POST", body: { enabled: true } }
+      },
+      {
+        name: "schedule delete through generic API",
+        request: { endpoint: "/api/schedules/schedule_123", method: "DELETE" }
+      },
+      {
+        name: "open settings through generic API",
+        request: { endpoint: "/api/system/open-settings", method: "POST", body: { uri: "ms-settings:" } }
+      },
+      {
+        name: "app reveal through generic API",
+        request: { endpoint: "/api/apps/reveal", method: "POST", body: { path: __filename } }
+      },
+      {
         name: "skill import through generic API",
         request: { endpoint: "/api/skills/import", method: "POST", body: { path: "C:\\temp\\skill.zip" } }
       },

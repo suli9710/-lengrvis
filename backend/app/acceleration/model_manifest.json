@@ -19,6 +19,7 @@
       "path": "multilingual-e5-small",
       "repo": "Xenova/multilingual-e5-small",
       "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+      "model_sha256": "4aa845c27760e06e9a686b9d8b5d440eae4b6612cd09e5b522b716d3941f77ff",
       "patterns": ["onnx/model.onnx", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]
     },
     {
@@ -28,6 +29,7 @@
       "path": "clip-vit-base-patch32",
       "repo": "Xenova/clip-vit-base-patch32",
       "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+      "model_sha256": "fd6e1402a588279d1723c7534d4bcba5bc0b14b47dfab0e46f8c47b8270d7d40",
       "patterns": ["onnx/vision_model.onnx", "preprocessor_config.json", "tokenizer.json", "vocab.json", "merges.txt"]
     },
     {

@@ -215,8 +215,31 @@ def test_edit_docx_writes_replacement_when_dry_run_false(tmp_path: Path):
 
     assert result["ok"] is True
     assert text == "Annual memo"
-    assert result["rollback_info"]["backup"]
-    assert Path(result["rollback_info"]["backup"]).exists()
+    backup = result["rollback_info"]["backup"]
+    assert backup["managed"] is True
+    assert Path(backup["path"]).exists()
+
+
+def test_edit_docx_uses_managed_backup_without_overwriting_legacy_bak(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    path = tmp_path / "memo.docx"
+    legacy_backup = tmp_path / "memo.docx.bak"
+    legacy_backup.write_text("keep me", encoding="utf-8")
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph("Quarterly memo")
+    doc.save(path)
+
+    result = svc.edit_docx(path, find="Quarterly", replace="Annual", dry_run=False)
+    backup = result["rollback_info"]["backup"]
+
+    assert backup["managed"] is True
+    assert Path(backup["path"]).parent == (tmp_path / "data" / "file-tool-backups").resolve()
+    assert legacy_backup.read_text(encoding="utf-8") == "keep me"
 
 
 def test_edit_docx_replaces_heading_and_table_text(tmp_path: Path):
@@ -272,8 +295,9 @@ def test_edit_xlsx_dry_run_and_write_cell(tmp_path: Path):
 
     assert result["ok"] is True
     assert load_workbook(path).active["B2"].value == "new"
-    assert result["rollback_info"]["backup"]
-    assert Path(result["rollback_info"]["backup"]).exists()
+    backup = result["rollback_info"]["backup"]
+    assert backup["managed"] is True
+    assert Path(backup["path"]).exists()
 
 
 def test_edit_xlsx_dry_run_includes_resource_state(tmp_path: Path):

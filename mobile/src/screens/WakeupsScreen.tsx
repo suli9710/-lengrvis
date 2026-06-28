@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -38,6 +38,7 @@ export function WakeupsScreen({
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [decisionId, setDecisionId] = useState("");
+  const decisionLockRef = useRef(false);
 
   const pendingCount = useMemo(
     () => wakeups.filter((wakeup) => wakeup.status === "pending").length,
@@ -83,7 +84,8 @@ export function WakeupsScreen({
   };
 
   const submitDecision = async (wakeup: BackendWakeup, decision: "approve" | "reject") => {
-    if (decisionId) return;
+    if (decisionLockRef.current) return;
+    decisionLockRef.current = true;
     setDecisionId(`${wakeup.id}:${decision}`);
     setError("");
     try {
@@ -103,6 +105,7 @@ export function WakeupsScreen({
       setError(errorMessage(currentError));
       void refreshWakeups().catch(() => undefined);
     } finally {
+      decisionLockRef.current = false;
       setDecisionId("");
     }
   };

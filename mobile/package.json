@@ -16,6 +16,7 @@
     "smoke:remote-input-grant": "node scripts/remote-input-grant-smoke.cjs",
     "smoke:wakeup-contract": "node scripts/wakeup-contract-smoke.cjs",
     "smoke:android-back": "node scripts/android-back-navigation-smoke.cjs",
+    "smoke:android-manifest-resources": "node scripts/android-manifest-resources-smoke.cjs",
     "smoke:android-lan-tls": "node scripts/android-lan-tls-smoke.cjs"
   },
   "dependencies": {

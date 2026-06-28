@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -284,6 +285,76 @@ def test_cleanup_execute_revalidates_approval_after_claim(monkeypatch: pytest.Mo
     assert target.exists()
     refreshed = Approval.model_validate(db.fetch_one("approvals", approval.id))
     assert refreshed.consumed_at
+
+
+def test_cleanup_execute_rejects_file_replaced_after_preview(tmp_path: Path):
+    root = _workspace(tmp_path)
+    cache_dir = root / "build"
+    cache_dir.mkdir()
+    target = cache_dir / "artifact.tmp"
+    target.write_text("cache", encoding="utf-8")
+    service = CleanupPlannerService()
+    args = {"roots": [str(root)]}
+    context = _context(root)
+    plan = service.create_plan(args, context)
+    selected = [item.id for item in plan.items if item.path == str(target.resolve())]
+    execute_args = {
+        **args,
+        "plan_id": plan.plan_id,
+        "content_hash": plan.content_hash,
+        "selected_item_ids": selected,
+        "dry_run": False,
+    }
+    preview = service.execute({**execute_args, "dry_run": True}, context)
+    approval = _approved_cleanup_execution(execute_args, context, preview)
+
+    target.write_text("owned!", encoding="utf-8")
+
+    with pytest.raises(SecurityError, match="plan_id/content_hash|file identity changed"):
+        service.execute({**execute_args, "approved": True, "approval_id": approval.id}, context)
+
+    assert target.read_text(encoding="utf-8") == "owned!"
+
+
+def test_cleanup_execute_rejects_same_size_same_mtime_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    root = _workspace(tmp_path)
+    cache_dir = root / "build"
+    cache_dir.mkdir()
+    target = cache_dir / "artifact.tmp"
+    target.write_text("cache", encoding="utf-8")
+    service = CleanupPlannerService()
+    args = {"roots": [str(root)]}
+    context = _context(root)
+    plan = service.create_plan(args, context)
+    item = next(item for item in plan.items if item.path == str(target.resolve()))
+    execute_args = {
+        **args,
+        "plan_id": plan.plan_id,
+        "content_hash": plan.content_hash,
+        "selected_item_ids": [item.id],
+        "dry_run": False,
+    }
+    preview = service.execute({**execute_args, "dry_run": True}, context)
+    approval = _approved_cleanup_execution(execute_args, context, preview)
+
+    original_claim = db.claim_approval_for_execution
+
+    def claim_then_replace(approval_id: str, consumed_at: str):
+        claimed = original_claim(approval_id, consumed_at)
+        target.unlink()
+        target.write_text("owned", encoding="utf-8")
+        os.utime(target, ns=(item.mtime_ns, item.mtime_ns))
+        return claimed
+
+    monkeypatch.setattr("app.services.cleanup_planner_service.db.claim_approval_for_execution", claim_then_replace)
+
+    with pytest.raises(SecurityError, match="file identity changed"):
+        service.execute({**execute_args, "approved": True, "approval_id": approval.id}, context)
+
+    assert target.read_text(encoding="utf-8") == "owned"
 
 
 def test_cleanup_execute_route_requires_policy_and_bound_approval(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

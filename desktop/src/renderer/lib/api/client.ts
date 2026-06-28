@@ -35,6 +35,7 @@ import type {
   CommercePlanStatus,
   CommerceQuotaStatus,
   ContextUsage,
+  DesktopRunMode,
   DesktopWebSocketSubscribeRequest,
   DesktopPrivacyEraseRequest,
   DesktopPrivacyEraseResponse,
@@ -428,7 +429,11 @@ export class LengrvisApiClient {
   }
 
   getLocalMetrics(days = 7): Promise<ApiResponse<LocalMetricsSummary>> {
-    return this.request<BackendLocalMetrics>({ endpoint: `/api/metrics/local?days=${days}`, timeoutMs: 10_000 }).then(
+    return this.request<BackendLocalMetrics>({
+      endpoint: "/api/metrics/local",
+      query: { days },
+      timeoutMs: 10_000
+    }).then(
       (response) =>
         mapResponse(response, (data) => ({
           windowDays: Number(data.window_days ?? days),
@@ -1057,6 +1062,9 @@ export class LengrvisApiClient {
   }
 
   revealFile(path: string): Promise<ApiResponse<FileRevealResult>> {
+    if (window.lengrvis) {
+      return this.showItemInFolder(path);
+    }
     return this.request<BackendFileRevealResult, { path: string }>({
       endpoint: "/api/apps/reveal",
       method: "POST",
@@ -1504,6 +1512,9 @@ export class LengrvisApiClient {
   }
 
   openWindowsSettings(uri: string): Promise<ApiResponse<{ ok: boolean; uri: string; opened?: boolean; error?: string }>> {
+    if (window.lengrvis?.system.openSettings) {
+      return window.lengrvis.system.openSettings({ uri }) as Promise<ApiResponse<{ ok: boolean; uri: string; opened?: boolean; error?: string }>>;
+    }
     return this.request({
       endpoint: "/api/system/open-settings",
       method: "POST",
@@ -1512,10 +1523,16 @@ export class LengrvisApiClient {
   }
 
   listSchedules(): Promise<ApiResponse<BackendScheduledTask[]>> {
+    if (window.lengrvis?.schedules) {
+      return window.lengrvis.schedules.list() as Promise<ApiResponse<BackendScheduledTask[]>>;
+    }
     return this.request<BackendScheduledTask[]>({ endpoint: "/api/schedules" });
   }
 
-  createSchedule(input: { cron: string; goal: string; mode: string; note?: string }): Promise<ApiResponse<BackendScheduledTask>> {
+  createSchedule(input: { cron: string; goal: string; mode: DesktopRunMode; note?: string }): Promise<ApiResponse<BackendScheduledTask>> {
+    if (window.lengrvis?.schedules) {
+      return window.lengrvis.schedules.create(input) as Promise<ApiResponse<BackendScheduledTask>>;
+    }
     return this.request<BackendScheduledTask, typeof input>({
       endpoint: "/api/schedules",
       method: "POST",
@@ -1524,10 +1541,16 @@ export class LengrvisApiClient {
   }
 
   deleteSchedule(scheduleId: string): Promise<ApiResponse<{ ok: boolean; id: string }>> {
+    if (window.lengrvis?.schedules) {
+      return window.lengrvis.schedules.delete(scheduleId) as Promise<ApiResponse<{ ok: boolean; id: string }>>;
+    }
     return this.request({ endpoint: `/api/schedules/${scheduleId}`, method: "DELETE" });
   }
 
   enableSchedule(scheduleId: string, enabled: boolean): Promise<ApiResponse<BackendScheduledTask>> {
+    if (window.lengrvis?.schedules) {
+      return window.lengrvis.schedules.enable({ scheduleId, enabled }) as Promise<ApiResponse<BackendScheduledTask>>;
+    }
     return this.request<BackendScheduledTask, { enabled: boolean }>({
       endpoint: `/api/schedules/${scheduleId}/enable`,
       method: "POST",

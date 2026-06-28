@@ -63,7 +63,7 @@ export async function notifyApproval(approval: BackendApproval): Promise<void> {
       sound: "default",
       priority: Notifications.AndroidNotificationPriority.HIGH,
     },
-    trigger: null,
+    trigger: Platform.OS === "android" ? { channelId: "approvals" } : null,
   });
 }
 

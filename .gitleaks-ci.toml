@@ -1,5 +1,7 @@
-# Gitleaks configuration for Lengrvis
-# Extends default rules with project-specific patterns.
+# Strict CI configuration for tracked source files.
+# Keep this separate from .gitleaks.toml, which excludes local build/runtime
+# folders for developer convenience. CI scans a git archive, so broad path
+# allowlists would hide accidentally tracked secrets.
 
 [extend]
 useDefault = true
@@ -29,22 +31,8 @@ tags = ["lengrvis", "android", "secret"]
 # --- Allowlist ---
 
 [allowlist]
-description = "Allowed false positives"
+description = "Allowed source-level test fixtures only"
 regexTarget = "match"
-paths = [
-  '''node_modules/''',
-  '''\.git/''',
-  '''vendor/''',
-  '''desktop/node_modules/''',
-  '''mobile/node_modules/''',
-  '''^\.lengrvis_data/''',
-  '''^\.tmp/''',
-  '''^dist/''',
-  '''^backend/\.pytest_cache/''',
-  '''^backend/\.ruff_cache/''',
-  '''__pycache__/''',
-]
-# CI test secret is not a real secret
 regexes = [
   '''ci-audit-hmac-secret''',
   '''lan-token=cert-secret-sk-proj-CERT1234\.crt''',

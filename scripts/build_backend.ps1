@@ -27,16 +27,16 @@ $DistPath = Resolve-ProjectPath $DistDir
 $DefaultDistPath = Join-Path $Root "dist"
 $DefaultBackendExe = Join-Path $DefaultDistPath "backend.exe"
 $TargetBackendExe = Join-Path $DistPath "backend.exe"
-$BuildRequirementsPath = Join-Path $Root "backend\requirements-build.txt"
+$BuildRequirementsPath = Join-Path $Root "backend\requirements-build-lock.txt"
 
 if (-not (Test-Path -LiteralPath $BuildRequirementsPath -PathType Leaf)) {
-    throw "Missing pinned backend build dependency file: $BuildRequirementsPath"
+    throw "Missing hashed backend build dependency lock: $BuildRequirementsPath"
 }
 
-Write-Host "Ensuring pinned backend build dependencies from $BuildRequirementsPath..."
-python -m pip install -r $BuildRequirementsPath
+Write-Host "Ensuring hashed backend build dependencies from $BuildRequirementsPath..."
+python -m pip install --require-hashes -r $BuildRequirementsPath
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to install pinned backend build dependencies. Run: python -m pip install -r backend\requirements-build.txt"
+    throw "Failed to install hashed backend build dependencies. Run: python -m pip install --require-hashes -r backend\requirements-build-lock.txt"
 }
 
 python backend\build_backend.py

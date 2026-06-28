@@ -6,6 +6,11 @@
     [string]$Model = "qwen2.5:3b",
     [string]$RuntimeSource = "",
     [string]$ModelSource = "",
+    [Alias("ExpectedRuntimeHash")]
+    [string]$ExpectedRuntimeSha256 = "",
+    [Alias("ExpectedModelsHash")]
+    [string]$ExpectedModelsSha256 = "",
+    [string]$ExpectedBundleManifest = "",
     [string]$PullDestination = "",
     [string]$PullHost = "127.0.0.1:11435",
     [switch]$UseInstalledOllama,
@@ -67,6 +72,81 @@ function Test-SameOrNestedPath {
     return $candidatePath.Equals($parentPath, [System.StringComparison]::OrdinalIgnoreCase) -or
         $candidatePath.StartsWith("$parentPath\", [System.StringComparison]::OrdinalIgnoreCase) -or
         $candidatePath.StartsWith("$parentPath/", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Resolve-ProjectPath {
+    param([string]$Path)
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    return Join-Path $script:repoRoot $Path
+}
+
+function Normalize-ExpectedSha256 {
+    param(
+        [string]$Value,
+        [string]$Label
+    )
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ""
+    }
+    $normalized = $Value.Trim()
+    if ($normalized.StartsWith("sha256:", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $normalized = $normalized.Substring("sha256:".Length)
+    }
+    $normalized = $normalized.ToLowerInvariant()
+    if ($normalized -notmatch '^[0-9a-f]{64}$') {
+        throw "$Label expected SHA-256 must be a 64-character hex digest or sha256:<digest>. Got: $Value"
+    }
+    return $normalized
+}
+
+function Read-ExpectedBundleManifestHashes {
+    param([string]$ManifestPath)
+    if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
+        return [ordered]@{
+            path = ""
+            runtime_sha256 = ""
+            models_sha256 = ""
+        }
+    }
+    $resolvedPath = Resolve-ProjectPath -Path $ManifestPath
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        throw "Expected Ollama bundle manifest was not found: $resolvedPath"
+    }
+    try {
+        $manifest = Get-Content -LiteralPath $resolvedPath -Raw | ConvertFrom-Json
+    } catch {
+        throw "Expected Ollama bundle manifest is not valid JSON: $resolvedPath"
+    }
+    if ($manifest.schema -and [int]$manifest.schema -ne 1) {
+        throw "Expected Ollama bundle manifest has unsupported schema: $($manifest.schema)"
+    }
+    $runtimeSha256 = Normalize-ExpectedSha256 -Value ([string]$manifest.runtime.summary.sha256) -Label "Runtime manifest"
+    $modelsSha256 = Normalize-ExpectedSha256 -Value ([string]$manifest.models.summary.sha256) -Label "Models manifest"
+    if (-not $runtimeSha256 -and -not $modelsSha256) {
+        throw "Expected Ollama bundle manifest does not contain runtime.summary.sha256 or models.summary.sha256: $resolvedPath"
+    }
+    return [ordered]@{
+        path = (Resolve-Path -LiteralPath $resolvedPath).Path
+        runtime_sha256 = $runtimeSha256
+        models_sha256 = $modelsSha256
+    }
+}
+
+function Merge-ExpectedSha256 {
+    param(
+        [string]$Explicit,
+        [string]$FromManifest,
+        [string]$Label
+    )
+    if ($Explicit -and $FromManifest -and $Explicit -ne $FromManifest) {
+        throw "$Label expected SHA-256 conflicts with ExpectedBundleManifest. Explicit: $Explicit Manifest: $FromManifest"
+    }
+    if ($Explicit) {
+        return $Explicit
+    }
+    return $FromManifest
 }
 
 function Copy-DirectoryClean {
@@ -474,6 +554,21 @@ function Compare-Summary {
     }
 }
 
+function Assert-ExpectedSummarySha256 {
+    param(
+        [string]$ExpectedSha256,
+        [object]$Actual,
+        [string]$Label
+    )
+    if (-not $ExpectedSha256) {
+        return
+    }
+    $actualSha256 = Normalize-ExpectedSha256 -Value ([string]$Actual.sha256) -Label "$Label actual"
+    if ($ExpectedSha256 -ne $actualSha256) {
+        throw "$Label sha256 mismatch. Expected $ExpectedSha256 but got $actualSha256."
+    }
+}
+
 function Test-OllamaBundleManifest {
     param(
         [string]$ManifestPath,
@@ -523,7 +618,10 @@ function New-BundleManifest {
         [string]$RuntimeDir,
         [string]$ModelsDir,
         [string]$ManifestPath,
-        [string]$RuntimeExecutable = ""
+        [string]$RuntimeExecutable = "",
+        [string]$ExpectedRuntimeSha256Value = "",
+        [string]$ExpectedModelsSha256Value = "",
+        [string]$ExpectedBundleManifestPath = ""
     )
     $modelManifestPath = if ($ModelsDir -and (Test-Path -LiteralPath $ModelsDir)) {
         $candidate = Get-ModelManifestPath -ModelsDir $ModelsDir -ModelRef $Model
@@ -555,6 +653,18 @@ function New-BundleManifest {
             model_manifest = if ($modelManifestPath) { Get-RelativePath -Root $ModelsDir -Path $modelManifestPath } else { "" }
             summary = Get-DirectorySummary -Path $ModelsDir
         }
+        provenance = [ordered]@{
+            hash_algorithm = "sha256"
+            expected_manifest = $ExpectedBundleManifestPath
+            runtime = [ordered]@{
+                expected_sha256 = $ExpectedRuntimeSha256Value
+                verified = [bool]$ExpectedRuntimeSha256Value
+            }
+            models = [ordered]@{
+                expected_sha256 = $ExpectedModelsSha256Value
+                verified = [bool]$ExpectedModelsSha256Value
+            }
+        }
     }
     Write-Utf8NoBom -Path $ManifestPath -Value ($payload | ConvertTo-Json -Depth 8)
 }
@@ -565,6 +675,12 @@ $runtimeOut = Join-Path $outputRootPath "ollama"
 $modelsOut = Join-Path $outputRootPath "ollama-models"
 $manifestPath = Join-Path $outputRootPath "ollama-bundle-manifest.json"
 $resolvedRuntimeExecutable = ""
+$ExpectedRuntimeSha256 = Normalize-ExpectedSha256 -Value $ExpectedRuntimeSha256 -Label "Runtime"
+$ExpectedModelsSha256 = Normalize-ExpectedSha256 -Value $ExpectedModelsSha256 -Label "Models"
+$expectedManifestHashes = Read-ExpectedBundleManifestHashes -ManifestPath $ExpectedBundleManifest
+$expectedBundleManifestRecordPath = [string]$expectedManifestHashes.path
+$ExpectedRuntimeSha256 = Merge-ExpectedSha256 -Explicit $ExpectedRuntimeSha256 -FromManifest ([string]$expectedManifestHashes.runtime_sha256) -Label "Runtime"
+$ExpectedModelsSha256 = Merge-ExpectedSha256 -Explicit $ExpectedModelsSha256 -FromManifest ([string]$expectedManifestHashes.models_sha256) -Label "Models"
 
 Assert-ChildPath -Root $repoRoot -Candidate $outputRootPath -Label "OutputRoot"
 New-Item -ItemType Directory -Path $outputRootPath -Force | Out-Null
@@ -612,6 +728,10 @@ if (-not $SkipModels) {
 }
 
 Write-Step "Writing bundle manifest"
-New-BundleManifest -RuntimeDir $(if (Test-Path -LiteralPath $runtimeOut) { $runtimeOut } else { "" }) -ModelsDir $(if (Test-Path -LiteralPath $modelsOut) { $modelsOut } else { "" }) -ManifestPath $manifestPath -RuntimeExecutable $(if ($resolvedRuntimeExecutable -and (Test-Path -LiteralPath $resolvedRuntimeExecutable)) { Join-Path $runtimeOut (Get-RelativePath -Root $OllamaRuntimeDir -Path $resolvedRuntimeExecutable) } else { "" })
-Test-OllamaBundleManifest -ManifestPath $manifestPath -RuntimeDir $(if (Test-Path -LiteralPath $runtimeOut) { $runtimeOut } else { "" }) -ModelsDir $(if (Test-Path -LiteralPath $modelsOut) { $modelsOut } else { "" }) | Out-Null
+$manifestRuntimeDir = if (Test-Path -LiteralPath $runtimeOut) { $runtimeOut } else { "" }
+$manifestModelsDir = if (Test-Path -LiteralPath $modelsOut) { $modelsOut } else { "" }
+New-BundleManifest -RuntimeDir $manifestRuntimeDir -ModelsDir $manifestModelsDir -ManifestPath $manifestPath -RuntimeExecutable $(if ($resolvedRuntimeExecutable -and (Test-Path -LiteralPath $resolvedRuntimeExecutable)) { Join-Path $runtimeOut (Get-RelativePath -Root $OllamaRuntimeDir -Path $resolvedRuntimeExecutable) } else { "" }) -ExpectedRuntimeSha256Value $ExpectedRuntimeSha256 -ExpectedModelsSha256Value $ExpectedModelsSha256 -ExpectedBundleManifestPath $expectedBundleManifestRecordPath
+$bundleManifest = Test-OllamaBundleManifest -ManifestPath $manifestPath -RuntimeDir $manifestRuntimeDir -ModelsDir $manifestModelsDir
+Assert-ExpectedSummarySha256 -ExpectedSha256 $ExpectedRuntimeSha256 -Actual $bundleManifest.runtime.summary -Label "Runtime"
+Assert-ExpectedSummarySha256 -ExpectedSha256 $ExpectedModelsSha256 -Actual $bundleManifest.models.summary -Label "Models"
 Write-Host "Ollama bundle manifest written to $manifestPath"

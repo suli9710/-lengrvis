@@ -30,12 +30,15 @@ import {
   validateDocumentCompareRequest,
   validateDocumentParseRequest,
   validateOptionalModelRequest,
+  validateOpenSettingsRequest,
   validatePermissionPolicyRelaxationRequest,
   validatePermissionRuleDeleteRequest,
   validatePermissionRuleUpsertRequest,
   validatePlainBridgeBody,
   validatePrivacyEraseRequest,
   validateRunStartRequest,
+  validateScheduleCreateRequest,
+  validateScheduleEnableRequest,
   validateSettingsPatchRequest
 } from "./ipcValidation";
 import { assertTrustedRenderer } from "./rendererTrust";
@@ -325,6 +328,50 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     });
   });
 
+  ipcMain.handle(IPC_CHANNELS.taskPause, async (event, taskId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeTaskId = validateBridgeIdentifier(taskId, "task id");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm task pause",
+      message: "Pause this task?",
+      detail: `Task id: ${safeTaskId}\n\nThis changes the lifecycle state of an agent task.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/tasks/${encodeURIComponent(safeTaskId)}/pause`,
+      method: "POST"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.taskResume, async (event, taskId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeTaskId = validateBridgeIdentifier(taskId, "task id");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm task resume",
+      message: "Resume this task?",
+      detail: `Task id: ${safeTaskId}\n\nResuming can continue previously planned agent work.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/tasks/${encodeURIComponent(safeTaskId)}/resume`,
+      method: "POST"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.taskCancel, async (event, taskId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeTaskId = validateBridgeIdentifier(taskId, "task id");
+    await confirmNativeDesktopAction(event, {
+      type: "warning",
+      confirmLabel: "Cancel task",
+      title: "Confirm task cancellation",
+      message: "Cancel this task?",
+      detail: `Task id: ${safeTaskId}\n\nThis may interrupt agent work in progress.`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/tasks/${encodeURIComponent(safeTaskId)}/cancel`,
+      method: "POST"
+    });
+  });
+
   ipcMain.handle(IPC_CHANNELS.cleanupExecute, async (event, body: unknown) => {
     assertTrustedRenderer(event);
     const safeBody = validatePlainBridgeBody(body, "cleanup execute request");
@@ -459,6 +506,82 @@ export function registerIpcHandlers(backend: BackendProcessManager): void {
     });
     return proxyExplicitDesktopBridgeRequest(backend, {
       endpoint: "/api/runs",
+      method: "POST",
+      body
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.schedulesList, async (event) => {
+    assertTrustedRenderer(event);
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/schedules",
+      method: "GET"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.schedulesCreate, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateScheduleCreateRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm scheduled agent run",
+      message: "Create this schedule?",
+      detail: [
+        `Cron: ${body.cron}`,
+        `Mode: ${body.mode}`,
+        "",
+        "Goal:",
+        truncateForDialog(body.goal),
+        "",
+        "Scheduled runs can use tools and authorized files in the future."
+      ].join("\n")
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/schedules",
+      method: "POST",
+      body
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.schedulesDelete, async (event, scheduleId: unknown) => {
+    assertTrustedRenderer(event);
+    const safeScheduleId = validateBridgeIdentifier(scheduleId, "schedule id");
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm schedule deletion",
+      message: "Delete this schedule?",
+      detail: `Schedule id: ${safeScheduleId}`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/schedules/${encodeURIComponent(safeScheduleId)}`,
+      method: "DELETE"
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.schedulesEnable, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validatePlainBridgeBody(request, "schedule enable request");
+    const { scheduleId, enabled } = validateScheduleEnableRequest(body.scheduleId, body.enabled);
+    await confirmNativeDesktopAction(event, {
+      title: enabled ? "Confirm schedule enable" : "Confirm schedule disable",
+      message: enabled ? "Enable this schedule?" : "Disable this schedule?",
+      detail: `Schedule id: ${scheduleId}`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: `/api/schedules/${encodeURIComponent(scheduleId)}/enable`,
+      method: "POST",
+      body: { enabled }
+    });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.systemOpenSettings, async (event, request: unknown) => {
+    assertTrustedRenderer(event);
+    const body = validateOpenSettingsRequest(request);
+    await confirmNativeDesktopAction(event, {
+      title: "Confirm Windows Settings",
+      message: "Open Windows Settings?",
+      detail: `Settings page: ${body.uri}`
+    });
+    return proxyExplicitDesktopBridgeRequest(backend, {
+      endpoint: "/api/system/open-settings",
       method: "POST",
       body
     });

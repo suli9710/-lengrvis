@@ -17,25 +17,191 @@ function Write-Step {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
-# Supply-chain hardening (audit B-3): all packages are installed from exact
-# `==` pins. Floating specs / blanket --upgrade are not allowed here.
-function Invoke-Pip {
-    param([string[]]$Packages)
-    if ($Packages.Count -eq 0) { return }
-    & $Python -m pip install @Packages
-    if ($LASTEXITCODE -ne 0) {
-        throw "pip install failed for: $($Packages -join ', ')"
-    }
-}
-
-function Invoke-PipRequirements {
-    param([string]$RequirementsFile)
+function Get-AccelerationRequirementLines {
+    param(
+        [string]$RequirementsFile,
+        [string]$ResolvedRuntime
+    )
     if (-not (Test-Path $RequirementsFile)) {
         throw "Pinned requirements file not found: $RequirementsFile"
     }
-    & $Python -m pip install -r $RequirementsFile
-    if ($LASTEXITCODE -ne 0) {
-        throw "pip install failed for requirements file: $RequirementsFile"
+
+    $selected = New-Object System.Collections.Generic.List[string]
+    $section = "common"
+    $runtimeSectionSeen = $false
+    foreach ($line in Get-Content -LiteralPath $RequirementsFile) {
+        $trimmed = $line.Trim()
+        $sectionMatch = [regex]::Match($trimmed, "^#\s*Runtime:\s*(?<runtime>[A-Za-z0-9_-]+)\s*$")
+        if ($sectionMatch.Success) {
+            $section = $sectionMatch.Groups["runtime"].Value.ToLowerInvariant()
+            if ($section -eq $ResolvedRuntime.ToLowerInvariant()) {
+                $runtimeSectionSeen = $true
+            }
+            continue
+        }
+        if ($trimmed -match "^#\s*Common packages\s*$") {
+            $section = "common"
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
+            continue
+        }
+        if ($section -eq "common" -or $section -eq $ResolvedRuntime.ToLowerInvariant()) {
+            $selected.Add($trimmed)
+        }
+    }
+    if (-not $runtimeSectionSeen) {
+        throw "No acceleration requirements section found for runtime: $ResolvedRuntime"
+    }
+    return [string[]]$selected
+}
+
+function Normalize-PythonPackageName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    return ($Name.ToLowerInvariant() -replace "[-_.]+", "-")
+}
+
+function Remove-RequirementComment {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Line)
+
+    $hashIndex = $Line.IndexOf("#")
+    if ($hashIndex -lt 0) {
+        return $Line.Trim()
+    }
+    return $Line.Substring(0, $hashIndex).Trim()
+}
+
+function Get-PythonRequirementName {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Line)
+
+    $cleanLine = Remove-RequirementComment -Line $Line
+    if ([string]::IsNullOrWhiteSpace($cleanLine) -or $cleanLine.StartsWith("-")) {
+        return $null
+    }
+    $match = [regex]::Match(
+        $cleanLine,
+        "^\s*(?<name>[A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[^\]]+\])?\s*(?:===|==|~=|!=|<=|>=|<|>|;|$)"
+    )
+    if (-not $match.Success) {
+        return $null
+    }
+    return $match.Groups["name"].Value
+}
+
+function Get-HashLockedRequirementBlocks {
+    param([Parameter(Mandatory = $true)][string]$LockFile)
+
+    $blocks = @{}
+    $currentName = $null
+    $currentLines = New-Object System.Collections.Generic.List[string]
+
+    foreach ($line in Get-Content -LiteralPath $LockFile) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
+            continue
+        }
+        $isContinuation = $line.StartsWith(" ") -or $line.StartsWith("`t")
+        if (-not $isContinuation) {
+            if ($currentName -and $currentLines.Count -gt 0) {
+                $blocks[$currentName] = [string[]]$currentLines
+            }
+            $currentName = $null
+            $currentLines = New-Object System.Collections.Generic.List[string]
+
+            $name = Get-PythonRequirementName -Line $line
+            if ($null -eq $name) {
+                continue
+            }
+            $currentName = Normalize-PythonPackageName -Name $name
+            $currentLines.Add($line)
+            continue
+        }
+        if ($currentName -and $trimmed -match "^--hash\s*=\s*sha256:[a-fA-F0-9]{64}") {
+            $currentLines.Add($line)
+        }
+    }
+
+    if ($currentName -and $currentLines.Count -gt 0) {
+        $blocks[$currentName] = [string[]]$currentLines
+    }
+    return $blocks
+}
+
+function Get-SelectedHashLockedRequirementLines {
+    param(
+        [Parameter(Mandatory = $true)][string]$LockFile,
+        [Parameter(Mandatory = $true)][string[]]$Requirements,
+        [Parameter(Mandatory = $true)][string]$ResolvedRuntime
+    )
+
+    $blocks = Get-HashLockedRequirementBlocks -LockFile $LockFile
+    $runtimePackages = @{
+        winml = @("onnxruntime-windowsml", "onnxruntime-genai-winml")
+        directml = @("onnxruntime-directml", "onnxruntime-genai-directml")
+        openvino = @("onnxruntime-openvino", "openvino", "openvino-telemetry")
+        cpu = @("onnxruntime", "onnxruntime-genai")
+    }
+    $excluded = @{}
+    foreach ($runtimeName in $runtimePackages.Keys) {
+        if ($runtimeName -eq $ResolvedRuntime.ToLowerInvariant()) {
+            continue
+        }
+        foreach ($packageName in [string[]]$runtimePackages[$runtimeName]) {
+            $excluded[(Normalize-PythonPackageName -Name $packageName)] = $true
+        }
+    }
+
+    foreach ($requirement in $Requirements) {
+        $name = Get-PythonRequirementName -Line $requirement
+        if ($null -eq $name) {
+            continue
+        }
+        $normalized = Normalize-PythonPackageName -Name $name
+        if (-not $blocks.ContainsKey($normalized)) {
+            throw "Acceleration hash lock does not contain a pinned hash block for direct requirement: $name"
+        }
+    }
+
+    $selected = New-Object System.Collections.Generic.List[string]
+    foreach ($normalized in ($blocks.Keys | Sort-Object)) {
+        if ($excluded.ContainsKey([string]$normalized)) {
+            continue
+        }
+        foreach ($line in [string[]]$blocks[$normalized]) {
+            $selected.Add($line)
+        }
+        $selected.Add("")
+    }
+
+    return [string[]]$selected
+}
+
+function Invoke-PipHashLockedRequirements {
+    param(
+        [string]$RequirementsFile,
+        [string]$LockFile,
+        [string]$ResolvedRuntime
+    )
+    if (-not (Test-Path $LockFile)) {
+        throw "Acceleration hash lock not found: $LockFile. Regenerate with: uv pip compile --generate-hashes --python-version 3.12 --universal --output-file scripts\acceleration-requirements-lock.txt scripts\acceleration-requirements.txt"
+    }
+
+    $requirements = Get-AccelerationRequirementLines -RequirementsFile $RequirementsFile -ResolvedRuntime $ResolvedRuntime
+    if ($requirements.Count -eq 0) {
+        throw "No acceleration requirements selected for runtime: $ResolvedRuntime"
+    }
+    $hashLockedRequirements = Get-SelectedHashLockedRequirementLines -LockFile $LockFile -Requirements $requirements -ResolvedRuntime $ResolvedRuntime
+
+    $tempRequirements = New-TemporaryFile
+    try {
+        Set-Content -LiteralPath $tempRequirements.FullName -Value $hashLockedRequirements -Encoding ASCII
+        & $Python -m pip install --require-hashes -r $tempRequirements.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "pip install failed for hash-locked acceleration requirements (runtime: $ResolvedRuntime)"
+        }
+    } finally {
+        Remove-Item -LiteralPath $tempRequirements.FullName -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -88,24 +254,10 @@ function Resolve-AutoAccelerationRuntime {
     return "cpu"
 }
 
-function Install-AccelerationRuntimePackages {
+function Assert-SupportedAccelerationRuntime {
     param([string]$ResolvedRuntime)
-    switch ($ResolvedRuntime) {
-        "winml" {
-            Invoke-Pip @("onnxruntime-windowsml==1.22.0", "onnxruntime-genai-winml==0.8.0")
-        }
-        "directml" {
-            Invoke-Pip @("onnxruntime-directml==1.22.0", "onnxruntime-genai-directml==0.8.0")
-        }
-        "openvino" {
-            Invoke-Pip @("onnxruntime-openvino==1.22.0", "openvino==2025.2.0")
-        }
-        "cpu" {
-            Invoke-Pip @("onnxruntime==1.26.0", "onnxruntime-genai==0.8.0")
-        }
-        default {
-            throw "Unsupported acceleration runtime: $ResolvedRuntime"
-        }
+    if ($ResolvedRuntime -notin @("winml", "directml", "openvino", "cpu")) {
+        throw "Unsupported acceleration runtime: $ResolvedRuntime"
     }
 }
 
@@ -115,9 +267,8 @@ if (-not $ModelsDir) {
     $ModelsDir = Join-Path $repoRoot ".lengrvis_data\models"
 }
 $manifestPath = Join-Path $repoRoot "backend\app\acceleration\model_manifest.json"
-
-Write-Step "Preparing Python packages (pinned versions)"
-Invoke-PipRequirements (Join-Path $repoRoot "scripts\acceleration-requirements.txt")
+$accelerationRequirementsPath = Join-Path $repoRoot "scripts\acceleration-requirements.txt"
+$accelerationLockPath = Join-Path $repoRoot "scripts\acceleration-requirements-lock.txt"
 
 # Runtime-specific ONNX Runtime flavors are mutually exclusive. When Runtime=auto,
 # probe the host once and install exactly one variant to avoid package conflicts.
@@ -126,9 +277,10 @@ if ($Runtime -eq "auto") {
     $resolvedRuntime = Resolve-AutoAccelerationRuntime
     Write-Host "Auto-detected acceleration runtime: $resolvedRuntime" -ForegroundColor Green
 }
+Assert-SupportedAccelerationRuntime -ResolvedRuntime $resolvedRuntime
 
-# Pinned inline with scripts/acceleration-requirements.txt (audit B-3 / C9).
-Install-AccelerationRuntimePackages -ResolvedRuntime $resolvedRuntime
+Write-Step "Preparing Python packages (hash-locked, runtime: $resolvedRuntime)"
+Invoke-PipHashLockedRequirements -RequirementsFile $accelerationRequirementsPath -LockFile $accelerationLockPath -ResolvedRuntime $resolvedRuntime
 
 if (-not $SkipModels) {
     Write-Step "Downloading model manifests into $ModelsDir"
@@ -140,10 +292,26 @@ if (-not $SkipModels) {
     $env:LENGRVIS_MODEL_MANIFEST = $manifestPath
     @'
 import json
+import hashlib
 import os
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
+
+def primary_onnx_model(path: Path) -> Path | None:
+    for name in ("model.onnx", "embedding.onnx", "vision_model.onnx", "encoder_model.onnx", "det_model.onnx"):
+        candidate = path / name
+        if candidate.is_file():
+            return candidate
+    candidates = sorted(item for item in path.rglob("*.onnx") if item.is_file())
+    return candidates[0] if candidates else None
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 manifest = json.loads(Path(os.environ["LENGRVIS_MODEL_MANIFEST"]).read_text(encoding="utf-8"))
 models_dir = Path(os.environ["LENGRVIS_MODELS_DIR"])
@@ -183,7 +351,22 @@ for item in manifest["models"]:
         raise SystemExit(
             f"model '{item['id']}' snapshot at {snapshot_path} is empty after download"
         )
-    print(f"Verified {item['id']}: {len(downloaded)} file(s) at {snapshot_path}")
+    expected_sha256 = (item.get("model_sha256") or item.get("sha256") or "").strip().lower().removeprefix("sha256:")
+    if not expected_sha256:
+        raise SystemExit(
+            f"model '{item['id']}' has no model_sha256/sha256 pin in the manifest; "
+            "refusing to install an unverified model"
+        )
+    model_file = primary_onnx_model(Path(snapshot_path))
+    if model_file is None:
+        raise SystemExit(f"model '{item['id']}' snapshot at {snapshot_path} does not contain an ONNX file")
+    actual_sha256 = sha256_file(model_file)
+    if actual_sha256 != expected_sha256:
+        raise SystemExit(
+            f"model '{item['id']}' sha256 mismatch for {model_file}: "
+            f"expected {expected_sha256}, got {actual_sha256}"
+        )
+    print(f"Verified {item['id']}: {len(downloaded)} file(s), {model_file.name} sha256={actual_sha256}")
 '@ | & $Python -
 }
 

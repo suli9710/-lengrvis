@@ -24,7 +24,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 PYTHON_BIN="${PYTHON:-python3}"
-BUILD_REQUIREMENTS="backend/requirements-build.txt"
+BUILD_REQUIREMENTS="backend/requirements-build-lock.txt"
 
 if [[ -f ".venv/bin/activate" ]]; then
   # shellcheck disable=SC1091
@@ -33,13 +33,13 @@ if [[ -f ".venv/bin/activate" ]]; then
 fi
 
 if [[ ! -f "$BUILD_REQUIREMENTS" ]]; then
-  echo "Missing pinned backend build dependency file: $BUILD_REQUIREMENTS" >&2
+  echo "Missing hashed backend build dependency lock: $BUILD_REQUIREMENTS" >&2
   exit 1
 fi
 
-echo "Ensuring pinned backend build dependencies from $BUILD_REQUIREMENTS..."
-if ! "$PYTHON_BIN" -m pip install -r "$BUILD_REQUIREMENTS"; then
-  echo "Failed to install pinned backend build dependencies. Run: $PYTHON_BIN -m pip install -r $BUILD_REQUIREMENTS" >&2
+echo "Ensuring hashed backend build dependencies from $BUILD_REQUIREMENTS..."
+if ! "$PYTHON_BIN" -m pip install --require-hashes -r "$BUILD_REQUIREMENTS"; then
+  echo "Failed to install hashed backend build dependencies. Run: $PYTHON_BIN -m pip install --require-hashes -r $BUILD_REQUIREMENTS" >&2
   exit 1
 fi
 

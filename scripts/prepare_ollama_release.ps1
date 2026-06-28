@@ -4,6 +4,11 @@
     [string]$OllamaExe = "",
     [string]$OutputRoot = ".lengrvis_data\ollama-release",
     [string]$Model = "qwen2.5:3b",
+    [Alias("ExpectedRuntimeHash")]
+    [string]$ExpectedRuntimeSha256 = "",
+    [Alias("ExpectedModelsHash")]
+    [string]$ExpectedModelsSha256 = "",
+    [string]$ExpectedBundleManifest = "",
     [string]$PullDestination = "",
     [string]$PullHost = "127.0.0.1:11435",
     [switch]$PullModel,
@@ -124,6 +129,9 @@ $bundleArgs = @(
 if ($OllamaRuntimeDir) { $bundleArgs += @("-OllamaRuntimeDir", $OllamaRuntimeDir) }
 if ($OllamaModelsDir) { $bundleArgs += @("-OllamaModelsDir", $OllamaModelsDir) }
 if ($OllamaExe) { $bundleArgs += @("-OllamaExe", $OllamaExe) }
+if ($ExpectedRuntimeSha256) { $bundleArgs += @("-ExpectedRuntimeSha256", $ExpectedRuntimeSha256) }
+if ($ExpectedModelsSha256) { $bundleArgs += @("-ExpectedModelsSha256", $ExpectedModelsSha256) }
+if ($ExpectedBundleManifest) { $bundleArgs += @("-ExpectedBundleManifest", $ExpectedBundleManifest) }
 if ($PullModel) { $bundleArgs += "-PullModel" }
 if ($PullDestination) { $bundleArgs += @("-PullDestination", $PullDestination) }
 if ($PullHost) { $bundleArgs += @("-PullHost", $PullHost) }

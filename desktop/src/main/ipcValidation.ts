@@ -18,7 +18,10 @@ import type {
   DesktopPermissionRuleDeleteRequest,
   DesktopPermissionRuleUpsertRequest,
   DesktopPrivacyEraseRequest,
+  DesktopOpenSettingsRequest,
   DesktopRunStartRequest,
+  DesktopScheduleCreateRequest,
+  DesktopScheduleEnableRequest,
   DesktopSettingsPatch
 } from "../shared/types";
 import { assertLoopbackBackendUrl } from "./backendUrl";
@@ -47,6 +50,14 @@ const SETTINGS_NATIVE_CONFIRMATION_FIELDS = new Set([
 ]);
 const RUN_MODES = new Set(["privacy", "efficiency", "hybrid"]);
 const RUN_ENGINES = new Set(["auto", "os", "developer"]);
+const SETTINGS_URI_ALLOWLIST = new Set([
+  "ms-settings:",
+  "ms-settings:appsfeatures",
+  "ms-settings:network",
+  "ms-settings:privacy",
+  "ms-settings:privacy-backgroundapps",
+  "ms-settings:windowsupdate"
+]);
 const PERMISSION_EFFECTS = new Set(["allow", "deny"]);
 const PERMISSION_RELAXATION_ACTIONS = new Set(["upsert_rule", "delete_rule", "replace_policy"]);
 const SETTINGS_PATCH_VALUE_KINDS: Record<
@@ -444,6 +455,41 @@ export function validateRunStartRequest(value: unknown): DesktopRunStartRequest 
   const mode = validateBridgeEnum<DesktopRunStartRequest["mode"] & string>(request.mode, "run mode", RUN_MODES, "efficiency");
   const engine = validateBridgeEnum<DesktopRunStartRequest["engine"] & string>(request.engine, "run engine", RUN_ENGINES, "auto");
   return { message, mode, engine };
+}
+
+export function validateScheduleCreateRequest(value: unknown): DesktopScheduleCreateRequest {
+  const request = validatePlainBridgeBody(value, "schedule create request");
+  rejectUnexpectedBridgeKeys(request, new Set(["cron", "goal", "mode", "note"]), "schedule create request");
+  const cron = validateBridgeStringValue(request.cron, "schedule cron", 256, { allowEmpty: false, trim: true });
+  const goal = validateBridgeStringValue(request.goal, "schedule goal", 20_000, { allowEmpty: false, trim: true });
+  const mode = validateBridgeEnum<DesktopScheduleCreateRequest["mode"] & string>(
+    request.mode,
+    "schedule mode",
+    RUN_MODES,
+    "efficiency"
+  );
+  const note =
+    request.note === undefined || request.note === null
+      ? undefined
+      : validateBridgeStringValue(request.note, "schedule note", 2_000, { allowEmpty: true, trim: true });
+  return note === undefined ? { cron, goal, mode } : { cron, goal, mode, note };
+}
+
+export function validateScheduleEnableRequest(scheduleId: unknown, enabled: unknown): DesktopScheduleEnableRequest {
+  return {
+    scheduleId: validateBridgeIdentifier(scheduleId, "schedule id"),
+    enabled: validateBridgeBoolean(enabled, "schedule enabled")
+  };
+}
+
+export function validateOpenSettingsRequest(value: unknown): DesktopOpenSettingsRequest {
+  const request = validatePlainBridgeBody(value, "open settings request");
+  rejectUnexpectedBridgeKeys(request, new Set(["uri"]), "open settings request");
+  const uri = validateBridgeStringValue(request.uri, "settings uri", 128, { allowEmpty: false, trim: true });
+  if (!SETTINGS_URI_ALLOWLIST.has(uri)) {
+    throw new ApiRequestValidationError("settings uri is not allowed");
+  }
+  return { uri };
 }
 
 export function validatePrivacyEraseRequest(value: unknown): Pick<DesktopPrivacyEraseRequest, "includeSettings"> {
