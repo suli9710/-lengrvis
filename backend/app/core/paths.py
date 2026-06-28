@@ -71,6 +71,7 @@ def is_sensitive_path(path: Path) -> bool:
 def is_system_path(path: Path) -> bool:
     if _is_windows_system_path(path):
         return True
+    path = Path(path)
     try:
         resolved = path.resolve(strict=False)
     except OSError:
