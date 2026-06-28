@@ -386,8 +386,14 @@ class PolicyEngine:
         tool_name: str,
         result: ToolResult,
         risk_level: RiskLevel,
+        tool_definition: Any | None = None,
     ) -> SafetyReview:
-        inspected_text = self._inspectable_text(result.output, result.error, result.changed_paths, result.rollback_info)
+        inspected_text = self._inspectable_text(
+            self._safe_tool_result_payload(result, tool_definition),
+            result.error,
+            result.changed_paths,
+            result.rollback_info,
+        )
         hits = self._unprotected_forbidden_hits(inspected_text)
         if risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF or hits:
             return SafetyReview(
@@ -409,6 +415,35 @@ class PolicyEngine:
             risk_level=risk_level,
             reasons=[f"Post-tool supervision cleared {tool_name} result."],
         )
+
+    def _safe_tool_result_payload(self, result: ToolResult, tool_definition: Any | None = None) -> Any:
+        if result.ok and result.error:
+            return result.output
+        if result.changed_paths or result.rollback_info:
+            return result.output
+        if result.ok and not self._low_risk_trusted_tool(tool_definition):
+            return result.output
+        summarizer = getattr(tool_definition, "result_summary", None)
+        if summarizer is None:
+            return result.output
+        try:
+            summary = summarizer(result.output if isinstance(result.output, dict) else {})
+        except Exception:  # noqa: BLE001 - fall back to fail-closed full-output review if a summarizer breaks.
+            return result.output
+        return {
+            "ok": result.ok,
+            "summary": summary,
+        }
+
+    @staticmethod
+    def _low_risk_trusted_tool(tool_definition: Any | None) -> bool:
+        if tool_definition is None:
+            return False
+        risk = getattr(tool_definition, "risk_level", None)
+        if risk not in {RiskLevel.R0_READ_ONLY, RiskLevel.R1_OPEN_ONLY}:
+            return False
+        trust_tier = str(getattr(tool_definition, "trust_tier", "") or "").casefold()
+        return trust_tier in FAST_PATH_TRUST_TIERS
 
     def final_review(self, plan: Plan, task_status: str, final_summary: str) -> SafetyReview:
         inspected_text = self._inspectable_text(plan.model_dump(), task_status, final_summary)

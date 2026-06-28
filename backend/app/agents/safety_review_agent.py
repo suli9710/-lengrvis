@@ -32,7 +32,9 @@ class BatchMessageReview:
 
 class SafetyReviewAgent(BaseAgent):
     name = "SafetyReviewAgent"
-    domain_summary = "Reviews goals, plans, tool calls, tool results, and agent messages for policy and risk violations."
+    domain_summary = (
+        "Reviews goals, plans, tool calls, tool results, and agent messages for policy and risk violations."
+    )
     prompt_file = "safety_review_agent.md"
 
     def __init__(self, bus=None, settings: AppSettings | None = None) -> None:
@@ -42,7 +44,7 @@ class SafetyReviewAgent(BaseAgent):
         if effective is None:
             try:
                 effective = get_effective_settings()
-            except Exception:
+            except Exception:  # noqa: BLE001 - settings fallback should not block deterministic safety review.
                 effective = None
         self.policy = PolicyEngine(effective)
 
@@ -166,7 +168,10 @@ class SafetyReviewAgent(BaseAgent):
             risk_level=RiskLevel.R0_READ_ONLY,
             reasons=[
                 f"Batch supervision passed {count} agent message(s).",
-                f"Deterministic fast path cleared {fast_path_count} message(s); full policy reviewed {slow_review_count}.",
+                (
+                    f"Deterministic fast path cleared {fast_path_count} message(s); "
+                    f"full policy reviewed {slow_review_count}."
+                ),
             ],
         )
         recorded = self._record_review(aggregate, f"{stage}: batch supervised {count} messages OK")
@@ -186,6 +191,15 @@ class SafetyReviewAgent(BaseAgent):
     def _fast_path_agent_message_review(self, message: AgentMessage, stage: str) -> SafetyReview | None:
         if message.message_type != MessageType.OBSERVATION:
             return None
+        if stage in {"tool_observation", "approved_tool_observation"} and self._has_allowing_post_tool_review(message):
+            return SafetyReview(
+                task_id=message.task_id,
+                step_id=message.step_id,
+                target_type=f"agent_message:{stage}",
+                verdict=SafetyVerdict.ALLOW,
+                risk_level=RiskLevel.R0_READ_ONLY,
+                reasons=["Deterministic fast path reused an allowing post-tool result review."],
+            )
         inspected_text = self._inspect_message_text(message)
         if self._contains_supervision_term(inspected_text):
             return None
@@ -205,11 +219,22 @@ class SafetyReviewAgent(BaseAgent):
     def _contains_supervision_term(self, text: str) -> bool:
         return any(term.lower() in text for term in FORBIDDEN_TERMS)
 
+    def _has_allowing_post_tool_review(self, message: AgentMessage) -> bool:
+        return (
+            str(message.metadata.get("post_tool_review_verdict") or "") == SafetyVerdict.ALLOW.value
+            and str(message.metadata.get("post_tool_review_target") or "") == "tool_result"
+            and bool(str(message.metadata.get("post_tool_review_id") or "").strip())
+        )
+
     def _tag_supervised_ids(self, task_id: str, ids: list[str], stage: str) -> None:
         """Pin supervised message ids on the latest safety bus message."""
         if not task_id or not ids:
             return
-        latest = self._last_review_message if self._last_review_message and self._last_review_message.task_id == task_id else None
+        latest = (
+            self._last_review_message
+            if self._last_review_message and self._last_review_message.task_id == task_id
+            else None
+        )
         if latest is None:
             for message in reversed(self.bus.get_messages(task_id)):
                 if message.from_agent == self.name:
@@ -229,8 +254,16 @@ class SafetyReviewAgent(BaseAgent):
         tool_name: str,
         result: ToolResult,
         risk_level: RiskLevel,
+        tool_definition: Any | None = None,
     ) -> SafetyReview:
-        review = self.policy.review_tool_result(task_id, step_id, tool_name, result, risk_level)
+        review = self.policy.review_tool_result(
+            task_id,
+            step_id,
+            tool_name,
+            result,
+            risk_level,
+            tool_definition=tool_definition,
+        )
         return self._record_review(review, f"{tool_name}: post-tool supervision -> {review.verdict}")
 
     def final_review(self, plan: Plan, task_status: str, final_summary: str) -> SafetyReview:

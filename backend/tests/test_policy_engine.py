@@ -5,6 +5,7 @@ import importlib
 import pytest
 
 from app.config import AppSettings
+from app.core.schemas import ToolResult
 from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.tools.registry import register_all_tools
@@ -122,6 +123,45 @@ def test_policy_denies_forbidden_shell_or_secret_tool_call():
 
     assert review.verdict == SafetyVerdict.DENY
     assert review.risk_level == RiskLevel.R4_FORBIDDEN_OR_HANDOFF
+
+
+def test_policy_reviews_tool_result_summary_when_tool_declares_summarizer():
+    tool = ToolDefinition(
+        name="developer.lengrvis_code",
+        description="Run a trusted developer subprocess.",
+        input_schema={},
+        output_schema={},
+        risk_level=RiskLevel.R1_OPEN_ONLY,
+        agent_owner="DeveloperExecutionEngine",
+        supports_dry_run=False,
+        requires_authorized_path=False,
+        execute=lambda _args, _context: {},
+        read_only=False,
+        concurrency_safe=False,
+        effects=["read", "execute_subprocess"],
+        resource_kinds=["workspace", "developer_runtime"],
+        trust_tier="builtin",
+        result_summary=lambda output: str(output.get("assistant_text") or "completed"),
+    )
+    result = ToolResult(
+        tool_call_id="tool_dev",
+        ok=True,
+        output={
+            "assistant_text": "Repository inspection completed.",
+            "runtime_health": {"command": ["python", "fake.py"], "token_metadata": "internal key name"},
+        },
+    )
+
+    review = PolicyEngine().review_tool_result(
+        "task_contract",
+        "step_dev",
+        tool.name,
+        result,
+        tool.risk_level,
+        tool_definition=tool,
+    )
+
+    assert review.verdict == SafetyVerdict.ALLOW
 
 
 def test_permission_mode_plan_denies_modifying_tool_call():

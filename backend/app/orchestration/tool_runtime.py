@@ -21,6 +21,7 @@ from app.core.schemas import (
     MessageType,
     OpenAIMessageRole,
     PlanStep,
+    SafetyReview,
     StepStatus,
     Task,
     TaskStatus,
@@ -360,11 +361,20 @@ class ToolRuntime:
             runtime=runtime,
         )
         db.upsert_model("tool_results", result)
-        denial = self._post_result_review_denial(task, step, tool, result)
-        if denial is not None:
-            return denial
+        post_tool_review = self._review_tool_result(task, step, tool, result)
+        if post_tool_review.verdict == SafetyVerdict.DENY:
+            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
+            orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
+            return RuntimeExecutionResult("fatal_denied", result)
 
-        return await self._publish_result_and_finish(task, step, call, result, approval_id=approval_id)
+        return await self._publish_result_and_finish(
+            task,
+            step,
+            call,
+            result,
+            approval_id=approval_id,
+            post_tool_review=post_tool_review,
+        )
 
     def _publish_tool_call_proposal(
         self,
@@ -519,22 +529,20 @@ class ToolRuntime:
 
         return result
 
-    def _post_result_review_denial(
+    def _review_tool_result(
         self,
         task: Task,
         step: PlanStep,
         tool: ToolDefinition,
         result: ToolResult,
-    ) -> RuntimeExecutionResult | None:
+    ) -> SafetyReview:
         orchestrator = self.orchestrator
-        post_tool_review = orchestrator.safety.review_tool_result(
-            task.id, step.id, step.tool_name, result, tool.risk_level
-        )
-        if post_tool_review.verdict == SafetyVerdict.DENY:
-            set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
-            orchestrator._set_status(task, TaskStatus.DENIED, final_summary=post_tool_review.safe_alternative)
-            return RuntimeExecutionResult("fatal_denied", result)
-        return None
+        review_tool_result = orchestrator.safety.review_tool_result
+        kwargs: dict[str, Any] = {}
+        accepted_keywords = self._accepted_review_tool_call_keywords(review_tool_result)
+        if accepted_keywords is None or "tool_definition" in accepted_keywords:
+            kwargs["tool_definition"] = tool
+        return review_tool_result(task.id, step.id, step.tool_name, result, tool.risk_level, **kwargs)
 
     async def _publish_result_and_finish(
         self,
@@ -544,6 +552,7 @@ class ToolRuntime:
         result: ToolResult,
         *,
         approval_id: str | None,
+        post_tool_review: SafetyReview,
     ) -> RuntimeExecutionResult:
         orchestrator = self.orchestrator
         orchestrator.bus.publish_text(
@@ -555,6 +564,11 @@ class ToolRuntime:
             step_id=step.id,
             tool_call_id=call.id,
             structured_payload=result.model_dump(),
+            metadata={
+                "post_tool_review_id": post_tool_review.id,
+                "post_tool_review_verdict": post_tool_review.verdict.value,
+                "post_tool_review_target": post_tool_review.target_type,
+            },
         )
         stage = "approved_tool_observation" if approval_id else "tool_observation"
         if not orchestrator._supervise_new_agent_messages(task.id, stage):
@@ -754,6 +768,7 @@ class ToolRuntime:
             step.tool_name,
             preview_result,
             tool.risk_level,
+            tool_definition=tool,
         )
         if post_preview_review.verdict == SafetyVerdict.DENY:
             set_step_status(step, StepStatus.DENIED, actor="ToolRuntime")
