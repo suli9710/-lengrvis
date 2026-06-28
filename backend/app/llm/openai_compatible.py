@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -697,7 +698,6 @@ class OpenAICompatibleProvider(LLMProvider):
         allowed_directories: list[str] | None = None,
     ) -> tuple[Path | None, str | None]:
         import os
-        from pathlib import Path
 
         from app.core.errors import SecurityError
         from app.core.paths import is_sensitive_path, is_system_path, normalize_path, resolve_authorized
@@ -739,9 +739,7 @@ class OpenAICompatibleProvider(LLMProvider):
         except OSError:
             return None, f"[vision] cannot stat file: {image_path}"
         if file_size > self._MAX_IMAGE_SIZE_BYTES:
-            return None, (
-                f"[vision] image file too large ({file_size} bytes; max {self._MAX_IMAGE_SIZE_BYTES})"
-            )
+            return None, (f"[vision] image file too large ({file_size} bytes; max {self._MAX_IMAGE_SIZE_BYTES})")
         if file_size == 0:
             return None, "[vision] image file is empty"
         return resolved, None

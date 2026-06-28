@@ -478,11 +478,7 @@ class FTSIndex:
                     """,
                     (fts_match_query(cleaned),),
                 ).fetchall()
-                rows = [
-                    row
-                    for row in rows
-                    if _path_within_roots(str(row["path"] or ""), allowed_roots)
-                ][:limit]
+                rows = [row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)][:limit]
                 if rows or len(cleaned) >= 3:
                     return [dict(row) for row in rows]
             except sqlite3.Error as exc:
@@ -505,11 +501,7 @@ class FTSIndex:
             """,
             (f"%{query}%",),
         ).fetchall()
-        rows = [
-            row
-            for row in rows
-            if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)
-        ][:limit]
+        rows = [row for row in rows if _path_within_roots(str(row["normalized_path"] or ""), allowed_roots)][:limit]
         results = []
         for row in rows:
             file_data = json.loads(row["data"])

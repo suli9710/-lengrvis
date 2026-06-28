@@ -79,9 +79,7 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
     install_hash = _digest_signal(secret)
 
     fingerprint_inputs = {
-        key: signals[key]
-        for key in ("machine_id_hash", "node_hash", "hostname_hash")
-        if key in signals
+        key: signals[key] for key in ("machine_id_hash", "node_hash", "hostname_hash") if key in signals
     }
     if not fingerprint_inputs:
         if _commercial_release_enabled():

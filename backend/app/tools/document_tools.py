@@ -4,18 +4,17 @@ import csv
 from pathlib import Path
 from typing import Any
 
-from app.core.paths import resolve_authorized
 from app.commerce.entitlements import Feature, active_plan, has_feature, require_feature
 from app.commerce.licensing import commercial_release_enabled
+from app.core.paths import resolve_authorized
 from app.indexer.ocr_service import extract_pdf_text_with_ocr_fallback
 from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
 from app.policy.privacy import can_upload_file_content
 from app.policy.risk import RiskLevel
-from app.services import document_service
-from app.services import document_intelligence_service
+from app.services import document_intelligence_service, document_service
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
-
 
 _EXTRACT_TEXT_LIMIT = 20000
 _CHUNK_CHARS = document_service.DEFAULT_CHUNK_CHARS
@@ -109,7 +108,7 @@ def extract_text_from_path(path: Path) -> str:
 
             doc = Document(str(path))
             return "\n".join(p.text for p in doc.paragraphs)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - document extraction degrades gracefully per file type.
             return f"[DOCX extraction unavailable: {exc}]"
     if ext == ".xlsx":
         try:
@@ -122,7 +121,7 @@ def extract_text_from_path(path: Path) -> str:
                 for row in ws.iter_rows(values_only=True):
                     lines.append(",".join("" if value is None else str(value) for value in row))
             return "\n".join(lines)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - document extraction degrades gracefully per file type.
             return f"[XLSX extraction unavailable: {exc}]"
     if ext == ".pptx":
         try:
@@ -136,7 +135,7 @@ def extract_text_from_path(path: Path) -> str:
                     if hasattr(shape, "text"):
                         lines.append(shape.text)
             return "\n".join(lines)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - document extraction degrades gracefully per file type.
             return f"[PPTX extraction unavailable: {exc}]"
     return "[Unsupported document type]"
 
@@ -278,34 +277,46 @@ def generate_cited_report(args: dict[str, Any], context: dict[str, Any]) -> dict
 @_require_document_ai_tool
 def edit_docx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
+    dry_run = bool(args.get("dry_run", True))
+    if not dry_run:
+        raise_if_tool_aborted(context)
     return document_intelligence_service.edit_docx(
         path,
         find=str(args.get("find") or ""),
         replace=str(args.get("replace") or ""),
-        dry_run=bool(args.get("dry_run", True)),
+        dry_run=dry_run,
+        abort_context=context,
     )
 
 
 @_require_document_ai_tool
 def edit_xlsx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
+    dry_run = bool(args.get("dry_run", True))
+    if not dry_run:
+        raise_if_tool_aborted(context)
     return document_intelligence_service.edit_xlsx(
         path,
         sheet=str(args.get("sheet") or ""),
         cell=str(args.get("cell") or ""),
         value=args.get("value"),
-        dry_run=bool(args.get("dry_run", True)),
+        dry_run=dry_run,
+        abort_context=context,
     )
 
 
 @_require_document_ai_tool
 def edit_pptx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
+    dry_run = bool(args.get("dry_run", True))
+    if not dry_run:
+        raise_if_tool_aborted(context)
     return document_intelligence_service.edit_pptx(
         path,
         find=str(args.get("find") or ""),
         replace=str(args.get("replace") or ""),
-        dry_run=bool(args.get("dry_run", True)),
+        dry_run=dry_run,
+        abort_context=context,
     )
 
 
@@ -313,12 +324,16 @@ def edit_pptx(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
 def apply_redaction(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     path = resolve_authorized(args["path"], _allowed(context))
     custom_patterns = args.get("custom_patterns") if isinstance(args.get("custom_patterns"), dict) else None
+    dry_run = bool(args.get("dry_run", True))
+    if not dry_run:
+        raise_if_tool_aborted(context)
     return document_intelligence_service.apply_redaction(
         path,
         settings=context.get("settings"),
         custom_patterns=custom_patterns,
         max_chars=int(args.get("max_chars") or document_intelligence_service.DEFAULT_PREVIEW_CHARS),
-        dry_run=bool(args.get("dry_run", True)),
+        dry_run=dry_run,
+        abort_context=context,
     )
 
 
@@ -372,7 +387,9 @@ def register(registry) -> None:
     schemas: dict[str, dict[str, Any]] = {
         "document.extract_text": _path_schema(),
         "document.summarize": _path_schema(),
-        "document.qa": _path_schema({"question": {"type": "string", "description": "Question to answer from the document."}}),
+        "document.qa": _path_schema(
+            {"question": {"type": "string", "description": "Question to answer from the document."}}
+        ),
         "document.convert_to_markdown": _path_schema(),
         "document.analyze_csv": _path_schema(),
         "document.analyze_xlsx": _path_schema(),
@@ -397,7 +414,11 @@ def register(registry) -> None:
             "properties": {
                 "left_path": {"type": "string", "description": "First document path."},
                 "right_path": {"type": "string", "description": "Second document path."},
-                "paths": {"type": "array", "items": {"type": "string"}, "description": "Alternative two-element list of document paths."},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Alternative two-element list of document paths.",
+                },
             },
             "required": [],
         },

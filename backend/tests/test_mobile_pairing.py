@@ -7,22 +7,25 @@ import os
 import subprocess
 import sys
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from tls_test_material import write_lan_tls_material
 
 from app.api import routes_remote
-from app.llm.registry import get_effective_settings
+from app.api.routes_mobile import _mobile_event_allowed
 from app.core import db
 from app.core.schemas import Approval, ChatResponse, Plan, PlanStep, SafetyReview, Task, ToolCall, ToolResult
+from app.llm.registry import get_effective_settings
+from app.main import app
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
-from app.main import app
 from app.policy.risk import RiskLevel, SafetyVerdict
+from app.security import mobile_jwt
 from app.security.mobile_jwt import (
     MOBILE_AUTH_WS_PROTOCOL_PREFIX,
     MOBILE_REMOTE_VIEW_TTL_SECONDS,
@@ -33,14 +36,11 @@ from app.security.mobile_jwt import (
     decode_mobile_token,
     issue_mobile_token,
 )
-from app.security import mobile_jwt
 from app.security.sensitive_confirmation import create_settings_confirmation
-from app.api.routes_mobile import _mobile_event_allowed
 from app.services import mobile_pairing_service
 from app.services.approval_event_service import publish_approval_created
 from app.services.settings_service import update_settings
 from app.tools.registry import register_all_tools
-from tls_test_material import write_lan_tls_material
 
 REMOTE_WS_GRANT_CLOSE_CODE = 4403
 
@@ -212,10 +212,22 @@ def test_pair_confirm_valid_code(monkeypatch, tmp_path):
     assert payload["expires_in"] <= 60 * 60 * 24 * 7
     token = payload["token"]
     claims = decode_mobile_token(token)
-    issued_at = datetime.fromtimestamp(float(claims["iat"]), timezone.utc)
-    expires_at = datetime.fromtimestamp(float(claims["exp"]), timezone.utc)
+    issued_at = datetime.fromtimestamp(float(claims["iat"]), UTC)
+    expires_at = datetime.fromtimestamp(float(claims["exp"]), UTC)
     assert claims["device_id"]
     assert claims["device_name"] == "Pixel"
+    assert "attestation" not in json.dumps(claims, ensure_ascii=False).lower()
+    assert payload["device_trust"] == {
+        "attestation_verified": False,
+        "attestation_status": "not_verified",
+        "attestation_provider": "none",
+        "trust_basis": "pairing_code_tls",
+        "hardware_backed": False,
+        "message": mobile_pairing_service.mobile_device_trust_metadata()["message"],
+    }
+    device = db.fetch_one("mobile_devices", claims["device_id"])
+    assert device is not None
+    assert device["device_trust"] == payload["device_trust"]
     assert expires_at - issued_at <= timedelta(seconds=mobile_pairing_service.TOKEN_TTL_SECONDS)
 
 
@@ -229,7 +241,7 @@ def test_pair_confirm_expired_code(monkeypatch, tmp_path):
     client = TestClient(app)
     pairing = client.post("/api/pair/request").json()
     code = pairing["code"]
-    expired_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    expired_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     with db.connect() as conn:
         row = conn.execute("SELECT data FROM mobile_pairings WHERE id = ?", (code,)).fetchone()
         data = json.loads(row["data"])
@@ -396,7 +408,12 @@ def test_mobile_companion_task_payload_uses_strict_completion_evidence(monkeypat
     assert tasks[verified.id]["result_verified"] is True
     assert tasks[verified.id]["credibility"] == "verified"
     payload_text = json.dumps(response.json(), ensure_ascii=False)
-    for fragment in ("tool_mobile_verified", "result_mobile_verified", "secret-token-1234567890", "C:/Users/Suli/private"):
+    for fragment in (
+        "tool_mobile_verified",
+        "result_mobile_verified",
+        "secret-token-1234567890",
+        "C:/Users/Suli/private",
+    ):
         assert fragment not in payload_text
 
 
@@ -433,7 +450,10 @@ def test_mobile_companion_redacts_sensitive_non_privacy_task_text(monkeypatch, t
     token = _paired_token(client)
     bare_filename = "private-payroll-2026.xlsx"
     task = Task(
-        user_goal=f"检查 C:/Users/example/private-contract.txt 和 {bare_filename}: 并使用 token=secret-token-raw-list-1234567890",
+        user_goal=(
+            f"检查 C:/Users/example/private-contract.txt 和 {bare_filename}: "
+            "并使用 token=secret-token-raw-list-1234567890"
+        ),
         mode="hybrid",
         final_summary=f"完成 {bare_filename}:，password=abc1234567890，联系 owner@example.com。",
         status=TaskPhase.EXECUTION,
@@ -513,7 +533,7 @@ def test_mobile_companion_hides_task_evidence_locators_from_task_payloads(monkey
     )
     for fragment in (
         "/api/tasks/",
-        "/tmp/mobile-private/input.csv",
+        "/tmp/mobile-private/input.csv",  # noqa: S108 - fixture text must look like a local path.
         "C:/Users/Suli/private/tool-result.txt",
         "step_1-after-20260608T120000000000Z.png",
         "rec_sensitive1234567890",
@@ -805,7 +825,10 @@ def test_mobile_companion_task_start_returns_stable_error_when_delegate_fails(mo
     )
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Computer task service is unavailable. Please retry from the desktop task workspace."
+    assert (
+        response.json()["detail"]
+        == "Computer task service is unavailable. Please retry from the desktop task workspace."
+    )
 
 
 def test_mobile_companion_follow_up_creates_related_computer_task(monkeypatch, tmp_path):
@@ -922,7 +945,12 @@ def test_mobile_companion_follow_up_does_not_echo_privacy_task_text(monkeypatch,
         metadata: dict | None = None,
     ) -> ChatResponse:
         captured.update({"goal": goal, "mode": mode})
-        task = Task(user_goal=goal, mode=mode, final_summary="private-contract.txt still secret", metadata=metadata or {})
+        task = Task(
+            user_goal=goal,
+            mode=mode,
+            final_summary="private-contract.txt still secret",
+            metadata=metadata or {},
+        )
         db.upsert_model("tasks", task)
         return ChatResponse(task_id=task.id, status=task.status, message=reply, delegated=True, agent=agent_hint)
 
@@ -992,9 +1020,9 @@ def test_pair_code_includes_remote_view_scope_only_when_remote_desktop_enabled(m
 
     assert set(claims["scope"].split()) == {"mobile:approval", "remote:view"}
     assert REMOTE_INPUT_SCOPE not in claims["scope"].split()
-    view_exp = datetime.fromtimestamp(claims["scope_exp"][REMOTE_VIEW_SCOPE], timezone.utc)
-    main_exp = datetime.fromtimestamp(claims["exp"], timezone.utc)
-    issued_at = datetime.fromtimestamp(claims["iat"], timezone.utc)
+    view_exp = datetime.fromtimestamp(claims["scope_exp"][REMOTE_VIEW_SCOPE], UTC)
+    main_exp = datetime.fromtimestamp(claims["exp"], UTC)
+    issued_at = datetime.fromtimestamp(claims["iat"], UTC)
     view_ttl = (view_exp - issued_at).total_seconds()
     assert MOBILE_REMOTE_VIEW_TTL_SECONDS - 2 <= view_ttl <= MOBILE_REMOTE_VIEW_TTL_SECONDS + 2
     assert view_exp <= main_exp
@@ -1040,11 +1068,12 @@ def test_mobile_token_survives_backend_process_restart(tmp_path):
     )
 
     claims_json = _run_mobile_jwt_subprocess(
-            (
-                "import json, os; "
-                "from app.security.mobile_jwt import decode_mobile_token; "
-                "print(json.dumps(decode_mobile_token(os.environ['LENGRVIS_TEST_TOKEN'], require_active_device=False), sort_keys=True))"
-            ),
+        (
+            "import json, os; "
+            "from app.security.mobile_jwt import decode_mobile_token; "
+            "claims = decode_mobile_token(os.environ['LENGRVIS_TEST_TOKEN'], require_active_device=False); "
+            "print(json.dumps(claims, sort_keys=True))"
+        ),
         data_dir,
         {"LENGRVIS_TEST_TOKEN": token},
     )
@@ -1269,7 +1298,11 @@ def test_mobile_device_list_only_returns_calling_device(monkeypatch, tmp_path):
     response = client.get("/api/mobile/devices", headers={"Authorization": f"Bearer {first_token}"})
 
     assert response.status_code == 200
-    assert [device["device_id"] for device in response.json()["devices"]] == [first_device_id]
+    devices = response.json()["devices"]
+    assert [device["device_id"] for device in devices] == [first_device_id]
+    assert devices[0]["device_trust"]["attestation_verified"] is False
+    assert devices[0]["device_trust"]["attestation_status"] == "not_verified"
+    assert devices[0]["device_trust"]["trust_basis"] == "pairing_code_tls"
     assert second_device_id not in [device["device_id"] for device in response.json()["devices"]]
 
 
@@ -1521,7 +1554,7 @@ def test_remote_view_scope_expires_before_paired_approval_scope(monkeypatch, tmp
     client = TestClient(app)
     paired_token = _paired_token(client)
     claims = decode_mobile_token(paired_token, allowed_scopes={TOKEN_SCOPE, REMOTE_VIEW_SCOPE})
-    expired_at = datetime.fromtimestamp(claims["scope_exp"][REMOTE_VIEW_SCOPE], timezone.utc) + timedelta(seconds=1)
+    expired_at = datetime.fromtimestamp(claims["scope_exp"][REMOTE_VIEW_SCOPE], UTC) + timedelta(seconds=1)
 
     class ExpiredViewScopeClock(datetime):
         @classmethod
@@ -1557,7 +1590,7 @@ def test_mobile_session_refresh_endpoint(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["token_type"] == "Bearer"
+    assert body["token_type"] == "Bearer"  # noqa: S105 - token_type is a protocol literal, not a secret.
     assert decode_mobile_token(body["token"], allowed_scopes={TOKEN_SCOPE, REMOTE_VIEW_SCOPE})
 
 
@@ -2002,8 +2035,14 @@ def test_revoking_remote_input_grant_invalidates_token(monkeypatch, tmp_path):
     assert revoke_response.status_code == 200
     assert revoke_response.json()["status"] == "revoked"
     assert "token" not in json.dumps(client.get("/api/pair/devices").json(), ensure_ascii=False)
+    approval_id = Approval(
+        task_id="unused",
+        step_id="step_1",
+        approval_type="remote_input",
+        message="unused",
+    ).id
     response = client.post(
-        f"/api/mobile/approvals/{Approval(task_id='unused', step_id='step_1', approval_type='remote_input', message='unused').id}/decision",
+        f"/api/mobile/approvals/{approval_id}/decision",
         headers={"Authorization": f"Bearer {token}"},
         json={"decision": "denied"},
     )
@@ -2101,11 +2140,11 @@ def test_expired_remote_input_grant_token_is_rejected(monkeypatch, tmp_path):
     token = _claim_remote_input_token(client, paired_token, grant)
     device = db.fetch_one("mobile_devices", device_id)
     assert device is not None
-    device["remote_input_grants"][0]["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    device["remote_input_grants"][0]["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     with db.connect() as conn:
         conn.execute(
             "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(device, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), device_id),
+            (json.dumps(device, ensure_ascii=False), datetime.now(UTC).isoformat(), device_id),
         )
     approval = Approval(
         task_id="task_expired_remote_input_grant",
@@ -2173,7 +2212,6 @@ def test_mobile_websocket_receives_remote_input_grant_without_token(monkeypatch,
         grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
         event = websocket.receive_json()
 
-    event_text = json.dumps(event, ensure_ascii=False)
     assert event["type"] == "remote_input_grant_created"
     assert event["device_id"] == device_id
     assert event["grant"]["id"] == grant["grant_id"]
@@ -2223,7 +2261,6 @@ def test_mobile_websocket_receives_remote_input_grant_revoked_without_token(monk
         client.delete(f"/api/pair/devices/{device_id}/remote-input-grants/{grant['grant_id']}")
         event = websocket.receive_json()
 
-    event_text = json.dumps(event, ensure_ascii=False)
     assert event["type"] == "remote_input_grant_revoked"
     assert event["device_id"] == device_id
     assert event["grant"]["id"] == grant["grant_id"]
@@ -2443,11 +2480,11 @@ def test_mobile_device_cannot_claim_expired_remote_input_grant(monkeypatch, tmp_
     grant = client.post(f"/api/pair/devices/{device_id}/remote-input-grants").json()
     device = db.fetch_one("mobile_devices", device_id)
     assert device is not None
-    device["remote_input_grants"][0]["expires_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    device["remote_input_grants"][0]["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     with db.connect() as conn:
         conn.execute(
             "UPDATE mobile_devices SET data = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(device, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), device_id),
+            (json.dumps(device, ensure_ascii=False), datetime.now(UTC).isoformat(), device_id),
         )
 
     response = client.post(
@@ -2768,7 +2805,10 @@ def test_mobile_approval_payload_redacts_sensitive_message(monkeypatch, tmp_path
 
     assert pending_response.status_code == 200
     assert detail_response.status_code == 200
-    payload_text = json.dumps({"pending": pending_response.json(), "detail": detail_response.json()}, ensure_ascii=False)
+    payload_text = json.dumps(
+        {"pending": pending_response.json(), "detail": detail_response.json()},
+        ensure_ascii=False,
+    )
     assert "secret-token-raw-message-1234567890" not in payload_text
     assert "token=[REDACTED]" in payload_text
 
@@ -2818,7 +2858,10 @@ def test_mobile_approval_detail_redacts_local_paths_in_text_fields(monkeypatch, 
 
     assert pending_response.status_code == 200
     assert detail_response.status_code == 200
-    payload_text = json.dumps({"pending": pending_response.json(), "detail": detail_response.json()}, ensure_ascii=False)
+    payload_text = json.dumps(
+        {"pending": pending_response.json(), "detail": detail_response.json()},
+        ensure_ascii=False,
+    )
     for fragment in (
         "C:/Users/Suli/private/payroll.xlsx",
         "C:/Users/Suli/private/final-summary.txt",
@@ -2962,7 +3005,7 @@ def test_approval_decision_is_atomic_under_concurrent_submitters(monkeypatch, tm
 
     def decide(status: str) -> None:
         barrier.wait(timeout=5)
-        row = db.decide_approval_atomically(approval.id, status, datetime.now(timezone.utc).isoformat())
+        row = db.decide_approval_atomically(approval.id, status, datetime.now(UTC).isoformat())
         results.append((status, "won" if row else "lost"))
 
     approve = threading.Thread(target=decide, args=("approved",))
@@ -2998,7 +3041,7 @@ def test_approved_approval_execution_claim_is_atomic_under_concurrent_callers(mo
     def claim() -> None:
         try:
             barrier.wait(timeout=5)
-            row = db.claim_approval_for_execution(approval.id, datetime.now(timezone.utc).isoformat())
+            row = db.claim_approval_for_execution(approval.id, datetime.now(UTC).isoformat())
             with lock:
                 results.append(row)
         except BaseException as exc:  # noqa: BLE001

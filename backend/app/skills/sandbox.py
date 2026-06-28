@@ -171,8 +171,7 @@ class SkillSandbox:
             port = loopback_http_port(url)
             return {
                 "error": (
-                    "HTTP skill handlers must not target protected local service ports "
-                    f"(port {port} is blocked)."
+                    f"HTTP skill handlers must not target protected local service ports (port {port} is blocked)."
                 ),
                 "policy": "skill_http_port_denied",
                 "port": port,
@@ -273,15 +272,16 @@ def _local_skill_execution_disabled_error(execution: SkillExecution) -> dict[str
     }
 
 
-_DEFAULT_BLOCKED_LOOPBACK_HTTP_PORTS = frozenset({
-    80,
-    443,
-    8000,  # Lengrvis backend default
-    5173,  # Vite dev server
-    1234,  # LM Studio default
-    8765,  # common local MCP example port
-    11434,  # Ollama default
-})
+_DEFAULT_BLOCKED_LOOPBACK_HTTP_PORTS = frozenset(
+    {
+        80,
+        443,
+        5173,  # Vite dev server
+        1234,  # LM Studio default
+        8765,  # common local MCP example port
+        11434,  # Ollama default
+    }
+)
 
 
 def blocked_loopback_http_ports() -> frozenset[int]:
@@ -290,6 +290,10 @@ def blocked_loopback_http_ports() -> frozenset[int]:
         raw = str(get_env(env_name) or "").strip()
         if raw.isdigit():
             ports.add(int(raw))
+    if not any(
+        str(get_env(name) or "").strip().isdigit() for name in ("LENGRVIS_BACKEND_PORT", "LENGRVIS_GUARDIAN_PORT")
+    ):
+        ports.add(8000)
     extra = str(get_env("LENGRVIS_SKILL_HTTP_BLOCKED_PORTS") or "").strip()
     for part in extra.split(","):
         item = part.strip()

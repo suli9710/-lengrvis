@@ -19,6 +19,7 @@ from app.observability.best_effort import log_best_effort_failure
 from app.orchestration.resource_state import resource_states
 from app.policy.redaction import redact_value
 from app.services import document_service
+from app.tools.tool_abort import raise_if_tool_aborted
 
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".log", ".rst"}
 CODE_OR_DATA_EXTENSIONS = {".json", ".yaml", ".yml", ".py", ".ts", ".tsx", ".js"}
@@ -157,9 +158,7 @@ def _ensure_parseable_file_size(document_path: Path) -> None:
         raise FileNotFoundError(f"Document not found: {document_path}") from exc
     max_bytes = _max_parse_bytes()
     if size > max_bytes:
-        raise DocumentTooLargeError(
-            f"Document exceeds parse size limit ({size} bytes; max {max_bytes})."
-        )
+        raise DocumentTooLargeError(f"Document exceeds parse size limit ({size} bytes; max {max_bytes}).")
 
 
 def parse_advanced(
@@ -1132,10 +1131,11 @@ def _meaningful_diff_tokens(text: str) -> set[str]:
     return {token for token in re.findall(r"[\w\u4e00-\u9fff]+", text, flags=re.UNICODE) if token not in stop_words}
 
 
-def _backup_document(path: Path) -> str | None:
+def _backup_document(path: Path, abort_context: dict[str, Any] | None = None) -> str | None:
     if not path.is_file():
         return None
     backup = path.with_suffix(path.suffix + ".bak")
+    raise_if_tool_aborted(abort_context)
     shutil.copy2(path, backup)
     return str(backup)
 
@@ -1200,6 +1200,7 @@ def edit_pptx(
     find: str,
     replace: str,
     dry_run: bool = True,
+    abort_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from pptx import Presentation
 
@@ -1230,9 +1231,11 @@ def edit_pptx(
         }
     if match_count <= 0:
         return {"ok": False, "error_code": "NO_MATCH", "path": str(path_obj), "match_count": 0}
-    backup = _backup_document(path_obj)
+    raise_if_tool_aborted(abort_context)
+    backup = _backup_document(path_obj, abort_context)
     prs = Presentation(str(path_obj))
     _pptx_replace_text(prs, needle, replacement, dry_run=False)
+    raise_if_tool_aborted(abort_context)
     prs.save(str(path_obj))
     return {
         "ok": True,
@@ -1251,6 +1254,7 @@ def apply_redaction(
     custom_patterns: dict[str, str] | None = None,
     max_chars: int = DEFAULT_PREVIEW_CHARS,
     dry_run: bool = True,
+    abort_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     path_obj = Path(path)
     preview = redact_preview(
@@ -1275,12 +1279,14 @@ def apply_redaction(
             "findings": preview.get("findings") or [],
             "_resource_state": _document_resource_state(path_obj),
         }
-    backup = _backup_document(path_obj)
+    raise_if_tool_aborted(abort_context)
+    backup = _backup_document(path_obj, abort_context)
     ext = path_obj.suffix.lower()
     if ext in {".txt", ".md", ".csv", ".json"}:
+        raise_if_tool_aborted(abort_context)
         path_obj.write_text(str(preview.get("redacted_text") or ""), encoding="utf-8")
     elif ext == ".docx":
-        _apply_redaction_docx(path_obj, custom_patterns)
+        _apply_redaction_docx(path_obj, custom_patterns, abort_context=abort_context)
     else:
         raise ValueError(f"document.apply_redaction does not support {ext} files yet.")
     return {
@@ -1299,6 +1305,7 @@ def edit_docx(
     find: str,
     replace: str,
     dry_run: bool = True,
+    abort_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from docx import Document
 
@@ -1329,9 +1336,11 @@ def edit_docx(
         }
     if match_count <= 0:
         return {"ok": False, "error_code": "NO_MATCH", "path": str(path_obj), "match_count": 0}
-    backup = _backup_document(path_obj)
+    raise_if_tool_aborted(abort_context)
+    backup = _backup_document(path_obj, abort_context)
     doc = Document(str(path_obj))
     _docx_replace_text(doc, needle, replacement, dry_run=False)
+    raise_if_tool_aborted(abort_context)
     doc.save(str(path_obj))
     return {
         "ok": True,
@@ -1350,6 +1359,7 @@ def edit_xlsx(
     cell: str,
     value: Any,
     dry_run: bool = True,
+    abort_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from openpyxl import load_workbook
 
@@ -1383,8 +1393,10 @@ def edit_xlsx(
             "diff_preview": diff_preview,
             "_resource_state": _document_resource_state(path_obj),
         }
-    backup = _backup_document(path_obj)
+    raise_if_tool_aborted(abort_context)
+    backup = _backup_document(path_obj, abort_context)
     worksheet[cell_ref].value = value
+    raise_if_tool_aborted(abort_context)
     workbook.save(path_obj)
     return {
         "ok": True,
@@ -1397,7 +1409,12 @@ def edit_xlsx(
     }
 
 
-def _apply_redaction_docx(path: Path, custom_patterns: dict[str, str] | None) -> None:
+def _apply_redaction_docx(
+    path: Path,
+    custom_patterns: dict[str, str] | None,
+    *,
+    abort_context: dict[str, Any] | None = None,
+) -> None:
     from docx import Document
 
     doc = Document(str(path))
@@ -1407,6 +1424,7 @@ def _apply_redaction_docx(path: Path, custom_patterns: dict[str, str] | None) ->
         for label, pattern in patterns.items():
             text = re.compile(pattern).sub(f"[REDACTED:{label}]", text)
         paragraph.text = text
+    raise_if_tool_aborted(abort_context)
     doc.save(str(path))
 
 

@@ -276,6 +276,70 @@ function assertSmokeDoesNotClaimRealDeviceEvidence() {
   }
 }
 
+async function assertNativeTlsTrustRuntimeBoundaries(client) {
+  const source = fs.readFileSync(mobilePath("src/api/client/nativeTlsTrust.ts"), "utf8");
+  assertSourceIncludes(
+    source,
+    "iOS LAN certificate pinning is not available yet",
+    "iOS must fail closed when local LAN certificate pinning would be required",
+  );
+  assertSourceIncludes(
+    source,
+    "This mobile runtime cannot configure LAN certificate pinning for local HTTPS pairing.",
+    "Non-Android runtimes must fail closed when local LAN certificate pinning would be required",
+  );
+  assert.doesNotMatch(
+    source,
+    /attestation_verified:\s*true|hardware_attestation|hardware attested/i,
+    "native TLS trust source must not claim hardware device attestation",
+  );
+
+  const pinnedSecurity = client.describeBaseUrlSecurity("https://example.test:8443", {
+    transport: { http_scheme: "https", websocket_scheme: "wss", tls_enabled: true },
+    tls: {
+      enabled: true,
+      trust_status: "requires_trust",
+      requires_trust: true,
+      self_signed: true,
+      fingerprint_sha256: "aa:bb:cc:dd",
+    },
+  });
+  const calls = [];
+  const androidTrust = loadTsModule(mobilePath("src/api/client/nativeTlsTrust.ts"), {
+    require: (id) => {
+      if (id === "react-native") {
+        return {
+          Platform: { OS: "android" },
+          NativeModules: {
+            LengrvisLanTrust: {
+              trustServerCertificate: async (baseUrl, fingerprint) => calls.push({ baseUrl, fingerprint }),
+              clearTrustedServers: async () => calls.push({ clear: true }),
+            },
+          },
+        };
+      }
+      return require(id);
+    },
+  });
+  await androidTrust.configureNativeTlsTrust(pinnedSecurity);
+  assert.deepEqual(calls, [{ baseUrl: "https://example.test:8443", fingerprint: "AA:BB:CC:DD" }]);
+  await androidTrust.clearNativeTlsTrust();
+  assert.deepEqual(calls[1], { clear: true });
+
+  for (const osName of ["ios", "web"]) {
+    const trust = loadTsModule(mobilePath("src/api/client/nativeTlsTrust.ts"), {
+      require: (id) => {
+        if (id === "react-native") return { Platform: { OS: osName }, NativeModules: {} };
+        return require(id);
+      },
+    });
+    await assert.rejects(
+      () => trust.configureNativeTlsTrust(pinnedSecurity),
+      (error) => error?.name === "TlsTrustConfigurationError" && /pinning|runtime/.test(String(error.message)),
+    );
+  }
+}
+
 function assertExpoCameraNativeConfig() {
   const appJson = JSON.parse(fs.readFileSync(mobilePath("app.json"), "utf8"));
   const expo = appJson.expo ?? {};
@@ -423,6 +487,7 @@ async function main() {
   assertAppShellSourceAssertions();
   assertPairScreenQrSourceAssertions();
   assertSmokeDoesNotClaimRealDeviceEvidence();
+  await assertNativeTlsTrustRuntimeBoundaries(client);
   assertExpoCameraNativeConfig();
 
   const server = await startHttpWsSmokeServer({
@@ -441,6 +506,13 @@ async function main() {
         token: expectedPairToken,
         token_type: "Bearer",
         device_id: "device-1",
+        device_trust: {
+          attestation_verified: false,
+          attestation_status: "not_verified",
+          attestation_provider: "none",
+          trust_basis: "pairing_code_tls",
+          hardware_backed: false,
+        },
         expires_in: 3600,
         server: {
           host: "127.0.0.1",
@@ -823,6 +895,9 @@ async function main() {
     assert.equal(paired.baseUrl, server.origin);
     assert.equal(paired.token, expectedPairToken);
     assert.equal(paired.deviceId, "device-1");
+    assert.equal(paired.deviceTrust.attestation_verified, false);
+    assert.equal(paired.deviceTrust.attestation_status, "not_verified");
+    assert.equal(paired.deviceTrust.trust_basis, "pairing_code_tls");
     assert.equal(paired.baseUrlSecurity.kind, "loopbackHttp");
     assert.equal(paired.server.port, Number(new URL(server.origin).port));
     assert.equal(paired.security.transport.httpScheme, "http");
@@ -889,6 +964,8 @@ async function main() {
     await migratedAuth.saveSession(storedSession);
     const storedMetadata = JSON.parse(migratedStorage.asyncMap.get("lengrvis.mobile.session"));
     assert.equal(storedMetadata.baseUrl, server.origin);
+    assert.equal(storedMetadata.deviceTrust.attestation_verified, false);
+    assert.equal(storedMetadata.deviceTrust.trust_basis, "pairing_code_tls");
     assert.equal(migratedStorage.secureMap.get("lengrvis.mobile.session.token"), "stored-token");
     assert.doesNotMatch(migratedStorage.asyncMap.get("lengrvis.mobile.session"), /stored-token/);
 

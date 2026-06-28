@@ -8,7 +8,6 @@ from app.core.schemas import ScheduledTask
 from app.llm.registry import get_effective_settings
 from app.services import scheduler_service
 
-
 router = APIRouter()
 
 

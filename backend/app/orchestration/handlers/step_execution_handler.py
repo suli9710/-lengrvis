@@ -23,7 +23,13 @@ from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.runtime_context import TaskRuntimeContext
 from app.orchestration.step_phase import set_step_status
 from app.orchestration.tool_runtime import ToolRuntime
-from app.policy.approval_binding import args_binding_hmac, binding_preview, permission_policy_version, preview_hmac, settings_fingerprint
+from app.policy.approval_binding import (
+    args_binding_hmac,
+    binding_preview,
+    permission_policy_version,
+    preview_hmac,
+    settings_fingerprint,
+)
 from app.policy.permissions import PermissionStore
 
 if TYPE_CHECKING:
@@ -55,7 +61,9 @@ class StepExecutionHandler:
         runtime = TaskRuntimeContext.from_task(task, settings, orchestrator.bus)
         if raw.get("allowed_directories") is not None:
             runtime.allowed_directories = list(raw.get("allowed_directories") or [])
-        runtime.extra_context.update({key: value for key, value in raw.items() if key not in {"allowed_directories", "settings"}})
+        runtime.extra_context.update(
+            {key: value for key, value in raw.items() if key not in {"allowed_directories", "settings"}}
+        )
         return runtime
 
     def _runtime_context_for_step(
@@ -91,7 +99,6 @@ class StepExecutionHandler:
             orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(exc)))
             return StepExecutionOutcome("fatal_failed")
 
-        risk = tool.risk_level
         runtime = self._runtime_context_for_step(task, step, context)
         safety_outcome = await self.tool_runtime.review_and_maybe_prepare_approval(
             task,
@@ -146,7 +153,11 @@ class StepExecutionHandler:
             original_tool_name = step.tool_name
             original_args = dict(step.args or {})
             proposed_tool_name = action.tool_name or step.tool_name
-            proposed_args = {**original_args, **dict(action.args or {})} if proposed_tool_name == step.tool_name else dict(action.args or {})
+            proposed_args = (
+                {**original_args, **dict(action.args or {})}
+                if proposed_tool_name == step.tool_name
+                else dict(action.args or {})
+            )
             if threaded_tools and (proposed_tool_name != original_tool_name or proposed_args != original_args):
                 action.kind = "request_revision"
                 action.rationale = action.rationale or (
@@ -174,7 +185,9 @@ class StepExecutionHandler:
                 tool = orchestrator._apply_subagent_tool_proposal(task, step, action)
             except KeyError as exc:
                 set_step_status(step, StepStatus.FAILED, actor="StepExecutionHandler")
-                orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(exc)))
+                orchestrator._set_status(
+                    task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(exc))
+                )
                 orchestrator.bus.publish_text(
                     task.id,
                     orchestrator.name,
@@ -185,7 +198,6 @@ class StepExecutionHandler:
                 )
                 orchestrator._supervise_new_agent_messages(task.id, "subagent_invalid_tool")
                 return StepExecutionOutcome("fatal_failed")
-            risk = tool.risk_level
             if not orchestrator._supervise_new_agent_messages(task.id, "subagent_proposal_applied"):
                 set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
                 orchestrator._set_status(
@@ -252,7 +264,11 @@ class StepExecutionHandler:
         if binding_error:
             return self._deny_approved_step(task, plan, step, approval, binding_error)
 
-        action = None if approval.approval_type == "remote_input" else await orchestrator._consult_subagent(task, step, observation=None)
+        action = (
+            None
+            if approval.approval_type == "remote_input"
+            else await orchestrator._consult_subagent(task, step, observation=None)
+        )
         if action and action.kind == "done":
             db.expire_approval_if_unconsumed(approval.id, now_iso(), "Subagent marked approved step already done.")
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
@@ -260,7 +276,9 @@ class StepExecutionHandler:
             orchestrator._set_status(task, TaskStatus.COMPLETED, final_summary="Approved step was already complete.")
             return task
         if action and action.kind == "request_revision":
-            db.expire_approval_if_unconsumed(approval.id, now_iso(), "Subagent requested plan revision before approved execution.")
+            db.expire_approval_if_unconsumed(
+                approval.id, now_iso(), "Subagent requested plan revision before approved execution."
+            )
             orchestrator._handle_subagent_revision_request(task, step, action)
             set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
             orchestrator._persist_plan_update(plan, "Approved step paused after subagent requested plan revision.")
@@ -276,16 +294,22 @@ class StepExecutionHandler:
             proposed_tool_name = action.tool_name or step.tool_name
             merged_args = {**dict(step.args or {}), **dict(action.args or {})}
             if proposed_tool_name != step.tool_name or merged_args != step.args:
-                db.expire_approval_if_unconsumed(approval.id, now_iso(), "Subagent proposed a different tool call before approved execution.")
+                db.expire_approval_if_unconsumed(
+                    approval.id, now_iso(), "Subagent proposed a different tool call before approved execution."
+                )
                 orchestrator._handle_subagent_revision_request(task, step, action)
                 set_step_status(step, StepStatus.SKIPPED, actor="StepExecutionHandler")
-                orchestrator._persist_plan_update(plan, "Approved step paused because subagent proposed a different tool call.")
+                orchestrator._persist_plan_update(
+                    plan, "Approved step paused because subagent proposed a different tool call."
+                )
                 if task.status != TaskStatus.EXECUTION:
                     orchestrator._set_status(task, TaskStatus.EXECUTING_STEP)
                 orchestrator._set_status(
                     task,
                     TaskStatus.PAUSED,
-                    final_summary="A subagent proposed a different tool call after approval; a fresh review is required.",
+                    final_summary=(
+                        "A subagent proposed a different tool call after approval; a fresh review is required."
+                    ),
                 )
                 return task
 
@@ -331,7 +355,9 @@ class StepExecutionHandler:
         if result and result.ok:
             db.upsert_model("approvals", approval, status=approval.status)
             orchestrator.step_scheduler_handler.revive_dependency_blocked_skips(plan)
-            pending_approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task.id, "pending"), limit=100)
+            pending_approvals = db.fetch_many(
+                "approvals", "task_id = ? AND status = ?", (task.id, "pending"), limit=100
+            )
             target_status = (
                 TaskStatus.WAITING_USER_APPROVAL
                 if pending_approvals
@@ -342,8 +368,7 @@ class StepExecutionHandler:
             summary = (
                 APPROVAL_REMAINING_STEPS_SUMMARY
                 if target_status == TaskStatus.EXECUTING_STEP
-                else
-                "Approved file trash operation completed."
+                else "Approved file trash operation completed."
                 if step.tool_name == "file.trash"
                 else "Approved modifying operation completed."
             )
@@ -383,12 +408,16 @@ class StepExecutionHandler:
         ):
             self.orchestrator._set_status(task, TaskStatus.WAITING_USER_APPROVAL)
 
-    def _expire_nonexecutable_step(self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str) -> Task:
+    def _expire_nonexecutable_step(
+        self, task: Task, plan: Plan, step: PlanStep, approval: Approval, reason: str
+    ) -> Task:
         orchestrator = self.orchestrator
         db.expire_approval_if_unconsumed(approval.id, now_iso(), reason)
         if step.status == StepStatus.WAITING_USER_APPROVAL:
             set_step_status(step, StepStatus.DENIED, actor="StepExecutionHandler")
-            orchestrator._persist_plan_update(plan, "Approved step expired because task state no longer allows execution.")
+            orchestrator._persist_plan_update(
+                plan, "Approved step expired because task state no longer allows execution."
+            )
         record(
             "approval.state_mismatch",
             orchestrator.name,

@@ -79,4 +79,7 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "B", "UP", "BLE", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S404", "S603", "S607"]
+"app/api/routes_guardian.py" = ["B008"]
+"app/api/routes_mobile.py" = ["B008"]
+"app/api/routes_settings.py" = ["B008"]
+"tests/**" = ["E501", "S101", "S105", "S404", "S603", "S607"]

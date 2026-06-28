@@ -482,7 +482,9 @@ def test_file_edit_text_requires_prior_read_state(tmp_path: Path):
         {"path": str(target), "old_string": "alpha", "new_string": "omega", "dry_run": False},
     )
     tool = orchestrator.registry.get("file.edit_text")
-    runtime = TaskRuntimeContext.from_task(task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus)
+    runtime = TaskRuntimeContext.from_task(
+        task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus
+    )
     runtime.allowed_directories = [str(tmp_path / "workspace")]
 
     execution = asyncio.run(ToolRuntime(orchestrator).execute_allowed(task, step, tool, runtime))
@@ -506,7 +508,9 @@ def test_file_edit_text_blocks_stale_write_after_read(tmp_path: Path):
     edit_step.task_id = task.id
     read_tool = orchestrator.registry.get("file.read_text")
     edit_tool = orchestrator.registry.get("file.edit_text")
-    runtime = TaskRuntimeContext.from_task(task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus)
+    runtime = TaskRuntimeContext.from_task(
+        task, orchestrator.step_execution_handler._runtime_context(task).settings, orchestrator.bus
+    )
     runtime.allowed_directories = [str(tmp_path / "workspace")]
     read_context = runtime.tool_context()
     asyncio.run(ToolRuntime(orchestrator).execute_tool_with_locks(read_tool, read_step, read_step.args, read_context))
@@ -696,13 +700,21 @@ def test_write_locks_are_shared_across_runtime_instances(tmp_path: Path):
     second = OrchestratorAgent()
     task_a, _plan_a, step_a = _task_plan_step("test.shared_write_lock", {"label": "A", "path": str(target)})
     task_b, _plan_b, step_b = _task_plan_step("test.shared_write_lock", {"label": "B", "path": str(target)})
-    runtime_a = TaskRuntimeContext.from_task(task_a, first.step_execution_handler._runtime_context(task_a).settings, first.bus)
-    runtime_b = TaskRuntimeContext.from_task(task_b, second.step_execution_handler._runtime_context(task_b).settings, second.bus)
+    runtime_a = TaskRuntimeContext.from_task(
+        task_a, first.step_execution_handler._runtime_context(task_a).settings, first.bus
+    )
+    runtime_b = TaskRuntimeContext.from_task(
+        task_b, second.step_execution_handler._runtime_context(task_b).settings, second.bus
+    )
 
     async def run_both():
         await asyncio.gather(
-            ToolRuntime(first).execute_tool_with_locks(tool, step_a, step_a.args, runtime_a.tool_context(), threaded=True),
-            ToolRuntime(second).execute_tool_with_locks(tool, step_b, step_b.args, runtime_b.tool_context(), threaded=True),
+            ToolRuntime(first).execute_tool_with_locks(
+                tool, step_a, step_a.args, runtime_a.tool_context(), threaded=True
+            ),
+            ToolRuntime(second).execute_tool_with_locks(
+                tool, step_b, step_b.args, runtime_b.tool_context(), threaded=True
+            ),
         )
 
     asyncio.run(run_both())
@@ -888,9 +900,7 @@ async def test_cancelled_tool_worker_aborts_cooperatively(tmp_path: Path):
     task_a, _plan_a, step_a = _task_plan_step("test.cancel_cooperative", {"label": "A", "path": str(target)})
     context = orchestrator.step_execution_handler._runtime_context(task_a).tool_context()
 
-    execution = asyncio.create_task(
-        runtime.execute_tool_with_locks(tool, step_a, step_a.args, context, threaded=True)
-    )
+    execution = asyncio.create_task(runtime.execute_tool_with_locks(tool, step_a, step_a.args, context, threaded=True))
     await asyncio.sleep(0.05)
     assert events == ["A:start"]
 
@@ -962,9 +972,7 @@ async def test_cancelled_tool_worker_does_not_register_pending_completion(tmp_pa
     assert pending == {}
 
     second_context = orchestrator.step_execution_handler._runtime_context(task_b).tool_context()
-    second_result = await runtime.execute_tool_with_locks(
-        tool, step_b, step_b.args, second_context, threaded=True
-    )
+    second_result = await runtime.execute_tool_with_locks(tool, step_b, step_b.args, second_context, threaded=True)
 
     assert second_result["ok"] is True
     assert "A:aborted" in events
@@ -1272,9 +1280,9 @@ def test_runtime_safety_review_uses_context_for_permission_policy():
 
 
 def test_low_information_tool_errors_are_enriched():
+    from app.core.schemas import ToolResult
     from app.orchestration.os_reflection import _is_low_information_failure
     from app.orchestration.tool_runtime import _actionable_error_text, _exception_error_text
-    from app.core.schemas import ToolResult
 
     _, _, step = _task_plan_step("file.search_by_name", {"query": "report"})
 

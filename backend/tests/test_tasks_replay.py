@@ -205,7 +205,9 @@ def test_task_timeline_exposes_boundary_events(monkeypatch, tmp_path):
             reasons=["Post-tool output remained within boundary."],
         ),
     )
-    record("context.projected", "ContextAwareProvider", {"strategy": "auto_compact", "tokens_saved": 42}, task_id=task.id)
+    record(
+        "context.projected", "ContextAwareProvider", {"strategy": "auto_compact", "tokens_saved": 42}, task_id=task.id
+    )
 
     client = TestClient(app)
     timeline = client.get(f"/api/tasks/{task.id}/timeline")
@@ -233,7 +235,9 @@ def test_task_timeline_omits_audit_boundary_events_without_audit_export(monkeypa
     db.init_db()
     task = Task(id="task_boundary_audit_gate", user_goal="Gate audit boundary events")
     db.upsert_model("tasks", task)
-    record("context.projected", "ContextAwareProvider", {"strategy": "auto_compact", "tokens_saved": 42}, task_id=task.id)
+    record(
+        "context.projected", "ContextAwareProvider", {"strategy": "auto_compact", "tokens_saved": 42}, task_id=task.id
+    )
 
     client = TestClient(app)
     timeline = client.get(f"/api/tasks/{task.id}/timeline")
@@ -499,7 +503,11 @@ def test_task_evidence_summary_and_boundary_payloads_are_public_safe(monkeypatch
     assert "[REDACTED_TEXT]" in public_dump
     assert "recordings/screen-" not in public_dump
     assert all(item["redacted"] is True for item in timeline.json()["recordings"])
-    assert all("url" not in frame and "file_name" not in frame for item in timeline.json()["recordings"] for frame in item["frames"])
+    assert all(
+        "url" not in frame and "file_name" not in frame
+        for item in timeline.json()["recordings"]
+        for frame in item["frames"]
+    )
     assert all(event["payload"].get("redacted") is True for event in timeline.json()["boundary_events"])
     assert timeline.json()["reviews"][0]["reason_count"] == 1
     assert timeline.json()["reviews"][0]["reasons"] == []
@@ -602,9 +610,7 @@ def test_task_result_quality_contract_reports_task_evidence_only_on_routes(monke
     assert "file.read_text" not in public_dump
 
 
-def test_task_payload_completion_evidence_does_not_verify_tool_result_without_final_summary(
-    monkeypatch, tmp_path
-):
+def test_task_payload_completion_evidence_does_not_verify_tool_result_without_final_summary(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     secret_token = "route-success-token-1234567890"
@@ -667,9 +673,7 @@ def test_task_payload_completion_evidence_does_not_verify_tool_result_without_fi
     assert tool_call.id not in public_dump
 
 
-def test_task_payload_completion_evidence_verifies_tool_result_with_final_summary_publicly(
-    monkeypatch, tmp_path
-):
+def test_task_payload_completion_evidence_verifies_tool_result_with_final_summary_publicly(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     secret_token = "route-success-token-1234567890"

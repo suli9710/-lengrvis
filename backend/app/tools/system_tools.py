@@ -4,7 +4,6 @@ import logging
 import os
 import platform
 import re
-import subprocess
 from typing import Any
 
 from app.config import get_env
@@ -13,11 +12,13 @@ from app.core.paths import resolve_authorized
 from app.policy.redaction import redact_value
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
-
 logger = logging.getLogger(__name__)
-LOCAL_AI_PATH_RE = re.compile(r"(?i)(?:[A-Za-z]:[\\/][^\s,;，。；、]+|(?:/Users|/home)/[^\s,;，。；、]+|~[\\/][^\s,;，。；、]+)")
+LOCAL_AI_PATH_RE = re.compile(
+    r"(?i)(?:[A-Za-z]:[\\/][^\s,;，。；、]+|(?:/Users|/home)/[^\s,;，。；、]+|~[\\/][^\s,;，。；、]+)"
+)
 LOCAL_AI_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
 
 
@@ -40,7 +41,7 @@ def get_info(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
                 "memory_available": psutil.virtual_memory().available,
             }
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
         data["psutil_error"] = str(exc)
     return data
 
@@ -70,7 +71,7 @@ def get_disks(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
                 }
             )
         return {"disks": disks, "skipped": skipped[:8], "errors": errors[:8]}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
         return {"error": str(exc), "disks": []}
 
 
@@ -97,7 +98,7 @@ def get_network(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
         import psutil
 
         return {"network": {name: [addr._asdict() for addr in addrs] for name, addrs in psutil.net_if_addrs().items()}}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
         return {"error": str(exc), "network": {}}
 
 
@@ -107,7 +108,7 @@ def get_battery(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
 
         battery = psutil.sensors_battery()
         return {"battery": battery._asdict() if battery else None}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - psutil diagnostics are best-effort.
         return {"error": str(exc), "battery": None}
 
 
@@ -146,7 +147,7 @@ def get_startup_items(args: dict[str, Any], context: dict[str, Any]) -> dict[str
                         index += 1
             except OSError:
                 continue
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - startup scan is best-effort.
         logger.debug("startup registry scan failed: %s", exc, exc_info=True)
 
     return {"startup_items": items, "count": len(items)}
@@ -160,7 +161,8 @@ def open_settings_uri(args: dict[str, Any], context: dict[str, Any]) -> dict[str
         return {"ok": True, "dry_run": True, "uri": uri}
     if platform.system().lower() != "windows":
         return {"ok": False, "error": "Windows settings URIs are only supported on Windows."}
-    os.startfile(uri)  # type: ignore[attr-defined]
+    raise_if_tool_aborted(context)
+    os.startfile(uri)  # noqa: S606  # type: ignore[attr-defined]
     record("system.open_settings_uri", "ComputerAgent", {"uri": uri})
     return {"ok": True, "uri": uri, "opened": True}
 
@@ -184,7 +186,7 @@ def find_large_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     for raw in raw_roots:
         try:
             root_path = str(resolve_authorized(str(raw), allowed))
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - unauthorized or malformed roots are skipped.
             continue
         if not os.path.isdir(root_path):
             continue
@@ -216,7 +218,13 @@ def find_large_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
             if scanned > max_scanned:
                 break
     results.sort(key=lambda item: -int(item["size"]))
-    return {"files": results[:limit], "count": len(results), "threshold_mb": threshold_mb, "scanned": scanned, "truncated": scanned > max_scanned}
+    return {
+        "files": results[:limit],
+        "count": len(results),
+        "threshold_mb": threshold_mb,
+        "scanned": scanned,
+        "truncated": scanned > max_scanned,
+    }
 
 
 def cleanup_suggestions(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -226,11 +234,13 @@ def cleanup_suggestions(args: dict[str, Any], context: dict[str, Any]) -> dict[s
 
     temp_dir = get_env("TEMP") or os.path.expandvars(r"%TEMP%")
     if temp_dir and os.path.isdir(temp_dir):
-        immediate.append({
-            "action": "clean_temp",
-            "path": temp_dir,
-            "detail": "Windows %TEMP% directory is safe to clean periodically.",
-        })
+        immediate.append(
+            {
+                "action": "clean_temp",
+                "path": temp_dir,
+                "detail": "Windows %TEMP% directory is safe to clean periodically.",
+            }
+        )
 
     cache_locations = [
         os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cache"),
@@ -238,22 +248,26 @@ def cleanup_suggestions(args: dict[str, Any], context: dict[str, Any]) -> dict[s
     ]
     for path in cache_locations:
         if path and os.path.isdir(path):
-            approval.append({
-                "action": "clear_browser_cache",
-                "path": path,
-                "detail": "Clearing browser cache is safe but requires user approval.",
-            })
+            approval.append(
+                {
+                    "action": "clear_browser_cache",
+                    "path": path,
+                    "detail": "Clearing browser cache is safe but requires user approval.",
+                }
+            )
 
     # Surface the top-N largest files inside authorized directories.
     large = find_large_files({"threshold_mb": float(args.get("threshold_mb") or 200), "limit": 8}, context)
     for file_info in large.get("files", [])[:8]:
-        info_only.append({
-            "action": "review_large_file",
-            "path": file_info["path"],
-            "size_mb": file_info["size_mb"],
-            "category": file_info["category"],
-            "detail": "Large file in your workspace; review before deleting.",
-        })
+        info_only.append(
+            {
+                "action": "review_large_file",
+                "path": file_info["path"],
+                "size_mb": file_info["size_mb"],
+                "category": file_info["category"],
+                "detail": "Large file in your workspace; review before deleting.",
+            }
+        )
 
     return {
         "ok": True,
@@ -307,7 +321,7 @@ def get_processes(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
                 continue
         processes.sort(key=lambda item: int(item.get("memory_bytes") or 0), reverse=True)
         return {"processes": processes[:limit], "count": len(processes)}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - process diagnostics are best-effort.
         return {"error": str(exc), "processes": []}
 
 
@@ -434,7 +448,7 @@ def _safe_local_ai_status(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def _safe_count(value: Any) -> int:
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return len(value)
     return 0
 

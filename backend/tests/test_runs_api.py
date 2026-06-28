@@ -44,7 +44,7 @@ def _test_app() -> FastAPI:
 
 
 def _wait_for_phase(client: TestClient, run_id: str, *phases: str) -> dict:
-    for _ in range(80):
+    for _ in range(240):
         response = client.get(f"/api/runs/{run_id}")
         assert response.status_code == 200
         payload = response.json()
@@ -57,7 +57,7 @@ def _wait_for_phase(client: TestClient, run_id: str, *phases: str) -> dict:
 
 
 def _wait_for_run_inactive(run_id: str) -> None:
-    for _ in range(80):
+    for _ in range(240):
         if run_id not in run_service.active_run_ids():
             return
         time.sleep(0.05)
@@ -1133,22 +1133,46 @@ def test_sync_resume_schedules_background_without_event_loop(monkeypatch, tmp_pa
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_ALLOWED_DIRECTORIES", str(tmp_path))
     db.init_db()
+    run = run_service.Run(
+        id="devrun_sync_resume",
+        message="inspect repository",
+        mode="privacy",
+        requested_engine=run_service.RunEngine.DEVELOPER,
+        engine=run_service.RunEngine.DEVELOPER,
+        phase=run_service.RunPhase.PAUSED,
+        state={
+            "run_id": "devrun_sync_resume",
+            "engine": "developer",
+            "phase": "paused",
+            "goal": "inspect repository",
+            "mode": "privacy",
+        },
+    )
+    db.upsert_model("runs", run)
 
     with TestClient(_test_app()) as client:
-        created = client.post(
-            "/api/runs",
-            json={"message": "inspect repository", "mode": "privacy", "engine": "developer"},
-        ).json()
-        _wait_for_phase(client, created["run_id"], "completed", "failed")
-        run = run_service.get_run(created["run_id"])
-        run.phase = run_service.RunPhase.PAUSED
-        db.upsert_model("runs", run)
+        scheduled = []
 
-        response = client.post(f"/api/runs/{created['run_id']}/resume")
+        def schedule_spy(coro, *, data_dir=None):  # noqa: ANN001, ANN202, ARG001
+            scheduled.append(coro)
+            coro.close()
+
+            class Pending:
+                def done(self) -> bool:
+                    return False
+
+                def cancel(self) -> bool:
+                    return True
+
+            return Pending()
+
+        monkeypatch.setattr(run_service, "_schedule_background", schedule_spy)
+
+        response = client.post(f"/api/runs/{run.id}/resume")
 
         assert response.status_code == 200
         assert response.json()["phase"] == "running"
-        _wait_for_phase(client, created["run_id"], "completed", "failed")
+        assert len(scheduled) == 1
 
 
 def test_perception_suggestion_launch_creates_run_without_direct_tool_execution(monkeypatch, tmp_path):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from app.policy.risk import RiskLevel
 from app.services.cleanup_planner_service import CleanupPlannerService
 from app.tools import file_tools
 from app.tools.registry import register_all_tools
+from app.tools.tool_abort import ToolAbortedError
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +121,38 @@ def test_cleanup_execute_direct_delete_requires_valid_approval(tmp_path: Path):
     assert str(target.resolve()) in result["changed_paths"]
     assert not target.exists()
     assert result["rollback_info"]["permanent_delete_unrecoverable"][0]["path"] == str(target.resolve())
+
+
+def test_cleanup_execute_aborts_before_direct_delete(tmp_path: Path):
+    root = _workspace(tmp_path)
+    cache_dir = root / "build"
+    cache_dir.mkdir()
+    target = cache_dir / "artifact.tmp"
+    target.write_text("cache", encoding="utf-8")
+    service = CleanupPlannerService()
+    args = {"roots": [str(root)]}
+    context = _context(root)
+    plan = service.create_plan(args, context)
+    selected = [item.id for item in plan.items if item.path == str(target.resolve())]
+    execute_args = {
+        **args,
+        "plan_id": plan.plan_id,
+        "content_hash": plan.content_hash,
+        "selected_item_ids": selected,
+        "dry_run": False,
+    }
+    preview = service.execute({**execute_args, "dry_run": True}, context)
+    approval = _approved_cleanup_execution(execute_args, context, preview)
+    abort = threading.Event()
+    abort.set()
+
+    with pytest.raises(ToolAbortedError):
+        service.execute(
+            {**execute_args, "approved": True, "approval_id": approval.id},
+            {**context, "_tool_abort_event": abort},
+        )
+
+    assert target.exists()
 
 
 def _approved_cleanup_execution(args: dict, context: dict, preview: dict) -> Approval:

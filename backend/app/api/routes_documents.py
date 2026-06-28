@@ -6,7 +6,6 @@ from app.commerce.entitlements import Feature, active_plan, require_feature
 from app.llm.registry import get_effective_settings
 from app.tools import document_tools
 
-
 router = APIRouter()
 
 

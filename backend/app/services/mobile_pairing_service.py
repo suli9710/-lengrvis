@@ -50,6 +50,20 @@ _PAIR_CONFIRM_FAILURES: dict[str, list[float]] = {}
 _PAIR_CONFIRM_FAILURES_LOCK = threading.Lock()
 
 
+def mobile_device_trust_metadata() -> dict[str, Any]:
+    return {
+        "attestation_verified": False,
+        "attestation_status": "not_verified",
+        "attestation_provider": "none",
+        "trust_basis": "pairing_code_tls",
+        "hardware_backed": False,
+        "message": (
+            "Device identity is not hardware-attested; trust is limited to the pairing code, "
+            "paired session, and LAN TLS/pinning state."
+        ),
+    }
+
+
 def create_pairing_request() -> dict[str, Any]:
     db.init_db()
     _expire_stale_pairings()
@@ -192,6 +206,7 @@ def _redeem_pairing_record(code: str, device_name: str, claim_secret: str) -> di
         "token": token,
         "token_type": "Bearer",
         "device_id": device_id,
+        "device_trust": mobile_device_trust_metadata(),
         "expires_in": TOKEN_TTL_SECONDS,
         "server": _server_info(),
     }
@@ -463,6 +478,7 @@ def revoke_mobile_device(device_id: str) -> dict[str, Any]:
         "status": "revoked",
         "revoked_at": timestamp,
         "updated_at": timestamp,
+        "device_trust": _safe_mobile_device_trust(updated),
         "remote_input_grants": _safe_remote_input_grants(updated),
     }
     from app.services.approval_event_service import publish_mobile_device_revoked
@@ -505,6 +521,7 @@ def revoke_mobile_device_sessions(device_id: str) -> dict[str, Any]:
         "status": str(updated.get("status") or "active").lower(),
         "token_epoch": updated["token_epoch"],
         "updated_at": timestamp,
+        "device_trust": _safe_mobile_device_trust(updated),
         "remote_input_grants": _safe_remote_input_grants(updated),
     }
 
@@ -561,6 +578,7 @@ def refresh_mobile_session_token(claims: dict[str, Any]) -> dict[str, Any]:
         "token": token,
         "token_type": "Bearer",
         "device_id": device_id,
+        "device_trust": _safe_mobile_device_trust(device),
         "expires_in": TOKEN_TTL_SECONDS,
         "view_expires_in": MOBILE_REMOTE_VIEW_TTL_SECONDS if REMOTE_VIEW_SCOPE in token_scopes else 0,
         "server": _server_info(),
@@ -649,6 +667,7 @@ def _upsert_mobile_device_locked(conn: Any, *, device_id: str, device_name: str,
         "revoked_at": "",
         "remote_input_grants": [],
         "token_epoch": 0,
+        "device_trust": mobile_device_trust_metadata(),
         "created_at": timestamp,
         "updated_at": timestamp,
     }
@@ -1009,7 +1028,22 @@ def _safe_mobile_device_payload(device: dict[str, Any]) -> dict[str, Any]:
         "created_at": device.get("created_at") or "",
         "updated_at": device.get("updated_at") or "",
         "revoked_at": device.get("revoked_at") or "",
+        "device_trust": _safe_mobile_device_trust(device),
         "remote_input_grants": _safe_remote_input_grants(device),
+    }
+
+
+def _safe_mobile_device_trust(device: dict[str, Any]) -> dict[str, Any]:
+    trust = device.get("device_trust")
+    if not isinstance(trust, dict):
+        return mobile_device_trust_metadata()
+    return {
+        "attestation_verified": False,
+        "attestation_status": "not_verified",
+        "attestation_provider": "none",
+        "trust_basis": _text(trust.get("trust_basis")) or "pairing_code_tls",
+        "hardware_backed": False,
+        "message": _text(trust.get("message")) or mobile_device_trust_metadata()["message"],
     }
 
 

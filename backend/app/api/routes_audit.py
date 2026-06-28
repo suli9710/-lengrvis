@@ -3,11 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.commerce.entitlements import Feature, active_plan, require_feature
-from app.core import audit as audit_core, db
+from app.core import audit as audit_core
+from app.core import db
 from app.core.schemas import AuditChainVerification
 from app.llm.registry import get_effective_settings
 from app.policy.redaction import redact_audit_payload
-
 
 router = APIRouter()
 

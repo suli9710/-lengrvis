@@ -207,7 +207,9 @@ def admin_unbind_device(license_id: str, request: Request) -> dict[str, Any]:
     return {"ok": True, **unbind_activation_device(license_id=license_id)}
 
 
-def hash_admin_password(password: str, *, salt: bytes | None = None, iterations: int = _PASSWORD_HASH_ITERATIONS) -> str:
+def hash_admin_password(
+    password: str, *, salt: bytes | None = None, iterations: int = _PASSWORD_HASH_ITERATIONS
+) -> str:
     """Return a deployable PBKDF2 admin password hash."""
     text = str(password or "")
     if not text:

@@ -5,7 +5,6 @@ from uuid import uuid4
 
 from app.security.native_confirmation import (
     NATIVE_CONFIRMATION_ID_HEADER,
-    NATIVE_CONFIRMATION_SECRET_ENV,
     NATIVE_CONFIRMATION_SIGNATURE_HEADER,
     NATIVE_CONFIRMATION_TIMESTAMP_HEADER,
     native_confirmation_signature,

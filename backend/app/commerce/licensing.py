@@ -736,9 +736,7 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
             refresh_error_code = None
     confirmation_stale = bool(confirmation["required"] and not confirmation["fresh"])
     confirmation_failed = bool(refresh_error_code and confirmation_stale and not expired and not subscription_inactive)
-    fingerprint_missing = bool(
-        commercial_release_enabled() and license_.device_id and not license_.device_fingerprint
-    )
+    fingerprint_missing = bool(commercial_release_enabled() and license_.device_id and not license_.device_fingerprint)
     state = (
         "revoked"
         if revoked

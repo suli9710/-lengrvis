@@ -4,7 +4,6 @@ from fastapi import APIRouter
 
 from app.services.skill_service import import_skill, list_installed_skills, refresh_runtime_registry
 
-
 router = APIRouter()
 
 

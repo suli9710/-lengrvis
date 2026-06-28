@@ -41,7 +41,9 @@ def test_tampered_approval_fails_integrity_check() -> None:
     payload["status"] = ApprovalStatus.APPROVED.value
 
     with db.connect() as conn:
-        conn.execute("UPDATE approvals SET data = ?, status = ? WHERE id = ?", (json.dumps(payload), "approved", approval.id))
+        conn.execute(
+            "UPDATE approvals SET data = ?, status = ? WHERE id = ?", (json.dumps(payload), "approved", approval.id)
+        )
 
     with pytest.raises(db.SensitiveRecordIntegrityError):
         db.fetch_one("approvals", approval.id)
@@ -52,7 +54,9 @@ def test_tampered_approval_fails_integrity_check() -> None:
 
 def test_tampered_permission_policy_fails_integrity_check() -> None:
     store = PermissionStore("default")
-    policy = store.add_rule(PermissionRule(id="allow_read", name="Allow read", effect="allow", tools=["file.read_text"]))
+    policy = store.add_rule(
+        PermissionRule(id="allow_read", name="Allow read", effect="allow", tools=["file.read_text"])
+    )
     payload = policy.model_dump(mode="json")
     payload["rules"][0]["effect"] = "deny"
 

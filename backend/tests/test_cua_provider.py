@@ -110,7 +110,9 @@ def test_resolve_cua_provider_returns_degraded_when_unsupported():
 def test_cua_provider_uses_configurable_model_without_logging_secrets():
     settings = _settings()
     provider = CUAProvider(settings, model="custom-cua", client_factory=FakeAsyncClient)
-    FakeAsyncClient.responses = [_response(200, {"id": "resp_run", "status": "completed", "output": [{"type": "message"}]})]
+    FakeAsyncClient.responses = [
+        _response(200, {"id": "resp_run", "status": "completed", "output": [{"type": "message"}]})
+    ]
 
     result = asyncio.run(provider.run_step(instruction="Inspect the current page."))
 

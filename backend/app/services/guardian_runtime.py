@@ -20,7 +20,6 @@ from app.security.desktop_api import (
     desktop_api_token_headers,
 )
 
-
 GUARDIAN_PORT = int(get_env("LENGRVIS_GUARDIAN_PORT") or get_env("LENGRVIS_BACKEND_PORT") or "8000")
 FULL_BACKEND_HOST = "127.0.0.1"
 FULL_BACKEND_PORT = int(get_env("LENGRVIS_FULL_BACKEND_PORT") or "8001")
@@ -178,14 +177,14 @@ class GuardianRuntime:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/foreground", headers=desktop_api_token_headers())
-        except Exception:
+        except Exception:  # noqa: BLE001 - foreground notification is best-effort.
             return
 
     async def _notify_full_background(self) -> None:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(f"{FULL_BACKEND_URL}/api/runtime/background", headers=desktop_api_token_headers())
-        except Exception:
+        except Exception:  # noqa: BLE001 - background notification is best-effort.
             return
 
     def _full_backend_command(self) -> list[str]:
@@ -201,7 +200,16 @@ class GuardianRuntime:
             return command
         if getattr(sys, "frozen", False):
             return [sys.executable]
-        return [sys.executable, "-m", "uvicorn", "backend.main:full_app", "--host", FULL_BACKEND_HOST, "--port", str(FULL_BACKEND_PORT)]
+        return [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "backend.main:full_app",
+            "--host",
+            FULL_BACKEND_HOST,
+            "--port",
+            str(FULL_BACKEND_PORT),
+        ]
 
     async def _wait_for_full_backend(self) -> None:
         deadline = time.monotonic() + 30
@@ -217,9 +225,11 @@ class GuardianRuntime:
     async def _is_full_backend_healthy(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=1.0) as client:
-                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers())
+                response = await client.get(
+                    f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers()
+                )
             return 200 <= response.status_code < 300
-        except Exception:
+        except Exception:  # noqa: BLE001 - health probes are best-effort.
             return False
 
     async def _stop_full_backend_locked(self) -> None:
@@ -232,7 +242,7 @@ class GuardianRuntime:
         process.terminate()
         try:
             await asyncio.wait_for(process.wait(), timeout=8)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()
 
@@ -256,11 +266,13 @@ class GuardianRuntime:
     async def _full_backend_has_active_runs(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=1.5) as client:
-                response = await client.get(f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers())
+                response = await client.get(
+                    f"{FULL_BACKEND_URL}/api/runtime/status", headers=desktop_api_token_headers()
+                )
             if not 200 <= response.status_code < 300:
                 return False
             data = response.json()
-        except Exception:
+        except Exception:  # noqa: BLE001 - active-run checks are best-effort.
             return False
         active = data.get("activeRunIds") if isinstance(data, dict) else None
         return bool(active)

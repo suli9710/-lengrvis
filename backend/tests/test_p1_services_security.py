@@ -11,8 +11,7 @@ from app.core import db
 from app.core.errors import SecurityError
 from app.security.sensitive_confirmation import create_settings_confirmation
 from app.services import document_intelligence_service as doc_svc
-from app.services import file_service
-from app.services import guardian_runtime
+from app.services import file_service, guardian_runtime
 
 
 def test_add_directory_rejects_system_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

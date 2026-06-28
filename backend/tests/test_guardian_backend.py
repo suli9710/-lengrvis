@@ -1088,7 +1088,9 @@ def test_guardian_approval_does_not_execute_step(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(routes_guardian, "_wake_full_backend_for_approval", fake_wake_full_backend)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     assert response.status_code == 200
     stored = db.fetch_one("approvals", approval.id)
@@ -1143,7 +1145,9 @@ def test_guardian_approval_surfaces_full_backend_failure(monkeypatch, tmp_path: 
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"]["approval_id"] == approval.id
@@ -1203,7 +1207,9 @@ def test_guardian_approval_surfaces_full_backend_continue_transport_failure(monk
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"]["message"] == "Full backend is not ready to continue the approval."
@@ -1356,7 +1362,9 @@ def test_guardian_approval_wraps_non_json_full_backend_continue_failure(monkeypa
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert response.status_code == 502
@@ -1434,7 +1442,9 @@ def test_guardian_approval_redacts_json_full_backend_continue_failure_detail(mon
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert response.status_code == 503
@@ -1513,7 +1523,9 @@ def test_guardian_approval_redacts_nested_backend_approval_preview(monkeypatch, 
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     payload_text = json.dumps(response.json(), ensure_ascii=False)
     assert response.status_code == 503
@@ -1593,8 +1605,12 @@ def test_guardian_approval_can_retry_after_transient_execute_failure(monkeypatch
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        first = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
-        second = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        first = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
+        second = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     assert first.status_code == 409
     assert second.status_code == 200
@@ -1658,7 +1674,9 @@ def test_guardian_approval_requires_full_backend_to_consume_approval(monkeypatch
     monkeypatch.setattr(routes_guardian.httpx, "AsyncClient", FakeClient)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/approve", headers=native_confirmation_headers("approve", approval.id)
+        )
 
     assert response.status_code == 503
     assert response.json()["detail"]["approval"]["id"] == approval.id
@@ -1870,7 +1888,9 @@ def test_guardian_desktop_reject_denies_step_and_cancels_task(monkeypatch, tmp_p
     db.upsert_model("approvals", approval)
 
     with TestClient(create_guardian_app()) as client:
-        response = client.post(f"/api/approvals/{approval.id}/reject", headers=native_confirmation_headers("reject", approval.id))
+        response = client.post(
+            f"/api/approvals/{approval.id}/reject", headers=native_confirmation_headers("reject", approval.id)
+        )
 
     refreshed_task = Task.model_validate(db.fetch_one("tasks", task.id))
     refreshed_plan = Plan.model_validate(db.fetch_many("plans", "task_id = ?", (task.id,), limit=1)[0])

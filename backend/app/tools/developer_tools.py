@@ -16,6 +16,7 @@ from app.core.subprocess_output import decode_process_output
 from app.orchestration.background_tasks import background_task_status, start_background_process
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
 READONLY_SHELL_COMMANDS = {
@@ -179,7 +180,6 @@ def grep_files(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not query:
         return {"ok": False, "error": "Missing query.", "results": []}
     for path in _authorized_rglob_paths(root, _allowed(context), pattern=pattern, files_only=True):
-        rel = path.relative_to(root).as_posix()
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
@@ -319,6 +319,7 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if args.get("dry_run", False):
         return _test_run_dry_run_preview(tokens, cwd=root, command_text=command, timeout_seconds=timeout_seconds)
     if args.get("background", False):
+        raise_if_tool_aborted(context)
         try:
             task = start_background_process(
                 tokens,
@@ -339,6 +340,7 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "summary": f"Started background test run {task.id}: {command}",
         }
 
+    raise_if_tool_aborted(context)
     return _run_test_foreground(
         tokens,
         cwd=root,
@@ -346,6 +348,7 @@ def test_run(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds=timeout_seconds,
         output_dir=output_dir,
         preview_chars=_preview_limit(args),
+        abort_context=context,
     )
 
 
@@ -696,9 +699,11 @@ def _run_test_foreground(
     timeout_seconds: int,
     output_dir: Path,
     preview_chars: int,
+    abort_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started_at = time.time()
     try:
+        raise_if_tool_aborted(abort_context)
         completed = run_process_tree(
             command,
             cwd=str(cwd),
@@ -720,7 +725,8 @@ def _run_test_foreground(
         timed_out = True
         error = f"Test run exceeded {min(timeout_seconds, TEST_FOREGROUND_TIMEOUT_MAX_SECONDS)}s timeout."
 
-    stdout_path, stderr_path = _persist_test_output(output_dir, stdout, stderr)
+    raise_if_tool_aborted(abort_context)
+    stdout_path, stderr_path = _persist_test_output(output_dir, stdout, stderr, abort_context=abort_context)
     stdout_preview, stdout_truncated = _truncate_text(stdout, preview_chars)
     stderr_preview, stderr_truncated = _truncate_text(stderr, preview_chars)
     ok = returncode == 0 and not timed_out
@@ -789,12 +795,21 @@ def _test_output_dir(context: dict[str, Any]) -> Path:
     return root / "developer_test_runs"
 
 
-def _persist_test_output(output_dir: Path, stdout: str, stderr: str) -> tuple[Path, Path]:
+def _persist_test_output(
+    output_dir: Path,
+    stdout: str,
+    stderr: str,
+    *,
+    abort_context: dict[str, Any] | None = None,
+) -> tuple[Path, Path]:
+    raise_if_tool_aborted(abort_context)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"testrun_{int(time.time() * 1000)}"
     stdout_path = output_dir / f"{stem}.stdout.log"
     stderr_path = output_dir / f"{stem}.stderr.log"
+    raise_if_tool_aborted(abort_context)
     stdout_path.write_text(stdout, encoding="utf-8", errors="replace")
+    raise_if_tool_aborted(abort_context)
     stderr_path.write_text(stderr, encoding="utf-8", errors="replace")
     return stdout_path, stderr_path
 

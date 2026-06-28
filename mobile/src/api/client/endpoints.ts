@@ -39,6 +39,7 @@ export async function pairWithBackend(
     baseUrl: normalizedBaseUrl,
     token: payload.token,
     deviceId: payload.device_id,
+    ...(payload.device_trust ? { deviceTrust: payload.device_trust } : {}),
     expiresAt,
     baseUrlSecurity: mergedBaseUrlSecurity,
     server: normalizePairingServerInfo(payload.server),

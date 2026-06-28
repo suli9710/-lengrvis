@@ -17,6 +17,7 @@ from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import RiskLevel
 from app.services import system_service
 from app.tools import app_tools, browser_tools, search_tools, system_tools, ui_automation_tools
+from app.tools.tool_abort import ToolAbortedError
 
 
 def _init_test_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, **env: str) -> None:
@@ -132,6 +133,7 @@ def test_uninstall_app_executes_scanned_entry_without_shell(monkeypatch, tmp_pat
 
     def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
         runs.append({"command": command, **kwargs})
+
         class _Completed:
             returncode = 0
             stdout = ""
@@ -147,6 +149,27 @@ def test_uninstall_app_executes_scanned_entry_without_shell(monkeypatch, tmp_pat
     assert result["verified_removed"] is True
     assert result["returncode"] == 0
     assert runs[0]["command"] == ["MsiExec.exe", "/X", "{ABC-123}"]
+
+
+def test_uninstall_app_aborts_before_uninstaller_process(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_tools, "_scan_shortcuts", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_appx_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_winget_packages", lambda: [])
+    monkeypatch.setattr(app_tools, "_scan_registry_apps", _registry_product_apps)
+    runs: list[object] = []
+    abort = threading.Event()
+    abort.set()
+
+    monkeypatch.setattr(app_tools.subprocess, "run", lambda *args, **kwargs: runs.append((args, kwargs)))
+
+    with pytest.raises(ToolAbortedError):
+        app_tools.uninstall_app(
+            {"query": "Sample Product", "dry_run": False},
+            {**_settings_context(), "_tool_abort_event": abort},
+        )
+
+    assert runs == []
 
 
 def test_uninstall_app_prefers_quiet_uninstall_string(monkeypatch, tmp_path):
@@ -177,6 +200,7 @@ def test_uninstall_app_prefers_quiet_uninstall_string(monkeypatch, tmp_path):
 
     def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
         runs.append(list(command))
+
         class _Completed:
             returncode = 0
             stdout = ""
@@ -219,6 +243,7 @@ def test_uninstall_app_winget_channel(monkeypatch, tmp_path):
 
     def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
         runs.append(list(command))
+
         class _Completed:
             returncode = 0
             stdout = ""
@@ -261,6 +286,7 @@ def test_uninstall_app_appx_channel(monkeypatch, tmp_path):
 
     def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
         runs.append(list(command))
+
         class _Completed:
             returncode = 0
             stdout = ""
@@ -460,6 +486,39 @@ def test_app_open_authorized_file_and_folder_dry_run(monkeypatch, tmp_path):
     assert folder_result == {"ok": True, "dry_run": True, "path": str(workspace.resolve())}
 
 
+def test_app_open_file_aborts_before_startfile(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sample = workspace / "note.txt"
+    sample.write_text("hello", encoding="utf-8")
+    _init_test_settings(monkeypatch, tmp_path, LENGRVIS_ALLOWED_DIRECTORIES=str(workspace))
+    calls: list[str] = []
+    abort = threading.Event()
+    abort.set()
+    monkeypatch.setattr(app_tools.os, "startfile", lambda path: calls.append(str(path)), raising=False)
+
+    with pytest.raises(ToolAbortedError):
+        app_tools.open_file(
+            {"path": str(sample), "dry_run": False},
+            {**_settings_context(), "_tool_abort_event": abort},
+        )
+
+    assert calls == []
+
+
+def test_app_launch_allowlisted_aborts_before_popen(monkeypatch, tmp_path):
+    _init_test_settings(monkeypatch, tmp_path)
+    calls: list[object] = []
+    abort = threading.Event()
+    abort.set()
+    monkeypatch.setattr(app_tools.subprocess, "Popen", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    with pytest.raises(ToolAbortedError):
+        app_tools.launch_allowlisted({"app": "notepad", "dry_run": False}, {"_tool_abort_event": abort})
+
+    assert calls == []
+
+
 def test_system_diagnostics_startup_and_settings_dry_run(monkeypatch):
     monkeypatch.setattr(system_tools, "get_info", lambda args, context: {"memory_total": 1024, "memory_available": 768})
     monkeypatch.setattr(system_tools, "get_disks", lambda args, context: {"disks": []})
@@ -474,6 +533,19 @@ def test_system_diagnostics_startup_and_settings_dry_run(monkeypatch):
     assert diagnostics["local_ai"]["probe_mode"] == "summary_only"
     assert isinstance(startup["startup_items"], list)
     assert settings == {"ok": True, "dry_run": True, "uri": "ms-settings:display"}
+
+
+def test_system_open_settings_aborts_before_startfile(monkeypatch):
+    abort = threading.Event()
+    abort.set()
+    calls: list[str] = []
+    monkeypatch.setattr(system_tools.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(system_tools.os, "startfile", lambda uri: calls.append(str(uri)), raising=False)
+
+    with pytest.raises(ToolAbortedError):
+        system_tools.open_settings_uri({"uri": "ms-settings:display", "dry_run": False}, {"_tool_abort_event": abort})
+
+    assert calls == []
 
 
 def test_browser_network_gate_blocks_when_disabled(monkeypatch, tmp_path):
@@ -501,7 +573,9 @@ def test_browser_read_page_and_extract_links_with_local_http(monkeypatch, tmp_pa
         def log_message(self, format: str, *args):  # noqa: A002
             return
 
-    with socketserver.TCPServer(("127.0.0.1", 0), lambda *args, **kwargs: QuietHandler(*args, directory=str(site), **kwargs)) as server:
+    with socketserver.TCPServer(
+        ("127.0.0.1", 0), lambda *args, **kwargs: QuietHandler(*args, directory=str(site), **kwargs)
+    ) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         url = f"http://127.0.0.1:{server.server_address[1]}/index.html"
@@ -544,7 +618,9 @@ def test_public_api_routes_expose_windows_core(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(system_service, "processes", lambda limit=25: {"processes": [], "count": 0})
     monkeypatch.setattr(system_service, "startup_items", lambda: {"startup_items": [], "count": 0})
-    monkeypatch.setattr(ui_automation_tools, "active_window", lambda args, context: {"ok": True, "title": "Test Window"})
+    monkeypatch.setattr(
+        ui_automation_tools, "active_window", lambda args, context: {"ok": True, "title": "Test Window"}
+    )
     monkeypatch.setattr(ui_automation_tools, "observe", lambda args, context: {"ok": True, "elements": []})
     client = TestClient(create_app())
 

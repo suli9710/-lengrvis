@@ -4,14 +4,15 @@ import base64
 import binascii
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 from urllib.parse import urlparse
 
 try:
     import yaml
-except Exception:  # pragma: no cover - PyYAML is optional at import time.
+except Exception:  # noqa: BLE001  # pragma: no cover - PyYAML is optional at import time.
     yaml = None
 
 from pydantic import ValidationError
@@ -30,7 +31,6 @@ from app.skills.schemas import (
     SkillToolSpec,
 )
 from app.tools.schemas import ToolDefinition
-
 
 SKILL_MANIFEST_NAMES = ("skill.yaml", "skill.yml")
 SENSITIVE_HEADER_HINTS = ("authorization", "cookie", "key", "password", "secret", "token")
@@ -140,7 +140,11 @@ def register_skills(
     settings: AppSettings | None = None,
     skill_directories: Iterable[str | Path] | None = None,
 ) -> list[LoadedSkillPackage]:
-    directories = list(skill_directories) if skill_directories is not None else skill_directories_from_settings(settings or AppSettings.from_sources())
+    directories = (
+        list(skill_directories)
+        if skill_directories is not None
+        else skill_directories_from_settings(settings or AppSettings.from_sources())
+    )
     packages = scan_skill_directories(
         directories,
         allow_unsafe_local_skill_execution=(
@@ -152,7 +156,9 @@ def register_skills(
     for package in packages:
         for definition in package.tool_definitions:
             if definition.name in existing_names:
-                raise SkillLoadError(f"Skill tool name collides with an existing tool: {definition.name}", path=package.manifest_path)
+                raise SkillLoadError(
+                    f"Skill tool name collides with an existing tool: {definition.name}", path=package.manifest_path
+                )
             registry.register(definition)
             existing_names.add(definition.name)
     if packages:
@@ -171,9 +177,7 @@ def canonical_skill_signature_payload(raw_manifest: Mapping[str, Any]) -> bytes:
     """Return the deterministic manifest bytes that Skill signatures cover."""
 
     unsigned = {
-        str(key): _canonicalize_json_value(item)
-        for key, item in raw_manifest.items()
-        if str(key) != "signature"
+        str(key): _canonicalize_json_value(item) for key, item in raw_manifest.items() if str(key) != "signature"
     }
     return json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -359,7 +363,9 @@ def review_skill_definition(definition: SkillDefinition, root: str | Path) -> Sk
 
         minimum_risk = _minimum_risk_for_permissions(permissions)
         if RISK_ORDER[risk] < RISK_ORDER[minimum_risk]:
-            severity = "error" if RISK_ORDER[minimum_risk] >= RISK_ORDER[RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM] else "warning"
+            severity = (
+                "error" if RISK_ORDER[minimum_risk] >= RISK_ORDER[RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM] else "warning"
+            )
             issues.append(
                 SkillSafetyIssue(
                     severity=severity,
@@ -409,7 +415,9 @@ def review_skill_definition(definition: SkillDefinition, root: str | Path) -> Sk
             try:
                 entry = sandbox.resolve_local_entry(execution)
             except SkillSandboxError as exc:
-                issues.append(SkillSafetyIssue(severity="error", location=f"{location}.execution.entry", message=str(exc)))
+                issues.append(
+                    SkillSafetyIssue(severity="error", location=f"{location}.execution.entry", message=str(exc))
+                )
                 continue
             if execution.type == SkillExecutionType.PYTHON and entry.suffix.lower() != ".py":
                 issues.append(
@@ -456,7 +464,11 @@ def review_skill_definition(definition: SkillDefinition, root: str | Path) -> Sk
                         )
                     )
         else:  # pragma: no cover - guarded by pydantic enum validation.
-            issues.append(SkillSafetyIssue(severity="error", location=f"{location}.execution.type", message="unsupported execution type."))
+            issues.append(
+                SkillSafetyIssue(
+                    severity="error", location=f"{location}.execution.type", message="unsupported execution type."
+                )
+            )
     return SkillSafetyReport(issues=issues)
 
 
@@ -626,7 +638,9 @@ def _hydrate_schema_paths(raw: dict[str, Any], root: Path, manifest: Path) -> di
             if not schema_path:
                 continue
             if not isinstance(schema_path, str):
-                raise SkillLoadError(f"Invalid skill.yaml: tools[{index}].{schema_field}_path must be a string.", path=manifest)
+                raise SkillLoadError(
+                    f"Invalid skill.yaml: tools[{index}].{schema_field}_path must be a string.", path=manifest
+                )
             try:
                 resolved = sandbox.resolve_package_file(schema_path, label=f"tools[{index}].{schema_field}_path")
             except SkillSandboxError as exc:

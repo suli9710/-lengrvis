@@ -331,7 +331,7 @@ def _onnx_containment_roots(raw: Path) -> list[Path]:
             data_dir = Path(settings.data_dir).expanduser()
             _append_unique_root(roots, data_dir / "models")
             _append_unique_root(roots, data_dir)
-    except Exception:  # noqa: BLE001 - optional settings lookup must not block model resolution.
+    except Exception:  # noqa: BLE001, S110 - optional settings lookup must not block model resolution.
         pass
     return roots
 

@@ -141,9 +141,7 @@ def test_chat_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
 
 def test_responses_uses_v1_for_bare_openai_compatible_base_url(monkeypatch):
     _patch_shared_client(monkeypatch)
-    FakeAsyncClient.responses = [
-        _response(200, {"status": "completed", "output": [{"content": [{"text": "ok"}]}]})
-    ]
+    FakeAsyncClient.responses = [_response(200, {"status": "completed", "output": [{"content": [{"text": "ok"}]}]})]
     provider = OpenAICompatibleProvider(_settings(base_url="https://api.example.test", wire_api="responses"))
 
     text = asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
@@ -241,9 +239,7 @@ def test_circuit_opens_after_repeated_transient_failures(monkeypatch):
         _response(500, {"error": "first"}),
         _response(503, {"error": "second"}),
     ]
-    provider = OpenAICompatibleProvider(
-        _settings(llm_api_max_retries=0, llm_api_circuit_failure_threshold=2)
-    )
+    provider = OpenAICompatibleProvider(_settings(llm_api_max_retries=0, llm_api_circuit_failure_threshold=2))
     message = [{"role": "user", "content": "hello"}]
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -262,9 +258,7 @@ def test_prompt_too_long_does_not_retry_or_open_circuit(monkeypatch):
         _response(400, {"error": {"message": "context_length_exceeded: prompt too long"}}),
         _response(500, {"error": "would be consumed by a bad retry"}),
     ]
-    provider = OpenAICompatibleProvider(
-        _settings(llm_api_max_retries=2, llm_api_circuit_failure_threshold=1)
-    )
+    provider = OpenAICompatibleProvider(_settings(llm_api_max_retries=2, llm_api_circuit_failure_threshold=1))
 
     with pytest.raises(PromptTooLongError) as exc_info:
         asyncio.run(provider.chat([{"role": "user", "content": "hello"}]))
@@ -376,9 +370,7 @@ def test_structured_chat_validates_schema_and_extracts_embedded_json(monkeypatch
             {
                 "choices": [
                     {
-                        "message": {
-                            "content": 'Result:\n{"name":"Ada","items":[{"id":"a","count":2}]}\nDone.'
-                        },
+                        "message": {"content": 'Result:\n{"name":"Ada","items":[{"id":"a","count":2}]}\nDone.'},
                         "finish_reason": "stop",
                     }
                 ]
@@ -423,9 +415,7 @@ def test_structured_chat_chat_completions_sends_native_json_schema(monkeypatch):
         "properties": {"name": {"type": "string"}},
         "additionalProperties": False,
     }
-    provider = OpenAICompatibleProvider(
-        _settings(structured_output_mode="native", structured_output_repair_retries=0)
-    )
+    provider = OpenAICompatibleProvider(_settings(structured_output_mode="native", structured_output_repair_retries=0))
 
     payload = asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
 
@@ -472,9 +462,7 @@ def test_structured_chat_auto_falls_back_when_native_json_schema_is_unsupported(
         "required": ["name"],
         "properties": {"name": {"type": "string"}},
     }
-    provider = OpenAICompatibleProvider(
-        _settings(structured_output_mode="auto", structured_output_repair_retries=0)
-    )
+    provider = OpenAICompatibleProvider(_settings(structured_output_mode="auto", structured_output_repair_retries=0))
 
     payload = asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
 
@@ -494,9 +482,7 @@ def test_structured_chat_native_mode_fail_closes_when_json_schema_is_unsupported
         "required": ["name"],
         "properties": {"name": {"type": "string"}},
     }
-    provider = OpenAICompatibleProvider(
-        _settings(structured_output_mode="native", structured_output_repair_retries=0)
-    )
+    provider = OpenAICompatibleProvider(_settings(structured_output_mode="native", structured_output_repair_retries=0))
 
     with pytest.raises(LLMStructuredOutputError) as exc_info:
         asyncio.run(provider.structured_chat([{"role": "user", "content": "return json"}], schema))
@@ -718,9 +704,7 @@ def test_vision_rejects_symlink_extension_bypass_without_reading_secret(monkeypa
     FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "unused"}}]})]
     provider = OpenAICompatibleProvider(_settings())
 
-    result = asyncio.run(
-        provider.vision(str(bait), "describe", allowed_directories=[str(tmp_path)])
-    )
+    result = asyncio.run(provider.vision(str(bait), "describe", allowed_directories=[str(tmp_path)]))
 
     assert "unsupported image format" in result
     assert FakeAsyncClient.calls == 0
@@ -753,9 +737,7 @@ def test_vision_rejects_symlink_escape_with_allowed_directories(monkeypatch, tmp
     FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "unused"}}]})]
     provider = OpenAICompatibleProvider(_settings())
 
-    result = asyncio.run(
-        provider.vision(str(bait), "describe", allowed_directories=[str(workspace)])
-    )
+    result = asyncio.run(provider.vision(str(bait), "describe", allowed_directories=[str(workspace)]))
 
     assert "invalid image path" in result
     assert FakeAsyncClient.calls == 0
@@ -772,9 +754,7 @@ def test_vision_reads_authorized_symlink_to_image_inside_sandbox(monkeypatch, tm
     FakeAsyncClient.responses = [_response(200, {"choices": [{"message": {"content": "ok"}}]})]
     provider = OpenAICompatibleProvider(_settings())
 
-    result = asyncio.run(
-        provider.vision(str(bait), "describe", allowed_directories=[str(workspace)])
-    )
+    result = asyncio.run(provider.vision(str(bait), "describe", allowed_directories=[str(workspace)]))
 
     assert result == "ok"
     assert FakeAsyncClient.calls == 1

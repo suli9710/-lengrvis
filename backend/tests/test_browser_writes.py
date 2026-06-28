@@ -200,7 +200,9 @@ def test_review_browser_write_call_blocks_fill_form_password_field():
 
 def test_review_tool_call_uses_browser_write_sensitive_field_gate():
     policy = PolicyEngine(
-        settings=AppSettings(provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True)
+        settings=AppSettings(
+            provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+        )
     )
 
     review = policy.review_tool_call(
@@ -222,7 +224,9 @@ def test_review_tool_call_uses_browser_write_sensitive_field_gate():
 
 def test_review_tool_call_denies_sensitive_browser_act_selector():
     policy = PolicyEngine(
-        settings=AppSettings(provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True)
+        settings=AppSettings(
+            provider_name="mock", mode="efficiency", allow_browser_network=True, allow_cloud_context=True
+        )
     )
 
     review = policy.review_tool_call(

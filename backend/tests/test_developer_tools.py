@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.policy.policy_engine import PolicyEngine
 from app.policy.risk import SafetyVerdict
 from app.tools import developer_tools
 from app.tools.registry import ToolRegistry
+from app.tools.tool_abort import ToolAbortedError
 
 
 @pytest.mark.parametrize(
@@ -525,6 +527,21 @@ def test_dev_test_run_dry_run_does_not_execute(monkeypatch: pytest.MonkeyPatch, 
     assert calls == []
 
 
+def test_dev_test_run_aborts_before_foreground_process(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[Any] = []
+    abort = threading.Event()
+    abort.set()
+    monkeypatch.setattr(developer_tools, "run_process_tree", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    with pytest.raises(ToolAbortedError):
+        developer_tools.test_run(
+            {"cwd": str(tmp_path), "command": "pytest backend/tests", "timeout_seconds": 7},
+            {"allowed_directories": [str(tmp_path)], "_tool_abort_event": abort},
+        )
+
+    assert calls == []
+
+
 def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class Timeout:
         stdout = "partial stdout"
@@ -546,6 +563,21 @@ def test_dev_test_run_persists_output_and_timeout(monkeypatch: pytest.MonkeyPatc
     assert result["timed_out"] is True
     assert Path(result["stdout_path"]).read_text(encoding="utf-8") == "partial stdout"
     assert Path(result["stderr_path"]).read_text(encoding="utf-8") == "partial stderr"
+
+
+def test_dev_test_run_aborts_before_persisting_output(tmp_path: Path) -> None:
+    abort = threading.Event()
+    abort.set()
+
+    with pytest.raises(ToolAbortedError):
+        developer_tools._persist_test_output(
+            tmp_path / "runs",
+            "stdout",
+            "stderr",
+            abort_context={"_tool_abort_event": abort},
+        )
+
+    assert not (tmp_path / "runs").exists()
 
 
 def test_dev_test_run_background_returns_task_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

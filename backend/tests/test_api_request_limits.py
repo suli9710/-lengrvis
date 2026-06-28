@@ -19,8 +19,7 @@ from app.security.api_request_limits import (
     guarded_api_endpoint_from_path,
 )
 from app.security.middleware import register_security_middleware
-from app.services import run_service_background
-from app.services import task_pool
+from app.services import run_service_background, task_pool
 
 
 class _StubRequest:

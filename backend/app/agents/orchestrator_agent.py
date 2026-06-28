@@ -49,14 +49,13 @@ from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.orchestration.state_machine import _phase_of, safe_transition
 from app.orchestration.step_phase import set_step_status
 from app.orchestration.task_phase import TaskPhase
-
-_TERMINAL_TASK_PHASES = frozenset({TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED})
 from app.perception.context_store import handle_perception_event
 from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error, strip_model_control_args
 from app.policy.risk import SafetyVerdict
 from app.services.task_recording_service import capture_step_screenshot, recording_enabled
 from app.tools.registry import register_all_tools
 
+_TERMINAL_TASK_PHASES = frozenset({TaskPhase.COMPLETED, TaskPhase.FAILED, TaskPhase.CANCELLED})
 _MAX_SUPERVISION_TASK_CACHES = 256
 _MAX_SUPERVISED_IDS_PER_TASK = 5000
 

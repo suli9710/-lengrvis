@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from app.config import AppSettings
 from app.services import document_intelligence_service as svc
 from app.tools import document_tools
 from app.tools.registry import ToolRegistry
+from app.tools.tool_abort import ToolAbortedError
 
 
 @pytest.fixture(autouse=True)
@@ -324,6 +327,45 @@ def test_apply_redaction_preview_then_write(tmp_path: Path):
     assert result["ok"] is True
     assert "[REDACTED:EMAIL]" in text
     assert result["rollback_info"]["backup"]
+
+
+def test_apply_redaction_aborts_before_writing_or_backup(tmp_path: Path):
+    path = tmp_path / "contacts.txt"
+    path.write_text("Email ada@example.com", encoding="utf-8")
+    abort = threading.Event()
+    abort.set()
+
+    with pytest.raises(ToolAbortedError):
+        svc.apply_redaction(path, dry_run=False, abort_context={"_tool_abort_event": abort})
+
+    assert path.read_text(encoding="utf-8") == "Email ada@example.com"
+    assert not path.with_suffix(path.suffix + ".bak").exists()
+
+
+def test_document_tool_write_aborts_before_service_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    path = tmp_path / "contacts.txt"
+    path.write_text("Email ada@example.com", encoding="utf-8")
+    abort = threading.Event()
+    abort.set()
+    calls: list[object] = []
+
+    def fake_apply_redaction(*args: object, **kwargs: object) -> dict[str, Any]:
+        calls.append((args, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(svc, "apply_redaction", fake_apply_redaction)
+
+    with pytest.raises(ToolAbortedError):
+        document_tools.apply_redaction(
+            {"path": str(path), "dry_run": False},
+            {
+                "allowed_directories": [str(tmp_path)],
+                "settings": AppSettings(allowed_directories=[str(tmp_path)], provider_name="mock", plan="pro"),
+                "_tool_abort_event": abort,
+            },
+        )
+
+    assert calls == []
 
 
 def test_edit_docx_preserves_run_formatting_when_match_is_single_run(tmp_path: Path):

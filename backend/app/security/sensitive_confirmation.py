@@ -103,7 +103,9 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         old_value = bool(getattr(settings, "requires_openai_auth", True))
         new_value = _truthy(payload.get("requires_openai_auth"))
         if old_value and not new_value:
-            changes.append({"kind": "settings_disable_auth", "key": "requires_openai_auth", "from": old_value, "to": new_value})
+            changes.append(
+                {"kind": "settings_disable_auth", "key": "requires_openai_auth", "from": old_value, "to": new_value}
+            )
     if "developer_writes_require_verification" in payload:
         old_value = bool(getattr(settings, "developer_writes_require_verification", True))
         new_value = _truthy(payload.get("developer_writes_require_verification"))
@@ -132,7 +134,14 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         old_mode = _normalized_setting_value("permission_mode", getattr(settings, "permission_mode", "default"))
         new_mode = _normalized_setting_value("permission_mode", payload.get("permission_mode"))
         if _permission_mode_rank(new_mode) > _permission_mode_rank(old_mode):
-            changes.append({"kind": "settings_permission_mode_relaxation", "key": "permission_mode", "from": old_mode, "to": new_mode})
+            changes.append(
+                {
+                    "kind": "settings_permission_mode_relaxation",
+                    "key": "permission_mode",
+                    "from": old_mode,
+                    "to": new_mode,
+                }
+            )
     for key in sorted(LLM_EGRESS_SETTINGS):
         if key not in payload:
             continue
@@ -146,9 +155,13 @@ def sensitive_settings_changes(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if old_mode != new_mode and new_mode != "privacy":
             changes.append({"kind": "settings_llm_egress_change", "key": "mode", "from": old_mode, "to": new_mode})
     if "allowed_directories" in payload:
-        additions = _added_values(getattr(settings, "allowed_directories", []) or [], payload.get("allowed_directories") or [])
+        additions = _added_values(
+            getattr(settings, "allowed_directories", []) or [], payload.get("allowed_directories") or []
+        )
         if additions:
-            changes.append({"kind": "settings_expand_allowed_directories", "key": "allowed_directories", "added": additions})
+            changes.append(
+                {"kind": "settings_expand_allowed_directories", "key": "allowed_directories", "added": additions}
+            )
     if "mcp_servers" in payload:
         additions = _enabled_mcp_additions(getattr(settings, "mcp_servers", []) or [], payload.get("mcp_servers") or [])
         if additions:
@@ -198,7 +211,9 @@ def permission_delete_relaxations(current_policy: PermissionPolicy, rule_id: str
     return permission_policy_relaxations(current_policy, next_policy)
 
 
-def _create_confirmation(scope: str, changes: list[dict[str, Any]], *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _create_confirmation(
+    scope: str, changes: list[dict[str, Any]], *, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
     _ensure_schema()
     now = _now()
     expires_at = now + timedelta(seconds=CONFIRMATION_TTL_SECONDS)
@@ -288,7 +303,9 @@ def _consume_confirmation(
             raise _invalid_confirmation()
         expires_at = datetime.fromisoformat(str(row["expires_at"]))
         if expires_at < now:
-            raise AppError("sensitive_confirmation_expired", "The sensitive-change confirmation expired.", status_code=409)
+            raise AppError(
+                "sensitive_confirmation_expired", "The sensitive-change confirmation expired.", status_code=409
+            )
         result = conn.execute(
             """
             UPDATE sensitive_confirmations
@@ -413,7 +430,9 @@ def _patterns_are_wider(previous: list[str], candidate: list[str]) -> bool:
 
 
 def _normalized_patterns(patterns: list[str]) -> list[str]:
-    values = [str(pattern or "").replace("\\", "/").casefold().strip() for pattern in patterns if str(pattern or "").strip()]
+    values = [
+        str(pattern or "").replace("\\", "/").casefold().strip() for pattern in patterns if str(pattern or "").strip()
+    ]
     return values or ["*"]
 
 
@@ -506,7 +525,7 @@ def _mcp_target(server: dict[str, Any]) -> str:
 
 
 def _stable_text(value: Any) -> str:
-    if isinstance(value, (dict, list)):
+    if isinstance(value, dict | list):
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return str(value or "").strip()
 

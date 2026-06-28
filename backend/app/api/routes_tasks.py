@@ -143,8 +143,10 @@ def _task_payload(
     payload["final_summary"] = _public_detail(str(payload.get("final_summary") or ""), limit=2000)
     payload["metadata"] = _redacted_public_field(payload.get("metadata") or {})
     events = boundary_events if boundary_events is not None else _boundary_events(task.id)
-    completion = completion_evidence if completion_evidence is not None else build_task_completion_evidence(
-        task, audits=_audits_for_task(task.id)
+    completion = (
+        completion_evidence
+        if completion_evidence is not None
+        else build_task_completion_evidence(task, audits=_audits_for_task(task.id))
     )
     payload["boundary_events"] = events
     payload["completion_evidence"] = completion

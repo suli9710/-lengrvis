@@ -7,7 +7,6 @@ from app.core.schemas import Task, now_iso
 from app.policy.redaction import contains_sensitive_key, redact_public_text
 from app.services import task_recording_service
 
-
 SOURCE_TASKS = "tasks"
 SOURCE_AGENT_MESSAGES = "agent_messages"
 SOURCE_SAFETY_REVIEWS = "safety_reviews"
@@ -208,9 +207,21 @@ def build_task_completion_evidence(
     """Summarize public completion evidence without exposing raw task data."""
 
     task_id = task.id
-    messages = messages if messages is not None else _chronological(db.fetch_many(SOURCE_AGENT_MESSAGES, "task_id = ?", (task_id,), limit=5000))
-    reviews = reviews if reviews is not None else _chronological(db.fetch_many(SOURCE_SAFETY_REVIEWS, "task_id = ?", (task_id,), limit=5000))
-    audits = audits if audits is not None else _chronological(db.fetch_many(SOURCE_AUDIT_EVENTS, "task_id = ?", (task_id,), limit=5000))
+    messages = (
+        messages
+        if messages is not None
+        else _chronological(db.fetch_many(SOURCE_AGENT_MESSAGES, "task_id = ?", (task_id,), limit=5000))
+    )
+    reviews = (
+        reviews
+        if reviews is not None
+        else _chronological(db.fetch_many(SOURCE_SAFETY_REVIEWS, "task_id = ?", (task_id,), limit=5000))
+    )
+    audits = (
+        audits
+        if audits is not None
+        else _chronological(db.fetch_many(SOURCE_AUDIT_EVENTS, "task_id = ?", (task_id,), limit=5000))
+    )
     tool_calls = db.fetch_many_by_fields("tool_calls", {"task_id": task_id}, limit=5000)
     tool_call_by_id = {str(item.get("id") or ""): item for item in tool_calls if item.get("id")}
     tool_call_ids = [str(item.get("id") or "") for item in tool_calls if item.get("id")]
@@ -237,7 +248,8 @@ def build_task_completion_evidence(
         message
         for message in messages
         if _payload(message).get("kind") == "tool_progress"
-        or str((_payload(message).get("event_type") or (message.get("metadata") or {}).get("event_type") or "")).lower() == "tool.progress"
+        or str(_payload(message).get("event_type") or (message.get("metadata") or {}).get("event_type") or "").lower()
+        == "tool.progress"
         or bool(message.get("tool_call_id"))
     ]
 
@@ -260,9 +272,13 @@ def build_task_completion_evidence(
         and all(step_id in reviewed_tool_result_steps for step_id in successful_result_steps)
         and not failed_results
     )
-    has_verified_result_evidence = has_result_summary and has_reviewed_successful_results and bool(allowing_final_reviews)
-    safe_failure = status in SAFE_FAILURE_STATUSES or bool(blocking_reviews) or any(
-        str(event.get("event_type") or "") == "task.background_failed" for event in terminal_audits
+    has_verified_result_evidence = (
+        has_result_summary and has_reviewed_successful_results and bool(allowing_final_reviews)
+    )
+    safe_failure = (
+        status in SAFE_FAILURE_STATUSES
+        or bool(blocking_reviews)
+        or any(str(event.get("event_type") or "") == "task.background_failed" for event in terminal_audits)
     )
     result_verified = status in COMPLETED_STATUSES and has_verified_result_evidence and not safe_failure
     if result_verified:
@@ -278,23 +294,35 @@ def build_task_completion_evidence(
 
     result_artifacts: list[dict[str, Any]] = []
     if successful_results:
-        result_artifacts.append(_completion_evidence_item("tool_result", "Successful tool result", len(successful_results)))
+        result_artifacts.append(
+            _completion_evidence_item("tool_result", "Successful tool result", len(successful_results))
+        )
     if failed_results:
-        result_artifacts.append(_completion_evidence_item("failed_tool_result", "Failed tool result", len(failed_results)))
+        result_artifacts.append(
+            _completion_evidence_item("failed_tool_result", "Failed tool result", len(failed_results))
+        )
     if has_final_summary:
         result_artifacts.append(_completion_evidence_item("final_summary", "Final task summary", 1))
     if allowing_tool_result_reviews:
         result_artifacts.append(
-            _completion_evidence_item("post_tool_review", "Post-tool verification review", len(allowing_tool_result_reviews))
+            _completion_evidence_item(
+                "post_tool_review", "Post-tool verification review", len(allowing_tool_result_reviews)
+            )
         )
     if final_reviews:
         result_artifacts.append(_completion_evidence_item("final_review", "Final safety review", len(final_reviews)))
     if safe_failure:
-        result_artifacts.append(_completion_evidence_item("safe_failure", "Blocking result review", len(blocking_reviews) or 1))
+        result_artifacts.append(
+            _completion_evidence_item("safe_failure", "Blocking result review", len(blocking_reviews) or 1)
+        )
     if not result_artifacts and terminal_audits:
-        result_artifacts.append(_completion_evidence_item("terminal_event", "Terminal task event", len(terminal_audits)))
+        result_artifacts.append(
+            _completion_evidence_item("terminal_event", "Terminal task event", len(terminal_audits))
+        )
     if not result_artifacts and progress_messages:
-        result_artifacts.append(_completion_evidence_item("tool_progress", "Tool progress event", len(progress_messages)))
+        result_artifacts.append(
+            _completion_evidence_item("tool_progress", "Tool progress event", len(progress_messages))
+        )
     if not result_artifacts and tool_calls:
         result_artifacts.append(_completion_evidence_item("tool_call", "Tool call", len(tool_calls)))
     recording_frame_count = len(task_recording_service.list_recording_frames(task_id))
@@ -354,8 +382,7 @@ def build_task_result_quality(
         "signoff": False,
         "redacted": True,
         "privacy_note": (
-            "Private action details, file names, raw outputs, prompts, hosts, "
-            "and secret-bearing URLs are hidden."
+            "Private action details, file names, raw outputs, prompts, hosts, and secret-bearing URLs are hidden."
         ),
     }
 
@@ -432,7 +459,9 @@ def _has_result_summary(summary: Any) -> bool:
 
 
 def _chronological(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(rows, key=lambda row: (str(row.get("created_at") or row.get("updated_at") or ""), str(row.get("id") or "")))
+    return sorted(
+        rows, key=lambda row: (str(row.get("created_at") or row.get("updated_at") or ""), str(row.get("id") or ""))
+    )
 
 
 def _enum_value(value: Any) -> str:
@@ -451,7 +480,9 @@ def _payload(row: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
-def _latest_plan_payload(task_id: str, messages: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def _latest_plan_payload(
+    task_id: str, messages: list[dict[str, Any]]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     plan_messages = [message for message in messages if _is_plan_payload(_payload(message))]
     if plan_messages:
         latest = plan_messages[-1]
@@ -498,7 +529,11 @@ def _user_goal(task: Task, messages: list[dict[str, Any]], audits: list[dict[str
 
 def _supervisor_judgment(task: Task, messages: list[dict[str, Any]], audits: list[dict[str, Any]]) -> dict[str, Any]:
     decision_event = next(
-        (event for event in audits if event.get("event_type") == "supervisor.decision" and event.get("actor") == "SupervisorAgent"),
+        (
+            event
+            for event in audits
+            if event.get("event_type") == "supervisor.decision" and event.get("actor") == "SupervisorAgent"
+        ),
         None,
     )
     if decision_event:
@@ -507,9 +542,7 @@ def _supervisor_judgment(task: Task, messages: list[dict[str, Any]], audits: lis
         agent_hint = str(payload.get("agent_hint") or "")
         reply = _public_text(payload.get("reply") or "").strip()
         summary = reply or (
-            f"Supervisor delegated the task to {agent_hint}."
-            if delegate
-            else "Supervisor kept the request in chat."
+            f"Supervisor delegated the task to {agent_hint}." if delegate else "Supervisor kept the request in chat."
         )
         return {
             "summary": summary,
@@ -527,7 +560,10 @@ def _supervisor_judgment(task: Task, messages: list[dict[str, Any]], audits: lis
     if user_message:
         evidence.append(_message_evidence(user_message))
     return {
-        "summary": "Task was accepted into orchestration; no task-scoped SupervisorAgent decision audit was recorded, so delegation is inferred from task creation.",
+        "summary": (
+            "Task was accepted into orchestration; no task-scoped SupervisorAgent decision audit was recorded, "
+            "so delegation is inferred from task creation."
+        ),
         "delegate": True,
         "agent_hint": "OrchestratorAgent",
         "inferred": True,
@@ -546,8 +582,7 @@ def _planner_reasoning(
     message_summary = _public_text(initial_plan_message.get("content") or "").strip() if initial_plan_message else ""
     assumption_summary = " ".join(assumptions)
     step_summary = "; ".join(
-        f"{step['order']}. {step['agent_name']} uses {step['tool_name']}: {step['description']}"
-        for step in steps
+        f"{step['order']}. {step['agent_name']} uses {step['tool_name']}: {step['description']}" for step in steps
     )
     summary_parts = [part for part in [message_summary, assumption_summary, step_summary] if part]
     summary = " ".join(summary_parts) or "No planner output was found for this task."
@@ -672,7 +707,9 @@ def _subagent_suggestions(messages: list[dict[str, Any]]) -> list[dict[str, Any]
         has_action = isinstance(payload.get("subagent_action"), dict)
         from_agent = _agent_name(message)
         message_type = str(message.get("message_type") or (message.get("metadata") or {}).get("message_type") or "")
-        if not has_action and (from_agent in SUBAGENT_EXCLUDED or message_type not in {"proposal", "revision", "critique"}):
+        if not has_action and (
+            from_agent in SUBAGENT_EXCLUDED or message_type not in {"proposal", "revision", "critique"}
+        ):
             continue
         if from_agent == "SafetyReviewAgent":
             continue
@@ -716,14 +753,12 @@ def _is_step_observation(message: dict[str, Any], step_id: str) -> bool:
 
 def _final_result(task: Task, reviews: list[dict[str, Any]], audits: list[dict[str, Any]]) -> dict[str, Any]:
     final_reviews = [_review_item(review) for review in reviews if str(review.get("target_type") or "") == "final"]
-    terminal_audits = [
-        event
-        for event in audits
-        if event.get("event_type") in TERMINAL_AUDIT_TYPES
-    ]
+    terminal_audits = [event for event in audits if event.get("event_type") in TERMINAL_AUDIT_TYPES]
     evidence = []
     if final_reviews:
-        evidence.extend(_review_evidence(review) for review in reviews if str(review.get("target_type") or "") == "final")
+        evidence.extend(
+            _review_evidence(review) for review in reviews if str(review.get("target_type") or "") == "final"
+        )
     if terminal_audits:
         evidence.append(_audit_evidence(terminal_audits[-1]))
     evidence.append(
@@ -821,7 +856,9 @@ def _review_evidence(review: dict[str, Any]) -> dict[str, Any]:
 def _audit_evidence(event: dict[str, Any]) -> dict[str, Any]:
     payload = _sanitize(event.get("payload") if isinstance(event.get("payload"), dict) else {})
     summary_source = payload.get("reply") or payload.get("goal") or payload.get("status") or payload.get("error")
-    summary = _public_text(summary_source) if summary_source else _public_audit_summary(str(event.get("event_type") or ""))
+    summary = (
+        _public_text(summary_source) if summary_source else _public_audit_summary(str(event.get("event_type") or ""))
+    )
     return {
         "source": SOURCE_AUDIT_EVENTS,
         "id": str(event.get("id") or ""),
@@ -954,7 +991,7 @@ def _public_audit_summary(event_type: str) -> str:
 def _redacted_public_field(value: Any) -> Any:
     if isinstance(value, dict):
         return {"redacted": True, "field_count": len(value)}
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return {"redacted": True, "count": len(value)}
     if isinstance(value, str):
         return "[REDACTED_TEXT]"

@@ -117,15 +117,18 @@ def test_admin_requires_login_and_csrf(monkeypatch, tmp_path: Path) -> None:
     assert client.post("/api/admin/login", json={"password": "wrong"}).status_code == 401
     csrf = _login(client)
 
-    assert client.post(
-        "/api/admin/subscriptions",
-        json={
-            "plan": "pro",
-            "subscription_id": "sub_missing_csrf",
-            "status": "active",
-            "expires_at": _future(),
-        },
-    ).status_code == 403
+    assert (
+        client.post(
+            "/api/admin/subscriptions",
+            json={
+                "plan": "pro",
+                "subscription_id": "sub_missing_csrf",
+                "status": "active",
+                "expires_at": _future(),
+            },
+        ).status_code
+        == 403
+    )
     assert csrf
 
 

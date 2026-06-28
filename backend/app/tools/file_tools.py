@@ -414,11 +414,11 @@ def write_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "diff_preview": [{"action": "write_text", "path": str(path), "bytes": len(text)}],
             "_resource_state": _resource_states(path),
         }
+    raise_if_tool_aborted(context)
     backup = None
     if path.exists():
         _ensure_mutation_path_safe(path, allowed, include_self=True)
         backup = create_managed_backup(path)
-    raise_if_tool_aborted(context)
     _safe_write_text(path, text, allowed, context)
     return {"changed_paths": [str(path)], "rollback_info": {"backup": backup}}
 
@@ -478,8 +478,8 @@ def edit_text(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "_resource_state": _resource_states(path),
         }
 
-    backup = create_managed_backup(path)
     raise_if_tool_aborted(context)
+    backup = create_managed_backup(path)
     _safe_write_text(path, edited, allowed, context)
     return {
         "ok": True,

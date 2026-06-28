@@ -56,6 +56,7 @@ _PUBLIC_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
 _PUBLIC_PATH_KEYS = {"path", "model_path", "models_path", "manifest_path", "bundle_manifest_path"}
 _PUBLIC_PATH_KEY_SUFFIXES = ("_path", "_dir", "_directory", "_file")
 
+
 @router.get("/settings")
 def settings():
     return get_settings()
@@ -114,11 +115,15 @@ def confirm_permission_policy_relaxation(payload: dict):
     store = PermissionStore()
     action = str(payload.get("action") or "").strip().lower()
     if action == "upsert_rule":
-        changes = permission_rule_relaxations(store.get_policy(), PermissionRule.model_validate(payload.get("rule") or {}))
+        changes = permission_rule_relaxations(
+            store.get_policy(), PermissionRule.model_validate(payload.get("rule") or {})
+        )
     elif action == "delete_rule":
         changes = permission_delete_relaxations(store.get_policy(), str(payload.get("rule_id") or ""))
     else:
-        changes = permission_policy_relaxations(store.get_policy(), PermissionPolicy.model_validate(payload.get("policy") or {}))
+        changes = permission_policy_relaxations(
+            store.get_policy(), PermissionPolicy.model_validate(payload.get("policy") or {})
+        )
     return create_permission_policy_confirmation(changes)
 
 

@@ -25,9 +25,7 @@ def test_fts_trigram_migration_repopulates_existing_chunks(tmp_path: Path) -> No
 
     with db.connect() as conn:
         conn.execute("DROP TABLE IF EXISTS document_chunks_fts")
-        conn.execute(
-            "CREATE VIRTUAL TABLE document_chunks_fts USING fts5(file_id, path, text)"
-        )
+        conn.execute("CREATE VIRTUAL TABLE document_chunks_fts USING fts5(file_id, path, text)")
         conn.execute("DELETE FROM document_chunks_fts")
         for row in conn.execute(
             "SELECT dc.file_id, dc.text, f.data FROM document_chunks dc JOIN indexed_files f ON f.id = dc.file_id"

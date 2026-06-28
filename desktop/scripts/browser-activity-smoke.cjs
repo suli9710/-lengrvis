@@ -199,7 +199,152 @@ async function waitForPreview() {
   throw new Error("Vite preview did not start in time");
 }
 
+async function installDesktopBridgeMocks(page) {
+  await page.addInitScript(() => {
+    const backendBaseUrl = "http://127.0.0.1:8000";
+    const apiRequest = async (request) => {
+      const url = new URL(request.endpoint, backendBaseUrl);
+      if (request.query && typeof request.query === "object") {
+        for (const [key, value] of Object.entries(request.query)) {
+          if (value !== undefined && value !== null && value !== "") {
+            url.searchParams.set(key, String(value));
+          }
+        }
+      }
+      const response = await fetch(url.toString(), {
+        method: request.method ?? "GET",
+        headers: request.body === undefined ? { Accept: "application/json" } : {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        body: request.body === undefined ? undefined : JSON.stringify(request.body)
+      });
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      return response.ok
+        ? { ok: true, status: response.status, data }
+        : { ok: false, status: response.status, error: { message: data?.detail ?? data?.error ?? data?.message ?? response.statusText } };
+    };
+    const emptyBrowserHostSnapshot = {
+      sessions: [],
+      events: [],
+      activeSessionId: null,
+      visible: false,
+      hostAvailable: false
+    };
+    const unavailableBrowserHostAction = async () => {
+      window.__browserHostCalls = (window.__browserHostCalls ?? 0) + 1;
+      return {
+        ok: false,
+        snapshot: emptyBrowserHostSnapshot,
+        error: "Desktop browser host is unavailable in browser activity smoke"
+      };
+    };
+    window.lengrvis = {
+      ...(window.lengrvis ?? {}),
+      api: {
+        request: apiRequest,
+        abortInflight: async () => undefined
+      },
+      backend: {
+        getStatus: async () => {
+          const startedAt = Date.now();
+          const health = await apiRequest({ endpoint: "/api/health", timeoutMs: 1500 });
+          return {
+            state: health.ok ? "running" : "stopped",
+            baseUrl: backendBaseUrl,
+            message: health.ok ? "后端已连接" : "等待后端连接",
+            lastCheckedAt: new Date().toISOString(),
+            health: { ok: health.ok, latencyMs: Date.now() - startedAt }
+          };
+        },
+        start: async () => ({ ok: false, error: "not available in browser activity smoke" }),
+        stop: async () => ({ ok: false, error: "not available in browser activity smoke" }),
+        foreground: async () => ({ ok: false, error: "not available in browser activity smoke" }),
+        background: async () => ({ ok: false, error: "not available in browser activity smoke" })
+      },
+      runs: {
+        start: async (request) => apiRequest({ endpoint: "/api/runs", method: "POST", body: request })
+      },
+      documents: {
+        parse: async (request) => apiRequest({ endpoint: "/api/documents/parse", method: "POST", body: request }),
+        ask: async (request) => apiRequest({ endpoint: "/api/documents/ask", method: "POST", body: request }),
+        compare: async (request) => apiRequest({ endpoint: "/api/documents/compare", method: "POST", body: request })
+      },
+      browserHost: {
+        getSnapshot: async () => emptyBrowserHostSnapshot,
+        open: unavailableBrowserHostAction,
+        show: unavailableBrowserHostAction,
+        hide: unavailableBrowserHostAction,
+        setBounds: unavailableBrowserHostAction,
+        pause: unavailableBrowserHostAction,
+        resume: unavailableBrowserHostAction,
+        takeover: unavailableBrowserHostAction,
+        release: unavailableBrowserHostAction,
+        stop: unavailableBrowserHostAction,
+        performAction: unavailableBrowserHostAction,
+        onSnapshot: () => () => undefined
+      },
+      consent: {
+        getStatus: async () => ({
+          consent: {
+            privacy_version: "v1.0",
+            eula_version: "v1.0",
+            privacy_accepted_at: "2026-01-01T00:00:00.000Z",
+            eula_accepted_at: "2026-01-01T00:00:00.000Z",
+            installer_version: "0.1.0-smoke"
+          },
+          needsPrivacyConsent: false,
+          needsEulaConsent: false
+        }),
+        accept: async (request) => ({
+          privacy_version: "v1.0",
+          eula_version: "v1.0",
+          privacy_accepted_at: request?.acceptPrivacy === false ? "" : "2026-01-01T00:00:00.000Z",
+          eula_accepted_at: request?.acceptEula === false ? "" : "2026-01-01T00:00:00.000Z",
+          installer_version: "0.1.0-smoke"
+        }),
+        readDoc: async (docId) => ({ docId, content: "Smoke legal document." })
+      },
+      dialog: {
+        chooseDirectory: async () => null,
+        knownFolders: async () => ({
+          desktop: null,
+          downloads: null,
+          documents: null,
+          pictures: null
+        }),
+        chooseSkillDirectory: async () => null,
+        chooseSkillZip: async () => null
+      },
+      shell: {
+        openExternal: async () => undefined,
+        getFileIcon: async () => null,
+        showItemInFolder: async (path) => apiRequest({ endpoint: "/api/apps/reveal", method: "POST", body: { path } })
+          .then((response) => response.ok ? { ok: true, path, revealed: true } : { ok: false, error: response.error?.message ?? "无法打开所在位置" })
+      },
+      notifications: {
+        show: async () => ({ shown: false, reason: "not available in browser activity smoke" }),
+        onOpenTask: () => () => undefined
+      },
+      backendBaseUrl,
+      platform: "win32",
+      versions: {
+        app: "0.1.0-smoke",
+        electron: "smoke",
+        chrome: "smoke",
+        node: "smoke"
+      }
+    };
+  });
+}
+
 async function installApiMocks(page, options = {}) {
+  await installDesktopBridgeMocks(page);
   const allowedDirectories = options.allowedDirectories ?? ["C:\\Users\\Smoke\\Documents"];
   const counters = options.counters;
   const fileSearchMode = options.fileSearchMode ?? "error";

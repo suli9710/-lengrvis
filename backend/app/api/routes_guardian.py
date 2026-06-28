@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from contextlib import suppress
 from typing import Any
 
@@ -10,16 +9,16 @@ import websockets
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
-from app.api.routes_schedules import _require_scheduling
 from app.api.routes_approvals import (
     _approval_native_confirmation,
     _deny_rejected_step,
+    _reconcile_runs,
     _record_desktop_native_confirmation,
     _rejection_native_confirmation,
-    _reconcile_runs,
     approval_execution_response,
     approval_for_execution,
 )
+from app.api.routes_schedules import _require_scheduling
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import AgentMessage, Approval, MessageType, RunCreateRequest, Wakeup, WakeupStatus, now_iso
@@ -32,6 +31,13 @@ from app.security.desktop_api import (
     desktop_api_token_headers,
 )
 from app.security.lan import is_mobile_token_websocket_path, is_secure_mobile_transport
+from app.security.mobile_jwt import (
+    TOKEN_SCOPE,
+    mobile_token_from_websocket,
+    require_mobile_or_remote_input_token,
+    require_mobile_token,
+    validate_mobile_claims_active,
+)
 from app.security.native_confirmation import (
     NATIVE_CONFIRMATION_ID_HEADER,
     NATIVE_CONFIRMATION_SIGNATURE_HEADER,
@@ -40,19 +46,11 @@ from app.security.native_confirmation import (
     enforce_native_confirmation_challenge_rate_limit,
     require_native_confirmation,
 )
-from app.security.mobile_jwt import (
-    TOKEN_SCOPE,
-    mobile_token_from_websocket,
-    require_mobile_or_remote_input_token,
-    require_mobile_token,
-    validate_mobile_claims_active,
-)
 from app.services import mobile_pairing_service, wakeup_service
 from app.services.approval_event_service import get_approval_event_bus
 from app.services.guardian_runtime import runtime
 from app.services.notification_service import SYSTEM_TASK_ID
 from app.services.scheduler_service import get_scheduler
-
 
 router = APIRouter()
 proxy_router = APIRouter()
@@ -174,7 +172,9 @@ def reject_approval(
 ) -> dict:
     before = db.fetch_one("approvals", approval_id)
     approval = mobile_pairing_service.reject_approval(approval_id)
-    _record_desktop_native_confirmation(Approval.model_validate(before) if before else approval, "reject", native_confirmation)
+    _record_desktop_native_confirmation(
+        Approval.model_validate(before) if before else approval, "reject", native_confirmation
+    )
     _deny_rejected_step(approval)
     _reconcile_runs(approval.task_id)
     return mobile_pairing_service.safe_approval_payload(approval)
@@ -375,7 +375,9 @@ async def notification_messages(websocket: WebSocket):
                 if message.id in seen:
                     continue
                 seen.add(message.id)
-                await websocket.send_json({"type": "agent_message", "task_id": message.task_id, "message": message.to_openai_dict()})
+                await websocket.send_json(
+                    {"type": "agent_message", "task_id": message.task_id, "message": message.to_openai_dict()}
+                )
             await asyncio.sleep(2.0)
     except WebSocketDisconnect:
         return
@@ -414,7 +416,7 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
             await _send_guardian_pending_mobile_approvals(websocket, claims, seen)
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=25.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if await _close_if_mobile_claims_inactive(websocket, claims):
                     return
                 await websocket.send_json({"type": "heartbeat"})
@@ -431,8 +433,12 @@ async def mobile_notifications(websocket: WebSocket, token: str = ""):
                 approval = event.get("approval")
                 if isinstance(approval, dict):
                     seen.add(str(approval.get("id") or ""))
-                payload_type = "approval_notification" if event.get("type") == "approval_created" else "approval_decided"
-                safe_approval = mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+                payload_type = (
+                    "approval_notification" if event.get("type") == "approval_created" else "approval_decided"
+                )
+                safe_approval = (
+                    mobile_pairing_service.safe_approval_payload(approval, claims) if isinstance(approval, dict) else {}
+                )
                 await websocket.send_json({"type": payload_type, "approval": safe_approval})
             else:
                 await websocket.send_json(event)
@@ -502,7 +508,7 @@ async def proxy_websocket(websocket: WebSocket, path: str):
             )
     except WebSocketDisconnect:
         return
-    except Exception:
+    except Exception:  # noqa: BLE001 - websocket proxy errors are reported by closing the client socket.
         with suppress(RuntimeError):
             await websocket.close(code=1011)
 
@@ -510,7 +516,9 @@ async def proxy_websocket(websocket: WebSocket, path: str):
 @proxy_router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def proxy_full_backend(path: str, request: Request) -> Response:
     if _is_mobile_or_remote_proxy_path(path):
-        raise HTTPException(status_code=404, detail="Mobile and remote routes are handled by Guardian and are not proxied.")
+        raise HTTPException(
+            status_code=404, detail="Mobile and remote routes are handled by Guardian and are not proxied."
+        )
     raw_body = await request.body()
     response = await runtime.proxy(
         request.method,
@@ -542,7 +550,9 @@ async def _wake_full_backend_for_approval(approval: Approval) -> Approval | None
             detail=_approval_continue_unavailable_detail(approval, exc),
         ) from exc
     if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_approval_continue_response_error_detail(approval, response))
+        raise HTTPException(
+            status_code=response.status_code, detail=_approval_continue_response_error_detail(approval, response)
+        )
     refreshed = db.fetch_one("approvals", approval.id)
     return Approval.model_validate(refreshed) if refreshed else approval
 
@@ -596,7 +606,7 @@ def _safe_backend_detail(value: Any) -> Any:
 
 
 def _safe_backend_detail_value(key: str, value: Any) -> Any:
-    if isinstance(value, (dict, list, tuple, set)):
+    if isinstance(value, dict | list | tuple | set):
         return _safe_backend_detail(value)
     redacted = redact_value({key: value})
     return redacted.get(key) if isinstance(redacted, dict) else redact_value(value)
@@ -642,7 +652,7 @@ def full_backend_url() -> str:
 def _response_detail(response: Any, *, include_text: bool = True) -> Any:
     try:
         payload = response.json()
-    except Exception:
+    except Exception:  # noqa: BLE001 - backend error bodies are best-effort JSON.
         return response.text if include_text else ""
     if isinstance(payload, dict) and "detail" in payload:
         return payload["detail"]
@@ -703,7 +713,7 @@ def _notification_messages() -> list[AgentMessage]:
         for item in db.fetch_many("agent_messages", "task_id = ?", (task_id,), limit=200):
             try:
                 message = AgentMessage.model_validate(item)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 - malformed notification rows are skipped.
                 continue
             if message.message_type == MessageType.NOTIFICATION:
                 messages.append(message)

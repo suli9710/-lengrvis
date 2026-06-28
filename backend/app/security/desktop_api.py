@@ -71,9 +71,7 @@ def has_valid_desktop_websocket_token(websocket: WebSocket) -> bool:
 def is_authorized_desktop_websocket(websocket: WebSocket) -> bool:
     client_host = websocket.client.host if websocket.client else ""
     token_ok = has_valid_desktop_websocket_token(websocket)
-    allow_missing_origin = token_ok or (
-        _desktop_api_token_optional() and is_loopback_host(client_host)
-    )
+    allow_missing_origin = token_ok or (_desktop_api_token_optional() and is_loopback_host(client_host))
     if not is_trusted_websocket_origin(
         websocket,
         allow_missing_origin_with_token=allow_missing_origin,

@@ -291,3 +291,22 @@ def test_write_text_aborts_before_persist(tmp_path: Path):
         file_tools.write_text({"path": str(target), "text": "blocked", "dry_run": False}, context)
 
     assert not target.exists()
+
+
+def test_write_text_aborts_before_existing_file_backup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    import threading
+
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "abort-me.txt"
+    target.write_text("original", encoding="utf-8")
+    abort = threading.Event()
+    abort.set()
+    context = {**_context(workspace), "_tool_abort_event": abort}
+
+    with pytest.raises(ToolAbortedError):
+        file_tools.write_text({"path": str(target), "text": "blocked", "dry_run": False}, context)
+
+    assert target.read_text(encoding="utf-8") == "original"
+    assert not (tmp_path / "data" / "file-tool-backups").exists()

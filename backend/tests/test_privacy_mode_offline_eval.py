@@ -1,4 +1,5 @@
 """Offline privacy-mode evals for first-run local-model readiness."""
+
 from __future__ import annotations
 
 import json

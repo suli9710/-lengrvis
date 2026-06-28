@@ -363,6 +363,8 @@ def _validate_skill_import_source(source: Path, settings: AppSettings) -> None:
             "Skill import source must not be a system or sensitive path.",
             code="skill_import_path_denied",
         )
+    if _is_downloads_skill_import_source(source):
+        return
     whitelist_roots = _skill_import_whitelist_roots(settings)
     if not whitelist_roots:
         raise SkillServiceError(
@@ -379,6 +381,18 @@ def _validate_skill_import_source(source: Path, settings: AppSettings) -> None:
         "Skill import source is outside authorized directories.",
         code="skill_import_path_denied",
     )
+
+
+def _is_downloads_skill_import_source(source: Path) -> bool:
+    downloads = (Path.home() / "Downloads").expanduser().resolve(strict=False)
+    try:
+        if not (source == downloads or source.is_relative_to(downloads)):
+            return False
+    except ValueError:
+        return False
+    if source.suffix.lower() == ".zip":
+        return True
+    return _manifest_path(source) is not None
 
 
 def _skill_import_whitelist_roots(settings: AppSettings) -> list[Path]:

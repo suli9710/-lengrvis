@@ -11,6 +11,7 @@ from app.security.desktop_api import DESKTOP_API_TOKEN_HEADER
 
 pytestmark = pytest.mark.requires_desktop_api_token
 
+
 @pytest.fixture(autouse=True)
 def _require_desktop_token(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))

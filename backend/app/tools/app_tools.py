@@ -18,8 +18,8 @@ from app.core.subprocess_output import decode_process_output
 from app.llm.registry import get_effective_settings
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
+from app.tools.tool_abort import raise_if_tool_aborted
 from app.tools.tool_catalog import tool_description, tool_search_hint
-
 
 ALLOWLIST = {"notepad": "notepad.exe", "calculator": "calc.exe", "calc": "calc.exe"}
 logger = logging.getLogger(__name__)
@@ -135,11 +135,7 @@ def _app_fields(app: dict[str, Any]) -> list[str]:
 
 def _app_categories(app: dict[str, Any]) -> list[str]:
     haystack = " ".join(_app_fields(app))
-    categories = [
-        category
-        for category, hints in APP_CATEGORY_HINTS.items()
-        if any(hint in haystack for hint in hints)
-    ]
+    categories = [category for category, hints in APP_CATEGORY_HINTS.items() if any(hint in haystack for hint in hints)]
     return sorted(set(categories))
 
 
@@ -252,7 +248,7 @@ def _scan_registry_apps() -> list[dict[str, Any]]:
                             continue
             except OSError:
                 continue
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - registry scanning is best-effort.
         logger.debug("registry app scan failed: %s", exc, exc_info=True)
     return apps
 
@@ -261,14 +257,18 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
     if platform.system().lower() != "windows":
         return []
     try:
-        completed = subprocess.run(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Get-AppxPackage | Select-Object Name,PackageFullName,Publisher,Version,InstallLocation | ConvertTo-Json -Compress",
-            ],
+        command = [  # noqa: S607 - Windows executable resolved by PATH.
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "Get-AppxPackage | Select-Object "
+                "Name,PackageFullName,Publisher,Version,InstallLocation | ConvertTo-Json -Compress"
+            ),
+        ]
+        completed = subprocess.run(  # noqa: S603 - fixed PowerShell command for local package inventory.
+            command,
             capture_output=True,
             timeout=UNINSTALL_SCAN_TIMEOUT_SECONDS,
             check=False,
@@ -300,22 +300,23 @@ def _scan_appx_packages() -> list[dict[str, Any]]:
                 }
             )
         return apps
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - appx scanning is best-effort.
         logger.debug("appx package scan failed: %s", exc, exc_info=True)
         return []
 
 
 def _scan_winget_packages() -> list[dict[str, Any]]:
     try:
-        completed = subprocess.run(
-            [
-                "winget",
-                "list",
-                "--output",
-                "json",
-                "--accept-source-agreements",
-                "--disable-interactivity",
-            ],
+        command = [  # noqa: S607 - Windows executable resolved by PATH.
+            "winget",
+            "list",
+            "--output",
+            "json",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ]
+        completed = subprocess.run(  # noqa: S603 - fixed winget inventory command.
+            command,
             capture_output=True,
             timeout=UNINSTALL_SCAN_TIMEOUT_SECONDS,
             check=False,
@@ -350,7 +351,7 @@ def _scan_winget_packages() -> list[dict[str, Any]]:
         return apps
     except FileNotFoundError:
         return []
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - winget scanning is best-effort.
         logger.debug("winget package scan failed: %s", exc, exc_info=True)
         return []
 
@@ -387,7 +388,10 @@ def _has_uninstall_capability(app: dict[str, Any]) -> bool:
 
 
 def installed_apps(context: dict[str, Any]) -> list[dict[str, Any]]:
-    apps = [{"id": key, "name": key, "command": value, "path": value, "source": "builtin"} for key, value in ALLOWLIST.items()]
+    apps = [
+        {"id": key, "name": key, "command": value, "path": value, "source": "builtin"}
+        for key, value in ALLOWLIST.items()
+    ]
     apps.extend(_scan_shortcuts())
     apps.extend(_scan_registry_apps())
     apps.extend(_scan_appx_packages())
@@ -503,9 +507,15 @@ def _truncate_process_output(text: str, limit: int = 2000) -> str:
     return text[:limit] + "..."
 
 
-def _run_uninstall_command(command_args: list[str], *, timeout: int = UNINSTALL_TIMEOUT_SECONDS) -> dict[str, Any]:
+def _run_uninstall_command(
+    command_args: list[str],
+    *,
+    timeout: int = UNINSTALL_TIMEOUT_SECONDS,
+    abort_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        completed = subprocess.run(
+        raise_if_tool_aborted(abort_context)
+        completed = subprocess.run(  # noqa: S603 - command is selected from scanned uninstall entries.
             command_args,
             shell=False,
             capture_output=True,
@@ -536,13 +546,19 @@ def _validate_appx_package_name(package_full_name: str) -> str:
     return package_full_name
 
 
-def _run_appx_uninstall(package_full_name: str, *, timeout: int = UNINSTALL_TIMEOUT_SECONDS) -> dict[str, Any]:
+def _run_appx_uninstall(
+    package_full_name: str,
+    *,
+    timeout: int = UNINSTALL_TIMEOUT_SECONDS,
+    abort_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     package_full_name = _validate_appx_package_name(package_full_name)
     escaped = package_full_name.replace("'", "''")
     script = f"Remove-AppxPackage -Package '{escaped}'"
     return _run_uninstall_command(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
         timeout=timeout,
+        abort_context=abort_context,
     )
 
 
@@ -577,7 +593,10 @@ def _entries_match_identity(target: dict[str, str], candidate: dict[str, Any]) -
         return True
     if target.get("package_full_name") and candidate_keys.get("package_full_name") == target["package_full_name"]:
         return True
-    if target.get("quiet_uninstall_string") and candidate_keys.get("quiet_uninstall_string") == target["quiet_uninstall_string"]:
+    if (
+        target.get("quiet_uninstall_string")
+        and candidate_keys.get("quiet_uninstall_string") == target["quiet_uninstall_string"]
+    ):
         return True
     if target.get("uninstall_string") and candidate_keys.get("uninstall_string") == target["uninstall_string"]:
         return True
@@ -633,7 +652,9 @@ def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     if uninstall_string:
         return {
             "ok": False,
-            "error": "Direct uninstall commands are not accepted. Search by app name and use a scanned uninstall entry.",
+            "error": (
+                "Direct uninstall commands are not accepted. Search by app name and use a scanned uninstall entry."
+            ),
         }
 
     matches = find_uninstall_entries({"query": query}, context)["matches"]
@@ -669,13 +690,15 @@ def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
     if args.get("dry_run", True):
         return preview
 
+    raise_if_tool_aborted(context)
     if method == "appx":
-        execution = _run_appx_uninstall(str(command))
+        execution = _run_appx_uninstall(str(command), abort_context=context)
         command_audit = f"Remove-AppxPackage -Package {command}"
     else:
-        execution = _run_uninstall_command(list(command))
+        execution = _run_uninstall_command(list(command), abort_context=context)
         command_audit = subprocess.list2cmdline(list(command))
 
+    raise_if_tool_aborted(context)
     verified_removed = _verify_removal(app_record, context)
     still_present = not verified_removed
     ok = execution.get("returncode") == 0 and verified_removed and not execution.get("timed_out")
@@ -716,7 +739,9 @@ def uninstall_app(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 
 
 def _normalize_uninstall_command(command: str) -> str:
-    if re.search(r"\bmsiexec(\.exe)?\b", command, flags=re.IGNORECASE) and re.search(r"\s/I\s*", command, flags=re.IGNORECASE):
+    if re.search(r"\bmsiexec(\.exe)?\b", command, flags=re.IGNORECASE) and re.search(
+        r"\s/I\s*", command, flags=re.IGNORECASE
+    ):
         command = re.sub(r"\s/I\s*", " /X ", command, count=1, flags=re.IGNORECASE)
     return command
 
@@ -762,7 +787,8 @@ def launch_allowlisted(args: dict[str, Any], context: dict[str, Any]) -> dict[st
         return {"ok": False, "error": "Application is not allowlisted and requires manual confirmation."}
     if args.get("dry_run", False):
         return {"ok": True, "dry_run": True, "command": ALLOWLIST[app]}
-    subprocess.Popen([ALLOWLIST[app]], shell=False)
+    raise_if_tool_aborted(context)
+    subprocess.Popen([ALLOWLIST[app]], shell=False)  # noqa: S603 - allowlisted app launch command.
     record("app.launch_allowlisted", "AppAgent", {"app": app, "command": ALLOWLIST[app]})
     return {"ok": True, "app": app, "command": ALLOWLIST[app], "launched": True}
 
@@ -784,8 +810,15 @@ def launch_installed(args: dict[str, Any], context: dict[str, Any]) -> dict[str,
     if not path:
         return {"ok": False, "error": "Application has no launchable path."}
     if args.get("dry_run", False):
-        return {"ok": True, "dry_run": True, "app": app_name, "path": path, "allowlist_match": match.get("allowlist_match", "")}
-    os.startfile(path)  # type: ignore[attr-defined]
+        return {
+            "ok": True,
+            "dry_run": True,
+            "app": app_name,
+            "path": path,
+            "allowlist_match": match.get("allowlist_match", ""),
+        }
+    raise_if_tool_aborted(context)
+    os.startfile(path)  # noqa: S606  # type: ignore[attr-defined]
     record("app.launch_installed", "AppAgent", {"app": app_name, "path": path})
     return {"ok": True, "app": app_name, "path": path, "launched": True}
 
@@ -797,7 +830,8 @@ def open_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "Path is not a file."}
     if args.get("dry_run", False):
         return {"ok": True, "dry_run": True, "path": str(path)}
-    os.startfile(str(path))  # type: ignore[attr-defined]
+    raise_if_tool_aborted(context)
+    os.startfile(str(path))  # noqa: S606  # type: ignore[attr-defined]
     record("app.open_file", "AppAgent", {"path": str(path)})
     return {"ok": True, "path": str(path), "opened": True}
 
@@ -809,7 +843,8 @@ def open_folder(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
         return {"ok": False, "error": "Path is not a folder."}
     if args.get("dry_run", False):
         return {"ok": True, "dry_run": True, "path": str(path)}
-    os.startfile(str(path))  # type: ignore[attr-defined]
+    raise_if_tool_aborted(context)
+    os.startfile(str(path))  # noqa: S606  # type: ignore[attr-defined]
     record("app.open_folder", "AppAgent", {"path": str(path)})
     return {"ok": True, "path": str(path), "opened": True}
 
@@ -819,10 +854,14 @@ def reveal_in_explorer(args: dict[str, Any], context: dict[str, Any]) -> dict[st
     path = resolve_authorized(str(args.get("path", "")), settings.allowed_directories)
     if args.get("dry_run", False):
         return {"ok": True, "dry_run": True, "path": str(path)}
+    raise_if_tool_aborted(context)
     if platform.system().lower() == "windows":
-        subprocess.Popen(["explorer", "/select,", str(path)], shell=False)
+        subprocess.Popen(  # noqa: S603
+            ["explorer", "/select,", str(path)],  # noqa: S607
+            shell=False,
+        )
     else:
-        os.startfile(str(path.parent if path.is_file() else path))  # type: ignore[attr-defined]
+        os.startfile(str(path.parent if path.is_file() else path))  # noqa: S606  # type: ignore[attr-defined]
     record("app.reveal_in_explorer", "AppAgent", {"path": str(path)})
     return {"ok": True, "path": str(path), "revealed": True}
 

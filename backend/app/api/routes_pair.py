@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 
 from app.services import mobile_pairing_service
 
-
 router = APIRouter()
 
 # Keep the request-schema length/pattern in sync with the generated code entropy.
