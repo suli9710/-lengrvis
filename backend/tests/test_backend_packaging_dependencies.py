@@ -20,15 +20,15 @@ def test_backend_build_requirements_pin_pyinstaller(project_root: Path) -> None:
     assert re.fullmatch(r"pyinstaller==\d+\.\d+\.\d+", requirement_lines[0])
 
 
-def test_backend_packaging_scripts_install_only_pinned_pyinstaller(project_root: Path) -> None:
+def test_backend_packaging_scripts_install_hashed_build_lock(project_root: Path) -> None:
     scripts = {
         "scripts/build_backend.ps1": _text(project_root, "scripts/build_backend.ps1"),
         "scripts/build_backend_mac.sh": _text(project_root, "scripts/build_backend_mac.sh"),
     }
 
     for path, text in scripts.items():
-        assert "requirements-build.txt" in text
-        assert re.search(r"pip\s+install\s+-r", text), path
+        assert "requirements-build-lock.txt" in text
+        assert re.search(r"pip\s+install\s+--require-hashes\s+-r", text), path
         assert not re.search(r"pip\s+install\s+pyinstaller\b", text, flags=re.IGNORECASE), path
         assert "pip show pyinstaller" not in text.lower()
-        assert "Failed to install pinned backend build dependencies" in text
+        assert "Failed to install hashed backend build dependencies" in text
