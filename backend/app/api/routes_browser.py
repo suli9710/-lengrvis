@@ -12,11 +12,11 @@ from app.llm.registry import get_effective_settings
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
 from app.policy.execution_marker import mark_execution_approved
 from app.policy.permissions import PermissionStore
-from app.policy.risk import RiskLevel, SafetyVerdict
+from app.policy.risk import SafetyVerdict
 from app.security.desktop_api import close_unauthorized_desktop_websocket
 from app.tools import browser_tools
-from app.tools.registry import register_all_tools, registry as tool_registry
-
+from app.tools.registry import register_all_tools
+from app.tools.registry import registry as tool_registry
 
 router = APIRouter()
 ws_router = APIRouter()
@@ -111,7 +111,11 @@ def _claim_valid_browser_approval(tool_name: str, payload: dict, context: dict) 
         return {"ok": False, "status": "denied", "error": binding_error}
     claimed = db.claim_approval_for_execution(approval.id, now_iso())
     if not claimed:
-        return {"ok": False, "status": "denied", "error": "Approval has already been consumed or is no longer approved."}
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "Approval has already been consumed or is no longer approved.",
+        }
     claimed_approval = Approval.model_validate(claimed)
     binding_error = _browser_approval_binding_error(claimed_approval, tool_name, payload, context, allow_consumed=True)
     if binding_error:

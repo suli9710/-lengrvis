@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from app.api.activation_admin_template import ADMIN_HTML
 from app.commerce.activation import (
     ActivationError,
+    delete_subscription_key,
     enforce_activation_rate_limit,
     list_subscription_keys,
     renew_subscription_key,
@@ -197,6 +198,14 @@ def admin_renew_subscription(
         max_devices=payload.max_devices,
     )
     return {"ok": True, "record": record}
+
+
+@router.delete("/api/admin/subscriptions/{key_hash}")
+def admin_delete_subscription(key_hash: str, request: Request) -> dict[str, Any]:
+    session = _require_admin_session(request)
+    _require_csrf(request, session)
+    _enforce_mutation_rate_limit(request)
+    return {"ok": True, **delete_subscription_key(key_hash=key_hash)}
 
 
 @router.delete("/api/admin/devices/{license_id}")

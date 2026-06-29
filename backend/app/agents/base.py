@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from app.core.schemas import AgentAction, MessageType, PlanStep, ToolResult
 from app.llm.prompts import load_prompt, render_prompt
 from app.orchestration.agent_bus import AgentBus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,7 +43,7 @@ class BaseAgent:
                 from app.tools.registry import registry as default_registry
 
                 registry = default_registry
-            except Exception:
+            except ImportError:
                 return []
         result: list[str] = []
         for tool in registry.list():
@@ -72,7 +75,10 @@ class BaseAgent:
 
         messages = [
             {"role": "system", "content": self.system_prompt()},
-            {"role": "user", "content": _act_user_prompt(step, observation, self.allowed_tools(context.registry), context)},
+            {
+                "role": "user",
+                "content": _act_user_prompt(step, observation, self.allowed_tools(context.registry), context),
+            },
         ]
         schema = {
             "type": "object",
@@ -88,9 +94,11 @@ class BaseAgent:
         try:
             prov = provider or get_provider(task="subagent")
             payload = await prov.structured_chat(messages, schema)
-            return AgentAction(**{k: payload.get(k, "") for k in ("kind", "tool_name", "rationale", "follow_up_question")},
-                               args=payload.get("args") or {})
-        except Exception as exc:  # noqa: BLE001
+            return AgentAction(
+                **{k: payload.get(k, "") for k in ("kind", "tool_name", "rationale", "follow_up_question")},
+                args=payload.get("args") or {},
+            )
+        except Exception as exc:  # noqa: BLE001 - provider/runtime failures become revision requests.
             return AgentAction(
                 kind="request_revision",
                 rationale=f"{self.name} failed to plan an action: {exc}",
@@ -176,9 +184,8 @@ class BaseAgent:
                 step_id=step.id,
                 structured_payload={"reflection": True, "step_id": step.id, "ok": result.ok},
             )
-        except Exception:
-            # Bus failures should not break orchestration.
-            pass
+        except Exception:  # noqa: BLE001 - bus failures should not break orchestration.
+            logger.exception("Failed to publish %s reflection for step %s", self.name, step.id)
         return summary
 
 
@@ -217,7 +224,7 @@ def _format_reflection(step: PlanStep, result: ToolResult, agent_name: str, doma
 def _default_registry():
     try:
         from app.tools.registry import registry
-    except Exception:
+    except ImportError:
         return None
     return registry
 
@@ -235,7 +242,9 @@ def _missing_required_args(schema: dict[str, Any], args: dict[str, Any]) -> list
 
 
 def _can_accept_planned_tool(tool: Any, step: PlanStep) -> bool:
-    if getattr(tool, "fast_path_eligible", False) and _has_explicit_object_schema(getattr(tool, "input_schema", {}) or {}):
+    if getattr(tool, "fast_path_eligible", False) and _has_explicit_object_schema(
+        getattr(tool, "input_schema", {}) or {}
+    ):
         return True
     risk_value = getattr(getattr(tool, "risk_level", None), "value", str(getattr(tool, "risk_level", "") or ""))
     return (

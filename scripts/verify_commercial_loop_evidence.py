@@ -99,15 +99,19 @@ def _require_subscription_activation(payload: dict[str, Any], errors: list[str])
     require_passed(payload, "subscription_activation.status", errors)
     for path in (
         "subscription_activation.activation_api_https_label",
+        "subscription_activation.reverse_proxy_label",
         "subscription_activation.activation_key_creation_label",
         "subscription_activation.first_activation_label",
         "subscription_activation.idempotent_repeat_activation_label",
         "subscription_activation.device_limit_label",
+        "subscription_activation.strong_device_binding_label",
         "subscription_activation.renewal_refresh_label",
         "subscription_activation.cancel_period_end_label",
         "subscription_activation.refund_revocation_label",
         "subscription_activation.expired_downgrade_label",
         "subscription_activation.rate_limit_label",
+        "subscription_activation.activation_audit_log_label",
+        "subscription_activation.operations_runbook_label",
         "subscription_activation.secret_redaction_label",
     ):
         require_nonempty(payload, path, errors)
@@ -122,6 +126,7 @@ def _require_license_issuer(payload: dict[str, Any], errors: list[str]) -> None:
         "license_issuer.public_key_fingerprint_label",
         "license_issuer.private_key_custody_label",
         "license_issuer.issuance_log_label",
+        "license_issuer.revocation_manifest_freshness_label",
     ):
         require_nonempty(payload, path, errors)
     for check in (

@@ -28,7 +28,10 @@ def create_adapter_tool_definitions(
     return [
         ToolDefinition(
             name="external.email.send",
-            description="Send an email through the configured email adapter. Requires an injected email client for approved live execution.",
+            description=(
+                "Send an email through the configured email adapter. "
+                "Requires an injected email client for approved live execution."
+            ),
             input_schema={
                 "type": "object",
                 "required": ["to", "subject", "body"],
@@ -55,7 +58,10 @@ def create_adapter_tool_definitions(
         ),
         ToolDefinition(
             name="external.calendar.create_event",
-            description="Create a calendar event through the configured calendar adapter. Requires an injected calendar client for approved live execution.",
+            description=(
+                "Create a calendar event through the configured calendar adapter. "
+                "Requires an injected calendar client for approved live execution."
+            ),
             input_schema={
                 "type": "object",
                 "required": ["title", "start", "end"],
@@ -83,7 +89,10 @@ def create_adapter_tool_definitions(
         ),
         ToolDefinition(
             name="external.webhook.post",
-            description="Post a JSON payload through the configured webhook adapter. Requires an injected webhook client for approved live execution.",
+            description=(
+                "Post a JSON payload through the configured webhook adapter. "
+                "Requires an injected webhook client for approved live execution."
+            ),
             input_schema={
                 "type": "object",
                 "required": ["payload"],

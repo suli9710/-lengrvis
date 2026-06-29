@@ -106,7 +106,7 @@ ADMIN_HTML = r"""<!doctype html>
     }
     .dashboard-grid {
       display: grid;
-      grid-template-columns: minmax(320px, 380px) minmax(460px, 1fr) minmax(320px, 390px);
+      grid-template-columns: minmax(320px, 380px) minmax(460px, 1fr) minmax(340px, 410px);
       gap: 14px;
       align-items: start;
     }
@@ -197,6 +197,14 @@ ADMIN_HTML = r"""<!doctype html>
     .message { min-height: 20px; margin-top: 10px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
     .message.error { color: var(--danger); }
     .message.ok { color: var(--ok); }
+    .message.panel-body {
+      margin: 0;
+      min-height: 46px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--line-soft);
+      background: #fff;
+    }
     .step {
       position: relative;
       padding: 14px 0 4px;
@@ -267,14 +275,14 @@ ADMIN_HTML = r"""<!doctype html>
     }
     .filters {
       display: grid;
-      grid-template-columns: minmax(180px, 1fr) 140px 140px;
+      grid-template-columns: minmax(210px, 1fr) minmax(116px, 140px) minmax(116px, 140px);
       gap: 10px;
       padding: 16px;
       border-bottom: 1px solid var(--line-soft);
       background: #fff;
     }
     .filters label { margin: 0; }
-    .subscription-list { max-height: calc(100vh - 285px); overflow: auto; }
+    .subscription-list { max-height: min(680px, calc(100vh - 285px)); overflow: auto; }
     .subscription-card {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -286,6 +294,7 @@ ADMIN_HTML = r"""<!doctype html>
       border-radius: 0;
       text-align: left;
       background: #fff;
+      align-items: start;
     }
     .subscription-card:hover { background: #f7faf9; transform: none; }
     .subscription-card.active {
@@ -304,10 +313,21 @@ ADMIN_HTML = r"""<!doctype html>
     .card-meta {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px 12px;
+      gap: 6px;
       color: var(--muted);
       font-size: 12px;
       line-height: 1.45;
+    }
+    .meta-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #f2f5f7;
+      color: #5d6875;
+      font-weight: 760;
+      overflow-wrap: anywhere;
     }
     .badge {
       display: inline-flex;
@@ -334,6 +354,31 @@ ADMIN_HTML = r"""<!doctype html>
     .muted { color: var(--muted); }
     .mono { font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; font-size: 12px; }
     .detail-empty { padding: 18px; color: var(--muted); line-height: 1.6; }
+    .detail-panel { position: sticky; top: 16px; }
+    .detail-header {
+      display: grid;
+      gap: 8px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .detail-title-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+    }
+    .detail-title {
+      margin-bottom: 0;
+      font-size: 16px;
+      line-height: 1.35;
+    }
+    .badge-row { gap: 6px; }
+    .detail-subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
     .detail-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -359,14 +404,28 @@ ADMIN_HTML = r"""<!doctype html>
       font-size: 13px;
       overflow-wrap: anywhere;
     }
+    .section-caption {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 16px 0 6px;
+    }
+    .section-caption span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
     .device-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
       padding: 10px 0;
       border-top: 1px solid var(--line-soft);
+      align-items: start;
     }
     .device-row:first-child { border-top: 0; }
+    .device-row button { align-self: start; }
     .device-meta {
       display: block;
       margin-top: 3px;
@@ -410,6 +469,43 @@ ADMIN_HTML = r"""<!doctype html>
       color: var(--danger);
     }
     .renew-body, .danger-body { padding: 12px; }
+    .operation-grid {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .operation-block {
+      display: grid;
+      gap: 9px;
+      padding: 12px;
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .operation-block.danger-zone {
+      border-color: #efb5ae;
+      background: #fff7f6;
+    }
+    .operation-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .operation-head span {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .operation-copy {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .operation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .operation-actions button { flex: 1 1 130px; }
+    .inline-note { margin: 0; }
     .callout {
       margin: 12px 0;
       padding: 10px 12px;
@@ -423,8 +519,9 @@ ADMIN_HTML = r"""<!doctype html>
     .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     @media (max-width: 1180px) {
       .dashboard-grid { grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); }
-      .detail-panel { grid-column: 1 / -1; }
+      .detail-panel { grid-column: 1 / -1; position: static; }
       .subscription-list { max-height: none; }
+      .operation-grid { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 860px) {
       header { padding: 0 16px; }
@@ -434,6 +531,8 @@ ADMIN_HTML = r"""<!doctype html>
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .segment { grid-template-columns: 1fr; }
       .subscription-card { grid-template-columns: 1fr; }
+      .operation-grid { grid-template-columns: 1fr; }
+      .operation-actions button { flex-basis: 100%; }
     }
   </style>
 </head>
@@ -586,16 +685,43 @@ ADMIN_HTML = r"""<!doctype html>
             <h2>详情与操作</h2>
             <span id="detailStatusLabel">未选择</span>
           </div>
-          <div id="detailEmpty" class="detail-empty">选择左侧订阅后，可以续期、撤销、解绑设备，并查看设备指纹风险。</div>
+          <div id="detailEmpty" class="detail-empty">选择左侧订阅后，可以续期、撤销、解绑设备、清理终态订阅记录，并查看设备指纹风险。</div>
           <div id="detailContent" class="panel-body hidden">
-            <div class="card-title" id="detailTitle"></div>
-            <div class="actions" id="detailBadges"></div>
+            <div class="detail-header">
+              <div class="detail-title-row">
+                <div class="card-title detail-title" id="detailTitle"></div>
+                <div class="actions badge-row" id="detailBadges"></div>
+              </div>
+              <p class="detail-subtitle" id="detailSubtitle"></p>
+            </div>
             <div class="detail-grid" id="detailGrid"></div>
-            <h3>设备绑定</h3>
+            <div class="section-caption">
+              <h3>设备绑定</h3>
+              <span id="deviceSummary">0 台设备</span>
+            </div>
             <div id="detailDevices"></div>
-            <div class="actions" style="margin-top: 14px;">
-              <button id="openRenew" class="primary" type="button">续期 / 改状态</button>
-              <button id="openRevoke" class="danger" type="button">撤销授权码</button>
+            <div class="operation-grid">
+              <div class="operation-block">
+                <div class="operation-head">
+                  <h3>维护订阅</h3>
+                  <span>RENEW</span>
+                </div>
+                <p class="operation-copy">调整状态、到期时间、席位数和最大设备数。</p>
+                <div class="operation-actions">
+                  <button id="openRenew" class="primary" type="button">续期 / 改状态</button>
+                </div>
+              </div>
+              <div class="operation-block danger-zone">
+                <div class="operation-head">
+                  <h3>清理与停用</h3>
+                  <span>DANGER</span>
+                </div>
+                <p class="operation-copy" id="deleteHint">终态且无设备绑定的记录可删除；已有设备时先处理吊销或解绑。</p>
+                <div class="operation-actions">
+                  <button id="openRevoke" class="danger" type="button">撤销授权码</button>
+                  <button id="openDelete" class="danger" type="button">删除记录</button>
+                </div>
+              </div>
             </div>
 
             <div id="renewPanel" class="renew-panel hidden">
@@ -677,6 +803,7 @@ ADMIN_HTML = r"""<!doctype html>
       pro: {label: 'Pro', devices: 2, note: '个人专业版，默认 2 台设备。'},
       max: {label: 'Max', devices: 5, note: '高阶或小团队试点，默认 5 台设备。'},
     };
+    const terminalStatuses = new Set(['canceled', 'expired', 'revoked']);
     const statusRank = {active: 0, trialing: 1, past_due: 2, canceled: 3, expired: 4, revoked: 5};
     const state = {
       items: [],
@@ -896,12 +1023,18 @@ ADMIN_HTML = r"""<!doctype html>
         title.append(badge(displayStatus(item.status), item.status));
         const meta = document.createElement('div');
         meta.className = 'card-meta';
-        meta.textContent = [
+        const metaParts = [
           item.subject ? '客户 ' + item.subject : '未填客户标签',
           item.order_ref ? '订单 ' + item.order_ref : '',
           '设备 ' + String(item.device_count || 0) + ' / ' + String(item.max_devices || 1),
           '到期 ' + formatDate(item.expires_at),
-        ].filter(Boolean).join(' · ');
+        ].filter(Boolean);
+        for (const part of metaParts) {
+          const pill = document.createElement('span');
+          pill.className = 'meta-pill';
+          pill.textContent = part;
+          meta.append(pill);
+        }
         body.append(title, meta);
         const right = document.createElement('div');
         right.className = 'mono muted';
@@ -937,6 +1070,11 @@ ADMIN_HTML = r"""<!doctype html>
       $('detailStatusLabel').textContent = item ? displayStatus(item.status) : '未选择';
       if (!item) return;
       $('detailTitle').textContent = item.subscription_id || item.key_hash_prefix || '未命名订阅';
+      $('detailSubtitle').textContent = [
+        item.subject ? '客户 ' + item.subject : '未填写客户标签',
+        item.order_ref ? '订单 ' + item.order_ref : '',
+        'Key ' + (item.key_hash_prefix || ''),
+      ].filter(Boolean).join(' · ');
       const badges = $('detailBadges');
       badges.textContent = '';
       badges.append(badge(displayPlan(item.plan), item.plan), badge(displayStatus(item.status), item.status));
@@ -951,8 +1089,21 @@ ADMIN_HTML = r"""<!doctype html>
         detailCell('Key 前缀', item.key_hash_prefix || ''),
       );
       renderDetailDevices(item);
+      $('deviceSummary').textContent = String(item.device_count || 0) + ' / ' + String(item.max_devices || 1) + ' 台设备';
       $('openRenew').disabled = item.status === 'revoked';
       $('openRevoke').disabled = item.status === 'revoked';
+      $('openDelete').disabled = !isSubscriptionDeletable(item);
+      $('openDelete').title = deleteBlockReason(item);
+      $('deleteHint').textContent = deleteBlockReason(item);
+    }
+    function isSubscriptionDeletable(item) {
+      return terminalStatuses.has(String(item?.status || '')) && Number(item?.device_count || 0) === 0;
+    }
+    function deleteBlockReason(item) {
+      if (!item) return '';
+      if (!terminalStatuses.has(String(item.status || ''))) return '只能删除已取消、已过期或已撤销的订阅记录。';
+      if (Number(item.device_count || 0) > 0) return '仍有设备绑定，请先完成撤销交接或解绑设备。';
+      return '删除后台订阅记录。';
     }
     function detailCell(label, value) {
       const box = document.createElement('div');
@@ -1138,13 +1289,29 @@ ADMIN_HTML = r"""<!doctype html>
       $('dangerPanel').classList.remove('hidden');
       $('dangerPanel').scrollIntoView({behavior: 'smooth', block: 'nearest'});
     }
+    function openDeleteDanger(item) {
+      if (!isSubscriptionDeletable(item)) {
+        setMessage('listMessage', deleteBlockReason(item), 'error');
+        return;
+      }
+      cancelRenew();
+      state.danger = {type: 'delete', item};
+      $('dangerTitle').textContent = '删除订阅记录';
+      $('dangerText').textContent = '将从后台列表删除订阅 ' + (item.subscription_id || item.key_hash_prefix || '') + '。这只清理无设备绑定的终态记录，不用于吊销已安装 license。请输入“删除”确认。';
+      $('dangerReasonWrap').classList.add('hidden');
+      $('dangerConfirm').value = '';
+      $('dangerConfirm').placeholder = '输入 删除';
+      $('confirmDanger').textContent = '确认删除';
+      $('dangerPanel').classList.remove('hidden');
+      $('dangerPanel').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
     function cancelDanger() {
       state.danger = null;
       $('dangerPanel').classList.add('hidden');
     }
     async function confirmDanger() {
       if (!state.danger) return;
-      const required = state.danger.type === 'revoke' ? '撤销' : '解绑';
+      const required = state.danger.type === 'revoke' ? '撤销' : state.danger.type === 'unbind' ? '解绑' : '删除';
       if ($('dangerConfirm').value.trim() !== required) {
         setMessage('listMessage', '确认文字不匹配，操作未执行。', 'error');
         return;
@@ -1161,12 +1328,19 @@ ADMIN_HTML = r"""<!doctype html>
           } else {
             setMessage('listMessage', '订阅授权码已撤销。', 'ok');
           }
-        } else {
+        } else if (state.danger.type === 'unbind') {
           const device = state.danger.device;
           await api('/api/admin/devices/' + device.license_id, {method: 'DELETE'});
           cancelDanger();
           await loadSubscriptions();
           setMessage('listMessage', '设备已解绑。', 'ok');
+        } else {
+          const item = state.danger.item;
+          await api('/api/admin/subscriptions/' + item.key_hash, {method: 'DELETE'});
+          state.selectedKeyHash = null;
+          cancelDanger();
+          await loadSubscriptions();
+          setMessage('listMessage', '订阅记录已删除。', 'ok');
         }
       } catch (err) {
         setMessage('listMessage', err.message, 'error');
@@ -1184,6 +1358,7 @@ ADMIN_HTML = r"""<!doctype html>
     $('statusFilter').onchange = applyFilters;
     $('openRenew').onclick = () => { const item = selectedItem(); if (item) renewSubscription(item); };
     $('openRevoke').onclick = () => { const item = selectedItem(); if (item) openRevokeDanger(item); };
+    $('openDelete').onclick = () => { const item = selectedItem(); if (item) openDeleteDanger(item); };
     $('cancelRenew').onclick = cancelRenew;
     $('submitRenew').onclick = submitRenewal;
     $('cancelDanger').onclick = cancelDanger;

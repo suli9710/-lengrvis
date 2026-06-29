@@ -60,6 +60,8 @@ The activation server must be configured with:
 
 - `LENGRVIS_ACTIVATION_DB=<private sqlite path>`
 - `LENGRVIS_ACTIVATION_KEY_PEPPER=<server-only random secret>`
+- `LENGRVIS_ACTIVATION_SERVER_DEVICE_SECRET=<separate server-only random secret for device binding>`
+- `LENGRVIS_ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF=true`
 - `LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY_FILE=<encrypted issuer private key path>`
 - `LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE_FILE=<private passphrase file>` when the key is encrypted
 - `LENGRVIS_LICENSE_PUBLIC_KEY=<production Ed25519 public key>` for local self-checks
@@ -78,6 +80,15 @@ npm run activation:admin -- create-key `
 ```
 
 The desktop app sends the key once to `LENGRVIS_ACTIVATION_BASE_URL/api/v1/activations`, stores the returned signed license, and then runs offline until expiry/revocation/refresh.
+
+For a commercial activation deployment, `npm run release:safety` also requires redacted evidence labels for:
+
+- `LENGRVIS_ACTIVATION_REVERSE_PROXY_EVIDENCE`
+- `LENGRVIS_ACTIVATION_RATE_LIMIT_EVIDENCE`
+- `LENGRVIS_ACTIVATION_AUDIT_EVIDENCE`
+- `LENGRVIS_ACTIVATION_OPERATIONS_EVIDENCE`
+
+The activation server rejects weak device profiles when `LENGRVIS_ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF=true`. The client profile must show system-protected local secret storage (`dpapi` or `keyring`) and at least one machine-level signal. This is strong local binding, not TPM/vendor attestation; do not market it as hardware attestation until an attestation provider is integrated and evidenced.
 
 ## 4. Replace or migrate a license
 
@@ -144,6 +155,8 @@ On the next settings resolution or application restart:
 
 - a matching `license_id` becomes `revoked` and paid features fall back to Free;
 - a tampered or malformed manifest becomes `revocation_data_invalid` and paid features fail closed;
+- a commercial offline paid license without a signed manifest becomes `revocation_required` and paid features fail closed;
+- a commercial offline paid license with a stale manifest becomes `revocation_stale` and paid features fail closed; default freshness is seven days and can be tightened with `LENGRVIS_LICENSE_REVOCATION_MAX_AGE_SECONDS`;
 - a legacy license without `license_id` remains readable for compatibility but is marked not revocation-capable and must be replaced before production sale.
 - a legacy device-bound license without `device_fingerprint` is rejected when `LENGRVIS_COMMERCIAL_RELEASE=true`; customers must re-activate or refresh online to receive a fingerprint-bound replacement token.
 
@@ -169,6 +182,9 @@ Inspection prints only safe metadata. A revoked, expired, malformed, or wrongly 
 - [ ] `LENGRVIS_COMMERCIAL_RELEASE=true` and public key pass `npm run release:safety`.
 - [ ] Test issue, import, replacement, refund revocation, manifest deployment, and Free fallback recorded.
 - [ ] Test activation key creation, first activation, repeated activation, device-limit rejection, renewal refresh, cancellation at period end, refund revocation, expiry downgrade, and rate limiting recorded.
+- [ ] Activation server uses separate key-hash pepper and device-binding HMAC secret; no production fallback shares those secrets.
+- [ ] Activation deployment evidence records HTTPS reverse proxy, rate limiting, safe audit events, operations runbook, and strong device-binding profile enforcement.
+- [ ] Offline paid deployments ship a fresh signed revocation manifest and have a tested update channel before paid entitlement is enabled.
 - [ ] Ledger backup and restore tested; tamper detection demonstrated.
 - [ ] Customer delivery and revocation-manifest update channel approved.
 

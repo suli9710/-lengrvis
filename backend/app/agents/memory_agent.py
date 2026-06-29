@@ -4,6 +4,8 @@ import json
 import math
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.agents.base import BaseAgent
 from app.core import db
 from app.core.audit import record
@@ -47,7 +49,12 @@ class MemoryAgent(BaseAgent):
         payload = memory.model_dump()
         payload["embedding"] = vector
         db.upsert_memory(payload)
-        record("memory.remembered", self.name, {"id": memory.id, "kind": kind, "tag_count": len(memory.tags)}, task_id=task_id)
+        record(
+            "memory.remembered",
+            self.name,
+            {"id": memory.id, "kind": kind, "tag_count": len(memory.tags)},
+            task_id=task_id,
+        )
         try:
             if task_id:
                 self.bus.publish_text(
@@ -57,7 +64,7 @@ class MemoryAgent(BaseAgent):
                     message_type=MessageType.OBSERVATION,
                     structured_payload={"memory_id": memory.id, "kind": kind, "tags": memory.tags},
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - bus failures should not block memory persistence.
             record("memory.bus_publish_failed", self.name, {"error": str(exc)}, task_id=task_id)
         return memory
 
@@ -101,14 +108,18 @@ class MemoryAgent(BaseAgent):
         scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
             vector = row.get("embedding") or []
-            similarity = _cosine_similarity(query_vector, vector) + _lexical_overlap_score(query, str(row.get("content") or ""))
+            similarity = _cosine_similarity(query_vector, vector) + _lexical_overlap_score(
+                query,
+                str(row.get("content") or ""),
+            )
             scored.append((similarity, row))
         scored.sort(key=lambda item: item[0], reverse=True)
         results: list[Memory] = []
-        for similarity, row in scored[:k]:
+        for _similarity, row in scored[:k]:
             try:
                 memory = Memory.model_validate(row)
-            except Exception:
+            except ValidationError as exc:
+                record("memory.recall_row_invalid", self.name, {"error": str(exc)})
                 continue
             memory.use_count = int(row.get("use_count", 0)) + 1
             memory.last_used_at = now_iso()
@@ -130,7 +141,8 @@ class MemoryAgent(BaseAgent):
         for row in rows:
             try:
                 result.append(Memory.model_validate(row))
-            except Exception:
+            except ValidationError as exc:
+                record("memory.list_row_invalid", self.name, {"error": str(exc)})
                 continue
         return result
 
@@ -138,7 +150,7 @@ class MemoryAgent(BaseAgent):
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(left * right for left, right in zip(a, b))
+    dot = sum(left * right for left, right in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(value * value for value in a))
     norm_b = math.sqrt(sum(value * value for value in b))
     if norm_a == 0 or norm_b == 0:

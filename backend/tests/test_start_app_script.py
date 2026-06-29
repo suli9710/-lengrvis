@@ -1,15 +1,37 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from tls_test_material import write_lan_tls_material
+
+from app.commerce.licensing import sign_license, sign_revocation_manifest
+
+_RELEASE_PRIVATE_KEY_BYTES = bytes(range(1, 33))
+_RELEASE_PRIVATE_KEY = base64.urlsafe_b64encode(_RELEASE_PRIVATE_KEY_BYTES).rstrip(b"=").decode("ascii")
+_RELEASE_PUBLIC_KEY = (
+    "ed25519:"
+    + base64.urlsafe_b64encode(
+        Ed25519PrivateKey.from_private_bytes(_RELEASE_PRIVATE_KEY_BYTES)
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    .rstrip(b"=")
+    .decode("ascii")
+)
 
 
 def _start_app_text(project_root: Path) -> str:
@@ -74,6 +96,31 @@ def _package_json(project_root: Path) -> dict[str, object]:
     return json.loads((project_root / "package.json").read_text(encoding="utf-8"))
 
 
+def _release_license_token(**extra: object) -> str:
+    payload: dict[str, object] = {
+        "schema": 1,
+        "license_id": "lic_release_safety",
+        "issuer": "Lengrvis Sales",
+        "subject": "release-safety-redacted",
+        "plan": "pro",
+        "issued_at": datetime.now(UTC).isoformat(),
+        **extra,
+    }
+    return sign_license(payload, _RELEASE_PRIVATE_KEY)
+
+
+def _release_revocations_token(*, generated_at: datetime | None = None) -> str:
+    return sign_revocation_manifest(
+        {
+            "schema": 1,
+            "generated_at": (generated_at or datetime.now(UTC)).isoformat(),
+            "issuer": "Lengrvis Sales",
+            "revoked": [{"license_id": "lic_other_redacted", "reason": "admin"}],
+        },
+        _RELEASE_PRIVATE_KEY,
+    )
+
+
 def _powershell_executable() -> str:
     executable = shutil.which("powershell") or shutil.which("pwsh")
     if executable is None:
@@ -97,7 +144,15 @@ def _run_release_safety(
         "LENGRVIS_CONFIG_FILE",
         "LENGRVIS_COMMERCIAL_RELEASE",
         "LENGRVIS_ENV_FILE",
+        "LENGRVIS_ACTIVATION_ALLOW_INSECURE_HTTP",
+        "LENGRVIS_ACTIVATION_AUDIT_EVIDENCE",
+        "LENGRVIS_ACTIVATION_BASE_URL",
+        "LENGRVIS_ACTIVATION_OPERATIONS_EVIDENCE",
+        "LENGRVIS_ACTIVATION_RATE_LIMIT_EVIDENCE",
+        "LENGRVIS_ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF",
+        "LENGRVIS_ACTIVATION_REVERSE_PROXY_EVIDENCE",
         "LENGRVIS_LICENSE_KEY",
+        "LENGRVIS_LICENSE_REVOCATION_MAX_AGE_SECONDS",
         "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE",
         "LENGRVIS_ACTIVATION_SIGNING_PASSPHRASE_FILE",
         "LENGRVIS_ACTIVATION_SIGNING_PRIVATE_KEY",
@@ -1127,6 +1182,138 @@ def test_release_safety_rejects_commercial_quota_overrides(
     assert result.returncode == 1, output
     assert "Commercial release profiles must not use LENGRVIS_CLOUD_QUOTA_* limit overrides" in output
     assert "LENGRVIS_CLOUD_QUOTA_MAX_TOKENS" in output
+
+
+def test_release_safety_rejects_commercial_insecure_activation_http(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_ACTIVATION_ALLOW_INSECURE_HTTP": "true",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial release profiles must not set LENGRVIS_ACTIVATION_ALLOW_INSECURE_HTTP=true" in output
+
+
+def test_release_safety_rejects_commercial_http_activation_base_url(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_ACTIVATION_BASE_URL": "http://activation.example",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial release profiles must use an HTTPS LENGRVIS_ACTIVATION_BASE_URL" in output
+
+
+def test_release_safety_rejects_commercial_activation_without_deployment_evidence(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_ACTIVATION_BASE_URL": "https://activation.example",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "LENGRVIS_ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF=true" in output
+    assert "LENGRVIS_ACTIVATION_REVERSE_PROXY_EVIDENCE" in output
+    assert "LENGRVIS_ACTIVATION_RATE_LIMIT_EVIDENCE" in output
+    assert "LENGRVIS_ACTIVATION_AUDIT_EVIDENCE" in output
+    assert "LENGRVIS_ACTIVATION_OPERATIONS_EVIDENCE" in output
+
+
+def test_release_safety_accepts_commercial_activation_deployment_evidence(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": "ed25519:ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+            "LENGRVIS_ACTIVATION_BASE_URL": "https://activation.example",
+            "LENGRVIS_ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF": "true",
+            "LENGRVIS_ACTIVATION_REVERSE_PROXY_EVIDENCE": "reverse-proxy-redacted",
+            "LENGRVIS_ACTIVATION_RATE_LIMIT_EVIDENCE": "rate-limit-redacted",
+            "LENGRVIS_ACTIVATION_AUDIT_EVIDENCE": "audit-redacted",
+            "LENGRVIS_ACTIVATION_OPERATIONS_EVIDENCE": "ops-redacted",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+
+
+def test_release_safety_rejects_commercial_offline_license_without_revocations(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": _RELEASE_PUBLIC_KEY,
+            "LENGRVIS_LICENSE_KEY": _release_license_token(),
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial offline paid license profiles require LENGRVIS_LICENSE_REVOCATIONS" in output
+
+
+def test_release_safety_rejects_stale_commercial_revocations(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    result = _run_release_safety(
+        project_root,
+        tmp_path,
+        {
+            "LENGRVIS_STRICT_STATE_MACHINE": "true",
+            "LENGRVIS_COMMERCIAL_RELEASE": "true",
+            "LENGRVIS_LICENSE_PUBLIC_KEY": _RELEASE_PUBLIC_KEY,
+            "LENGRVIS_LICENSE_KEY": _release_license_token(),
+            "LENGRVIS_LICENSE_REVOCATIONS": _release_revocations_token(
+                generated_at=datetime.now(UTC) - timedelta(days=2)
+            ),
+            "LENGRVIS_LICENSE_REVOCATION_MAX_AGE_SECONDS": "3600",
+        },
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 1, output
+    assert "Commercial revocation manifests are stale" in output
 
 
 def test_release_safety_rejects_runtime_license_private_key(

@@ -4,6 +4,8 @@ import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { ConsentGate } from "./components/legal/ConsentGate";
 import "./styles.css";
+import "./components/legal/privacy-consent.css";
+import "./components/settings/settings-commerce-privacy.css";
 import "./styles.diagnostics-fix.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

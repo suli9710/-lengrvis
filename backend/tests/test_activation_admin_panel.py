@@ -22,6 +22,7 @@ from app.api.routes_activation_admin import (
 )
 from app.commerce.activation import (
     ACTIVATION_KEY_PEPPER_ENV_VAR,
+    ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR,
     ACTIVATION_SIGNING_PRIVATE_KEY_ENV_VAR,
     ActivationRequest,
     activate_subscription_key,
@@ -59,6 +60,7 @@ def _app() -> FastAPI:
 def _configure(monkeypatch, tmp_path: Path) -> Path:
     db_path = tmp_path / "activation.sqlite"
     monkeypatch.setenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "pepper-redacted")
+    monkeypatch.setenv(ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR, "server-device-secret-redacted")
     monkeypatch.setenv(ACTIVATION_SIGNING_PRIVATE_KEY_ENV_VAR, PRIVATE_KEY)
     monkeypatch.setenv(LICENSE_PUBLIC_KEY_ENV_VAR, PUBLIC_KEY)
     monkeypatch.setenv("LENGRVIS_ACTIVATION_DB", str(db_path))
@@ -192,6 +194,7 @@ def test_admin_create_list_renew_revoke_and_unbind(monkeypatch, tmp_path: Path) 
         ActivationRequest(
             activation_key=activation_key,
             device_id="dev_admin_one",
+            nonce="nonce-admin-redacted-123456",
             device_fingerprint="fp_admin_one",
             device_profile={"os": "windows", "arch": "x64", "device_name": "raw-device"},
             app_version="desktop",
@@ -239,6 +242,88 @@ def test_admin_create_list_renew_revoke_and_unbind(monkeypatch, tmp_path: Path) 
     assert listed[0]["device_count"] == 0
 
 
+def test_admin_can_delete_terminal_subscription_without_devices(monkeypatch, tmp_path: Path) -> None:
+    _configure(monkeypatch, tmp_path)
+    client = TestClient(_app())
+    csrf = _login(client)
+
+    created = _create_key(
+        client,
+        csrf,
+        subscription_id="sub_delete_terminal_001",
+        status="expired",
+    )
+    key_hash = created["record"]["key_hash"]
+
+    deleted = client.delete(
+        f"/api/admin/subscriptions/{key_hash}",
+        headers={"x-lengrvis-admin-csrf": csrf},
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["ok"] is True
+    assert deleted.json()["removed"] is True
+    assert deleted.json()["key_hash_prefix"] == key_hash[:12]
+    assert client.get("/api/admin/subscriptions").json()["items"] == []
+
+    deleted_again = client.delete(
+        f"/api/admin/subscriptions/{key_hash}",
+        headers={"x-lengrvis-admin-csrf": csrf},
+    )
+    assert deleted_again.status_code == 404
+    assert deleted_again.json()["error"]["code"] == "activation_key_not_found"
+
+
+def test_admin_delete_refuses_active_or_device_bound_subscription(monkeypatch, tmp_path: Path) -> None:
+    db_path = _configure(monkeypatch, tmp_path)
+    client = TestClient(_app())
+    csrf = _login(client)
+
+    active = _create_key(client, csrf, subscription_id="sub_delete_active_001")
+    active_delete = client.delete(
+        f"/api/admin/subscriptions/{active['record']['key_hash']}",
+        headers={"x-lengrvis-admin-csrf": csrf},
+    )
+    assert active_delete.status_code == 409
+    assert active_delete.json()["error"]["code"] == "subscription_delete_not_terminal"
+
+    bound = _create_key(client, csrf, subscription_id="sub_delete_bound_001")
+    activated = activate_subscription_key(
+        ActivationRequest(
+            activation_key=bound["activation_key"],
+            device_id="dev_delete_bound",
+            nonce="nonce-delete-bound-redacted",
+            device_fingerprint="fp_delete_bound",
+            device_profile={"os": "windows", "arch": "x64"},
+            app_version="desktop",
+        ),
+        db_path=db_path,
+    )
+    revoke = client.post(
+        f"/api/admin/subscriptions/{bound['record']['key_hash']}/revoke",
+        headers={"x-lengrvis-admin-csrf": csrf},
+    )
+    assert revoke.status_code == 200
+
+    bound_delete = client.delete(
+        f"/api/admin/subscriptions/{bound['record']['key_hash']}",
+        headers={"x-lengrvis-admin-csrf": csrf},
+    )
+    assert bound_delete.status_code == 409
+    assert bound_delete.json()["error"]["code"] == "subscription_delete_has_devices"
+
+    unbind = client.delete(
+        f"/api/admin/devices/{activated.license_id}",
+        headers={"x-lengrvis-admin-csrf": csrf},
+    )
+    assert unbind.status_code == 200
+    cleaned = client.delete(
+        f"/api/admin/subscriptions/{bound['record']['key_hash']}",
+        headers={"x-lengrvis-admin-csrf": csrf},
+    )
+    assert cleaned.status_code == 200
+
+
 def test_admin_create_generates_subscription_id_when_blank(monkeypatch, tmp_path: Path) -> None:
     _configure(monkeypatch, tmp_path)
     client = TestClient(_app())
@@ -278,6 +363,7 @@ def test_admin_can_issue_free_pro_max_keys(monkeypatch, tmp_path: Path) -> None:
             ActivationRequest(
                 created["activation_key"],
                 f"dev_{plan}_one",
+                nonce="nonce-admin-plan-redacted-123456",
                 device_fingerprint=f"fp_{plan}_one",
             ),
             db_path=db_path,
@@ -305,6 +391,9 @@ def test_admin_page_uses_expiry_presets_and_renew_panel() -> None:
     assert 'id="statusFilter"' in html
     assert "详情与操作" in html
     assert "输入 撤销" in html
+    assert "删除记录" in html
+    assert "输入 删除" in html
+    assert "只能删除已取消、已过期或已撤销的订阅记录" in html
     assert "下载交接文本" in html
     assert "我已把授权码交接到安全位置" in html
     assert 'id="renewPanel"' in html

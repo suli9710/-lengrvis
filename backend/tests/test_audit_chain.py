@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -313,6 +314,34 @@ def test_audit_hmac_secret_read_once_per_process(monkeypatch, tmp_path):
     record("security.secret_cache_third", "pytest", {"ok": True})
 
     assert calls["count"] == 1
+    assert db.verify_audit_log()["ok"] is True
+
+
+def test_audit_write_after_cache_reset_with_local_secret_does_not_deadlock(monkeypatch, tmp_path):
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET", raising=False)
+    monkeypatch.delenv("LENGRVIS_AUDIT_HMAC_SECRET_FILE", raising=False)
+    db.init_db()
+
+    first = record("security.local_secret_head_first", "pytest", {"ok": True})
+    db.reset_audit_caches()
+    result: dict[str, object] = {}
+
+    def write_after_reset() -> None:
+        try:
+            result["event"] = record("security.local_secret_head_second", "pytest", {"ok": True})
+        except BaseException as exc:  # noqa: BLE001 - propagate thread failures into assertion output.
+            result["error"] = exc
+
+    thread = threading.Thread(target=write_after_reset, daemon=True)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive(), "audit write deadlocked after cache reset with persisted chain head"
+    assert "error" not in result
+    second = result["event"]
+    assert second.sequence == first.sequence + 1
+    assert second.prev_hash == first.event_hash
     assert db.verify_audit_log()["ok"] is True
 
 

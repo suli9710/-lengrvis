@@ -40,9 +40,9 @@ AUDIT_APPEND_ONLY_TRIGGERS = frozenset(
 )
 
 # Audit hot-path caches (2-H2): avoid re-reading the HMAC secret file and
-# re-querying the chain tail on every event. Single-writer assumption: failed
-# inserts invalidate the chain head and fall back to a fresh DB query.
-_AUDIT_CACHE_LOCK = threading.Lock()
+# re-querying the chain tail on every event. RLock is required because a cold
+# chain-head cache can verify a persisted head, which re-enters the secret cache.
+_AUDIT_CACHE_LOCK = threading.RLock()
 _AUDIT_SECRET_CACHE: dict[str, str] = {}
 _AUDIT_CHAIN_HEADS: dict[str, tuple[int, str]] = {}
 

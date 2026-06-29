@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import threading
 from collections import defaultdict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class AgentBus:
         for callback in callbacks:
             try:
                 callback(event)
-            except Exception:
+            except Exception:  # noqa: BLE001 - isolate third-party/subscriber callbacks.
                 _log.exception("AgentBus subscriber error on topic %r", topic)
 
 

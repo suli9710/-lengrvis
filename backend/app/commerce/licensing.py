@@ -53,10 +53,13 @@ SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS_ENV_VAR = "LENGRVIS_SUBSCRIPTION_LICENS
 DEFAULT_SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS = 24 * 60 * 60
 HIGH_RISK_SUBSCRIPTION_REFRESH_TTL_SECONDS_ENV_VAR = "LENGRVIS_HIGH_RISK_SUBSCRIPTION_REFRESH_TTL_SECONDS"
 DEFAULT_HIGH_RISK_SUBSCRIPTION_REFRESH_TTL_SECONDS = 15 * 60
+LICENSE_REVOCATION_MAX_AGE_SECONDS_ENV_VAR = "LENGRVIS_LICENSE_REVOCATION_MAX_AGE_SECONDS"
+DEFAULT_LICENSE_REVOCATION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 MAX_LICENSE_TOKEN_BYTES = 64 * 1024
 MAX_REVOCATION_TOKEN_BYTES = 1024 * 1024
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _DEVICE_BINDING_NOT_CHECKED = object()
+_STRONG_DEVICE_SECRET_STORAGE = {"dpapi", "keyring"}
 
 _SIGNED_PAYLOAD_LABELS = {
     "License": "许可证",
@@ -374,6 +377,13 @@ def verify_license(
             code="license_device_fingerprint_missing",
             status_code=402,
         )
+    activation_binding_error = _commercial_activation_device_binding_error(license_)
+    if activation_binding_error:
+        raise LicenseError(
+            "商业发行版要求激活许可证包含强设备绑定证明。",
+            code=activation_binding_error,
+            status_code=402,
+        )
     if license_.is_expired(now=now):
         raise LicenseError("许可证已过期。", code="license_expired", status_code=402)
     if license_.subscription_status and license_.subscription_status not in {"active", "trialing"}:
@@ -423,6 +433,34 @@ def commercial_release_enabled() -> bool:
     return str(os.getenv(COMMERCIAL_RELEASE_ENV_VAR, "")).strip().lower() in _TRUE_VALUES
 
 
+def _activation_source(license_: License) -> str:
+    activation = license_.payload.get("activation")
+    if not isinstance(activation, dict):
+        return ""
+    return str(activation.get("source") or "").strip().lower()
+
+
+def _commercial_activation_device_binding_error(license_: License) -> str | None:
+    if not commercial_release_enabled() or _activation_source(license_) != "activation_server":
+        return None
+    activation = license_.payload.get("activation")
+    binding = activation.get("device_binding") if isinstance(activation, dict) else None
+    if not isinstance(binding, dict):
+        return "license_device_proof_missing"
+    strength = str(binding.get("strength") or "").strip().lower()
+    storage = str(binding.get("secret_storage") or "").strip().lower()
+    binding_fingerprint = str(binding.get("fingerprint") or "").strip()
+    try:
+        hardware_signal_count = int(binding.get("hardware_signal_count") or 0)
+    except (TypeError, ValueError):
+        hardware_signal_count = 0
+    if not binding_fingerprint or not hmac.compare_digest(binding_fingerprint, license_.device_fingerprint):
+        return "license_device_proof_mismatch"
+    if strength != "strong" or storage not in _STRONG_DEVICE_SECRET_STORAGE or hardware_signal_count < 1:
+        return "license_device_proof_weak"
+    return None
+
+
 def _plan_env_override_allowed() -> bool:
     """Dev/test escape hatch: allow ``LENGRVIS_PLAN`` to select paid tiers without a license."""
     if commercial_release_enabled():
@@ -460,6 +498,58 @@ def high_risk_subscription_refresh_ttl_seconds() -> int:
         return max(1, min(DEFAULT_SUBSCRIPTION_LICENSE_REFRESH_TTL_SECONDS, int(raw)))
     except ValueError:
         return DEFAULT_HIGH_RISK_SUBSCRIPTION_REFRESH_TTL_SECONDS
+
+
+def revocation_manifest_max_age_seconds() -> int:
+    raw = str(os.getenv(LICENSE_REVOCATION_MAX_AGE_SECONDS_ENV_VAR, "")).strip()
+    if not raw:
+        return DEFAULT_LICENSE_REVOCATION_MAX_AGE_SECONDS
+    try:
+        return max(60, min(30 * 24 * 60 * 60, int(raw)))
+    except ValueError:
+        return DEFAULT_LICENSE_REVOCATION_MAX_AGE_SECONDS
+
+
+def _commercial_revocation_freshness_error(
+    license_: License,
+    revocations: RevocationManifest | None,
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    if (
+        not commercial_release_enabled()
+        or license_.plan is Plan.FREE
+        or _subscription_license_requires_online_confirmation(license_)
+    ):
+        return None
+    if not license_.license_id:
+        return "license_revocation_id_missing"
+    if revocations is None:
+        return "license_revocation_required"
+    generated_at = revocations.generated_at
+    if generated_at is None:
+        return "license_revocation_stale"
+    moment = now or datetime.now(UTC)
+    if generated_at > moment + timedelta(minutes=5):
+        return "license_revocation_time_invalid"
+    if moment - generated_at > timedelta(seconds=revocation_manifest_max_age_seconds()):
+        return "license_revocation_stale"
+    return None
+
+
+def _enforce_commercial_revocation_freshness(
+    license_: License,
+    revocations: RevocationManifest | None,
+    *,
+    now: datetime | None = None,
+) -> None:
+    error = _commercial_revocation_freshness_error(license_, revocations, now=now)
+    if error:
+        raise LicenseError(
+            "商业发行版要求离线付费许可证配套新鲜的签名吊销清单。",
+            code=error,
+            status_code=402,
+        )
 
 
 def _subscription_confirmation_expires_at(
@@ -528,6 +618,26 @@ def _enforce_subscription_confirmation(
         )
 
 
+def require_activation_response_nonce(license_: License, expected_nonce_sha256: str) -> None:
+    """Ensure an activation-server license belongs to the current request.
+
+    The activation client sends a fresh nonce and the server signs its SHA-256
+    hash into the returned license. Verifying that hash before persistence
+    prevents replay of an older still-valid token for the same device.
+    """
+    expected = str(expected_nonce_sha256 or "").strip().lower()
+    activation = license_.payload.get("activation")
+    actual = ""
+    if isinstance(activation, dict):
+        actual = str(activation.get("nonce_sha256") or "").strip().lower()
+    if not expected or not actual or not hmac.compare_digest(actual, expected):
+        raise LicenseError(
+            "激活服务返回的许可证不是本次请求的结果。",
+            code="activation_nonce_mismatch",
+            status_code=502,
+        )
+
+
 def _refresh_subscription_license(
     token: str,
     settings: Any | None,
@@ -570,6 +680,7 @@ def _verify_runtime_license(
     parsed = parse_license(token, public_key)
     if revocations is not None and revocations.is_revoked(parsed.license_id):
         raise LicenseError("许可证已被吊销。", code="license_revoked", status_code=402)
+    _enforce_commercial_revocation_freshness(parsed, revocations, now=now)
     if _subscription_license_needs_refresh(parsed, now=now):
         refreshed, _ = _refresh_subscription_license(token, settings, now=now, source=source)
         if refreshed is not None:
@@ -689,8 +800,10 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
         confirmation,
     ) = _local_flags(license_)
     revoked = bool(revocations and revocations.is_revoked(license_.license_id))
+    revocation_freshness_error = _commercial_revocation_freshness_error(license_, revocations, now=now)
     if (
         not revoked
+        and not revocation_freshness_error
         and not device_unverified
         and not device_mismatch
         and not fingerprint_unverified
@@ -733,19 +846,31 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
                 confirmation,
             ) = _local_flags(license_)
             revoked = bool(revocations and revocations.is_revoked(license_.license_id))
+            revocation_freshness_error = _commercial_revocation_freshness_error(license_, revocations, now=now)
             refresh_error_code = None
     confirmation_stale = bool(confirmation["required"] and not confirmation["fresh"])
     confirmation_failed = bool(refresh_error_code and confirmation_stale and not expired and not subscription_inactive)
     fingerprint_missing = bool(commercial_release_enabled() and license_.device_id and not license_.device_fingerprint)
+    device_binding_error = _commercial_activation_device_binding_error(license_)
     state = (
         "revoked"
         if revoked
+        else "revocation_required"
+        if revocation_freshness_error == "license_revocation_required"
+        else "revocation_stale"
+        if revocation_freshness_error
         else "subscription_confirmation_failed"
         if confirmation_failed
         else "expired"
         if expired
         else "device_fingerprint_missing"
         if fingerprint_missing
+        else "device_proof_missing"
+        if device_binding_error == "license_device_proof_missing"
+        else "device_proof_mismatch"
+        if device_binding_error == "license_device_proof_mismatch"
+        else "device_proof_weak"
+        if device_binding_error
         else "device_mismatch"
         if device_mismatch
         else "device_fingerprint_mismatch"
@@ -762,7 +887,9 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
         (
             expired,
             revoked,
+            bool(revocation_freshness_error),
             fingerprint_missing,
+            bool(device_binding_error),
             device_mismatch,
             device_unverified,
             fingerprint_mismatch,
@@ -806,10 +933,14 @@ def license_status(settings: Any | None = None, *, now: datetime | None = None) 
         "issued_at": license_.issued_at.isoformat() if license_.issued_at else None,
         "expires_at": license_.expires_at.isoformat() if license_.expires_at else None,
         "error_code": (
-            "license_device_mismatch"
-            if device_mismatch
+            revocation_freshness_error
+            if revocation_freshness_error
             else "license_device_fingerprint_missing"
             if fingerprint_missing
+            else device_binding_error
+            if device_binding_error
+            else "license_device_mismatch"
+            if device_mismatch
             else "license_device_fingerprint_mismatch"
             if fingerprint_mismatch
             else "license_device_unverified"
@@ -849,6 +980,8 @@ def subscription_confirmation_fresh(
     try:
         revocations, _ = load_revocation_manifest(settings, public_key=public_key)
         license_ = parse_license(token, public_key)
+        if _commercial_revocation_freshness_error(license_, revocations, now=now):
+            return False
         if revocations is not None and revocations.is_revoked(license_.license_id):
             return False
         if _subscription_license_needs_refresh(license_, now=now, ttl_seconds=ttl_seconds):
@@ -888,7 +1021,13 @@ def subscription_confirmation_fresh(
         return False
 
 
-def install_license(token: str, settings: Any, *, now: datetime | None = None) -> License:
+def install_license(
+    token: str,
+    settings: Any,
+    *,
+    now: datetime | None = None,
+    expected_activation_nonce_sha256: str | None = None,
+) -> License:
     """Verify and atomically persist a locally imported offline license."""
     if os.getenv(LICENSE_KEY_ENV_VAR, "").strip():
         raise LicenseError(
@@ -912,7 +1051,10 @@ def install_license(token: str, settings: Any, *, now: datetime | None = None) -
         expected_device_id=expected_device_id,
         expected_device_fingerprint=expected_device_fingerprint,
     )
+    _enforce_commercial_revocation_freshness(license_, revocations, now=now)
     _enforce_subscription_confirmation(license_, now=now)
+    if expected_activation_nonce_sha256 is not None:
+        require_activation_response_nonce(license_, expected_activation_nonce_sha256)
     path = _license_file_path(settings)
     if path is None:
         raise LicenseError("许可证存储目录不可用。", code="license_storage_unavailable", status_code=503)

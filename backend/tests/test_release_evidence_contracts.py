@@ -146,15 +146,19 @@ def _commercial_sample() -> dict:
             "subscription_activation": {
                 "status": "passed",
                 "activation_api_https_label": "activation-https-redacted",
+                "reverse_proxy_label": "reverse-proxy-redacted",
                 "activation_key_creation_label": "activation-key-created-redacted",
                 "first_activation_label": "first-activation-redacted",
                 "idempotent_repeat_activation_label": "repeat-activation-redacted",
                 "device_limit_label": "device-limit-redacted",
+                "strong_device_binding_label": "strong-device-binding-redacted",
                 "renewal_refresh_label": "renewal-refresh-redacted",
                 "cancel_period_end_label": "cancel-period-end-redacted",
                 "refund_revocation_label": "refund-revocation-redacted",
                 "expired_downgrade_label": "expired-downgrade-redacted",
                 "rate_limit_label": "rate-limit-redacted",
+                "activation_audit_log_label": "activation-audit-redacted",
+                "operations_runbook_label": "activation-ops-redacted",
                 "secret_redaction_label": "secret-redaction-redacted",
             },
             "license_issuer": {
@@ -163,6 +167,7 @@ def _commercial_sample() -> dict:
                 "public_key_fingerprint_label": "fingerprint-redacted",
                 "private_key_custody_label": "custody-redacted",
                 "issuance_log_label": "issuance-log-redacted",
+                "revocation_manifest_freshness_label": "revocation-freshness-redacted",
                 "issuance_rehearsal": "passed",
                 "renewal_rehearsal": "passed",
                 "replacement_rehearsal": "passed",
@@ -636,6 +641,21 @@ def test_commercial_rejects_self_serve_checkout_claim() -> None:
     payload["summary"]["self_serve_checkout_enabled"] = True
     errors = commercial.validate_payload(payload)
     assert any("self_serve_checkout_enabled" in error for error in errors)
+
+
+def test_commercial_rejects_missing_activation_security_evidence() -> None:
+    payload = deepcopy(_commercial_sample())
+    payload["subscription_activation"].pop("strong_device_binding_label")
+    payload["subscription_activation"].pop("reverse_proxy_label")
+    payload["subscription_activation"].pop("activation_audit_log_label")
+    payload["license_issuer"].pop("revocation_manifest_freshness_label")
+
+    errors = commercial.validate_payload(payload)
+
+    assert any("strong_device_binding_label" in error for error in errors)
+    assert any("reverse_proxy_label" in error for error in errors)
+    assert any("activation_audit_log_label" in error for error in errors)
+    assert any("revocation_manifest_freshness_label" in error for error in errors)
 
 
 def test_distribution_cross_checks_dist_artifact_sha256_when_path_present(tmp_path) -> None:

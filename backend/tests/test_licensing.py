@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from app.api import routes_commerce
-from app.commerce.device_identity import DeviceIdentityError, collect_activation_device_identity
+from app.commerce.device_identity import DeviceIdentityError, LocalDeviceIdentity, collect_activation_device_identity
 from app.commerce.entitlements import Plan
 from app.commerce.licensing import (
     LicenseError,
@@ -66,6 +66,18 @@ def _make_token(plan: str = "max", expires_at: str | None = None, **extra: objec
     if expires_at is not None:
         payload["expires_at"] = expires_at
     return sign_license(payload, PRIVATE_KEY)
+
+
+def _make_revocations(*, generated_at: datetime | None = None) -> str:
+    return sign_revocation_manifest(
+        {
+            "schema": 1,
+            "generated_at": (generated_at or datetime.now(UTC)).isoformat(),
+            "issuer": "Lengrvis Sales",
+            "revoked": [{"license_id": "lic_other_redacted", "reason": "admin"}],
+        },
+        PRIVATE_KEY,
+    )
 
 
 def _legacy_hmac_token(payload: dict[str, object], signing_key: str) -> str:
@@ -353,6 +365,7 @@ def test_commercial_release_uses_verified_license_plan(
         _make_token(plan="pro", license_id="lic_commercial", issuer="Lengrvis Sales"),
     )
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_LICENSE_REVOCATIONS", _make_revocations())
 
     class _S:
         plan = "max"
@@ -568,12 +581,16 @@ def test_commercial_release_rejects_license_without_device_fingerprint(
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
     monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
     monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+    monkeypatch.setenv("LENGRVIS_LICENSE_REVOCATIONS", _make_revocations())
+    monkeypatch.setattr(
+        "app.commerce.licensing.collect_activation_device_identity",
+        lambda settings: LocalDeviceIdentity("dev_commercial_legacy", "fp_commercial_legacy", {}),
+    )
 
     class _S:
         data_dir = str(tmp_path)
 
-    identity = collect_activation_device_identity(_S())
-    token = _make_token(plan="pro", license_id="lic_commercial_legacy", device_id=identity.device_id)
+    token = _make_token(plan="pro", license_id="lic_commercial_legacy", device_id="dev_commercial_legacy")
 
     with pytest.raises(LicenseError) as excinfo:
         install_license(token, _S())
@@ -588,12 +605,16 @@ def test_commercial_release_license_status_reports_missing_device_fingerprint(
     monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
     monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
     monkeypatch.setenv("LENGRVIS_ALLOW_INSECURE_LOCAL_SECRETS", "1")
+    monkeypatch.setenv("LENGRVIS_LICENSE_REVOCATIONS", _make_revocations())
+    monkeypatch.setattr(
+        "app.commerce.licensing.collect_activation_device_identity",
+        lambda settings: LocalDeviceIdentity("dev_commercial_status", "fp_commercial_status", {}),
+    )
 
     class _S:
         data_dir = str(tmp_path)
 
-    identity = collect_activation_device_identity(_S())
-    token = _make_token(plan="pro", license_id="lic_commercial_status", device_id=identity.device_id)
+    token = _make_token(plan="pro", license_id="lic_commercial_status", device_id="dev_commercial_status")
     (tmp_path / "license.key").write_text(token, encoding="utf-8")
 
     status = license_status(_S())
@@ -725,6 +746,110 @@ def test_invalid_revocation_file_fails_closed(
     status = license_status(_S())
     assert status["state"] == "revocation_data_invalid"
     assert status["active"] is False
+
+
+def test_commercial_offline_license_requires_revocation_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.delenv("LENGRVIS_LICENSE_REVOCATIONS", raising=False)
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    token = _make_token(plan="pro", license_id="lic_offline_no_revocations", issuer="Lengrvis Sales")
+
+    with pytest.raises(LicenseError) as excinfo:
+        install_license(token, _S())
+
+    assert excinfo.value.code == "license_revocation_required"
+    (tmp_path / "license.key").write_text(token, encoding="utf-8")
+    assert load_license(_S()) is None
+    status = license_status(_S())
+    assert status["state"] == "revocation_required"
+    assert status["active"] is False
+    assert status["error_code"] == "license_revocation_required"
+
+
+def test_commercial_offline_license_rejects_stale_revocation_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    now = datetime.now(UTC)
+    monkeypatch.delenv("LENGRVIS_LICENSE_KEY", raising=False)
+    monkeypatch.delenv("LENGRVIS_LICENSE_REVOCATIONS", raising=False)
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    monkeypatch.setenv("LENGRVIS_LICENSE_PUBLIC_KEY", PUBLIC_KEY)
+    monkeypatch.setenv("LENGRVIS_LICENSE_REVOCATION_MAX_AGE_SECONDS", "3600")
+    (tmp_path / "license.key").write_text(
+        _make_token(plan="pro", license_id="lic_offline_stale_revocations", issuer="Lengrvis Sales"),
+        encoding="utf-8",
+    )
+    (tmp_path / "license-revocations.key").write_text(
+        _make_revocations(generated_at=now - timedelta(days=2)),
+        encoding="utf-8",
+    )
+
+    class _S:
+        data_dir = str(tmp_path)
+
+    assert load_license(_S(), now=now) is None
+    status = license_status(_S(), now=now)
+    assert status["state"] == "revocation_stale"
+    assert status["active"] is False
+    assert status["error_code"] == "license_revocation_stale"
+
+
+def test_commercial_activation_license_requires_signed_strong_device_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    token = _make_token(
+        plan="pro",
+        license_id="lic_activation_weak_binding",
+        issuer="Lengrvis Activation",
+        subscription_id="sub_activation_weak_binding",
+        subscription_status="active",
+        issued_at=datetime.now(UTC).isoformat(),
+        activation={"source": "activation_server"},
+    )
+
+    with pytest.raises(LicenseError) as excinfo:
+        verify_license(token, PUBLIC_KEY)
+
+    assert excinfo.value.code == "license_device_proof_missing"
+
+
+def test_commercial_activation_license_rejects_mismatched_device_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_COMMERCIAL_RELEASE", "true")
+    token = _make_token(
+        plan="pro",
+        license_id="lic_activation_mismatched_binding",
+        issuer="Lengrvis Activation",
+        subscription_id="sub_activation_mismatched_binding",
+        subscription_status="active",
+        device_fingerprint="fp_actual",
+        issued_at=datetime.now(UTC).isoformat(),
+        activation={
+            "source": "activation_server",
+            "device_binding": {
+                "strength": "strong",
+                "secret_storage": "dpapi",
+                "hardware_signal_count": 1,
+                "fingerprint": "fp_other",
+            },
+        },
+    )
+
+    with pytest.raises(LicenseError) as excinfo:
+        verify_license(token, PUBLIC_KEY)
+
+    assert excinfo.value.code == "license_device_proof_mismatch"
 
 
 def test_commerce_api_import_records_audit_and_returns_status(

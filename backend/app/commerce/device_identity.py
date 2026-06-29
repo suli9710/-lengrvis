@@ -26,6 +26,7 @@ COMMERCIAL_RELEASE_ENV_VAR = "LENGRVIS_COMMERCIAL_RELEASE"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
 _HASH_PREFIX = "lengrvis-device-v1:"
+_STRONG_SECRET_STORAGE = {"dpapi", "keyring"}
 
 
 class DeviceIdentityError(AppError):
@@ -64,6 +65,7 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
     Raw machine ids, hostnames, MAC addresses, paths, and IP addresses are never
     returned. The server receives hashes and coarse platform labels only.
     """
+    secret_path = activation_install_secret_path(settings)
     secret = _activation_install_secret(settings)
     device_id = f"dev_{sha256(secret.encode('utf-8')).hexdigest()[:32]}"
     signals: dict[str, str] = {}
@@ -78,10 +80,11 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
         signals["node_hash"] = _digest_signal(node)
     install_hash = _digest_signal(secret)
 
+    hardware_signal_count = sum(1 for key in ("machine_id_hash", "node_hash") if key in signals)
     fingerprint_inputs = {
         key: signals[key] for key in ("machine_id_hash", "node_hash", "hostname_hash") if key in signals
     }
-    if not fingerprint_inputs:
+    if not fingerprint_inputs or (_commercial_release_enabled() and hardware_signal_count < 1):
         if _commercial_release_enabled():
             raise DeviceIdentityError(
                 "Commercial release requires a hardware-backed device fingerprint.",
@@ -93,6 +96,14 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
     fingerprint_inputs["arch"] = _safe_label(platform.machine().lower(), max_length=32)
     fingerprint_body = json.dumps(fingerprint_inputs, sort_keys=True, separators=(",", ":"))
     fingerprint = f"fp_{sha256(fingerprint_body.encode('utf-8')).hexdigest()[:48]}"
+    secret_storage = _activation_secret_storage_kind(secret_path)
+    binding_strength = _device_binding_strength(secret_storage, hardware_signal_count)
+    if _commercial_release_enabled() and binding_strength != "strong":
+        raise DeviceIdentityError(
+            "商业发行版要求激活安装密钥使用系统保护存储，并至少包含一个机器级设备信号。",
+            code="activation_device_proof_weak",
+            status_code=503,
+        )
 
     profile: dict[str, Any] = {
         "schema": 1,
@@ -102,8 +113,11 @@ def collect_activation_device_identity(settings: Any) -> LocalDeviceIdentity:
         "arch": fingerprint_inputs["arch"],
         "os_release": _safe_label(platform.release(), max_length=32),
         "signal_count": len(signals),
+        "hardware_signal_count": hardware_signal_count,
         "signals": sorted(signals.keys()),
         "install_hash": install_hash,
+        "secret_storage": secret_storage,
+        "binding_strength": binding_strength,
     }
     profile.update(signals)
     return LocalDeviceIdentity(device_id=device_id, fingerprint=fingerprint, profile=profile)
@@ -153,6 +167,26 @@ def _assert_restrictive_secret_file_permissions(path: Path) -> None:
             code="activation_secret_insecure_permissions",
             status_code=403,
         )
+
+
+def _activation_secret_storage_kind(path: Path) -> str:
+    try:
+        stored = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "missing"
+    if stored.startswith(LOCAL_SECRET_DPAPI_PREFIX):
+        return "dpapi"
+    if stored.startswith(LOCAL_SECRET_KEYRING_PREFIX):
+        return "keyring"
+    return "plaintext" if stored else "missing"
+
+
+def _device_binding_strength(secret_storage: str, hardware_signal_count: int) -> str:
+    if secret_storage in _STRONG_SECRET_STORAGE and hardware_signal_count >= 1:
+        return "strong"
+    if hardware_signal_count >= 1:
+        return "machine_signal"
+    return "install_only"
 
 
 def _digest_signal(value: str) -> str:

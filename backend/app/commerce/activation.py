@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -45,10 +46,14 @@ from app.commerce.licensing import (
     install_license,
     load_revocation_manifest,
     parse_license,
+    require_activation_response_nonce,
     sign_license,
     verify_license,
 )
+from app.core import audit as audit_core
 from app.core.errors import AppError
+
+logger = logging.getLogger(__name__)
 
 ACTIVATION_BASE_URL_ENV_VAR = "LENGRVIS_ACTIVATION_BASE_URL"
 ACTIVATION_TIMEOUT_SECONDS_ENV_VAR = "LENGRVIS_ACTIVATION_TIMEOUT_SECONDS"
@@ -64,6 +69,7 @@ ACTIVATION_ISSUER_ENV_VAR = "LENGRVIS_ACTIVATION_ISSUER"
 ACTIVATION_RATE_LIMIT_MAX_ENV_VAR = "LENGRVIS_ACTIVATION_RATE_LIMIT_MAX"
 ACTIVATION_RATE_LIMIT_WINDOW_SECONDS_ENV_VAR = "LENGRVIS_ACTIVATION_RATE_LIMIT_WINDOW_SECONDS"
 ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR = "LENGRVIS_ACTIVATION_SERVER_DEVICE_SECRET"  # noqa: S105
+ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF_ENV_VAR = "LENGRVIS_ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF"
 
 MAX_ACTIVATION_KEY_CHARS = 256
 MAX_DEVICE_ID_CHARS = 128
@@ -72,8 +78,10 @@ MIN_DEVICE_FINGERPRINT_CHARS = 4
 MAX_DEVICE_PROFILE_JSON_CHARS = 2048
 MAX_APP_VERSION_CHARS = 64
 MAX_NONCE_CHARS = 128
+MIN_ACTIVATION_NONCE_CHARS = 16
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _ALLOWED_SUBSCRIPTION_STATES = {"active", "trialing"}
+_DELETABLE_SUBSCRIPTION_STATES = {"canceled", "expired", "revoked"}
 _DEFAULT_TIMEOUT_SECONDS = 12.0
 _DEFAULT_RATE_LIMIT_MAX = 8
 _DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 300
@@ -85,11 +93,14 @@ _ALLOWED_DEVICE_PROFILE_KEYS = {
     "arch",
     "os_release",
     "signal_count",
+    "hardware_signal_count",
     "signals",
     "install_hash",
     "machine_id_hash",
     "hostname_hash",
     "node_hash",
+    "secret_storage",
+    "binding_strength",
 }
 
 _UNSET = object()
@@ -117,7 +128,14 @@ _ACTIVATION_ERROR_MESSAGES = {
     "activation_device_rebind_requires_unbind": "该设备指纹已绑定到其他激活记录，请先在后台解绑旧设备。",
     "activation_device_fingerprint_invalid": "设备指纹无效。",
     "activation_device_fingerprint_mismatch": "设备指纹与本次激活记录不一致。",
+    "activation_device_profile_mismatch": "设备证明与设备指纹不一致。",
     "activation_fingerprint_required": "新设备激活必须提交设备指纹。",
+    "activation_device_proof_weak": "设备绑定证明强度不足。",
+    "subscription_delete_not_terminal": "只能删除已取消、已过期或已撤销且不再可激活的订阅记录。",
+    "subscription_delete_has_devices": "该订阅仍有设备绑定，请先撤销并处理吊销清单或解绑设备后再删除记录。",
+    "activation_nonce_required": "激活请求缺少安全随机数。",
+    "activation_nonce_invalid": "激活请求安全随机数无效。",
+    "activation_nonce_mismatch": "激活服务返回的许可证不是本次请求的结果。",
     "license_token_required": "许可证令牌不能为空。",
     "license_public_key_missing": "当前构建未配置许可证验签公钥。",
     "license_id_required": "许可证编号不能为空。",
@@ -223,6 +241,7 @@ def activate_license_with_server(
         "nonce": nonce,
     }
     endpoint = _activation_endpoint(base_url)
+    nonce_sha256 = sha256(nonce.encode("utf-8")).hexdigest()
     http_client = client or httpx.Client(timeout=_activation_timeout_seconds())
     close_client = client is None
     try:
@@ -252,7 +271,12 @@ def activate_license_with_server(
             status_code=502,
         )
     try:
-        return install_license(token, settings, now=now)
+        return install_license(
+            token,
+            settings,
+            now=now,
+            expected_activation_nonce_sha256=nonce_sha256,
+        )
     except LicenseError as exc:
         raise ActivationError(
             "激活服务返回的许可证未通过验签。",
@@ -294,6 +318,7 @@ def refresh_license_with_server(
         "nonce": nonce,
     }
     endpoint = _license_refresh_endpoint(base_url)
+    nonce_sha256 = sha256(nonce.encode("utf-8")).hexdigest()
     http_client = client or httpx.Client(timeout=_activation_timeout_seconds())
     close_client = client is None
     try:
@@ -324,7 +349,12 @@ def refresh_license_with_server(
         )
     if persist:
         try:
-            return install_license(refreshed_token, settings, now=now)
+            return install_license(
+                refreshed_token,
+                settings,
+                now=now,
+                expected_activation_nonce_sha256=nonce_sha256,
+            )
         except LicenseError as exc:
             raise ActivationError(
                 "激活服务返回的许可证未通过验签。",
@@ -340,7 +370,7 @@ def refresh_license_with_server(
         )
     try:
         revocations, _ = load_revocation_manifest(settings, public_key=public_key)
-        return verify_license(
+        license_ = verify_license(
             refreshed_token,
             public_key,
             now=now,
@@ -348,6 +378,8 @@ def refresh_license_with_server(
             expected_device_id=identity.device_id,
             expected_device_fingerprint=identity.fingerprint,
         )
+        require_activation_response_nonce(license_, nonce_sha256)
+        return license_
     except LicenseError as exc:
         raise ActivationError(
             "激活服务返回的许可证未通过验签。",
@@ -516,9 +548,9 @@ def activate_subscription_key(
     key = _clean_activation_key(request.activation_key)
     device_id = _clean_device_id(request.device_id)
     device_fingerprint = _clean_device_fingerprint(request.device_fingerprint)
-    device_profile = _clean_device_profile(request.device_profile)
+    device_profile = _clean_device_profile(request.device_profile, device_fingerprint=device_fingerprint)
     app_version = _safe_label(request.app_version, max_length=MAX_APP_VERSION_CHARS)
-    nonce = _safe_label(request.nonce, max_length=MAX_NONCE_CHARS)
+    nonce = _clean_activation_nonce(request.nonce)
     key_hash = hash_activation_key(key)
     server_device_ref = _server_device_ref(key_hash=key_hash, device_fingerprint=device_fingerprint)
     path = initialize_activation_db(db_path)
@@ -668,6 +700,7 @@ def activate_subscription_key(
         license_id=license_id,
         device_id=device_id,
         device_fingerprint=device_fingerprint,
+        device_profile=device_profile,
         app_version=app_version,
         nonce=nonce,
         private_key=private_key,
@@ -728,9 +761,9 @@ def refresh_subscription_license(
             status_code=402,
         )
     device_fingerprint = _clean_device_fingerprint(request.device_fingerprint)
-    device_profile = _clean_device_profile(request.device_profile)
+    device_profile = _clean_device_profile(request.device_profile, device_fingerprint=device_fingerprint)
     app_version = _safe_label(request.app_version, max_length=MAX_APP_VERSION_CHARS)
-    nonce = _safe_label(request.nonce, max_length=MAX_NONCE_CHARS)
+    nonce = _clean_activation_nonce(request.nonce)
 
     path = initialize_activation_db(db_path)
     with sqlite3.connect(path) as conn:
@@ -836,6 +869,7 @@ def refresh_subscription_license(
         license_id=current_license.license_id,
         device_id=device_id,
         device_fingerprint=next_fingerprint,
+        device_profile=device_profile,
         app_version=app_version,
         nonce=nonce,
         private_key=private_key,
@@ -904,6 +938,32 @@ def enforce_activation_rate_limit(
         conn.commit()
 
 
+def record_activation_audit(
+    event_type: str,
+    *,
+    result: ActivationResult | None = None,
+    code: str = "",
+    client_ref: str = "",
+) -> None:
+    """Record activation-server audit metadata without keys, tokens, or raw device ids."""
+    payload: dict[str, Any] = {"client_ref": _safe_label(client_ref, max_length=64)}
+    if result is not None:
+        payload.update(
+            {
+                "license_id": result.license_id,
+                "plan": result.plan.value,
+                "subscription_id": result.subscription_id,
+                "reused_device": result.reused_device,
+            }
+        )
+    if code:
+        payload["code"] = _safe_label(code, max_length=64)
+    try:
+        audit_core.record(event_type, "activation_server", payload)
+    except Exception as exc:  # noqa: BLE001 - audit must not change activation outcomes.
+        logger.warning("Activation audit write failed; continuing: %s", type(exc).__name__)
+
+
 def hash_activation_key(activation_key: str, *, pepper: str | None = None) -> str:
     key = _clean_activation_key(activation_key)
     secret = str(pepper if pepper is not None else os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip()
@@ -918,7 +978,9 @@ def hash_activation_key(activation_key: str, *, pepper: str | None = None) -> st
 
 def activation_server_configured() -> bool:
     return bool(
-        str(os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip() and _read_activation_private_key(required=False)
+        str(os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip()
+        and str(os.getenv(ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR, "")).strip()
+        and _read_activation_private_key(required=False)
     )
 
 
@@ -988,6 +1050,7 @@ def _sign_activation_license(
     license_id: str,
     device_id: str,
     device_fingerprint: str,
+    device_profile: str,
     app_version: str,
     nonce: str,
     private_key: str | None,
@@ -1018,6 +1081,10 @@ def _sign_activation_license(
             "source": "activation_server",
             "nonce_sha256": sha256(nonce.encode("utf-8")).hexdigest() if nonce else "",
             "app_version": app_version,
+            "device_binding": _activation_device_binding_claim(
+                device_profile,
+                device_fingerprint=device_fingerprint,
+            ),
         },
     }
     return sign_license(payload, signing_key, password=password)
@@ -1201,8 +1268,31 @@ def _clean_device_fingerprint(value: str) -> str:
     return text
 
 
-def _clean_device_profile(value: Mapping[str, Any] | dict[str, Any] | None) -> str:
+def _clean_activation_nonce(value: str) -> str:
+    text = _safe_label(value, max_length=MAX_NONCE_CHARS)
+    if not text:
+        raise ActivationError(
+            _activation_message_for_code("activation_nonce_required"),
+            code="activation_nonce_required",
+            status_code=422,
+        )
+    if len(text) < MIN_ACTIVATION_NONCE_CHARS or any(char.isspace() for char in text):
+        raise ActivationError(
+            _activation_message_for_code("activation_nonce_invalid"),
+            code="activation_nonce_invalid",
+            status_code=422,
+        )
+    return text
+
+
+def _clean_device_profile(
+    value: Mapping[str, Any] | dict[str, Any] | None,
+    *,
+    device_fingerprint: str = "",
+) -> str:
     profile = _safe_device_profile(value if isinstance(value, Mapping) else {})
+    _enforce_device_profile_consistency(profile, device_fingerprint=device_fingerprint)
+    _enforce_device_proof_profile(profile)
     return json.dumps(profile, sort_keys=True, separators=(",", ":"))
 
 
@@ -1239,6 +1329,91 @@ def _safe_device_profile(value: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _enforce_device_profile_consistency(profile: Mapping[str, Any], *, device_fingerprint: str) -> None:
+    if not profile:
+        return
+    strength = str(profile.get("binding_strength") or "").strip().lower()
+    if strength != "strong":
+        return
+    reported_fingerprint = str(profile.get("fingerprint") or "").strip()
+    if (
+        not device_fingerprint
+        or not reported_fingerprint
+        or not hmac.compare_digest(reported_fingerprint, device_fingerprint)
+    ):
+        raise ActivationError(
+            _activation_message_for_code("activation_device_profile_mismatch"),
+            code="activation_device_profile_mismatch",
+            status_code=422,
+        )
+    if not str(profile.get("install_hash") or "").strip():
+        raise ActivationError(
+            _activation_message_for_code("activation_device_profile_mismatch"),
+            code="activation_device_profile_mismatch",
+            status_code=422,
+        )
+    try:
+        hardware_signal_count = int(profile.get("hardware_signal_count") or 0)
+    except (TypeError, ValueError):
+        hardware_signal_count = 0
+    signals_raw = profile.get("signals")
+    signals = (
+        {str(item or "").strip() for item in signals_raw if str(item or "").strip()}
+        if isinstance(signals_raw, list)
+        else set()
+    )
+    hardware_signal_names = {"machine_id_hash", "node_hash"}
+    present_hardware_signals = {name for name in hardware_signal_names if str(profile.get(name) or "").strip()}
+    if signals:
+        present_hardware_signals &= signals
+    if hardware_signal_count > len(present_hardware_signals):
+        raise ActivationError(
+            _activation_message_for_code("activation_device_profile_mismatch"),
+            code="activation_device_profile_mismatch",
+            status_code=422,
+        )
+
+
+def _enforce_device_proof_profile(profile: Mapping[str, Any]) -> None:
+    if not _require_strong_device_proof():
+        return
+    strength = str(profile.get("binding_strength") or "").strip().lower()
+    storage = str(profile.get("secret_storage") or "").strip().lower()
+    try:
+        hardware_signal_count = int(profile.get("hardware_signal_count") or 0)
+    except (TypeError, ValueError):
+        hardware_signal_count = 0
+    if strength != "strong" or storage not in {"dpapi", "keyring"} or hardware_signal_count < 1:
+        raise ActivationError(
+            _activation_message_for_code("activation_device_proof_weak"),
+            code="activation_device_proof_weak",
+            status_code=422,
+        )
+
+
+def _require_strong_device_proof() -> bool:
+    return str(os.getenv(ACTIVATION_REQUIRE_STRONG_DEVICE_PROOF_ENV_VAR, "")).strip().lower() in _TRUE_VALUES
+
+
+def _activation_device_binding_claim(device_profile: str, *, device_fingerprint: str) -> dict[str, Any]:
+    try:
+        profile = json.loads(device_profile or "{}")
+    except json.JSONDecodeError:
+        profile = {}
+    if not isinstance(profile, dict):
+        profile = {}
+    try:
+        hardware_signal_count = int(profile.get("hardware_signal_count") or 0)
+    except (TypeError, ValueError):
+        hardware_signal_count = 0
+    return {
+        "strength": _safe_label(profile.get("binding_strength"), max_length=32),
+        "secret_storage": _safe_label(profile.get("secret_storage"), max_length=32),
+        "hardware_signal_count": max(0, hardware_signal_count),
+        "fingerprint": _safe_label(device_fingerprint, max_length=MAX_DEVICE_FINGERPRINT_CHARS),
+    }
+
+
 def _server_device_ref(
     *,
     key_hash: str,
@@ -1266,9 +1441,6 @@ def _activation_server_device_secret() -> str:
     configured = str(os.getenv(ACTIVATION_SERVER_DEVICE_SECRET_ENV_VAR, "")).strip()
     if configured:
         return configured
-    fallback = str(os.getenv(ACTIVATION_KEY_PEPPER_ENV_VAR, "")).strip()
-    if fallback:
-        return fallback
     raise ActivationError(
         _activation_message_for_code("activation_server_unconfigured"),
         code="activation_server_unconfigured",
@@ -1454,6 +1626,52 @@ def revoke_subscription_key(
         record["revoked_license_ids"] = []
         record["revocation_manifest_required"] = False
     return record
+
+
+def delete_subscription_key(
+    *,
+    key_hash: str,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Delete a terminal, device-free subscription record from the admin list."""
+    normalized_hash = _clean_key_hash(key_hash)
+    path = initialize_activation_db(db_path)
+    with sqlite3.connect(path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM subscription_keys WHERE key_hash = ?", (normalized_hash,)).fetchone()
+        if row is None:
+            raise ActivationError(
+                _activation_message_for_code("activation_key_not_found"),
+                code="activation_key_not_found",
+                status_code=404,
+            )
+        status = _normalize_subscription_status(row["status"])
+        if status not in _DELETABLE_SUBSCRIPTION_STATES:
+            raise ActivationError(
+                _activation_message_for_code("subscription_delete_not_terminal"),
+                code="subscription_delete_not_terminal",
+                status_code=409,
+            )
+        device_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM activation_devices WHERE key_hash = ?",
+                (normalized_hash,),
+            ).fetchone()[0]
+            or 0
+        )
+        if device_count > 0:
+            raise ActivationError(
+                _activation_message_for_code("subscription_delete_has_devices"),
+                code="subscription_delete_has_devices",
+                status_code=409,
+            )
+        conn.execute("DELETE FROM subscription_keys WHERE key_hash = ?", (normalized_hash,))
+    return {
+        "removed": True,
+        "key_hash": normalized_hash,
+        "key_hash_prefix": normalized_hash[:12],
+    }
 
 
 def renew_subscription_key(
