@@ -105,7 +105,7 @@ jobs:
             reason = "LENGRVIS_REAL_LLM_API_KEY secret is not configured for this workflow context."
           } | ConvertTo-Json | Set-Content .tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json -Encoding UTF8
           "release_evidence_status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          throw "Real LLM quality gate skipped because LENGRVIS_REAL_LLM_API_KEY is not configured."
+          Write-Warning "Real LLM quality gate skipped because LENGRVIS_REAL_LLM_API_KEY is not configured. Release evidence remains incomplete."
       - name: Real LLM eval quality gate
         id: real-llm-eval
         if: ${{ env.LENGRVIS_API_KEY != '' }}
