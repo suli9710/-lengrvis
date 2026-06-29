@@ -3,7 +3,9 @@
 
 Default mode prints a machine-readable summary and exits 0 unless the dashboard is
 missing or malformed. Strict mode fails when any P0 blocker is not passed or
-explicitly waived.
+explicitly waived. RC release mode is stricter: every P0 row must be passed, so a
+scope-limited maintenance waiver cannot be mistaken for release-candidate
+sign-off.
 """
 
 from __future__ import annotations
@@ -74,7 +76,11 @@ def parse_rows(markdown: str) -> list[ReadinessRow]:
 
 
 def validate(
-    rows: list[ReadinessRow], *, strict: bool, artifact_root: Path | None = None
+    rows: list[ReadinessRow],
+    *,
+    strict: bool,
+    rc_release: bool = False,
+    artifact_root: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -106,6 +112,11 @@ def validate(
         ):
             errors.append(
                 f"{row.row_id}: strict release readiness requires passed or waived, got {row.status}."
+            )
+        if rc_release and row.row_id.startswith(P0_PREFIX) and row.status != "passed":
+            errors.append(
+                f"{row.row_id}: RC release requires passed P0 evidence; "
+                f"{row.status} is only allowed for scoped maintenance packaging."
             )
         if (
             strict
@@ -202,6 +213,11 @@ def main() -> int:
         "--dashboard", default="docs/release/release-readiness-dashboard.md"
     )
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--rc-release",
+        action="store_true",
+        help="Require every RR-P0 row to be passed; waivers are allowed only for scoped maintenance packaging.",
+    )
     args = parser.parse_args()
 
     dashboard_path = Path(args.dashboard)
@@ -222,11 +238,17 @@ def main() -> int:
         if len(resolved_dashboard.parents) > 2
         else Path.cwd()
     )
-    errors, warnings = validate(rows, strict=args.strict, artifact_root=artifact_root)
+    errors, warnings = validate(
+        rows,
+        strict=args.strict or args.rc_release,
+        rc_release=args.rc_release,
+        artifact_root=artifact_root,
+    )
     p0_rows = [row for row in rows if row.row_id.startswith(P0_PREFIX)]
     summary = {
         "ok": not errors,
         "strict": args.strict,
+        "rc_release": args.rc_release,
         "dashboard": str(dashboard_path),
         "rows": len(rows),
         "p0_total": len(p0_rows),

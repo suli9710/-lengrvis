@@ -117,6 +117,22 @@ Record the emitted `.tmp\release-evidence-packet\...\release-evidence-packet.red
 
 After generating the packet, open the `.redacted.md` first and work through `release_readiness_blockers` one by one: clean-machine local model, real-device LAN/WSS, natural-language result-quality review, actual diagnostics package content review, and RC handoff. Do not tag, publish, announce, or share diagnostics externally until the missing evidence is attached and the release owner has explicitly approved the separate human sign-off.
 
+For paid/public launch evidence, run the reviewed-evidence validators only after the support/privacy operations rehearsal and public claims review JSON files have been filled from real artifacts. They are fail-closed evidence contract checks; missing JSON keeps paid launch blocked, and they are not release sign-off by themselves:
+
+```powershell
+npm run evidence:paid-launch-template
+npm run evidence:support-privacy-verify
+npm run evidence:claims-launch-verify
+```
+
+Raw PowerShell equivalent:
+
+```powershell
+python scripts\collect_paid_launch_evidence_templates.py
+python scripts\verify_support_privacy_rehearsal_evidence.py
+python scripts\verify_launch_claims_reviewed_evidence.py
+```
+
 When a natural-language task/result is ready for human quality review, scaffold the redacted manual review fields with:
 
 ```powershell

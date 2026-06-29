@@ -3,8 +3,11 @@ const { join } = require("node:path");
 
 const configPath = join(__dirname, "..", "electron-builder.signed.js");
 const configText = readFileSync(configPath, "utf8");
+const args = process.argv.slice(2);
+const structureOnly = args.includes("--structure-only");
+const targetArgs = args.filter((arg) => arg !== "--structure-only");
 const requestedTargets = new Set(
-  (process.argv.slice(2).length > 0 ? process.argv.slice(2) : ["win"])
+  (targetArgs.length > 0 ? targetArgs : ["win"])
     .flatMap((arg) => arg.split(","))
     .map((arg) => arg.trim().toLowerCase())
     .filter(Boolean)
@@ -63,8 +66,10 @@ if (requestedTargets.has("win")) {
     }
   }
 
-  for (const name of requiredEnv) {
-    requireEnv(name);
+  if (!structureOnly) {
+    for (const name of requiredEnv) {
+      requireEnv(name);
+    }
   }
 }
 
@@ -79,15 +84,17 @@ if (requestedTargets.has("mac")) {
       issues.push(`Signed macOS build config must contain ${marker}`);
     }
   }
-  requireEnv("APPLE_TEAM_ID");
-  requireAny("macOS signing identity or certificate", ["MAC_CSC_NAME", "CSC_NAME", "MAC_CSC_LINK", "CSC_LINK"]);
+  if (!structureOnly) {
+    requireEnv("APPLE_TEAM_ID");
+    requireAny("macOS signing identity or certificate", ["MAC_CSC_NAME", "CSC_NAME", "MAC_CSC_LINK", "CSC_LINK"]);
 
-  const hasAppleIdAuth = configured("APPLE_ID") && configured("APPLE_APP_SPECIFIC_PASSWORD");
-  const hasApiKeyAuth = configured("APPLE_API_KEY") && configured("APPLE_API_KEY_ID") && configured("APPLE_API_ISSUER");
-  if (!hasAppleIdAuth && !hasApiKeyAuth) {
-    issues.push(
-      "Missing Apple notarization credentials; set APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD, or APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER."
-    );
+    const hasAppleIdAuth = configured("APPLE_ID") && configured("APPLE_APP_SPECIFIC_PASSWORD");
+    const hasApiKeyAuth = configured("APPLE_API_KEY") && configured("APPLE_API_KEY_ID") && configured("APPLE_API_ISSUER");
+    if (!hasAppleIdAuth && !hasApiKeyAuth) {
+      issues.push(
+        "Missing Apple notarization credentials; set APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD, or APPLE_API_KEY + APPLE_API_KEY_ID + APPLE_API_ISSUER."
+      );
+    }
   }
 }
 
@@ -96,7 +103,7 @@ for (const target of unsupportedTargets) {
   issues.push(`Unsupported signed build config target: ${target}`);
 }
 
-if (issues.length === 0 && (requestedTargets.has("win") || requestedTargets.has("mac"))) {
+if (!structureOnly && issues.length === 0 && (requestedTargets.has("win") || requestedTargets.has("mac"))) {
   delete require.cache[configPath];
   const config = require(configPath);
 
@@ -168,7 +175,7 @@ if (issues.length > 0) {
   }
   if (onlyWindows) {
     console.error(
-      "Unsigned local builds must use `npm --prefix desktop run dist`; signed release builds must set Azure Trusted Signing environment values and verify the backend binary signature before packaging."
+      "Unsigned local builds must use `npm --prefix desktop run dist:unsigned`; signed release builds must set Azure Trusted Signing environment values and verify the backend binary signature before packaging."
     );
   } else {
     console.error(

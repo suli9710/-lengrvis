@@ -118,6 +118,7 @@ def test_strict_adds_strict_flag_to_readiness():
         "signed-artifacts",
         "distribution-evidence",
         "clean-machine-evidence",
+        "result-quality-evidence",
         "android-strict-gate",
         "commercial-loop",
         "market-readiness",
@@ -125,12 +126,29 @@ def test_strict_adds_strict_flag_to_readiness():
         "evidence",
     ]
     readiness = next(s for s in mod.default_stages(strict=True) if s.name == "readiness")
-    assert "--strict" in readiness.command
+    assert "--rc-release" in readiness.command
+    assert "--strict" not in readiness.command
     market = next(s for s in mod.default_stages(strict=True) if s.name == "market-readiness")
     assert "--strict" in market.command
+    assert "--paid-launch" not in market.command
     android = next(s for s in mod.default_stages(strict=True) if s.name == "android-strict-gate")
     assert "LENGRVIS_ANDROID_APK_PATH" in android.command[-1]
     assert "LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH" in android.command[-1]
+
+
+def test_paid_launch_adds_commercial_evidence_and_paid_market_gate():
+    stages = mod.default_stages(strict=True, paid_launch=True)
+    names = [s.name for s in stages]
+    assert "support-privacy-evidence" in names
+    assert "claims-launch-evidence" in names
+    assert names.index("commercial-loop") < names.index("support-privacy-evidence")
+    assert names.index("support-privacy-evidence") < names.index("claims-launch-evidence")
+    assert names.index("claims-launch-evidence") < names.index("market-readiness")
+    market = next(s for s in stages if s.name == "market-readiness")
+    assert "--paid-launch" in market.command
+    assert "--strict" not in market.command
+    readiness = next(s for s in stages if s.name == "readiness")
+    assert "--rc-release" in readiness.command
 
 
 def test_non_strict_readiness_has_no_strict_flag():

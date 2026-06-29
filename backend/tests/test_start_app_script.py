@@ -1100,6 +1100,7 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     )
 
     assert scripts["verify:signed-build-config"] == "node scripts/verify-signed-build-config.cjs"
+    assert scripts["verify:signed-build-config:structure"] == "node scripts/verify-signed-build-config.cjs --structure-only"
     assert scripts["verify:signed-build-config:mac"] == "node scripts/verify-signed-build-config.cjs mac"
     assert scripts["verify:macos-release-signatures"] == "node scripts/verify-macos-release-signatures.cjs"
     assert scripts["verify:linux-release-integrity"] == "node scripts/verify-linux-release-integrity.cjs"
@@ -1144,6 +1145,7 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
         assert env_name in verify_script
     assert "REPLACE_" in verify_script
     assert "Signed Windows distribution configuration is incomplete" in verify_script
+    assert "--structure-only" in verify_script
     assert "verify the backend binary signature before packaging" in verify_script
     assert "win.azureSignOptions.publisherName" in verify_script
     assert "win.publisherName[0]" in verify_script
@@ -1210,8 +1212,46 @@ def test_windows_signed_build_config_gate_rejects_missing_release_env(
     assert "Signed Windows distribution configuration is incomplete:" in output
     assert "Missing non-placeholder environment variable: AZURE_TRUSTED_SIGNING_ENDPOINT" in output
     assert "Missing non-placeholder environment variable: AZURE_TRUSTED_SIGNING_PUBLISHER_NAME" in output
-    assert "Unsigned local builds must use `npm --prefix desktop run dist`" in output
+    assert "Unsigned local builds must use `npm --prefix desktop run dist:unsigned`" in output
     assert "Signed Windows distribution configuration verified" not in output
+
+
+def test_windows_signed_build_config_structure_check_does_not_require_secrets(
+    project_root: Path,
+) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for desktop signed build config checks")
+
+    env = os.environ.copy()
+    for env_name in (
+        "AZURE_TENANT_ID",
+        "AZURE_CLIENT_ID",
+        "AZURE_CLIENT_SECRET",
+        "AZURE_TRUSTED_SIGNING_ENDPOINT",
+        "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
+        "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+        "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
+    ):
+        env.pop(env_name, None)
+
+    result = subprocess.run(
+        [
+            node,
+            str(project_root / "desktop" / "scripts" / "verify-signed-build-config.cjs"),
+            "--structure-only",
+        ],
+        cwd=project_root / "desktop",
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    assert "Signed Windows distribution configuration verified" in output
+    assert "AZURE_CLIENT_SECRET" not in output
 
 
 def test_readme_and_release_gate_expose_evidence_aliases_without_overclaim(
@@ -1687,13 +1727,17 @@ def test_evidence_alias_names_and_docs_do_not_imply_pass_or_signoff(project_root
         "evidence:rc-handoff",
         "evidence:rc-handoff-template",
         "evidence:result-quality-review",
+        "evidence:result-quality-verify",
         "evidence:mobile-lan-wss",
         "evidence:android-real-device-template",
         "evidence:local-model-template",
         "evidence:diagnostics-review",
         "evidence:distribution-template",
+        "evidence:paid-launch-template",
         "evidence:distribution-verify",
         "evidence:clean-machine-verify",
+        "evidence:support-privacy-verify",
+        "evidence:claims-launch-verify",
         "evidence:commercial-loop",
     }
     forbidden_name_pattern = re.compile(

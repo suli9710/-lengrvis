@@ -54,8 +54,13 @@ npm run market:readiness
 npm run market:readiness:strict
 npm run market:readiness:paid
 npm run evidence:commercial-loop
+npm run evidence:paid-launch-template
+npm run evidence:support-privacy-verify
+npm run evidence:claims-launch-verify
+npm run delivery:paid-launch
 ```
 
 The non-strict command validates structure and reports open blockers. Strict mode fails until every `MR-P0` row is `passed` or explicitly `waived`.
 Paid-launch mode fails unless every `MR-P0` row is `passed`; use it before taking payment, issuing invoices, publishing paid pricing, or calling a paid plan generally available.
 `evidence:commercial-loop` validates a reviewed Free/Pro/Max subscription activation evidence JSON; it does not create checkout, issue legal approval, or replace commercial owner sign-off.
+`evidence:paid-launch-template` creates fail-closed template files under `.tmp` so owners have a concrete collection path; it is not reviewed evidence and cannot make a paid launch pass. `evidence:support-privacy-verify` and `evidence:claims-launch-verify` validate reviewed support/privacy rehearsal and public claims evidence JSON. `delivery:paid-launch` combines RC engineering gates with these commercial gates and `market:readiness:paid`; missing evidence is an expected paid-launch blocker.

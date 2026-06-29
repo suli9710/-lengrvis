@@ -37,6 +37,7 @@
     "verify:windows-release-signatures": "node scripts/verify-windows-release-signatures.cjs",
     "verify:macos-release-signatures": "node scripts/verify-macos-release-signatures.cjs",
     "verify:linux-release-integrity": "node scripts/verify-linux-release-integrity.cjs",
+    "verify:signed-build-config:structure": "node scripts/verify-signed-build-config.cjs --structure-only",
     "verify:signed-build-config": "node scripts/verify-signed-build-config.cjs",
     "verify:signed-build-config:mac": "node scripts/verify-signed-build-config.cjs mac",
     "verify:release-version": "node scripts/verify-release-version.cjs",

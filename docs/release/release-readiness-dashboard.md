@@ -47,14 +47,16 @@ npm run deps:verify
 npm run supply-chain:verify
 npm run security:extensions
 npm run qa:gate
+npm run evidence:result-quality-verify
 npm run release:check
 npm run release:readiness
 npm run release:readiness:strict
+npm run release:readiness:rc
 npm run market:readiness
 npm run market:readiness:strict
 ```
 
-Strict readiness is expected to fail until every P0 blocker is `passed` or has an explicit release-owner-approved `waived` row.
+Strict readiness accepts explicit release-owner-approved `waived` rows for scoped maintenance packaging. RC/GA readiness must use `npm run release:readiness:rc`, which fails until every P0 blocker is `passed`.
 
 ## Manual evidence rules
 

@@ -43,7 +43,7 @@ function fail(detail) {
       ? "Sign it before packaging, e.g.: signtool sign /tr http://timestamp.acs.microsoft.com /td SHA256 /fd SHA256 ... dist/backend.exe (or the Azure Trusted Signing CLI)."
       : "Sign it before packaging with: codesign --sign <identity> --timestamp --options runtime dist/backend"
   );
-  console.error("Unsigned local builds should use `npm run dist` (unsigned pipeline) instead of dist:signed/dist:publish.");
+  console.error("Unsigned local builds should use `npm run dist:unsigned` instead of dist:signed/dist:publish.");
   process.exit(1);
 }
 

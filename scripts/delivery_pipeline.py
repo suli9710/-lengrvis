@@ -15,7 +15,8 @@ Design notes:
 - The pipeline is fail-closed: any failed required stage blocks the verdict and
   returns a non-zero exit code. Remaining stages are skipped unless --keep-going.
 - A release candidate must run with --strict so the readiness dashboard enforces
-  that every P0 stop-ship blocker is passed or explicitly waived.
+  that every P0 stop-ship blocker is passed. Scoped maintenance waivers are not
+  release-candidate sign-off.
 - Non-strict delivery:run still runs signed-artifacts unless
   --skip-signature-verify is passed (explicit dev opt-out; emits warnings).
 """
@@ -86,7 +87,12 @@ def release_artifact_preflight_stage() -> Stage:
     )
 
 
-def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List[Stage]:
+def default_stages(
+    *,
+    strict: bool,
+    skip_signature_verify: bool = False,
+    paid_launch: bool = False,
+) -> List[Stage]:
     """Return the ordered delivery stages.
 
     The readiness stage gains --strict for release candidates so blocked P0
@@ -95,6 +101,7 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
     Non-strict runs still verify Windows release signatures unless
     ``skip_signature_verify`` is set (explicit dev opt-out only).
     """
+    effective_strict = strict or paid_launch
     readiness_cmd = [
         sys.executable,
         "scripts/check_release_readiness_dashboard.py",
@@ -107,8 +114,11 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
         "--dashboard",
         MARKET_DASHBOARD,
     ]
-    if strict:
-        readiness_cmd.append("--strict")
+    if paid_launch:
+        readiness_cmd.append("--rc-release")
+        market_readiness_cmd.append("--paid-launch")
+    elif effective_strict:
+        readiness_cmd.append("--rc-release")
         market_readiness_cmd.append("--strict")
     stages = [
         Stage(
@@ -169,11 +179,11 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
             "Collect release evidence packet",
         ),
     ]
-    if not strict and not skip_signature_verify:
+    if not effective_strict and not skip_signature_verify:
         insert_at = next(i for i, stage in enumerate(stages) if stage.name == "market-readiness")
         stages.insert(insert_at, release_artifact_preflight_stage())
         stages.insert(insert_at + 1, signed_artifacts_stage())
-    if strict:
+    if effective_strict:
         by_name = {stage.name: stage for stage in stages}
         stages = [
             by_name["qa-gate"],
@@ -219,6 +229,12 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
                 "Reviewed clean-machine install/runtime evidence",
             ),
             Stage(
+                "result-quality-evidence",
+                ["npm", "run", "evidence:result-quality-verify"],
+                True,
+                "Reviewed 30+ task natural-language result quality evidence",
+            ),
+            Stage(
                 "android-strict-gate",
                 [
                     "powershell",
@@ -239,6 +255,24 @@ def default_stages(*, strict: bool, skip_signature_verify: bool = False) -> List
                 ["npm", "run", "evidence:commercial-loop"],
                 True,
                 "Reviewed Free/Pro/Max subscription activation commercial loop evidence",
+            ),
+            *(
+                [
+                    Stage(
+                        "support-privacy-evidence",
+                        ["npm", "run", "evidence:support-privacy-verify"],
+                        True,
+                        "Reviewed support and privacy operations rehearsal evidence",
+                    ),
+                    Stage(
+                        "claims-launch-evidence",
+                        ["npm", "run", "evidence:claims-launch-verify"],
+                        True,
+                        "Reviewed paid-launch claims and asset evidence",
+                    ),
+                ]
+                if paid_launch
+                else []
             ),
             by_name["market-readiness"],
             by_name["readiness"],
@@ -338,6 +372,14 @@ def main() -> int:
         help="Enforce strict release readiness (RC mode).",
     )
     parser.add_argument(
+        "--paid-launch",
+        action="store_true",
+        help=(
+            "Enforce paid/public launch readiness. This implies strict RC release "
+            "readiness and requires passed MR-P0 commercial evidence."
+        ),
+    )
+    parser.add_argument(
         "--skip-signature-verify",
         action="store_true",
         help=(
@@ -364,14 +406,17 @@ def main() -> int:
     args = parser.parse_args()
 
     skip_signature_verify_requested = bool(args.skip_signature_verify)
+    effective_strict = bool(args.strict or args.paid_launch)
     skip_signature_verify, signature_verify_warnings = build_signature_verify_warnings(
-        strict=args.strict,
+        strict=effective_strict,
         skip_signature_verify_requested=skip_signature_verify_requested,
     )
     for line in signature_verify_warnings:
         print(f"warning: {line}", file=sys.stderr)
     stages = default_stages(
-        strict=args.strict, skip_signature_verify=skip_signature_verify
+        strict=effective_strict,
+        skip_signature_verify=skip_signature_verify,
+        paid_launch=bool(args.paid_launch),
     )
 
     if args.plan_only:
@@ -379,6 +424,8 @@ def main() -> int:
             json.dumps(
                 {
                     "strict": args.strict,
+                    "paid_launch": args.paid_launch,
+                    "effective_strict": effective_strict,
                     "skip_signature_verify": skip_signature_verify,
                     "warnings": signature_verify_warnings,
                     "plan": build_plan(stages),
@@ -394,6 +441,8 @@ def main() -> int:
     verdict = aggregate_verdict(results)
     payload = {
         "strict": args.strict,
+        "paid_launch": args.paid_launch,
+        "effective_strict": effective_strict,
         "skip_signature_verify": skip_signature_verify,
         "warnings": signature_verify_warnings,
         **verdict,

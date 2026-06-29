@@ -15,8 +15,8 @@ exposed through npm scripts.
 | 5 | secret-scan | yes | `npm run security:secrets` | Strict gitleaks source snapshot scan. |
 | 6 | security-extensions | yes | `npm run security:extensions` | Extension/skill security gate. |
 | 7 | release-safety | yes | `npm run release:safety` | Release safety checks. |
-| 8 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (strict in RC mode). |
-| 9 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (strict in RC mode). |
+| 8 | market-readiness | yes | `python scripts/check_market_readiness.py` | Validate commercial identity, legal, payment, license-issuer, support, and claims readiness (`--paid-launch` only in paid launch mode). |
+| 9 | readiness | yes | `python scripts/check_release_readiness_dashboard.py` | Validate the engineering readiness dashboard (`--rc-release` in strict/paid modes). |
 | 10 | evidence | no | `npm run evidence:release` | Collect the release evidence packet. |
 
 Non-strict `delivery:run` inserts required `release-artifact-preflight` and
@@ -26,9 +26,11 @@ passed. Strict RC mode (`delivery:rc`) always runs `signed-artifacts` and ignore
 
 Strict RC mode inserts additional required stages after golden/safety/artifact checks:
 `real-llm-eval`, `packaging-verify`, `signed-artifacts`, `distribution-evidence`,
-`clean-machine-evidence`, `android-strict-gate`, and `commercial-loop`. These stages
-require reviewed evidence JSON and real Android APK/device evidence; template/preflight
-outputs intentionally fail them.
+`clean-machine-evidence`, `result-quality-evidence`, `android-strict-gate`, and
+`commercial-loop`. Paid-launch mode adds `support-privacy-evidence` and
+`claims-launch-evidence`, then runs market readiness with `--paid-launch`.
+These stages require reviewed evidence JSON and real Android APK/device evidence;
+template/preflight outputs intentionally fail them.
 
 Windows RC signing order (`.github/workflows/release-candidate.yml`):
 
@@ -49,6 +51,9 @@ npm run delivery:run
 
 # Release-candidate mode: strict engineering and market readiness; blocked P0 rows fail the pipeline.
 npm run delivery:rc
+
+# Paid/public launch mode: RC engineering evidence plus passed MR-P0 commercial evidence.
+npm run delivery:paid-launch
 ```
 
 ## Verdict contract
@@ -81,16 +86,19 @@ The orchestrator prints and optionally writes a JSON verdict:
 
 1. A real release candidate must use `delivery:rc` (strict). Non-strict runs are for
    day-to-day development and never authorize a tag or announcement.
-2. The pipeline does not replace manual evidence. `RR-P0` engineering rows and
+2. A paid/public launch must use `delivery:paid-launch`; `delivery:rc` is necessary
+   but not sufficient to accept payment, issue invoices, publish paid pricing, or
+   call a paid plan generally available.
+3. The pipeline does not replace manual evidence. `RR-P0` engineering rows and
    `MR-P0` commercial rows still require their named real-world artifacts and owners.
-3. Strict Android evidence is supplied through `LENGRVIS_ANDROID_APK_PATH` and
+4. Strict Android evidence is supplied through `LENGRVIS_ANDROID_APK_PATH` and
    `LENGRVIS_ANDROID_REAL_DEVICE_EVIDENCE_PATH`; strict reviewed evidence checkers use
    their default build paths or `LENGRVIS_*_EVIDENCE_PATH` overrides.
-4. The JSON verdict should be attached to the RC handoff and the release evidence
+5. The JSON verdict should be attached to the RC handoff and the release evidence
    packet.
-5. Do not weaken a required stage to optional to make the pipeline pass. Use an
+6. Do not weaken a required stage to optional to make the pipeline pass. Use an
    explicit, owner-approved waiver row in the dashboard instead.
-6. CI should run `delivery:plan` plus both readiness validators on every PR. A
+7. CI should run `delivery:plan` plus both readiness validators on every PR. A
    real release runs `delivery:rc` on the candidate build host.
 
 ## What this closes and what it does not

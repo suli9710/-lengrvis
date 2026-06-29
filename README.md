@@ -262,13 +262,18 @@ npm run evidence:current-release # CI/local current summary; not a pass
 npm run qa:gate
 npm run golden:gate
 npm run audit:deps
+npm run release:readiness:rc # RC/GA gate; P0 waivers do not count as passed evidence
 npm run market:readiness
 npm run market:readiness:strict
 npm run market:readiness:paid # required before taking payment or publishing paid pricing
 npm run evidence:commercial-loop # required reviewed commercial-loop evidence; not legal/payment sign-off
+npm run evidence:paid-launch-template # template only; not paid-launch pass
+npm run evidence:support-privacy-verify # required reviewed support/privacy rehearsal evidence for paid launch
+npm run evidence:claims-launch-verify # required reviewed public claims/assets evidence for paid launch
 npm run deps:verify
 npm run sbom:generate
 npm run release:check
+npm run release:paid-launch # paid/public launch gate; requires passed MR-P0 evidence
 ```
 
 证据 helper 新手入口（只整理材料，不产生签收）。每一行都保留 no-overclaim 说明：
@@ -279,12 +284,17 @@ npm run security:extensions # not release sign-off; IPC/Skill/MCP/settings gate 
 npm run evidence:release # template only; not a pass
 npm run evidence:rc-handoff # handoff template; not release-candidate sign-off
 npm run evidence:result-quality-review # template only; not completed task-result sign-off
+npm run evidence:result-quality-verify # reviewed 30+ task evidence only; template helper cannot satisfy this
+npm run evidence:support-privacy-verify # reviewed paid support/privacy operations evidence only
+npm run evidence:claims-launch-verify # reviewed paid-launch claims evidence only
 npm run evidence:mobile-lan-wss # prerequisite template only; not real-device pass
 npm run android:release-gate -- -PreflightOnly # source/config check only; not APK or real-device pass
 npm run evidence:android-real-device-template # fail-closed template only; not real-device pass
 npm run evidence:local-model-template # handoff template; not clean-machine pass
 npm run evidence:diagnostics-review # template only; not public-safe/signoff; public_safe=false until reviewed
 npm run evidence:distribution-template # template only; not signed-installer pass or release sign-off
+npm run evidence:paid-launch-template # template only; not paid-launch pass or release sign-off
+npm run sign:windows:preflight # metadata only; checks signing env/artifacts without signing or exposing secrets
 ```
 
 输出只能作为 evidence/template/preflight/inventory 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、completed task-result signoff、signed-installer pass、upgrade/rollback pass、RC signoff 或 release sign-off。

@@ -21,6 +21,8 @@ def test_release_candidate_workflow_orders_windows_signing_steps() -> None:
 
 def test_package_json_exposes_portable_signing_scripts() -> None:
     text = PACKAGE_JSON.read_text(encoding="utf-8")
+    assert "sign:windows:preflight" in text
+    assert "windows_signing_preflight.ps1" in text
     assert "refresh:portable-bundle" in text
     assert "sign:portable:launcher" in text
     assert "sign:portable:sfx" in text
@@ -39,3 +41,22 @@ def test_trusted_signing_helper_is_shared_by_backend_and_portable_scripts() -> N
     assert "sign_windows_trusted_signing.ps1" in portable
     assert "Invoke-TrustedWindowsSigning" in backend
     assert "Invoke-TrustedWindowsSigning" in portable
+
+
+def test_windows_signing_preflight_is_metadata_only() -> None:
+    text = (REPO_ROOT / "scripts" / "windows_signing_preflight.ps1").read_text(encoding="utf-8")
+    assert "windows-signing-preflight.json" in text
+    assert "contains_secret_values = $false" in text
+    assert "signs_files = $false" in text
+    assert "release_signoff = $false" in text
+    assert "contains_secret_values = $false" in text
+    assert "ready_to_attempt_any_signing" in text
+    assert "ready_to_attempt_pfx_signing" in text
+    assert "missing_pfx_env" in text
+    assert "blockers" in text
+    assert "if ($blockers.Count -gt 0)" in text
+    assert "next_actions" in text
+    assert "Get-AuthenticodeSignature" in text
+    assert "check_unavailable" in text
+    assert "Invoke-TrustedSigning" not in text
+    assert "Set-AuthenticodeSignature" not in text

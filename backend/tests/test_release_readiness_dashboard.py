@@ -126,3 +126,19 @@ def test_strict_waiver_requires_unexpired_expiry_reason_and_followup():
     )
     errors, _ = mod.validate(mod.parse_rows(markdown), strict=True, artifact_root=REPO_ROOT)
     assert any("RR-P0-012" in e and "expiry" in e for e in errors)
+
+
+def test_rc_release_rejects_scoped_maintenance_waivers():
+    note = "Reason: maintenance packaging only. Follow-up issue: collect real evidence."
+    markdown = (
+        "| ID | Area | Required evidence | Status | Artifact | Owner | Expiry | Notes |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        f"| RR-P0-014 | X | ev | waived | https://github.com/example/repo/actions/runs/123 | alice | 2099-01-01 | {note} |\n"
+    )
+    errors, _ = mod.validate(
+        mod.parse_rows(markdown),
+        strict=True,
+        rc_release=True,
+        artifact_root=REPO_ROOT,
+    )
+    assert any("RR-P0-014" in e and "RC release requires passed P0 evidence" in e for e in errors)
