@@ -396,14 +396,14 @@ npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidenc
 .\scripts\build_all.ps1 -VerifyOnly
 ```
 
-默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库。Settings 已提供本地模型健康检查、Ollama 安装/启动/拉取推荐模型的产品入口；Ollama 后端测试结果以 current release evidence 或对应 CI/test artifact 为准。真实安装、启动和模型拉取仍按真实机器环境单独验收。隐私模式不可用时会明确失败，不会静默切到云端。
+默认 Windows portable、zip 和自解压包不包含 Ollama 离线模型或 GPU 运行库；默认主包体积门禁要求 portable zip 和自解压 exe 均不超过 500MB，并拒绝默认包内出现 `resources\ollama`、`resources\ollama-models` 或 `resources\ollama-bundle-manifest.json`。Settings 已提供本地模型健康检查、Ollama 安装/启动/拉取推荐模型的产品入口；首次联网准备模型后，才可验证断网隐私任务。Ollama 后端测试结果以 current release evidence 或对应 CI/test artifact 为准。真实安装、启动、模型拉取和断网任务 smoke 仍按真实机器环境单独验收。隐私模式不可用时会明确失败，不会静默切到云端。
 
 ```powershell
 .\scripts\build_all.ps1
 .\scripts\build_all.ps1 -VerifyOnly
 ```
 
-`vendor\ollama`、`vendor\ollama-models` 和 `vendor\ollama-bundle-manifest.json` 是本地缓存/实验发行资源，不应提交到 Git，也不会被默认 portable 构建自动打包。确有特殊离线发行需求时，只能显式传入外部资源目录给 `scripts\build_portable.ps1` 的 `-BundledOllamaDir`、`-BundledOllamaModelsDir`、`-BundledOllamaManifest`，并单独运行 `verify_packaging.ps1 -RequireBundledOllama`。
+`vendor\ollama`、`vendor\ollama-models` 和 `vendor\ollama-bundle-manifest.json` 是本地缓存/实验发行资源，不应提交到 Git，也不会被默认 portable 构建自动打包。确有特殊离线发行需求时，只能显式传入外部资源目录给 `scripts\build_portable.ps1` 的 `-BundledOllamaDir`、`-BundledOllamaModelsDir`、`-BundledOllamaManifest`，并单独运行 `verify_packaging.ps1 -RequireBundledOllama`；该路径应作为单独离线模型包或企业包处理，不属于默认小体积主安装包。
 
 ## API
 

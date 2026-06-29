@@ -1761,7 +1761,7 @@ function PrivacyReadinessPanel({
       <p className="privacy-readiness__note">
         {mode === "efficiency"
           ? "开启隐私模式只会关闭云端辅助并检查本地 AI；下一步再按提示准备本地模型，不会静默回退云端。"
-          : "主按钮会按顺序安装本地 AI 应用、启动本地服务，并下载或启用推荐模型；失败会停在本地修复步骤，不会静默回退云端。"}
+          : "主程序安装包不内置大模型；主按钮会按顺序安装本地 AI 应用、启动本地服务，并联网下载或启用推荐模型。下载完成后可用于断网隐私任务，失败会停在本地修复步骤，不会静默回退云端。"}
       </p>
     </section>
   );
@@ -1848,7 +1848,7 @@ function privacyReadinessSummary(
   if (setupPlan?.nextAction === "install_runtime") return "这台电脑条件已通过，下一步安装本地 AI 应用。";
   if (setupPlan?.nextAction === "start_runtime") return "本地 AI 已安装，下一步启动本地服务。";
   if (setupPlan?.nextAction === "use_bundled_model") return `${setupPlan.model || "推荐模型"} 已随安装包提供，下一步启用随包模型，无需下载。`;
-  if (setupPlan?.nextAction === "download_model") return `本地服务已运行，下一步下载 ${setupPlan.model || "推荐模型"}。`;
+  if (setupPlan?.nextAction === "download_model") return `本地服务已运行，下一步联网下载 ${setupPlan.model || "推荐模型"}；模型不包含在主程序安装包内。`;
   if (setupPlan && !setupPlan.canInstall) return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
   if (health?.readiness && !health.readiness.canInstall) return "这台电脑暂不满足推荐本地模型条件，可继续使用高效模式。";
   return "还需要准备本地 AI。可以用下方按钮一键安装推荐模型。";
@@ -1879,7 +1879,7 @@ function privacyReadinessPrimaryAction(
     return { label: "一键启用随包模型", disabled: false, kind: "bundled" };
   }
   if (setupPlan?.nextAction === "download_model") {
-    return { label: `一键下载 ${setupPlan.model || "推荐模型"}`, disabled: false, kind: "download" };
+    return { label: `一键联网下载 ${setupPlan.model || "推荐模型"}`, disabled: false, kind: "download" };
   }
   return { label: "一键准备本地 AI", disabled: false, kind: "enable" };
 }
@@ -1989,7 +1989,7 @@ function zhLocalModelRepairAction(setupPlan: LocalModelSetupPlan): string {
   if (action === "start_runtime") return "启动本地 AI 服务";
   if (action === "restart_runtime_with_bundled_models") return "重启本地服务并读取随包模型";
   if (action === "use_bundled_model") return "启用随包模型";
-  if (action === "download_model") return `下载 ${setupPlan.model || "推荐模型"} 到本机`;
+  if (action === "download_model") return `联网下载 ${setupPlan.model || "推荐模型"} 到本机`;
   if (action === "none" || action === "ready") return "本地 AI 已就绪";
   if (action === "prepare_local_ai") return "继续准备本地 AI";
   return zhLocalModelAction(setupPlan.nextAction);
@@ -2000,7 +2000,7 @@ function zhLocalModelAction(action: string): string {
   if (action === "install_runtime") return "安装本地 AI 应用";
   if (action === "start_runtime") return "启动本地 AI 服务";
   if (action === "use_bundled_model") return "启用随包模型";
-  if (action === "download_model") return "下载推荐模型";
+  if (action === "download_model") return "联网下载推荐模型";
   if (action === "ready") return "本地 AI 已就绪";
   if (action === "restart_runtime_with_bundled_models") return "用随包模型重启本地服务";
   return "继续本地 AI 设置";
@@ -2014,7 +2014,7 @@ function zhLocalModelSetupStepLabel(key: string, fallback: string): string {
     const normalized = fallback.toLowerCase();
     if (normalized.includes("bundled")) return "启用随包模型";
     if (normalized.includes("use local")) return "确认本地模型";
-    return "下载推荐模型";
+    return "联网下载推荐模型";
   }
   return fallback || "准备本地 AI";
 }
@@ -2037,7 +2037,7 @@ function zhLocalModelSetupDetail(
   if (key === "server") return state === "done" ? "本地 AI 服务正在运行。" : "安装完成后，Lengrvis 会启动本地 AI 服务。";
   if (key === "model" && fallback.includes("included with Lengrvis")) return `${model || "推荐模型"} 已随安装包提供，服务启动后会直接读取。`;
   if (key === "model" && state === "current" && fallback.includes("bundled")) return `${model || "推荐模型"} 已随安装包提供，启用后无需下载。`;
-  if (key === "model") return state === "done" ? `${model || "推荐模型"} 已就绪。` : `下载 ${model || "推荐模型"} 后即可进入隐私任务。`;
+  if (key === "model") return state === "done" ? `${model || "推荐模型"} 已就绪。` : `联网下载 ${model || "推荐模型"} 后即可进入隐私任务；下载文件不计入主程序安装包体积。`;
   return localModelUserMessage(fallback, "继续准备本地 AI。");
 }
 
@@ -2669,7 +2669,7 @@ function localModelRepairAction(setupPlan: LocalModelSetupPlan | null, health: L
   if (setupPlan?.nextAction === "install_runtime") return "失败修复：下一步安装本地 AI 应用";
   if (setupPlan?.nextAction === "start_runtime") return "失败修复：下一步启动本地 AI 服务";
   if (setupPlan?.nextAction === "use_bundled_model") return "失败修复：下一步启用随包模型";
-  if (setupPlan?.nextAction === "download_model") return "失败修复：下一步下载推荐模型";
+  if (setupPlan?.nextAction === "download_model") return "失败修复：下一步联网下载推荐模型，模型不包含在主程序安装包内";
   if (setupPlan?.ready || health?.available) return "失败修复：重新检查本地 AI 或切换模型";
   return "失败修复：按下一步准备本地 AI";
 }

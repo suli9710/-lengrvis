@@ -326,6 +326,16 @@ if ($script:LastVerifyPackagingExitCode -ne 0) {
 }
 Write-Host "[ok] package with bundled Ollama passes"
 
+$output = Invoke-VerifyPackaging -Package $withOllama
+if ($script:LastVerifyPackagingExitCode -eq 0) {
+    throw "Expected bundled Ollama package verification to fail for the default release package."
+}
+$text = $output | Out-String
+if ($text -notmatch "must not be present in the default release package" -or $text -notmatch "zip directory must not be present in the default release package") {
+    throw "Unexpected default bundled Ollama failure output:`n$text"
+}
+Write-Host "[ok] package with bundled Ollama fails for default release package"
+
 $output = Invoke-VerifyPackaging -Package $withOllama -RequireBundledOllama -RunExecutableSmoke
 if ($script:LastVerifyPackagingExitCode -ne 0) {
     throw "Expected bundled Ollama package verification with runnable smoke to pass:`n$output"

@@ -458,6 +458,9 @@ async function assertNoSensitiveLocalModelText(page, label) {
 
 function runSourceAssertions() {
   const settingsSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "components", "SettingsPanel.tsx"), "utf8");
+  const localModelSettingsPath = path.join(desktopRoot, "src", "renderer", "components", "settings", "LocalModelSettings.tsx");
+  const localModelSettingsSource = fs.existsSync(localModelSettingsPath) ? fs.readFileSync(localModelSettingsPath, "utf8") : "";
+  const settingsModuleSources = `${settingsSource}\n${localModelSettingsSource}`;
   const apiClientSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "api", "client.ts"), "utf8");
 
   assert.match(
@@ -480,11 +483,13 @@ function runSourceAssertions() {
     "一键安装本地 AI 应用并准备",
     "一键启动本地 AI 服务并启用随包模型",
     "一键启动本地 AI 服务并检查模型",
-    "一键下载",
+    "一键联网下载",
     "安装本地 AI 应用、启动服务、准备模型",
-    "安装本地 AI 应用、启动本地服务，并下载或启用推荐模型"
+    "安装本地 AI 应用、启动本地服务，并联网下载或启用推荐模型",
+    "主程序安装包不内置大模型",
+    "模型不包含在主程序安装包内"
   ]) {
-    assert.ok(settingsSource.includes(expectedText), `settings page should expose clear next step copy: ${expectedText}`);
+    assert.ok(settingsModuleSources.includes(expectedText), `settings page should expose clear next step copy: ${expectedText}`);
   }
 
   for (const expectedText of [
@@ -499,7 +504,7 @@ function runSourceAssertions() {
     "不会静默回退云端",
     "隐私模式失败时不会静默回退云端"
   ]) {
-    assert.ok(settingsSource.includes(expectedText), `privacy mode fallback behavior should be visible and testable: ${expectedText}`);
+    assert.ok(settingsModuleSources.includes(expectedText), `privacy mode fallback behavior should be visible and testable: ${expectedText}`);
   }
 }
 
@@ -576,7 +581,9 @@ async function assertCleanMachinePrivacyPath(page) {
   assert.match(privacyText, /检查电脑条件/, "privacy path should show the hardware step");
   assert.match(privacyText, /安装本地 AI 应用/, "privacy path should show the local app step");
   assert.match(privacyText, /启动本地 AI 服务/, "privacy path should show the service step");
-  assert.match(privacyText, /下载推荐模型/, "privacy path should show the model step");
+  assert.match(privacyText, /联网下载推荐模型/, "privacy path should show the model step");
+  assert.match(privacyText, /主程序安装包不内置大模型/, "privacy path should distinguish app size from model download size");
+  assert.match(privacyText, /模型不包含在主程序安装包内|不计入主程序安装包体积/, "privacy path should say model download is outside the main exe");
   assert.match(privacyText, /一键安装本地 AI 应用并准备 qwen2\.5:3b/, "clean machine should expose a one-click install path");
   assert.match(privacyText, /本机路径已隐藏/, "privacy path should show backend verification redaction status");
   assert.match(privacyText, /下一步：安装本地 AI 应用/, "privacy path should expose localized repair action copy");

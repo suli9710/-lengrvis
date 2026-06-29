@@ -34,6 +34,7 @@ $MissingArtifacts = New-Object System.Collections.Generic.List[object]
 $MinimumSelfExtractingExeBytes = 65536
 $MinimumPortableLauncherBytes = 4096
 $MinimumBackendExecutableBytes = 4096
+$MaximumDefaultReleaseArtifactBytes = 500MB
 $SmokeRunGuid = ([guid]::NewGuid().ToString("N")).Substring(0, 8)
 $SmokeRunId = "run-{0}-{1}-{2}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $PID, $SmokeRunGuid
 $SmokeLogRoot = Join-Path (Join-Path $Root ".tmp\packaging-smoke") $SmokeRunId
@@ -73,6 +74,28 @@ function Test-RequiredDirectory([string]$Label, [string]$Path) {
         return
     }
     Write-Host "[ok] $Label`: $FullPath"
+}
+
+function Test-MaximumFileSize([string]$Label, [string]$Path, [int64]$MaximumBytes) {
+    $FullPath = Resolve-ProjectPath $Path
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
+        return
+    }
+    $Item = Get-Item -LiteralPath $FullPath
+    if ($Item.Length -gt $MaximumBytes) {
+        $Failures.Add("$Label is too large for the default release package ($($Item.Length) bytes; maximum $MaximumBytes bytes): $FullPath. Default builds must download local models on demand instead of bundling them in the main installer.")
+        return
+    }
+    Write-Host "[ok] $Label size is within default release budget ($($Item.Length) / $MaximumBytes bytes)"
+}
+
+function Test-PathAbsent([string]$Label, [string]$Path) {
+    $FullPath = Resolve-ProjectPath $Path
+    if (Test-Path -LiteralPath $FullPath) {
+        $Failures.Add("$Label must not be present in the default release package: $FullPath. Use -RequireBundledOllama only for a separate offline Ollama/model package.")
+        return
+    }
+    Write-Host "[ok] $Label not bundled in default package"
 }
 
 function Test-NonEmptyDirectory([string]$Label, [string]$Path) {
@@ -162,6 +185,28 @@ function Test-ZipDirectoryEntry([System.IO.Compression.ZipArchive]$Zip, [string]
         return
     }
     Write-Host "[ok] zip directory $Normalized contains files"
+}
+
+function Test-ZipEntryAbsent([System.IO.Compression.ZipArchive]$Zip, [string]$EntryName) {
+    $Normalized = $EntryName -replace "\\", "/"
+    $Entry = $Zip.Entries | Where-Object { ($_.FullName -replace "\\", "/") -eq $Normalized } | Select-Object -First 1
+    if ($null -ne $Entry) {
+        $Failures.Add("zip entry must not be present in the default release package: $Normalized. Use -RequireBundledOllama only for a separate offline Ollama/model package.")
+        return
+    }
+    Write-Host "[ok] zip entry absent from default package: $Normalized"
+}
+
+function Test-ZipDirectoryAbsent([System.IO.Compression.ZipArchive]$Zip, [string]$Prefix) {
+    $Normalized = ($Prefix -replace "\\", "/").TrimEnd("/") + "/"
+    $Entry = $Zip.Entries | Where-Object {
+        ($_.FullName -replace "\\", "/").StartsWith($Normalized, [System.StringComparison]::OrdinalIgnoreCase)
+    } | Select-Object -First 1
+    if ($null -ne $Entry) {
+        $Failures.Add("zip directory must not be present in the default release package: $Normalized. Use -RequireBundledOllama only for a separate offline Ollama/model package.")
+        return
+    }
+    Write-Host "[ok] zip directory absent from default package: $Normalized"
 }
 
 function Add-ReleaseSourceMapPolicyResult {
@@ -967,6 +1012,8 @@ Test-RequiredDirectory "portable renderer dist" $PortableAppDistPath
 Test-RequiredFile "portable app package manifest" (Join-Path $PortablePath "resources\app\package.json")
 Test-RequiredFile "portable zip" $PortableZipPath
 Test-RequiredFile "self-extracting executable" $SelfExtractingPath
+Test-MaximumFileSize "portable zip" $PortableZipPath $MaximumDefaultReleaseArtifactBytes
+Test-MaximumFileSize "self-extracting executable" $SelfExtractingPath $MaximumDefaultReleaseArtifactBytes
 Test-BackendCapabilityManifest -Label "backend capability manifest" -Path (Join-Path $DistPath "backend-capabilities.json") -RequiredCapabilities $RequiredBackendCapabilities
 Test-BackendCapabilityManifest -Label "portable backend capability manifest" -Path (Join-Path $PortablePath "resources\backend\backend-capabilities.json") -RequiredCapabilities $RequiredBackendCapabilities
 Test-PEExecutableHeader -Label "backend executable" -Path $BackendExePath -MinimumBytes $MinimumBackendExecutableBytes | Out-Null
@@ -981,6 +1028,10 @@ if ($RequireBundledOllama) {
     Test-NonEmptyDirectory "portable Ollama models" $PortableOllamaModelsDir
     Test-RequiredFile "portable Ollama bundle manifest" $PortableOllamaManifest
     Test-OllamaBundleManifest -ManifestPath $PortableOllamaManifest -RuntimeDir $PortableOllamaDir -ModelsDir $PortableOllamaModelsDir
+} else {
+    Test-PathAbsent "portable Ollama runtime" $PortableOllamaDir
+    Test-PathAbsent "portable Ollama models" $PortableOllamaModelsDir
+    Test-PathAbsent "portable Ollama bundle manifest" $PortableOllamaManifest
 }
 Test-ReleaseSourceMapFreeDirectory -Label "portable app dist" -Path $PortableAppDistPath
 
@@ -996,6 +1047,10 @@ if (Test-Path -LiteralPath $PortableZipPath -PathType Leaf) {
             Test-ZipEntry $Zip "resources/ollama-bundle-manifest.json"
             Test-ZipDirectoryEntry $Zip "resources/ollama"
             Test-ZipDirectoryEntry $Zip "resources/ollama-models"
+        } else {
+            Test-ZipEntryAbsent $Zip "resources/ollama-bundle-manifest.json"
+            Test-ZipDirectoryAbsent $Zip "resources/ollama"
+            Test-ZipDirectoryAbsent $Zip "resources/ollama-models"
         }
     }
     finally {
