@@ -1,14 +1,29 @@
 function Initialize-TrustedSigningModule {
-    param([switch]$SkipModuleInstall)
+    param(
+        [switch]$SkipModuleInstall,
+        [switch]$AllowModuleInstall
+    )
 
-    if (-not $SkipModuleInstall) {
+    $requiredVersion = "0.5.0"
+    if ($AllowModuleInstall) {
         try {
             Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
         }
         catch {
             Write-Host "NuGet package provider installation skipped or already satisfied: $($_.Exception.Message)"
         }
-        Install-Module -Name TrustedSigning -MinimumVersion 0.5.0 -Force -Repository PSGallery -Scope CurrentUser
+        Install-Module -Name TrustedSigning -RequiredVersion $requiredVersion -Force -Repository PSGallery -Scope CurrentUser
+    }
+    elseif (-not $SkipModuleInstall) {
+        Write-Host "TrustedSigning module online install is disabled by default; pass -AllowModuleInstall only on a controlled runner."
+    }
+
+    $module = Get-Module -ListAvailable TrustedSigning |
+        Where-Object { $_.Version.ToString() -eq $requiredVersion } |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+    if ($null -eq $module) {
+        throw "TrustedSigning module version $requiredVersion is required. Preinstall it in the runner image/tool cache or pass -AllowModuleInstall on a controlled runner."
     }
 }
 
@@ -45,7 +60,8 @@ function Invoke-TrustedWindowsSigning {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Files,
-        [switch]$SkipModuleInstall
+        [switch]$SkipModuleInstall,
+        [switch]$AllowModuleInstall
     )
 
     $isWindowsHost = $env:OS -eq "Windows_NT" -or [string][System.IO.Path]::DirectorySeparatorChar -eq "\"
@@ -54,7 +70,7 @@ function Invoke-TrustedWindowsSigning {
     }
 
     Require-AzureTrustedSigningEnv
-    Initialize-TrustedSigningModule -SkipModuleInstall:$SkipModuleInstall
+    Initialize-TrustedSigningModule -SkipModuleInstall:$SkipModuleInstall -AllowModuleInstall:$AllowModuleInstall
 
     $timestampUrl = Get-AzureTrustedSigningTimestampUrl
     $targets = @()

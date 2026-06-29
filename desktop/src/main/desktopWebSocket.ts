@@ -15,6 +15,12 @@ import { assertTrustedRenderer } from "./ipc";
 export const DESKTOP_WS_PROTOCOL_PREFIX = "lengrvis.desktop.token.";
 const WEB_SOCKET_PROTOCOL_TOKEN_REGEX = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const DESKTOP_WS_RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const PASSIVE_DESKTOP_WS_PATTERNS = [
+  /^\/(?:api\/)?ws\/notifications$/,
+  /^\/(?:api\/)?ws\/tasks\/[^/]+$/,
+  /^\/(?:api\/)?ws\/runs\/[^/]+$/,
+  /^\/api\/ws\/browser-host$/
+];
 
 interface DesktopSocketEntry {
   sender: WebContents;
@@ -169,16 +175,11 @@ function validateDesktopWebSocketEndpoint(endpoint: unknown): string {
   if (decodedPath.includes("\\") || decodedPath.includes("//")) {
     throw new Error("Desktop WebSocket endpoint contains unsafe path separators");
   }
-  if (
-    decodedPath !== "/ws" &&
-    !decodedPath.startsWith("/ws/") &&
-    decodedPath !== "/api/ws" &&
-    !decodedPath.startsWith("/api/ws/")
-  ) {
-    throw new Error("Desktop WebSocket endpoints must target backend WebSocket paths");
-  }
   if (decodedPath.split("/").some((segment) => segment === "." || segment === "..")) {
     throw new Error("Desktop WebSocket endpoint contains unsafe path segments");
+  }
+  if (!PASSIVE_DESKTOP_WS_PATTERNS.some((pattern) => pattern.test(decodedPath))) {
+    throw new Error("Desktop WebSocket endpoint is not on the passive subscription allowlist");
   }
 
   return endpoint;

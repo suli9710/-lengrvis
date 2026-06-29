@@ -19,5 +19,17 @@ assert.ok(
   normalized.includes('status !== "Valid"'),
   "must fail closed on non-Valid Authenticode status"
 );
+assert.ok(
+  normalized.includes("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"),
+  "must verify the expected signer publisher"
+);
+assert.ok(
+  normalized.includes("AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT"),
+  "must verify the expected signer certificate thumbprint"
+);
+assert.ok(
+  normalized.includes("TimestampSubject"),
+  "must require Authenticode timestamp metadata"
+);
 
 console.log("windows-release-signatures-smoke: ok");

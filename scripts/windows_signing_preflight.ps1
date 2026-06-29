@@ -25,9 +25,19 @@ function Get-ArtifactStatus {
     }
     $item = Get-Item -LiteralPath $fullPath
     $authenticodeStatus = "check_unavailable"
+    $signerSubject = ""
+    $signerThumbprint = ""
+    $timestampSubject = ""
     try {
         $signature = Get-AuthenticodeSignature -LiteralPath $fullPath -ErrorAction Stop
         $authenticodeStatus = $signature.Status.ToString()
+        if ($null -ne $signature.SignerCertificate) {
+            $signerSubject = $signature.SignerCertificate.Subject
+            $signerThumbprint = $signature.SignerCertificate.Thumbprint
+        }
+        if ($null -ne $signature.TimeStamperCertificate) {
+            $timestampSubject = $signature.TimeStamperCertificate.Subject
+        }
     }
     catch {
         $authenticodeStatus = "check_unavailable"
@@ -36,6 +46,9 @@ function Get-ArtifactStatus {
         path = $Path
         exists = $true
         authenticode_status = $authenticodeStatus
+        signer_subject = $signerSubject
+        signer_thumbprint = $signerThumbprint
+        timestamp_subject = $timestampSubject
         size_bytes = $item.Length
     }
 }
@@ -47,6 +60,7 @@ $azureEnv = @(
     "AZURE_TRUSTED_SIGNING_ENDPOINT",
     "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
     "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+    "AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT",
     "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME"
 )
 
@@ -80,6 +94,24 @@ $missingAzure = @($azureEnv | Where-Object { -not $azureStatus[$_] })
 $missingPfx = @($pfxEnv.Keys | Where-Object { -not $pfxEnv[$_] })
 $missingTargets = @($targetStatuses | Where-Object { -not $_.exists } | ForEach-Object { $_.path })
 $unsignedTargets = @($targetStatuses | Where-Object { $_.exists -and $_.authenticode_status -ne "Valid" } | ForEach-Object { $_.path })
+$publisherMismatchTargets = @()
+$thumbprintMismatchTargets = @()
+$missingTimestampTargets = @()
+if (Test-ConfiguredEnv "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME") {
+    $expectedPublisher = [Environment]::GetEnvironmentVariable("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME").Trim()
+    $publisherMismatchTargets = @($targetStatuses | Where-Object {
+        $_.exists -and $_.authenticode_status -eq "Valid" -and -not ([string]$_.signer_subject).Contains($expectedPublisher)
+    } | ForEach-Object { $_.path })
+}
+if (Test-ConfiguredEnv "AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT") {
+    $expectedThumbprint = ([Environment]::GetEnvironmentVariable("AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT") -replace "\s", "").ToUpperInvariant()
+    $thumbprintMismatchTargets = @($targetStatuses | Where-Object {
+        $_.exists -and $_.authenticode_status -eq "Valid" -and (([string]$_.signer_thumbprint -replace "\s", "").ToUpperInvariant() -ne $expectedThumbprint)
+    } | ForEach-Object { $_.path })
+}
+$missingTimestampTargets = @($targetStatuses | Where-Object {
+    $_.exists -and $_.authenticode_status -eq "Valid" -and [string]::IsNullOrWhiteSpace([string]$_.timestamp_subject)
+} | ForEach-Object { $_.path })
 
 $azureReadyToAttempt = $missingAzure.Count -eq 0 -and $missingTargets.Count -eq 0
 $pfxReadyToAttempt = $missingPfx.Count -eq 0 -and $missingTargets.Count -eq 0 -and $null -ne $signtool
@@ -97,6 +129,15 @@ if ($missingPfx.Count -eq 0 -and $null -eq $signtool) {
 }
 if ($unsignedTargets.Count -gt 0) {
     $blockers += "one or more target artifacts are unsigned or invalid"
+}
+if ($publisherMismatchTargets.Count -gt 0) {
+    $blockers += "one or more target artifacts are signed by an unexpected publisher"
+}
+if ($thumbprintMismatchTargets.Count -gt 0) {
+    $blockers += "one or more target artifacts are signed by an unexpected certificate thumbprint"
+}
+if ($missingTimestampTargets.Count -gt 0) {
+    $blockers += "one or more target artifacts are missing Authenticode timestamp metadata"
 }
 
 $payload = [ordered]@{
@@ -136,6 +177,9 @@ $payload = [ordered]@{
     missing_pfx_env = $missingPfx
     missing_artifacts = $missingTargets
     unsigned_artifacts = $unsignedTargets
+    publisher_mismatch_artifacts = $publisherMismatchTargets
+    thumbprint_mismatch_artifacts = $thumbprintMismatchTargets
+    missing_timestamp_artifacts = $missingTimestampTargets
     blockers = $blockers
     ready_to_attempt_azure_signing = $azureReadyToAttempt
     ready_to_attempt_pfx_signing = $pfxReadyToAttempt

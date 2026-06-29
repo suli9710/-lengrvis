@@ -2,8 +2,9 @@ param(
     [string]$PortableDir = "dist\Lengrvis-win-portable",
     [string]$SelfExtractingExe = "",
     [switch]$LauncherOnly,
-    [switch]$SelfExtractingOnly,
-    [switch]$SkipModuleInstall
+    [switch]$SelfExtractingOnly,
+    [switch]$SkipModuleInstall,
+    [switch]$AllowModuleInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,4 +61,4 @@ if ($targets.Count -eq 0) {
   throw "No portable release executables found to sign. Expected: $($expected -join ', ')."
 }
 
-Invoke-TrustedWindowsSigning -Files $targets -SkipModuleInstall:$SkipModuleInstall
+Invoke-TrustedWindowsSigning -Files $targets -SkipModuleInstall:$SkipModuleInstall -AllowModuleInstall:$AllowModuleInstall

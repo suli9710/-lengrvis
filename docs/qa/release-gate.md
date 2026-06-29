@@ -259,10 +259,16 @@ Demo pass criteria:
 
 ## 3. Release Artifact Gate
 
-Run the formal release check after Windows release artifacts have been built:
+Run the formal release-candidate check after Windows release artifacts have been built:
 
 ```powershell
 npm run release:check
+```
+
+`release:check`, `release:gate`, and `release:smoke` are compatibility aliases for the strict RC orchestrator:
+
+```powershell
+npm run delivery:rc
 ```
 
 Use the structural-only quick check when you only need artifact presence, manifest, zip, and PE/header validation:
@@ -277,7 +283,7 @@ Run the independent portable launcher/backend diagnostics smoke when Windows por
 npm run smoke:portable-first-screen
 ```
 
-`release:check`, `release:gate`, `release:smoke`, and `release:quick` all include `release:safety`. `release:check`, `release:gate`, and `release:smoke` also include `supply-chain:verify`, `audit:deps`, `security:secrets`, and `security:extensions` so the formal local gate matches the CI supply-chain, vulnerability, secret, and IPC/Skill/MCP/settings security gates. Enable the strict state machine through `config.yaml` or the shell environment before running them:
+`delivery:rc` runs the strict release-candidate pipeline: `qa:gate`, `golden:gate`, real-LLM eval, supply-chain verification, dependency audit, secret scan, extension security, release safety, packaging verification, Windows signature verification, distribution/clean-machine/result-quality/Android evidence validators, commercial-loop evidence, market readiness, release readiness, and current release evidence generation. Enable the strict state machine through `config.yaml` or the shell environment before running it:
 
 ```powershell
 $env:LENGRVIS_STRICT_STATE_MACHINE = "true"
@@ -286,16 +292,11 @@ npm run release:check
 
 If neither `LENGRVIS_STRICT_STATE_MACHINE=true` nor `privacy.strict_state_machine: true` is configured, `release:safety` is expected to fail before packaging verification starts. Treat that as the release gate doing its job, not as a runnable smoke failure.
 
-Equivalent expanded command:
+Equivalent planner preview:
 
 ```powershell
-npm run qa:gate
-npm run supply-chain:verify
-npm run audit:deps
-npm run security:secrets
-npm run security:extensions
-.\scripts\verify_release_safety.ps1
-.\scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45
+npm run delivery:plan
+python scripts\delivery_pipeline.py --plan-only --strict
 ```
 
 Pass criteria:
@@ -304,8 +305,8 @@ Pass criteria:
 - Supply-chain verification passes: `npm run supply-chain:verify` completes dependency lock verification and CycloneDX SBOM generation; `npm run audit:deps` and `npm run security:secrets` complete vulnerability and strict source secret scanning.
 - Extension security verification passes: `npm run security:extensions` completes the IPC policy/openExternal smoke plus targeted Skill/MCP/settings security tests and records or references the `extension-security-gate` evidence artifact.
 - Release safety verification passes: `LENGRVIS_ALLOW_MOCK_FALLBACK` resolves to false, and `strict_state_machine` resolves to true through `LENGRVIS_STRICT_STATE_MACHINE=true` or `privacy.strict_state_machine: true` in `config.yaml`.
-- `release:check` is the default formal release gate. It runs `qa:gate`, `golden:gate`, real-LLM eval, `supply-chain:verify`, `audit:deps`, `security:secrets`, `security:extensions`, `scripts\verify_release_safety.ps1`, `scripts\build_all.ps1 -VerifyOnly -RunExecutableSmoke -SmokeTimeoutSeconds 45`, Windows signature verification, `evidence:commercial-loop`, market readiness, and release readiness. Packaged backend executables must start and answer `/health`, and missing reviewed commercial-loop evidence keeps the gate failed.
-- `release:gate` and `release:smoke` are aliases for `release:check`, preserving the explicit gate/smoke command names without allowing a structural-only release pass.
+- `release:check` is the compatibility name for `delivery:rc`; it is the default formal release-candidate gate. Packaged backend executables must start and answer `/health`, Windows artifacts must pass signature verification against the protected publisher/thumbprint configuration, and missing required reviewed evidence keeps the gate failed.
+- `release:gate` and `release:smoke` are also aliases for `delivery:rc`, preserving the explicit gate/smoke command names without allowing a structural-only release pass.
 - `release:quick` is the structural-only artifact check. Use it for fast artifact validation, not for release-candidate sign-off.
 - The structural packaging verification performed by `scripts\verify_packaging.ps1` requires `dist\backend.exe`, `dist\Lengrvis-win-portable`, `dist\Lengrvis-win-portable.zip`, and `dist\Lengrvis-<version>-x64-self-extracting.exe` (version sourced from `desktop\package.json`) unless custom artifact paths are supplied directly to `scripts\build_all.ps1 -VerifyOnly`.
 - Structural verification also checks that the portable directory and portable zip contain `Lengrvis.exe`, `resources\backend\backend.exe`, app resources, renderer dist, and package manifest.

@@ -36,6 +36,12 @@ PROHIBITED_KEY_MARKERS = (
     "customer_name",
 )
 EVIDENCE_SIGNATURE_ENV = "LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"
+UNSAFE_EVIDENCE_SIGNATURE_SECRETS = {
+    "ci-release-evidence-hmac-secret",
+    "dev-release-evidence-hmac-secret",
+    "local-release-evidence-hmac-secret",
+    "release-evidence-hmac-secret",
+}
 SHA256_HEX_CHARS = frozenset("0123456789abcdefABCDEF")
 DEFAULT_ARTIFACT_CROSS_CHECK_BINDINGS: tuple[tuple[str, str], ...] = (
     ("candidate.artifact_path", "candidate.artifact_sha256"),
@@ -181,15 +187,18 @@ def validate_dist_artifact_sha256_cross_check(
     for path_key, sha_key in bindings:
         artifact_path = get_path(payload, path_key)
         if not isinstance(artifact_path, str) or not artifact_path.strip():
+            errors.append(f"{path_key} is required for on-disk artifact SHA256 verification")
             continue
         expected_sha = get_path(payload, sha_key)
         if not is_sha256_hex(expected_sha):
+            errors.append(f"{sha_key} must be a 64-character SHA256 hex digest for on-disk verification")
             continue
         resolved = _resolve_dist_artifact_path(root, artifact_path)
         if resolved is None:
             errors.append(f"{path_key} must be a repo-relative path under dist/")
             continue
         if not resolved.is_file():
+            errors.append(f"{path_key} must point to an existing on-disk artifact: {artifact_path}")
             continue
         actual_sha = sha256(resolved.read_bytes()).hexdigest()
         if not hmac.compare_digest(actual_sha, str(expected_sha).strip().lower()):
@@ -217,6 +226,9 @@ def validate_evidence_signature(payload: dict[str, Any], errors: list[str]) -> d
     secret = str(os.getenv(EVIDENCE_SIGNATURE_ENV) or "").strip()
     if not secret:
         errors.append(f"{EVIDENCE_SIGNATURE_ENV} must be set to verify reviewed evidence signatures")
+        return {"valid_hash": valid_hash, "valid_signature": False}
+    if secret in UNSAFE_EVIDENCE_SIGNATURE_SECRETS:
+        errors.append(f"{EVIDENCE_SIGNATURE_ENV} uses a known unsafe development/CI value")
         return {"valid_hash": valid_hash, "valid_signature": False}
     expected_signature = hmac.new(secret.encode("utf-8"), computed_hash.encode("utf-8"), sha256).hexdigest()
     valid_signature = bool(signature and hmac.compare_digest(signature, expected_signature))

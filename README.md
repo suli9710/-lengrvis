@@ -236,7 +236,7 @@ npm run golden:gate              # golden tasks 报告（≥95% 通过率）
 
 主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract 和 Android back navigation smokes。mobile smoke 是本地行为桩/客户端契约证据，不是真机 LAN/WSS 或证书信任路径验收。
 
-CI 在 push/PR 上跑 hygiene、deps:verify、SBOM、backend pytest、golden gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不包含 `release:check`、portable GUI smoke、clean-machine/真实设备人工验收。
+CI 在 push/PR 上跑 hygiene、deps:verify、SBOM、backend pytest、golden gate、real-LLM quality gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。缺少真实 LLM gate 凭据时，release evidence 会记录 skipped/incomplete，而不是 machine gates passed。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不包含 portable GUI smoke、clean-machine/真实设备人工验收。
 
 ### 测试结果来源
 
@@ -272,7 +272,7 @@ npm run evidence:support-privacy-verify # required reviewed support/privacy rehe
 npm run evidence:claims-launch-verify # required reviewed public claims/assets evidence for paid launch
 npm run deps:verify
 npm run sbom:generate
-npm run release:check
+npm run release:check # compatibility alias for npm run delivery:rc
 npm run release:paid-launch # paid/public launch gate; requires passed MR-P0 evidence
 ```
 

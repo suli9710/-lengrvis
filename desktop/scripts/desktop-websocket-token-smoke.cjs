@@ -45,9 +45,10 @@ assert.equal(
   buildBackendWebSocketUrl("http://127.0.0.1:8000", "/ws/tasks/task-1", { cursor: 1, ignored: null }),
   "ws://127.0.0.1:8000/ws/tasks/task-1?cursor=1"
 );
-assert.equal(
-  buildBackendWebSocketUrl("https://localhost:8443", "/api/ws/settings/install-local-model", { model: "qwen2.5:3b" }),
-  "wss://localhost:8443/api/ws/settings/install-local-model?model=qwen2.5%3A3b"
+assert.throws(
+  () => buildBackendWebSocketUrl("https://localhost:8443", "/api/ws/settings/install-local-model", { model: "qwen2.5:3b" }),
+  /passive subscription allowlist/,
+  "model installation must not use the generic desktop WebSocket bridge"
 );
 
 for (const baseUrl of ["http://192.168.1.20:8000", "https://api.example.test"]) {
@@ -125,6 +126,11 @@ assert.match(
 const settingsSource = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "components", "SettingsPanel.tsx"), "utf8");
 assert.match(settingsSource, /subscribeInstallModelProgressSocket/, "install progress should use the shared subscribe helper");
 assert.doesNotMatch(settingsSource, /new WebSocket\(buildInstallModelWebSocketUrl/, "install progress must not directly create protected WebSockets");
+assert.doesNotMatch(
+  settingsSource,
+  /window\.lengrvis\.realtime\.subscribe\(\s*\{\s*endpoint:\s*path/,
+  "Electron install progress must not open the protected install WebSocket through the generic desktop bridge"
+);
 assert.match(settingsSource, /function isInstallModelWebOnlyDevFallbackEnabled[\s\S]*import\.meta\.env\.DEV/, "install progress fallback must be web-only dev gated");
 
 const preloadSource = fs.readFileSync(path.join(__dirname, "..", "src", "preload", "preload.ts"), "utf8");

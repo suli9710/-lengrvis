@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +18,10 @@ from app.tools.filesystem_safety import (
     ensure_mutation_path_safe as _ensure_mutation_path_safe,
 )
 from app.tools.filesystem_safety import (
-    path_exists_or_reparse_point as _path_exists_or_reparse_point,
+    safe_copy_file as _safe_copy_file,
 )
 from app.tools.filesystem_safety import (
-    prepare_parent_for_mutation as _prepare_parent_for_mutation,
+    safe_move_file as _safe_move_file,
 )
 from app.tools.filesystem_safety import (
     safe_write_text as _safe_write_text,
@@ -347,10 +346,7 @@ def copy_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "_resource_state": _resource_states(src, dst),
         }
     raise_if_tool_aborted(context)
-    _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed, context)
-    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
-    shutil.copy2(src, dst)
+    _safe_copy_file(src, dst, allowed, context)
     return {"changed_paths": [str(dst)], "rollback_info": {"trash_created_file": str(dst)}}
 
 
@@ -365,10 +361,7 @@ def move_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
             "_resource_state": _resource_states(src, dst),
         }
     raise_if_tool_aborted(context)
-    _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed, context)
-    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
-    shutil.move(str(src), str(dst))
+    _safe_move_file(src, dst, allowed, context)
     return {"changed_paths": [str(dst)], "rollback_info": {"move_back": {"from": str(dst), "to": str(src)}}}
 
 
@@ -384,10 +377,7 @@ def rename_file(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
             "_resource_state": _resource_states(src, dst),
         }
     raise_if_tool_aborted(context)
-    _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed, context)
-    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
-    src.rename(dst)
+    _safe_move_file(src, dst, allowed, context)
     return {"changed_paths": [str(dst)], "rollback_info": {"rename_back": {"from": str(dst), "to": str(src)}}}
 
 
@@ -532,10 +522,7 @@ def _safe_copy_existing_file(
     context: dict[str, Any] | None = None,
 ) -> None:
     raise_if_tool_aborted(context)
-    _ensure_mutation_path_safe(src, allowed, include_self=True)
-    _prepare_parent_for_mutation(dst, allowed, context)
-    _ensure_mutation_path_safe(dst, allowed, include_self=_path_exists_or_reparse_point(dst))
-    shutil.copy2(src, dst)
+    _safe_copy_file(src, dst, allowed, context)
 
 
 def _resource_states(*paths: Path) -> list[dict[str, Any]]:

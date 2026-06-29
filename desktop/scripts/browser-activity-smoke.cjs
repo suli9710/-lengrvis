@@ -1012,11 +1012,16 @@ async function returnToSearchTab(page) {
       assertNoSecretPayload(redactedSnapshot, "BrowserHost snapshot");
 
       let windowOpenHandler;
+      let willNavigateHandler;
       const hardenedWebContents = {
         setWindowOpenHandler: (handler) => {
           windowOpenHandler = handler;
         },
-        on: () => undefined,
+        on: (name, handler) => {
+          if (name === "will-navigate") {
+            willNavigateHandler = handler;
+          }
+        },
         session: {
           setPermissionRequestHandler: () => undefined,
           setPermissionCheckHandler: () => undefined
@@ -1025,12 +1030,24 @@ async function returnToSearchTab(page) {
       };
       hardenEmbeddedWebContents(hardenedWebContents);
       assert.ok(windowOpenHandler, "embedded BrowserHost webContents should install a window.open handler");
+      assert.ok(willNavigateHandler, "embedded BrowserHost webContents should install a will-navigate guard");
       assert.deepEqual(
         windowOpenHandler({ url: "https://example.test" }),
         { action: "deny" },
         "embedded BrowserHost window.open should be denied by default"
       );
       assert.equal(openedExternalUrls, 0, "embedded BrowserHost window.open must not shell.openExternal automatically");
+      let privatePrevented = false;
+      willNavigateHandler({ preventDefault: () => { privatePrevented = true; } }, "http://127.0.0.1:8000/admin");
+      assert.equal(privatePrevented, true, "BrowserHost must block loopback navigation by default");
+      process.env.LENGRVIS_BROWSER_HOST_ALLOW_PRIVATE_NETWORK = "1";
+      let devPrivatePrevented = false;
+      willNavigateHandler({ preventDefault: () => { devPrivatePrevented = true; } }, "http://127.0.0.1:8000/admin");
+      delete process.env.LENGRVIS_BROWSER_HOST_ALLOW_PRIVATE_NETWORK;
+      assert.equal(devPrivatePrevented, false, "BrowserHost private network navigation requires an explicit development opt-in");
+      let publicPrevented = false;
+      willNavigateHandler({ preventDefault: () => { publicPrevented = true; } }, "https://example.test/");
+      assert.equal(publicPrevented, false, "BrowserHost must allow public http(s) navigation");
 
       assert.equal(isLoopbackBackendUrl("http://127.0.0.1:8000"), true);
       assert.equal(isLoopbackBackendUrl("http://localhost:8000"), true);

@@ -51,7 +51,7 @@ jobs:
       - name: Build release artifacts
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ format('{0}-{1}-{2}-{3}', 'ci', 'release', 'evidence', 'hmac-secret') }}
+          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build_all.ps1 -SkipTests
 
       - name: Verify signed Windows release configuration
@@ -62,6 +62,7 @@ jobs:
           AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
           AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: npm --prefix desktop run verify:signed-build-config
 
@@ -109,22 +110,27 @@ jobs:
           AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
           AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
           AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
           AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: npm --prefix desktop run dist:signed
 
       - name: Strict release artifact gate
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ format('{0}-{1}-{2}-{3}', 'ci', 'release', 'evidence', 'hmac-secret') }}
+          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
           LENGRVIS_STRICT_STATE_MACHINE: "true"
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: npm run release:check
 
       - name: Strict delivery verdict
         if: always()
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
-          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ format('{0}-{1}-{2}-{3}', 'ci', 'release', 'evidence', 'hmac-secret') }}
+          LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET: ${{ secrets.LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET }}
           LENGRVIS_STRICT_STATE_MACHINE: "true"
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT }}
+          AZURE_TRUSTED_SIGNING_PUBLISHER_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_PUBLISHER_NAME }}
         run: npm run delivery:rc
 
       - name: Upload release candidate evidence

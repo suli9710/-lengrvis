@@ -368,12 +368,34 @@ def _resign(payload: dict) -> dict:
     return body
 
 
-def test_distribution_reviewed_sample_passes() -> None:
+def _with_dist_artifact(
+    payload: dict,
+    tmp_path: Path,
+    *,
+    rel_path: str,
+    contents: bytes,
+) -> dict:
+    artifact = tmp_path / rel_path
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(contents)
+    body = deepcopy(payload)
+    body["candidate"]["artifact_path"] = rel_path
+    body["candidate"]["artifact_sha256"] = sha256(contents).hexdigest()
+    return _resign(body)
+
+
+def test_distribution_reviewed_sample_passes(tmp_path: Path) -> None:
     import os
 
     os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
-    assert distribution.validate_payload(_distribution_sample()) == []
-    errors, contract = distribution.validate_payload_with_contract(_distribution_sample())
+    payload = _with_dist_artifact(
+        _distribution_sample(),
+        tmp_path,
+        rel_path="dist/backend.exe",
+        contents=b"distribution-reviewed-artifact",
+    )
+    assert distribution.validate_payload(payload, repo_root=tmp_path) == []
+    errors, contract = distribution.validate_payload_with_contract(payload, repo_root=tmp_path)
     assert errors == []
     assert contract == {
         "valid_hash": True,
@@ -397,25 +419,12 @@ def test_package_json_exposes_evidence_checker_scripts() -> None:
     assert scripts["market:readiness:paid"] == (
         "python scripts/check_market_readiness.py --dashboard docs/business/market-readiness.md --paid-launch"
     )
-    assert "npm run evidence:commercial-loop" in scripts["release:check"]
-    assert "npm run audit:deps" in scripts["release:check"]
-    assert "npm run security:secrets" in scripts["release:check"]
-    assert "npm run release:readiness:rc" in scripts["release:check"]
+    assert scripts["release:check"] == "npm run delivery:rc"
+    assert scripts["release:gate"] == "npm run delivery:rc"
+    assert scripts["release:smoke"] == "npm run delivery:rc"
     assert scripts["release:paid-launch"] == "npm run delivery:paid-launch"
     assert scripts["delivery:paid-launch"] == (
         "python scripts/delivery_pipeline.py --paid-launch --output build/delivery-verdict.json"
-    )
-    assert scripts["release:check"].index("npm run supply-chain:verify") < scripts["release:check"].index(
-        "npm run audit:deps"
-    )
-    assert scripts["release:check"].index("npm run audit:deps") < scripts["release:check"].index(
-        "npm run security:secrets"
-    )
-    assert scripts["release:check"].index("npm run security:secrets") < scripts["release:check"].index(
-        "npm run security:extensions"
-    )
-    assert scripts["release:check"].index("npm run evidence:commercial-loop") < scripts["release:check"].index(
-        "npm run market:readiness:strict"
     )
 
 
@@ -448,14 +457,21 @@ def test_distribution_rejects_sensitive_raw_values() -> None:
     assert any("raw IPv4" in error or "token" in error or "raw URL" in error for error in errors)
 
 
-def test_clean_machine_reviewed_sample_passes_with_local_model_required() -> None:
+def test_clean_machine_reviewed_sample_passes_with_local_model_required(tmp_path: Path) -> None:
     import os
 
     os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
-    assert clean_machine.validate_payload(_clean_machine_sample(), require_local_model=True) == []
-    errors, contract = clean_machine.validate_payload_with_contract(
+    payload = _with_dist_artifact(
         _clean_machine_sample(),
+        tmp_path,
+        rel_path="dist/Lengrvis-win-portable.zip",
+        contents=b"clean-machine-reviewed-artifact",
+    )
+    assert clean_machine.validate_payload(payload, require_local_model=True, repo_root=tmp_path) == []
+    errors, contract = clean_machine.validate_payload_with_contract(
+        payload,
         require_local_model=True,
+        repo_root=tmp_path,
     )
     assert errors == []
     assert contract == {
@@ -644,7 +660,7 @@ def test_distribution_cross_checks_dist_artifact_sha256_when_path_present(tmp_pa
     assert any("does not match SHA256" in error for error in errors)
 
 
-def test_distribution_skips_cross_check_when_dist_file_missing(tmp_path) -> None:
+def test_distribution_rejects_cross_check_when_dist_file_missing(tmp_path) -> None:
     import os
 
     os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
@@ -652,7 +668,27 @@ def test_distribution_skips_cross_check_when_dist_file_missing(tmp_path) -> None
     payload["candidate"]["artifact_path"] = "dist/missing-artifact.exe"
     payload = _resign(payload)
     errors = distribution.validate_payload(payload, repo_root=tmp_path)
-    assert not any("does not match SHA256" in error for error in errors)
+    assert any("must point to an existing on-disk artifact" in error for error in errors)
+
+
+def test_distribution_requires_artifact_path_for_cross_check(tmp_path) -> None:
+    import os
+
+    os.environ["LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET"] = TEST_EVIDENCE_SECRET
+    errors = distribution.validate_payload(_distribution_sample(), repo_root=tmp_path)
+    assert any("candidate.artifact_path is required" in error for error in errors)
+
+
+def test_distribution_rejects_known_unsafe_evidence_secret(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LENGRVIS_RELEASE_EVIDENCE_HMAC_SECRET", "ci-release-evidence-hmac-secret")
+    payload = _with_dist_artifact(
+        _distribution_sample(),
+        tmp_path,
+        rel_path="dist/backend.exe",
+        contents=b"unsafe-secret-artifact",
+    )
+    errors = distribution.validate_payload(payload, repo_root=tmp_path)
+    assert any("known unsafe development/CI value" in error for error in errors)
 
 
 def test_distribution_rejects_artifact_path_outside_dist(tmp_path) -> None:

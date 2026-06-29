@@ -1,6 +1,7 @@
 param(
     [string]$BackendExe = "dist\backend.exe",
-    [switch]$SkipModuleInstall
+    [switch]$SkipModuleInstall,
+    [switch]$AllowModuleInstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +19,7 @@ function Resolve-ProjectPath {
 }
 
 $backendPath = Resolve-ProjectPath $BackendExe
-Invoke-TrustedWindowsSigning -Files @($backendPath) -SkipModuleInstall:$SkipModuleInstall
+Invoke-TrustedWindowsSigning -Files @($backendPath) -SkipModuleInstall:$SkipModuleInstall -AllowModuleInstall:$AllowModuleInstall
 
 $portableBackendPath = Join-Path $Root "dist\Lengrvis-win-portable\resources\backend\backend.exe"
 if (Test-Path -LiteralPath (Split-Path -Parent $portableBackendPath) -PathType Container) {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -34,10 +36,43 @@ def safe_write_text(path: Path, text: str, allowed: list[str], context: dict[str
     raise_if_tool_aborted(context)
     prepare_parent_for_mutation(path, allowed, context)
     ensure_mutation_path_safe(path, allowed, include_self=path_exists_or_reparse_point(path), context=context)
+    if sys.platform == "win32":
+        write_text_with_windows_handle(path, text, allowed, context)
+        return
     if supports_dir_fd_no_follow():
         write_text_with_dir_fd_no_follow(path, text)
         return
     path.write_text(text, encoding="utf-8")
+
+
+def safe_copy_file(src: Path, dst: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:
+    safe_copy_file_between_scopes(src, dst, allowed, allowed, context)
+
+
+def safe_copy_file_between_scopes(
+    src: Path,
+    dst: Path,
+    src_allowed: list[str],
+    dst_allowed: list[str],
+    context: dict[str, Any] | None = None,
+) -> None:
+    raise_if_tool_aborted(context)
+    ensure_mutation_path_safe(src, src_allowed, include_self=True, context=context)
+    prepare_parent_for_mutation(dst, dst_allowed, context)
+    ensure_mutation_path_safe(dst, dst_allowed, include_self=path_exists_or_reparse_point(dst), context=context)
+    if sys.platform == "win32":
+        copy_file_with_windows_handles(src, dst, src_allowed, dst_allowed, context)
+        return
+    shutil.copy2(src, dst)
+
+
+def safe_move_file(src: Path, dst: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:
+    raise_if_tool_aborted(context)
+    ensure_mutation_path_safe(src, allowed, include_self=True, context=context)
+    safe_copy_file(src, dst, allowed, context)
+    raise_if_tool_aborted(context)
+    ensure_mutation_path_safe(src, allowed, include_self=True, context=context)
+    src.unlink()
 
 
 def authorized_real_base(
@@ -113,6 +148,138 @@ def write_text_with_dir_fd_no_follow(path: Path, text: str) -> None:
                 os.close(fd)
     finally:
         os.close(dir_fd)
+
+
+def write_text_with_windows_handle(
+    path: Path,
+    text: str,
+    allowed: list[str],
+    context: dict[str, Any] | None = None,
+) -> None:
+    import msvcrt
+
+    handle = _open_windows_file_handle(path, access=_win_generic_write(), creation=_win_create_always())
+    try:
+        _assert_windows_handle_authorized(handle, allowed, context)
+        fd = msvcrt.open_osfhandle(handle, os.O_WRONLY)
+        handle = None
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    finally:
+        if handle is not None:
+            _close_windows_handle(handle)
+
+
+def copy_file_with_windows_handles(
+    src: Path,
+    dst: Path,
+    src_allowed: list[str],
+    dst_allowed: list[str],
+    context: dict[str, Any] | None = None,
+) -> None:
+    import msvcrt
+
+    src_handle = _open_windows_file_handle(src, access=_win_generic_read(), creation=_win_open_existing())
+    dst_handle = None
+    try:
+        _assert_windows_handle_authorized(src_handle, src_allowed, context)
+        dst_handle = _open_windows_file_handle(dst, access=_win_generic_write(), creation=_win_create_always())
+        _assert_windows_handle_authorized(dst_handle, dst_allowed, context)
+        src_fd = msvcrt.open_osfhandle(src_handle, os.O_RDONLY)
+        src_handle = None
+        dst_fd = msvcrt.open_osfhandle(dst_handle, os.O_WRONLY)
+        dst_handle = None
+        with os.fdopen(src_fd, "rb") as src_fh, os.fdopen(dst_fd, "wb") as dst_fh:
+            shutil.copyfileobj(src_fh, dst_fh, length=1024 * 1024)
+        try:
+            shutil.copystat(src, dst, follow_symlinks=False)
+        except OSError:
+            pass
+    finally:
+        if src_handle is not None:
+            _close_windows_handle(src_handle)
+        if dst_handle is not None:
+            _close_windows_handle(dst_handle)
+
+
+def _assert_windows_handle_authorized(handle: int, allowed: list[str], context: dict[str, Any] | None) -> None:
+    final_path = _windows_final_path(handle)
+    real_target = Path(final_path).expanduser().resolve(strict=False)
+    scope = _explicit_scope(context) if context else None
+    base = authorized_real_base(real_target, allowed, explicit_scope_text=scope)
+    reject_reparse_points(base, real_target)
+
+
+def _open_windows_file_handle(path: Path, *, access: int, creation: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    handle = ctypes.windll.kernel32.CreateFileW(
+        str(path),
+        access,
+        _win_share_read() | _win_share_write() | _win_share_delete(),
+        None,
+        creation,
+        _win_file_attribute_normal(),
+        None,
+    )
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), f"CreateFileW failed for {path}")
+    return int(handle)
+
+
+def _windows_final_path(handle: int) -> str:
+    import ctypes
+
+    buffer_len = 32768
+    buffer = ctypes.create_unicode_buffer(buffer_len)
+    result = ctypes.windll.kernel32.GetFinalPathNameByHandleW(handle, buffer, buffer_len, 0)
+    if result == 0 or result >= buffer_len:
+        raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW failed")
+    path = buffer.value
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
+def _close_windows_handle(handle: int) -> None:
+    import ctypes
+
+    ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _win_generic_read() -> int:
+    return 0x80000000
+
+
+def _win_generic_write() -> int:
+    return 0x40000000
+
+
+def _win_share_read() -> int:
+    return 0x00000001
+
+
+def _win_share_write() -> int:
+    return 0x00000002
+
+
+def _win_share_delete() -> int:
+    return 0x00000004
+
+
+def _win_open_existing() -> int:
+    return 3
+
+
+def _win_create_always() -> int:
+    return 2
+
+
+def _win_file_attribute_normal() -> int:
+    return 0x00000080
 
 
 def _explicit_scope(context: dict[str, Any] | None) -> str | None:

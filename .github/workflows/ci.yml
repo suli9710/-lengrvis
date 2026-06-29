@@ -74,6 +74,8 @@ jobs:
     name: Real LLM quality gate
     runs-on: windows-latest
     timeout-minutes: 90
+    outputs:
+      release_evidence_status: ${{ steps.real-llm-skip.outputs.release_evidence_status || steps.real-llm-eval.outputs.release_evidence_status }}
     env:
       LENGRVIS_API_KEY: ${{ secrets.LENGRVIS_REAL_LLM_API_KEY }}
     steps:
@@ -91,16 +93,21 @@ jobs:
           python -m pip install --require-hashes -r backend/requirements-lock.txt
           python -m pip install -r requirements-dev.txt
       - name: Skip real LLM quality gate when secret is unavailable
+        id: real-llm-skip
         if: ${{ env.LENGRVIS_API_KEY == '' }}
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .tmp/qa-evidence/real-llm-eval | Out-Null
           @{
-            ok = $true
+            ok = $false
             skipped = $true
+            blocking_for_release = $true
             reason = "LENGRVIS_REAL_LLM_API_KEY secret is not configured for this workflow context."
           } | ConvertTo-Json | Set-Content .tmp/qa-evidence/real-llm-eval/real-llm-eval-report.json -Encoding UTF8
+          "release_evidence_status=skipped" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          throw "Real LLM quality gate skipped because LENGRVIS_REAL_LLM_API_KEY is not configured."
       - name: Real LLM eval quality gate
+        id: real-llm-eval
         if: ${{ env.LENGRVIS_API_KEY != '' }}
         env:
           LENGRVIS_AUDIT_HMAC_SECRET: ${{ format('{0}-{1}-{2}', 'ci', 'audit', 'hmac-secret') }}
@@ -109,7 +116,9 @@ jobs:
           LENGRVIS_MODEL: ${{ vars.LENGRVIS_REAL_LLM_MODEL || 'gpt-4o-mini' }}
           LENGRVIS_ALLOW_MOCK_FALLBACK: "false"
           LENGRVIS_MODE: efficiency
-        run: python scripts/run_real_llm_eval.py --quality-gate
+        run: |
+          python scripts/run_real_llm_eval.py --quality-gate
+          "release_evidence_status=success" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Upload real LLM eval report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -274,7 +283,7 @@ jobs:
   release-evidence:
     name: Current release evidence
     runs-on: windows-latest
-    needs: [hygiene, backend, desktop, mobile, supply-chain, extension-security]
+    needs: [hygiene, backend, real-llm-quality, desktop, mobile, supply-chain, extension-security]
     if: always()
     timeout-minutes: 10
     steps:

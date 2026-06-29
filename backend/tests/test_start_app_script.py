@@ -736,7 +736,9 @@ def test_current_release_evidence_is_single_ci_generated_summary(project_root: P
     )
 
     assert "release-evidence:" in ci
-    assert "needs: [hygiene, backend, desktop, mobile, supply-chain, extension-security]" in ci
+    assert "needs: [hygiene, backend, real-llm-quality, desktop, mobile, supply-chain, extension-security]" in ci
+    assert "release_evidence_status=skipped" in ci
+    assert "steps.real-llm-skip.outputs.release_evidence_status" in ci
     assert "if: always()" in ci
     assert "RELEASE_EVIDENCE_NEEDS_JSON: ${{ toJson(needs) }}" in ci
     assert "npm run evidence:current-release" in ci
@@ -792,6 +794,7 @@ def test_current_release_evidence_ci_success_still_requires_manual_signature(
         for gate in (
             "hygiene",
             "backend",
+            "real-llm-quality",
             "desktop",
             "mobile",
             "supply-chain",
@@ -847,6 +850,7 @@ def test_current_release_evidence_requires_every_ci_gate_success(
         for gate in (
             "hygiene",
             "backend",
+            "real-llm-quality",
             "desktop",
             "mobile",
             "supply-chain",
@@ -892,6 +896,64 @@ def test_current_release_evidence_requires_every_ci_gate_success(
     assert (
         "| Backend pytest + golden task gate | Backend pytest suite and golden task regression gate | failure |" in text
     )
+
+
+def test_current_release_evidence_records_real_llm_secret_skip_as_incomplete(
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    needs = {
+        gate: {"result": "success"}
+        for gate in (
+            "hygiene",
+            "backend",
+            "real-llm-quality",
+            "desktop",
+            "mobile",
+            "supply-chain",
+            "extension-security",
+        )
+    }
+    needs["real-llm-quality"] = {
+        "result": "failure",
+        "outputs": {"release_evidence_status": "skipped"},
+    }
+    output_path = tmp_path / "current-release-evidence.md"
+
+    result = subprocess.run(
+        [
+            _powershell_executable(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(project_root / "scripts" / "generate_current_release_evidence.ps1"),
+            "-Root",
+            str(project_root),
+            "-OutputPath",
+            str(output_path),
+            "-CommitSha",
+            "abc123",
+            "-GeneratedAtUtc",
+            "2026-06-20T00:00:00.0000000Z",
+            "-NeedsJson",
+            json.dumps(needs),
+            "-ReleaseOwner",
+            "release-owner",
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+
+    assert result.returncode == 0, output
+    text = output_path.read_text(encoding="utf-8-sig")
+    assert "- CI status: machine_gates_failed_or_incomplete" in text
+    assert "- Real LLM quality gate: skipped" in text
+    assert "| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | skipped |" in text
+    assert "machine_gates_passed" not in text
 
 
 def test_release_safety_fails_closed_without_strict_state_machine(
@@ -1143,6 +1205,7 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     ):
         assert env_name in signed_config
         assert env_name in verify_script
+    assert "AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT" in verify_script
     assert "REPLACE_" in verify_script
     assert "Signed Windows distribution configuration is incomplete" in verify_script
     assert "--structure-only" in verify_script
@@ -1163,6 +1226,7 @@ def test_windows_release_signature_verification_covers_portable_artifacts(
         encoding="utf-8"
     )
     root_package = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
+    delivery_pipeline = (project_root / "scripts" / "delivery_pipeline.py").read_text(encoding="utf-8")
     normalized = verify_script.replace("\\", "/")
 
     assert "Lengrvis-win-portable" in normalized
@@ -1171,9 +1235,15 @@ def test_windows_release_signature_verification_covers_portable_artifacts(
     assert "portableBackendExe" in normalized
     assert "Get-AuthenticodeSignature" in verify_script
     assert 'status !== "Valid"' in verify_script
-    assert "verify:windows-release-signatures" in root_package["scripts"]["release:check"]
+    assert "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME" in verify_script
+    assert "AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT" in verify_script
+    assert "TimeStamperCertificate" in verify_script
+    assert root_package["scripts"]["release:check"] == "npm run delivery:rc"
+    assert "delivery_pipeline.py --strict" in root_package["scripts"]["delivery:rc"]
+    assert "verify:windows-release-signatures" in delivery_pipeline
     assert "Lengrvis-win-portable" in smoke_script
     assert "x64-self-extracting.exe" in smoke_script
+    assert "TimestampSubject" in smoke_script
 
 
 def test_windows_signed_build_config_gate_rejects_missing_release_env(
@@ -1211,6 +1281,7 @@ def test_windows_signed_build_config_gate_rejects_missing_release_env(
     assert result.returncode == 1, output
     assert "Signed Windows distribution configuration is incomplete:" in output
     assert "Missing non-placeholder environment variable: AZURE_TRUSTED_SIGNING_ENDPOINT" in output
+    assert "Missing non-placeholder environment variable: AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT" in output
     assert "Missing non-placeholder environment variable: AZURE_TRUSTED_SIGNING_PUBLISHER_NAME" in output
     assert "Unsigned local builds must use `npm --prefix desktop run dist:unsigned`" in output
     assert "Signed Windows distribution configuration verified" not in output
@@ -1231,6 +1302,7 @@ def test_windows_signed_build_config_structure_check_does_not_require_secrets(
         "AZURE_TRUSTED_SIGNING_ENDPOINT",
         "AZURE_TRUSTED_SIGNING_ACCOUNT_NAME",
         "AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME",
+        "AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT",
         "AZURE_TRUSTED_SIGNING_PUBLISHER_NAME",
     ):
         env.pop(env_name, None)

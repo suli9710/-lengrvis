@@ -8,7 +8,6 @@ performed programmatically and surface as `requires_user_action`.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +24,8 @@ from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel
 from app.tools.filesystem_safety import (
     ensure_mutation_path_safe,
-    path_exists_or_reparse_point,
-    prepare_parent_for_mutation,
+    safe_copy_file_between_scopes,
+    safe_move_file,
 )
 from app.tools.managed_backups import managed_backup_root, resolve_managed_backup_path
 from app.tools.tool_abort import ToolAbortedError, raise_if_tool_aborted
@@ -325,16 +324,7 @@ def _move_back(
         return {"ok": False, "action": "move_back", "detail": f"source path missing: {source}"}
     try:
         raise_if_tool_aborted(context)
-        ensure_mutation_path_safe(source, allowed or [], include_self=True, context=context)
-        prepare_parent_for_mutation(target, allowed or [], context)
-        ensure_mutation_path_safe(
-            target,
-            allowed or [],
-            include_self=path_exists_or_reparse_point(target),
-            context=context,
-        )
-        raise_if_tool_aborted(context)
-        shutil.move(str(source), str(target))
+        safe_move_file(source, target, allowed or [], context)
         return {"ok": True, "action": "move_back", "from": str(source), "to": str(target)}
     except ToolAbortedError:
         raise
@@ -410,15 +400,7 @@ def _restore_backup(
         raise_if_tool_aborted(context)
         backup_allowed = [str(managed_backup_root())] if managed_backup else list(allowed or [])
         ensure_mutation_path_safe(backup, backup_allowed, include_self=True, context=context)
-        prepare_parent_for_mutation(original, allowed or [], context)
-        ensure_mutation_path_safe(
-            original,
-            allowed or [],
-            include_self=path_exists_or_reparse_point(original),
-            context=context,
-        )
-        raise_if_tool_aborted(context)
-        shutil.copy2(backup, original)
+        safe_copy_file_between_scopes(backup, original, backup_allowed, allowed or [], context)
         raise_if_tool_aborted(context)
         ensure_mutation_path_safe(original, allowed or [], include_self=True, context=context)
         backup.unlink()

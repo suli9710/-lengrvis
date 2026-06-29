@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
@@ -68,6 +69,10 @@ _REMOTE_INPUT_MAX_EVENTS_PER_WINDOW = 20
 _REMOTE_INPUT_PENDING_APPROVAL_LIMIT = 5
 _REMOTE_INPUT_PENDING_APPROVAL_SCAN_LIMIT = 1000
 _REMOTE_INPUT_RATE_LIMITERS = RemoteInputRateLimiterStore()
+_REMOTE_INPUT_TEXT_MAX_CHARS = 180
+_REMOTE_INPUT_ALLOWED_KEYS = {"enter", "escape", "tab", "backspace", "pageup", "pagedown"}
+_REMOTE_INPUT_FRAME_TTL_SECONDS = 10.0
+_REMOTE_INPUT_FRAME_GEOMETRY: dict[tuple[str, str], dict[str, Any]] = {}
 _REMOTE_REVIEW_REASON_AUDIT_LIMIT = 3
 _REMOTE_WEBSOCKET_RETRY_CLOSE_CODE = 1012
 _REMOTE_WEBSOCKET_AUTH_CLOSE_CODE = 4401
@@ -144,6 +149,14 @@ async def remote_screen_stream(websocket: WebSocket, token: str = ""):
                     max_width=DEFAULT_CAPTURE_WIDTH,
                     max_height=DEFAULT_CAPTURE_HEIGHT,
                     quality=quality,
+                )
+                _remember_remote_screen_frame(
+                    claims,
+                    sequence=frame_sequence,
+                    origin_x=int(getattr(frame, "screen_origin_x", 0) or 0),
+                    origin_y=int(getattr(frame, "screen_origin_y", 0) or 0),
+                    width=int(getattr(frame, "original_width", frame.width) or frame.width),
+                    height=int(getattr(frame, "original_height", frame.height) or frame.height),
                 )
                 await websocket.send_json(
                     {
@@ -262,6 +275,8 @@ async def remote_input_events(websocket: WebSocket, token: str = ""):
 
 
 def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        raise HTTPException(status_code=400, detail="Remote input event must be an object.")
     settings = get_effective_settings()
     if not settings.remote_desktop_enabled:
         raise HTTPException(status_code=403, detail="Remote desktop is disabled.")
@@ -270,7 +285,7 @@ def handle_remote_input_event(event: dict[str, Any], *, claims: dict[str, Any] |
     if not subscription_confirmation_fresh_for_high_risk(settings):
         raise HTTPException(status_code=403, detail="Remote input requires a fresh subscription confirmation.")
 
-    tool_name, args = _event_to_tool_call(event)
+    tool_name, args = _event_to_tool_call(event, claims=claims)
     payload = {
         "event_type": event.get("type"),
         "tool_name": tool_name,
@@ -553,15 +568,92 @@ def _is_frame_ack(message: Any, sequence: int) -> bool:
         return False
 
 
-def _event_to_tool_call(event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _event_to_tool_call(event: dict[str, Any], *, claims: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
     event_type = str(event.get("type") or "").strip().lower()
     if event_type == "click":
-        return "remote.click", {"x": int(event.get("x") or 0), "y": int(event.get("y") or 0)}
+        x = _parse_remote_input_int(event.get("x"), "x")
+        y = _parse_remote_input_int(event.get("y"), "y")
+        _validate_remote_click_coordinates(x, y, claims or {})
+        return "remote.click", {"x": x, "y": y}
     if event_type == "type":
-        return "remote.type_text", {"text": str(event.get("text") or "")}
+        text = str(event.get("text") or "")
+        if len(text) > _REMOTE_INPUT_TEXT_MAX_CHARS:
+            raise HTTPException(status_code=400, detail="Remote input text is too long.")
+        return "remote.type_text", {"text": text}
     if event_type == "key":
-        return "remote.key_press", {"key": str(event.get("key") or "")}
+        key = str(event.get("key") or "").strip().lower()
+        if key not in _REMOTE_INPUT_ALLOWED_KEYS:
+            raise HTTPException(status_code=400, detail="Remote input key is not allowed.")
+        return "remote.key_press", {"key": key}
     raise HTTPException(status_code=400, detail="Unsupported remote input event.")
+
+
+def _parse_remote_input_int(value: Any, name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Remote input {name} coordinate is invalid.") from exc
+    return parsed
+
+
+def _validate_remote_click_coordinates(x: int, y: int, claims: dict[str, Any]) -> None:
+    frame = _latest_remote_screen_frame(claims)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Remote click requires a recent screen frame.")
+    origin_x = int(frame["origin_x"])
+    origin_y = int(frame["origin_y"])
+    width = int(frame["width"])
+    height = int(frame["height"])
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=400, detail="Remote screen frame geometry is invalid.")
+    if not (origin_x <= x < origin_x + width and origin_y <= y < origin_y + height):
+        raise HTTPException(status_code=400, detail="Remote click coordinate is outside the latest screen frame.")
+
+
+def _remember_remote_screen_frame(
+    claims: dict[str, Any],
+    *,
+    sequence: int,
+    origin_x: int,
+    origin_y: int,
+    width: int,
+    height: int,
+) -> None:
+    keys = _remote_frame_keys(claims)
+    if not keys:
+        return
+    frame = {
+        "sequence": int(sequence),
+        "origin_x": int(origin_x),
+        "origin_y": int(origin_y),
+        "width": max(0, int(width)),
+        "height": max(0, int(height)),
+        "recorded_at": time.monotonic(),
+    }
+    for key in keys:
+        _REMOTE_INPUT_FRAME_GEOMETRY[key] = dict(frame)
+
+
+def _latest_remote_screen_frame(claims: dict[str, Any]) -> dict[str, Any] | None:
+    for key in _remote_frame_keys(claims):
+        frame = _REMOTE_INPUT_FRAME_GEOMETRY.get(key)
+        if not frame:
+            continue
+        if time.monotonic() - float(frame.get("recorded_at") or 0.0) > _REMOTE_INPUT_FRAME_TTL_SECONDS:
+            _REMOTE_INPUT_FRAME_GEOMETRY.pop(key, None)
+            continue
+        return frame
+    return None
+
+
+def _remote_frame_keys(claims: dict[str, Any]) -> list[tuple[str, str]]:
+    grant_id = str(claims.get("grant_id") or "")
+    device_id = str(claims.get("device_id") or "")
+    if not device_id:
+        return []
+    keys = [(grant_id, device_id)] if grant_id else []
+    keys.append(("", device_id))
+    return keys
 
 
 def _audit_args(args: dict[str, Any]) -> dict[str, Any]:

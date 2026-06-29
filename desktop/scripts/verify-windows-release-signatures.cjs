@@ -43,17 +43,64 @@ function powershellString(value) {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function authenticodeStatus(path) {
-  return execFileSync(
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value || !value.trim() || /^REPLACE_/i.test(value.trim())) {
+    throw new Error(`Missing non-placeholder environment variable: ${name}`);
+  }
+  return value.trim();
+}
+
+const expectedPublisherName = requiredEnv("AZURE_TRUSTED_SIGNING_PUBLISHER_NAME");
+const expectedCertificateThumbprint = requiredEnv("AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT")
+  .replace(/\s/g, "")
+  .toUpperCase();
+
+function authenticodeDetails(path) {
+  const output = execFileSync(
     "powershell.exe",
     [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      `(Get-AuthenticodeSignature -LiteralPath ${powershellString(path)}).Status.ToString()`
+      [
+        `$signature = Get-AuthenticodeSignature -LiteralPath ${powershellString(path)}`,
+        "$signer = $signature.SignerCertificate",
+        "$timestamp = $signature.TimeStamperCertificate",
+        "[ordered]@{",
+        "Status = $signature.Status.ToString();",
+        "Subject = if ($signer) { $signer.Subject } else { '' };",
+        "Thumbprint = if ($signer) { $signer.Thumbprint } else { '' };",
+        "Issuer = if ($signer) { $signer.Issuer } else { '' };",
+        "NotAfter = if ($signer) { $signer.NotAfter.ToUniversalTime().ToString('o') } else { '' };",
+        "TimestampSubject = if ($timestamp) { $timestamp.Subject } else { '' };",
+        "TimestampThumbprint = if ($timestamp) { $timestamp.Thumbprint } else { '' }",
+        "} | ConvertTo-Json -Compress"
+      ].join(" ")
     ],
     { encoding: "utf8" }
   ).trim();
+  return JSON.parse(output);
+}
+
+function validateAuthenticodeDetails(path, details, issueList) {
+  const status = String(details.Status || "");
+  const subject = String(details.Subject || "");
+  const thumbprint = String(details.Thumbprint || "").replace(/\s/g, "").toUpperCase();
+  const timestampSubject = String(details.TimestampSubject || "");
+  if (status !== "Valid") {
+    issueList.push(`${path}: Authenticode status is ${status || "(empty)"}`);
+  }
+  if (!subject.includes(expectedPublisherName)) {
+    issueList.push(`${path}: signer subject does not include expected publisher ${expectedPublisherName}`);
+  }
+  if (thumbprint !== expectedCertificateThumbprint) {
+    issueList.push(`${path}: signer thumbprint does not match AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT`);
+  }
+  if (!timestampSubject.trim()) {
+    issueList.push(`${path}: Authenticode timestamp certificate is missing`);
+  }
+  return { status, subject, thumbprint, timestampSubject };
 }
 
 function verifyPortableZipInnerLauncher(issueList) {
@@ -77,16 +124,14 @@ function verifyPortableZipInnerLauncher(issueList) {
       issueList.push(`Missing portable launcher inside zip: ${portableZip}`);
       return;
     }
-    let status = "";
+    let details = {};
     try {
-      status = authenticodeStatus(innerLauncher);
+      details = authenticodeDetails(innerLauncher);
     } catch (error) {
       issueList.push(`${portableZip} (Lengrvis.exe): signature check failed: ${error.message || error}`);
       return;
     }
-    if (status !== "Valid") {
-      issueList.push(`${portableZip} (Lengrvis.exe): Authenticode status is ${status || "(empty)"}`);
-    }
+    validateAuthenticodeDetails(`${portableZip} (Lengrvis.exe)`, details, issueList);
   } finally {
     rmSync(extractDir, { recursive: true, force: true });
   }
@@ -134,16 +179,17 @@ verifyPortableZipInnerLauncher(issues);
 
 for (const file of uniqueFiles) {
   if (!existsSync(file)) continue;
-  let status = "";
+  let details = {};
   try {
-    status = authenticodeStatus(file);
+    details = authenticodeDetails(file);
   } catch (error) {
     issues.push(`${file}: signature check failed: ${error.message || error}`);
     continue;
   }
-  if (status !== "Valid") {
-    issues.push(`${file}: Authenticode status is ${status || "(empty)"}`);
-  }
+  const summary = validateAuthenticodeDetails(file, details, issues);
+  console.log(
+    `Checked signature: ${file} subject=${summary.subject || "(empty)"} thumbprint=${summary.thumbprint || "(empty)"}`
+  );
 }
 
 if (issues.length > 0) {

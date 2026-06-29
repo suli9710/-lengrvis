@@ -72,7 +72,19 @@ def _remote_input_grant_token(device_id: str, device_name: str = "Input Phone") 
         grant["grant_id"],
         {"device_id": device_id, "device_name": device_name},
     )
+    _seed_remote_frame(device_id=device_id, grant_id=grant["grant_id"])
     return claimed["token"], grant["grant_id"]
+
+
+def _seed_remote_frame(*, device_id: str, grant_id: str = "") -> None:
+    routes_remote._remember_remote_screen_frame(
+        {"device_id": device_id, "grant_id": grant_id},
+        sequence=1,
+        origin_x=0,
+        origin_y=0,
+        width=800,
+        height=600,
+    )
 
 
 def _enable_remote_desktop() -> None:
@@ -745,10 +757,12 @@ def test_input_events_audited(monkeypatch: pytest.MonkeyPatch):
     registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
     monkeypatch.setattr(routes_remote, "register_all_tools", lambda settings=None: registry)
     monkeypatch.setattr(registry.get("remote.click"), "execute", lambda args, context: preview)
+    claims = {"device_id": "mobile_test", "device_name": "Test Phone", "sub": "mobile:mobile_test"}
+    _seed_remote_frame(device_id="mobile_test")
 
     result = routes_remote.handle_remote_input_event(
         {"type": "click", "x": 100, "y": 200},
-        claims={"device_id": "mobile_test", "device_name": "Test Phone", "sub": "mobile:mobile_test"},
+        claims=claims,
     )
 
     assert result["type"] == "approval_required"
@@ -757,38 +771,19 @@ def test_input_events_audited(monkeypatch: pytest.MonkeyPatch):
     assert any(event["event_type"] == "remote.input.approval_requested" for event in events)
 
 
-def test_remote_key_input_audit_redacts_unsafe_key_payload(monkeypatch: pytest.MonkeyPatch):
+def test_remote_key_input_rejects_unsafe_key_before_approval(monkeypatch: pytest.MonkeyPatch):
     _enable_remote_desktop()
     raw_key = r"token=abc123 selector=#password C:\\Users\\Suli\\secret.txt"
     registry = register_all_tools(settings=get_effective_settings(), load_skills=False)
     monkeypatch.setattr(routes_remote, "register_all_tools", lambda settings=None: registry)
-    monkeypatch.setattr(
-        registry.get("remote.key_press"),
-        "execute",
-        lambda args, context: {"ok": True, "dry_run": True, "diff_preview": [{"action": "key_press", "key": raw_key}]},
-    )
 
-    result = routes_remote.handle_remote_input_event(
-        {"type": "key", "key": raw_key},
-        claims={"device_id": "mobile_key_audit", "device_name": "Key Phone", "grant_id": "rig_key_audit"},
-    )
+    with pytest.raises(HTTPException):
+        routes_remote.handle_remote_input_event(
+            {"type": "key", "key": raw_key},
+            claims={"device_id": "mobile_key_audit", "device_name": "Key Phone", "grant_id": "rig_key_audit"},
+        )
 
-    assert result["type"] == "approval_required"
-    received = next(
-        event for event in db.fetch_many("audit_events", limit=20) if event["event_type"] == "remote.input.received"
-    )
-    assert received["payload"]["args"]["key"] == "***"
-    _assert_no_sensitive_details(
-        received["payload"],
-        [
-            "token=abc123",
-            "#password",
-            r"C:\\Users\\Suli",
-            "mobile_key_audit",
-            "rig_key_audit",
-            "Key Phone",
-        ],
-    )
+    assert db.fetch_many("approvals", limit=20) == []
 
 
 @pytest.mark.parametrize(
@@ -850,6 +845,60 @@ def test_remote_input_websocket_accepts_text_and_key_events(
         "message": "Remote desktop input preview. User approval is required before execution.",
         "diff_preview": preview["diff_preview"],
     }
+
+
+def test_remote_input_rejects_oversized_text_before_approval():
+    _enable_remote_desktop()
+
+    with pytest.raises(HTTPException):
+        routes_remote.handle_remote_input_event(
+            {"type": "type", "text": "x" * 181},
+            claims={"device_id": "mobile_input_oversized", "grant_id": "rig_oversized"},
+        )
+
+    assert db.fetch_many("approvals", limit=20) == []
+
+
+def test_remote_input_rejects_key_outside_server_allowlist_before_approval():
+    _enable_remote_desktop()
+
+    with pytest.raises(HTTPException):
+        routes_remote.handle_remote_input_event(
+            {"type": "key", "key": "delete"},
+            claims={"device_id": "mobile_input_key_boundary", "grant_id": "rig_key_boundary"},
+        )
+
+    assert db.fetch_many("approvals", limit=20) == []
+
+
+def test_remote_input_rejects_click_outside_latest_frame_before_approval():
+    _enable_remote_desktop()
+    claims = {"device_id": "mobile_input_click_boundary", "grant_id": "rig_click_boundary"}
+    routes_remote._remember_remote_screen_frame(
+        claims,
+        sequence=1,
+        origin_x=10,
+        origin_y=20,
+        width=100,
+        height=80,
+    )
+
+    with pytest.raises(HTTPException):
+        routes_remote.handle_remote_input_event({"type": "click", "x": 111, "y": 40}, claims=claims)
+
+    assert db.fetch_many("approvals", limit=20) == []
+
+
+def test_remote_input_rejects_click_without_recent_frame_before_approval():
+    _enable_remote_desktop()
+
+    with pytest.raises(HTTPException):
+        routes_remote.handle_remote_input_event(
+            {"type": "click", "x": 10, "y": 40},
+            claims={"device_id": "mobile_input_click_no_frame", "grant_id": "rig_click_no_frame"},
+        )
+
+    assert db.fetch_many("approvals", limit=20) == []
 
 
 def test_remote_input_websocket_rate_limits_event_burst(monkeypatch: pytest.MonkeyPatch):
@@ -1172,6 +1221,7 @@ def test_remote_input_tool_metadata_missing_falls_back_to_safe_mobile_boundary(m
         "execute",
         lambda args, context: {"ok": True, "dry_run": True, "diff_preview": [{"action": "click", "x": 5, "y": 6}]},
     )
+    _seed_remote_frame(device_id="mobile_metadata_fallback", grant_id="rig_metadata_fallback")
 
     result = routes_remote.handle_remote_input_event(
         {"type": "click", "x": 5, "y": 6},
@@ -1202,6 +1252,7 @@ def test_remote_input_tool_without_dry_run_metadata_fails_closed(monkeypatch: py
 
     monkeypatch.setattr(routes_remote, "register_all_tools", lambda settings=None: registry)
     monkeypatch.setattr(tool, "execute", fake_execute)
+    _seed_remote_frame(device_id="mobile_no_dry_run", grant_id="rig_no_dry_run")
 
     with pytest.raises(HTTPException) as exc_info:
         routes_remote.handle_remote_input_event(

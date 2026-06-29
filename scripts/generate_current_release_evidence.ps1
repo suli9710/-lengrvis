@@ -105,6 +105,12 @@ function ConvertTo-NeedsResultMap([string]$Json) {
             if ($null -ne $property.Value -and $null -ne $property.Value.PSObject.Properties["result"]) {
                 $result = [string]$property.Value.result
             }
+            if ($null -ne $property.Value -and
+                $null -ne $property.Value.PSObject.Properties["outputs"] -and
+                $null -ne $property.Value.outputs.PSObject.Properties["release_evidence_status"] -and
+                -not [string]::IsNullOrWhiteSpace([string]$property.Value.outputs.release_evidence_status)) {
+                $result = [string]$property.Value.outputs.release_evidence_status
+            }
             $map[$property.Name] = $result
         }
     }
@@ -241,6 +247,14 @@ $gates = @(
             "python -m playwright install chromium",
             "python -m pytest backend/tests -q --maxfail=1",
             "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run_golden_tasks.ps1"
+        )
+    },
+    [ordered]@{
+        id = "real-llm-quality"
+        job = "Real LLM quality gate"
+        scope = "Real-provider quality gate; skipped or missing credentials block release evidence"
+        commands = @(
+            "python scripts/run_real_llm_eval.py --quality-gate"
         )
     },
     [ordered]@{

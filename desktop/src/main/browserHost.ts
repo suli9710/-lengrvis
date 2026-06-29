@@ -86,6 +86,7 @@ const SENSITIVE_QUERY_KEY_NAMES = [
 const SENSITIVE_QUERY_KEYS = new Set<string>(SENSITIVE_QUERY_KEY_NAMES);
 const SENSITIVE_URL_PARAM_REGEX = new RegExp(`([?&#](?:${SENSITIVE_QUERY_KEY_NAMES.join("|")})=)[^&#\\s"'<>]+`, "gi");
 const URL_IN_TEXT_REGEX = /\b(?:https?:\/\/|file:\/\/|app:\/\/)[^\s"'<>]+/gi;
+const BROWSER_HOST_ALLOW_PRIVATE_NETWORK_ENV = "LENGRVIS_BROWSER_HOST_ALLOW_PRIVATE_NETWORK";
 
 export class BrowserHost {
   private sessions = new Map<string, HostedBrowserSession>();
@@ -843,7 +844,7 @@ export function hardenEmbeddedWebContents(webContents: WebContents): void {
     return { action: "deny" };
   });
   webContents.on("will-navigate", (event, url) => {
-    if (url.startsWith("file:") || url.startsWith("javascript:")) {
+    if (isBlockedBrowserHostNavigation(url)) {
       event.preventDefault();
     }
   });
@@ -874,7 +875,95 @@ function normalizeUrl(value?: string): string | undefined {
   if (!["https:", "http:"].includes(parsed.protocol)) {
     throw new Error("Only http and https URLs can be opened in Watch Mode");
   }
+  assertBrowserHostUrlAllowed(parsed);
   return parsed.toString();
+}
+
+function isBlockedBrowserHostNavigation(value: string): boolean {
+  try {
+    if (value === "about:blank") return false;
+    const parsed = new URL(value);
+    if (!["https:", "http:"].includes(parsed.protocol)) {
+      return true;
+    }
+    assertBrowserHostUrlAllowed(parsed);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function assertBrowserHostUrlAllowed(parsed: URL): void {
+  if (browserHostPrivateNetworkAllowed()) {
+    return;
+  }
+  if (isBlockedBrowserHostHostname(parsed.hostname)) {
+    throw new Error("BrowserHost blocks localhost, private network, link-local, and metadata URLs by default");
+  }
+}
+
+function browserHostPrivateNetworkAllowed(): boolean {
+  return process.env[BROWSER_HOST_ALLOW_PRIVATE_NETWORK_ENV] === "1";
+}
+
+function isBlockedBrowserHostHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (normalized === "localhost" || normalized.endsWith(".localhost") || normalized === "metadata.google.internal") {
+    return true;
+  }
+  if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") {
+    return true;
+  }
+  const ipv4Mapped = normalized.match(/^::ffff:(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/i);
+  if (ipv4Mapped) {
+    const mappedIpv4 = ipv4Mapped[1] ?? ipv4FromHexWords(ipv4Mapped[2] ?? "", ipv4Mapped[3] ?? "");
+    return isBlockedBrowserHostIpv4(mappedIpv4);
+  }
+  if (normalized.includes(":")) {
+    return isBlockedBrowserHostIpv6(normalized);
+  }
+  return isBlockedBrowserHostIpv4(normalized);
+}
+
+function isBlockedBrowserHostIpv6(hostname: string): boolean {
+  const firstHextetText = hostname.split(":")[0] ?? "";
+  const firstHextet = Number.parseInt(firstHextetText, 16);
+  if (!Number.isInteger(firstHextet)) {
+    return false;
+  }
+  return (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) || (firstHextet >= 0xfc00 && firstHextet <= 0xfdff);
+}
+
+function isBlockedBrowserHostIpv4(hostname: string): boolean {
+  const octets = hostname.split(".").map((part) => Number(part));
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  const [first = 0, second = 0] = octets;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    first === 169 && second === 254 ||
+    first === 172 && second >= 16 && second <= 31 ||
+    first === 192 && second === 168
+  );
+}
+
+function ipv4FromHexWords(highWord: string, lowWord: string): string {
+  const high = Number.parseInt(highWord, 16);
+  const low = Number.parseInt(lowWord, 16);
+  if (
+    !Number.isInteger(high) ||
+    !Number.isInteger(low) ||
+    high < 0 ||
+    high > 0xffff ||
+    low < 0 ||
+    low > 0xffff
+  ) {
+    return "";
+  }
+  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
 }
 
 function normalizeBounds(bounds: BrowserHostBounds): BrowserHostBounds {

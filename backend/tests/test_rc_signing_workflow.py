@@ -37,10 +37,20 @@ def test_package_json_exposes_portable_signing_scripts() -> None:
 def test_trusted_signing_helper_is_shared_by_backend_and_portable_scripts() -> None:
     backend = (REPO_ROOT / "scripts" / "sign_windows_backend.ps1").read_text(encoding="utf-8")
     portable = (REPO_ROOT / "scripts" / "sign_windows_portable_artifacts.ps1").read_text(encoding="utf-8")
+    helper = (REPO_ROOT / "scripts" / "sign_windows_trusted_signing.ps1").read_text(encoding="utf-8")
     assert "sign_windows_trusted_signing.ps1" in backend
     assert "sign_windows_trusted_signing.ps1" in portable
     assert "Invoke-TrustedWindowsSigning" in backend
     assert "Invoke-TrustedWindowsSigning" in portable
+    assert "[switch]$AllowModuleInstall" in backend
+    assert "[switch]$AllowModuleInstall" in portable
+    assert "-AllowModuleInstall:$AllowModuleInstall" in backend
+    assert "-AllowModuleInstall:$AllowModuleInstall" in portable
+    assert '$requiredVersion = "0.5.0"' in helper
+    assert "Install-Module -Name TrustedSigning -RequiredVersion $requiredVersion" in helper
+    assert "Where-Object { $_.Version.ToString() -eq $requiredVersion }" in helper
+    assert "TrustedSigning module online install is disabled by default" in helper
+    assert "pass -AllowModuleInstall only on a controlled runner" in helper
 
 
 def test_windows_signing_preflight_is_metadata_only() -> None:
@@ -53,6 +63,13 @@ def test_windows_signing_preflight_is_metadata_only() -> None:
     assert "ready_to_attempt_any_signing" in text
     assert "ready_to_attempt_pfx_signing" in text
     assert "missing_pfx_env" in text
+    assert "AZURE_TRUSTED_SIGNING_CERTIFICATE_THUMBPRINT" in text
+    assert "signer_subject" in text
+    assert "signer_thumbprint" in text
+    assert "timestamp_subject" in text
+    assert "publisher_mismatch_artifacts" in text
+    assert "thumbprint_mismatch_artifacts" in text
+    assert "missing_timestamp_artifacts" in text
     assert "blockers" in text
     assert "if ($blockers.Count -gt 0)" in text
     assert "next_actions" in text

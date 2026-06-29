@@ -2078,15 +2078,7 @@ function subscribeInstallModelProgressSocket(
   handlers: InstallModelProgressSocketHandlers
 ): (() => void) | null {
   if (window.lengrvis?.realtime) {
-    return window.lengrvis.realtime.subscribe(
-      { endpoint: path, query: { model } },
-      {
-        onOpen: handlers.onOpen,
-        onMessage: handlers.onMessage,
-        onError: handlers.onError,
-        onClose: handlers.onClose
-      }
-    );
+    return null;
   }
 
   if (typeof WebSocket === "undefined") {
