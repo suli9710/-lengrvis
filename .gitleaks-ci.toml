@@ -53,3 +53,85 @@ commits = [
 ]
 paths = ['''^backend/tests/tls_test_material\.py$''']
 regexes = ['''-----BEGIN RSA PRIVATE KEY-----''']
+
+[[allowlists]]
+description = "Historical test and vendored fixture placeholders before strict history scanning"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "02e9904cd329fe98f11716bf0047cc406c82ee2c",
+  "0980625dbededde044e40a576907328149e3dd11",
+  "0d98a7b136ef6d10687a3df6cbb9a1533cc12fec",
+  "1f8ae057dcde0a787f0d3f2a2a4e9a33be010c73",
+  "2583f1425455a187827dbc2938fe79e4439606e1",
+  "274ba95275c7423b63590258cdf1705f5c06f7a7",
+  "364c6b4919563f231373c1b62e7a3498d9928693",
+  "3d4793f5a3abc8cad6484a25d0fdd3311c0470ca",
+  "430a25695d491d0086de5374990ecb1fd2568bd6",
+  "4bc03d7cc9f3c56457dd482ecbc9bd663d6ea899",
+  "58f5e7fbbe0d04270444e1a0ec55133f69612a98",
+  "670f38dc51b6e9ff6502fbf7bd4f03ab84f47264",
+  "79a6327852ef63b2ef721959a9a341263eec65c3",
+  "8ccdf52c80334ff6b5480b827f97eafbbcf3a94e",
+  "92e9828cb15556200f3d1e80e5ed083c6f24d8b8",
+  "9ff806c1dd6a77fbc517a256dd0911f9e40cb191",
+  "a2ae1995beef46414333bcd6088025fd79e22b9d",
+  "b8abb2fbec398eae4f71865b29a1237882c0c674",
+  "bb36792b75379286f833ab2b30a1ad8fa88f3270",
+  "c611b17554db2b3cec156ebc974af9cfb942cac5",
+  "cc7c2f3009751260a98d80dff3f36f2edb5bf992",
+  "d329652084ab702084bb10c9d99044c753e5f747",
+  "d787638fa256d834ef337e4740cb6b48c7f5c55b",
+  "dad4acaa40116a6272549d62d8ea0f5f0aed6503",
+]
+paths = [
+  '''^backend/tests/test_approval_binding\.py$''',
+  '''^backend/tests/test_guardian_backend\.py$''',
+  '''^backend/tests/test_mobile_pairing\.py$''',
+  '''^backend/tests/test_ollama_install_endpoint\.py$''',
+  '''^backend/tests/test_ollama_service\.py$''',
+  '''^backend/tests/test_privacy_redaction\.py$''',
+  '''^backend/tests/test_remote_desktop\.py$''',
+  '''^backend/tests/test_start_app_script\.py$''',
+  '''^backend/tests/test_ui_automation\.py$''',
+  '''^docs/qa/agentic-product-evals\.md$''',
+  '''^vendor/claude-code/src/commands/env/__tests__/env\.test\.ts$''',
+  '''^vendor/claude-code/src/commands/local-vault/__tests__/launchLocalVault\.test\.ts$''',
+  '''^vendor/claude-code/src/commands/upgrade/upgrade\.tsx$''',
+]
+regexes = [
+  '''(?i)(api_key|lan-secret|lan-token|password|query-token|secret|secretValue|token|tokens\.rateLimitTier)''',
+]
+
+[[allowlists]]
+description = "Historical generated JSON artifact removed from tracked source"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "652ed72ea4257f6f66319e27981ee8251c1c869f",
+]
+paths = ['''^puzzler_bards\.2b\+bb3199_2026-06-27\.json$''']
+regexes = ['''^.*$''']
+
+[[allowlists]]
+description = "Historical CI docs used fixed local test HMAC strings before format helper"
+condition = "AND"
+regexTarget = "match"
+commits = [
+  "11e7d4e6cdc58b61625acd6a2189b1f3a45b4412",
+  "331446533c37f2ba0a369b78777b44b6b02ea462",
+  "378044be7b576032643a1c9b69578f9ffb82ce73",
+  "71c8a832d443a870bf6ea116ebaed71d464d1e97",
+  "ab97d4386bb365c57656c54b4daa2888b820c3fe",
+  "d05d33323aca5a928d2eab6c2f4b020d94622335",
+  "dfff115bff0ff87b41b11b2ea8fbcc6f92dbed5d",
+  "e4f92da12cd64d2137bb56423e092773cf9c4bae",
+  "e755f5ef9bc3831fe958453ba75385c36b89c0b6",
+]
+paths = [
+  '''^\.github/workflows/backend-cross-platform\.yml$''',
+  '''^\.github/workflows/ci\.yml$''',
+  '''^\.github/workflows/release-candidate\.yml$''',
+  '''^AGENTS\.md$''',
+]
+regexes = ['''LENGRVIS_AUDIT_HMAC_SECRET''']
