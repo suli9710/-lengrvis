@@ -4,13 +4,11 @@ import {
   FlatList,
   Platform,
   Pressable,
-  SafeAreaView,
-  StatusBar,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-import { AlarmClock, ArrowLeft, Check, RefreshCcw, X } from "lucide-react-native";
+import { AlarmClock, Check, RefreshCcw, X } from "lucide-react-native";
 
 import {
   AuthExpiredError,
@@ -23,16 +21,19 @@ import {
 } from "../api/client";
 import { shortDate } from "../format";
 import { safeDisplayText } from "../safeDisplay";
+import { ActionButton, EmptyState, IconButton, NoticeBanner, ScreenShell, StatusPill, TopBar } from "../ui/Primitives";
+import { colors, radii } from "../ui/theme";
 
 export function WakeupsScreen({
   session,
-  onBack,
+  onBack: _onBack,
   onSessionExpired,
 }: {
   session: PairingSession;
   onBack: () => void;
   onSessionExpired: () => void;
 }) {
+  void _onBack;
   const [wakeups, setWakeups] = useState<BackendWakeup[]>([]);
   const [error, setError] = useState("");
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
@@ -111,34 +112,15 @@ export function WakeupsScreen({
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor="#f6f4ee" />
-      <View style={styles.header}>
-        <Pressable
-          accessibilityLabel="返回审批列表"
-          accessibilityRole="button"
-          hitSlop={4}
-          onPress={onBack}
-          style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
-        >
-          <ArrowLeft size={18} color="#23313d" />
-        </Pressable>
-        <View style={styles.headerCopy}>
-          <Text style={styles.kicker}>定时唤醒</Text>
-          <Text style={styles.headerTitle}>{headerTitle}</Text>
-        </View>
-        <Pressable
-          accessibilityLabel="刷新唤醒列表"
-          accessibilityRole="button"
-          hitSlop={4}
-          onPress={handleRefresh}
-          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-        >
-          <RefreshCcw size={18} color="#23313d" />
-        </Pressable>
-      </View>
+    <ScreenShell scroll={false} testID="wakeups-screen">
+      <TopBar
+        action={<IconButton accessibilityLabel="刷新唤醒列表" icon={<RefreshCcw size={18} color={colors.ink} />} onPress={handleRefresh} />}
+        detail="电脑端计划在未来唤醒任务时，会先让手机确认。"
+        kicker="定时唤醒"
+        title={headerTitle}
+      />
 
-      {error ? <Text style={styles.errorBanner}>{error}</Text> : null}
+      {error ? <NoticeBanner detail={error} title="同步失败" tone="danger" /> : null}
 
       <FlatList
         contentContainerStyle={wakeups.length ? styles.list : styles.emptyList}
@@ -146,17 +128,17 @@ export function WakeupsScreen({
         keyExtractor={(wakeup) => wakeup.id}
         ListEmptyComponent={
           isInitialLoading ? (
-            <View accessible accessibilityLabel="正在加载定时唤醒" style={styles.emptyState}>
-              <ActivityIndicator color="#0e5f76" />
-              <Text style={styles.emptyTitle}>正在同步</Text>
-              <Text style={styles.emptyText}>手机正在向电脑端加载待确认的定时唤醒。</Text>
-            </View>
+            <EmptyState
+              icon={<ActivityIndicator color={colors.accent} />}
+              title="正在同步"
+              detail="手机正在向电脑端加载待确认的定时唤醒。"
+            />
           ) : (
-            <View style={styles.emptyState}>
-              <AlarmClock size={34} color="#5f6b76" />
-              <Text style={styles.emptyTitle}>暂无定时唤醒</Text>
-              <Text style={styles.emptyText}>电脑端有新的定时任务唤醒时会显示在这里。</Text>
-            </View>
+            <EmptyState
+              icon={<AlarmClock size={34} color={colors.inkSubtle} />}
+              title="暂无定时唤醒"
+              detail="电脑端有新的定时任务唤醒时会显示在这里。"
+            />
           )
         }
         onRefresh={handleRefresh}
@@ -169,9 +151,8 @@ export function WakeupsScreen({
             wakeup={item}
           />
         )}
-        style={styles.listViewport}
       />
-    </SafeAreaView>
+    </ScreenShell>
   );
 }
 
@@ -196,35 +177,13 @@ function WakeupCard({
           <Text style={styles.cardTitle}>{title}</Text>
           <Text style={styles.cardMeta}>{shortDate(wakeup.due_at || wakeup.created_at)}</Text>
         </View>
-        <Text style={[styles.badge, pending ? styles.badgePending : styles.badgeDone]}>{wakeupStatusLabel(wakeup.status)}</Text>
+        <StatusPill label={wakeupStatusLabel(wakeup.status)} tone={pending ? "warning" : "success"} />
       </View>
       <Text style={styles.message}>{detail}</Text>
       {pending ? (
         <View style={styles.actions}>
-          <Pressable
-            accessibilityLabel="拒绝定时唤醒"
-            accessibilityRole="button"
-            accessibilityState={{ busy, disabled: busy }}
-            disabled={busy}
-            hitSlop={4}
-            onPress={onReject}
-            style={({ pressed }) => [styles.actionButton, styles.rejectButton, busy && styles.disabledAction, pressed && styles.pressed]}
-          >
-            <X size={15} color="#8c2f39" />
-            <Text style={styles.rejectText}>拒绝</Text>
-          </Pressable>
-          <Pressable
-            accessibilityLabel="批准定时唤醒"
-            accessibilityRole="button"
-            accessibilityState={{ busy, disabled: busy }}
-            disabled={busy}
-            hitSlop={4}
-            onPress={onApprove}
-            style={({ pressed }) => [styles.actionButton, styles.approveButton, busy && styles.disabledAction, pressed && styles.pressed]}
-          >
-            <Check size={15} color="#ffffff" />
-            <Text style={styles.approveText}>批准</Text>
-          </Pressable>
+          <ActionButton disabled={busy} icon={<X size={15} color={colors.danger} />} label="拒绝" onPress={onReject} tone="neutral" />
+          <ActionButton disabled={busy} icon={<Check size={15} color="#ffffff" />} label="批准" onPress={onApprove} tone="success" />
         </View>
       ) : null}
     </View>
@@ -265,93 +224,19 @@ function errorMessage(error: unknown): string {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#f6f4ee",
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  backButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#d7dedf",
-  },
-  headerCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  kicker: {
-    color: "#65717c",
-    fontSize: 12,
-    fontWeight: "800",
-    textTransform: "uppercase",
-  },
-  headerTitle: {
-    color: "#1f2933",
-    fontSize: 24,
-    fontWeight: "800",
-    marginTop: 2,
-  },
-  iconButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#d7dedf",
-  },
-  errorBanner: {
-    marginHorizontal: 20,
-    marginBottom: 8,
-    color: "#8c2f39",
-    lineHeight: 20,
-  },
   list: {
-    paddingBottom: Platform.select({ android: 96, default: 28 }),
-    gap: 14,
+    paddingBottom: Platform.select({ android: 118, default: 110 }),
+    gap: 12,
   },
   emptyList: {
     flexGrow: 1,
-    paddingBottom: Platform.select({ android: 96, default: 28 }),
-  },
-  listViewport: {
-    flex: 1,
-  },
-  emptyState: {
-    alignItems: "center",
-    gap: 10,
-    paddingTop: 90,
-    paddingHorizontal: 24,
-  },
-  emptyTitle: {
-    color: "#1f2933",
-    fontSize: 20,
-    fontWeight: "800",
-  },
-  emptyText: {
-    color: "#5f6b76",
-    textAlign: "center",
-    lineHeight: 22,
+    paddingBottom: Platform.select({ android: 118, default: 110 }),
   },
   card: {
-    marginHorizontal: 20,
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#d7dedf",
+    borderColor: colors.border,
     padding: 16,
     gap: 12,
   },
@@ -366,68 +251,22 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   cardTitle: {
-    color: "#1f2933",
+    color: colors.ink,
     fontSize: 18,
-    fontWeight: "800",
+    fontWeight: "900",
   },
   cardMeta: {
-    color: "#65717c",
+    color: colors.inkSubtle,
     marginTop: 3,
   },
-  badge: {
-    borderRadius: 8,
-    overflow: "hidden",
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  badgePending: {
-    backgroundColor: "#fff2c6",
-    color: "#7a5700",
-  },
-  badgeDone: {
-    backgroundColor: "#e7ece8",
-    color: "#1f6244",
-  },
   message: {
-    color: "#27343f",
+    color: colors.inkMuted,
     lineHeight: 22,
     fontSize: 15,
   },
   actions: {
     flexDirection: "row",
     gap: 10,
-  },
-  actionButton: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-  rejectButton: {
-    borderWidth: 1,
-    borderColor: "#e1b8be",
-    backgroundColor: "#fff5f6",
-  },
-  approveButton: {
-    backgroundColor: "#1f7a4d",
-  },
-  rejectText: {
-    color: "#8c2f39",
-    fontSize: 13,
-    fontWeight: "900",
-  },
-  approveText: {
-    color: "#ffffff",
-    fontSize: 13,
-    fontWeight: "900",
-  },
-  disabledAction: {
-    opacity: 0.44,
   },
   pressed: {
     opacity: 0.72,

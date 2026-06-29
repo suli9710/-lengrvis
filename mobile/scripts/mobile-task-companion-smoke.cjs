@@ -191,16 +191,19 @@ function assertSafeDisplayHelpers(safeDisplay) {
 }
 
 function assertTaskCompanionSourceSafety() {
-  const source = fs.readFileSync(mobilePath("src/screens/ApprovalsScreen.tsx"), "utf8");
-  assert.doesNotMatch(source, /D:\/Downloads|任务 Companion|return error\.message/);
-  assert.match(source, /approvalListSafety/);
-  assert.match(source, /ListEmptyComponent/);
-  assert.match(source, /refreshing=\{isRefreshing\}/);
-  assert.match(source, /重新同步/);
-  assert.match(source, /taskCredibilityText/);
-  assert.match(source, /taskStatusBadgeText/);
-  assert.match(source, /taskStatusBadgeIsDone/);
-  assert.match(source, /safePreviewText/);
+  const cardSource = fs.readFileSync(mobilePath("src/screens/CompanionCards.tsx"), "utf8");
+  const approvalsRouteSource = fs.readFileSync(mobilePath("app/approvals.tsx"), "utf8");
+  const homeRouteSource = fs.readFileSync(mobilePath("app/home.tsx"), "utf8");
+  const combinedSource = `${cardSource}\n${approvalsRouteSource}\n${homeRouteSource}`;
+  assert.doesNotMatch(combinedSource, /D:\/Downloads|任务 Companion|return error\.message/);
+  assert.match(cardSource, /approvalListSafety/);
+  assert.match(approvalsRouteSource, /ListEmptyComponent/);
+  assert.match(approvalsRouteSource, /refreshing=\{companion\.isRefreshing\}/);
+  assert.match(combinedSource, /刷新/);
+  assert.match(cardSource, /taskCredibilityText/);
+  assert.match(cardSource, /taskStatusBadgeText/);
+  assert.match(cardSource, /taskStatusBadgeIsDone/);
+  assert.match(cardSource, /safePreviewText/);
 }
 
 async function main() {

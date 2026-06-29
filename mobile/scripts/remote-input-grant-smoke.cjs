@@ -442,11 +442,12 @@ function assertApprovalListBeginnerSafety() {
   assert.match(redacted, /已隐藏/);
   assert.doesNotMatch(redacted, /args|path|C:\\Users|secret\.txt|abc\.def|Bearer abc|authorization/i);
 
-  const listSource = fs.readFileSync(mobilePath("src/screens/ApprovalsScreen.tsx"), "utf8");
+  const listSource = fs.readFileSync(mobilePath("src/screens/CompanionCards.tsx"), "utf8");
+  const companionStateSource = fs.readFileSync(mobilePath("src/state/MobileCompanionContext.tsx"), "utf8");
   assertSourceIncludes(listSource, "const safety = approvalListSafety(", "Approval list cards must derive beginner-safe list copy");
   assertSourceIncludes(listSource, "isRemoteInputGrantUsable(remoteInputGrant)", "Approval list must ignore expired or revoked remote-input grants");
-  assertSourceIncludes(listSource, "payload.remote_input_grants", "Approval stream connected snapshot must restore active remote-input grants after missed events");
-  assertSourceIncludes(listSource, "onRemoteInputGrant(snapshotGrant)", "Approval stream connected snapshot must hand restored active grants to the app shell");
+  assertSourceIncludes(companionStateSource, "payload.remote_input_grants", "Approval stream connected snapshot must restore active remote-input grants after missed events");
+  assertSourceIncludes(companionStateSource, "onRemoteInputGrant(snapshotGrant)", "Approval stream connected snapshot must hand restored active grants to the app shell");
   assertSourceIncludes(listSource, "bindingRef: activeRemoteInputGrant.binding_ref", "Approval list safety copy must include the current usable remote-input public binding ref");
   assertSourceIncludes(listSource, "safety.label", "Approval cards must expose the safety label instead of only a generic pending badge");
   assertSourceIncludes(listSource, "safety.detail", "Pending approval cards must explain the safe next step without raw approval internals");
@@ -454,7 +455,7 @@ function assertApprovalListBeginnerSafety() {
 }
 
 function assertAppClearsRemoteInputGrantTokens() {
-  const source = fs.readFileSync(mobilePath("App.tsx"), "utf8");
+  const source = fs.readFileSync(mobilePath("app/_layout.tsx"), "utf8");
   assertSourceIncludes(source, "clearRemoteInputGrantTokens", "App shell must import the remote-input grant token cache reset helper");
   assertSourceIncludes(source, "const handleRemoteInputGrantRevoked", "App shell must handle desktop/device remote-input grant revoke events");
   assertSourceIncludes(source, "clearRemoteInputGrantTokens();", "App shell must clear cached remote-input bearer tokens when grant/session state is cleared");

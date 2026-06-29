@@ -602,6 +602,33 @@ def test_start_app_main_backend_reuses_or_blocks_existing_listener(project_root:
     assert "为避免误关用户手动启动的服务" in function_body
 
 
+def test_start_app_can_auto_generate_lan_tls_for_phone_pairing(project_root: Path) -> None:
+    text = _start_app_text(project_root)
+
+    assert "[switch]$AutoLanTls" in text
+    assert "LENGRVIS_LAN_TLS_AUTO" in text
+    assert "[string]$LanPublicBaseUrl" in text
+    assert "function Test-LoopbackLaunchHost" in text
+    assert "app.security.lan_tls" in text
+    assert "LENGRVIS_LAN_PUBLIC_BASE_URL" in text
+    assert "$BackendUrl = $publicBaseUrl" in text
+    assert "${BackendScheme}://127.0.0.1`:$BackendPort/api/health" in text
+    assert "$env:LENGRVIS_LAN_TLS_CERT_FILE" in text
+    assert "$env:LENGRVIS_LAN_TLS_KEY_FILE" in text
+
+
+def test_install_service_auto_enables_lan_tls_for_non_loopback(project_root: Path) -> None:
+    text = (project_root / "scripts" / "install_service.ps1").read_text(encoding="utf-8")
+
+    assert "[switch]$AutoLanTls" in text
+    assert "[string]$LanPublicBaseUrl" in text
+    assert "$effectiveAutoLanTls" in text
+    assert "Test-LoopbackHost $BackendHost" in text
+    assert "--auto-lan-tls" in text
+    assert "--lan-public-base-url" in text
+    assert "LENGRVIS_LAN_TLS_AUTO" in text
+
+
 def test_start_app_does_not_stop_port_discovered_processes(project_root: Path) -> None:
     text = _start_app_text(project_root)
     helper_start = text.index("function Stop-VerifiedListenProcess")

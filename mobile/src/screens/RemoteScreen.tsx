@@ -20,7 +20,6 @@ import {
   useWindowDimensions,
 } from "react-native";
 import {
-  ArrowLeft,
   ChevronsDown,
   ChevronsUp,
   CornerDownLeft,
@@ -111,7 +110,7 @@ type RemoteInputPayload =
 export function RemoteScreen({
   grant,
   session,
-  onBack,
+  onBack: _onBack,
   onRemoteInputGrantRevoked,
   onSessionExpired,
 }: {
@@ -121,6 +120,7 @@ export function RemoteScreen({
   onRemoteInputGrantRevoked: (grant: RemoteInputGrant) => void;
   onSessionExpired: () => void;
 }) {
+  void _onBack;
   const windowSize = useWindowDimensions();
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [inputConnection, setInputConnection] = useState<InputConnectionState>(isRemoteInputGrantUsable(grant) ? "ready" : "disabled");
@@ -750,16 +750,6 @@ export function RemoteScreen({
       <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor="#17222b" />
       <View style={[styles.header, isCompactRemoteLayout && styles.headerCompact]}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="返回审批列表"
-          accessibilityHint="停止查看远程屏幕并返回审批列表"
-          hitSlop={8}
-          onPress={onBack}
-          style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-        >
-          <ArrowLeft size={20} color="#f7faf8" />
-        </Pressable>
         <View style={styles.headerText}>
           <Text style={styles.kicker}>{remoteModeText}</Text>
           <Text style={styles.headerTitle}>远程屏幕</Text>
@@ -914,7 +904,7 @@ export function RemoteScreen({
         </ScrollView>
       </View>
 
-      <View style={[styles.controlDeck, isCompactRemoteLayout && styles.controlDeckCompact]}>
+      <View style={[styles.controlDeck, isCompactRemoteLayout && styles.controlDeckCompact]} testID="remote-control-deck">
         <View accessibilityRole="tablist" style={styles.zoomRow}>
           {REMOTE_VIEWER_ZOOM_OPTIONS.map((option) => {
             const selected = option.value === viewerZoom;

@@ -164,6 +164,14 @@ def isolate_local_runtime_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     monkeypatch.setenv("LENGRVIS_ENV_FILE", str(missing / ".env"))
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("LENGRVIS_AUDIT_HMAC_SECRET", "pytest-audit-hmac-secret")
+    for key in (
+        "LENGRVIS_LAN_TLS_ENABLED",
+        "LENGRVIS_LAN_TLS_AUTO",
+        "LENGRVIS_LAN_TLS_CERT_FILE",
+        "LENGRVIS_LAN_TLS_KEY_FILE",
+        "LENGRVIS_LAN_PUBLIC_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture(autouse=True)

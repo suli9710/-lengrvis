@@ -77,6 +77,31 @@ def _wait_for_run_inactive(run_id: str, *, timeout_seconds: float = 15.0) -> Non
     raise AssertionError(f"Run {run_id} was still active after reaching a terminal/waiting phase")
 
 
+def _wait_for_executable_approval(task_id: str, *, timeout_seconds: float = 15.0) -> Approval:
+    deadline = time.monotonic() + timeout_seconds
+    last_state: dict = {}
+    while time.monotonic() < deadline:
+        approvals = db.fetch_many("approvals", "task_id = ? AND status = ?", (task_id, "pending"), limit=10)
+        if approvals:
+            approval = Approval.model_validate(approvals[0])
+            task_data = db.fetch_one("tasks", approval.task_id) or {}
+            plans = db.fetch_many("plans", "task_id = ?", (approval.task_id,), limit=1)
+            plan = plans[0] if plans else {}
+            step = next((item for item in plan.get("steps", []) if item.get("id") == approval.step_id), {})
+            last_state = {
+                "approval_id": approval.id,
+                "task_execution_stage": task_data.get("execution_stage"),
+                "step_status": step.get("status"),
+            }
+            if (
+                task_data.get("execution_stage") == ExecutionStage.AWAITING_APPROVAL.value
+                and step.get("status") == "waiting_user_approval"
+            ):
+                return approval
+        time.sleep(0.05)
+    raise AssertionError(f"Task {task_id} did not expose an executable approval; last_state={last_state!r}")
+
+
 def _recent_run_events(client: TestClient, run_id: str) -> list[dict]:
     try:
         response = client.get(f"/api/runs/{run_id}/timeline")
@@ -668,9 +693,8 @@ def test_run_timeline_reconciles_after_approval(monkeypatch, tmp_path):
             "/api/runs",
             json={"message": "delete approved file", "mode": "efficiency", "engine": "os"},
         ).json()
-        _wait_for_phase(client, created["run_id"], "awaiting_approval")
-        approvals = db.fetch_many("approvals", limit=10)
-        approval = Approval.model_validate(approvals[0])
+        awaiting = _wait_for_phase(client, created["run_id"], "awaiting_approval")
+        approval = _wait_for_executable_approval(awaiting["task_id"])
         approve_approval(approval.id)
         approval = Approval.model_validate(db.fetch_one("approvals", approval.id))
         assert approval.status == ApprovalStatus.APPROVED

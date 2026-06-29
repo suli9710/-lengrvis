@@ -566,6 +566,7 @@ export function SettingsPanel({
   const pairingQrContent = pairing ? buildMobilePairingQrContent(pairing) : null;
   const pairingBaseUrl = pairing ? formatMobilePairingBaseUrl(pairing) : "";
   const pairingTransportWarning = pairingBaseUrl ? mobilePairingTransportWarning(pairingBaseUrl) : "";
+  const pairingTransportSummary = pairing && pairingBaseUrl ? mobilePairingTransportSummary(pairing, pairingBaseUrl) : null;
   return (
     <Panel
       title="设置"
@@ -1168,6 +1169,40 @@ export function SettingsPanel({
                     <small className="mobile-pairing__error" role="status">
                       {pairingTransportWarning}
                     </small>
+                  ) : null}
+                  {pairingTransportSummary ? (
+                    <div
+                      className={`mobile-pairing__transport mobile-pairing__transport--${pairingTransportSummary.tone}`}
+                      aria-label="手机连接安全状态"
+                    >
+                      <div className="mobile-pairing__transport-head">
+                        {pairingTransportSummary.tone === "ready" ? (
+                          <ShieldCheck size={14} aria-hidden="true" />
+                        ) : (
+                          <AlertCircle size={14} aria-hidden="true" />
+                        )}
+                        <strong>{pairingTransportSummary.label}</strong>
+                      </div>
+                      <span>{pairingTransportSummary.detail}</span>
+                      <dl>
+                        <div>
+                          <dt>HTTPS</dt>
+                          <dd>{pairingTransportSummary.origin}</dd>
+                        </div>
+                        <div>
+                          <dt>WSS</dt>
+                          <dd>{pairingTransportSummary.wssPaths.join(" · ")}</dd>
+                        </div>
+                        {pairingTransportSummary.fingerprint ? (
+                          <div>
+                            <dt>证书 SHA-256</dt>
+                            <dd className="mobile-pairing__fingerprint">{pairingTransportSummary.fingerprint}</dd>
+                          </div>
+                        ) : null}
+                      </dl>
+                      {pairingTransportSummary.trustNotice ? <span>{pairingTransportSummary.trustNotice}</span> : null}
+                      <span>真机证据仍需单独采集：扫码配对、审批 WSS、远程屏幕、输入授权、撤销和过期都不会由桌面 UI 自动标记通过。</span>
+                    </div>
                   ) : null}
                 </div>
               ) : (
@@ -2318,6 +2353,90 @@ function mobilePairingTransportWarning(baseUrl: string): string {
   } catch {
     return "";
   }
+}
+
+type MobilePairingTransportTone = "ready" | "warning" | "blocked";
+
+interface MobilePairingTransportSummary {
+  tone: MobilePairingTransportTone;
+  label: string;
+  detail: string;
+  origin: string;
+  wssPaths: string[];
+  fingerprint: string;
+  trustNotice: string;
+}
+
+function mobilePairingTransportSummary(pairing: MobilePairingCode, baseUrl: string): MobilePairingTransportSummary {
+  const parsed = new URL(baseUrl);
+  const transport = pairing.transport_security ?? pairing.server.transport_security ?? {};
+  const tlsReady = boolTransportValue(transport, "tls_ready") || boolTransportValue(transport, "tls_enabled");
+  const status = textTransportValue(transport, "status");
+  const fingerprint =
+    textTransportValue(transport, "certificate_fingerprint_sha256") || textTransportValue(transport, "fingerprint_sha256");
+  const wssPaths = [
+    webSocketPathLabel(parsed, "/ws/mobile/approvals"),
+    webSocketPathLabel(parsed, "/ws/remote/screen"),
+    webSocketPathLabel(parsed, "/ws/remote/input")
+  ];
+  const https = parsed.protocol === "https:";
+  const loopback = isLoopbackHostname(parsed.hostname);
+  const trustRequired = pairing.trust_required === true || boolTransportValue(transport, "trust_required") || boolTransportValue(transport, "requires_trust");
+
+  if (https && tlsReady) {
+    return {
+      tone: "ready",
+      label: "HTTPS/WSS 已写入二维码",
+      detail: "手机会使用这个局域网 HTTPS 地址，并把审批、远程屏幕和远程输入升级为 WSS。",
+      origin: parsed.origin,
+      wssPaths,
+      fingerprint,
+      trustNotice: trustRequired
+        ? "Android 首次连接需要信任这张本机证书；请在手机端确认指纹或按系统/应用提示安装信任后再继续。"
+        : ""
+    };
+  }
+  if (https) {
+    return {
+      tone: "warning",
+      label: "HTTPS 已配置但证书未就绪",
+      detail: status === "https_misconfigured"
+        ? "后端报告证书或私钥未通过校验，请重新生成或重新指向证书后再生成二维码。"
+        : "当前二维码是 HTTPS，但缺少可确认的 TLS 就绪状态。",
+      origin: parsed.origin,
+      wssPaths,
+      fingerprint,
+      trustNotice: "手机端会 fail closed；请先完成证书生成和信任引导。"
+    };
+  }
+  return {
+    tone: loopback ? "warning" : "blocked",
+    label: loopback ? "仅限本机调试" : "局域网 HTTP 已阻断",
+    detail: loopback
+      ? "loopback 地址只适合本机或 emulator 调试，正式手机扫码需要真实局域网 HTTPS 地址。"
+      : "token 承载的手机配对、审批、远控和输入授权不能走局域网 HTTP/ws。",
+    origin: parsed.origin,
+    wssPaths,
+    fingerprint: "",
+    trustNotice: "请用启动器或服务的自动 LAN TLS 生成 HTTPS/WSS 二维码后重试。"
+  };
+}
+
+function textTransportValue(transport: Record<string, unknown>, key: string): string {
+  const value = transport[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function boolTransportValue(transport: Record<string, unknown>, key: string): boolean {
+  const value = transport[key];
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+  return false;
+}
+
+function webSocketPathLabel(origin: URL, path: string): string {
+  const protocol = origin.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${origin.host}${path}`;
 }
 
 function isLoopbackHostname(hostname: string): boolean {

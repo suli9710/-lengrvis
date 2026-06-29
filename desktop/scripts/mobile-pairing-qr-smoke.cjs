@@ -148,6 +148,12 @@ async function main() {
   assert.match(settingsSource, /HTTPS\/WSS 会直接用于手机连接/);
   assert.match(settingsSource, /局域网 HTTP 会被拦截/);
   assert.match(settingsSource, /手机端会阻断 token 配对/);
+  assert.match(settingsSource, /HTTPS\/WSS 已写入二维码/);
+  assert.match(settingsSource, /\/ws\/remote\/screen/);
+  assert.match(settingsSource, /\/ws\/remote\/input/);
+  assert.match(settingsSource, /证书 SHA-256/);
+  assert.match(settingsSource, /Android 首次连接需要信任这张本机证书/);
+  assert.match(settingsSource, /真机证据仍需单独采集/);
   assert.doesNotMatch(settingsSource, /点击生成后复制整段配对信息/);
   assert.doesNotMatch(settingsSource, /手动复制下方文本/);
   assert.doesNotMatch(settingsSource, /真实手机已验证|真机已验证|已在手机验证/);

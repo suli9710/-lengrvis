@@ -34,6 +34,7 @@ import {
 import { approvalStatusLabel, approvalTitle, formatPreview, shortDate } from "../format";
 import { isRemoteInputGrantUsable } from "../remoteInputGrant";
 import { safeCompactText, safeDisplayText, safePreviewText } from "../safeDisplay";
+import { colors, radii } from "../ui/theme";
 
 export function ApprovalDetail({
   session,
@@ -155,7 +156,7 @@ export function ApprovalDetail({
       style={styles.keyboardAvoiding}
     >
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor="#f6f4ee" />
+      <StatusBar barStyle="dark-content" backgroundColor={colors.canvas} />
       <View style={styles.header}>
         <Pressable
           accessibilityLabel="返回审批列表"
@@ -180,18 +181,18 @@ export function ApprovalDetail({
         <ScrollView contentContainerStyle={styles.content}>
           {error ? <ApprovalDetailError error={error} hasCachedDetail={Boolean(detail)} onRetry={retryLoadDetail} /> : null}
 
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>任务</Text>
-            <Text style={styles.body}>{safeDisplayText(detail?.task?.user_goal ?? currentApproval.message, "任务内容已隐藏，请在电脑端查看。")}</Text>
-            <Text style={styles.meta}>创建于 {shortDate(currentApproval.created_at)}</Text>
-          </View>
+          <ApprovalDecisionGuard guard={decisionGuard} />
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>请求</Text>
             <Text style={styles.body}>{safeDisplayText(currentApproval.message, "请求内容已隐藏，请在电脑端查看。")}</Text>
+            <Text style={styles.meta}>创建于 {shortDate(currentApproval.created_at)}</Text>
           </View>
 
-          <ApprovalBoundarySection approval={currentApproval} />
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>安全预览</Text>
+            <Text style={styles.preview}>{safePreviewText(formatPreview(detail?.preview ?? currentApproval.diff_preview))}</Text>
+          </View>
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>计划步骤</Text>
@@ -219,11 +220,11 @@ export function ApprovalDetail({
           </View>
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>试运行预览</Text>
-            <Text style={styles.preview}>{safePreviewText(formatPreview(detail?.preview ?? currentApproval.diff_preview))}</Text>
+            <Text style={styles.sectionTitle}>任务目标</Text>
+            <Text style={styles.body}>{safeDisplayText(detail?.task?.user_goal ?? currentApproval.message, "任务内容已隐藏，请在电脑端查看。")}</Text>
           </View>
 
-          <ApprovalDecisionGuard guard={decisionGuard} />
+          <ApprovalBoundarySection approval={currentApproval} />
         </ScrollView>
       )}
 
@@ -406,11 +407,11 @@ function stringList(value: unknown): string[] {
 const styles = StyleSheet.create({
   keyboardAvoiding: {
     flex: 1,
-    backgroundColor: "#f6f4ee",
+    backgroundColor: colors.canvas,
   },
   safeArea: {
     flex: 1,
-    backgroundColor: "#f6f4ee",
+    backgroundColor: colors.canvas,
   },
   header: {
     paddingHorizontal: 20,
@@ -423,27 +424,27 @@ const styles = StyleSheet.create({
   backButton: {
     width: 42,
     height: 42,
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#d7dedf",
+    borderColor: colors.border,
   },
   headerText: {
     flex: 1,
     minWidth: 0,
   },
   kicker: {
-    color: "#65717c",
+    color: colors.inkSubtle,
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "900",
     textTransform: "uppercase",
   },
   headerTitle: {
-    color: "#1f2933",
+    color: colors.ink,
     fontSize: 25,
-    fontWeight: "800",
+    fontWeight: "900",
     marginTop: 2,
   },
   loading: {
@@ -454,8 +455,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
   },
   loadingText: {
-    color: "#46535f",
-    fontWeight: "800",
+    color: colors.inkMuted,
+    fontWeight: "900",
     textAlign: "center",
   },
   content: {
@@ -464,30 +465,30 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   section: {
-    borderRadius: 8,
-    backgroundColor: "#ffffff",
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "#d7dedf",
+    borderColor: colors.border,
     padding: 16,
     gap: 10,
   },
   sectionTitle: {
-    color: "#1f2933",
+    color: colors.ink,
     fontSize: 13,
-    fontWeight: "800",
+    fontWeight: "900",
     textTransform: "uppercase",
   },
   body: {
-    color: "#27343f",
+    color: colors.inkMuted,
     lineHeight: 22,
     fontSize: 15,
   },
   meta: {
-    color: "#65717c",
+    color: colors.inkSubtle,
     fontSize: 12,
   },
   muted: {
-    color: "#65717c",
+    color: colors.inkSubtle,
     lineHeight: 20,
   },
   stepRow: {
@@ -497,10 +498,10 @@ const styles = StyleSheet.create({
   stepIndex: {
     width: 26,
     height: 26,
-    borderRadius: 8,
+    borderRadius: radii.md,
     overflow: "hidden",
-    backgroundColor: "#e7ece8",
-    color: "#1f2933",
+    backgroundColor: colors.surfaceMuted,
+    color: colors.ink,
     textAlign: "center",
     textAlignVertical: "center",
     fontWeight: "800",
@@ -510,57 +511,57 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   stepTitle: {
-    color: "#1f2933",
-    fontWeight: "800",
+    color: colors.ink,
+    fontWeight: "900",
     marginBottom: 3,
   },
   stepText: {
-    color: "#46535f",
+    color: colors.inkMuted,
     lineHeight: 20,
   },
   preview: {
-    color: "#46535f",
-    backgroundColor: "#f3f6f7",
-    borderRadius: 8,
+    color: colors.inkMuted,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radii.md,
     padding: 12,
     lineHeight: 20,
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: undefined }),
   },
   decisionGuard: {
-    borderRadius: 8,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "#d7dedf",
-    backgroundColor: "#ffffff",
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     padding: 16,
     gap: 8,
   },
   decisionGuardWarning: {
-    borderColor: "#e4cf8b",
-    backgroundColor: "#fff9e8",
+    borderColor: "#e0c676",
+    backgroundColor: colors.warningSoft,
   },
   decisionGuardDanger: {
-    borderColor: "#e1b8be",
-    backgroundColor: "#fff5f6",
+    borderColor: "#e4aaba",
+    backgroundColor: colors.dangerSoft,
   },
   decisionGuardKicker: {
-    color: "#65717c",
+    color: colors.inkSubtle,
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "900",
     textTransform: "uppercase",
   },
   decisionGuardTitle: {
-    color: "#1f2933",
+    color: colors.ink,
     fontSize: 16,
     fontWeight: "900",
   },
   decisionGuardText: {
-    color: "#3a4651",
+    color: colors.inkMuted,
     lineHeight: 21,
   },
   decisionGuardNext: {
-    color: "#8c2f39",
+    color: colors.danger,
     lineHeight: 21,
-    fontWeight: "800",
+    fontWeight: "900",
   },
   boundaryGrid: {
     flexDirection: "row",
@@ -571,34 +572,34 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     flexBasis: "46%",
     minWidth: 130,
-    borderRadius: 8,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "#d7dedf",
-    backgroundColor: "#f3f6f7",
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
     padding: 10,
     gap: 4,
   },
   boundaryLabel: {
-    color: "#65717c",
+    color: colors.inkSubtle,
     fontSize: 11,
-    fontWeight: "800",
+    fontWeight: "900",
     textTransform: "uppercase",
   },
   boundaryValue: {
-    color: "#1f2933",
+    color: colors.ink,
     fontSize: 14,
-    fontWeight: "800",
+    fontWeight: "900",
   },
   boundaryBlock: {
-    borderRadius: 8,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "#d7dedf",
-    backgroundColor: "#f3f6f7",
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
     padding: 10,
     gap: 6,
   },
   boundaryText: {
-    color: "#46535f",
+    color: colors.inkMuted,
     lineHeight: 20,
   },
   chipRowBlock: {
@@ -611,39 +612,39 @@ const styles = StyleSheet.create({
   },
   chip: {
     maxWidth: "100%",
-    borderRadius: 8,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "#d7dedf",
-    backgroundColor: "#f3f6f7",
-    color: "#27343f",
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    color: colors.inkMuted,
     fontSize: 12,
     fontWeight: "800",
     paddingHorizontal: 8,
     paddingVertical: 5,
   },
   errorBanner: {
-    color: "#8c2f39",
+    color: colors.danger,
     lineHeight: 20,
   },
   errorPanel: {
-    borderRadius: 8,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "#e1b8be",
-    backgroundColor: "#fff5f6",
+    borderColor: "#e4aaba",
+    backgroundColor: colors.dangerSoft,
     padding: 12,
     gap: 9,
   },
   errorHint: {
-    color: "#5f4a4f",
+    color: colors.inkMuted,
     lineHeight: 20,
   },
   retryButton: {
     alignSelf: "flex-start",
     minHeight: 36,
-    borderRadius: 8,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "#d7dedf",
-    backgroundColor: "#ffffff",
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -651,7 +652,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   retryText: {
-    color: "#23313d",
+    color: colors.ink,
     fontSize: 12,
     fontWeight: "900",
   },
@@ -663,9 +664,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: Platform.select({ android: 32, default: 20 }),
-    backgroundColor: "#f6f4ee",
+    backgroundColor: colors.canvas,
     borderTopWidth: 1,
-    borderTopColor: "#d7dedf",
+    borderTopColor: colors.border,
     flexDirection: "row",
     gap: 10,
   },
@@ -673,10 +674,10 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     minHeight: 48,
-    borderRadius: 8,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "#e1b8be",
-    backgroundColor: "#ffffff",
+    borderColor: "#e4aaba",
+    backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
@@ -686,32 +687,32 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     minHeight: 48,
-    borderRadius: 8,
-    backgroundColor: "#1f7a4d",
+    borderRadius: radii.md,
+    backgroundColor: colors.success,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
   },
   disabledApproveButton: {
-    backgroundColor: "#8b969e",
+    backgroundColor: colors.inkSubtle,
     opacity: 0.72,
   },
   disabledDenyButton: {
-    borderColor: "#c4cdd2",
-    backgroundColor: "#eef1f2",
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
     opacity: 0.72,
   },
   denyText: {
     flexShrink: 1,
-    color: "#8c2f39",
-    fontWeight: "800",
+    color: colors.danger,
+    fontWeight: "900",
     textAlign: "center",
   },
   approveText: {
     flexShrink: 1,
     color: "#ffffff",
-    fontWeight: "800",
+    fontWeight: "900",
     textAlign: "center",
   },
   pressed: {

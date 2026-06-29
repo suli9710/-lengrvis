@@ -253,14 +253,15 @@ def _thread_connection_state() -> _ThreadConnectionState | None:
 
 
 def _open_connection(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, isolation_level=None)
+    conn = sqlite3.connect(path, isolation_level=None, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL + busy_timeout: watcher/scheduler threads and async handlers open
     # concurrent connections; without these, writers race into
-    # "database is locked" errors under load.
-    conn.execute("PRAGMA journal_mode = WAL")
+    # "database is locked" errors under load. Set the timeout before WAL
+    # initialization because changing journal mode can itself need the lock.
     conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 

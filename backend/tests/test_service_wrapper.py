@@ -69,11 +69,38 @@ def test_get_backend_config_falls_back_when_port_is_invalid(monkeypatch: pytest.
 def test_get_backend_config_rejects_non_loopback_without_lan_tls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "0.0.0.0")
     monkeypatch.delenv("LENGRVIS_LAN_TLS_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_AUTO", raising=False)
     monkeypatch.delenv("LENGRVIS_LAN_TLS_CERT_FILE", raising=False)
     monkeypatch.delenv("LENGRVIS_LAN_TLS_KEY_FILE", raising=False)
 
     with pytest.raises(RuntimeError, match="non-loopback"):
         service_wrapper.get_backend_config()
+
+
+def test_get_backend_config_auto_generates_lan_tls_for_non_loopback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LENGRVIS_BACKEND_HOST", "0.0.0.0")
+    monkeypatch.setenv("LENGRVIS_BACKEND_PORT", "9443")
+    monkeypatch.setenv("LENGRVIS_LAN_TLS_AUTO", "true")
+    monkeypatch.setenv("LENGRVIS_LAN_PUBLIC_BASE_URL", "https://lengrvis.local:9443")
+    monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_ENABLED", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_CERT_FILE", raising=False)
+    monkeypatch.delenv("LENGRVIS_LAN_TLS_KEY_FILE", raising=False)
+
+    config = service_wrapper.get_backend_config()
+
+    assert config.host == "0.0.0.0"
+    assert config.port == 9443
+    assert config.ssl_certfile
+    assert config.ssl_keyfile
+    assert Path(config.ssl_certfile).exists()
+    assert Path(config.ssl_keyfile).exists()
+    assert os.environ["LENGRVIS_LAN_TLS_ENABLED"] == "true"
+    assert os.environ["LENGRVIS_LAN_TLS_CERT_FILE"] == config.ssl_certfile
+    assert os.environ["LENGRVIS_LAN_TLS_KEY_FILE"] == config.ssl_keyfile
 
 
 def test_apply_service_runtime_options_sets_cwd_and_environment(
@@ -537,6 +564,7 @@ def test_main_persists_install_options() -> None:
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendPort", "9000")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "BackendLogLevel", "debug")
     fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsEnabled", "true")
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsAuto", "false")
     fake_util.SetServiceCustomOption.assert_any_call(
         service_wrapper.SERVICE_NAME,
         "LanTlsCertFile",
@@ -546,6 +574,48 @@ def test_main_persists_install_options() -> None:
         service_wrapper.SERVICE_NAME,
         "LanTlsKeyFile",
         "C:/certs/lengrvis.key",
+    )
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanPublicBaseUrl", "")
+
+
+def test_main_persists_auto_lan_tls_option() -> None:
+    fake_service = type("FakeService", (), {"_svc_name_": service_wrapper.SERVICE_NAME})
+    fake_util = SimpleNamespace(
+        HandleCommandLine=MagicMock(return_value=0),
+        SetServiceCustomOption=MagicMock(),
+    )
+
+    with (
+        patch.object(service_wrapper, "get_service_class", return_value=fake_service),
+        patch.object(
+            service_wrapper,
+            "import_pywin32_service_modules",
+            return_value=SimpleNamespace(win32serviceutil=fake_util),
+        ),
+        patch.object(service_wrapper, "PROJECT_ROOT", Path("C:/repo")),
+    ):
+        result = service_wrapper.main(
+            [
+                "install",
+                "--project-root",
+                "C:/work/lengrvis",
+                "--backend-host",
+                "0.0.0.0",
+                "--backend-port",
+                "9443",
+                "--auto-lan-tls",
+                "--lan-public-base-url",
+                "https://lengrvis.local:9443",
+            ]
+        )
+
+    assert result == 0
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsEnabled", "true")
+    fake_util.SetServiceCustomOption.assert_any_call(service_wrapper.SERVICE_NAME, "LanTlsAuto", "true")
+    fake_util.SetServiceCustomOption.assert_any_call(
+        service_wrapper.SERVICE_NAME,
+        "LanPublicBaseUrl",
+        "https://lengrvis.local:9443",
     )
 
 

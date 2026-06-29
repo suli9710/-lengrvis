@@ -1,8 +1,8 @@
 # Lengrvis
 
-Lengrvis 是一个 Windows 优先的本地电脑助手。你用一句话描述任务，它把任务拆成可审计的步骤，再调用本机文件、文档、浏览器、系统信息和桌面工具。凡是会写文件、删除内容或改变系统状态的操作，都会先给出预览，等用户批准，并留下回滚信息。
+Lengrvis 是一款面向 Windows 本地环境的 OS Agent 桌面助手。用户可以用自然语言描述目标，系统会将任务拆解为可审计的步骤，并在授权范围内调用本机文件、文档、浏览器、系统信息和桌面工具。涉及写入、删除或其他状态变更的操作，会先生成预览和审批记录，并保留可追踪的回滚信息。
 
-它适合处理这些日常活：整理下载目录、总结本地文档、查找大文件、检查电脑状态、做文档问答，或者把审批和任务监督交给 Android companion。默认思路很朴素：能在本机处理的留在本机；需要动手前先问；出事以后能追踪。
+Lengrvis 适用于本地文件整理、文档摘要与问答、重复文件检测、系统状态检查，以及通过 Android companion 进行移动审批和任务监督。产品原则是：优先在本机处理数据；执行有风险的操作前取得明确授权；关键行为具备审计、诊断和追溯能力。
 
 - 仓库：[github.com/suli9710/-lengrvis](https://github.com/suli9710/-lengrvis)
 - 当前版本：[v0.1.1](https://github.com/suli9710/-lengrvis/releases/tag/v0.1.1)
@@ -17,40 +17,40 @@ Lengrvis 是一个 Windows 优先的本地电脑助手。你用一句话描述�
 
 ## 平台状态
 
-| 平台 | 状态 | 当前交付 | 还没收口的地方 |
+| 平台 | 状态 | 当前交付 | 待完善事项 |
 | --- | --- | --- | --- |
-| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.1 产物未签名；clean-machine、升级/回滚、真实设备联动还需要候选版本证据。 |
-| Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、短期远程输入授权 | 适合内部预览和联调；真机 LAN/WSS、证书信任路径和应用商店分发还没完成。 |
-| macOS 桌面 | Preview | macOS 后端构建脚本和 DMG 脚本 | 需要在 macOS 主机上完成打包、签名和 notarization 验证。 |
-| iOS Companion | Planned | 暂不交付 | Android companion 稳定后再排期。 |
+| Windows 桌面 | Supported | Electron 桌面、FastAPI 后端、portable zip、自解压包、任务工作台、审批、文件/文档/系统工具 | v0.1.1 产物尚未签名；clean-machine、升级/回滚和真实设备联动仍需候选版本证据。 |
+| Android Companion | Preview | 配对、移动审批、任务监督、暂停/继续/取消、只读屏幕流、短期远程输入授权 | 当前面向内部预览和联调；真机 LAN/WSS、证书信任路径和应用商店分发尚未完成。 |
+| macOS 桌面 | Preview | macOS 后端构建脚本和 DMG 脚本 | 仍需在 macOS 主机上完成打包、签名和 notarization 验证。 |
+| iOS Companion | Planned | 暂不交付 | 待 Android companion 稳定后再排期。 |
 
 ## 安装与快速开始
 
 1. 打开 [Releases](https://github.com/suli9710/-lengrvis/releases)。
 2. 下载 `Lengrvis-0.1.1-win-portable.zip` 或 `Lengrvis-0.1.1-x64-self-extracting.exe`。
 3. portable zip 解压后运行 `Lengrvis.exe`；自解压包双击后会释放到本机用户目录并启动。
-4. 启动后，在桌面窗口里输入任务，例如“找出重复文件，但先不要删除”。
-5. 会改动本机状态的步骤会进入预览和审批。文件写入、编辑等操作会记录回滚信息。
+4. 启动后，在桌面窗口中输入任务，例如“找出重复文件，但先不要删除”。
+5. 涉及本机状态变更的步骤会进入预览和审批流程；文件写入、编辑等操作会记录回滚信息。
 
-源码仓库不是普通用户启动路径。要从源码运行，请看下面的“源码开发 setup”。完整上手、FAQ 和故障排查在 `docs/user-guide.md`。
+源码仓库面向开发和验证场景，不是普通用户的推荐启动路径。如需从源码运行，请参考下方“源码开发 setup”。完整上手、FAQ 和故障排查见 `docs/user-guide.md`。
 
 ## 配置、隐私与诊断
 
-- AI Provider、隐私模式、本地模型、硬件加速和手机配对优先在桌面“设置”里配置。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
+- AI Provider、隐私模式、本地模型、硬件加速和手机配对优先通过桌面端“设置”完成配置。普通用户不需要手动编辑 `.env` 或 `config.yaml`。
 - “设置 -> 套餐与授权”显示 Free / Pro / Max 能力、云端额度窗口、许可证主体和到期时间。默认 token 护栏为 Free 滚动 5 小时 500 万 + 7 天 2,000 万、Pro 滚动 24 小时 1,000 万、Max 滚动 24 小时 1 亿。离线许可证可以本机验签；在线购买、订阅、退款自动降级和吊销同步仍在建设中。
-- “设置 -> 本机数据与隐私”可以删除本机数据。删除前需要确认短语和系统确认；任务、对话、录屏、配对、索引和已导出诊断包会被清掉，防篡改审计链会保留删除事件。日志目录仍需手动清理。
+- “设置 -> 本机数据与隐私”可以删除本机数据。删除前需要确认短语和系统确认；任务、对话、录屏、配对、索引和已导出诊断包会被删除，防篡改审计链会保留删除事件。日志目录仍需手动清理。
 - “系统信息”显示桌面版本、后端版本、服务状态、日志目录、只读系统诊断和本地发布说明。
 - “导出诊断包”用于支持排查。诊断包写入本机数据目录下的 `diagnostic-packages`，会尽量脱敏路径、用户名、密钥、任务正文、设备名、配对码、grant id 和模型路径。
-- 诊断包默认不是公开材料。外发前仍要人工检查里面有没有不该分享的路径、日志片段或组织信息。
-- 应用打不开时，可以运行 `Start-Lengrvis-Debug.cmd` 看最近启动日志摘要。完整日志通常在仓库 `logs` 目录或应用数据目录的 `logs` 目录。
+- 诊断包默认不作为公开材料使用。外发前应进行人工复核，确认其中不包含不应共享的路径、日志片段或组织信息。
+- 应用无法启动时，可以运行 `Start-Lengrvis-Debug.cmd` 查看最近启动日志摘要。完整日志通常位于仓库 `logs` 目录或应用数据目录的 `logs` 目录。
 
 ## 任务证据和录屏
 
-任务录屏/截图默认关闭。只有明确开启任务录屏时，截图才会作为本机 task recording 写入数据目录；开发/测试环境可用 `LENGRVIS_TASK_RECORDING_ENABLED=true`，测试可用 `LENGRVIS_TASK_RECORDING_FORCE=1`。不要在含私人资料的 profile 上随手开启。
+任务录屏/截图默认关闭。只有明确开启任务录屏时，截图才会作为本机 task recording 写入数据目录；开发/测试环境可用 `LENGRVIS_TASK_RECORDING_ENABLED=true`，测试可用 `LENGRVIS_TASK_RECORDING_FORCE=1`。不建议在包含私人资料的 profile 上启用该能力。
 
 公开任务视图只返回脱敏摘要、状态、计数和边界标签。`timeline`、`replay`、任务列表、agent messages、safety reviews、progress 和 explain 接口不会返回截图 URL、截图文件名、recording id、raw tool args/result、隐藏 prompt、任务 metadata、review reasons 或文件正文。诊断包也只记录 task recording 的状态边界，不会打包录屏图片或截图路径。
 
-## 它怎么工作
+## 工作原理
 
 ```text
 lengrvis/
@@ -64,7 +64,7 @@ lengrvis/
 └── docs/                用户手册、QA 门禁、发布与合规文档
 ```
 
-运行时大致是这条链路：
+运行时的核心链路如下：
 
 ```text
 用户 -> OrchestratorAgent -> PlannerAgent -> SafetyReviewAgent
@@ -79,7 +79,7 @@ lengrvis/
 - 自然语言任务提交：桌面端或 `POST /api/chat`。
 - Agent 分层：Orchestrator、Planner、Supervisor、SafetyReview、OSExecutionEngine 和 Memory 负责推理与编排；PolicyEngine、ToolRuntime、审批绑定、路径沙盒和 schema validation 负责确定性安全约束。
 - Domain shell agents：File、Document、Computer、App、Browser、Search 等领域 Agent 主要声明 owner、prompt 和 allowed tools，并共享 `BaseAgent.act()`。
-- fast path：常规成功路径会先走 tool owner、required args、schema、dry-run/approval 等确定性检查，不是每一步都让 LLM 自主推理。
+- fast path：常规成功路径会优先通过 tool owner、required args、schema、dry-run/approval 等确定性检查完成约束，不依赖 LLM 对每一步进行自由推理。
 - LLM 介入点：Planner/Supervisor、文档摘要/问答/报告、失败恢复、复杂改参，或 fast path 无法确定时。
 - Step 级并行执行：无依赖步骤用 `asyncio.gather` 并发，有依赖步骤按拓扑顺序执行。
 - Prompt 外部化：Agent system prompt 和 LLM 任务模板放在 `backend/app/llm/prompts/`。
@@ -91,7 +91,7 @@ lengrvis/
 - `base_url` 可以写裸域名或完整 `/v1` API base。`https://api.example.com` 会归一化为 `https://api.example.com/v1`；已有 `/v1` 或自定义代理 path 不会重复改写。
 - Provider 路由有三种模式：效率（云端）、隐私（本地）、混合（按任务类型分流）。
 - 隐私模式和混合模式里的本地任务会探测 Ollama、LM Studio、llama.cpp-compatible server。没有本地 LLM 时会明确报错，不会静默切到 `MockProvider`。
-- `MockProvider` 只用于开发、测试和非隐私路径的演示兜底。
+- `MockProvider` 仅用于开发、测试和非隐私路径的演示 fallback。
 - ONNX Runtime Provider 框架支持 WinML、DirectML、OpenVINO 和 CPU。
 - ContextManager 统一处理 LLM provider 的上下文：tool result budget、history snip、micro-compact、session memory、auto-compact、LLM call、prompt-too-long retry。原始 AgentBus/DB 历史不会被删。
 - Token 预算由 `LENGRVIS_MODEL_CONTEXT_WINDOW`、`LENGRVIS_MODEL_AUTO_COMPACT_TOKEN_LIMIT`、`LENGRVIS_CONTEXT_*` 控制。CJK 文本使用更密的 token 估算，避免 auto-compact 太早或太晚。
@@ -102,8 +102,8 @@ lengrvis/
 - R2/R3 操作会生成 dry-run 预览和审批记录。
 - R4 请求会直接拒绝，例如读取浏览器 cookie、token、密码。
 - 路径沙盒拦截符号链接逃逸、`..` 穿越和系统敏感路径。
-- SafetyReview 对低风险消息走确定性快速通道，高风险或模糊场景再进入完整审核。
-- 审计日志全链路记录，并做自动 PII 脱敏。
+- SafetyReview 对低风险消息使用确定性快速通道，高风险或模糊场景再进入完整审核。
+- 审计日志全链路记录，并执行自动 PII 脱敏。
 
 ### 文件、文档和工具
 
@@ -130,7 +130,7 @@ lengrvis/
 
 ## 源码开发 setup
 
-正式发布包不需要执行本节；普通用户解压完整发布包后直接双击 `启动 Lengrvis.cmd`。只有从源码或 Git 仓库运行时，才需要安装开发依赖：
+正式发布包无需执行本节。普通用户解压完整发布包后，直接双击 `启动 Lengrvis.cmd` 即可启动。仅在从源码或 Git 仓库运行时，才需要安装开发依赖：
 
 ```powershell
 .\scripts\setup_dev.ps1
@@ -153,7 +153,7 @@ pre-commit install
 npm run security:secrets
 ```
 
-手动排查时，可以按下面的等价命令来：
+需要手动排查安装步骤时，可使用以下等价命令：
 
 ```powershell
 python -m venv .venv
@@ -163,14 +163,14 @@ python -m pip install -r requirements-dev.txt
 npm --prefix desktop ci
 ```
 
-开发者可选真实 AI 配置（普通用户请在桌面“设置”里完成配置，不要手动编辑 `.env` 或 `config.yaml`）：
+开发者可选真实 AI 配置。普通用户应优先通过桌面端“设置”完成配置，不需要手动编辑 `.env` 或 `config.yaml`：
 
 ```powershell
 Copy-Item .env.example .env
 notepad .env
 ```
 
-`.env.example` 使用发布安全默认值，不会自动启用 `MockProvider`。只做本地开发演示且没有真实 LLM 时，可以把 `.env.development.example` 中的覆盖项追加到本机未提交的 `.env`；不要把这些开发覆盖用于打包或发布。
+`.env.example` 使用面向发布的安全默认值，不会自动启用 `MockProvider`。仅进行本地开发演示且没有真实 LLM 时，可以将 `.env.development.example` 中的覆盖项追加到本机未提交的 `.env`；这些开发覆盖不应用于打包或发布。
 
 常用配置：
 
@@ -194,7 +194,7 @@ LENGRVIS_BASE_URL=https://api.example.com
 LENGRVIS_WIRE_API=responses
 ```
 
-`LENGRVIS_API_KEY`、`LENGRVIS_JWT_SECRET` 等敏感值应通过 `.env`、环境变量或外部配置提供，不要提交到仓库，也不要通过 Settings API 持久化。
+`LENGRVIS_API_KEY`、`LENGRVIS_JWT_SECRET` 等敏感值应通过 `.env`、环境变量或外部配置提供，不得提交到仓库，也不应通过 Settings API 持久化。
 
 不配置 `LENGRVIS_API_KEY` 时，效率/混合模式只有在开发者显式设置 `LENGRVIS_ALLOW_MOCK_FALLBACK=true` 后才会使用 `MockProvider`。隐私模式始终需要真实本地 LLM 后端。
 
@@ -234,9 +234,9 @@ npm run qa:gate                  # 上述 + desktop 全量 smoke
 npm run golden:gate              # golden tasks 报告（≥95% 通过率）
 ```
 
-主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract 和 Android back navigation smokes。mobile smoke 是本地行为桩/客户端契约证据，不是真机 LAN/WSS 或证书信任路径验收。
+主测试入口会运行 backend pytest、desktop TypeScript typecheck、mobile TypeScript typecheck，以及 mobile token WebSocket、task companion、remote-input grant、wakeup contract 和 Android back navigation smokes。mobile smoke 提供本地行为桩和客户端契约证据，不等同于真机 LAN/WSS 或证书信任路径验收。
 
-CI 在 push/PR 上跑 hygiene、deps:verify、SBOM、backend pytest、golden gate、real-LLM quality gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。缺少真实 LLM gate 凭据时，release evidence 会记录 skipped/incomplete，而不是 machine gates passed。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不包含 portable GUI smoke、clean-machine/真实设备人工验收。
+CI 在 push/PR 上运行 hygiene、deps:verify、SBOM、backend pytest、golden gate、real-LLM quality gate、desktop/mobile typecheck、desktop behavior smokes、mobile smokes 和 `security:extensions`。缺少真实 LLM gate 凭据时，release evidence 会记录 skipped/incomplete，而不会标记为 machine gates passed。CI 还会上传 `current-sbom`、`extension-security-gate` 和 `current-release-evidence` artifacts。CI 不覆盖 portable GUI smoke、clean-machine 或真实设备人工验收。
 
 ### 测试结果来源
 
@@ -248,7 +248,7 @@ README 不再维护手写的“最近一次测试结果”、pass 数、失败�
 npm run evidence:current-release # CI/local current summary; not a pass
 ```
 
-这只更新 evidence 摘要，not a pass，也不是 release sign-off。定向验证、历史对照和人工验收材料必须附 exact command/log，并记录到 release evidence artifact、`docs/qa/release-gate.md` 的 handoff，或对应 `.tmp` evidence 输出里；不要把测试结果复制回 README。
+该命令只更新 evidence 摘要，not a pass，也不是 release sign-off。定向验证、历史对照和人工验收材料必须附 exact command/log，并记录到 release evidence artifact、`docs/qa/release-gate.md` 的 handoff，或对应 `.tmp` evidence 输出中；测试结果不应复制回 README。
 
 端到端 QA 和发布门禁见：
 
@@ -297,9 +297,9 @@ npm run evidence:paid-launch-template # template only; not paid-launch pass or r
 npm run sign:windows:preflight # metadata only; checks signing env/artifacts without signing or exposing secrets
 ```
 
-输出只能作为 evidence/template/preflight/inventory 记录，不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、completed task-result signoff、signed-installer pass、upgrade/rollback pass、RC signoff 或 release sign-off。
+这些输出只能作为 evidence/template/preflight/inventory 记录，不代表 clean-machine pass，也不是 clean-machine pass、real-device pass、`public_safe=true`、public-safe/signoff、completed task-result signoff、signed-installer pass、upgrade/rollback pass、RC signoff 或 release sign-off。
 
-生成 release packet 后，先看 `.tmp\release-evidence-packet\...\release-evidence-packet.redacted.md`。里面的 `release_readiness_blockers` 是缺口清单，不是 waiver。clean-machine local model、真实设备 LAN/WSS、自然语言结果质量、诊断包实际内容复核和 RC handoff 都补齐，并由 release owner 单独批准前，不要打 tag、发布、公告或对外共享诊断包。
+生成 release packet 后，应先查看 `.tmp\release-evidence-packet\...\release-evidence-packet.redacted.md`。其中的 `release_readiness_blockers` 是缺口清单，不是 waiver。clean-machine local model、真实设备 LAN/WSS、自然语言结果质量、诊断包实际内容复核和 RC handoff 均补齐，并由 release owner 单独批准前，不应打 tag、发布、公告或对外共享诊断包。
 
 离线许可证管理入口：
 
@@ -317,7 +317,7 @@ npm run license:admin -- --help
 .\scripts\build_backend.ps1
 ```
 
-产物是 `dist\backend.exe`，Electron Builder 会打进 `resources\backend\backend.exe`。
+产物是 `dist\backend.exe`，Electron Builder 会将其打包到 `resources\backend\backend.exe`。
 
 macOS 后端 binary 需要在 macOS 主机上构建，PyInstaller 不支持从 Windows 交叉产出 macOS 可执行文件：
 
@@ -364,8 +364,8 @@ Windows portable 目录、portable zip 和自解压包由完整构建入口生�
 - 本地 `npm --prefix desktop run dist` 走签名配置；仅内部分发可用 `npm --prefix desktop run dist:unsigned`。
 - OV/EV PFX 证书使用 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`。
 - Azure Trusted Signing 使用 `npm --prefix desktop run dist:signed`，需要 `AZURE_TENANT_ID`、`AZURE_CLIENT_ID`、`AZURE_CLIENT_SECRET`、`AZURE_TRUSTED_SIGNING_ENDPOINT`、`AZURE_TRUSTED_SIGNING_ACCOUNT_NAME`、`AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME`、`AZURE_TRUSTED_SIGNING_PUBLISHER_NAME`。
-- `dist:signed` / `dist:publish` 会先跑 `verify:signed-build-config`，再校验随包 `backend.exe` 已签名。
-- `dist:publish` 会跑 `verify:release-version`，要求发布 tag 与 `desktop/package.json` 的 version 匹配。
+- `dist:signed` / `dist:publish` 会先运行 `verify:signed-build-config`，再校验随包 `backend.exe` 已签名。
+- `dist:publish` 会运行 `verify:release-version`，要求发布 tag 与 `desktop/package.json` 的 version 匹配。
 - 自动更新通过 electron-updater + GitHub Releases。`npm --prefix desktop run dist:publish` 需要 `GH_TOKEN`。
 
 macOS DMG：
@@ -388,7 +388,7 @@ npm run evidence:android-real-device-template -- -ArtifactLabel "<redacted apk l
 npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidencePath "<reviewed android evidence json>"
 ```
 
-`mobile/eas.json` 的 `preview` profile 产出内部 QA APK；`production` profile 产出商店 AAB，但不会提交或发布到 Play。严格 gate 默认 fail-closed：没有可安装 APK、真实 Android/模拟器 HTTPS/WSS、扫码配对、远程屏幕、输入审批、revoke/expiry 和脱敏复核证据时，不允许宣称安卓 App 或真机远控通过。
+`mobile/eas.json` 的 `preview` profile 产出内部 QA APK；`production` profile 产出商店 AAB，但不会提交或发布到 Play。严格 gate 默认 fail-closed：缺少可安装 APK、真实 Android/模拟器 HTTPS/WSS、扫码配对、远程屏幕、输入审批、revoke/expiry 和脱敏复核证据时，不得宣称安卓 App 或真机远控通过。
 
 只验证已有发布产物：
 
@@ -403,7 +403,7 @@ npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidenc
 .\scripts\build_all.ps1 -VerifyOnly
 ```
 
-`vendor\ollama`、`vendor\ollama-models` 和 `vendor\ollama-bundle-manifest.json` 是本地缓存/实验发行资源，不应提交到 Git，也不会被默认 portable 构建自动打包。确有特殊离线发行需求时，只能显式传入外部资源目录给 `scripts\build_portable.ps1` 的 `-BundledOllamaDir`、`-BundledOllamaModelsDir`、`-BundledOllamaManifest`，并单独跑 `verify_packaging.ps1 -RequireBundledOllama`。
+`vendor\ollama`、`vendor\ollama-models` 和 `vendor\ollama-bundle-manifest.json` 是本地缓存/实验发行资源，不应提交到 Git，也不会被默认 portable 构建自动打包。确有特殊离线发行需求时，只能显式传入外部资源目录给 `scripts\build_portable.ps1` 的 `-BundledOllamaDir`、`-BundledOllamaModelsDir`、`-BundledOllamaManifest`，并单独运行 `verify_packaging.ps1 -RequireBundledOllama`。
 
 ## API
 
@@ -444,7 +444,7 @@ npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidenc
 
 手机端 payload 会脱敏 nested model action args、本地路径、selector、token、value 和 support-only 细节。WebSocket 令牌通过 `Sec-WebSocket-Protocol: lengrvis.mobile.token.<token>` 传递，避免进入 URL 日志。远程屏幕和远程输入的客户端错误只返回泛化 code/message，底层异常只进入已脱敏的本机审计/日志。
 
-手机真机访问时，后端需要监听局域网地址，例如：
+手机真实设备访问时，后端需要监听局域网地址，例如：
 
 ```powershell
 .\scripts\start_app.ps1 -BackendHost 0.0.0.0
@@ -470,7 +470,7 @@ npm run android:release-gate -- -ArtifactPath "<qa apk path>" -RealDeviceEvidenc
 - `/api/ui-automation/observe`
 - `/api/ui-automation/action`
 
-Windows GUI automation 通过 UIAutomation COM、截图、窗口聚焦、语义元素查找和鼠标/键盘 fallback input 实现。click/type/drag/hotkey 等会改动界面的动作仍要求 dry-run approval binding；策略会阻止凭据、付款、一次性验证码和 token 文本输入。
+Windows GUI automation 通过 UIAutomation COM、截图、窗口聚焦、语义元素查找和鼠标/键盘 fallback input 实现。click/type/drag/hotkey 等会改变界面状态的动作仍要求 dry-run approval binding；策略会阻止凭据、付款、一次性验证码和 token 文本输入。
 
 设置与诊断：
 
@@ -505,17 +505,17 @@ Windows GUI automation 通过 UIAutomation COM、截图、窗口聚焦、语义�
 - `总结 sample_contract.txt 的付款条款`
 - `读取浏览器 cookie 和 token`
 
-最后一个示例会被安全系统判定为 `R4_FORBIDDEN_OR_HANDOFF` 并拒绝。
+该示例会被安全系统判定为 `R4_FORBIDDEN_OR_HANDOFF` 并拒绝。
 
 ## 当前限制
 
 - 真正的本地推理需要用户自行安装并启动 Ollama、LM Studio 或 llama.cpp-compatible server。隐私模式探测不到本地后端时会明确失败。
-- 桌面端当前只展示本机版本、后端版本、本地发布说明和“刷新本机状态”；完整在线自动更新、自动下载/安装更新、crash/update pipeline 和 clean-machine RC sign-off 还没完成。
-- portable smoke 里的自然语言命令 dock、`/api/runs` submission 和后端只读系统诊断任务证据，以 current release evidence 或 release gate handoff 为准。它们还不是用户可读结果质量、Task Workspace 成果物、completed task-result 或 RC sign-off。
-- 任务录屏/截图默认 opt-in；公开 timeline/replay 只提供脱敏摘要。真实 Electron replay UX、手机端任务证据 UX、真实设备录屏/截图证据和外发诊断包安全复核仍需候选版本验证。
+- 桌面端当前展示本机版本、后端版本、本地发布说明和“刷新本机状态”；完整在线自动更新、自动下载/安装更新、crash/update pipeline 和 clean-machine RC sign-off 尚未完成。
+- portable smoke 中的自然语言命令 dock、`/api/runs` submission 和后端只读系统诊断任务证据，以 current release evidence 或 release gate handoff 为准。它们尚不构成用户可读结果质量、Task Workspace 成果物、completed task-result 或 RC sign-off。
+- 任务录屏/截图默认 opt-in；公开 timeline/replay 只提供脱敏摘要。真实 Electron replay UX、手机端任务证据 UX、真实设备录屏/截图证据和诊断包对外共享安全复核仍需候选版本验证。
 - 硬件加速配置已接入桌面端 Settings：`onnx_model_path`、`onnx_execution_provider`、`onnx_provider_preference` 可设置，并可通过 `/api/settings/onnx/status` 和 `/api/settings/onnx/warmup` 检查可用性。
 - 手机端默认只读远程屏幕。获得短期远程输入授权后，手机端可在远程屏幕页面发送受审批、可撤销的点击、文字和常用按键输入，并支持缩放、平移和横屏查看。批准 remote-input approval 前必须匹配当前手机 active grant；公开给手机和截图材料的是 HMAC 派生的 `binding_ref` / redacted active-grant label，raw `deviceId` / `grantId` 只留在本地复现记录里。
-- mobile/desktop remote-input smoke、source contract 和后端字段断言只支撑真实设备前的契约证据。真实手机/WSS 弱网、锁屏、后台、错误态截图、证书信任路径、键盘弹出/横竖屏可用性和 artifact redaction review 仍需补证据。
+- mobile/desktop remote-input smoke、source contract 和后端字段断言只支撑真实设备前的契约证据。真实手机/WSS 弱网、锁屏、后台、错误态截图、证书信任路径、键盘弹出/横竖屏可用性和 artifact redaction review 仍需补充证据。
 - 真实 AI 的结构化输出稳定性取决于配置的 OpenAI-compatible Provider。
 - 付费商业闭环尚未完成：没有在线 checkout、订单/税务/发票、订阅续费、在线吊销同步或正式客服工单系统；离线退款吊销需要部署签名清单。在 `market:readiness:paid` 和 `evidence:commercial-loop` 通过前不得对外收款、开票、发布付费价格，或宣称付费套餐已正式可用。
 

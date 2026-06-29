@@ -17,40 +17,34 @@ function assertResolverDecisionTable(nav) {
     "exit_app",
   );
 
-  // Inner sub-screens return to the approvals list (mirrors their in-app back).
-  for (const screen of ["remote", "wakeups"]) {
+  // Tab sub-screens return to the Home tab.
+  for (const screen of ["approvals", "remote", "wakeups"]) {
     assert.equal(
-      resolveAndroidBack({ sessionActive: true, activeScreen: screen, hasSelectedApproval: false }),
-      "return_to_approvals",
-      `back from ${screen} must return to approvals`,
-    );
-    // Sub-screens take precedence over an open approval detail (render order).
-    assert.equal(
-      resolveAndroidBack({ sessionActive: true, activeScreen: screen, hasSelectedApproval: true }),
-      "return_to_approvals",
-      `${screen} must outrank an open approval detail`,
+      resolveAndroidBack({ sessionActive: true, route: { kind: "tab", tab: screen } }),
+      "return_to_home",
+      `back from ${screen} must return to home`,
     );
   }
 
-  // An open approval detail closes back to the list.
+  // An open approval detail closes back to the previous route.
   assert.equal(
-    resolveAndroidBack({ sessionActive: true, activeScreen: "approvals", hasSelectedApproval: true }),
-    "close_approval_detail",
+    resolveAndroidBack({ sessionActive: true, route: { kind: "approvalDetail" } }),
+    "go_back",
   );
 
-  // The approvals list root exits the app via the OS default.
+  // The home root exits the app via the OS default.
   assert.equal(
-    resolveAndroidBack({ sessionActive: true, activeScreen: "approvals", hasSelectedApproval: false }),
+    resolveAndroidBack({ sessionActive: true, route: { kind: "tab", tab: "home" } }),
     "exit_app",
   );
 
-  assert.equal(androidBackIsHandled("return_to_approvals"), true);
-  assert.equal(androidBackIsHandled("close_approval_detail"), true);
+  assert.equal(androidBackIsHandled("return_to_home"), true);
+  assert.equal(androidBackIsHandled("go_back"), true);
   assert.equal(androidBackIsHandled("exit_app"), false);
 }
 
 function assertAppWiresBackHandler() {
-  const source = fs.readFileSync(mobilePath("App.tsx"), "utf8");
+  const source = fs.readFileSync(mobilePath("app/_layout.tsx"), "utf8");
   // The hardware back button must be wired and gated to Android, and use the
   // shared resolver instead of ad-hoc inline logic.
   assert.match(source, /resolveAndroidBack/, "App.tsx must use the shared back resolver");

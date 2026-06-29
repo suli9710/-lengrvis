@@ -25,6 +25,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.security.lan import require_secure_non_loopback_bind  # noqa: E402
+from app.security.lan_tls import ensure_lan_tls_material  # noqa: E402
 
 DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 SERVICE_LOG_FILENAME = "lengrvis-service.log"
@@ -41,8 +42,10 @@ SERVICE_OPTION_BACKEND_HOST = "BackendHost"
 SERVICE_OPTION_BACKEND_PORT = "BackendPort"
 SERVICE_OPTION_BACKEND_LOG_LEVEL = "BackendLogLevel"
 SERVICE_OPTION_LAN_TLS_ENABLED = "LanTlsEnabled"
+SERVICE_OPTION_LAN_TLS_AUTO = "LanTlsAuto"
 SERVICE_OPTION_LAN_TLS_CERT_FILE = "LanTlsCertFile"
 SERVICE_OPTION_LAN_TLS_KEY_FILE = "LanTlsKeyFile"
+SERVICE_OPTION_LAN_PUBLIC_BASE_URL = "LanPublicBaseUrl"
 SERVICE_COMMANDS = {
     "debug",
     "install",
@@ -127,6 +130,7 @@ def get_backend_config() -> BackendConfig:
         "info",
     )
     tls_enabled = _lan_tls_enabled(settings)
+    tls_auto = _lan_tls_auto_enabled()
     ssl_certfile = _env("LENGRVIS_LAN_TLS_CERT_FILE") or _get_service_option(
         SERVICE_OPTION_LAN_TLS_CERT_FILE,
         str(getattr(settings, "lan_tls_cert_file", "") or ""),
@@ -135,6 +139,29 @@ def get_backend_config() -> BackendConfig:
         SERVICE_OPTION_LAN_TLS_KEY_FILE,
         str(getattr(settings, "lan_tls_key_file", "") or ""),
     )
+    public_base_url = _env("LENGRVIS_LAN_PUBLIC_BASE_URL") or _get_service_option(
+        SERVICE_OPTION_LAN_PUBLIC_BASE_URL,
+        str(getattr(settings, "lan_public_base_url", "") or ""),
+    )
+    if public_base_url and not _env("LENGRVIS_LAN_PUBLIC_BASE_URL"):
+        _set_env("LENGRVIS_LAN_PUBLIC_BASE_URL", public_base_url)
+    if tls_auto and (tls_enabled or not _is_loopback_bind_host(host)):
+        material = ensure_lan_tls_material(
+            data_dir=str(getattr(settings, "data_dir", "") or ""),
+            host=host,
+            port=port,
+            public_base_url=public_base_url,
+            cert_file=ssl_certfile,
+            key_file=ssl_keyfile,
+        )
+        tls_enabled = True
+        ssl_certfile = str(material.cert_file)
+        ssl_keyfile = str(material.key_file)
+        if not _env("LENGRVIS_LAN_PUBLIC_BASE_URL"):
+            _set_env("LENGRVIS_LAN_PUBLIC_BASE_URL", material.origin)
+        _set_env("LENGRVIS_LAN_TLS_ENABLED", "true")
+        _set_env("LENGRVIS_LAN_TLS_CERT_FILE", ssl_certfile)
+        _set_env("LENGRVIS_LAN_TLS_KEY_FILE", ssl_keyfile)
     require_secure_non_loopback_bind(
         host,
         tls_enabled=tls_enabled,
@@ -164,6 +191,27 @@ def _lan_tls_enabled(settings: Any) -> bool:
     if configured:
         return str(configured).strip().lower() in {"1", "true", "yes", "on"}
     return bool(getattr(settings, "lan_tls_enabled", False))
+
+
+def _lan_tls_auto_enabled() -> bool:
+    configured = _env("LENGRVIS_LAN_TLS_AUTO") or _get_service_option(SERVICE_OPTION_LAN_TLS_AUTO, "")
+    return str(configured).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_loopback_bind_host(host: str | None) -> bool:
+    normalized = str(host or "").strip().lower()
+    if not normalized:
+        return True
+    if normalized in {"localhost", "testclient"}:
+        return True
+    if normalized in {"0.0.0.0", "::", "*"}:
+        return False
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(normalized.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def import_pywin32_service_modules() -> Pywin32ServiceModules | None:
@@ -223,8 +271,10 @@ def apply_service_runtime_options() -> None:
         SERVICE_OPTION_BACKEND_PORT: "LENGRVIS_BACKEND_PORT",
         SERVICE_OPTION_BACKEND_LOG_LEVEL: "LENGRVIS_BACKEND_LOG_LEVEL",
         SERVICE_OPTION_LAN_TLS_ENABLED: "LENGRVIS_LAN_TLS_ENABLED",
+        SERVICE_OPTION_LAN_TLS_AUTO: "LENGRVIS_LAN_TLS_AUTO",
         SERVICE_OPTION_LAN_TLS_CERT_FILE: "LENGRVIS_LAN_TLS_CERT_FILE",
         SERVICE_OPTION_LAN_TLS_KEY_FILE: "LENGRVIS_LAN_TLS_KEY_FILE",
+        SERVICE_OPTION_LAN_PUBLIC_BASE_URL: "LENGRVIS_LAN_PUBLIC_BASE_URL",
     }
     for option, env_key in option_to_env.items():
         try:
@@ -480,8 +530,10 @@ def _parse_cli(argv: list[str]) -> Namespace:
     parser.add_argument("--backend-port", default=None)
     parser.add_argument("--backend-log-level", default=None)
     parser.add_argument("--lan-tls-enabled", action="store_true", default=None)
+    parser.add_argument("--auto-lan-tls", action="store_true", default=None)
     parser.add_argument("--lan-tls-cert-file", default=None)
     parser.add_argument("--lan-tls-key-file", default=None)
+    parser.add_argument("--lan-public-base-url", default=None)
     parsed, service_args = parser.parse_known_args(remainder)
     parsed.command = command
     parsed.service_args = service_args
@@ -498,8 +550,13 @@ def _normalize_command(command: str) -> str:
 def _persist_service_options(args: Namespace, modules: Pywin32ServiceModules) -> None:
     lan_tls_enabled = (
         "true"
-        if args.lan_tls_enabled
+        if args.lan_tls_enabled or args.auto_lan_tls
         else _env("LENGRVIS_LAN_TLS_ENABLED", _get_service_option(SERVICE_OPTION_LAN_TLS_ENABLED, "false"))
+    )
+    lan_tls_auto = (
+        "true"
+        if args.auto_lan_tls
+        else _env("LENGRVIS_LAN_TLS_AUTO", _get_service_option(SERVICE_OPTION_LAN_TLS_AUTO, "false"))
     )
     options = {
         SERVICE_OPTION_PROJECT_ROOT: args.project_root,
@@ -507,8 +564,10 @@ def _persist_service_options(args: Namespace, modules: Pywin32ServiceModules) ->
         SERVICE_OPTION_BACKEND_PORT: args.backend_port or _env("LENGRVIS_BACKEND_PORT", "8000"),
         SERVICE_OPTION_BACKEND_LOG_LEVEL: args.backend_log_level or _env("LENGRVIS_BACKEND_LOG_LEVEL", "info"),
         SERVICE_OPTION_LAN_TLS_ENABLED: lan_tls_enabled,
+        SERVICE_OPTION_LAN_TLS_AUTO: lan_tls_auto,
         SERVICE_OPTION_LAN_TLS_CERT_FILE: args.lan_tls_cert_file or _env("LENGRVIS_LAN_TLS_CERT_FILE", ""),
         SERVICE_OPTION_LAN_TLS_KEY_FILE: args.lan_tls_key_file or _env("LENGRVIS_LAN_TLS_KEY_FILE", ""),
+        SERVICE_OPTION_LAN_PUBLIC_BASE_URL: args.lan_public_base_url or _env("LENGRVIS_LAN_PUBLIC_BASE_URL", ""),
     }
     for key, value in options.items():
         modules.win32serviceutil.SetServiceCustomOption(SERVICE_NAME, key, str(value))

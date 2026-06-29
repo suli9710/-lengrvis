@@ -36,7 +36,8 @@
           "cameraPermission": "允许 Lengrvis 手机端使用相机扫描电脑端配对二维码。",
           "recordAudioAndroid": false
         }
-      ]
+      ],
+      "expo-router"
     ]
   }
 }

@@ -2,7 +2,7 @@
   "name": "lengrvis-mobile",
   "version": "0.1.1",
   "private": true,
-  "main": "index.ts",
+  "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
@@ -25,10 +25,15 @@
     "expo-camera": "56.0.8",
     "expo-device": "56.0.4",
     "expo-notifications": "56.0.18",
+    "expo-router": "56.2.11",
     "expo-secure-store": "56.0.4",
     "lucide-react-native": "1.16.0",
     "react": "19.2.3",
-    "react-native": "0.85.3"
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-gesture-handler": "2.31.1",
+    "react-native-safe-area-context": "5.7.0",
+    "react-native-screens": "4.25.2"
   },
   "devDependencies": {
     "@types/react": "19.2.15",

@@ -5,6 +5,8 @@
     [switch]$SkipInstall,
     [switch]$InstallMissingDependencies,
     [switch]$EnableLanTls,
+    [switch]$AutoLanTls,
+    [string]$LanPublicBaseUrl = "",
     [string]$TlsCertFile = "",
     [string]$TlsKeyFile = "",
     [switch]$CheckOnly,
@@ -102,6 +104,21 @@ function Test-TruthyEnv([string]$Value) {
     return $Value -and $Value.ToLowerInvariant() -in @("1", "true", "yes", "on")
 }
 
+function Test-LoopbackLaunchHost([string]$HostName) {
+    $normalized = if ($HostName) { $HostName.Trim().Trim("[]".ToCharArray()).ToLowerInvariant() } else { "" }
+    if ($normalized -in @("", "localhost", "127.0.0.1", "::1")) {
+        return $true
+    }
+    if ($normalized.StartsWith("127.")) {
+        return $true
+    }
+    $ipAddress = [System.Net.IPAddress]::None
+    if ([System.Net.IPAddress]::TryParse($normalized, [ref]$ipAddress)) {
+        return [System.Net.IPAddress]::IsLoopback($ipAddress)
+    }
+    return $false
+}
+
 function Redact-UrlText([string]$Text) {
     $redacted = [regex]::Replace($Text, "(?i)(https?://)[^/\s:@]+:[^/\s@]+@", "`${1}$RedactedLogValue`:$RedactedLogValue@")
     return [regex]::Replace($redacted, "(?i)([?&#](?:$SensitiveUrlParamPattern)=)[^&#\s]+", "`${1}$RedactedLogValue")
@@ -186,9 +203,53 @@ function Resolve-LaunchPath([string]$Path) {
 }
 
 function Resolve-LanTlsConfig {
+    param([string]$Python)
+
     $cert = if ($TlsCertFile) { $TlsCertFile } elseif ($env:LENGRVIS_LAN_TLS_CERT_FILE) { $env:LENGRVIS_LAN_TLS_CERT_FILE } else { "" }
     $key = if ($TlsKeyFile) { $TlsKeyFile } elseif ($env:LENGRVIS_LAN_TLS_KEY_FILE) { $env:LENGRVIS_LAN_TLS_KEY_FILE } else { "" }
-    $enabled = [bool]$EnableLanTls -or (Test-TruthyEnv $env:LENGRVIS_LAN_TLS_ENABLED) -or [bool]$cert -or [bool]$key
+    $autoEnabled = [bool]$AutoLanTls -or (Test-TruthyEnv $env:LENGRVIS_LAN_TLS_AUTO)
+    $needsAutoTls = $autoEnabled -or ((-not (Test-LoopbackLaunchHost $BackendHost)) -and (-not $cert) -and (-not $key))
+    if ($needsAutoTls) {
+        if (-not $Python) {
+            throw "自动 LAN HTTPS 需要 Python 运行时。"
+        }
+        $publicBaseUrl = if ($env:LENGRVIS_LAN_PUBLIC_BASE_URL) { $env:LENGRVIS_LAN_PUBLIC_BASE_URL } else { "" }
+        $previousPythonPath = $env:PYTHONPATH
+        try {
+            $backendImportPath = Join-Path $Root "backend"
+            if ($previousPythonPath) {
+                $env:PYTHONPATH = "$backendImportPath;$previousPythonPath"
+            }
+            else {
+                $env:PYTHONPATH = $backendImportPath
+            }
+            $output = & $Python -m app.security.lan_tls --host $BackendHost --port ([string]$BackendPort) --public-base-url $publicBaseUrl 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "自动生成 LAN HTTPS 证书失败：$(Redact-LogText (($output | ForEach-Object { [string]$_ }) -join "`n"))"
+            }
+        }
+        finally {
+            if ($null -eq $previousPythonPath) {
+                Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:PYTHONPATH = $previousPythonPath
+            }
+        }
+        try {
+            $material = ($output | Select-Object -Last 1) | ConvertFrom-Json
+            $cert = [string]$material.cert_file
+            $key = [string]$material.key_file
+            if (-not $env:LENGRVIS_LAN_PUBLIC_BASE_URL) {
+                $env:LENGRVIS_LAN_PUBLIC_BASE_URL = [string]$material.origin
+            }
+            $env:LENGRVIS_LAN_TLS_AUTO = "true"
+        }
+        catch {
+            throw "自动生成 LAN HTTPS 证书输出无法解析。"
+        }
+    }
+    $enabled = [bool]$EnableLanTls -or $autoEnabled -or (Test-TruthyEnv $env:LENGRVIS_LAN_TLS_ENABLED) -or [bool]$cert -or [bool]$key
 
     if (-not $enabled) {
         return [pscustomobject]@{ Enabled = $false; CertFile = ""; KeyFile = "" }
@@ -211,10 +272,10 @@ function Resolve-LanTlsConfig {
 
 function Test-Health {
     try {
-        $healthUrl = "$BackendUrl/api/health"
+        $healthUrl = "${BackendScheme}://127.0.0.1`:$BackendPort/api/health"
         # Self-signed certs are only expected on loopback; never skip
         # certificate validation when probing a non-loopback host.
-        $isLoopbackHost = $BackendHost -in @("127.0.0.1", "localhost", "::1", "[::1]")
+        $isLoopbackHost = $true
         if ($BackendScheme -eq "https" -and $isLoopbackHost) {
             $invokeCommand = Get-Command Invoke-WebRequest
             if ($invokeCommand.Parameters.ContainsKey("SkipCertificateCheck")) {
@@ -691,10 +752,15 @@ try {
     if ($InstallMissingDependencies) {
         throw "start_app.ps1 不再安装依赖，避免普通用户首次启动被网络或 registry 影响。"
     }
-    $lanTlsConfig = Resolve-LanTlsConfig
+    if ($LanPublicBaseUrl) {
+        $env:LENGRVIS_LAN_PUBLIC_BASE_URL = $LanPublicBaseUrl.TrimEnd("/")
+    }
+    $python = Find-Python
+    $lanTlsConfig = Resolve-LanTlsConfig $python
     if ($lanTlsConfig.Enabled) {
         $BackendScheme = "https"
-        $BackendUrl = "${BackendScheme}://$BackendHost`:$BackendPort"
+        $publicBaseUrl = if ($env:LENGRVIS_LAN_PUBLIC_BASE_URL) { $env:LENGRVIS_LAN_PUBLIC_BASE_URL.TrimEnd("/") } else { "${BackendScheme}://$BackendHost`:$BackendPort" }
+        $BackendUrl = $publicBaseUrl
         $env:LENGRVIS_LAN_TLS_ENABLED = "true"
         $env:LENGRVIS_LAN_TLS_CERT_FILE = [string]$lanTlsConfig.CertFile
         $env:LENGRVIS_LAN_TLS_KEY_FILE = [string]$lanTlsConfig.KeyFile
@@ -711,7 +777,6 @@ try {
     $env:LENGRVIS_BACKEND_PORT = [string]$BackendPort
     $env:LENGRVIS_CONFIG_DIR = $Root
 
-    $python = Find-Python
     $npm = Find-Npm
 
     Ensure-NodeDependencies $npm ([bool]$Desktop)

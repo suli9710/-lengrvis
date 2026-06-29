@@ -5,6 +5,8 @@
     [int]$BackendPort = 8000,
     [string]$LogLevel = "info",
     [switch]$LanTlsEnabled,
+    [switch]$AutoLanTls,
+    [string]$LanPublicBaseUrl = "",
     [string]$LanTlsCertFile = "",
     [string]$LanTlsKeyFile = "",
     [switch]$StartupAuto,
@@ -42,6 +44,21 @@ function Test-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-LoopbackHost([string]$HostName) {
+    $normalized = if ($HostName) { $HostName.Trim().Trim("[]".ToCharArray()).ToLowerInvariant() } else { "" }
+    if ($normalized -in @("", "localhost", "127.0.0.1", "::1")) {
+        return $true
+    }
+    if ($normalized.StartsWith("127.")) {
+        return $true
+    }
+    $ipAddress = [System.Net.IPAddress]::None
+    if ([System.Net.IPAddress]::TryParse($normalized, [ref]$ipAddress)) {
+        return [System.Net.IPAddress]::IsLoopback($ipAddress)
+    }
+    return $false
 }
 
 function Wait-BackendHealth {
@@ -103,8 +120,15 @@ $env:LENGRVIS_BACKEND_HOST = $BackendHost
 $env:LENGRVIS_BACKEND_PORT = [string]$BackendPort
 $env:LENGRVIS_BACKEND_LOG_LEVEL = $LogLevel
 $env:LENGRVIS_CONFIG_DIR = $Root
-if ($LanTlsEnabled) {
+$effectiveAutoLanTls = [bool]$AutoLanTls -or ((-not (Test-LoopbackHost $BackendHost)) -and -not $LanTlsCertFile -and -not $LanTlsKeyFile)
+if ($LanPublicBaseUrl) {
+    $env:LENGRVIS_LAN_PUBLIC_BASE_URL = $LanPublicBaseUrl.TrimEnd("/")
+}
+if ($LanTlsEnabled -or $effectiveAutoLanTls) {
     $env:LENGRVIS_LAN_TLS_ENABLED = "true"
+    if ($effectiveAutoLanTls) {
+        $env:LENGRVIS_LAN_TLS_AUTO = "true"
+    }
     if ($LanTlsCertFile) {
         $env:LENGRVIS_LAN_TLS_CERT_FILE = $LanTlsCertFile
     }
@@ -129,8 +153,14 @@ switch ($Action) {
             "--backend-port", [string]$BackendPort,
             "--backend-log-level", $LogLevel
         )
-        if ($LanTlsEnabled) {
+        if ($LanTlsEnabled -or $effectiveAutoLanTls) {
             $serviceArgs += "--lan-tls-enabled"
+        }
+        if ($effectiveAutoLanTls) {
+            $serviceArgs += "--auto-lan-tls"
+        }
+        if ($LanPublicBaseUrl) {
+            $serviceArgs += @("--lan-public-base-url", $LanPublicBaseUrl.TrimEnd("/"))
         }
         if ($LanTlsCertFile) {
             $serviceArgs += @("--lan-tls-cert-file", $LanTlsCertFile)
@@ -153,8 +183,14 @@ switch ($Action) {
             "--backend-port", [string]$BackendPort,
             "--backend-log-level", $LogLevel
         )
-        if ($LanTlsEnabled) {
+        if ($LanTlsEnabled -or $effectiveAutoLanTls) {
             $serviceArgs += "--lan-tls-enabled"
+        }
+        if ($effectiveAutoLanTls) {
+            $serviceArgs += "--auto-lan-tls"
+        }
+        if ($LanPublicBaseUrl) {
+            $serviceArgs += @("--lan-public-base-url", $LanPublicBaseUrl.TrimEnd("/"))
         }
         if ($LanTlsCertFile) {
             $serviceArgs += @("--lan-tls-cert-file", $LanTlsCertFile)
@@ -178,7 +214,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 if (($Action -eq "start" -or $Action -eq "restart") -and -not $SkipHealthCheck) {
-    $healthScheme = if ($LanTlsEnabled) { "https" } else { "http" }
+    $healthScheme = if ($LanTlsEnabled -or $effectiveAutoLanTls) { "https" } else { "http" }
     Wait-BackendHealth -HostName $BackendHost -Port $BackendPort -Scheme $healthScheme -TimeoutSeconds $WaitSeconds
 }
 

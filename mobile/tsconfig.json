@@ -7,6 +7,8 @@
   "include": [
     "index.ts",
     "App.tsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
     "src/**/*.ts",
     "src/**/*.tsx"
   ]

@@ -7,18 +7,25 @@
 // in-app back buttons so App.tsx can map a hardware back press to the same
 // transition. Kept dependency-free so it is unit-testable in the Node smokes.
 
-export type ActiveScreen = "approvals" | "remote" | "wakeups";
+export type ActiveScreen = "home" | "approvals" | "remote" | "wakeups";
+export type CompanionTab = ActiveScreen;
+
+export type RouterBackState =
+  | { kind: "gate" }
+  | { kind: "tab"; tab: CompanionTab }
+  | { kind: "approvalDetail" };
 
 export interface BackNavigationState {
   /** True once a pairing session is loaded (PairScreen / load screens excluded). */
   sessionActive: boolean;
-  activeScreen: ActiveScreen;
-  hasSelectedApproval: boolean;
+  activeScreen?: ActiveScreen;
+  hasSelectedApproval?: boolean;
+  route?: RouterBackState;
 }
 
 export type BackNavigationAction =
-  | "return_to_approvals"
-  | "close_approval_detail"
+  | "return_to_home"
+  | "go_back"
   | "exit_app";
 
 /**
@@ -32,11 +39,18 @@ export function resolveAndroidBack(state: BackNavigationState): BackNavigationAc
     // Pairing / session-recovery screens use default OS back (exit).
     return "exit_app";
   }
-  if (state.activeScreen === "remote" || state.activeScreen === "wakeups") {
-    return "return_to_approvals";
+
+  if (state.route) {
+    if (state.route.kind === "approvalDetail") return "go_back";
+    if (state.route.kind === "tab" && state.route.tab !== "home") return "return_to_home";
+    return "exit_app";
   }
+
   if (state.hasSelectedApproval) {
-    return "close_approval_detail";
+    return "go_back";
+  }
+  if (state.activeScreen === "remote" || state.activeScreen === "wakeups" || state.activeScreen === "approvals") {
+    return state.activeScreen === "approvals" ? "exit_app" : "return_to_home";
   }
   return "exit_app";
 }

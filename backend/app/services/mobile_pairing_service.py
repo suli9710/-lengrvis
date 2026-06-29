@@ -23,6 +23,7 @@ from app.llm.registry import get_effective_settings
 from app.orchestration.execution_stage import ExecutionStage
 from app.policy.approval_binding import redacted_preview, remote_input_binding_ref
 from app.policy.redaction import contains_sensitive_key, redact_public_text, redact_value
+from app.security.lan_tls import certificate_fingerprint_sha256
 from app.security.mobile_jwt import (
     MOBILE_REMOTE_VIEW_TTL_SECONDS,
     MOBILE_TOKEN_TTL_SECONDS,
@@ -1386,11 +1387,7 @@ def _validate_lan_tls_material(cert_file: str, key_file: str) -> dict[str, Any]:
 
 
 def _certificate_fingerprint_sha256(cert_path: Path) -> str:
-    data = cert_path.read_bytes()
-    text = data.decode("utf-8", errors="ignore")
-    if "-----BEGIN CERTIFICATE-----" in text:
-        data = ssl.PEM_cert_to_DER_cert(text)
-    return sha256(data).hexdigest()
+    return certificate_fingerprint_sha256(cert_path)
 
 
 def _safe_tls_error(error: Exception) -> str:
