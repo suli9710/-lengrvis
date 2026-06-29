@@ -20,19 +20,19 @@
     "smoke:android-lan-tls": "node scripts/android-lan-tls-smoke.cjs"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-async-storage/async-storage": "3.1.1",
     "expo": "56.0.12",
     "expo-camera": "56.0.8",
     "expo-device": "56.0.4",
     "expo-notifications": "56.0.18",
     "expo-secure-store": "56.0.4",
-    "lucide-react-native": "1.16.0",
-    "react": "19.2.3",
-    "react-native": "0.85.3"
+    "lucide-react-native": "1.22.0",
+    "react": "19.2.7",
+    "react-native": "0.86.0"
   },
   "devDependencies": {
-    "@types/react": "19.2.15",
-    "eas-cli": "20.3.0",
+    "@types/react": "19.2.17",
+    "eas-cli": "20.4.0",
     "typescript": "6.0.3"
   },
   "overrides": {
