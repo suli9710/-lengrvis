@@ -2301,6 +2301,14 @@ def test_remote_input_grant_full_websocket_lifecycle(monkeypatch, tmp_path):
         )
         assert claim_response.status_code == 200
         claimed = claim_response.json()
+        routes_remote._remember_remote_screen_frame(
+            decode_mobile_token(claimed["token"], allowed_scopes={REMOTE_INPUT_SCOPE}),
+            sequence=1,
+            origin_x=0,
+            origin_y=0,
+            width=800,
+            height=600,
+        )
 
         with client.websocket_connect(
             "/ws/remote/input",

@@ -72,6 +72,9 @@ def safe_move_file(src: Path, dst: Path, allowed: list[str], context: dict[str, 
     safe_copy_file(src, dst, allowed, context)
     raise_if_tool_aborted(context)
     ensure_mutation_path_safe(src, allowed, include_self=True, context=context)
+    if sys.platform == "win32":
+        delete_file_with_windows_handle(src, allowed, context)
+        return
     src.unlink()
 
 
@@ -191,10 +194,6 @@ def copy_file_with_windows_handles(
         dst_handle = None
         with os.fdopen(src_fd, "rb") as src_fh, os.fdopen(dst_fd, "wb") as dst_fh:
             shutil.copyfileobj(src_fh, dst_fh, length=1024 * 1024)
-        try:
-            shutil.copystat(src, dst, follow_symlinks=False)
-        except OSError:
-            pass
     finally:
         if src_handle is not None:
             _close_windows_handle(src_handle)
@@ -202,7 +201,21 @@ def copy_file_with_windows_handles(
             _close_windows_handle(dst_handle)
 
 
+def delete_file_with_windows_handle(src: Path, allowed: list[str], context: dict[str, Any] | None = None) -> None:
+    handle = _open_windows_file_handle(
+        src,
+        access=_win_delete_access() | _win_file_read_attributes(),
+        creation=_win_open_existing(),
+    )
+    try:
+        _assert_windows_handle_authorized(handle, allowed, context)
+        _delete_windows_handle_on_close(handle)
+    finally:
+        _close_windows_handle(handle)
+
+
 def _assert_windows_handle_authorized(handle: int, allowed: list[str], context: dict[str, Any] | None) -> None:
+    _assert_windows_handle_not_reparse_point(handle)
     final_path = _windows_final_path(handle)
     real_target = Path(final_path).expanduser().resolve(strict=False)
     scope = _explicit_scope(context) if context else None
@@ -214,17 +227,40 @@ def _open_windows_file_handle(path: Path, *, access: int, creation: int) -> int:
     import ctypes
     from ctypes import wintypes
 
-    handle = ctypes.windll.kernel32.CreateFileW(
+    parent_handle = _open_windows_directory_handle(path.parent)
+    try:
+        _assert_windows_handle_not_reparse_point(parent_handle)
+        handle = _kernel32().CreateFileW(
+            str(path),
+            access,
+            _win_share_read() | _win_share_write() | _win_share_delete(),
+            None,
+            creation,
+            _win_file_attribute_normal() | _win_file_flag_open_reparse_point(),
+            None,
+        )
+    finally:
+        _close_windows_handle(parent_handle)
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), f"CreateFileW failed for {path}")
+    return int(handle)
+
+
+def _open_windows_directory_handle(path: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    handle = _kernel32().CreateFileW(
         str(path),
-        access,
+        _win_file_read_attributes(),
         _win_share_read() | _win_share_write() | _win_share_delete(),
         None,
-        creation,
-        _win_file_attribute_normal(),
+        _win_open_existing(),
+        _win_file_flag_backup_semantics() | _win_file_flag_open_reparse_point(),
         None,
     )
     if handle == wintypes.HANDLE(-1).value:
-        raise OSError(ctypes.get_last_error(), f"CreateFileW failed for {path}")
+        raise OSError(ctypes.get_last_error(), f"CreateFileW failed for directory {path}")
     return int(handle)
 
 
@@ -233,7 +269,7 @@ def _windows_final_path(handle: int) -> str:
 
     buffer_len = 32768
     buffer = ctypes.create_unicode_buffer(buffer_len)
-    result = ctypes.windll.kernel32.GetFinalPathNameByHandleW(handle, buffer, buffer_len, 0)
+    result = _kernel32().GetFinalPathNameByHandleW(handle, buffer, buffer_len, 0)
     if result == 0 or result >= buffer_len:
         raise OSError(ctypes.get_last_error(), "GetFinalPathNameByHandleW failed")
     path = buffer.value
@@ -245,9 +281,88 @@ def _windows_final_path(handle: int) -> str:
 
 
 def _close_windows_handle(handle: int) -> None:
+    _kernel32().CloseHandle(handle)
+
+
+def _assert_windows_handle_not_reparse_point(handle: int) -> None:
+    attributes = _windows_file_attributes(handle)
+    if attributes & _win_file_attribute_reparse_point():
+        raise SecurityError("Filesystem links inside authorized directories are not writable.")
+
+
+def _windows_file_attributes(handle: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("ReparseTag", wintypes.DWORD),
+        ]
+
+    info = FileAttributeTagInfo()
+    ok = _kernel32().GetFileInformationByHandleEx(
+        handle,
+        _win_file_attribute_tag_info(),
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+    if not ok:
+        raise OSError(ctypes.get_last_error(), "GetFileInformationByHandleEx(FileAttributeTagInfo) failed")
+    return int(info.FileAttributes)
+
+
+def _delete_windows_handle_on_close(handle: int) -> None:
     import ctypes
 
-    ctypes.windll.kernel32.CloseHandle(handle)
+    class FileDispositionInfo(ctypes.Structure):
+        _fields_ = [("DeleteFile", ctypes.c_byte)]
+
+    info = FileDispositionInfo(1)
+    ok = _kernel32().SetFileInformationByHandle(
+        handle,
+        _win_file_disposition_info(),
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+    if not ok:
+        raise OSError(ctypes.get_last_error(), "SetFileInformationByHandle(FileDispositionInfo) failed")
+
+
+def _kernel32():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
 
 
 def _win_generic_read() -> int:
@@ -256,6 +371,14 @@ def _win_generic_read() -> int:
 
 def _win_generic_write() -> int:
     return 0x40000000
+
+
+def _win_delete_access() -> int:
+    return 0x00010000
+
+
+def _win_file_read_attributes() -> int:
+    return 0x00000080
 
 
 def _win_share_read() -> int:
@@ -280,6 +403,26 @@ def _win_create_always() -> int:
 
 def _win_file_attribute_normal() -> int:
     return 0x00000080
+
+
+def _win_file_attribute_reparse_point() -> int:
+    return 0x00000400
+
+
+def _win_file_flag_open_reparse_point() -> int:
+    return 0x00200000
+
+
+def _win_file_flag_backup_semantics() -> int:
+    return 0x02000000
+
+
+def _win_file_attribute_tag_info() -> int:
+    return 9
+
+
+def _win_file_disposition_info() -> int:
+    return 4
 
 
 def _explicit_scope(context: dict[str, Any] | None) -> str | None:
