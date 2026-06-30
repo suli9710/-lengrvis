@@ -1,2 +1,1 @@
 """Registered tool implementations."""
-

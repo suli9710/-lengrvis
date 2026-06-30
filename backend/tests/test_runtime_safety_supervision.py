@@ -229,8 +229,7 @@ async def test_orchestrator_app_agent_is_supervised_for_app_steps(monkeypatch, t
 
     task = await orchestrator.handle_user_goal("open notepad", "privacy")
     target_types = {
-        review["target_type"]
-        for review in db.fetch_many("safety_reviews", "task_id = ?", (task.id,), limit=100)
+        review["target_type"] for review in db.fetch_many("safety_reviews", "task_id = ?", (task.id,), limit=100)
     }
 
     assert task.status == "completed"
@@ -248,18 +247,18 @@ async def test_tool_call_denial_keeps_task_denied(monkeypatch, tmp_path):
     orchestrator.subagents["ComputerAgent"] = DoneComputerAgent(orchestrator.bus)
     orchestrator.registry.register(
         ToolDefinition(
-                name="test.forbidden_runtime",
-                description="forbidden runtime tool",
-                input_schema={"type": "object", "properties": {}, "additionalProperties": False},
-                output_schema={},
-                risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
-                agent_owner="ComputerAgent",
-                supports_dry_run=False,
-                requires_authorized_path=False,
-                execute=lambda args, context: {"ok": True},  # noqa: ARG005
-                fast_path_eligible=True,
-            )
+            name="test.forbidden_runtime",
+            description="forbidden runtime tool",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            output_schema={},
+            risk_level=RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+            agent_owner="ComputerAgent",
+            supports_dry_run=False,
+            requires_authorized_path=False,
+            execute=lambda args, context: {"ok": True},  # noqa: ARG005
+            fast_path_eligible=True,
         )
+    )
 
     async def forbidden_plan(*args, **kwargs):  # noqa: ANN002, ANN003, ARG001
         task_id = args[0]

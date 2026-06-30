@@ -7,7 +7,6 @@ from typing import Any
 
 from app.policy.risk import RISK_ORDER, RiskLevel
 
-
 RISK_BY_SCORE = {score: level for level, score in RISK_ORDER.items()}
 PATH_ARG_KEYS = {
     "path",
@@ -173,10 +172,10 @@ def _candidate_paths(value: Any) -> list[str]:
             normalized_key = str(key).casefold()
             if normalized_key in PATH_ARG_KEYS or "path" in normalized_key:
                 result.extend(_candidate_paths(item))
-            elif isinstance(item, (dict, list, tuple)):
+            elif isinstance(item, dict | list | tuple):
                 result.extend(_candidate_paths(item))
         return result
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         for item in value:
             result.extend(_candidate_paths(item))
         return result
@@ -209,7 +208,7 @@ def _recent_failure_count(context: dict[str, Any]) -> int:
     )
     if isinstance(raw, int):
         return max(0, raw)
-    if isinstance(raw, (list, tuple, set)):
+    if isinstance(raw, list | tuple | set):
         return len(raw)
     try:
         return max(0, int(str(raw)))
@@ -219,7 +218,7 @@ def _recent_failure_count(context: dict[str, Any]) -> int:
 
 def _trust_level(context: dict[str, Any]) -> str:
     raw = context.get("user_trust_level", context.get("trust_level", context.get("user_trust", "medium")))
-    if isinstance(raw, (int, float)):
+    if isinstance(raw, int | float):
         if raw >= 0.75:
             return "high"
         if raw <= 0.35:

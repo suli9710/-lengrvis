@@ -119,7 +119,10 @@ def test_context_usage_route_estimates_payload():
     response = client.post(
         "/api/context/usage",
         json={
-            "messages": [{"role": "developer", "content": "Follow local policy."}, {"role": "user", "content": "Ship it."}],
+            "messages": [
+                {"role": "developer", "content": "Follow local policy."},
+                {"role": "user", "content": "Ship it."},
+            ],
             "tools": [{"name": "file.read", "description": "Read a file", "input_schema": {"type": "object"}}],
             "session_context": {"conversation_summary": "short"},
             "include_registered_tools": False,

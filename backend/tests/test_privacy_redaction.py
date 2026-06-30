@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from conftest import load_json_fixture
 
 from app.policy.redaction import redact_audit_payload, redact_public_text, redact_text, redact_value
 
@@ -15,7 +16,6 @@ def test_redact_audit_payload_scrubs_local_paths_in_free_text():
     assert scrubbed["status"] == "ok"
     # Baseline redact_value still leaves the path (documents the gap this closes).
     assert "C:\\Users\\alice" in redact_value(payload)["note"]
-from conftest import load_json_fixture
 
 
 @pytest.fixture

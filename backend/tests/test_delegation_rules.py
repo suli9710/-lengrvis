@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.agents.delegation_metadata import infer_supervisor_agent_hint
-from app.agents.delegation_rules import contains_any, contains_term
+from app.agents.delegation_rules import contains_term
 from app.agents.supervisor_agent import SupervisorAgent
 
 

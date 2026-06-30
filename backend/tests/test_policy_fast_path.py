@@ -19,7 +19,9 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     yield
 
 
-def _tool(name: str = "test.safe_read", *, risk: RiskLevel = RiskLevel.R0_READ_ONLY, trust: str = "builtin") -> ToolDefinition:
+def _tool(
+    name: str = "test.safe_read", *, risk: RiskLevel = RiskLevel.R0_READ_ONLY, trust: str = "builtin"
+) -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description=name,

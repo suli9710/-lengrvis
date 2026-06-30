@@ -17,10 +17,10 @@ from app.orchestration.handlers import (
     StepSchedulerHandler,
 )
 
-
 # ---------------------------------------------------------------------------
 # Minimal Event stub (independent of events.py)
 # ---------------------------------------------------------------------------
+
 
 class StubEvent(BaseModel):
     id: str = Field(default_factory=lambda: new_id("evt"))
@@ -38,6 +38,7 @@ class StubEvent(BaseModel):
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
@@ -52,6 +53,7 @@ def dispatcher():
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_register_and_dispatch(dispatcher):
@@ -117,10 +119,13 @@ async def test_dispatch_returns_results(dispatcher):
 @pytest.mark.asyncio
 async def test_register_many(dispatcher):
     received = []
-    dispatcher.register_many("test.event", [
-        lambda e: received.append("a"),
-        lambda e: received.append("b"),
-    ])
+    dispatcher.register_many(
+        "test.event",
+        [
+            lambda e: received.append("a"),
+            lambda e: received.append("b"),
+        ],
+    )
     await dispatcher.dispatch(StubEvent())
     assert received == ["a", "b"]
 

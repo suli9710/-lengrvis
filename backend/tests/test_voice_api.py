@@ -50,7 +50,7 @@ def test_voice_transcribe_round_trip_with_fallback_transcriber(monkeypatch, tmp_
     client = _client(monkeypatch, tmp_path)
     # The deterministic fallback decodes text-like buffers; binary audio
     # would require pywhispercpp which is not present in CI.
-    audio = "打开记事本".encode("utf-8")
+    audio = "打开记事本".encode()
     payload = {"audio_base64": base64.b64encode(audio).decode("ascii"), "sample_rate": 16000}
 
     response = client.post("/api/perception/voice/transcribe", json=payload)
@@ -65,12 +65,16 @@ def test_voice_transcribe_rejects_bad_payloads(monkeypatch, tmp_path):
     not_base64 = client.post("/api/perception/voice/transcribe", json={"audio_base64": "@@not-base64@@"})
     assert not_base64.status_code == 400
 
-    empty = client.post("/api/perception/voice/transcribe", json={"audio_base64": base64.b64encode(b"").decode("ascii")})
+    empty = client.post(
+        "/api/perception/voice/transcribe", json={"audio_base64": base64.b64encode(b"").decode("ascii")}
+    )
     assert empty.status_code in {400, 422}
 
     too_large = client.post(
         "/api/perception/voice/transcribe",
-        json={"audio_base64": base64.b64encode(b"\x00" * (routes_perception.MAX_VOICE_AUDIO_BYTES + 2)).decode("ascii")},
+        json={
+            "audio_base64": base64.b64encode(b"\x00" * (routes_perception.MAX_VOICE_AUDIO_BYTES + 2)).decode("ascii")
+        },
     )
     assert too_large.status_code == 413
 

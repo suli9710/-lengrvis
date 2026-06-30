@@ -19,7 +19,7 @@ _logger = logging.getLogger("lengrvis.observability.access")
 def _route_template(request) -> str:
     try:
         route = request.scope.get("route")
-    except Exception:  # pragma: no cover - scope is always a mapping in practice
+    except Exception:  # pragma: no cover - scope is always a mapping in practice  # noqa: BLE001
         route = None
     path = getattr(route, "path", None)
     if path:

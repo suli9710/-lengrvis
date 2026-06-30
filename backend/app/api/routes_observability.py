@@ -38,6 +38,4 @@ def observability_metrics():
 def observability_metrics_prometheus():
     if not _observability_enabled():
         raise HTTPException(status_code=403, detail="Observability endpoints are disabled")
-    return PlainTextResponse(
-        metrics.render_prometheus(), media_type="text/plain; version=0.0.4"
-    )
+    return PlainTextResponse(metrics.render_prometheus(), media_type="text/plain; version=0.0.4")

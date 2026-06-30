@@ -15,7 +15,8 @@ import httpx
 
 from app.config import AppSettings
 from app.core.schemas import LocalLLMHealth
-from app.llm.onnx_provider import detect_onnx_backend, health_snapshot as onnx_health_snapshot
+from app.llm.onnx_provider import detect_onnx_backend
+from app.llm.onnx_provider import health_snapshot as onnx_health_snapshot
 from app.services.ollama_service import hardware_readiness
 
 
@@ -64,13 +65,13 @@ def detect_local_backend(*, timeout: float = _DEFAULT_TIMEOUT, client_factory=No
         try:
             with factory() as client:
                 response = client.get(probe_url)
-        except Exception:
+        except Exception:  # noqa: S112, BLE001
             continue
         if response.status_code != 200:
             continue
         try:
             payload = response.json()
-        except Exception:
+        except Exception:  # noqa: BLE001
             payload = {}
         models = [name for name in _extract_models(kind, payload) if name]
         return LocalBackend(kind=kind, base_url=base_url, models=models)
@@ -93,15 +94,19 @@ def health_snapshot(settings: AppSettings | None = None, *, timeout: float = _DE
     onnx_snapshot = onnx_health_snapshot(settings) if settings is not None else onnx_health_snapshot()
     if onnx_backend is not None:
         selected = dataclasses.asdict(onnx_backend)
-        return LocalLLMHealth(
-            available=True,
-            selected_backend=selected,
-            probe_order=PROBE_ORDER,
-        ).model_dump() | selected | {
-            "onnx": onnx_snapshot,
-            "llm": onnx_snapshot.get("llm", {}),
-            "readiness": readiness,
-        }
+        return (
+            LocalLLMHealth(
+                available=True,
+                selected_backend=selected,
+                probe_order=PROBE_ORDER,
+            ).model_dump()
+            | selected
+            | {
+                "onnx": onnx_snapshot,
+                "llm": onnx_snapshot.get("llm", {}),
+                "readiness": readiness,
+            }
+        )
 
     backend = detect_local_backend(timeout=timeout)
     if backend is None:
@@ -116,8 +121,12 @@ def health_snapshot(settings: AppSettings | None = None, *, timeout: float = _DE
         **backend_dict,
         "model": backend.models[0] if backend.models else "",
     }
-    return LocalLLMHealth(
-        available=True,
-        selected_backend=selected,
-        probe_order=PROBE_ORDER,
-    ).model_dump() | backend_dict | {"onnx": onnx_snapshot, "llm": onnx_snapshot.get("llm", {}), "readiness": readiness}
+    return (
+        LocalLLMHealth(
+            available=True,
+            selected_backend=selected,
+            probe_order=PROBE_ORDER,
+        ).model_dump()
+        | backend_dict
+        | {"onnx": onnx_snapshot, "llm": onnx_snapshot.get("llm", {}), "readiness": readiness}
+    )

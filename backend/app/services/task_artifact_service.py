@@ -52,12 +52,16 @@ def collect_task_artifacts(task_id: str) -> dict[str, Any]:
         changed = result.get("changed_paths")
         if isinstance(changed, list):
             for raw in changed:
-                _merge_artifact(artifacts, raw, kind="changed", tool_name=tool_name, step_id=step_id, created_at=created_at)
+                _merge_artifact(
+                    artifacts, raw, kind="changed", tool_name=tool_name, step_id=step_id, created_at=created_at
+                )
 
         output = result.get("output")
         if isinstance(output, dict):
             for raw in _path_values(output):
-                _merge_artifact(artifacts, raw, kind="output", tool_name=tool_name, step_id=step_id, created_at=created_at)
+                _merge_artifact(
+                    artifacts, raw, kind="output", tool_name=tool_name, step_id=step_id, created_at=created_at
+                )
 
         if len(artifacts) >= MAX_ARTIFACTS:
             break

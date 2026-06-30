@@ -12,7 +12,17 @@ from app.agents.base import AgentContext
 from app.agents.file_agent import FileAgent
 from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
-from app.core.schemas import AgentAction, Approval, ApprovalStatus, MessageType, Plan, PlanStep, StepStatus, Task, TaskStatus
+from app.core.schemas import (
+    AgentAction,
+    Approval,
+    ApprovalStatus,
+    MessageType,
+    Plan,
+    PlanStep,
+    StepStatus,
+    Task,
+    TaskStatus,
+)
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.task_phase import TaskPhase
 from app.policy.approval_binding import args_binding_hmac, permission_policy_version, preview_hmac, settings_fingerprint
@@ -129,8 +139,7 @@ def test_real_subagent_fast_path_uses_orchestrator_registry():
     assert calls == [{"tool": "test.local_only", "args": {"query": "invoice"}}]
     assert step.status == StepStatus.SUCCEEDED
     assert not any(
-        message.message_type == MessageType.REVISION
-        and (message.structured_payload or {}).get("revision_requested")
+        message.message_type == MessageType.REVISION and (message.structured_payload or {}).get("revision_requested")
         for message in orchestrator.bus.get_messages(task.id)
     )
 
@@ -230,9 +239,7 @@ def test_request_revision_publishes_bus_message_and_does_not_execute_or_loop():
     assert task.execution_stage == ExecutionStage.PAUSED
     messages = orchestrator.bus.get_messages(task.id)
     assert any(
-        m.message_type == MessageType.REVISION
-        and m.to_agent == "PlannerAgent"
-        and "Which folder" in m.content
+        m.message_type == MessageType.REVISION and m.to_agent == "PlannerAgent" and "Which folder" in m.content
         for m in messages
     )
     assert any(
@@ -295,11 +302,7 @@ def test_routed_step_produces_observation_from_owning_subagent():
     asyncio.run(orchestrator._process_steps(task, plan))
 
     messages = orchestrator.bus.get_messages(task.id)
-    assert any(
-        m.from_agent == "ComputerAgent"
-        and m.message_type == MessageType.OBSERVATION
-        for m in messages
-    )
+    assert any(m.from_agent == "ComputerAgent" and m.message_type == MessageType.OBSERVATION for m in messages)
 
 
 def test_approved_step_pauses_when_subagent_changes_approved_tool_call():
@@ -336,7 +339,4 @@ def test_approved_step_pauses_when_subagent_changes_approved_tool_call():
     assert updated.status == TaskPhase.EXECUTION
     assert updated.execution_stage == ExecutionStage.PAUSED
     messages = orchestrator.bus.get_messages(task.id)
-    assert any(
-        m.message_type == MessageType.REVIEW and m.to_agent == "PlannerAgent"
-        for m in messages
-    )
+    assert any(m.message_type == MessageType.REVIEW and m.to_agent == "PlannerAgent" for m in messages)

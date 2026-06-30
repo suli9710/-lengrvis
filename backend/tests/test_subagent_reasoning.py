@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from app.agents.app_agent import AppAgent
 from app.agents.base import AgentContext
 from app.agents.browser_agent import BrowserAgent
 from app.agents.computer_agent import ComputerAgent
 from app.agents.document_agent import DocumentAgent
 from app.agents.file_agent import FileAgent
-from app.agents.app_agent import AppAgent
 from app.agents.search_agent import SearchAgent
 from app.core import db
 from app.core.schemas import AgentAction, PlanStep, ToolResult
@@ -188,7 +188,9 @@ def test_act_requests_revision_when_fast_path_detects_missing_required_args():
         expected_observation="tool matches",
     )
 
-    action = asyncio.run(agent.act(step, AgentContext(task_id="task-1", mode="privacy", allowed_directories=[], registry=registry)))
+    action = asyncio.run(
+        agent.act(step, AgentContext(task_id="task-1", mode="privacy", allowed_directories=[], registry=registry))
+    )
 
     assert action.kind == "request_revision"
     assert "query" in action.rationale

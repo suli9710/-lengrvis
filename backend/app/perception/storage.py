@@ -10,7 +10,6 @@ from app.core import db
 from app.core.schemas import new_id, now_iso
 from app.perception.schemas import AppContext, ScreenState
 
-
 DEFAULT_SENSITIVE_WINDOW_PATTERNS = [
     "password",
     "passcode",
@@ -73,7 +72,9 @@ def store_observation(event: Any, settings: AppSettings | None = None) -> dict[s
         return None
 
     payload = _event_payload(event)
-    suppressed = is_sensitive_context(payload=event, settings=effective) or _contains_sensitive_field(payload, effective)
+    suppressed = is_sensitive_context(payload=event, settings=effective) or _contains_sensitive_field(
+        payload, effective
+    )
     summary = _summary(event)
     if suppressed:
         summary = "Perception observation suppressed for a sensitive window."
@@ -98,7 +99,9 @@ def store_observation(event: Any, settings: AppSettings | None = None) -> dict[s
     return body
 
 
-def store_suggestion(suggestion: Any, source_event: Any | None = None, settings: AppSettings | None = None) -> dict[str, Any] | None:
+def store_suggestion(
+    suggestion: Any, source_event: Any | None = None, settings: AppSettings | None = None
+) -> dict[str, Any] | None:
     effective = settings or get_base_settings()
     if not getattr(effective, "perception_storage_enabled", True):
         return None
@@ -171,7 +174,9 @@ def is_sensitive_context(
     return False
 
 
-def screen_state_summary(state: ScreenState | dict[str, Any] | None, settings: AppSettings | None = None) -> dict[str, Any] | None:
+def screen_state_summary(
+    state: ScreenState | dict[str, Any] | None, settings: AppSettings | None = None
+) -> dict[str, Any] | None:
     if state is None:
         return None
     effective = settings or get_base_settings()
@@ -198,7 +203,9 @@ def screen_state_summary(state: ScreenState | dict[str, Any] | None, settings: A
     }
 
 
-def app_context_summary(context: AppContext | dict[str, Any] | None, settings: AppSettings | None = None) -> dict[str, Any] | None:
+def app_context_summary(
+    context: AppContext | dict[str, Any] | None, settings: AppSettings | None = None
+) -> dict[str, Any] | None:
     if context is None:
         return None
     effective = settings or get_base_settings()
@@ -255,11 +262,11 @@ def _event_payload(event: Any) -> dict[str, Any]:
     elif isinstance(event, dict):
         data = dict(event)
     else:
-        data = {
-            key: value
-            for key, value in vars(event).items()
-            if not key.startswith("_")
-        } if hasattr(event, "__dict__") else {"value": str(event)}
+        data = (
+            {key: value for key, value in vars(event).items() if not key.startswith("_")}
+            if hasattr(event, "__dict__")
+            else {"value": str(event)}
+        )
     data.pop("image_base64", None)
     data.pop("ui_elements", None)
     return data
@@ -324,7 +331,7 @@ def _extract_app_context(event: Any) -> AppContext | None:
         if isinstance(raw, dict):
             try:
                 return AppContext.model_validate(raw)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return None
     return None
 
@@ -364,7 +371,7 @@ def _summary(event: Any) -> str:
     if callable(summary):
         try:
             return str(summary() or "")
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
     if isinstance(event, dict):
         return str(event.get("summary") or event.get("summary_text") or event.get("title") or "")
@@ -481,7 +488,7 @@ def _control_text_is_sensitive(value: Any, settings: AppSettings) -> bool:
     if isinstance(attributes, dict):
         for key, raw in attributes.items():
             parts.append(str(key))
-            if isinstance(raw, (str, int, float, bool)):
+            if isinstance(raw, str | int | float | bool):
                 parts.append(str(raw))
     text = " ".join(parts).lower()
     return any(_matches_pattern(text, pattern) for pattern in _sensitive_window_patterns(settings))

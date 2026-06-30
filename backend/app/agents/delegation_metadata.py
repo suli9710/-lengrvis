@@ -18,7 +18,6 @@ from app.agents.delegation_rules import (
 )
 from app.agents.worker_agents import normalize_supervisor_agent_hint
 
-
 DEVELOPER_ENGINE_CAPABILITY_MODE = "read_only_code_analysis"
 DEVELOPER_ENGINE_WRITE_MODE = "controlled_code_editing"
 
@@ -88,8 +87,7 @@ def infer_supervisor_agent_hint(goal: str) -> str:
     if contains_any(lower, ORGANIZE_TERMS) and contains_any(lower, FILE_TARGET_TERMS + ("发票",)):
         return "FileAgent"
     if contains_any(lower, FILE_ACTION_TERMS) and (
-        contains_any(lower, FILE_TARGET_TERMS)
-        or re.search(r"\.(txt|pdf|docx|pptx)\b", lower)
+        contains_any(lower, FILE_TARGET_TERMS) or re.search(r"\.(txt|pdf|docx|pptx)\b", lower)
     ):
         return "FileAgent"
     if contains_any(lower, DOCUMENT_HINT_TERMS):

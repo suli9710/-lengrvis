@@ -6,7 +6,17 @@ from fastapi.testclient import TestClient
 
 from app.core import db
 from app.core.audit import record
-from app.core.schemas import AgentMessage, MessageType, OpenAIMessageRole, Plan, PlanStep, SafetyReview, Task, ToolCall, ToolResult
+from app.core.schemas import (
+    AgentMessage,
+    MessageType,
+    OpenAIMessageRole,
+    Plan,
+    PlanStep,
+    SafetyReview,
+    Task,
+    ToolCall,
+    ToolResult,
+)
 from app.main import create_app
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.task_explain_service import build_task_explain
@@ -85,7 +95,9 @@ def test_build_task_explain_returns_full_decision_chain(monkeypatch, tmp_path):
     assert explain["supervisor_judgment"]["agent_hint"] == "ComputerAgent"
     assert explain["planner_reasoning"]["step_count"] == 1
     assert explain["steps"][0]["safety_reviews"]
-    assert explain["steps"][0]["subagent_suggestions"][0]["action"]["rationale"] == "System info answers the user's goal."
+    assert (
+        explain["steps"][0]["subagent_suggestions"][0]["action"]["rationale"] == "System info answers the user's goal."
+    )
     _assert_completion_evidence_shape(explain["completion_evidence"])
     assert explain["completion_evidence"]["level"] == "completed_result"
     assert explain["completion_evidence"]["result_verified"] is True
@@ -180,9 +192,7 @@ def test_completion_evidence_does_not_verify_submission_only_completed_task(monk
     assert "verified result evidence" in explain["result_quality"]["missing_checks"]
 
 
-def test_completion_evidence_does_not_verify_successful_tool_result_without_final_summary(
-    monkeypatch, tmp_path
-):
+def test_completion_evidence_does_not_verify_successful_tool_result_without_final_summary(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     secret_token = "secret-tool-result-token-1234567890"
@@ -366,9 +376,7 @@ def test_completion_evidence_verifies_successful_tool_result_with_final_summary_
     assert secret_token not in public_dump
 
 
-def test_completion_evidence_does_not_verify_multiple_results_with_partial_step_reviews(
-    monkeypatch, tmp_path
-):
+def test_completion_evidence_does_not_verify_multiple_results_with_partial_step_reviews(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     secret_token = "secret-multi-result-token-1234567890"
@@ -443,9 +451,7 @@ def test_completion_evidence_does_not_verify_multiple_results_with_partial_step_
     assert secret_token not in public_dump
 
 
-def test_completion_evidence_verifies_multiple_results_with_step_bound_reviews(
-    monkeypatch, tmp_path
-):
+def test_completion_evidence_verifies_multiple_results_with_step_bound_reviews(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path))
     db.init_db()
     task = Task(
@@ -739,7 +745,12 @@ def test_task_explain_redacts_tool_protocol_paths_urls_and_tokens(monkeypatch, t
 
 
 def _seed_complete_task() -> Task:
-    task = Task(user_goal="check system information", mode="efficiency", status="completed", final_summary="System info checked.")
+    task = Task(
+        user_goal="check system information",
+        mode="efficiency",
+        status="completed",
+        final_summary="System info checked.",
+    )
     db.upsert_model("tasks", task)
 
     step = PlanStep(

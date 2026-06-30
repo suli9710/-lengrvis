@@ -31,4 +31,3 @@ def max_risk(levels: list[RiskLevel]) -> RiskLevel:
     if not levels:
         return RiskLevel.R0_READ_ONLY
     return max(levels, key=lambda level: RISK_ORDER[level])
-

@@ -6,7 +6,6 @@ from typing import Any
 
 from app.policy.risk import RiskLevel
 
-
 ToolExecutor = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
 ToolInputValidator = Callable[[dict[str, Any], dict[str, Any]], None]
 ToolPermissionPolicy = Callable[[dict[str, Any], dict[str, Any]], bool]
@@ -78,7 +77,10 @@ class ToolDefinition:
             errors.append("resource_kinds must be declared")
         if not str(self.trust_tier or "").strip() or self.trust_tier == "unknown":
             errors.append("trust_tier must be authoritative")
-        if self.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM} and not self.supports_dry_run:
+        if (
+            self.risk_level in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM}
+            and not self.supports_dry_run
+        ):
             errors.append("R2/R3 tools must support dry_run")
         return errors
 

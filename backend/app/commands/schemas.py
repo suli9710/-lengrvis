@@ -4,7 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-
 CommandKind = Literal["diagnostic", "action", "workflow"]
 
 
@@ -43,7 +42,7 @@ class CommandDefinition(BaseModel):
         return aliases
 
     @model_validator(mode="after")
-    def fill_public_labels(self) -> "CommandDefinition":
+    def fill_public_labels(self) -> CommandDefinition:
         if not self.title:
             self.title = self.name
         if not self.description:

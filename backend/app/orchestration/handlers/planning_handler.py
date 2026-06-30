@@ -3,21 +3,20 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING
 
-from app.core.audit import record
-from app.core import db
-from app.core.schemas import MessageType, Plan, StepStatus, Task, TaskStatus
 from app.agents.delegation_metadata import (
     SupervisorHintPlanError,
     plan_matches_supervisor_hint,
     plan_tools_outside_visible,
 )
 from app.agents.worker_agents import normalize_supervisor_agent_hint
+from app.core import db
+from app.core.audit import record
+from app.core.schemas import MessageType, Plan, StepStatus, Task, TaskStatus
+from app.orchestration.step_phase import set_step_status
 from app.perception.context_store import latest_perception_context
 from app.perception.storage import perception_context_summary
 from app.policy.model_boundary import ModelActionEnvelope, model_control_arg_error
-from app.policy.risk import SafetyVerdict
-from app.policy.risk import RiskLevel
-from app.orchestration.step_phase import set_step_status
+from app.policy.risk import RiskLevel, SafetyVerdict
 
 if TYPE_CHECKING:
     from app.agents.orchestrator_agent import OrchestratorAgent
@@ -91,7 +90,9 @@ class PlanningHandler:
         session_context = self._session_context_for_planning(task)
         agent_hint = normalize_supervisor_agent_hint((task.metadata or {}).get("supervisor_agent_hint")) or None
         try:
-            plan = await self._create_plan(task, goal, mode, memory_context, goal_context, session_context, agent_hint=agent_hint)
+            plan = await self._create_plan(
+                task, goal, mode, memory_context, goal_context, session_context, agent_hint=agent_hint
+            )
         except SupervisorHintPlanError as exc:
             record(
                 "planner.supervisor_hint_denied",
@@ -132,13 +133,13 @@ class PlanningHandler:
     ) -> Plan:
         orchestrator = self.orchestrator
         list_tools = getattr(orchestrator.registry, "list_for_planning", orchestrator.registry.list)
-        visible_tools = [tool for tool in list_tools() if tool.name == "tool.search" or not getattr(tool, "defer_loading", False)]
+        visible_tools = [
+            tool for tool in list_tools() if tool.name == "tool.search" or not getattr(tool, "defer_loading", False)
+        ]
         hint = normalize_supervisor_agent_hint(agent_hint)
         if hint:
             hinted_tools = [
-                tool
-                for tool in visible_tools
-                if tool.name == "tool.search" or getattr(tool, "agent_owner", "") == hint
+                tool for tool in visible_tools if tool.name == "tool.search" or getattr(tool, "agent_owner", "") == hint
             ]
             visible_tools = hinted_tools or [tool for tool in visible_tools if tool.name == "tool.search"]
         tools = [tool.name for tool in visible_tools]
@@ -178,7 +179,7 @@ class PlanningHandler:
                 {"attempt": attempt + 1, "outside_tools": last_outside, "agent_hint": hint},
                 task_id=task.id,
             )
-        assert plan is not None
+        assert plan is not None  # noqa: S101
         plan = self._guard_supervisor_hint_plan(task.id, plan, tools, hint, last_outside)
         self._publish_annotated_plan(task.id, plan)
         return plan
@@ -212,13 +213,9 @@ class PlanningHandler:
             # emptied by stripping out-of-surface tools is a violation.
             if not had_steps:
                 return plan
-            raise SupervisorHintPlanError(
-                f"Supervisor hint {hint} could not be satisfied by the generated plan."
-            )
+            raise SupervisorHintPlanError(f"Supervisor hint {hint} could not be satisfied by the generated plan.")
         if not plan_matches_supervisor_hint(plan, hint, tools):
-            raise SupervisorHintPlanError(
-                f"Supervisor hint {hint} could not be satisfied by the generated plan."
-            )
+            raise SupervisorHintPlanError(f"Supervisor hint {hint} could not be satisfied by the generated plan.")
         return plan
 
     def _annotate_plan_tool_contracts(self, plan: Plan, visible_tool_ids: list[str]) -> None:
@@ -227,7 +224,9 @@ class PlanningHandler:
             try:
                 tool = self.orchestrator.registry.get(step.tool_name)
             except KeyError:
-                step.model_action = self._model_action_for_step(step, visible_tool_ids, model_supplied_risk=model_supplied_risk)
+                step.model_action = self._model_action_for_step(
+                    step, visible_tool_ids, model_supplied_risk=model_supplied_risk
+                )
                 continue
 
             step.agent_name = getattr(tool, "agent_owner", "") or step.agent_name
@@ -312,8 +311,13 @@ class PlanningHandler:
             else:
                 goal_stack.relate_task(task.id, related_goal.id)
             return goal_stack.get_context_for_planning(goal)
-        except Exception as exc:
-            record("goal_stack.context_failed", self.orchestrator.name, {"task_id": task.id, "error": str(exc)}, task_id=task.id)
+        except Exception as exc:  # noqa: BLE001
+            record(
+                "goal_stack.context_failed",
+                self.orchestrator.name,
+                {"task_id": task.id, "error": str(exc)},
+                task_id=task.id,
+            )
             return None
 
     def _session_context_for_planning(self, task: Task) -> dict | None:
@@ -323,6 +327,11 @@ class PlanningHandler:
         try:
             store.remember_task(task.id, workflow_state={"latest_goal": task.user_goal, "latest_task_id": task.id})
             return store.planning_context()
-        except Exception as exc:
-            record("session_context.planning_context_failed", self.orchestrator.name, {"task_id": task.id, "error": str(exc)}, task_id=task.id)
+        except Exception as exc:  # noqa: BLE001
+            record(
+                "session_context.planning_context_failed",
+                self.orchestrator.name,
+                {"task_id": task.id, "error": str(exc)},
+                task_id=task.id,
+            )
             return None

@@ -325,7 +325,8 @@ def test_cluster_images_by_scene(tmp_path, monkeypatch):
 
     context = {"allowed_directories": [str(tmp_path)]}
     result = cluster_tools.cluster_images(
-        {"paths": [str(tmp_path)], "cluster_by": "scene", "k": 2}, context,
+        {"paths": [str(tmp_path)], "cluster_by": "scene", "k": 2},
+        context,
     )
     assert result["ok"] is True
     assert result["cluster_by"] == "scene"
@@ -358,7 +359,8 @@ def test_cluster_images_by_time(tmp_path, monkeypatch):
 
     context = {"allowed_directories": [str(tmp_path)]}
     result = cluster_tools.cluster_images(
-        {"paths": [str(tmp_path)], "cluster_by": "time"}, context,
+        {"paths": [str(tmp_path)], "cluster_by": "time"},
+        context,
     )
     assert result["ok"] is True
     assert result["cluster_by"] == "time"
@@ -389,7 +391,8 @@ def test_cluster_images_by_time_falls_back_on_sparse_data(tmp_path, monkeypatch)
 
     context = {"allowed_directories": [str(tmp_path)]}
     result = cluster_tools.cluster_images(
-        {"paths": [str(tmp_path)], "cluster_by": "time"}, context,
+        {"paths": [str(tmp_path)], "cluster_by": "time"},
+        context,
     )
     assert result["ok"] is True
     assert result["cluster_by"] == "time"
@@ -410,7 +413,8 @@ def test_cluster_images_by_location(tmp_path, monkeypatch):
 
     context = {"allowed_directories": [str(tmp_path)]}
     result = cluster_tools.cluster_images(
-        {"paths": [str(tmp_path)], "cluster_by": "location"}, context,
+        {"paths": [str(tmp_path)], "cluster_by": "location"},
+        context,
     )
     assert result["ok"] is True
     assert result["cluster_by"] == "location"
@@ -453,7 +457,8 @@ def test_cluster_images_by_location_falls_back_on_sparse_gps(tmp_path, monkeypat
 
     context = {"allowed_directories": [str(tmp_path)]}
     result = cluster_tools.cluster_images(
-        {"paths": [str(tmp_path)], "cluster_by": "location"}, context,
+        {"paths": [str(tmp_path)], "cluster_by": "location"},
+        context,
     )
     assert result["ok"] is True
     assert result["cluster_by"] == "location"
@@ -505,7 +510,8 @@ def test_cluster_images_by_people(tmp_path, monkeypatch):
 
     context = {"allowed_directories": [str(tmp_path)]}
     result = cluster_tools.cluster_images(
-        {"paths": [str(tmp_path)], "cluster_by": "people", "k": 2}, context,
+        {"paths": [str(tmp_path)], "cluster_by": "people", "k": 2},
+        context,
     )
     assert result["ok"] is True
     assert result["cluster_by"] == "people"
@@ -561,7 +567,8 @@ def test_cluster_images_invalid_cluster_by_falls_back_to_auto(tmp_path, monkeypa
 
     context = {"allowed_directories": [str(tmp_path)]}
     result = cluster_tools.cluster_images(
-        {"paths": [str(tmp_path)], "cluster_by": "nonexistent"}, context,
+        {"paths": [str(tmp_path)], "cluster_by": "nonexistent"},
+        context,
     )
     assert result["ok"] is True
     assert result["cluster_by"] == "auto"

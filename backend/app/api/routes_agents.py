@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-
 router = APIRouter()
 
 AGENTS = [
@@ -28,4 +27,3 @@ def agents():
 @router.get("/agents/status")
 def status():
     return {"agents": agents()}
-

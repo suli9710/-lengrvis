@@ -62,7 +62,7 @@ def test_policy_engine_cleanup_execute_requires_valid_plan_binding():
         "task_cleanup",
         "step_cleanup",
         "file.cleanup_execute",
-        {"roots": ["/tmp"], "selected_item_ids": ["id"], "dry_run": True},
+        {"roots": ["/tmp"], "selected_item_ids": ["id"], "dry_run": True},  # noqa: S108
         RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
     )
 
@@ -76,7 +76,7 @@ def test_policy_engine_cleanup_execute_non_dry_run_requires_approval():
         "step_cleanup",
         "file.cleanup_execute",
         {
-            "roots": ["/tmp"],
+            "roots": ["/tmp"],  # noqa: S108
             "plan_id": "cleanup_123",
             "content_hash": "hash",
             "selected_item_ids": ["id"],
@@ -94,7 +94,7 @@ def test_policy_engine_allows_approved_cleanup_execute_for_service_revalidation(
         "step_cleanup",
         "file.cleanup_execute",
         {
-            "roots": ["/tmp"],
+            "roots": ["/tmp"],  # noqa: S108
             "plan_id": "cleanup_123",
             "content_hash": "hash",
             "selected_item_ids": ["id"],
@@ -106,4 +106,3 @@ def test_policy_engine_allows_approved_cleanup_execute_for_service_revalidation(
     )
 
     assert review.verdict == SafetyVerdict.ALLOW
-

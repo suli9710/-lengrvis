@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 from app.core import db
 from app.core.schemas import new_id, now_iso
 
-
 DEFAULT_SESSION_ID = "session_current"
 
 

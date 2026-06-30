@@ -19,7 +19,6 @@ import httpx
 from app.core.audit import record
 from app.core.outbound_url import pin_outbound_http_url
 
-
 DEFAULT_TIMEOUT = 30
 JSONRPC_VERSION = "2.0"
 
@@ -142,7 +141,9 @@ class MCPClient:
             headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
             try:
-                response = await client.post(pinned.url, json=payload, headers=headers, extensions=dict(pinned.extensions))
+                response = await client.post(
+                    pinned.url, json=payload, headers=headers, extensions=dict(pinned.extensions)
+                )
                 response.raise_for_status()
                 return response.json()
             except httpx.HTTPError as exc:
@@ -218,7 +219,7 @@ def _validate_tool_arguments(arguments: Any, schema: dict[str, Any]) -> str:
     try:
         from jsonschema import Draft202012Validator
         from jsonschema.exceptions import SchemaError, ValidationError
-    except Exception:  # pragma: no cover - exercised only when jsonschema is absent.
+    except Exception:  # pragma: no cover - exercised only when jsonschema is absent.  # noqa: BLE001
         return _validate_tool_arguments_lightweight(arguments, schema)
     try:
         Draft202012Validator.check_schema(schema)
@@ -267,7 +268,7 @@ def _matches_json_schema_type(value: Any, expected_type: Any) -> bool:
     if expected_type == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if expected_type == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return isinstance(value, int | float) and not isinstance(value, bool)
     if expected_type == "boolean":
         return isinstance(value, bool)
     if expected_type == "null":

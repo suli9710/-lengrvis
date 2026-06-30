@@ -18,7 +18,8 @@ from app.config import get_env
 
 try:  # pragma: no cover - redaction is always present in the app
     from app.policy.redaction import redact_text, redact_value
-except Exception:  # pragma: no cover - defensive fallback only
+except Exception:  # pragma: no cover - defensive fallback only  # noqa: BLE001
+
     def redact_text(text, redact_generic_tokens=True):  # type: ignore[misc]
         return text
 
@@ -27,10 +28,7 @@ except Exception:  # pragma: no cover - defensive fallback only
 
 
 _HANDLER_MARKER = "_lengrvis_observability_handler"
-_TEXT_FORMAT = (
-    "%(asctime)s %(levelname)s %(name)s "
-    "[req=%(request_id)s trace=%(trace_id)s span=%(span_id)s] %(message)s"
-)
+_TEXT_FORMAT = "%(asctime)s %(levelname)s %(name)s [req=%(request_id)s trace=%(trace_id)s span=%(span_id)s] %(message)s"
 _configured = False
 
 
@@ -70,9 +68,7 @@ class JsonLogFormatter(logging.Formatter):
         if isinstance(observability_extra, dict):
             payload["observability"] = redact_value(observability_extra)
         if record.exc_info:
-            payload["exception"] = redact_text(
-                self.formatException(record.exc_info), redact_generic_tokens=True
-            )
+            payload["exception"] = redact_text(self.formatException(record.exc_info), redact_generic_tokens=True)
         return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
@@ -140,9 +136,7 @@ def configure_logging(force: bool = False) -> None:
             file_handler.addFilter(correlation_filter)
             setattr(file_handler, _HANDLER_MARKER, True)
             root.addHandler(file_handler)
-        except Exception:  # pragma: no cover - file logging is best effort
-            logging.getLogger(__name__).warning(
-                "observability: file logging disabled (initialization failed)"
-            )
+        except Exception:  # pragma: no cover - file logging is best effort  # noqa: BLE001
+            logging.getLogger(__name__).warning("observability: file logging disabled (initialization failed)")
 
     _configured = True

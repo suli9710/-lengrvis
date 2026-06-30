@@ -6,10 +6,10 @@ from app.agents.code_review_agent import (
     MISSING_FAILURE_TESTS,
     MODEL_BOUNDARY_ESCAPE,
     ORCHESTRATOR_BLOAT,
+    REQUIRED_RISK_CATEGORIES,
     RISK_MODEL_BREAK,
     WRITE_CONCURRENCY,
     CodeReviewAgent,
-    REQUIRED_RISK_CATEGORIES,
 )
 
 

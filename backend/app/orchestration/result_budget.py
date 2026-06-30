@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 from app.config import AppSettings
 from app.core.schemas import ToolResult
 from app.orchestration.runtime_context import LargeResultReference, TaskRuntimeContext
-
 
 DEFAULT_PREVIEW_CHARS = 2000
 

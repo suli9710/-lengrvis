@@ -35,9 +35,7 @@ def _seed_user_data(tmp_path) -> None:
     record("seed.event", "pytest", {"ok": True})
     export_dir = tmp_path / "diagnostic-packages"
     export_dir.mkdir(parents=True, exist_ok=True)
-    (export_dir / "lengrvis-diagnostics-sample.json").write_text(
-        json.dumps({"schema_version": 1}), encoding="utf-8"
-    )
+    (export_dir / "lengrvis-diagnostics-sample.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
 
 
 def test_erase_requires_explicit_confirmation(monkeypatch, tmp_path):
@@ -58,9 +56,7 @@ def test_erase_deletes_user_content_and_packages_preserving_audit_chain(monkeypa
     _seed_user_data(tmp_path)
     client = TestClient(create_app())
 
-    response = client.post(
-        "/api/system/privacy/erase-local-data", json={"confirm": "erase-local-data"}
-    )
+    response = client.post("/api/system/privacy/erase-local-data", json={"confirm": "erase-local-data"})
 
     assert response.status_code == 200
     payload = response.json()

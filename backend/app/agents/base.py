@@ -260,6 +260,4 @@ def _has_explicit_object_schema(schema: dict[str, Any]) -> bool:
         return False
     properties = schema.get("properties")
     required = schema.get("required") or []
-    return isinstance(properties, dict) and (
-        bool(properties) or bool(required) or "additionalProperties" in schema
-    )
+    return isinstance(properties, dict) and (bool(properties) or bool(required) or "additionalProperties" in schema)

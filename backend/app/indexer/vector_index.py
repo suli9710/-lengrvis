@@ -68,8 +68,7 @@ class VectorIndex:
         missing_embedding_candidates = [
             row
             for row in lexical_candidates
-            if row["chunk_id"] not in embedded_chunk_ids
-            and vector_from_storage(row.get("embedding")) is None
+            if row["chunk_id"] not in embedded_chunk_ids and vector_from_storage(row.get("embedding")) is None
         ]
         if missing_embedding_candidates:
             ranked.extend(_lexical_fallback_rows(missing_embedding_candidates, query))

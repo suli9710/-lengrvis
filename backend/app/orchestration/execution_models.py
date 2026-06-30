@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 EngineName = Literal["os", "developer"]
 EngineSelection = Literal["auto", "os", "developer"]
 
@@ -40,9 +39,7 @@ EngineRouteRule = Literal[
 ]
 
 RunContinuationKind = Literal["", "approval_remaining_steps"]
-APPROVAL_REMAINING_STEPS_SUMMARY = (
-    "Approved modifying operation completed; continuing remaining plan steps."
-)
+APPROVAL_REMAINING_STEPS_SUMMARY = "Approved modifying operation completed; continuing remaining plan steps."
 
 
 class RunObservation(BaseModel):

@@ -56,7 +56,9 @@ def test_terminal_run_releases_registry_binding_but_paused_run_keeps_it() -> Non
     assert orchestrator_registry.get_for_task("task_m5") is orchestrator
 
     # Terminal run with no other live runs on the task: binding released.
-    completed = Run(message="goal", mode="efficiency", engine=RunEngine.OS, phase=RunPhase.COMPLETED, task_id="task_m5_done")
+    completed = Run(
+        message="goal", mode="efficiency", engine=RunEngine.OS, phase=RunPhase.COMPLETED, task_id="task_m5_done"
+    )
     db.upsert_model("runs", completed)
     orchestrator_registry.bind(task_id="task_m5_done", orchestrator=orchestrator, run_id=completed.id)
     _release_terminal_orchestrator(completed.id)
@@ -64,8 +66,12 @@ def test_terminal_run_releases_registry_binding_but_paused_run_keeps_it() -> Non
     assert orchestrator_registry.get_for_run(completed.id) is None
 
     # Terminal run whose task still has a live sibling run: task binding kept.
-    shared_done = Run(message="goal", mode="efficiency", engine=RunEngine.OS, phase=RunPhase.COMPLETED, task_id="task_m5_shared")
-    shared_live = Run(message="goal", mode="efficiency", engine=RunEngine.OS, phase=RunPhase.PAUSED, task_id="task_m5_shared")
+    shared_done = Run(
+        message="goal", mode="efficiency", engine=RunEngine.OS, phase=RunPhase.COMPLETED, task_id="task_m5_shared"
+    )
+    shared_live = Run(
+        message="goal", mode="efficiency", engine=RunEngine.OS, phase=RunPhase.PAUSED, task_id="task_m5_shared"
+    )
     db.upsert_model("runs", shared_done)
     db.upsert_model("runs", shared_live)
     orchestrator_registry.bind(task_id="task_m5_shared", orchestrator=orchestrator, run_id=shared_done.id)

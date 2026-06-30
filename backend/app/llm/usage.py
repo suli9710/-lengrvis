@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -9,7 +9,6 @@ from app.config import AppSettings
 from app.core import db
 from app.core.schemas import now_iso
 from app.llm.types import LLMCost, LLMResponse, LLMUsage
-
 
 CLAUDE_USAGE_KEYS = (
     "input_tokens",
@@ -32,7 +31,9 @@ def estimate_usage(messages: list[dict[str, Any]], content: str) -> LLMUsage:
 
 def usage_breakdown(usage: LLMUsage) -> dict[str, Any]:
     details = usage.details or {}
-    prompt_details = details.get("prompt_tokens_details") if isinstance(details.get("prompt_tokens_details"), dict) else {}
+    prompt_details = (
+        details.get("prompt_tokens_details") if isinstance(details.get("prompt_tokens_details"), dict) else {}
+    )
     completion_details = (
         details.get("completion_tokens_details") if isinstance(details.get("completion_tokens_details"), dict) else {}
     )
@@ -53,7 +54,9 @@ def usage_breakdown(usage: LLMUsage) -> dict[str, Any]:
         "output_tokens": output_tokens,
         "cache_creation_input_tokens": cache_creation,
         "cache_read_input_tokens": cache_read,
-        "reasoning_output_tokens": _int_token(details.get("reasoning_output_tokens"), completion_details.get("reasoning_tokens")),
+        "reasoning_output_tokens": _int_token(
+            details.get("reasoning_output_tokens"), completion_details.get("reasoning_tokens")
+        ),
         "estimated": bool(usage.estimated),
         "total_tokens": int(usage.total_tokens or (usage.prompt_tokens + usage.completion_tokens)),
     }
@@ -119,7 +122,7 @@ def record_llm_response(
                     data["created_at"],
                 ),
             )
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Usage telemetry must never make an LLM call fail.
         return
 
@@ -143,7 +146,7 @@ def list_usage_events(*, limit: int = 100) -> list[dict[str, Any]]:
 
 def usage_summary(*, hours: int = 24) -> dict[str, Any]:
     db.init_db()
-    since = datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
+    since = datetime.now(UTC) - timedelta(hours=max(1, int(hours)))
     with db.connect() as conn:
         rows = conn.execute(
             """

@@ -12,9 +12,8 @@ import math
 import threading
 import time
 from contextlib import contextmanager
-from typing import Dict, List, Optional, Tuple
 
-DEFAULT_BUCKETS: Tuple[float, ...] = (
+DEFAULT_BUCKETS: tuple[float, ...] = (
     0.005,
     0.01,
     0.025,
@@ -28,14 +27,14 @@ DEFAULT_BUCKETS: Tuple[float, ...] = (
     10.0,
 )
 
-LabelsInput = Optional[Dict[str, object]]
-FrozenLabels = Tuple[Tuple[str, str], ...]
+LabelsInput = dict[str, object] | None
+FrozenLabels = tuple[tuple[str, str], ...]
 
 
 def _freeze_labels(labels: LabelsInput) -> FrozenLabels:
     if not labels:
         return ()
-    items: List[Tuple[str, str]] = []
+    items: list[tuple[str, str]] = []
     for key in sorted(labels.keys()):
         items.append((str(key), str(labels[key])))
     return tuple(items)
@@ -44,10 +43,10 @@ def _freeze_labels(labels: LabelsInput) -> FrozenLabels:
 class _Histogram:
     """A single histogram series with cumulative bucket counts."""
 
-    def __init__(self, buckets: Tuple[float, ...]):
+    def __init__(self, buckets: tuple[float, ...]):
         bounds = sorted(float(b) for b in buckets if not math.isinf(float(b)))
-        self._bounds: Tuple[float, ...] = tuple(bounds)
-        self._counts: List[int] = [0 for _ in self._bounds]
+        self._bounds: tuple[float, ...] = tuple(bounds)
+        self._counts: list[int] = [0 for _ in self._bounds]
         self._sum: float = 0.0
         self._count: int = 0
 
@@ -58,7 +57,7 @@ class _Histogram:
             if value <= bound:
                 self._counts[index] += 1
 
-    def snapshot(self) -> Dict[str, object]:
+    def snapshot(self) -> dict[str, object]:
         buckets = []
         for index, bound in enumerate(self._bounds):
             buckets.append({"le": bound, "count": self._counts[index]})
@@ -70,10 +69,10 @@ class MetricsRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._counters: Dict[Tuple[str, FrozenLabels], float] = {}
-        self._gauges: Dict[Tuple[str, FrozenLabels], float] = {}
-        self._histograms: Dict[Tuple[str, FrozenLabels], _Histogram] = {}
-        self._histogram_buckets: Dict[str, Tuple[float, ...]] = {}
+        self._counters: dict[tuple[str, FrozenLabels], float] = {}
+        self._gauges: dict[tuple[str, FrozenLabels], float] = {}
+        self._histograms: dict[tuple[str, FrozenLabels], _Histogram] = {}
+        self._histogram_buckets: dict[str, tuple[float, ...]] = {}
 
     def increment_counter(self, name: str, value: float = 1.0, labels: LabelsInput = None) -> None:
         key = (name, _freeze_labels(labels))
@@ -95,7 +94,7 @@ class MetricsRegistry:
         name: str,
         value: float,
         labels: LabelsInput = None,
-        buckets: Optional[Tuple[float, ...]] = None,
+        buckets: tuple[float, ...] | None = None,
     ) -> None:
         key = (name, _freeze_labels(labels))
         with self._lock:
@@ -114,7 +113,7 @@ class MetricsRegistry:
             self._histograms.clear()
             self._histogram_buckets.clear()
 
-    def snapshot(self) -> Dict[str, object]:
+    def snapshot(self) -> dict[str, object]:
         with self._lock:
             counters = [
                 {"name": name, "labels": dict(labels), "value": value}
@@ -135,28 +134,25 @@ class MetricsRegistry:
         with self._lock:
             counters = sorted(self._counters.items())
             gauges = sorted(self._gauges.items())
-            histograms = [
-                (name, labels, hist.snapshot())
-                for (name, labels), hist in sorted(self._histograms.items())
-            ]
-        lines: List[str] = []
+            histograms = [(name, labels, hist.snapshot()) for (name, labels), hist in sorted(self._histograms.items())]
+        lines: list[str] = []
         emitted_type = set()
 
         def emit_type(metric_name: str, metric_type: str) -> None:
             if metric_name in emitted_type:
                 return
             emitted_type.add(metric_name)
-            lines.append("# TYPE {} {}".format(metric_name, metric_type))
+            lines.append(f"# TYPE {metric_name} {metric_type}")
 
         for (name, labels), value in counters:
             metric_name = _sanitize_name(name)
             emit_type(metric_name, "counter")
-            lines.append("{}{} {}".format(metric_name, _render_labels(labels), _render_number(value)))
+            lines.append(f"{metric_name}{_render_labels(labels)} {_render_number(value)}")
 
         for (name, labels), value in gauges:
             metric_name = _sanitize_name(name)
             emit_type(metric_name, "gauge")
-            lines.append("{}{} {}".format(metric_name, _render_labels(labels), _render_number(value)))
+            lines.append(f"{metric_name}{_render_labels(labels)} {_render_number(value)}")
 
         for name, labels, snap in histograms:
             metric_name = _sanitize_name(name)
@@ -191,13 +187,13 @@ def _escape_label_value(value: str) -> str:
     return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
-def _render_labels(labels: FrozenLabels, extra: Optional[List[Tuple[str, str]]] = None) -> str:
-    parts: List[str] = []
+def _render_labels(labels: FrozenLabels, extra: list[tuple[str, str]] | None = None) -> str:
+    parts: list[str] = []
     for key, value in labels:
-        parts.append('{}="{}"'.format(_sanitize_name(key), _escape_label_value(value)))
+        parts.append(f'{_sanitize_name(key)}="{_escape_label_value(value)}"')
     if extra:
         for key, value in extra:
-            parts.append('{}="{}"'.format(_sanitize_name(key), _escape_label_value(value)))
+            parts.append(f'{_sanitize_name(key)}="{_escape_label_value(value)}"')
     if not parts:
         return ""
     return "{" + ",".join(parts) + "}"
@@ -243,12 +239,12 @@ def observe_histogram(
     name: str,
     value: float,
     labels: LabelsInput = None,
-    buckets: Optional[Tuple[float, ...]] = None,
+    buckets: tuple[float, ...] | None = None,
 ) -> None:
     _REGISTRY.observe_histogram(name, value, labels=labels, buckets=buckets)
 
 
-def snapshot() -> Dict[str, object]:
+def snapshot() -> dict[str, object]:
     return _REGISTRY.snapshot()
 
 
@@ -261,7 +257,7 @@ def reset() -> None:
 
 
 @contextmanager
-def timer(name: str, labels: LabelsInput = None, buckets: Optional[Tuple[float, ...]] = None):
+def timer(name: str, labels: LabelsInput = None, buckets: tuple[float, ...] | None = None):
     start = time.perf_counter()
     try:
         yield

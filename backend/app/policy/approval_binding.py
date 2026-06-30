@@ -9,9 +9,8 @@ from typing import Any
 from app.config import AppSettings, _find_config_file, _load_dotenv, env_value, get_base_settings, get_env
 from app.policy.redaction import redact_value
 
-
 APPROVAL_HMAC_ENV_KEYS = ("LENGRVIS_APPROVAL_HMAC_SECRET",)
-APPROVAL_HMAC_SECRET_FILE = "approval_hmac.secret"
+APPROVAL_HMAC_SECRET_FILE = "approval_hmac.secret"  # noqa: S105
 
 
 def approval_secret() -> str:
@@ -75,9 +74,7 @@ def binding_preview(preview: dict[str, Any]) -> dict[str, Any]:
 
 def canonical_args(args: dict[str, Any]) -> dict[str, Any]:
     return {
-        str(key): _jsonable(value)
-        for key, value in args.items()
-        if key not in {"dry_run", "approved", "approval_id"}
+        str(key): _jsonable(value) for key, value in args.items() if key not in {"dry_run", "approved", "approval_id"}
     }
 
 
@@ -132,7 +129,9 @@ def _is_preview_path_key(key: str) -> bool:
 
 
 def settings_fingerprint(settings: AppSettings | None, *, allowed_directories: list[str] | None = None) -> str:
-    directory_values = getattr(settings, "allowed_directories", []) if allowed_directories is None else allowed_directories
+    directory_values = (
+        getattr(settings, "allowed_directories", []) if allowed_directories is None else allowed_directories
+    )
     payload = {
         "mode": getattr(settings, "mode", ""),
         "permission_mode": getattr(settings, "permission_mode", ""),
@@ -158,7 +157,7 @@ def permission_policy_version(policy_updated_at: str = "") -> str:
 def _jsonable(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in sorted(value.items(), key=lambda item: str(item[0]))}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_jsonable(item) for item in value]
     if isinstance(value, set):
         return [_jsonable(item) for item in sorted(value, key=str)]

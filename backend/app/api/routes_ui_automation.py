@@ -26,8 +26,8 @@ from app.policy.permissions import PermissionStore
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.services.approval_event_service import publish_approval_created
 from app.tools import ui_automation_tools
-from app.tools.registry import register_all_tools, registry as tool_registry
-
+from app.tools.registry import register_all_tools
+from app.tools.registry import registry as tool_registry
 
 router = APIRouter()
 
@@ -235,11 +235,18 @@ def _create_action_approval(
     safe_transition(task, TaskStatus.WAITING_USER_APPROVAL, actor=_GUI_ACTOR)
     db.upsert_model("tasks", task)
     db.upsert_model("plans", plan)
-    record("ui_automation.approval_requested", _GUI_ACTOR, {"tool_name": tool_name, "approval_id": approval.id}, task_id=task.id)
+    record(
+        "ui_automation.approval_requested",
+        _GUI_ACTOR,
+        {"tool_name": tool_name, "approval_id": approval.id},
+        task_id=task.id,
+    )
     return approval
 
 
-def _claim_valid_gui_approval(tool_name: str, payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any] | None:
+def _claim_valid_gui_approval(
+    tool_name: str, payload: dict[str, Any], context: dict[str, Any]
+) -> dict[str, Any] | None:
     if payload.get("approved") is not True:
         return {
             "ok": False,
@@ -266,7 +273,11 @@ def _claim_valid_gui_approval(tool_name: str, payload: dict[str, Any], context: 
         return {"ok": False, "status": "denied", "error": binding_error}
     claimed = db.claim_approval_for_execution(approval.id, now_iso())
     if not claimed:
-        return {"ok": False, "status": "denied", "error": "Approval has already been consumed or is no longer approved."}
+        return {
+            "ok": False,
+            "status": "denied",
+            "error": "Approval has already been consumed or is no longer approved.",
+        }
     claimed_approval = Approval.model_validate(claimed)
     binding_error = _approval_binding_error(claimed_approval, tool_name, payload, context, allow_consumed=True)
     if binding_error:
@@ -309,7 +320,9 @@ def _approval_binding_error(
         return "GUI automation approval risk level does not match this tool."
     if approval.tool_version != getattr(tool, "tool_version", "1"):
         return "GUI automation approval tool version does not match this tool."
-    expected_args = args_binding_hmac(tool_name, _approval_args(payload), task_id=approval.task_id, step_id=approval.step_id)
+    expected_args = args_binding_hmac(
+        tool_name, _approval_args(payload), task_id=approval.task_id, step_id=approval.step_id
+    )
     if not hmac.compare_digest(str(approval.args_binding_hmac or ""), str(expected_args or "")):
         return "GUI automation approval arguments do not match this request."
     expected_preview = preview_hmac(approval.diff_preview)
@@ -328,8 +341,4 @@ def _approval_binding_error(
 
 
 def _approval_args(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in payload.items()
-        if key not in {"approved", "approval_id", "dry_run"}
-    }
+    return {key: value for key, value in payload.items() if key not in {"approved", "approval_id", "dry_run"}}

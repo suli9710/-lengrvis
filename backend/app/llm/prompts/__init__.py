@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from string import Template
-from typing import Any, Mapping
+from typing import Any
 
 from app.config import AppSettings, get_base_settings, get_env
-
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).resolve().parent
 PROMPT_DIR = _DEFAULT_PROMPTS_DIR

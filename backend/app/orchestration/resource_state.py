@@ -12,7 +12,6 @@ from app.config import get_env
 from app.core.errors import SecurityError
 from app.core.paths import resolve_authorized
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -243,7 +242,7 @@ def remember_read_states_for_tool(
             try:
                 runtime.remember_file(str(state["path"]), partial_view=False, size=int(state.get("size") or 0))
                 runtime.extra_context.setdefault("_resource_read_states", {})[key] = cached
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("could not cache read state for %s: %s", state.get("path"), exc, exc_info=True)
 
 
@@ -313,7 +312,9 @@ def compare_resource_states(expected: Any, current: Any) -> dict[str, Any]:
         for key in sorted(set(expected_by_path) & set(current_by_path)):
             mismatch = compare_single_resource_state(expected_by_path[key], current_by_path[key])
             if mismatch:
-                changed.append({"path": current_by_path[key].get("path") or expected_by_path[key].get("path"), "diff": mismatch})
+                changed.append(
+                    {"path": current_by_path[key].get("path") or expected_by_path[key].get("path"), "diff": mismatch}
+                )
         if not missing and not extra and not changed:
             return {}
         return {"missing": missing, "extra": extra, "changed": changed}
@@ -341,7 +342,13 @@ def canonical_state_list(value: Any) -> list[dict[str, Any]]:
         if state.get("path") and not state.get("normalized_path"):
             state["normalized_path"] = normalize_path_key(str(state["path"]))
         normalized.append(state)
-    return sorted(normalized, key=lambda item: (str(item.get("normalized_path") or item.get("path") or ""), json.dumps(item, sort_keys=True, default=str)))
+    return sorted(
+        normalized,
+        key=lambda item: (
+            str(item.get("normalized_path") or item.get("path") or ""),
+            json.dumps(item, sort_keys=True, default=str),
+        ),
+    )
 
 
 def read_result_paths(args: dict[str, Any], output: dict[str, Any], context: dict[str, Any]) -> list[Path]:
@@ -411,14 +418,16 @@ def _read_state_for_path(
             cached = runtime.extra_context.get("_resource_read_states", {}).get(key)
             if cached:
                 return cached
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("could not read runtime resource cache for %s: %s", key, exc, exc_info=True)
     return None
 
 
 def _read_state_is_recent(cached: dict[str, Any]) -> bool:
     try:
-        ttl = max(0, int(get_env("LENGRVIS_READ_STATE_TTL_SECONDS", str(READ_STATE_TTL_SECONDS)) or READ_STATE_TTL_SECONDS))
+        ttl = max(
+            0, int(get_env("LENGRVIS_READ_STATE_TTL_SECONDS", str(READ_STATE_TTL_SECONDS)) or READ_STATE_TTL_SECONDS)
+        )
         if ttl <= 0:
             return True
         return (time.time() - float(cached.get("read_at") or 0)) <= ttl
@@ -459,7 +468,7 @@ def _task_id(context: dict[str, Any], runtime: Any | None = None) -> str:
     if runtime is not None:
         try:
             return str(runtime.task.id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
     return ""
 
@@ -472,7 +481,7 @@ def _step_id(context: dict[str, Any], runtime: Any | None = None) -> str:
             step = getattr(runtime, "step", None)
             if step is not None and getattr(step, "id", None):
                 return str(step.id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
     return ""
 
@@ -487,10 +496,10 @@ def _collect_preview_path_values(value: Any, values: list[Any]) -> None:
             text_key = str(key).replace("-", "_").casefold()
             if text_key in PREVIEW_PATH_KEYS or text_key.endswith("_path"):
                 _append_path_values(child, values)
-            elif isinstance(child, (dict, list, tuple, set)):
+            elif isinstance(child, dict | list | tuple | set):
                 _collect_preview_path_values(child, values)
         return
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         for child in value:
             _collect_preview_path_values(child, values)
 
@@ -520,23 +529,27 @@ def _collect_path_values(
                 or normalized.endswith("_dirs")
                 or normalized.endswith("_file")
                 or normalized.endswith("_files")
-                or (top_level and normalized in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"})
+                or (
+                    top_level
+                    and normalized
+                    in {"source", "sources", "destination", "destinations", "dest", "dst", "target", "targets"}
+                )
             ):
                 _append_path_values(child, values)
-            elif isinstance(child, (dict, list, tuple, set)):
+            elif isinstance(child, dict | list | tuple | set):
                 _collect_path_values(child, child_name, values, top_level=False, path_keys=path_keys)
         return
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         for index, child in enumerate(value):
             child_name = f"{arg_name}[{index}]" if arg_name else f"[{index}]"
             _collect_path_values(child, child_name, values, top_level=False, path_keys=path_keys)
 
 
 def _append_path_values(value: Any, values: list[Any]) -> None:
-    if isinstance(value, (str, Path)) and str(value).strip():
+    if isinstance(value, str | Path) and str(value).strip():
         values.append(value)
         return
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         for child in value:
             _append_path_values(child, values)
         return
@@ -548,7 +561,7 @@ def _tool_specific_path_values(tool_name: str, args: dict[str, Any], context: di
     if tool_name == "file.rename" and args.get("source") and args.get("new_name"):
         try:
             source = _resolve_candidate_path(args["source"], _allowed_directories(context))
-        except Exception:
+        except Exception:  # noqa: BLE001
             source = None
         if source is not None:
             return [source.with_name(str(args["new_name"]))]
@@ -558,7 +571,7 @@ def _tool_specific_path_values(tool_name: str, args: dict[str, Any], context: di
 
 
 def _resolve_candidate_path(value: Any, allowed_directories: list[str]) -> Path | None:
-    if not isinstance(value, (str, Path)):
+    if not isinstance(value, str | Path):
         return None
     text = str(value).strip()
     if not text or text.startswith("(") or "://" in text:
@@ -583,7 +596,10 @@ def _is_modifying_tool(tool: Any) -> bool:
     if risk_value.startswith(("R2", "R3")):
         return True
     name = str(getattr(tool, "name", ""))
-    return any(token in name for token in (".copy", ".move", ".rename", ".trash", ".write", ".edit", ".create", ".delete", ".uninstall"))
+    return any(
+        token in name
+        for token in (".copy", ".move", ".rename", ".trash", ".write", ".edit", ".create", ".delete", ".uninstall")
+    )
 
 
 def _is_read_tool(tool: Any) -> bool:
@@ -593,7 +609,7 @@ def _is_read_tool(tool: Any) -> bool:
         try:
             if tool.is_read_only():
                 return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("tool read-only check failed for %s: %s", getattr(tool, "name", ""), exc, exc_info=True)
     effects = {str(item).casefold() for item in (getattr(tool, "effects", None) or [])}
     if effects & {"read", "list", "search", "inspect"}:

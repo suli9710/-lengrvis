@@ -166,9 +166,7 @@ def test_diagnostics_external_review_packet_is_template_not_actual_content_revie
     assert packet["claim_controls"]["public_safe_approval_created"] is False
 
     input_package = packet["input_diagnostics_package"]
-    assert input_package["actual_exported_package_path_label"] == (
-        "lengrvis-diagnostics-public-safety.json"
-    )
+    assert input_package["actual_exported_package_path_label"] == ("lengrvis-diagnostics-public-safety.json")
     assert packet["review_template"]["actual_exported_package_path_label"] == (
         "lengrvis-diagnostics-public-safety.json"
     )
@@ -177,9 +175,10 @@ def test_diagnostics_external_review_packet_is_template_not_actual_content_revie
     assert packet["review_template"]["review_fields_complete"] is False
     assert packet["review_template"]["external_sharing_blocked"] is True
     assert packet["review_template"]["separate_human_content_review_required"] is True
-    assert "actual exported diagnostics package content review is uncollected" in packet[
-        "review_template"
-    ]["blocked_reason_redacted"]
+    assert (
+        "actual exported diagnostics package content review is uncollected"
+        in packet["review_template"]["blocked_reason_redacted"]
+    )
 
     checklist = {item["id"]: item for item in packet["review_template"]["checklist"]}
     for checklist_id in (
@@ -196,9 +195,10 @@ def test_diagnostics_external_review_packet_is_template_not_actual_content_revie
         assert checklist[checklist_id]["required"] is True
         assert checklist[checklist_id]["reviewed"] is False
 
-    assert checklist["actual_exported_package_path_label"][
-        "actual_exported_package_path_label"
-    ] == "lengrvis-diagnostics-public-safety.json"
+    assert (
+        checklist["actual_exported_package_path_label"]["actual_exported_package_path_label"]
+        == "lengrvis-diagnostics-public-safety.json"
+    )
     assert "External sharing allowed: false" in markdown
     assert "Claim allowed: false" in markdown
     assert "Actual package content review completed: false" in markdown
@@ -291,15 +291,12 @@ def test_diagnostics_external_review_packet_rejects_string_boolean_source_contra
     assert packet["summary"]["external_sharing_blocked"] is True
     assert packet["summary"]["separate_human_content_review_required"] is True
     assert packet["review_scope"]["actual_package_content_review_completed"] is False
-    assert packet["source_redaction_contract"]["package_public_safe_observation"] == (
-        "not_false_ignored"
+    assert packet["source_redaction_contract"]["package_public_safe_observation"] == ("not_false_ignored")
+    assert packet["source_redaction_contract"]["external_review_public_safe_observation"] == ("not_false_ignored")
+    assert (
+        packet["source_redaction_contract"]["required_before_external_sharing_observation"]
+        == "not_required_in_input_but_required_by_template"
     )
-    assert packet["source_redaction_contract"]["external_review_public_safe_observation"] == (
-        "not_false_ignored"
-    )
-    assert packet["source_redaction_contract"][
-        "required_before_external_sharing_observation"
-    ] == "not_required_in_input_but_required_by_template"
     issues = "\n".join(packet["issues_redacted"])
     assert "support package public-safe flag was not false in input" in issues
     assert "external review public-safe flag was not false in input" in issues
@@ -309,9 +306,7 @@ def test_diagnostics_external_review_packet_rejects_string_boolean_source_contra
 
 
 def test_release_gate_documents_diagnostics_review_claim_controls(project_root: Path) -> None:
-    release_gate = (project_root / "docs" / "qa" / "release-gate.md").read_text(
-        encoding="utf-8"
-    )
+    release_gate = (project_root / "docs" / "qa" / "release-gate.md").read_text(encoding="utf-8")
 
     assert "`external_sharing_allowed=false`" in release_gate
     assert "`claim_allowed=false`" in release_gate

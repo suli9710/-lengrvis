@@ -10,9 +10,9 @@ import pytest
 
 from app.core import db
 from app.core.schemas import Plan, PlanStep, StepStatus, Task, TaskStatus, ToolResult
+from app.orchestration import resource_state as rs
 from app.orchestration.handlers.context import StepExecutionOutcome
 from app.orchestration.handlers.step_scheduler_handler import StepSchedulerHandler, _ScheduleState
-from app.orchestration import resource_state as rs
 from app.orchestration.os_execution_engine import OSExecutionEngine
 from app.policy.risk import RiskLevel, SafetyVerdict
 
@@ -116,7 +116,7 @@ async def test_parallel_scheduler_steps_receive_isolated_context_dicts() -> None
 
 def test_read_states_are_scoped_per_step_not_shared_across_parallel_steps() -> None:
     tool = _read_tool()
-    path = "/tmp/workspace/isolated.txt"
+    path = "/tmp/workspace/isolated.txt"  # noqa: S108
     state = _file_state(path)
     key = rs.normalize_path_key(path)
 
@@ -143,7 +143,7 @@ def test_read_states_are_scoped_per_step_not_shared_across_parallel_steps() -> N
 
 def test_prior_step_read_visible_to_later_write_step_with_include_prior_steps() -> None:
     tool = _read_tool()
-    path = "/tmp/workspace/sequential.txt"
+    path = "/tmp/workspace/sequential.txt"  # noqa: S108
     state = _file_state(path)
     key = rs.normalize_path_key(path)
 

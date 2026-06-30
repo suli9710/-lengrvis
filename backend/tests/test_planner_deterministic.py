@@ -4,6 +4,7 @@
 性。每个模板必须满足:意图命中时产出正确工具与参数;意图含糊或与删除/
 卸载/清理/路径/网页冲突时让位给 LLM 规划。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,7 +14,6 @@ import pytest
 from app.agents.planner_agent import PlannerAgent
 from app.core import db
 from app.policy.risk import RiskLevel
-
 
 TOOLS = [
     "file.search_by_name",

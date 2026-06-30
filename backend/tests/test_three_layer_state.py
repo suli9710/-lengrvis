@@ -16,7 +16,6 @@ from app.core import db
 from app.core.errors import StateTransitionError
 from app.core.schemas import LEGACY_TASK_STATUS_MAP, PlanStep, StepStatus, Task, TaskStatus
 from app.orchestration.execution_stage import (
-    EXECUTION_STAGE_TRANSITIONS,
     ExecutionStage,
     is_stage_transition_allowed,
     stage_transition,
@@ -42,10 +41,10 @@ from app.orchestration.task_phase import (
     phase_transition,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path):
@@ -65,6 +64,7 @@ def _make_task(status: TaskStatus = TaskStatus.CREATED) -> Task:
 # ===========================================================================
 # Layer 1: TaskPhase
 # ===========================================================================
+
 
 class TestTaskPhaseTransitions:
     """Verify every valid transition in the TaskPhase layer."""
@@ -130,6 +130,7 @@ class TestTaskPhaseTransitions:
 # Layer 2: ExecutionStage
 # ===========================================================================
 
+
 class TestExecutionStageTransitions:
     """Verify every valid transition in the ExecutionStage layer."""
 
@@ -169,6 +170,7 @@ class TestExecutionStageTransitions:
 # ===========================================================================
 # Layer 3: StepPhase
 # ===========================================================================
+
 
 class TestStepPhaseTransitions:
     """Verify every valid transition in the StepPhase layer."""
@@ -248,6 +250,7 @@ class TestStepPhaseTransitions:
 # PHASE_MAP coverage
 # ===========================================================================
 
+
 class TestPhaseMapCoverage:
     """Ensure PHASE_MAP covers new phases and legacy persisted status strings."""
 
@@ -269,6 +272,7 @@ class TestPhaseMapCoverage:
 # sync_phase
 # ===========================================================================
 
+
 class TestSyncPhase:
     """Verify sync_phase correctly maps current and legacy status values."""
 
@@ -277,9 +281,7 @@ class TestSyncPhase:
         task = Task(user_goal="test", mode="privacy", status=phase)
         sync_phase(task)
         expected_phase, expected_stage = PHASE_MAP[phase]
-        assert task.phase == expected_phase, (
-            f"For {phase}: expected phase={expected_phase}, got {task.phase}"
-        )
+        assert task.phase == expected_phase, f"For {phase}: expected phase={expected_phase}, got {task.phase}"
         assert task.execution_stage == expected_stage, (
             f"For {phase}: expected stage={expected_stage}, got {task.execution_stage}"
         )
@@ -310,6 +312,7 @@ class TestSyncPhase:
 # ===========================================================================
 # Dual-write integration
 # ===========================================================================
+
 
 class TestDualWriteIntegration:
     """Verify that transition() and safe_transition() keep phase fields in sync."""
@@ -385,6 +388,7 @@ class TestDualWriteIntegration:
 # ===========================================================================
 # Model defaults
 # ===========================================================================
+
 
 class TestModelDefaults:
     """Verify new fields have correct defaults."""

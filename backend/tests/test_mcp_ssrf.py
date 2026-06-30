@@ -47,9 +47,10 @@ def test_mcp_client_sends_authorization_when_token_present() -> None:
         },
     )()
 
-    with patch("app.mcp.client.pin_outbound_http_url", return_value=pinned), patch(
-        "app.mcp.client.httpx.AsyncClient"
-    ) as async_client_cls:
+    with (
+        patch("app.mcp.client.pin_outbound_http_url", return_value=pinned),
+        patch("app.mcp.client.httpx.AsyncClient") as async_client_cls,
+    ):
         async_client_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
         async_client_cls.return_value.__aexit__ = AsyncMock(return_value=None)
         asyncio.run(client.list_tools(force_refresh=True))
@@ -74,9 +75,10 @@ def test_mcp_client_uses_follow_redirects_false() -> None:
         },
     )()
 
-    with patch("app.mcp.client.pin_outbound_http_url", return_value=pinned), patch(
-        "app.mcp.client.httpx.AsyncClient"
-    ) as async_client_cls:
+    with (
+        patch("app.mcp.client.pin_outbound_http_url", return_value=pinned),
+        patch("app.mcp.client.httpx.AsyncClient") as async_client_cls,
+    ):
         instance = AsyncMock()
         response = MagicMock()
         response.raise_for_status = MagicMock()

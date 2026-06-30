@@ -4,8 +4,8 @@ import pytest
 
 from app.agents.planner_agent import PlannerAgent
 from app.core import db
-from app.core.session_context import SessionContext, SessionContextStore, reset_session_context_store
 from app.core.schemas import Plan, Task
+from app.core.session_context import SessionContext, SessionContextStore, reset_session_context_store
 from app.orchestration.handlers.planning_handler import PlanningHandler
 
 
@@ -119,7 +119,9 @@ def test_session_context_complete_task_removes_unfinished_reference():
 
 
 def test_session_context_load_latest_uses_configured_session_id():
-    older_created_later = SessionContext(id="created_later", created_at="2026-01-02T00:00:00Z", updated_at="2026-01-02T00:00:00Z")
+    older_created_later = SessionContext(
+        id="created_later", created_at="2026-01-02T00:00:00Z", updated_at="2026-01-02T00:00:00Z"
+    )
     newer_updated = SessionContext(
         id="updated_later",
         created_at="2026-01-01T00:00:00Z",
@@ -129,8 +131,12 @@ def test_session_context_load_latest_uses_configured_session_id():
     db.upsert_model("session_contexts", older_created_later)
     db.upsert_model("session_contexts", newer_updated)
     with db.connect() as conn:
-        conn.execute("UPDATE session_contexts SET updated_at = ? WHERE id = ?", ("2026-01-02T00:00:00Z", "created_later"))
-        conn.execute("UPDATE session_contexts SET updated_at = ? WHERE id = ?", ("2026-01-03T00:00:00Z", "updated_later"))
+        conn.execute(
+            "UPDATE session_contexts SET updated_at = ? WHERE id = ?", ("2026-01-02T00:00:00Z", "created_later")
+        )
+        conn.execute(
+            "UPDATE session_contexts SET updated_at = ? WHERE id = ?", ("2026-01-03T00:00:00Z", "updated_later")
+        )
 
     loaded = SessionContextStore(session_id="session_c").load_latest()
 
@@ -160,7 +166,17 @@ async def test_planning_handler_passes_session_context_to_planner():
     captured = {}
 
     class Planner:
-        async def create_plan(self, task_id, goal, mode, tools, memory_context=None, perception_context=None, goal_context=None, session_context=None):  # noqa: ARG002
+        async def create_plan(
+            self,
+            task_id,
+            goal,
+            mode,
+            tools,
+            memory_context=None,
+            perception_context=None,
+            goal_context=None,
+            session_context=None,
+        ):  # noqa: ARG002
             captured["session_context"] = session_context
             return Plan(task_id=task_id, goal=goal, steps=[])
 
@@ -175,7 +191,9 @@ async def test_planning_handler_passes_session_context_to_planner():
 
     task = Task(id="task_session", user_goal="continue report")
     handler = PlanningHandler(Orchestrator())
-    plan = await handler._create_plan(task, task.user_goal, "efficiency", [], None, {"unfinished_task_ids": ["old_task"]})
+    plan = await handler._create_plan(
+        task, task.user_goal, "efficiency", [], None, {"unfinished_task_ids": ["old_task"]}
+    )
 
     assert plan.goal == "continue report"
     assert captured["session_context"]["unfinished_task_ids"] == ["old_task"]

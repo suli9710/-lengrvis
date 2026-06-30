@@ -4,12 +4,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.agents.delegation_rules import contains_any
+from app.agents.path_detection import find_explicit_path
 from app.llm.base import LLMProvider
 from app.llm.types import LLMResponse
 from app.llm.usage import estimate_usage
-
-from app.agents.delegation_rules import contains_any
-from app.agents.path_detection import find_explicit_path
 
 
 class MockProvider(LLMProvider):

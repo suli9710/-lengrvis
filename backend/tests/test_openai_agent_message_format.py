@@ -60,4 +60,3 @@ def test_agent_bus_can_publish_tool_call_message(tmp_path, monkeypatch):
 
     assert payload["role"] == "assistant"
     assert payload["tool_calls"][0]["function"]["name"] == "system.get_info"
-

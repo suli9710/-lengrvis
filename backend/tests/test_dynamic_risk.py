@@ -80,7 +80,9 @@ def test_deep_night_context_upgrades_static_open_risk():
     assert any("Deep-night" in reason for reason in assessment.reasons)
 
 
-@pytest.mark.parametrize("recent_failure_count,expected", [(1, RiskLevel.R1_OPEN_ONLY), (3, RiskLevel.R2_REVERSIBLE_MODIFY)])
+@pytest.mark.parametrize(
+    "recent_failure_count,expected", [(1, RiskLevel.R1_OPEN_ONLY), (3, RiskLevel.R2_REVERSIBLE_MODIFY)]
+)
 def test_recent_failures_escalate_by_failure_volume(recent_failure_count: int, expected: RiskLevel):
     assessment = DynamicRiskAssessor().assess(
         tool_name="system.get_info",

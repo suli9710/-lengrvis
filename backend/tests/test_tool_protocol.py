@@ -188,6 +188,5 @@ def test_fast_path_eligible_tools_declare_explicit_object_schema() -> None:
         and not _has_explicit_object_schema(getattr(tool, "input_schema", {}) or {})
     ]
     assert offenders == [], (
-        "fast_path_eligible tools without an explicit object input_schema fall back to "
-        f"an extra LLM hop: {offenders}"
+        f"fast_path_eligible tools without an explicit object input_schema fall back to an extra LLM hop: {offenders}"
     )

@@ -41,9 +41,7 @@ def _latest_json(root: Path, pattern: str) -> dict[str, object]:
     return json.loads(matches[0].read_text(encoding="utf-8-sig"))
 
 
-def test_android_release_gate_preflight_subgates_are_not_passed(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_android_release_gate_preflight_subgates_are_not_passed(project_root: Path, tmp_path: Path) -> None:
     output_root = tmp_path / "android-release-gate"
     result = _run_powershell(
         project_root,
@@ -72,9 +70,7 @@ def test_android_release_gate_preflight_subgates_are_not_passed(
     assert packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
 
 
-def test_android_real_device_template_cannot_satisfy_strict_gate(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_android_real_device_template_cannot_satisfy_strict_gate(project_root: Path, tmp_path: Path) -> None:
     apk = tmp_path / "lengrvis-preview.apk"
     with zipfile.ZipFile(apk, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00" + (b"\0" * 600_000))
@@ -157,10 +153,7 @@ def test_android_real_device_template_cannot_satisfy_strict_gate(
     assert gate_packet["claim_controls"]["installable_android_app_claim_allowed"] is False
     assert gate_packet["claim_controls"]["real_device_remote_control_claim_allowed"] is False
 
-    issue_codes = {
-        issue["code"]
-        for issue in gate_packet["real_device_gate"]["issues"]
-    }
+    issue_codes = {issue["code"] for issue in gate_packet["real_device_gate"]["issues"]}
     assert "real_device_result_not_passed" in issue_codes
     assert "review_status_not_passed" in issue_codes
     assert "real_device_claim_flag_missing" in issue_codes

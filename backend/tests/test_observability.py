@@ -9,11 +9,11 @@ from app.observability import (
     JsonLogFormatter,
     RedactingTextFormatter,
     configure_logging,
+    metrics,
     report_exception,
     span,
 )
 from app.observability import context as obs_context
-from app.observability import metrics
 
 _SECRET = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
@@ -30,9 +30,7 @@ def test_counter_snapshot_aggregates_by_labels():
     metrics.increment_counter("widgets_total", value=2, labels={"kind": "a"})
     metrics.increment_counter("widgets_total", labels={"kind": "b"})
     snap = metrics.snapshot()
-    by_key = {
-        (c["name"], tuple(sorted(c["labels"].items()))): c["value"] for c in snap["counters"]
-    }
+    by_key = {(c["name"], tuple(sorted(c["labels"].items()))): c["value"] for c in snap["counters"]}
     assert by_key[("widgets_total", (("kind", "a"),))] == 3
     assert by_key[("widgets_total", (("kind", "b"),))] == 1
 

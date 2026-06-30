@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 CARDLIKE_DIGITS = re.compile(r"\d[\d\s-]{11,}\d")
 BLOCKED_REDACTION_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|token|password|secret|authorization|cookie)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.=:/+]{8,})"),
+    re.compile(
+        r"(?i)(api[_-]?key|token|password|secret|authorization|cookie)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.=:/+]{8,})"
+    ),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.=:/+]{8,}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),

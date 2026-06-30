@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field
 from app.core.session_context import SessionContext
 from app.perception.schemas import AppContext, ScreenState, UIElement
 
-
 CONFIDENCE_THRESHOLD = 0.8
 MAX_SUGGESTIONS = 3
 RULE_SOURCE = "rules"
@@ -58,9 +57,12 @@ class IntentPredictor:
             return []
         try:
             raw_candidates = self.model.predict(features)
-        except Exception:
+        except Exception:  # noqa: BLE001
             return []
-        return [_with_source_metadata(_coerce_suggestion(item), source=MODEL_SOURCE, model_enabled=True) for item in raw_candidates]
+        return [
+            _with_source_metadata(_coerce_suggestion(item), source=MODEL_SOURCE, model_enabled=True)
+            for item in raw_candidates
+        ]
 
 
 def predict_intents(

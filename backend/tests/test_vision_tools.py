@@ -139,7 +139,9 @@ def test_embed_image_runs_local_onnx_session(sample_png, monkeypatch, tmp_path):
             assert "pixel_values" in feed
             return [np.asarray([[1.0, 2.0, 2.0]], dtype=np.float32)]
 
-    monkeypatch.setattr("app.acceleration.onnx_sessions.available_execution_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr(
+        "app.acceleration.onnx_sessions.available_execution_providers", lambda: ["CPUExecutionProvider"]
+    )
     monkeypatch.setattr("app.acceleration.onnx_sessions.import_onnxruntime", lambda: object())
     monkeypatch.setattr(vision_tools, "create_inference_session", lambda backend: _Session())
     monkeypatch.setattr(vision_tools, "available_execution_providers", lambda: ["CPUExecutionProvider"])

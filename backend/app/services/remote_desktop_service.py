@@ -10,7 +10,6 @@ from PIL import Image
 
 from app.core.schemas import now_iso
 
-
 DEFAULT_CAPTURE_WIDTH = 1280
 DEFAULT_CAPTURE_HEIGHT = 720
 DEFAULT_FPS = 2.0
@@ -107,8 +106,8 @@ def _grab_screen() -> Image.Image:
     # Attaching the origin is an optional optimization; readers fall back to
     # _virtual_screen_origin() when the attribute is missing.
     try:
-        setattr(converted, "_lengrvis_screen_origin", screen_origin)
-    except Exception:
+        converted._lengrvis_screen_origin = screen_origin
+    except Exception:  # noqa: S110, BLE001
         pass
     return converted
 
@@ -129,7 +128,7 @@ def _virtual_screen_origin() -> tuple[int, int]:
     try:
         user32 = ctypes.windll.user32  # type: ignore[attr-defined]
         return int(user32.GetSystemMetrics(76)), int(user32.GetSystemMetrics(77))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0, 0
 
 

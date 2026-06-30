@@ -4,7 +4,6 @@ from fastapi import APIRouter
 
 from app.services import app_service
 
-
 router = APIRouter()
 
 
@@ -31,4 +30,3 @@ def open_folder(payload: dict):
 @router.post("/apps/reveal")
 def reveal(payload: dict):
     return app_service.reveal(payload)
-

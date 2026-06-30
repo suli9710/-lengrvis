@@ -7,7 +7,10 @@ from app.core.schemas import MessageType, Plan
 class ComputerAgent(BaseAgent):
     name = "ComputerAgent"
     tool_prefix = "system."
-    domain_summary = "Inspects host CPU / RAM / disk / processes / startup items and proposes safe cleanup, remote desktop, or GUI automation actions."
+    domain_summary = (
+        "Inspects host CPU / RAM / disk / processes / startup items and proposes safe cleanup, "
+        "remote desktop, or GUI automation actions."
+    )
     prompt_file = "computer_agent.md"
 
     def allowed_tools(self, registry=None) -> list[str]:
@@ -20,10 +23,16 @@ class ComputerAgent(BaseAgent):
         return allowed
 
     def consult(self, plan: Plan) -> None:
-        if any(step.agent_name == self.name or step.tool_name.startswith(("system.", "remote.", "ui_automation.")) for step in plan.steps):
+        if any(
+            step.agent_name == self.name or step.tool_name.startswith(("system.", "remote.", "ui_automation."))
+            for step in plan.steps
+        ):
             self.bus.publish_text(
                 plan.task_id,
                 self.name,
-                "System inspection is read-only unless a Windows settings, remote input, or GUI automation operation is explicitly approved.",
+                (
+                    "System inspection is read-only unless a Windows settings, remote input, "
+                    "or GUI automation operation is explicitly approved."
+                ),
                 message_type=MessageType.CRITIQUE,
             )

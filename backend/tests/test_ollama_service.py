@@ -1,4 +1,5 @@
 """Tests for the Ollama lifecycle service."""
+
 from __future__ import annotations
 
 import asyncio
@@ -39,7 +40,9 @@ def test_repository_vendor_ollama_is_not_a_bundled_source(monkeypatch, tmp_path:
     model_manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
     runtime_dir.mkdir(parents=True)
     model_manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     model_manifest.write_text("{}", encoding="utf-8")
     manifest_path.write_text('{"schema":1,"accepted_licenses":true}', encoding="utf-8")
     monkeypatch.setattr(ollama_service, "_bundle_anchor_dirs", lambda: [tmp_path])
@@ -74,8 +77,10 @@ def test_status_installed_not_running():
     async def _not_running():
         return False
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", side_effect=_not_running):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", side_effect=_not_running),
+    ):
         result = asyncio.run(ollama_service.status())
         assert result["installed"] is True
         assert result["running"] is False
@@ -89,9 +94,11 @@ def test_status_installed_and_running():
     async def _models():
         return ["qwen2.5:3b", "llama3:8b"]
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", side_effect=_running), \
-         patch.object(ollama_service, "list_models", side_effect=_models):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", side_effect=_running),
+        patch.object(ollama_service, "list_models", side_effect=_models),
+    ):
         result = asyncio.run(ollama_service.status())
         assert result["installed"] is True
         assert result["running"] is True
@@ -107,9 +114,11 @@ def test_status_running_without_recommended_model():
     async def _models():
         return ["llama3:8b"]
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", side_effect=_running), \
-         patch.object(ollama_service, "list_models", side_effect=_models):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", side_effect=_running),
+        patch.object(ollama_service, "list_models", side_effect=_models),
+    ):
         result = asyncio.run(ollama_service.status())
         assert result["installed"] is True
         assert result["running"] is True
@@ -123,9 +132,11 @@ def test_status_matches_model_tag_prefix():
     async def _models():
         return ["qwen2.5:3b-instruct-q4_0"]
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", side_effect=_running), \
-         patch.object(ollama_service, "list_models", side_effect=_models):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", side_effect=_running),
+        patch.object(ollama_service, "list_models", side_effect=_models),
+    ):
         result = asyncio.run(ollama_service.status())
         assert result["has_recommended"] is True
 
@@ -149,7 +160,9 @@ def test_setup_plan_reports_next_action_for_missing_runtime(monkeypatch):
         assert result["steps"][1]["state"] == "current"
 
 
-def test_setup_plan_clean_machine_no_runtime_no_model_has_safe_verification(monkeypatch, tmp_path: Path, no_bundled_ollama):
+def test_setup_plan_clean_machine_no_runtime_no_model_has_safe_verification(
+    monkeypatch, tmp_path: Path, no_bundled_ollama
+):
     monkeypatch.setattr(
         ollama_service,
         "hardware_readiness",
@@ -165,8 +178,7 @@ def test_setup_plan_clean_machine_no_runtime_no_model_has_safe_verification(monk
         },
     )
 
-    with patch("shutil.which", return_value=None), \
-         patch.object(ollama_service.os.path, "exists", return_value=False):
+    with patch("shutil.which", return_value=None), patch.object(ollama_service.os.path, "exists", return_value=False):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
 
     evidence = {item["key"]: item for item in result["evidence"]}
@@ -224,8 +236,7 @@ def test_setup_plan_blocks_insufficient_resources_before_runtime_work(monkeypatc
     }
     monkeypatch.setattr(ollama_service, "hardware_readiness", lambda model=None: blocked_readiness)
 
-    with patch("shutil.which", return_value=None), \
-         patch.object(ollama_service.os.path, "exists", return_value=False):
+    with patch("shutil.which", return_value=None), patch.object(ollama_service.os.path, "exists", return_value=False):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
 
     hardware_evidence = next(item for item in result["evidence"] if item["key"] == "hardware")
@@ -262,17 +273,18 @@ def test_setup_plan_ready_when_runtime_and_model_exist(monkeypatch):
             "checks": [],
         },
     )
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", side_effect=_running), \
-         patch.object(ollama_service, "list_models", side_effect=_models):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", side_effect=_running),
+        patch.object(ollama_service, "list_models", side_effect=_models),
+    ):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
         assert result["ready"] is True
         assert result["next_action"] == "ready"
 
 
 def test_is_installed_checks_path(no_bundled_ollama):
-    with patch("shutil.which", return_value=None), \
-         patch("os.path.exists", return_value=False):
+    with patch("shutil.which", return_value=None), patch("os.path.exists", return_value=False):
         assert ollama_service.is_installed() is False
     with patch("shutil.which", return_value="C:\\Program Files\\Ollama\\ollama.exe"):
         assert ollama_service.is_installed() is True
@@ -313,9 +325,11 @@ def test_install_already_installed(no_bundled_ollama):
 
 
 def test_install_non_windows():
-    with patch.object(ollama_service, "is_installed", return_value=False), \
-         patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"), \
-         patch.object(ollama_service.sys, "platform", "linux"):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=False),
+        patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"),
+        patch.object(ollama_service.sys, "platform", "linux"),
+    ):
         result = asyncio.run(ollama_service.install())
         assert result["ok"] is False
         assert "Windows" in result["error"]
@@ -325,10 +339,12 @@ def test_install_winget_not_found():
     async def _raise_fnf(*args, **kwargs):
         raise FileNotFoundError()
 
-    with patch.object(ollama_service, "is_installed", return_value=False), \
-         patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"), \
-         patch.object(ollama_service.sys, "platform", "win32"), \
-         patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError()):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=False),
+        patch.object(ollama_service, "_ollama_runtime_source", return_value="missing"),
+        patch.object(ollama_service.sys, "platform", "win32"),
+        patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError()),
+    ):
         result = asyncio.run(ollama_service.install())
         assert result["ok"] is False
         assert "winget" in result["error"].lower()
@@ -341,8 +357,7 @@ def test_bundled_runtime_takes_precedence_over_winget(monkeypatch, tmp_path: Pat
     executable.write_text("fake", encoding="utf-8")
     monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
 
-    with patch("shutil.which", return_value=None), \
-         patch("asyncio.create_subprocess_exec") as subprocess_exec:
+    with patch("shutil.which", return_value=None), patch("asyncio.create_subprocess_exec") as subprocess_exec:
         result = asyncio.run(ollama_service.install())
 
     assert result["ok"] is True
@@ -358,7 +373,9 @@ def test_setup_plan_reports_bundled_runtime_and_model(monkeypatch, tmp_path: Pat
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
     runtime_dir.mkdir()
     manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     manifest.write_text("{}", encoding="utf-8")
     manifest_path.write_text(
         '{"schema":1,"model":"qwen2.5:3b","accepted_licenses":true,'
@@ -380,8 +397,10 @@ def test_setup_plan_reports_bundled_runtime_and_model(monkeypatch, tmp_path: Pat
         },
     )
 
-    with patch("shutil.which", return_value=None), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False):
+    with (
+        patch("shutil.which", return_value=None),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False),
+    ):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
 
     assert result["runtime_source"] == "bundled"
@@ -409,7 +428,9 @@ def test_setup_plan_accepts_bom_encoded_bundle_manifest(monkeypatch, tmp_path: P
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
     runtime_dir.mkdir()
     manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     manifest.write_text("{}", encoding="utf-8")
     manifest_path.write_text(
         '{"schema":1,"model":"qwen2.5:3b","accepted_licenses":true,'
@@ -431,8 +452,10 @@ def test_setup_plan_accepts_bom_encoded_bundle_manifest(monkeypatch, tmp_path: P
         },
     )
 
-    with patch("shutil.which", return_value=None), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False):
+    with (
+        patch("shutil.which", return_value=None),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False),
+    ):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
 
     assert result["bundle_manifest"]["present"] is True
@@ -448,7 +471,9 @@ def test_setup_plan_redacts_bundle_manifest_string_fields(monkeypatch, tmp_path:
     private_manifest = r"C:\Users\Suli\private\models\qwen2.5\3b?token=sk-manifest-secret-1234567890"
     runtime_dir.mkdir()
     model_manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     model_manifest.write_text("{}", encoding="utf-8")
     manifest_path.write_text(
         json.dumps(
@@ -476,8 +501,10 @@ def test_setup_plan_redacts_bundle_manifest_string_fields(monkeypatch, tmp_path:
         },
     )
 
-    with patch("shutil.which", return_value=None), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False):
+    with (
+        patch("shutil.which", return_value=None),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False),
+    ):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
 
     payload = json.dumps(result)
@@ -529,7 +556,9 @@ def test_setup_plan_does_not_claim_bundled_model_without_manifest(monkeypatch, t
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
     runtime_dir.mkdir()
     manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     manifest.write_text("{}", encoding="utf-8")
     monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
     monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
@@ -544,9 +573,11 @@ def test_setup_plan_does_not_claim_bundled_model_without_manifest(monkeypatch, t
         },
     )
 
-    with patch("shutil.which", return_value=None), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]):
+    with (
+        patch("shutil.which", return_value=None),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]),
+    ):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
 
     assert result["bundled_models_available"] is True
@@ -566,7 +597,9 @@ def test_setup_plan_reports_restart_repair_when_running_service_not_using_bundle
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
     runtime_dir.mkdir()
     manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     manifest.write_text("{}", encoding="utf-8")
     _write_valid_bundle_manifest(manifest_path)
     monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
@@ -583,9 +616,11 @@ def test_setup_plan_reports_restart_repair_when_running_service_not_using_bundle
         },
     )
 
-    with patch("shutil.which", return_value=None), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]):
+    with (
+        patch("shutil.which", return_value=None),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]),
+    ):
         result = asyncio.run(ollama_service.setup_plan("qwen2.5:3b"))
 
     bundled_evidence = next(item for item in result["evidence"] if item["key"] == "bundled_model")
@@ -600,19 +635,23 @@ def test_setup_plan_reports_restart_repair_when_running_service_not_using_bundle
 
 
 def test_start_server_requires_installed_ollama():
-    with patch.object(ollama_service, "is_installed", return_value=False), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=False),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False),
+    ):
         result = asyncio.run(ollama_service.start_server())
         assert result["ok"] is False
         assert "not installed" in result["error"]
 
 
 def test_start_server_launches_ollama_when_available():
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "_ollama_executable", return_value="ollama"), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False), \
-         patch("subprocess.Popen") as popen, \
-         patch.object(ollama_service, "record"):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "_ollama_executable", return_value="ollama"),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False),
+        patch("subprocess.Popen") as popen,
+        patch.object(ollama_service, "record"),
+    ):
         result = asyncio.run(ollama_service.start_server())
         assert result["ok"] is True
         popen.assert_called_once()
@@ -623,11 +662,13 @@ def test_start_server_uses_bundled_models_dir(monkeypatch, tmp_path: Path):
     models_dir.mkdir()
     monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR", str(models_dir))
 
-    with patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False), \
-         patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "_ollama_executable", return_value="ollama"), \
-         patch("subprocess.Popen") as popen, \
-         patch.object(ollama_service, "record"):
+    with (
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False),
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "_ollama_executable", return_value="ollama"),
+        patch("subprocess.Popen") as popen,
+        patch.object(ollama_service, "record"),
+    ):
         result = asyncio.run(ollama_service.start_server())
 
     assert result["ok"] is True
@@ -744,9 +785,13 @@ async def test_install_local_model_reports_start_server_failure(monkeypatch):
             "checks": [],
         },
     )
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False), \
-         patch.object(ollama_service, "start_server", new_callable=AsyncMock, return_value={"ok": False, "error": "port busy"}):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=False),
+        patch.object(
+            ollama_service, "start_server", new_callable=AsyncMock, return_value={"ok": False, "error": "port busy"}
+        ),
+    ):
         results = []
         async for progress in ollama_service.install_local_model("qwen2.5:3b"):
             results.append(progress)
@@ -773,10 +818,12 @@ async def test_install_local_model_stops_on_pull_error(monkeypatch, no_bundled_o
     async def _pull_error(model=None):
         yield {"status": "error", "error": "network down"}
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]), \
-         patch.object(ollama_service, "pull_model_streaming", side_effect=_pull_error):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]),
+        patch.object(ollama_service, "pull_model_streaming", side_effect=_pull_error),
+    ):
         results = []
         async for progress in ollama_service.install_local_model("qwen2.5:3b"):
             results.append(progress)
@@ -804,10 +851,12 @@ async def test_install_local_model_verifies_model_is_listed_after_pull_success(m
     async def _pull_success(model=None):
         yield {"status": "success", "model": model or "qwen2.5:3b"}
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]) as list_models, \
-         patch.object(ollama_service, "pull_model_streaming", side_effect=_pull_success):
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]) as list_models,
+        patch.object(ollama_service, "pull_model_streaming", side_effect=_pull_success),
+    ):
         results = []
         async for progress in ollama_service.install_local_model("qwen2.5:3b"):
             results.append(progress)
@@ -832,7 +881,9 @@ async def test_install_local_model_requires_visible_bundled_model_before_switch(
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
     runtime_dir.mkdir()
     manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     manifest.write_text("{}", encoding="utf-8")
     _write_valid_bundle_manifest(manifest_path)
     monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
@@ -854,10 +905,17 @@ async def test_install_local_model_requires_visible_bundled_model_before_switch(
     async def _is_running():
         return next(running_states, True)
 
-    with patch.object(ollama_service, "is_running", side_effect=_is_running), \
-         patch.object(ollama_service, "start_server", new_callable=AsyncMock, return_value={"ok": True, "models_dir": str(models_dir)}), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]), \
-         patch.object(ollama_service, "pull_model_streaming") as pull:
+    with (
+        patch.object(ollama_service, "is_running", side_effect=_is_running),
+        patch.object(
+            ollama_service,
+            "start_server",
+            new_callable=AsyncMock,
+            return_value={"ok": True, "models_dir": str(models_dir)},
+        ),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]),
+        patch.object(ollama_service, "pull_model_streaming") as pull,
+    ):
         results = []
         async for progress in ollama_service.install_local_model("qwen2.5:3b"):
             results.append(progress)
@@ -884,7 +942,9 @@ async def test_install_local_model_does_not_pull_when_bundled_model_needs_servic
     manifest = models_dir / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / "3b"
     runtime_dir.mkdir()
     manifest.parent.mkdir(parents=True)
-    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text("fake", encoding="utf-8")
+    (runtime_dir / ("ollama.exe" if ollama_service.sys.platform == "win32" else "ollama")).write_text(
+        "fake", encoding="utf-8"
+    )
     manifest.write_text("{}", encoding="utf-8")
     _write_valid_bundle_manifest(manifest_path)
     monkeypatch.setenv("LENGRVIS_BUNDLED_OLLAMA_DIR", str(runtime_dir))
@@ -901,10 +961,12 @@ async def test_install_local_model_does_not_pull_when_bundled_model_needs_servic
         },
     )
 
-    with patch.object(ollama_service, "is_installed", return_value=True), \
-         patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-         patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]), \
-         patch.object(ollama_service, "pull_model_streaming") as pull:
+    with (
+        patch.object(ollama_service, "is_installed", return_value=True),
+        patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+        patch.object(ollama_service, "list_models", new_callable=AsyncMock, return_value=[]),
+        patch.object(ollama_service, "pull_model_streaming") as pull,
+    ):
         results = []
         async for progress in ollama_service.install_local_model("qwen2.5:3b"):
             results.append(progress)

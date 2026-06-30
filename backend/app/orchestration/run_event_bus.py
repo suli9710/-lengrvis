@@ -4,14 +4,13 @@ import asyncio
 import threading
 from collections import defaultdict
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import AgentMessage, MessageType, RunEvent, now_iso
 from app.policy.redaction import redact_run_payload
-
 
 RUN_EVENT_NAMES = {
     "run.started",
@@ -43,7 +42,9 @@ class RunEventBus:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[RunEvent]]]] = defaultdict(set)
+        self._subscriptions: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Queue[RunEvent]]]] = defaultdict(
+            set
+        )
 
     def publish(
         self,
@@ -103,7 +104,7 @@ class RunEventBus:
         retention_days = max(0, int(getattr(settings, "run_event_retention_days", 30) or 0))
         if retention_days <= 0:
             return 0
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
         return db.delete_run_events_before(cutoff.isoformat())
 
     def _publish_to_subscribers(self, event: RunEvent) -> None:
@@ -138,7 +139,9 @@ def task_message_to_run_event(message: AgentMessage, *, run_id: str) -> tuple[st
     metadata = dict(message.metadata or {})
     payload = dict(message.structured_payload or {})
     event_type = str(payload.get("event_type") or metadata.get("event_type") or "")
-    message_type = message.message_type.value if isinstance(message.message_type, MessageType) else str(message.message_type)
+    message_type = (
+        message.message_type.value if isinstance(message.message_type, MessageType) else str(message.message_type)
+    )
 
     base_payload: dict[str, Any] = {
         "task_id": message.task_id,

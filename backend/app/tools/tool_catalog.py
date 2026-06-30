@@ -270,7 +270,10 @@ TOOL_CATALOG: dict[str, tuple[str, str]] = {
         "apply redaction sensitive privacy mask write 脱敏 写入 应用 隐私",
     ),
     "document.edit_docx": (
-        "Find and replace text inside a Word docx document (headings, body, tables); dry-run preview then write with rollback backup",
+        (
+            "Find and replace text inside a Word docx document (headings, body, tables); "
+            "dry-run preview then write with rollback backup"
+        ),
         "edit docx word replace find modify heading title 编辑 替换 文档 word 标题",
     ),
     "document.edit_xlsx": (

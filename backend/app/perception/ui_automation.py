@@ -236,11 +236,15 @@ class UIAutomationTarget(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_property(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str) -> Any:
+    async def get_property(
+        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str
+    ) -> Any:
         raise NotImplementedError
 
     @abstractmethod
-    async def get_children(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]) -> list[UIAutomationElement]:
+    async def get_children(
+        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]
+    ) -> list[UIAutomationElement]:
         raise NotImplementedError
 
 
@@ -498,7 +502,9 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
         if review.verdict == SafetyVerdict.NEEDS_USER_APPROVAL:
             return {"ok": False, "approval_required": True, "reasons": review.reasons}
         try:
-            await asyncio.to_thread(_send_mouse_drag, int(start_x), int(start_y), int(end_x), int(end_y), duration, button)
+            await asyncio.to_thread(
+                _send_mouse_drag, int(start_x), int(start_y), int(end_x), int(end_y), duration, button
+            )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
         return {
@@ -592,7 +598,9 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             _bounded_int(quality, default=50, minimum=10, maximum=95),
         )
 
-    async def get_property(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str) -> Any:
+    async def get_property(
+        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str
+    ) -> Any:
         target_element = element if isinstance(element, UIAutomationElement) else await self.find_element(element)
         if target_element is None:
             return None
@@ -600,7 +608,9 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return target_element.properties[prop]
         return getattr(target_element.native, prop, None)
 
-    async def get_children(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]) -> list[UIAutomationElement]:
+    async def get_children(
+        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]
+    ) -> list[UIAutomationElement]:
         target_element = element if isinstance(element, UIAutomationElement) else await self.find_element(element)
         if target_element is None:
             return []
@@ -612,12 +622,12 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             return None
         try:
             import comtypes.client  # type: ignore[import-not-found]
-        except Exception as exc:  # pragma: no cover - depends on host packages.
+        except Exception as exc:  # pragma: no cover - depends on host packages.  # noqa: BLE001
             self._available_error = f"comtypes is not installed or unavailable: {exc}"
             return None
         try:
             return comtypes.client.CreateObject("UIAutomationClient.CUIAutomation")
-        except Exception as exc:  # pragma: no cover - depends on host COM.
+        except Exception as exc:  # pragma: no cover - depends on host COM.  # noqa: BLE001
             self._available_error = f"Could not create UIAutomation COM object: {exc}"
             return None
 
@@ -689,7 +699,9 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
                 return found
         return None
 
-    def _tree_sync(self, native: Any, *, max_depth: int, max_elements: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _tree_sync(
+        self, native: Any, *, max_depth: int, max_elements: int
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         flat: list[dict[str, Any]] = []
 
         def visit(current: Any, depth: int) -> dict[str, Any]:
@@ -710,14 +722,14 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
     def _children_sync(self, native: Any) -> list[UIAutomationElement]:
         try:
             children = native.FindAll(2, self._automation.CreateTrueCondition())
-        except Exception:
+        except Exception:  # noqa: BLE001
             return []
         length = int(getattr(children, "Length", 0) or 0)
         result: list[UIAutomationElement] = []
         for index in range(length):
             try:
                 result.append(_element_from_native(children.GetElement(index)))
-            except Exception:
+            except Exception:  # noqa: S112, BLE001
                 continue
         return result
 
@@ -726,7 +738,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             pattern = native.GetCurrentPattern(10000)
             pattern.Invoke()
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("UIA invoke pattern failed, falling back to pointer click: %s", exc, exc_info=True)
         rect = getattr(native, "CurrentBoundingRectangle", None)
         if rect is not None:
@@ -745,7 +757,7 @@ class WindowsCOMUIAutomationTarget(UIAutomationTarget):
             value_pattern = native.GetCurrentPattern(10002)
             value_pattern.SetValue(text)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("UIA value pattern failed, falling back to keyboard input: %s", exc, exc_info=True)
         native.SetFocus()
         _send_text(text)
@@ -983,10 +995,14 @@ class UnavailableUIAutomationTarget(UIAutomationTarget):
     ) -> dict[str, Any]:
         return {"ok": False, "error": self.reason, "available": False}
 
-    async def get_property(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str) -> Any:
+    async def get_property(
+        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any], prop: str
+    ) -> Any:
         return None
 
-    async def get_children(self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]) -> list[UIAutomationElement]:
+    async def get_children(
+        self, element: UIAutomationElement | UIAutomationSelector | dict[str, Any]
+    ) -> list[UIAutomationElement]:
         return []
 
 
@@ -1069,11 +1085,7 @@ def _ui_automation_approval_binding_error(
 
 
 def _ui_automation_approval_args(args: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in args.items()
-        if key not in {"approved", "approval_id", "dry_run"}
-    }
+    return {key: value for key, value in args.items() if key not in {"approved", "approval_id", "dry_run"}}
 
 
 def _ui_automation_tool_definition(tool_name: str) -> Any:
@@ -1107,7 +1119,9 @@ def _coerce_selector(
     )
 
 
-def _selector_from_element(element: UIAutomationElement | UIAutomationSelector | dict[str, Any]) -> UIAutomationSelector:
+def _selector_from_element(
+    element: UIAutomationElement | UIAutomationSelector | dict[str, Any],
+) -> UIAutomationSelector:
     if isinstance(element, UIAutomationElement):
         return UIAutomationSelector(
             automation_id=element.automation_id,
@@ -1172,7 +1186,9 @@ def _send_mouse_click(x: int, y: int, button: str = "left", clicks: int = 1) -> 
         import pyautogui  # type: ignore[import-not-found]
     except Exception as exc:
         if sys.platform != "win32":
-            raise UIAutomationUnavailable("pyautogui is required for coordinate click fallback outside Windows.") from exc
+            raise UIAutomationUnavailable(
+                "pyautogui is required for coordinate click fallback outside Windows."
+            ) from exc
         _ctypes_mouse_click(x, y, button, clicks)
         return
     pyautogui.click(x=x, y=y, button=button, clicks=clicks)
@@ -1259,7 +1275,7 @@ def _rect_payload(rect: Any) -> dict[str, int] | None:
     if isinstance(rect, dict):
         try:
             return Rect.model_validate(rect).model_dump()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
     left = getattr(rect, "left", None)
     top = getattr(rect, "top", None)
@@ -1272,7 +1288,7 @@ def _rect_payload(rect: Any) -> dict[str, int] | None:
             "width": max(0, int(right) - int(left)),
             "height": max(0, int(bottom) - int(top)),
         }
-    if isinstance(rect, (list, tuple)) and len(rect) >= 4:
+    if isinstance(rect, list | tuple) and len(rect) >= 4:
         left, top, right, bottom = rect[:4]
         return {
             "x": int(left),
@@ -1288,7 +1304,7 @@ def _native_text(native: Any) -> str:
         value_pattern = native.GetCurrentPattern(10002)
         value = str(getattr(value_pattern, "CurrentValue", "") or "")
         return value or str(getattr(native, "CurrentName", "") or "")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return str(getattr(native, "CurrentName", "") or "")
 
 
@@ -1434,7 +1450,7 @@ def _list_windows_sync() -> list[dict[str, Any]]:
                         "rect": rect.model_dump() if rect else None,
                     }
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return True
         return True
 
@@ -1484,7 +1500,7 @@ def _focus_window_sync(
     target_hwnd = int(target["hwnd"])
     try:
         user32.ShowWindow(target_hwnd, 9)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Restoring a minimized window is best-effort; SetForegroundWindow
         # below still runs and its result is what gets reported.
         logger.debug("ShowWindow failed for hwnd %s", target_hwnd, exc_info=True)

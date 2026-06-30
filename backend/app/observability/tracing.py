@@ -10,8 +10,8 @@ from __future__ import annotations
 import functools
 import logging
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Callable, Dict, Optional
 
 import app.observability.context as obs_context
 import app.observability.metrics as metrics
@@ -26,14 +26,14 @@ class Span:
         self.name = name
         self.trace_id = trace_id
         self.span_id = span_id
-        self.attributes: Dict[str, object] = {}
+        self.attributes: dict[str, object] = {}
 
     def set_attribute(self, key: str, value: object) -> None:
         self.attributes[str(key)] = value
 
 
 @contextmanager
-def span(name: str, attributes: Optional[Dict[str, object]] = None):
+def span(name: str, attributes: dict[str, object] | None = None):
     trace_id = obs_context.get_trace_id() or obs_context.new_trace_id()
     span_id = obs_context.new_span_id()
     trace_token = obs_context.set_trace_id(trace_id)
@@ -70,7 +70,7 @@ def span(name: str, attributes: Optional[Dict[str, object]] = None):
         obs_context.reset_trace_id(trace_token)
 
 
-def traced(name: Optional[str] = None) -> Callable:
+def traced(name: str | None = None) -> Callable:
     def decorator(func: Callable) -> Callable:
         span_name = name or getattr(func, "__qualname__", getattr(func, "__name__", "span"))
 

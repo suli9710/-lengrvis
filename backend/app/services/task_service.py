@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
-from typing import Any, Coroutine
+from collections.abc import Coroutine
+from typing import Any
 
 from app.agents.delegation_metadata import build_task_delegation_metadata
 from app.agents.delegation_rules import FILE_ACTION_TERMS, UNINSTALL_TERMS, contains_any
+from app.agents.orchestrator_agent import OrchestratorAgent
 from app.agents.path_detection import find_explicit_path
 from app.agents.supervisor_agent import SupervisorAgent, SupervisorDecision
-from app.agents.orchestrator_agent import OrchestratorAgent
 from app.core import db
 from app.core.audit import record
 from app.core.schemas import ChatMessage, ChatResponse, OpenAIMessageRole, RunEngine, RunPhase, Task, TaskStatus
@@ -18,7 +19,6 @@ from app.orchestration.orchestrator_registry import orchestrator_registry
 from app.orchestration.state_machine import safe_transition
 from app.orchestration.task_phase import TaskPhase
 from app.services.task_pool import get_pool
-
 
 # The event loop only keeps weak references to tasks; fire-and-forget tasks
 # must be held here until done or they can be garbage collected mid-run.
@@ -141,7 +141,9 @@ def _is_uninstall_request(message: str) -> bool:
     return contains_any(normalized, UNINSTALL_TERMS)
 
 
-async def _delegate_task(message: str, mode: str, decision: SupervisorDecision, *, metadata: dict[str, Any] | None = None) -> ChatResponse:
+async def _delegate_task(
+    message: str, mode: str, decision: SupervisorDecision, *, metadata: dict[str, Any] | None = None
+) -> ChatResponse:
     orchestrator = OrchestratorAgent()
     merged_metadata = build_task_delegation_metadata(agent_hint=decision.agent_hint, extra=metadata)
     agent_hint = str(merged_metadata.get("supervisor_agent_hint") or "")
@@ -192,10 +194,7 @@ async def _run_task_through_orchestrator(task: Task) -> Task:
 
 
 def list_chat_messages() -> list[ChatMessage]:
-    return [
-        ChatMessage.model_validate(item)
-        for item in reversed(db.fetch_many_by_fields("chat_messages", limit=500))
-    ]
+    return [ChatMessage.model_validate(item) for item in reversed(db.fetch_many_by_fields("chat_messages", limit=500))]
 
 
 def list_tasks() -> list[Task]:
@@ -240,7 +239,7 @@ async def _resume_task_through_orchestrator(task: Task) -> Task:
 async def _resume_task_background(task: Task) -> None:
     try:
         await _run_existing_plan(task)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         task.final_summary = f"Task resume failed: {exc}"
         safe_transition(task, TaskStatus.FAILED, actor="TaskService")
         record("task.resume_failed", "OrchestratorAgent", {"error": str(exc)}, task_id=task.id)

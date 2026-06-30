@@ -11,7 +11,6 @@ from typing import Any
 
 from app.policy.risk import RiskLevel, SafetyVerdict
 
-
 # P1-1 fix: Use a process-level random marker instead of a caller-supplied
 # string. The old code checked context.get("cache_scope") == "deterministic_fast_path"
 # which could be injected by any caller to poison the cache.

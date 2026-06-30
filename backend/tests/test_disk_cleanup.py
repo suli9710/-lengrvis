@@ -6,8 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.tools import system_tools
-from app.tools import file_tools
+from app.tools import file_tools, system_tools
 
 
 @pytest.fixture
@@ -53,9 +52,7 @@ def test_find_large_files_handles_missing_root(tmp_path: Path):
 
 
 def test_cleanup_suggestions_three_buckets(workspace: Path):
-    result = system_tools.cleanup_suggestions(
-        {"threshold_mb": 1}, {"allowed_directories": [str(workspace)]}
-    )
+    result = system_tools.cleanup_suggestions({"threshold_mb": 1}, {"allowed_directories": [str(workspace)]})
     assert result["ok"] is True
     buckets = result["buckets"]
     assert isinstance(buckets["immediate"], list)

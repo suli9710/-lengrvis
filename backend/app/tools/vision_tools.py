@@ -31,7 +31,6 @@ from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_catalog import tool_description, tool_search_hint
 
-
 _IMAGE_EXTENSIONS = IMAGE_EXTENSIONS
 _GPS_EXIF_TAG = 34853
 logger = logging.getLogger(__name__)
@@ -133,7 +132,7 @@ def _resolve_image_batch(args: dict[str, Any], context: dict[str, Any]) -> list[
     raw_paths = args.get("paths") or args.get("image_paths") or args.get("images")
     if raw_paths is None and args.get("path"):
         raw_paths = [args["path"]]
-    if isinstance(raw_paths, (str, Path)):
+    if isinstance(raw_paths, str | Path):
         raw_paths = [raw_paths]
 
     paths: list[Path] = []
@@ -252,7 +251,7 @@ def image_embedding(
                         "model": getattr(provider, "name", ""),
                         "fallback_used": False,
                     }
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("image provider profile failed for %s: %s", image_path, exc, exc_info=True)
 
     fallback_profile = profile or _embedding_fallback_profile(image_path, context, settings=settings)
@@ -268,7 +267,7 @@ def image_embedding(
         try:
             vectors = embed_texts_sync([label_text], embedder=text_embedder)
             vector = vectors[0] if vectors else []
-        except Exception:
+        except Exception:  # noqa: BLE001
             from app.indexer.clustering import hashing_vectorize
 
             vector = hashing_vectorize([label_text], dim=64)[0]
@@ -375,9 +374,8 @@ def structure_image_labels(description: str, metadata: dict[str, Any] | None = N
         people_count = _coerce_int(parsed.get("people_count"))
     if people_count is None:
         people_count = _infer_people_count(description)
-    scene_type = (
-        str(metadata.get("scene_type") or parsed.get("scene_type") or "").strip().lower()
-        or _infer_scene_type(description)
+    scene_type = str(metadata.get("scene_type") or parsed.get("scene_type") or "").strip().lower() or _infer_scene_type(
+        description
     )
     visible_objects = list(metadata.get("visible_objects") or [])
     if not visible_objects:
@@ -385,9 +383,7 @@ def structure_image_labels(description: str, metadata: dict[str, Any] | None = N
     if not visible_objects:
         visible_objects = _infer_visible_objects(description)
     label_metadata = {
-        key: metadata[key]
-        for key in ("captured_at", "gps", "camera", "width", "height", "format")
-        if key in metadata
+        key: metadata[key] for key in ("captured_at", "gps", "camera", "width", "height", "format") if key in metadata
     }
     return {
         "people_count": people_count,
@@ -661,7 +657,7 @@ def _run_maybe_async(value: Any) -> Any:
 def _coerce_vector(vector: Any) -> list[float]:
     try:
         return [float(value) for value in vector]
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
 
 
@@ -735,7 +731,7 @@ def _decode_exif_text(value: Any) -> str:
     if isinstance(value, tuple) and all(isinstance(item, int) for item in value):
         try:
             return bytes(value).decode("utf-16le").strip("\x00 ").strip()
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
     text = str(value).strip()
     return text if text and text.lower() != "none" else ""
@@ -770,7 +766,9 @@ def _parse_structured_label_text(description: str) -> dict[str, Any]:
         return {}
     scene = _first_label_value(parsed, ("scene_type", "scene", "场景", "場景"))
     people = _first_label_value(parsed, ("people_count", "person_count", "people", "persons", "人物数", "人数"))
-    objects = _first_label_value(parsed, ("visible_objects", "objects", "object", "可见物体", "可見物體", "物体", "物件"))
+    objects = _first_label_value(
+        parsed, ("visible_objects", "objects", "object", "可见物体", "可見物體", "物体", "物件")
+    )
     result: dict[str, Any] = {}
     coerced_people = _coerce_int(people)
     if coerced_people is not None:
@@ -824,7 +822,7 @@ def _first_label_value(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
 def _coerce_label_list(value: Any) -> list[str]:
     if value is None:
         return []
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         raw_items = value
     else:
         raw_items = re.split(r"[,;|，、]", str(value))
@@ -863,13 +861,15 @@ def _get_gps_ifd(exif: Any) -> dict[int, Any]:
     try:
         gps = exif.get_ifd(_GPS_EXIF_TAG)
         return dict(gps or {})
-    except Exception:
+    except Exception:  # noqa: BLE001
         raw = exif.get(_GPS_EXIF_TAG)
         return dict(raw or {}) if isinstance(raw, dict) else {}
 
 
 def _gps_from_metadata(info: dict[str, Any]) -> dict[str, float]:
-    lat = _coerce_float(_first_text_value(info, ("lengrvis_gps_latitude", "lengrvis_gps_latitude", "gps_latitude", "latitude")))
+    lat = _coerce_float(
+        _first_text_value(info, ("lengrvis_gps_latitude", "lengrvis_gps_latitude", "gps_latitude", "latitude"))
+    )
     lon = _coerce_float(
         _first_text_value(info, ("lengrvis_gps_longitude", "lengrvis_gps_longitude", "gps_longitude", "longitude"))
     )
@@ -891,13 +891,15 @@ def _gps_from_ifd(gps_ifd: dict[int, Any]) -> dict[str, float]:
 def _gps_coordinate(value: Any, ref: Any) -> float | None:
     if value is None:
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         coordinate = float(value)
     else:
-        parts = list(value) if isinstance(value, (tuple, list)) else []
+        parts = list(value) if isinstance(value, tuple | list) else []
         if len(parts) < 3:
             return None
-        coordinate = _rational_float(parts[0]) + (_rational_float(parts[1]) / 60.0) + (_rational_float(parts[2]) / 3600.0)
+        coordinate = (
+            _rational_float(parts[0]) + (_rational_float(parts[1]) / 60.0) + (_rational_float(parts[2]) / 3600.0)
+        )
     ref_text = _decode_exif_text(ref).upper()
     if ref_text in {"S", "W"}:
         coordinate *= -1
@@ -905,7 +907,7 @@ def _gps_coordinate(value: Any, ref: Any) -> float | None:
 
 
 def _rational_float(value: Any) -> float:
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return float(value)
     numerator = getattr(value, "numerator", None)
     denominator = getattr(value, "denominator", None)

@@ -29,4 +29,3 @@ def open_folder(payload: dict[str, Any]) -> dict[str, Any]:
 
 def reveal(payload: dict[str, Any]) -> dict[str, Any]:
     return app_tools.reveal_in_explorer(payload, _context())
-

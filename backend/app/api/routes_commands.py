@@ -5,7 +5,6 @@ from fastapi import APIRouter
 from app.commands.schemas import CommandExecuteRequest, CommandResult
 from app.commands.service import execute_command, list_commands
 
-
 router = APIRouter()
 
 

@@ -9,9 +9,7 @@ import pytest
 
 
 def _script_text(project_root: Path) -> str:
-    return (project_root / "scripts" / "collect_result_quality_review_packet.ps1").read_text(
-        encoding="utf-8"
-    )
+    return (project_root / "scripts" / "collect_result_quality_review_packet.ps1").read_text(encoding="utf-8")
 
 
 def _run_packet(project_root: Path, evidence_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -87,9 +85,7 @@ def test_result_quality_review_packet_script_is_fail_closed_and_read_only(
     assert "signoff = $true" not in text
 
 
-def test_result_quality_review_packet_defaults_to_blocked_missing_fields(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_result_quality_review_packet_defaults_to_blocked_missing_fields(project_root: Path, tmp_path: Path) -> None:
     evidence_root = tmp_path / "result-quality-review"
     result = _run_packet(project_root, evidence_root)
     output = result.stdout + result.stderr
@@ -208,9 +204,7 @@ def test_result_quality_review_packet_records_redacted_fields_without_signoff(
     assert "[redacted-email]" in packet_text
     assert "[redacted-internal-prompt]" in packet_text
     assert "completed-result evidence" in packet["review_template"]["must_not_be_recorded_as"]
-    assert "natural-language result-quality sign-off" in packet["review_template"][
-        "must_not_be_recorded_as"
-    ]
+    assert "natural-language result-quality sign-off" in packet["review_template"]["must_not_be_recorded_as"]
     assert "result_quality_signoff=false" in markdown
     assert "Review fields complete: True" in markdown
     assert "Result-quality claim blocked: true" in markdown
@@ -218,9 +212,7 @@ def test_result_quality_review_packet_records_redacted_fields_without_signoff(
 
 
 def test_release_gate_documents_result_quality_review_helper(project_root: Path) -> None:
-    release_gate = (project_root / "docs" / "qa" / "release-gate.md").read_text(
-        encoding="utf-8"
-    )
+    release_gate = (project_root / "docs" / "qa" / "release-gate.md").read_text(encoding="utf-8")
 
     assert r".\scripts\collect_result_quality_review_packet.ps1" in release_gate
     assert "`summary.signoff=false`" in release_gate

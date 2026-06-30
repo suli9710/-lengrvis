@@ -15,9 +15,7 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "check_release_readiness_dashboard.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location(
-        "check_release_readiness_dashboard", SCRIPT_PATH
-    )
+    spec = importlib.util.spec_from_file_location("check_release_readiness_dashboard", SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # Register before exec_module: on Python 3.13 dataclasses resolves the

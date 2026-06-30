@@ -58,9 +58,7 @@ def test_detect_local_backend_finds_ollama_first():
 def test_detect_local_backend_falls_through_to_lmstudio():
     plan = {
         "http://127.0.0.1:11434/api/tags": _FakeResponse(500),
-        "http://127.0.0.1:1234/v1/models": _FakeResponse(
-            200, {"data": [{"id": "qwen2.5-3b-instruct"}]}
-        ),
+        "http://127.0.0.1:1234/v1/models": _FakeResponse(200, {"data": [{"id": "qwen2.5-3b-instruct"}]}),
     }
     backend = detect_local_backend(client_factory=_factory_for(plan))
     assert backend is not None
@@ -72,9 +70,7 @@ def test_detect_local_backend_falls_through_to_llamacpp():
     plan = {
         "http://127.0.0.1:11434/api/tags": _FakeResponse(500),
         "http://127.0.0.1:1234/v1/models": _FakeResponse(500),
-        "http://127.0.0.1:8080/v1/models": _FakeResponse(
-            200, {"data": [{"id": "tinyllama-1.1b-chat"}]}
-        ),
+        "http://127.0.0.1:8080/v1/models": _FakeResponse(200, {"data": [{"id": "tinyllama-1.1b-chat"}]}),
     }
     backend = detect_local_backend(client_factory=_factory_for(plan))
     assert backend is not None

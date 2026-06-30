@@ -204,7 +204,7 @@ def _is_loopback_bind_host(host: str | None) -> bool:
         return True
     if normalized in {"localhost", "testclient"}:
         return True
-    if normalized in {"0.0.0.0", "::", "*"}:
+    if normalized in {"0.0.0.0", "::", "*"}:  # noqa: S104
         return False
     try:
         import ipaddress

@@ -4,7 +4,6 @@ from typing import Any
 
 from app.policy.risk import RiskLevel
 
-
 PERMISSION_MODES = {"plan", "default", "trusted_edits", "auto_review", "dont_ask"}
 TRUSTED_AUTO_EDIT_TIERS = {"builtin", "core", "first_party"}
 AUTO_EDIT_FORBIDDEN_EFFECTS = {
@@ -44,7 +43,11 @@ def permission_mode_from_context(context: dict[str, Any] | None = None, settings
 
 
 def is_modifying_risk(risk: RiskLevel) -> bool:
-    return risk in {RiskLevel.R2_REVERSIBLE_MODIFY, RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM, RiskLevel.R4_FORBIDDEN_OR_HANDOFF}
+    return risk in {
+        RiskLevel.R2_REVERSIBLE_MODIFY,
+        RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM,
+        RiskLevel.R4_FORBIDDEN_OR_HANDOFF,
+    }
 
 
 def trusted_reversible_edit_allowed(tool_definition: Any | None, args: dict[str, Any] | None = None) -> bool:
@@ -71,7 +74,7 @@ def trusted_reversible_edit_allowed(tool_definition: Any | None, args: dict[str,
 def _contains_runtime_or_sensitive_path(value: Any) -> bool:
     if isinstance(value, dict):
         return any(_contains_runtime_or_sensitive_path(child) for child in value.values())
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return any(_contains_runtime_or_sensitive_path(child) for child in value)
     if not isinstance(value, str):
         return False

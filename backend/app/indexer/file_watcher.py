@@ -4,16 +4,16 @@ import asyncio
 import inspect
 import os
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
 from app.core.audit import record
 from app.core.paths import resolve_authorized
-
 
 _DEBOUNCE_SECONDS = 2.0
 FileChangeCallback = Callable[[str, str], None]
@@ -57,7 +57,7 @@ class _FileChangeHandler(FileSystemEventHandler):
         if self._allowed_directories is not None:
             try:
                 resolve_authorized(path, self._allowed_directories)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return
         self._callback(path, action)
 
@@ -173,9 +173,7 @@ class FileWatcher:
                 self._observer.schedule(handler, str(dir_path), recursive=True)
 
         self._observer.start()
-        self._consumer_task = asyncio.create_task(
-            self._consume(), name="lengrvis-file-watcher"
-        )
+        self._consumer_task = asyncio.create_task(self._consume(), name="lengrvis-file-watcher")
         record(
             "file_watcher.started",
             "FileWatcher",
@@ -204,9 +202,7 @@ class FileWatcher:
         while True:
             # Drain available events from the queue
             with suppress(asyncio.TimeoutError):
-                path, action = await asyncio.wait_for(
-                    self._queue.get(), timeout=0.5
-                )
+                path, action = await asyncio.wait_for(self._queue.get(), timeout=0.5)
                 pending[path] = (action, time.monotonic())
                 # Drain any additional queued events without waiting
                 while not self._queue.empty():
@@ -218,11 +214,7 @@ class FileWatcher:
 
             # Process entries that have been quiet for debounce_seconds
             now = time.monotonic()
-            ready = [
-                p
-                for p, (_, ts) in pending.items()
-                if now - ts >= self._debounce_seconds
-            ]
+            ready = [p for p, (_, ts) in pending.items() if now - ts >= self._debounce_seconds]
 
             for path in ready:
                 action, _ = pending.pop(path)
@@ -240,7 +232,7 @@ class FileWatcher:
                             self._fts_index.remove_file,
                             normalized,
                         )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     record(
                         "file_watcher.error",
                         "FileWatcher",
@@ -279,5 +271,5 @@ def get_file_watcher(**kwargs: Any) -> FileWatcher:
 
 def watch_directories(paths: list[str]) -> dict:
     """Backward-compatible entry point."""
-    watcher = get_file_watcher()
+    get_file_watcher()
     return {"watching": paths, "watcher": "FileWatcher", "status": "use await watcher.start(paths)"}

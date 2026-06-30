@@ -238,7 +238,9 @@ def test_open_url_defaults_to_isolated_session_without_system_browser(monkeypatc
     opened: list[str] = []
     monkeypatch.setattr(browser_tools.webbrowser, "open", lambda url, new=0: opened.append(url))
 
-    result = browser_tools.open_url({"url": "https://example.test/page?token=secret-token", "task_id": "task-5"}, _context())
+    result = browser_tools.open_url(
+        {"url": "https://example.test/page?token=secret-token", "task_id": "task-5"}, _context()
+    )
     events = browser_tools.get_browser_activity_runtime().events({"task_id": "task-5"})["events"]
 
     assert result["ok"] is True

@@ -114,7 +114,12 @@ class BrowserActivityReviewAgent(BaseAgent):
                     target_type=target_type,
                     verdict=SafetyVerdict.NEEDS_USER_APPROVAL,
                     risk_level=risk,
-                    reasons=[f"Browser {kind} can change page state; dry-run preview and explicit user approval are required."],
+                    reasons=[
+                        (
+                            f"Browser {kind} can change page state; "
+                            "dry-run preview and explicit user approval are required."
+                        )
+                    ],
                     user_confirmation_message=f"Approve browser {kind} after reviewing the browser activity preview?",
                 ),
                 tool_name=tool_name,
@@ -245,7 +250,9 @@ def _deny_reasons(handoff_hits: list[str], injection_hits: list[str]) -> list[st
     if handoff_hits:
         reasons.append(f"Browser activity touches handoff-only material: {', '.join(handoff_hits)}.")
     if injection_hits:
-        reasons.append("Browser activity appears to contain webpage instructions aimed at overriding the agent or policy.")
+        reasons.append(
+            "Browser activity appears to contain webpage instructions aimed at overriding the agent or policy."
+        )
     return reasons
 
 
@@ -262,10 +269,10 @@ def _candidate_urls(value: Any) -> list[str]:
         for key, item in value.items():
             if str(key).casefold() in {"url", "current_url", "href"} and isinstance(item, str):
                 result.append(item)
-            elif isinstance(item, (Mapping, list, tuple, set)):
+            elif isinstance(item, Mapping | list | tuple | set):
                 result.extend(_candidate_urls(item))
         return result
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         result: list[str] = []
         for item in value:
             result.extend(_candidate_urls(item))

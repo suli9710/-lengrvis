@@ -145,13 +145,16 @@ def test_hybrid_vision_respects_allow_cloud_context(monkeypatch):
     assert provider.settings.provider_name == "ollama"
 
 
-@pytest.mark.parametrize("mode,task,expected", [
-    ("privacy", "planner", False),
-    ("efficiency", "subagent", True),
-    ("hybrid", "planner", True),
-    ("hybrid", "subagent", False),
-    ("hybrid", "vision", False),  # allow_cloud_context default False
-])
+@pytest.mark.parametrize(
+    "mode,task,expected",
+    [
+        ("privacy", "planner", False),
+        ("efficiency", "subagent", True),
+        ("hybrid", "planner", True),
+        ("hybrid", "subagent", False),
+        ("hybrid", "vision", False),  # allow_cloud_context default False
+    ],
+)
 def test_can_use_cloud_model_matrix(mode: str, task: str, expected: bool):
     settings = AppSettings(provider_name="openai", api_key="x", mode=mode)
     assert can_use_cloud_model(settings, task=task).allowed is expected
@@ -185,7 +188,9 @@ def test_can_use_browser_network_blocks_in_privacy_even_when_flag_enabled():
     efficiency = AppSettings(provider_name="openai", api_key="x", mode="efficiency", allow_browser_network=True)
     assert can_use_browser_network(efficiency).allowed is True
 
-    efficiency_disabled = AppSettings(provider_name="openai", api_key="x", mode="efficiency", allow_browser_network=False)
+    efficiency_disabled = AppSettings(
+        provider_name="openai", api_key="x", mode="efficiency", allow_browser_network=False
+    )
     assert can_use_browser_network(efficiency_disabled).allowed is False
 
 

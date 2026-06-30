@@ -12,12 +12,8 @@ MOBILE_TOKEN_HTTP_PATHS = {"/api/pair", "/api/pair/confirm"}
 MOBILE_SECURE_TRANSPORT_ERROR = (
     "Remote mobile pairing and mobile APIs require HTTPS/WSS unless the client is on this computer."
 )
-DESKTOP_SECURE_TRANSPORT_ERROR = (
-    "Remote desktop API access requires HTTPS/WSS unless the client is on this computer."
-)
-UNTRUSTED_PROXY_HEADERS_ERROR = (
-    "Forwarded proxy headers require explicit trusted proxy configuration."
-)
+DESKTOP_SECURE_TRANSPORT_ERROR = "Remote desktop API access requires HTTPS/WSS unless the client is on this computer."
+UNTRUSTED_PROXY_HEADERS_ERROR = "Forwarded proxy headers require explicit trusted proxy configuration."
 INVALID_PROXY_HEADERS_ERROR = "Forwarded proxy headers are malformed."
 TRUSTED_PROXY_IPS_ENV = "LENGRVIS_TRUSTED_PROXY_IPS"
 TRUSTED_PROXY_ALIASES_ENV = "LENGRVIS_TRUSTED_PROXIES"
@@ -125,7 +121,7 @@ def is_trusted_proxy_host(host: str | None) -> bool:
 def normalize_host_for_security(host: str | None) -> str:
     normalized = str(host or "").strip().lower()
     if normalized.startswith("[") and "]" in normalized:
-        normalized = normalized[1:normalized.index("]")]
+        normalized = normalized[1 : normalized.index("]")]
     elif normalized.count(":") == 1:
         candidate, maybe_port = normalized.rsplit(":", 1)
         if maybe_port.isdigit():
@@ -159,10 +155,7 @@ def is_public_lan_http_path(path: str) -> bool:
 
 
 def is_mobile_token_http_path(path: str) -> bool:
-    return (
-        path in MOBILE_TOKEN_HTTP_PATHS
-        or path.startswith("/api/mobile/")
-    )
+    return path in MOBILE_TOKEN_HTTP_PATHS or path.startswith("/api/mobile/")
 
 
 def is_mobile_token_websocket_path(path: str) -> bool:

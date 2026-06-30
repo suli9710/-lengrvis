@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 from app.agents.base import BaseAgent
-
 
 Verdict = Literal["allow", "block"]
 
@@ -171,8 +171,11 @@ class CodeReviewAgent(BaseAgent):
                     category=RISK_MODEL_BREAK,
                     severity="high",
                     message="Change may alter the shared risk model or safety verdict contract.",
-                    evidence=paths or _matching_terms(corpus, "risk_model_break", "risk level", "safetyverdict", "risk model"),
-                    recommendation="Add compatibility checks and focused tests around risk levels, verdicts, and schema consumers.",
+                    evidence=paths
+                    or _matching_terms(corpus, "risk_model_break", "risk level", "safetyverdict", "risk model"),
+                    recommendation=(
+                        "Add compatibility checks and focused tests around risk levels, verdicts, and schema consumers."
+                    ),
                 )
             ]
         return []
@@ -195,14 +198,18 @@ class CodeReviewAgent(BaseAgent):
             "requires_approval=false",
             "dry_run=false",
         )
-        if bypass_terms or (approval_paths and _contains_any(corpus, "bypass", "skip", "approved=true", "dry_run=false")):
+        if bypass_terms or (
+            approval_paths and _contains_any(corpus, "bypass", "skip", "approved=true", "dry_run=false")
+        ):
             return [
                 CodeReviewFinding(
                     category=APPROVAL_BYPASS,
                     severity="critical",
                     message="Change may execute write or remote actions without an explicit approval gate.",
                     evidence=bypass_terms or approval_paths,
-                    recommendation="Require dry-run previews, pending approvals, and approved approval_id checks before execution.",
+                    recommendation=(
+                        "Require dry-run previews, pending approvals, and approved approval_id checks before execution."
+                    ),
                 )
             ]
         return []
@@ -235,15 +242,22 @@ class CodeReviewAgent(BaseAgent):
         )
         if boundary_terms or (
             model_boundary_paths
-            and _contains_any(corpus, "approval_id", "approved=true", "approved in args", "model output", "subagent args")
+            and _contains_any(
+                corpus, "approval_id", "approved=true", "approved in args", "model output", "subagent args"
+            )
         ):
             return [
                 CodeReviewFinding(
                     category=MODEL_BOUNDARY_ESCAPE,
                     severity="critical",
-                    message="Change may let model-authored plans or subagent args carry runtime approval/control fields.",
+                    message=(
+                        "Change may let model-authored plans or subagent args carry runtime approval/control fields."
+                    ),
                     evidence=boundary_terms or model_boundary_paths,
-                    recommendation="Strip or deny model-proposed approved/approval_id/private runtime fields before validation and execution, with negative tests.",
+                    recommendation=(
+                        "Strip or deny model-proposed approved/approval_id/private runtime fields before validation "
+                        "and execution, with negative tests."
+                    ),
                 )
             ]
         return []
@@ -264,7 +278,9 @@ class CodeReviewAgent(BaseAgent):
             for file in files
             if _path_contains(file.path, "state_machine.py", "task_service.py", "core/db.py")
         ]
-        if concurrency_terms or (state_paths and _contains_any(corpus, "concurrency", "race", "parallel", "simultaneous")):
+        if concurrency_terms or (
+            state_paths and _contains_any(corpus, "concurrency", "race", "parallel", "simultaneous")
+        ):
             return [
                 CodeReviewFinding(
                     category=WRITE_CONCURRENCY,
@@ -278,7 +294,9 @@ class CodeReviewAgent(BaseAgent):
 
     def _review_orchestrator_bloat(self, files: list[_ChangedFile], corpus: str) -> list[CodeReviewFinding]:
         orchestrator_files = [file for file in files if _path_contains(file.path, "orchestrator_agent.py")]
-        large_orchestrator_edits = [file.path for file in orchestrator_files if file.added_lines >= 150 or file.deleted_lines >= 150]
+        large_orchestrator_edits = [
+            file.path for file in orchestrator_files if file.added_lines >= 150 or file.deleted_lines >= 150
+        ]
         bloat_terms = _matching_terms(
             corpus,
             "orchestrator_bloat",
@@ -294,7 +312,9 @@ class CodeReviewAgent(BaseAgent):
                     severity="medium",
                     message="Change may concentrate domain logic inside the orchestrator instead of a focused module.",
                     evidence=large_orchestrator_edits or bloat_terms,
-                    recommendation="Move domain-specific behavior behind a handler, agent, or service boundary with narrow tests.",
+                    recommendation=(
+                        "Move domain-specific behavior behind a handler, agent, or service boundary with narrow tests."
+                    ),
                 )
             ]
         return []
@@ -308,7 +328,10 @@ class CodeReviewAgent(BaseAgent):
                     severity="high",
                     message="Change may include externally copied source without provenance or license clearance.",
                     evidence=flags,
-                    recommendation="Replace copied code, document provenance and license, or isolate it behind an approved dependency.",
+                    recommendation=(
+                        "Replace copied code, document provenance and license, "
+                        "or isolate it behind an approved dependency."
+                    ),
                 )
             ]
         source_terms = _matching_terms(
@@ -336,7 +359,10 @@ class CodeReviewAgent(BaseAgent):
                     severity="high",
                     message="Change may include externally copied source without provenance or license clearance.",
                     evidence=source_terms,
-                    recommendation="Replace copied code, document provenance and license, or isolate it behind an approved dependency.",
+                    recommendation=(
+                        "Replace copied code, document provenance and license, "
+                        "or isolate it behind an approved dependency."
+                    ),
                 )
             ]
         return []
@@ -353,7 +379,9 @@ class CodeReviewAgent(BaseAgent):
             "exception",
             "regression",
         )
-        missing_terms = _matching_terms(corpus, "missing_failure_tests", "happy path only", "no failure test", "not tested")
+        missing_terms = _matching_terms(
+            corpus, "missing_failure_tests", "happy path only", "no failure test", "not tested"
+        )
         if not (has_test_run and has_failure_case) or missing_terms:
             return [
                 CodeReviewFinding(
@@ -409,7 +437,7 @@ def _truthy_source_flags(value: Any) -> list[str]:
     if isinstance(value, dict):
         items = value.items()
         return [f"{key}: {val}" for key, val in items if _flag_value_is_truthy(val)]
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return [str(item) for item in value if _flag_value_is_truthy(item)]
     return [str(value)] if _flag_value_is_truthy(value) else []
 
@@ -427,6 +455,6 @@ def _stringify(value: Any) -> str:
         return value
     if isinstance(value, dict):
         return " ".join(f"{key}={_stringify(val)}" for key, val in value.items())
-    if isinstance(value, (list, tuple, set)):
+    if isinstance(value, list | tuple | set):
         return " ".join(_stringify(item) for item in value)
     return str(value)

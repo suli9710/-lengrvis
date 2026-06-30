@@ -42,7 +42,7 @@ class BestEffortWindowFocus:
             return False
         try:
             import pygetwindow  # type: ignore[import-not-found]
-        except Exception:
+        except Exception:  # noqa: BLE001
             return False
         try:
             windows = pygetwindow.getWindowsWithTitle(target_app)
@@ -50,7 +50,7 @@ class BestEffortWindowFocus:
                 return False
             windows[0].activate()
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001
             return False
 
 
@@ -75,7 +75,7 @@ class Workflow(BaseModel):
     steps: list[WorkflowStep] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_dag(self) -> "Workflow":
+    def validate_dag(self) -> Workflow:
         step_ids = [step.id for step in self.steps]
         duplicates = sorted({step_id for step_id in step_ids if step_ids.count(step_id) > 1})
         if duplicates:
@@ -149,7 +149,7 @@ class WorkflowRuntime:
 
 
 def topological_order(steps: list[WorkflowStep]) -> list[str]:
-    by_id = {step.id: step for step in steps}
+    {step.id: step for step in steps}
     incoming = {step.id: set(step.depends_on) for step in steps}
     outgoing: dict[str, set[str]] = {step.id: set() for step in steps}
     for step in steps:

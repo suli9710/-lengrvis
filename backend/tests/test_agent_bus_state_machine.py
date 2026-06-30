@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
 from conftest import import_first, require_attr
-
 
 BUS_MODULES = (
     "backend.agent.bus",
@@ -40,10 +38,7 @@ def test_agent_bus_publishes_events_in_order():
     else:
         pytest.skip(f"{bus_cls.__name__} does not expose publish/emit")
 
-    ids = [
-        item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
-        for item in received
-    ]
+    ids = [item.get("id") if isinstance(item, dict) else getattr(item, "id", None) for item in received]
     assert ids == ["task-1", "task-2"]
 
 

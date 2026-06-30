@@ -169,25 +169,36 @@ class StepSchedulerHandler:
             # so siblings never observe (or persist) a half-updated step.
             isolated = snapshot_step(step)
             work = asyncio.create_task(
-                orchestrator._execute_step(task, plan, isolated, step_context, observation, threaded_tools=threaded_tools),
+                orchestrator._execute_step(
+                    task, plan, isolated, step_context, observation, threaded_tools=threaded_tools
+                ),
                 name=f"step-{step.id}",
             )
             state.running[work] = _RunningStep(step=step, snapshot=isolated)
 
-    async def _collect_finished_steps(self, task: Task, plan: Plan, context: dict[str, Any], state: _ScheduleState) -> None:
+    async def _collect_finished_steps(
+        self, task: Task, plan: Plan, context: dict[str, Any], state: _ScheduleState
+    ) -> None:
         orchestrator = self.orchestrator
         done_set, _ = await asyncio.wait(state.running.keys(), return_when=asyncio.FIRST_COMPLETED)
         done = list(done_set)  # freeze iteration order before zip
         outcomes = await asyncio.gather(*done, return_exceptions=True)
-        for work, outcome in zip(done, outcomes):
+        for work, outcome in zip(done, outcomes, strict=False):
             running = state.running.pop(work)
             step = running.step
             # BaseException also covers asyncio.CancelledError, which
             # gather(return_exceptions=True) returns but Exception misses.
             if isinstance(outcome, BaseException):
                 set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
-                orchestrator._set_status(task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(outcome)))
-                record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
+                orchestrator._set_status(
+                    task, TaskStatus.FAILED, final_summary=orchestrator._friendly_tool_error(str(outcome))
+                )
+                record(
+                    "task.step_failed_unhandled",
+                    orchestrator.name,
+                    {"step": step.id, "error": str(outcome)},
+                    task_id=task.id,
+                )
                 state.stop_requested = True
                 continue
             write_back_step(step, running.snapshot)
@@ -218,12 +229,17 @@ class StepSchedulerHandler:
             work.cancel()
         remaining = list(state.running.keys())
         outcomes = await asyncio.gather(*remaining, return_exceptions=True)
-        for work, outcome in zip(remaining, outcomes):
+        for work, outcome in zip(remaining, outcomes, strict=False):
             running = state.running.pop(work)
             step = running.step
             if isinstance(outcome, BaseException):
                 set_step_status(step, StepStatus.FAILED, actor="StepSchedulerHandler")
-                record("task.step_failed_unhandled", orchestrator.name, {"step": step.id, "error": str(outcome)}, task_id=task.id)
+                record(
+                    "task.step_failed_unhandled",
+                    orchestrator.name,
+                    {"step": step.id, "error": str(outcome)},
+                    task_id=task.id,
+                )
                 continue
             write_back_step(step, running.snapshot)
             if outcome.result is not None:
@@ -255,7 +271,7 @@ class StepSchedulerHandler:
         for work in remaining:
             work.cancel()
         outcomes = await asyncio.gather(*remaining, return_exceptions=True)
-        for work, outcome in zip(remaining, outcomes):
+        for work, outcome in zip(remaining, outcomes, strict=False):
             running = state.running.pop(work)
             step = running.step
             if isinstance(outcome, asyncio.CancelledError):

@@ -513,7 +513,11 @@ async def proxy_websocket(websocket: WebSocket, path: str):
             await websocket.close(code=1011)
 
 
-@proxy_router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@proxy_router.api_route(
+    "/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
 async def proxy_full_backend(path: str, request: Request) -> Response:
     if _is_mobile_or_remote_proxy_path(path):
         raise HTTPException(

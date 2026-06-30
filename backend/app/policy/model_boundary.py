@@ -4,7 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 MODEL_CONTROL_KEYS = {
     "approved",
     "approval_id",
@@ -120,9 +119,7 @@ def model_control_arg_error(value: Any) -> str:
 def strip_model_control_args(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: strip_model_control_args(child)
-            for key, child in value.items()
-            if not _is_model_control_key(str(key))
+            key: strip_model_control_args(child) for key, child in value.items() if not _is_model_control_key(str(key))
         }
     if isinstance(value, list):
         return [strip_model_control_args(child) for child in value]

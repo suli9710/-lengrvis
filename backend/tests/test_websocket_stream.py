@@ -3,9 +3,10 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.api.routes_chat import bus as chat_bus
+from app.api.routes_chat import ws_router
 from app.core import db
 from app.core.schemas import MessageType
-from app.api.routes_chat import bus as chat_bus, ws_router
 from app.orchestration.agent_bus import AgentBus
 
 

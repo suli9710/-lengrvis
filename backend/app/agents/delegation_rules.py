@@ -37,26 +37,84 @@ def contains_any(text_lower: str, terms: tuple[str, ...]) -> bool:
 # --- Base vocabulary (Chinese + English) -----------------------------------
 
 COMPUTER_DOMAIN_TERMS: tuple[str, ...] = (
-    "电脑", "配置", "系统", "cpu", "memory", "内存", "磁盘", "进程", "启动项", "设置",
+    "电脑",
+    "配置",
+    "系统",
+    "cpu",
+    "memory",
+    "内存",
+    "磁盘",
+    "进程",
+    "启动项",
+    "设置",
 )
 COMPUTER_ACTION_TERMS: tuple[str, ...] = ("查", "看", "读取", "获取", "诊断", "检测", "列出")
 
 FILE_DOMAIN_TERMS: tuple[str, ...] = (
-    "文件", "文档", "目录", "文件夹", "重复", "发票", "合同", "素材",
-    ".txt", ".pdf", ".docx",
-    "file", "folder", "directory", "duplicate",
+    "文件",
+    "文档",
+    "目录",
+    "文件夹",
+    "重复",
+    "发票",
+    "合同",
+    "素材",
+    ".txt",
+    ".pdf",
+    ".docx",
+    "file",
+    "folder",
+    "directory",
+    "duplicate",
 )
 FILE_ACTION_TERMS: tuple[str, ...] = (
-    "查", "找", "搜索", "整理", "复制", "移动", "重命名", "删除", "删掉", "移除", "清理",
-    "读取", "列出", "打开",
-    "delete", "remove", "trash", "copy", "move", "rename", "open", "edit",
-    "organize", "search", "find", "list", "read",
+    "查",
+    "找",
+    "搜索",
+    "整理",
+    "复制",
+    "移动",
+    "重命名",
+    "删除",
+    "删掉",
+    "移除",
+    "清理",
+    "读取",
+    "列出",
+    "打开",
+    "delete",
+    "remove",
+    "trash",
+    "copy",
+    "move",
+    "rename",
+    "open",
+    "edit",
+    "organize",
+    "search",
+    "find",
+    "list",
+    "read",
 )
 # Strong file verbs/domains that alone imply FileAgent (catch-all fallback).
 FILE_FALLBACK_TERMS: tuple[str, ...] = (
-    "清理", "删除", "移动", "复制", "文件", "目录", "文件夹",
-    "delete", "remove", "copy", "move", "rename", "trash", "cleanup",
-    "file", "folder", "directory",
+    "清理",
+    "删除",
+    "移动",
+    "复制",
+    "文件",
+    "目录",
+    "文件夹",
+    "delete",
+    "remove",
+    "copy",
+    "move",
+    "rename",
+    "trash",
+    "cleanup",
+    "file",
+    "folder",
+    "directory",
 )
 
 BROWSER_DOMAIN_TERMS: tuple[str, ...] = ("网页", "浏览器", "网址", "url", "页面", "链接")
@@ -71,16 +129,38 @@ SEARCH_HINT_TERMS: tuple[str, ...] = ("搜索", "查询", "最新", "新闻", "s
 
 APP_DOMAIN_TERMS: tuple[str, ...] = ("应用", "软件", "程序", "app", "notepad", "记事本")
 APP_ACTION_TERMS: tuple[str, ...] = (
-    "打开", "启动", "运行", "卸载", "移除", "删除", "uninstall", "remove", "open", "launch",
+    "打开",
+    "启动",
+    "运行",
+    "卸载",
+    "移除",
+    "删除",
+    "uninstall",
+    "remove",
+    "open",
+    "launch",
 )
 APP_HINT_TERMS: tuple[str, ...] = (
-    "卸载", "打开应用", "启动应用", "uninstall", "open app", "launch",
+    "卸载",
+    "打开应用",
+    "启动应用",
+    "uninstall",
+    "open app",
+    "launch",
 )
 
 DOCUMENT_DOMAIN_TERMS: tuple[str, ...] = ("pdf", "word", "docx", "pptx", "表格", "文档")
 DOCUMENT_ACTION_TERMS: tuple[str, ...] = ("总结", "解析", "读取", "提取")
 DOCUMENT_HINT_TERMS: tuple[str, ...] = (
-    "发票", "合同", "文档", "pdf", "docx", "pptx", "总结", "摘要", "summarize",
+    "发票",
+    "合同",
+    "文档",
+    "pdf",
+    "docx",
+    "pptx",
+    "总结",
+    "摘要",
+    "summarize",
 )
 
 UNINSTALL_TERMS: tuple[str, ...] = ("卸载", "uninstall")

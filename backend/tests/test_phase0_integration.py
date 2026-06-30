@@ -1,9 +1,11 @@
 """Phase 0 integration tests -- verifies all new components work together."""
+
 from __future__ import annotations
 
 import pytest
+
 from app.core import db
-from app.core.schemas import LEGACY_TASK_STATUS_MAP, Task, PlanStep, TaskStatus, StepStatus
+from app.core.schemas import LEGACY_TASK_STATUS_MAP, PlanStep, Task, TaskStatus
 from app.orchestration.task_phase import TaskPhase
 
 
@@ -34,7 +36,7 @@ class TestDualWrite:
     def test_transition_syncs_phase(self):
         """Transitioning TaskStatus should update phase and execution_stage."""
         try:
-            from app.orchestration.state_machine import transition, PHASE_MAP
+            from app.orchestration.state_machine import PHASE_MAP, transition
         except ImportError:
             pytest.skip("PHASE_MAP not implemented in state_machine yet")
 
@@ -51,7 +53,7 @@ class TestDualWrite:
     def test_safe_transition_syncs_phase(self):
         """safe_transition should also sync phase fields."""
         try:
-            from app.orchestration.state_machine import safe_transition, PHASE_MAP
+            from app.orchestration.state_machine import PHASE_MAP, safe_transition
         except ImportError:
             pytest.skip("PHASE_MAP not implemented in state_machine yet")
 
@@ -136,9 +138,10 @@ class TestEventDispatcherIntegration:
     async def test_dispatch_records_audit_event(self):
         """Dispatching an event should create an audit record."""
         try:
-            from app.orchestration.dispatcher import EventDispatcher
             from pydantic import BaseModel, Field
+
             from app.core.schemas import new_id, now_iso
+            from app.orchestration.dispatcher import EventDispatcher
         except ImportError:
             pytest.skip("dispatcher not implemented yet")
 
@@ -154,7 +157,7 @@ class TestEventDispatcherIntegration:
                 return "integration test event"
 
         dispatcher = EventDispatcher()
-        results = await dispatcher.dispatch(FakeEvent())
+        await dispatcher.dispatch(FakeEvent())
 
         audit_rows = db.fetch_many("audit_events", "event_type = ?", ("test.integration",))
         assert len(audit_rows) >= 1
@@ -167,8 +170,8 @@ class TestNotificationE2E:
     """Verify notification service works end-to-end."""
 
     def test_notify_publishes_to_bus(self):
-        from app.services.notification_service import notify, init_bus
         from app.orchestration.agent_bus import AgentBus
+        from app.services.notification_service import init_bus, notify
 
         bus = AgentBus()
         init_bus(bus)
@@ -191,9 +194,11 @@ class TestLocalModelInstallFlow:
     """Verify the install-local-model endpoint works (with mocked Ollama)."""
 
     def test_endpoint_exists(self):
+        from unittest.mock import AsyncMock, patch
+
         from fastapi.testclient import TestClient
+
         from app.main import create_app
-        from unittest.mock import patch, AsyncMock
         from app.services import ollama_service
 
         async def fake_install_local_model(model=None):
@@ -202,10 +207,11 @@ class TestLocalModelInstallFlow:
             yield {"phase": "pull", "status": "success", "model": model or "test"}
             yield {"phase": "switch", "status": "done", "message": "Ready.", "model": model or "test"}
 
-        with patch.object(ollama_service, "is_installed", return_value=True), \
-             patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True), \
-             patch.object(ollama_service, "install_local_model", side_effect=fake_install_local_model):
-
+        with (
+            patch.object(ollama_service, "is_installed", return_value=True),
+            patch.object(ollama_service, "is_running", new_callable=AsyncMock, return_value=True),
+            patch.object(ollama_service, "install_local_model", side_effect=fake_install_local_model),
+        ):
             client = TestClient(create_app())
             resp = client.post("/api/settings/install-local-model", json={})
             assert resp.status_code == 200

@@ -94,7 +94,7 @@ class MCPRegistry:
         return adapted
 
 
-def _build_executor(registry: "MCPRegistry", server: str, tool_name: str):
+def _build_executor(registry: MCPRegistry, server: str, tool_name: str):
     def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
         client = registry.clients.get(server)
         if client is None:

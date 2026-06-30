@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.config import AppSettings
 from app.core.audit import record
@@ -44,8 +44,7 @@ class ToolRegistry:
             registered = self._name_index[lower]
             if registered != name:
                 raise KeyError(
-                    f"Tool '{name}' not found. Did you mean '{registered}'? "
-                    f"Tool name matching is case-sensitive."
+                    f"Tool '{name}' not found. Did you mean '{registered}'? Tool name matching is case-sensitive."
                 )
         raise KeyError(f"Tool not registered: {name}")
 
@@ -171,6 +170,7 @@ def register_all_tools(
     rebuilding the shared global would wipe custom registrations of every
     other live orchestrator and briefly empty the toolset mid-run.
     """
+    from app.adapters import tools as adapter_tools
     from app.tools import (
         app_excel,
         app_tools,
@@ -187,7 +187,6 @@ def register_all_tools(
         vision_tools,
         workflow_tools,
     )
-    from app.adapters import tools as adapter_tools
 
     reg = target if target is not None else registry
     reg._tools.clear()

@@ -1,4 +1,5 @@
 """真实 LLM 评测轨道 B harness 的契约测试（不调用任何真实 LLM）。"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -178,8 +179,6 @@ def test_required_args_missing_flags_unknown_tools(monkeypatch, tmp_path):
     monkeypatch.setenv("LENGRVIS_DATA_DIR", str(tmp_path / "data"))
     harness = _load_harness()
 
-    missing = harness._required_args_missing(
-        [{"tool_name": "definitely.not.a.tool", "args": {}}]
-    )
+    missing = harness._required_args_missing([{"tool_name": "definitely.not.a.tool", "args": {}}])
 
     assert missing and missing[0]["missing"] == ["<unknown tool>"]

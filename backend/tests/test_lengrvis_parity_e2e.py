@@ -34,10 +34,11 @@ from app.agents.planner_agent import PlannerAgent
 from app.config import AppSettings
 from app.core import db
 from app.core.schemas import Plan, PlanStep
-from app.orchestration.task_phase import TaskPhase
 from app.mcp import MCPRegistry
+from app.orchestration.task_phase import TaskPhase
 from app.policy.risk import RiskLevel
-from app.tools.registry import register_all_tools, registry as tool_registry
+from app.tools.registry import register_all_tools
+from app.tools.registry import registry as tool_registry
 
 
 @pytest.fixture(autouse=True)
@@ -133,7 +134,11 @@ def _make_mcp_handler():
             elif method == "tools/call":
                 response = {"jsonrpc": "2.0", "id": payload.get("id"), "result": {"echo": "ok"}}
             else:
-                response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32600, "message": "invalid method"}}
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "error": {"code": -32600, "message": "invalid method"},
+                }
             body = json.dumps(response).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -213,9 +218,7 @@ def test_scenario_2_mcp_tools_visible_via_tool_registry(mock_mcp_server, monkeyp
     )
     settings = AppSettings(
         provider_name="mock",
-        mcp_servers=[
-            {"name": "demo", "url": mock_mcp_server, "transport": "http", "enabled": True}
-        ],
+        mcp_servers=[{"name": "demo", "url": mock_mcp_server, "transport": "http", "enabled": True}],
     )
 
     mcp_registry = MCPRegistry()

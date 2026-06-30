@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import webbrowser
-from urllib.parse import quote_plus, urlparse
 from typing import Any
+from urllib.parse import quote_plus, urlparse
 
 from app.core.audit import record
 from app.llm.cua_provider import CUAProvider, resolve_cua_provider
@@ -14,7 +14,6 @@ from app.policy.sensitive_values import looks_sensitive_value
 from app.services.browser_activity_runtime import BrowserActivityAdapter, BrowserActivityRuntime
 from app.tools.schemas import ToolDefinition
 from app.tools.tool_catalog import tool_description, tool_search_hint
-
 
 SENSITIVE_SELECTOR_TOKENS = {"password", "pwd", "passwd", "credit", "card", "cvv", "cvc", "ssn", "支付", "密码"}
 
@@ -176,7 +175,11 @@ def screenshot(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         context,
     )
     if result.get("ok"):
-        record("browser.screenshot", "BrowserAgent", {"url": url, "path": result.get("path") or result.get("screenshot_url")})
+        record(
+            "browser.screenshot",
+            "BrowserAgent",
+            {"url": url, "path": result.get("path") or result.get("screenshot_url")},
+        )
     return result
 
 
@@ -222,7 +225,9 @@ def _sensitive_selector(selector: str) -> bool:
 
 def _sensitive_value(value: Any) -> bool:
     lowered = str(value or "").lower()
-    return any(token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS) or looks_sensitive_value(value)
+    return any(
+        token in lowered for token in SENSITIVE_SELECTOR_TOKENS | EXTRA_SENSITIVE_SELECTOR_TOKENS
+    ) or looks_sensitive_value(value)
 
 
 def _has_approval(args: dict[str, Any]) -> bool:
@@ -423,7 +428,13 @@ def fill_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     if not result.get("ok"):
         return result
     record("browser.fill_form", "BrowserAgent", {"url": url, "fields": "***"})
-    return {"ok": True, "url": result.get("url", url), "changed_paths": [], "rollback_info": {}, "event": result.get("event")}
+    return {
+        "ok": True,
+        "url": result.get("url", url),
+        "changed_paths": [],
+        "rollback_info": {},
+        "event": result.get("event"),
+    }
 
 
 def submit_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -455,7 +466,13 @@ def submit_form(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]
     if not result.get("ok"):
         return result
     record("browser.submit_form", "BrowserAgent", {"url": url, "selector": "***"})
-    return {"ok": True, "url": result.get("url", url), "changed_paths": [], "rollback_info": {}, "event": result.get("event")}
+    return {
+        "ok": True,
+        "url": result.get("url", url),
+        "changed_paths": [],
+        "rollback_info": {},
+        "event": result.get("event"),
+    }
 
 
 def wait_for_selector(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:

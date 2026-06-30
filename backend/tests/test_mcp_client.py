@@ -16,10 +16,9 @@ import pytest
 
 from app.config import AppSettings
 from app.core.outbound_url import PinnedOutboundRequest
-from app.mcp import MCPClient, MCPServerConfig, MCPRegistry
+from app.mcp import MCPClient, MCPRegistry, MCPServerConfig
 from app.policy.risk import RiskLevel
 from app.tools.schemas import ToolDefinition
-
 
 _MOCK_TOOLS = [
     {
@@ -54,11 +53,23 @@ def _make_handler():
                 if name == "echo":
                     response = {"jsonrpc": "2.0", "id": payload.get("id"), "result": {"echo": args.get("text", "")}}
                 elif name == "add":
-                    response = {"jsonrpc": "2.0", "id": payload.get("id"), "result": {"sum": int(args.get("a", 0)) + int(args.get("b", 0))}}
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": payload.get("id"),
+                        "result": {"sum": int(args.get("a", 0)) + int(args.get("b", 0))},
+                    }
                 else:
-                    response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32601, "message": f"unknown tool {name}"}}
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": payload.get("id"),
+                        "error": {"code": -32601, "message": f"unknown tool {name}"},
+                    }
             else:
-                response = {"jsonrpc": "2.0", "id": payload.get("id"), "error": {"code": -32600, "message": "invalid method"}}
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "error": {"code": -32600, "message": "invalid method"},
+                }
             body = json.dumps(response).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

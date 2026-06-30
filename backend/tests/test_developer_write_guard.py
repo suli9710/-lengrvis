@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -141,7 +140,9 @@ async def test_developer_engine_permission_denial_enters_awaiting_approval(tmp_p
             result={
                 "is_error": False,
                 "result": "Write blocked pending approval",
-                "permission_denials": [{"tool_name": "Write", "reason": "default permission mode requires user approval"}],
+                "permission_denials": [
+                    {"tool_name": "Write", "reason": "default permission mode requires user approval"}
+                ],
             },
             assistant_text=["blocked"],
             tool_events=[{"name": "Write", "input": {"file_path": "backend/app/sample.py"}}],

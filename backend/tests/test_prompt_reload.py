@@ -52,10 +52,7 @@ def test_load_prompt_reloads_on_mtime_change(monkeypatch, tmp_path: Path):
 def test_render_prompt_substitution(monkeypatch, tmp_path: Path):
     _write_prompt(monkeypatch, tmp_path, "template.md", "Hello $name from $place")
 
-    assert (
-        prompts.render_prompt("template.md", {"name": "Lengrvis", "place": "dev"})
-        == "Hello Lengrvis from dev"
-    )
+    assert prompts.render_prompt("template.md", {"name": "Lengrvis", "place": "dev"}) == "Hello Lengrvis from dev"
 
 
 def test_prompt_list_api(monkeypatch, tmp_path: Path):

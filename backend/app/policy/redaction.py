@@ -4,7 +4,6 @@ import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-
 REDACTED = "***"
 
 SENSITIVE_KEY_FRAGMENTS = {
@@ -52,10 +51,18 @@ PATH_VALUE_KEYS = {
 }
 
 PATTERNS = [
-    (re.compile(r"(?i)(api[_-]?key|token|password|secret|authorization|cookie)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.=:/+]{8,})"), r"\1=[REDACTED]"),
+    (
+        re.compile(
+            r"(?i)(api[_-]?key|token|password|secret|authorization|cookie)\s*[:=]\s*['\"]?([A-Za-z0-9_\-\.=:/+]{8,})"
+        ),
+        r"\1=[REDACTED]",
+    ),
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-\.=:/+]{8,}\b"), "Bearer [REDACTED]"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"), "[REDACTED_API_KEY]"),
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S), "[REDACTED_PRIVATE_KEY]"),
+    (
+        re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
     (re.compile(r"\b\d{13,19}\b"), "[REDACTED_CARD_OR_ID]"),
     (re.compile(r"\b[\w\.-]+@[\w\.-]+\.\w+\b"), "[REDACTED_EMAIL]"),
     (re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b"), "[REDACTED_PHONE]"),
@@ -140,7 +147,7 @@ def _redact_run_value(value: Any, *, key: str = "", in_form: bool = False) -> An
                 continue
             result[text_key] = _redact_run_keyed_value(text_key, item, in_form=in_form)
         return result
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_redact_run_value(item, key=key, in_form=in_form) for item in value]
     if isinstance(value, set):
         return [_redact_run_value(item, key=key, in_form=in_form) for item in sorted(value, key=str)]
@@ -157,7 +164,7 @@ def _redact_run_value(value: Any, *, key: str = "", in_form: bool = False) -> An
 
 def _redact_run_keyed_value(key: str, value: Any, *, in_form: bool = False) -> Any:
     if contains_sensitive_key(key):
-        if isinstance(value, (dict, list, tuple, set)):
+        if isinstance(value, dict | list | tuple | set):
             return _redact_run_value(value)
         return REDACTED
     child_in_form = in_form or _is_form_container_key(key)
@@ -175,7 +182,9 @@ def sanitize_text(text: str) -> str:
 def _redact_value(value: Any, *, key: str = "", in_form: bool = False, scrub_local_paths: bool = False) -> Any:
     if isinstance(value, dict):
         return {
-            str(item_key): _redact_keyed_value(str(item_key), item, in_form=in_form, scrub_local_paths=scrub_local_paths)
+            str(item_key): _redact_keyed_value(
+                str(item_key), item, in_form=in_form, scrub_local_paths=scrub_local_paths
+            )
             for item_key, item in value.items()
         }
     if isinstance(value, list):
@@ -206,7 +215,7 @@ def contains_sensitive_key(key: str) -> bool:
 
 def _redact_keyed_value(key: str, value: Any, *, in_form: bool = False, scrub_local_paths: bool = False) -> Any:
     if contains_sensitive_key(key):
-        if isinstance(value, (dict, list, tuple, set)):
+        if isinstance(value, dict | list | tuple | set):
             return _redact_value(value, scrub_local_paths=scrub_local_paths)
         return REDACTED
     child_in_form = in_form or _is_form_container_key(key)

@@ -81,9 +81,7 @@ def _iter_indexed_files(context: dict[str, Any]):
             rows = conn.execute(
                 "SELECT id, normalized_path AS path, name, extension, size FROM indexed_files LIMIT 2000"
             ).fetchall()
-        scoped_rows = [
-            row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)
-        ]
+        scoped_rows = [row for row in rows if _path_within_roots(str(row["path"] or ""), allowed_roots)]
         if scoped_rows:
             for row in scoped_rows:
                 yield {
@@ -147,9 +145,7 @@ def cluster_apps(args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any
     for app in apps:
         category = _category_from_app(app)
         buckets.setdefault(category, []).append(app)
-    clusters = [
-        {"category": category, "count": len(items), "apps": items[:8]} for category, items in buckets.items()
-    ]
+    clusters = [{"category": category, "count": len(items), "apps": items[:8]} for category, items in buckets.items()]
     clusters.sort(key=lambda item: -item["count"])
     return {"ok": True, "clusters": clusters, "total": len(apps)}
 
@@ -202,7 +198,10 @@ def cluster_images(args: dict[str, Any], context: dict[str, Any]) -> dict[str, A
         metadata_weight = _float_arg(args.get("metadata_weight"), default=1.0)
 
     vectors = _combine_image_vectors(
-        semantic_vectors, profiles, metadata_weight=metadata_weight, cluster_by=cluster_by,
+        semantic_vectors,
+        profiles,
+        metadata_weight=metadata_weight,
+        cluster_by=cluster_by,
     )
 
     if cluster_by == "people":
@@ -437,7 +436,9 @@ def _image_semantic_vectors(
 
 
 def _metadata_feature_vectors(
-    profiles: list[dict[str, Any]], *, cluster_by: str = "auto",
+    profiles: list[dict[str, Any]],
+    *,
+    cluster_by: str = "auto",
 ) -> list[list[float]]:
     timestamps = [_captured_timestamp(profile) for profile in profiles]
     available_times = [timestamp for timestamp in timestamps if timestamp is not None]
@@ -503,7 +504,10 @@ def _image_cluster_member(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 def _label_based_clustering(
-    args: dict[str, Any], profiles: list[dict[str, Any]], *, group_by: str,
+    args: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    *,
+    group_by: str,
 ) -> dict[str, Any]:
     buckets: dict[str, list[dict[str, Any]]] = {}
     for profile in profiles:
@@ -600,8 +604,18 @@ def _generate_cluster_name(members: list[dict[str, Any]]) -> str:
 
     # Time range
     _MONTH_NAMES = {
-        1: "1月", 2: "2月", 3: "3月", 4: "4月", 5: "5月", 6: "6月",
-        7: "7月", 8: "8月", 9: "9月", 10: "10月", 11: "11月", 12: "12月",
+        1: "1月",
+        2: "2月",
+        3: "3月",
+        4: "4月",
+        5: "5月",
+        6: "6月",
+        7: "7月",
+        8: "8月",
+        9: "9月",
+        10: "10月",
+        11: "11月",
+        12: "12月",
     }
     time_label = ""
     timestamps: list[datetime] = []
@@ -628,7 +642,8 @@ def _generate_cluster_name(members: list[dict[str, Any]]) -> str:
 
 
 def _time_based_clustering(
-    args: dict[str, Any], profiles: list[dict[str, Any]],
+    args: dict[str, Any],
+    profiles: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Cluster images by time (month or quarter)."""
     # Extract timestamps and group by month
@@ -719,7 +734,8 @@ def _time_based_clustering(
 
 
 def _location_based_clustering(
-    args: dict[str, Any], profiles: list[dict[str, Any]],
+    args: dict[str, Any],
+    profiles: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Cluster images by GPS location using grid-based pre-grouping."""
     grid_groups: dict[str, list[int]] = {}
@@ -787,7 +803,9 @@ def _location_based_clustering(
 
 
 def _sub_cluster_indices(
-    profiles: list[dict[str, Any]], indices: list[int], args: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    indices: list[int],
+    args: dict[str, Any],
 ) -> list[list[int]]:
     """Sub-cluster a group of indices using k-means if the group is large enough."""
     if len(indices) <= 5:
@@ -809,7 +827,10 @@ def _sub_cluster_indices(
 
 
 def _fallback_kmeans_clustering(
-    args: dict[str, Any], profiles: list[dict[str, Any]], *, cluster_by: str,
+    args: dict[str, Any],
+    profiles: list[dict[str, Any]],
+    *,
+    cluster_by: str,
 ) -> dict[str, Any]:
     """Fall back to standard k-means when dimension-specific data is sparse."""
     from app.tools import vision_tools
@@ -818,7 +839,10 @@ def _fallback_kmeans_clustering(
     semantic_vectors = hashing_vectorize(label_texts, dim=64)
     metadata_weight = _float_arg(args.get("metadata_weight"), default=1.0)
     vectors = _combine_image_vectors(
-        semantic_vectors, profiles, metadata_weight=metadata_weight, cluster_by="auto",
+        semantic_vectors,
+        profiles,
+        metadata_weight=metadata_weight,
+        cluster_by="auto",
     )
     target_k = _int_arg(args.get("k"), default=0) or max(1, min(8, len(profiles) // 3 or 2))
     assignments = kmeans(vectors, target_k)

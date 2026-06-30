@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core import db
@@ -34,7 +34,7 @@ REFLECTION_DECIDED_EVENT = "os.reflection.decided"
 
 def collect_local_metrics(*, days: int = 7) -> dict[str, Any]:
     window_days = max(1, min(90, int(days)))
-    since = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+    since = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
     db.init_db()
     with db.connect() as conn:
         task_rows = conn.execute(
@@ -62,7 +62,7 @@ def collect_local_metrics(*, days: int = 7) -> dict[str, Any]:
     return {
         "window_days": window_days,
         "since": since,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "tasks": tasks,
         "runs": runs,
         "recovery": reflections,

@@ -6,4 +6,3 @@ def create_index():
 
 
 WorkspaceIndex = SearchIndex
-

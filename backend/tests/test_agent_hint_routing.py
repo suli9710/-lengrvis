@@ -9,15 +9,14 @@ import pytest
 
 from app.agents.planner_agent import (
     PlannerAgent,
-    format_planner_revision_feedback_block,
     format_supervisor_hint_block,
     normalize_supervisor_agent_hint,
     supervisor_hint_allows_deterministic,
 )
 from app.agents.supervisor_agent import SupervisorDecision
-from app.llm.mock_provider import MockProvider
 from app.core import db
 from app.core.schemas import Task
+from app.llm.mock_provider import MockProvider
 from app.orchestration.handlers.planning_handler import PlanningHandler
 from app.services import task_service
 

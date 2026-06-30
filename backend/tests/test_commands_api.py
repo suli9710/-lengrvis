@@ -7,8 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import db
-from app.core.session_context import SessionContextStore, reset_session_context_store
 from app.core.schemas import Task
+from app.core.session_context import SessionContextStore, reset_session_context_store
 from app.main import create_app
 from app.orchestration.execution_stage import ExecutionStage
 from app.orchestration.state_machine import safe_transition
@@ -102,7 +102,9 @@ def test_commands_execute_endpoint_returns_structured_unknown_command_error() ->
 
 def test_resume_command_uses_task_resume_service(monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(create_app())
-    task = Task(user_goal="resume me", mode="efficiency", status=TaskPhase.EXECUTION, execution_stage=ExecutionStage.PAUSED)
+    task = Task(
+        user_goal="resume me", mode="efficiency", status=TaskPhase.EXECUTION, execution_stage=ExecutionStage.PAUSED
+    )
     db.upsert_model("tasks", task)
     calls: list[str] = []
 
@@ -235,10 +237,14 @@ def test_resume_command_loads_compacted_context_by_boundary_id() -> None:
     client = TestClient(create_app())
     older_store = SessionContextStore(session_id="older_boundary_session")
     older_store.load()
-    older_store.remember_summary("Older boundary summary.", last_message_id="msg_old", resumed_from_boundary_id="boundary_old")
+    older_store.remember_summary(
+        "Older boundary summary.", last_message_id="msg_old", resumed_from_boundary_id="boundary_old"
+    )
     newer_store = SessionContextStore(session_id="newer_boundary_session")
     newer_store.load()
-    newer_store.remember_summary("Newer boundary summary.", last_message_id="msg_new", resumed_from_boundary_id="boundary_new")
+    newer_store.remember_summary(
+        "Newer boundary summary.", last_message_id="msg_new", resumed_from_boundary_id="boundary_new"
+    )
 
     response = client.post(
         "/api/commands/execute",
@@ -255,7 +261,9 @@ def test_resume_command_loads_compacted_context_by_boundary_id() -> None:
 
 def test_resume_command_without_args_still_lists_resumable_tasks() -> None:
     client = TestClient(create_app())
-    task = Task(user_goal="resume list", mode="efficiency", status=TaskPhase.EXECUTION, execution_stage=ExecutionStage.PAUSED)
+    task = Task(
+        user_goal="resume list", mode="efficiency", status=TaskPhase.EXECUTION, execution_stage=ExecutionStage.PAUSED
+    )
     db.upsert_model("tasks", task)
 
     response = client.post(
@@ -303,7 +311,9 @@ def test_compact_command_diagnostics_include_lineage_without_running_compaction(
     store = SessionContextStore(session_id="session_compact_diag")
     store.load()
     store.remember_task("task_active")
-    store.remember_summary("Compact diag summary.", last_message_id="msg_diag", resumed_from_boundary_id="boundary_diag")
+    store.remember_summary(
+        "Compact diag summary.", last_message_id="msg_diag", resumed_from_boundary_id="boundary_diag"
+    )
 
     response = client.post(
         "/api/commands/execute",

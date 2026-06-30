@@ -61,7 +61,9 @@ def _builtin_commands() -> list[CommandDefinition]:
             },
             related_routes=["POST /api/context/compact"],
             requires_approval=False,
-            next_action="Pass task_id or messages to execute compaction; omit both for session lineage diagnostics only.",
+            next_action=(
+                "Pass task_id or messages to execute compaction; omit both for session lineage diagnostics only."
+            ),
         ),
         CommandDefinition(
             name="/mcp",
@@ -71,7 +73,9 @@ def _builtin_commands() -> list[CommandDefinition]:
         ),
         CommandDefinition(
             name="/permissions",
-            summary="Inspect the current permission policy and route callers to the existing policy endpoints for edits.",
+            summary=(
+                "Inspect the current permission policy and route callers to the existing policy endpoints for edits."
+            ),
             related_routes=[
                 "GET /api/settings/permission-policy",
                 "PUT /api/settings/permission-policy",
@@ -96,11 +100,17 @@ def _builtin_commands() -> list[CommandDefinition]:
                 "additionalProperties": True,
             },
             related_routes=["POST /api/tasks/{task_id}/resume", "GET /api/tasks/{task_id}"],
-            next_action="Pass task_id to resume a paused task, or explicit session_id/boundary_id to load compacted session context.",
+            next_action=(
+                "Pass task_id to resume a paused task, or explicit session_id/boundary_id "
+                "to load compacted session context."
+            ),
         ),
         CommandDefinition(
             name="/summary",
-            summary="Return persisted session summary, compact metadata, compacted context, and lineage diagnostics for resume.",
+            summary=(
+                "Return persisted session summary, compact metadata, compacted context, "
+                "and lineage diagnostics for resume."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -117,7 +127,10 @@ def _builtin_commands() -> list[CommandDefinition]:
         ),
         CommandDefinition(
             name="/review",
-            summary="Run the deterministic code review agent when change evidence is supplied; otherwise report review status.",
+            summary=(
+                "Run the deterministic code review agent when change evidence is supplied; "
+                "otherwise report review status."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -130,7 +143,9 @@ def _builtin_commands() -> list[CommandDefinition]:
                 "additionalProperties": True,
             },
             related_routes=["GET /api/tasks/{task_id}/safety-reviews"],
-            next_action="Pass changed_files and test_evidence to run CodeReviewAgent, or task_id to inspect safety reviews.",
+            next_action=(
+                "Pass changed_files and test_evidence to run CodeReviewAgent, or task_id to inspect safety reviews."
+            ),
         ),
         CommandDefinition(
             name="/skills",
@@ -140,7 +155,9 @@ def _builtin_commands() -> list[CommandDefinition]:
         ),
         CommandDefinition(
             name="/voice",
-            summary="Report voice input capability and optionally transcribe text-like audio through the voice processor.",
+            summary=(
+                "Report voice input capability and optionally transcribe text-like audio through the voice processor."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -150,7 +167,10 @@ def _builtin_commands() -> list[CommandDefinition]:
                 "additionalProperties": True,
             },
             related_routes=["POST /api/chat"],
-            next_action="Attach real audio support in a future route; this command currently supports diagnostics and text-like fallback checks.",
+            next_action=(
+                "Attach real audio support in a future route; this command currently supports diagnostics "
+                "and text-like fallback checks."
+            ),
         ),
         CommandDefinition(
             name="/workflows",
@@ -166,7 +186,9 @@ def _builtin_commands() -> list[CommandDefinition]:
             },
             related_routes=["workflow.run tool"],
             requires_approval=True,
-            next_action="Pass workflow to receive a dry-run preview; execution still requires the normal approval flow.",
+            next_action=(
+                "Pass workflow to receive a dry-run preview; execution still requires the normal approval flow."
+            ),
         ),
     ]
 

@@ -608,7 +608,9 @@ def test_paid_launch_templates_are_actionable_but_not_reviewed_evidence(tmp_path
     assert any("paid-launch pass" in item for item in support_payload["must_not_be_recorded_as"])
     assert any("paid-launch pass" in item for item in claims_payload["must_not_be_recorded_as"])
     assert any("artifact_type" in error for error in support_privacy.validate_payload(support_payload))
-    assert any("artifact_type" in error for error in claims_launch.validate_payload(claims_payload, repo_root=REPO_ROOT))
+    assert any(
+        "artifact_type" in error for error in claims_launch.validate_payload(claims_payload, repo_root=REPO_ROOT)
+    )
 
 
 def test_result_quality_rejects_template_short_run_and_safety_false_negative() -> None:

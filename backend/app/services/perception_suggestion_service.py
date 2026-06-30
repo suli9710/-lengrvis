@@ -9,11 +9,10 @@ from app.core.session_context import get_session_context_store
 from app.llm.registry import get_effective_settings
 from app.perception.context_store import latest_app_context, latest_screen_state, update_screen_state
 from app.perception.intent_predictor import IntentSuggestion, predict_intents
-from app.perception.schemas import AppContext, PerceptionEvent, ScreenState
+from app.perception.schemas import PerceptionEvent, ScreenState
 from app.perception.screen_monitor import ScreenMonitor, ScreenMonitorConfig
 from app.perception.storage import app_context_summary, is_sensitive_context, screen_state_summary
 from app.services import run_service
-
 
 _SUGGESTIONS: dict[str, IntentSuggestion] = {}
 _LOCK = threading.RLock()
@@ -127,7 +126,7 @@ def _store_suggestions(suggestions: list[IntentSuggestion]) -> None:
         }
         try:
             db.insert_perception_suggestion(payload)
-        except Exception:
+        except Exception:  # noqa: S112, BLE001
             continue
 
 
@@ -151,5 +150,5 @@ def _mark_suggestion_launched(suggestion: IntentSuggestion, run: Run) -> None:
     }
     try:
         db.insert_perception_suggestion(payload)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Iterable
 from uuid import uuid4
 
 
@@ -120,7 +120,11 @@ class CoordinatorWorkerPolicy:
         normalized_right = {_normalize_path(path) for path in right}
         for left_path in normalized_left:
             for right_path in normalized_right:
-                if left_path == right_path or left_path.startswith(right_path + "/") or right_path.startswith(left_path + "/"):
+                if (
+                    left_path == right_path
+                    or left_path.startswith(right_path + "/")
+                    or right_path.startswith(left_path + "/")
+                ):
                     return True
         return False
 

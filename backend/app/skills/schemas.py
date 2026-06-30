@@ -9,7 +9,6 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from app.policy.risk import RiskLevel
 
-
 TOOL_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$"
 SKILL_NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]*$"
 AGENT_OWNER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]*$"
@@ -157,7 +156,9 @@ class WorkflowIntentSpec(BaseModel):
 
     target_app: str = Field(default="", validation_alias=AliasChoices("target_app", "targetApp"))
     action: str = ""
-    data_transfer: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("data_transfer", "dataTransfer"))
+    data_transfer: dict[str, Any] = Field(
+        default_factory=dict, validation_alias=AliasChoices("data_transfer", "dataTransfer")
+    )
     interface: str = "ui_automation"
 
 
@@ -188,7 +189,9 @@ class SkillSignatureSpec(BaseModel):
     key_id: str = Field(min_length=1, max_length=128, validation_alias=AliasChoices("key_id", "keyId"))
     algorithm: str = Field(default="ed25519", min_length=1, max_length=64)
     signature: str = Field(min_length=1, max_length=8192)
-    manifest_digest: str = Field(default="", max_length=256, validation_alias=AliasChoices("manifest_digest", "manifestDigest"))
+    manifest_digest: str = Field(
+        default="", max_length=256, validation_alias=AliasChoices("manifest_digest", "manifestDigest")
+    )
     signed_at: str = Field(default="", max_length=64, validation_alias=AliasChoices("signed_at", "signedAt"))
 
     @field_validator("key_id", "algorithm", "signature", "manifest_digest", "signed_at", mode="before")
@@ -209,7 +212,9 @@ class SkillToolSpec(BaseModel):
 
     name: str = Field(pattern=TOOL_NAME_PATTERN)
     description: str = ""
-    agent_owner: str | None = Field(default=None, pattern=AGENT_OWNER_PATTERN, validation_alias=AliasChoices("agent_owner", "agentOwner"))
+    agent_owner: str | None = Field(
+        default=None, pattern=AGENT_OWNER_PATTERN, validation_alias=AliasChoices("agent_owner", "agentOwner")
+    )
     risk: RiskLevel | None = None
     permissions: list[str] | None = None
     entrypoint: str = Field(default="", validation_alias=AliasChoices("entrypoint", "entryPoint"))
@@ -282,7 +287,7 @@ class SkillToolSpec(BaseModel):
         return value.strip()
 
     @model_validator(mode="after")
-    def manifest_contract_must_be_consistent(self) -> "SkillToolSpec":
+    def manifest_contract_must_be_consistent(self) -> SkillToolSpec:
         for field_name in ("input_schema", "output_schema"):
             schema = getattr(self, field_name)
             if not isinstance(schema, dict):
@@ -326,7 +331,7 @@ class SkillDefinition(BaseModel):
         return permissions or [LEGACY_PERMISSION]
 
     @model_validator(mode="after")
-    def tools_must_have_unique_names(self) -> "SkillDefinition":
+    def tools_must_have_unique_names(self) -> SkillDefinition:
         names = [tool.name for tool in self.tools]
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:

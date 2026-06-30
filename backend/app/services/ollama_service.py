@@ -1,21 +1,22 @@
 """Ollama lifecycle management — detect, install, pull models."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 try:
     import psutil
-except Exception:  # pragma: no cover - optional in stripped-down test envs
+except Exception:  # pragma: no cover - optional in stripped-down test envs  # noqa: BLE001
     psutil = None  # type: ignore[assignment]
 
 from app.config import get_env
@@ -43,9 +44,7 @@ _MEDIUM_RAM_BYTES = 16 * _GIB
 _MEDIUM_DISK_BYTES = 12 * _GIB
 _TIMEOUT = 5.0
 _BUNDLED_ENV_KEYS = ("LENGRVIS_BUNDLED_OLLAMA_DIR",)
-_BUNDLED_MODEL_ENV_KEYS = (
-    "LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",
-)
+_BUNDLED_MODEL_ENV_KEYS = ("LENGRVIS_BUNDLED_OLLAMA_MODELS_DIR",)
 _BUNDLED_RELATIVE_DIRS = (
     ("resources", "ollama"),
     ("ollama",),
@@ -54,9 +53,7 @@ _BUNDLED_MODEL_RELATIVE_DIRS = (
     ("resources", "ollama-models"),
     ("ollama-models",),
 )
-_BUNDLED_MANIFEST_ENV_KEYS = (
-    "LENGRVIS_OLLAMA_BUNDLE_MANIFEST",
-)
+_BUNDLED_MANIFEST_ENV_KEYS = ("LENGRVIS_OLLAMA_BUNDLE_MANIFEST",)
 _BUNDLED_MANIFEST_RELATIVE_PATHS = (
     ("resources", "ollama-bundle-manifest.json"),
     ("ollama-bundle-manifest.json",),
@@ -289,7 +286,9 @@ async def setup_plan(model: str | None = None) -> dict[str, Any]:
                 "key": "model",
                 "label": _model_setup_label(has_model, bundled_model_available, bundled_model_configured, running),
                 "state": "done" if has_model else "current" if running and not hardware_blocked else "pending",
-                "detail": _model_setup_detail(target, has_model, bundled_model_available, bundled_model_configured, running),
+                "detail": _model_setup_detail(
+                    target, has_model, bundled_model_available, bundled_model_configured, running
+                ),
             },
         ],
         "next_action": next_action,
@@ -408,7 +407,7 @@ async def is_running() -> bool:
         async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(f"{OLLAMA_API}/api/tags")
             return resp.status_code == 200
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -421,7 +420,7 @@ async def list_models() -> list[str]:
                 return []
             data = resp.json()
             return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
-    except Exception:
+    except Exception:  # noqa: BLE001
         return []
 
 
@@ -448,8 +447,12 @@ async def install() -> dict[str, Any]:
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            "winget", "install", "--id", "Ollama.Ollama",
-            "--accept-package-agreements", "--accept-source-agreements",
+            "winget",
+            "install",
+            "--id",
+            "Ollama.Ollama",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -471,9 +474,9 @@ async def install() -> dict[str, Any]:
             "winget not found. Install Ollama manually from the official Ollama website, then retry.",
             "install_runtime",
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return _ollama_action_error("Installation timed out after 120 seconds.", "install_runtime")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return _ollama_action_error(str(exc), "install_runtime")
 
 
@@ -519,7 +522,7 @@ async def start_server() -> dict[str, Any]:
         if models_dir:
             env["OLLAMA_MODELS"] = str(models_dir)
         global _SERVER_PROCESS
-        _SERVER_PROCESS = subprocess.Popen(
+        _SERVER_PROCESS = subprocess.Popen(  # noqa: S603
             [executable, "serve"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -533,7 +536,7 @@ async def start_server() -> dict[str, Any]:
             "models_dir": "",
             "models_dir_configured": bool(models_dir),
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         record("ollama.start", "OllamaService", {"ok": False, "error": _public_text(exc)})
         return _ollama_action_error(str(exc), "start_runtime")
 
@@ -667,7 +670,7 @@ def _ollama_bundle_manifest_summary() -> dict[str, Any]:
         return {"present": False}
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return {"present": True, "valid": False, "path": "", "error": _public_text(exc)}
     runtime_summary = data.get("runtime", {}).get("summary", {}) if isinstance(data, dict) else {}
     models_payload = data.get("models", {}) if isinstance(data, dict) else {}
@@ -682,7 +685,9 @@ def _ollama_bundle_manifest_summary() -> dict[str, Any]:
         "models_sha256": _public_manifest_string(models_summary.get("sha256", "")),
         "runtime_files": int(runtime_summary.get("files", 0) or 0),
         "models_files": int(models_summary.get("files", 0) or 0),
-        "model_manifest": _public_manifest_string(models_payload.get("model_manifest", "")) if isinstance(models_payload, dict) else "",
+        "model_manifest": _public_manifest_string(models_payload.get("model_manifest", ""))
+        if isinstance(models_payload, dict)
+        else "",
     }
 
 
@@ -698,7 +703,7 @@ def _same_path(left: Path | None, right: Path | None) -> bool:
         return False
     try:
         return left.expanduser().resolve() == right.expanduser().resolve()
-    except Exception:
+    except Exception:  # noqa: BLE001
         return str(left.expanduser()).lower() == str(right.expanduser()).lower()
 
 
@@ -912,7 +917,8 @@ def _setup_repair_action(next_action: str, target: str) -> dict[str, str]:
             "code": "free_resources_for_local_ai",
             "label": "Free resources for local AI",
             "detail": (
-                "Close memory-heavy apps, free disk space, or choose a smaller supported local model, then check again. "
+                "Close memory-heavy apps, free disk space, or choose a smaller supported local model, "
+                "then check again. "
                 "Privacy mode stays local-only and will not silently use cloud or mock AI."
             ),
         },
@@ -1201,7 +1207,9 @@ def _bundled_model_evidence_detail(bundle: dict[str, Any], target: str, configur
     if missing:
         return f"Bundled {target} is not proven available; missing " + ", ".join(missing) + "."
     if not configured:
-        return f"Bundled {target} is proven available, but Ollama is not configured to read the bundled model directory."
+        return (
+            f"Bundled {target} is proven available, but Ollama is not configured to read the bundled model directory."
+        )
     return f"Bundled {target} is proven available and the preferred model directory points to it."
 
 
@@ -1210,7 +1218,7 @@ def _total_memory_bytes() -> int:
         return 0
     try:
         return int(psutil.virtual_memory().total)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -1224,7 +1232,7 @@ def _ollama_disk_free_bytes() -> int:
                 break
             existing = parent
         return int(shutil.disk_usage(existing or os.path.expanduser("~")).free)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -1232,14 +1240,14 @@ def _gpu_summary() -> str:
     if sys.platform != "win32":
         return ""
     try:
-        proc = subprocess.run(
-            ["wmic", "path", "win32_VideoController", "get", "name"],
+        proc = subprocess.run(  # noqa: S603
+            ["wmic", "path", "win32_VideoController", "get", "name"],  # noqa: S607
             capture_output=True,
             text=True,
             timeout=0.75,
             check=False,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001
         return ""
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip() and line.strip().lower() != "name"]
     return ", ".join(lines[:3])
@@ -1271,7 +1279,7 @@ async def pull_model(model: str | None = None) -> dict[str, Any]:
                 record("ollama.pull_complete", "OllamaService", {"model": target})
                 return {"ok": True, "model": target, "message": f"Model {target} pulled successfully."}
             return _ollama_action_error(f"Pull failed with status {resp.status_code}", "download_model", model=target)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return _ollama_action_error(str(exc), "download_model", model=target)
 
 
@@ -1293,7 +1301,9 @@ async def pull_model_streaming(model: str | None = None):
                 timeout=600.0,
             ) as resp:
                 if resp.status_code != 200:
-                    yield _ollama_action_error(f"Pull failed with status {resp.status_code}", "download_model", model=target)
+                    yield _ollama_action_error(
+                        f"Pull failed with status {resp.status_code}", "download_model", model=target
+                    )
                     return
                 async for line in resp.aiter_lines():
                     if not line.strip():
@@ -1313,7 +1323,7 @@ async def pull_model_streaming(model: str | None = None):
                         continue
         record("ollama.pull_complete", "OllamaService", {"model": target})
         yield {"status": "success", "model": target}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         yield _ollama_action_error(str(exc), "download_model", model=target)
 
 
@@ -1426,7 +1436,12 @@ async def install_local_model(model: str | None = None):
 
     models = await list_models()
     if _has_model(models, target):
-        yield {"phase": "pull", "status": "skipped", "message": f"Local model {target} is already installed.", "model": target}
+        yield {
+            "phase": "pull",
+            "status": "skipped",
+            "message": f"Local model {target} is already installed.",
+            "model": target,
+        }
         yield {"phase": "switch", "status": "done", "message": f"Local model {target} is ready.", "model": target}
         return
 

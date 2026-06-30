@@ -14,7 +14,9 @@ def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return redacted if isinstance(redacted, dict) else {}
 
 
-def record(event_type: str, actor: str, payload: dict[str, Any] | None = None, task_id: str | None = None) -> "AuditEvent":
+def record(
+    event_type: str, actor: str, payload: dict[str, Any] | None = None, task_id: str | None = None
+) -> AuditEvent:
     from app.core.schemas import AuditEvent
 
     event = AuditEvent(

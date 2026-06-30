@@ -12,7 +12,6 @@ from app.core import db
 from app.indexer import ocr_service
 from app.tools import document_tools, vision_tools
 
-
 FIXTURE_TEXT = "OFFLINE OCR INVOICE 042"
 PDF_FIXTURE_TEXT = "SCANNED PDF OCR FALLBACK 314"
 
@@ -119,7 +118,9 @@ def test_accelerated_ocr_runs_onnx_session_when_configured(
             return [np.asarray(["ONNX OCR TEXT"], dtype=object)]
 
     monkeypatch.setattr(ocr_service, "available_execution_providers", lambda: ["CPUExecutionProvider"])
-    monkeypatch.setattr("app.acceleration.onnx_sessions.available_execution_providers", lambda: ["CPUExecutionProvider"])
+    monkeypatch.setattr(
+        "app.acceleration.onnx_sessions.available_execution_providers", lambda: ["CPUExecutionProvider"]
+    )
     monkeypatch.setattr("app.acceleration.onnx_sessions.import_onnxruntime", lambda: object())
     monkeypatch.setattr("app.acceleration.onnx_sessions.create_inference_session", lambda backend: _Session())
     monkeypatch.setattr(ocr_service, "create_inference_session", lambda backend: _Session())

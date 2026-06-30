@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import ssl
 from datetime import UTC, datetime
@@ -11,12 +10,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from app.config import PROJECT_ROOT, env_raw
-from app.core import audit as audit_core, db
+from app.core import audit as audit_core
+from app.core import db
 from app.llm.registry import LOCAL_PROVIDERS, get_effective_settings
 from app.policy.redaction import contains_sensitive_key, redact_text
-from app.services import mobile_pairing_service, ollama_service, task_recording_service
-from app.services import system_service
-
+from app.services import mobile_pairing_service, ollama_service, system_service, task_recording_service
 
 router = APIRouter()
 
@@ -146,13 +144,9 @@ SUPPORT_PACKAGE_LOCAL_PATH_PATTERNS = (
         r"(?i)%(?:USERPROFILE|LOCALAPPDATA|APPDATA|TEMP|TMP|PROGRAMDATA|PUBLIC)%[\\/]"
         r"(?:[^\\/\r\n\"'<>|,;]*[\\/])*[^\\/\r\n\"'<>|,;]*"
     ),
-    re.compile(
-        r"(?i)\$(?:HOME|TMPDIR|TEMP|TMP)[\\/](?:[^\\/\r\n\"'<>|,;]*[\\/])*[^\\/\r\n\"'<>|,;]*"
-    ),
+    re.compile(r"(?i)\$(?:HOME|TMPDIR|TEMP|TMP)[\\/](?:[^\\/\r\n\"'<>|,;]*[\\/])*[^\\/\r\n\"'<>|,;]*"),
 )
-SUPPORT_PACKAGE_PATH_LABEL_CHILD_PATTERN = re.compile(
-    r"(\[path_label:[^\]]+\])(?:[\\/][^\\/\r\n\"'<>|,;]+)+"
-)
+SUPPORT_PACKAGE_PATH_LABEL_CHILD_PATTERN = re.compile(r"(\[path_label:[^\]]+\])(?:[\\/][^\\/\r\n\"'<>|,;]+)+")
 
 
 @router.get("/system/info")
@@ -485,7 +479,8 @@ def _support_package_task_recording_status_value(value: Any) -> bool:
     export = value.get("export")
     return (
         set(value).issubset(SUPPORT_PACKAGE_TASK_RECORDING_STATUS_KEYS)
-        and value.get("default_policy") == {
+        and value.get("default_policy")
+        == {
             "mode": "opt_in",
             "enabled_by_default": False,
             "scope": "local_only",

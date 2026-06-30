@@ -37,7 +37,9 @@ class ParallelReviewAgent(BaseAgent):
                 reasons.append(f"Step {step.id} tool {tool.name} has write-like effects: {sorted(effects)}.")
             risk_value = getattr(risk, "value", str(risk))
             if risk_value.startswith(("R2", "R3", "R4")):
-                reasons.append(f"Step {step.id} tool {tool.name} risk {risk_value} is not eligible for parallel execution.")
+                reasons.append(
+                    f"Step {step.id} tool {tool.name} risk {risk_value} is not eligible for parallel execution."
+                )
 
         if reasons:
             return self._record_review(
@@ -47,7 +49,9 @@ class ParallelReviewAgent(BaseAgent):
                     verdict=SafetyVerdict.REVISE_PLAN,
                     risk_level=max_level,
                     reasons=reasons,
-                    safe_alternative="Run the ready steps serially or split write-like work behind explicit dependencies.",
+                    safe_alternative=(
+                        "Run the ready steps serially or split write-like work behind explicit dependencies."
+                    ),
                 )
             )
 
@@ -57,7 +61,12 @@ class ParallelReviewAgent(BaseAgent):
                 target_type="parallel_batch",
                 verdict=SafetyVerdict.ALLOW,
                 risk_level=RiskLevel.R0_READ_ONLY,
-                reasons=[f"ParallelReviewAgent approved {len(steps)} concurrency-safe read-only step(s) for parallel execution."],
+                reasons=[
+                    (
+                        f"ParallelReviewAgent approved {len(steps)} concurrency-safe read-only step(s) "
+                        "for parallel execution."
+                    )
+                ],
             )
         )
 

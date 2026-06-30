@@ -4,14 +4,14 @@ import asyncio
 import concurrent.futures
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from app.indexer.chunker import chunk_text
 from app.llm.mock_provider import MockProvider
 from app.llm.prompts import load_prompt, render_prompt
 from app.llm.registry import get_provider
-
 
 DEFAULT_MAX_CHARS_TO_LLM = 30000
 DEFAULT_CHUNK_CHARS = 1800
@@ -46,7 +46,7 @@ def _run_async(coro) -> Any:
 def _provider(task: str = "subagent"):
     try:
         return get_provider(task=task)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -70,7 +70,7 @@ def _call_chat(
         return None
     try:
         result = _run_async(provider.chat(messages, temperature=temperature))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None
     result_text = str(result or "").strip()
     return result_text or None
@@ -104,11 +104,16 @@ def _extractive_summary(text: str, *, max_chars: int = 900) -> str:
 
 def _extractive_report(title: str, content: str, *, max_chars: int = 6000) -> str:
     excerpt = _extractive_summary(content, max_chars=max_chars)
-    return f"# {title}\n\n## Summary\n\n{excerpt}\n\n## Key Points\n\n- {excerpt[:240]}\n\n## Conclusion\n\nGenerated from available source material."
+    return (
+        f"# {title}\n\n## Summary\n\n{excerpt}\n\n## Key Points\n\n- {excerpt[:240]}"
+        "\n\n## Conclusion\n\nGenerated from available source material."
+    )
 
 
 def _tokenize(value: str) -> list[str]:
-    return [token.lower() for token in re.findall(r"[\w\u4e00-\u9fff]+", value or "", flags=re.UNICODE) if len(token) > 1]
+    return [
+        token.lower() for token in re.findall(r"[\w\u4e00-\u9fff]+", value or "", flags=re.UNICODE) if len(token) > 1
+    ]
 
 
 def _lexical_score(query_tokens: set[str], chunk: str) -> float:
@@ -224,7 +229,13 @@ def answer_question(
     cleaned_question = (question or "").strip()
     fallback = _extractive_summary(text, max_chars=1100)
     if not cleaned_question:
-        return {"question": cleaned_question, "answer": fallback, "note": "no_question", "citations": 0, "citation_labels": []}
+        return {
+            "question": cleaned_question,
+            "answer": fallback,
+            "note": "no_question",
+            "citations": 0,
+            "citation_labels": [],
+        }
     if not (text or "").strip() or text.lstrip().startswith("["):
         return {
             "question": cleaned_question,

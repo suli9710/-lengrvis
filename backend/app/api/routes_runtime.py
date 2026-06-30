@@ -3,11 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.api.routes_approvals import _execute_approved_step, approval_execution_response, latest_approval_payload
-from app.core.schemas import ApprovalStatus
 from app.core import db
-from app.core.schemas import Approval
+from app.core.schemas import Approval, ApprovalStatus
 from app.services import run_service
-
 
 router = APIRouter()
 

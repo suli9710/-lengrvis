@@ -10,8 +10,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from app.policy.risk import RiskLevel
-
-from app.skills.loader import canonical_skill_signature_payload, load_skill_package, review_skill_definition, scan_skill_directories
+from app.skills.loader import (
+    canonical_skill_signature_payload,
+    load_skill_package,
+    review_skill_definition,
+    scan_skill_directories,
+)
 from app.skills.schemas import LEGACY_PERMISSION, SkillDefinition, SkillLoadError
 from app.tools.registry import register_all_tools
 
@@ -301,7 +305,9 @@ tools:
 
     assert package.definition.effective_permissions(package.definition.tools[0]) == [LEGACY_PERMISSION]
     assert package.safety_report.ok is True
-    assert any(issue.severity == "warning" and "permissions missing" in issue.message for issue in package.safety_report.issues)
+    assert any(
+        issue.severity == "warning" and "permissions missing" in issue.message for issue in package.safety_report.issues
+    )
 
 
 def test_invalid_manifest_risk_is_rejected(tmp_path: Path):
@@ -388,9 +394,12 @@ def test_example_app_skill_packages_load(test_data_dir: Path):
     assert "windows-settings-workflow" in by_name
     assert by_name["wechat-desktop-message"].definition.tools[0].app_target.app_id == "wechat.desktop"
     assert by_name["wps-office-document"].definition.tools[0].app_target.interface == "com"
-    assert by_name["windows-settings-workflow"].definition.effective_risk(
-        by_name["windows-settings-workflow"].definition.tools[0]
-    ) == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+    assert (
+        by_name["windows-settings-workflow"].definition.effective_risk(
+            by_name["windows-settings-workflow"].definition.tools[0]
+        )
+        == RiskLevel.R3_DESTRUCTIVE_OR_SYSTEM
+    )
 
 
 def test_example_app_skill_dry_run_handler_returns_intent(test_data_dir: Path):

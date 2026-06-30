@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Union
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from app.core.audit import record
 from app.core.schemas import MessageType
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-EventHandler = Union[Callable[..., Any], Callable[..., Awaitable[Any]]]
+EventHandler = Callable[..., Any] | Callable[..., Awaitable[Any]]
 
 _WILDCARD = "*"
 

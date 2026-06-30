@@ -29,7 +29,9 @@ def _seed_dataset() -> None:
     for run in (run_ok, run_reflected, run_failed):
         db.upsert_model("runs", run)
 
-    db.insert_run_event(RunEvent(run_id=run_reflected.id, name="os.reflection.started", payload={"reason": "step failed"}))
+    db.insert_run_event(
+        RunEvent(run_id=run_reflected.id, name="os.reflection.started", payload={"reason": "step failed"})
+    )
     db.insert_run_event(
         RunEvent(run_id=run_reflected.id, name="os.reflection.decided", payload={"action": "add_steps"})
     )

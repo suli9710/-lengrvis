@@ -58,7 +58,9 @@ def test_tool_decision_cache_does_not_cache_approved_or_live_write_args():
         context=_FAST_PATH_CONTEXT,
     )
 
-    assert cache.get("browser.click_element", {"url": "https://example.com", "selector": "#go", "dry_run": False}) is None
+    assert (
+        cache.get("browser.click_element", {"url": "https://example.com", "selector": "#go", "dry_run": False}) is None
+    )
 
 
 def test_tool_decision_cache_expires_entries():

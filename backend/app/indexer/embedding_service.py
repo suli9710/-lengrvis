@@ -10,7 +10,6 @@ from app.indexer.clustering import hashing_vectorize
 from app.indexer.local_embedding_provider import get_local_embedding_provider
 from app.llm.registry import get_effective_settings, get_provider
 
-
 Embedder = Callable[[list[str]], Awaitable[list[list[float]]] | list[list[float]]]
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ async def embed_texts(texts: list[str], *, embedder: Embedder | None = None) -> 
     try:
         vectors = await get_provider(settings, task="embed").embed(normalized, model=settings.embedding_model)
         return [_coerce_vector(vector) for vector in vectors]
-    except Exception:
+    except Exception:  # noqa: BLE001
         return hashing_vectorize(normalized, dim=64)
 
 

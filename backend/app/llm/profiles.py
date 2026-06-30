@@ -105,7 +105,9 @@ def profile_for_settings(
 def profile_for_provider(provider: Any, settings: AppSettings) -> ProviderProfile:
     provider_settings = getattr(provider, "settings", settings)
     backend = getattr(provider, "backend", None)
-    provider_name = getattr(provider, "name", None) or getattr(provider_settings, "provider_name", settings.provider_name)
+    provider_name = getattr(provider, "name", None) or getattr(
+        provider_settings, "provider_name", settings.provider_name
+    )
     active_backend = getattr(backend, "kind", None) or provider_name
     base_url = getattr(provider_settings, "base_url", settings.base_url)
     model = getattr(provider_settings, "model", settings.model)
@@ -173,6 +175,6 @@ def _location_for(provider_name: str, base_url: str) -> str:
         return "local"
     parsed = urlparse(base_url or "")
     host = (parsed.hostname or "").lower()
-    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+    if host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:  # noqa: S104
         return "local"
     return "cloud"

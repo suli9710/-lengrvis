@@ -14,7 +14,6 @@ from app.tools.developer_tools import (
     _parse_test_command,
     _run_command,
     _run_test_foreground,
-    _safe_command_env,
     _truncate_text,
 )
 
@@ -145,7 +144,9 @@ def run_write_verification(
     write_targets = extract_write_targets(tool_events)
     path_check = validate_write_paths(write_targets, workspace=root, allowed_directories=allowed)
     diff_preview = git_worktree_diff_preview(root, allowed_directories=allowed)
-    changed_paths = [item["path"] for item in diff_preview.get("changed_files", []) if isinstance(item, dict) and item.get("path")]
+    changed_paths = [
+        item["path"] for item in diff_preview.get("changed_files", []) if isinstance(item, dict) and item.get("path")
+    ]
     verification_command = infer_verification_command(goal, changed_paths or write_targets)
     test_result: dict[str, Any] | None = None
     if require_verification and verification_command:

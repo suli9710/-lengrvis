@@ -6,8 +6,7 @@ from app.adapters.base import AdapterBase, AdapterConfig, AdapterResult
 
 
 class CalendarClient(Protocol):
-    def create_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        ...
+    def create_event(self, event: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class CalendarAdapter(AdapterBase):

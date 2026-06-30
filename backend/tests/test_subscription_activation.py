@@ -892,9 +892,10 @@ def test_client_activation_verifies_and_persists_license(monkeypatch: pytest.Mon
     assert license_.license_id == "lic_client"
     persisted = (tmp_path / "license.key").read_text(encoding="utf-8").strip()
     assert parse_license(persisted, PUBLIC_KEY).license_id == "lic_client"
-    assert parse_license(persisted, PUBLIC_KEY).payload["activation"]["nonce_sha256"] == sha256(
-        str(seen["json"]["nonce"]).encode("utf-8")
-    ).hexdigest()
+    assert (
+        parse_license(persisted, PUBLIC_KEY).payload["activation"]["nonce_sha256"]
+        == sha256(str(seen["json"]["nonce"]).encode("utf-8")).hexdigest()
+    )
     assert seen["url"] == "https://activation.example/api/v1/activations"
     assert seen["json"]["activation_key"] == "key-client"
     assert seen["json"]["device_id"].startswith("dev_")
@@ -1144,9 +1145,10 @@ def test_subscription_license_stale_refresh_success_persists_replacement(
     assert license_ is not None
     assert license_.license_id == "lic_refresh_success"
     persisted = (tmp_path / "license.key").read_text(encoding="utf-8").strip()
-    assert parse_license(persisted, PUBLIC_KEY).payload["activation"]["nonce_sha256"] == sha256(
-        str(seen["json"]["nonce"]).encode("utf-8")
-    ).hexdigest()
+    assert (
+        parse_license(persisted, PUBLIC_KEY).payload["activation"]["nonce_sha256"]
+        == sha256(str(seen["json"]["nonce"]).encode("utf-8")).hexdigest()
+    )
     assert seen["url"] == "https://activation.example/api/v1/licenses/refresh"
     assert seen["json"]["license_token"] == token
     assert seen["json"]["device_id"].startswith("dev_")

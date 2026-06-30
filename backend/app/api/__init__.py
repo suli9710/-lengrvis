@@ -1,2 +1,1 @@
 """FastAPI route modules."""
-

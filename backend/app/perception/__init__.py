@@ -1,15 +1,6 @@
 from __future__ import annotations
 
 from app.perception.app_context import get_current_app_context
-from app.perception.schemas import (
-    AppContext,
-    PerceptionEvent,
-    PerceptionProvider,
-    Rect,
-    ScreenState,
-    UIElement,
-)
-from app.perception.screen_monitor import ScreenMonitor, ScreenMonitorConfig
 from app.perception.context_store import (
     clear,
     handle_perception_event,
@@ -20,6 +11,15 @@ from app.perception.context_store import (
     update_screen_state,
 )
 from app.perception.intent_predictor import IntentPredictor, IntentSuggestion, predict_intents
+from app.perception.schemas import (
+    AppContext,
+    PerceptionEvent,
+    PerceptionProvider,
+    Rect,
+    ScreenState,
+    UIElement,
+)
+from app.perception.screen_monitor import ScreenMonitor, ScreenMonitorConfig
 from app.perception.voice_input import (
     AudioChunk,
     ChatEndpointClient,

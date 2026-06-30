@@ -7,7 +7,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from tls_test_material import write_lan_tls_material
 
 
@@ -62,19 +61,13 @@ def _run_preflight(
     summaries = list(evidence_root.rglob("evidence-summary.redacted.json"))
     assert len(summaries) == 1, result.stdout + result.stderr
     summary = json.loads(summaries[0].read_text(encoding="utf-8-sig"))
-    checklist = next(evidence_root.rglob("real-device-evidence-checklist.redacted.md")).read_text(
-        encoding="utf-8-sig"
-    )
+    checklist = next(evidence_root.rglob("real-device-evidence-checklist.redacted.md")).read_text(encoding="utf-8-sig")
     return result, summary, checklist
 
 
 def test_mobile_lan_wss_preflight_source_has_beginner_fail_closed_contract(project_root: Path) -> None:
-    script = (project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1").read_text(
-        encoding="utf-8"
-    )
-    matrix = (project_root / "docs" / "qa" / "real-device-mobile-matrix.md").read_text(
-        encoding="utf-8"
-    )
+    script = (project_root / "scripts" / "verify_mobile_lan_wss_preflight.ps1").read_text(encoding="utf-8")
+    matrix = (project_root / "docs" / "qa" / "real-device-mobile-matrix.md").read_text(encoding="utf-8")
 
     for needle in (
         "real_device_evidence_status",
@@ -180,9 +173,10 @@ def test_ready_mobile_lan_wss_preflight_stays_fail_closed_until_real_device_arti
 
     assert "Actual approval WebSocket over WSS from that device" in summary["next_manual_evidence_needed"]
     assert "Actual remote screen WebSocket over WSS from that device" in summary["next_manual_evidence_needed"]
-    assert "Actual remote input WebSocket over WSS from that device when input is in scope" in summary[
-        "next_manual_evidence_needed"
-    ]
+    assert (
+        "Actual remote input WebSocket over WSS from that device when input is in scope"
+        in summary["next_manual_evidence_needed"]
+    )
     assert "Remote input revoke and expiry evidence" in "\n".join(summary["next_manual_evidence_needed"])
 
     assert "## Beginner Collection Path" in checklist

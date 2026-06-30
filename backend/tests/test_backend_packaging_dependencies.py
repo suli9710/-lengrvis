@@ -11,9 +11,7 @@ def _text(project_root: Path, relative_path: str) -> str:
 def test_backend_build_requirements_pin_pyinstaller(project_root: Path) -> None:
     text = _text(project_root, "backend/requirements-build.txt")
     requirement_lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
+        line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
 
     assert len(requirement_lines) == 1
@@ -42,8 +40,7 @@ def test_default_windows_packaging_gate_stays_under_500mb_without_bundled_ollama
     assert "$MaximumDefaultReleaseArtifactBytes = 500MB" in text
     assert 'Test-MaximumFileSize "portable zip" $PortableZipPath $MaximumDefaultReleaseArtifactBytes' in text
     assert (
-        'Test-MaximumFileSize "self-extracting executable" $SelfExtractingPath '
-        "$MaximumDefaultReleaseArtifactBytes"
+        'Test-MaximumFileSize "self-extracting executable" $SelfExtractingPath $MaximumDefaultReleaseArtifactBytes'
     ) in text
 
     default_branch = re.search(

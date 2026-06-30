@@ -7,7 +7,10 @@ from app.core.schemas import MessageType, Plan
 class BrowserAgent(BaseAgent):
     name = "BrowserAgent"
     tool_prefix = "browser."
-    domain_summary = "Reads web pages, takes screenshots, performs R2/R3 clicks / fills only in efficiency mode with explicit approval."
+    domain_summary = (
+        "Reads web pages, takes screenshots, performs R2/R3 clicks / fills only in efficiency mode "
+        "with explicit approval."
+    )
     prompt_file = "browser_agent.md"
 
     def consult(self, plan: Plan) -> None:

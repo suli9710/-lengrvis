@@ -4,9 +4,9 @@ import base64
 import mimetypes
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import urlencode
 
 from fastapi import HTTPException
@@ -16,7 +16,6 @@ from app.core.paths import resolve_authorized
 from app.indexer.fts_index import FTSIndex
 from app.llm.registry import get_effective_settings
 from app.security.desktop_api import signed_desktop_resource_query
-
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 DOCUMENT_EXTENSIONS = {
@@ -57,7 +56,20 @@ MAX_CANDIDATE_ITEMS = 1200
 MAX_SCAN_DEPTH = 6
 USERPROFILE_ENV_KEYS = ("USERPROFILE", "HOME")
 ONEDRIVE_ENV_KEYS = ("OneDrive", "OneDriveConsumer", "OneDriveCommercial")
-DEFAULT_LIBRARY_DIR_NAMES = ("Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music", "桌面", "文档", "下载", "图片", "视频", "音乐")
+DEFAULT_LIBRARY_DIR_NAMES = (
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Videos",
+    "Music",
+    "桌面",
+    "文档",
+    "下载",
+    "图片",
+    "视频",
+    "音乐",
+)
 IMAGE_LIBRARY_DIR_NAMES = ("Desktop", "Downloads", "Pictures", "Videos", "桌面", "下载", "图片", "视频")
 DOCUMENT_LIBRARY_DIR_NAMES = ("Desktop", "Documents", "Downloads", "桌面", "文档", "下载")
 APP_LIBRARY_DIR_NAMES = ("Desktop", "Downloads", "桌面", "下载")
@@ -201,7 +213,7 @@ def _iter_library_files(allowed_directories: list[str], extensions: set[str], bu
             break
         try:
             root = resolve_authorized(raw_root, allowed_directories)
-        except Exception:
+        except Exception:  # noqa: S112, BLE001
             continue
         if not root.exists():
             continue
@@ -265,9 +277,13 @@ def _matches_section(path: Path, section: str) -> bool:
     if section == "papers":
         return suffix == ".pdf" or any(token in name for token in ("paper", "thesis", "论文", "期刊", "journal"))
     if section == "courseware":
-        return suffix in {".ppt", ".pptx"} or any(token in name for token in ("course", "lesson", "lecture", "课件", "课程", "讲义"))
+        return suffix in {".ppt", ".pptx"} or any(
+            token in name for token in ("course", "lesson", "lecture", "课件", "课程", "讲义")
+        )
     if section == "reports":
-        return any(token in name for token in ("report", "weekly", "monthly", "summary", "报告", "周报", "月报", "总结"))
+        return any(
+            token in name for token in ("report", "weekly", "monthly", "summary", "报告", "周报", "月报", "总结")
+        )
     return True
 
 
@@ -371,7 +387,7 @@ def _image_dimensions(path: Path) -> tuple[int, int]:
 
         with Image.open(path) as image:
             return int(image.width), int(image.height)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return 0, 0
 
 

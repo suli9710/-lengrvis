@@ -1,2 +1,1 @@
 """Compatibility privacy package."""
-

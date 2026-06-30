@@ -11,4 +11,3 @@ def summarize_result(result: ToolResult) -> str:
     if result.changed_paths:
         return f"Tool succeeded; changed paths: {', '.join(result.changed_paths)}"
     return "Tool succeeded without file changes."
-

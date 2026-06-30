@@ -9,10 +9,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
-
 
 MAC_TARGET_ARCHES = {"x86_64", "arm64", "universal2"}
 
@@ -34,12 +33,11 @@ CAPABILITY_MANIFEST_SCHEMA = "lengrvis-backend-capabilities/v1"
 
 def write_capability_manifest(dist_dir: Path) -> Path:
     capabilities = {
-        name: importlib.util.find_spec(module) is not None
-        for name, module in OPTIONAL_CAPABILITY_MODULES.items()
+        name: importlib.util.find_spec(module) is not None for name, module in OPTIONAL_CAPABILITY_MODULES.items()
     }
     manifest = {
         "schema": CAPABILITY_MANIFEST_SCHEMA,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "python": platform.python_version(),
         "platform": sys.platform,
         "capabilities": capabilities,
@@ -122,7 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.append("main.py")
 
     try:
-        exit_code = subprocess.call(command, cwd=source_dir, env=env)
+        exit_code = subprocess.call(command, cwd=source_dir, env=env)  # noqa: S603
         if exit_code == 0:
             write_capability_manifest(dist_dir if args.onedir else root / "dist")
         return exit_code

@@ -20,11 +20,7 @@ def _isolate_db(monkeypatch, tmp_path: Path):
 
 
 def _step(step_id: str, *, status: StepStatus, skip_reason: str | None = None) -> PlanStep:
-    model_action = (
-        {"scheduler": {"skip_reason": skip_reason, "blocked_by": ["upstream"]}}
-        if skip_reason
-        else {}
-    )
+    model_action = {"scheduler": {"skip_reason": skip_reason, "blocked_by": ["upstream"]}} if skip_reason else {}
     return PlanStep(
         id=step_id,
         task_id="task_partial",
@@ -62,6 +58,8 @@ def test_finalize_marks_failed_when_success_coexists_with_blocked_skips() -> Non
         name="TestOrchestrator",
     )
     handler = StepSchedulerHandler(orchestrator)
-    handler._finalize_plan_status(task, plan, _ScheduleState(pending=set(), by_id={step.id: step for step in plan.steps}))
+    handler._finalize_plan_status(
+        task, plan, _ScheduleState(pending=set(), by_id={step.id: step for step in plan.steps})
+    )
 
     assert statuses == [TaskStatus.FAILED]

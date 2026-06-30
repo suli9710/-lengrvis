@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections import defaultdict
 from contextlib import suppress
 
 from app.core.schemas import Approval
@@ -61,11 +60,15 @@ def publish_approval_decided(approval: Approval) -> None:
 
 
 def publish_remote_input_grant_created(device_id: str, grant: dict) -> None:
-    _bus.publish({"type": "remote_input_grant_created", "device_id": device_id, "grant": _safe_remote_input_grant(grant)})
+    _bus.publish(
+        {"type": "remote_input_grant_created", "device_id": device_id, "grant": _safe_remote_input_grant(grant)}
+    )
 
 
 def publish_remote_input_grant_revoked(device_id: str, grant: dict) -> None:
-    _bus.publish({"type": "remote_input_grant_revoked", "device_id": device_id, "grant": _safe_remote_input_grant(grant)})
+    _bus.publish(
+        {"type": "remote_input_grant_revoked", "device_id": device_id, "grant": _safe_remote_input_grant(grant)}
+    )
 
 
 def publish_mobile_device_revoked(device: dict) -> None:

@@ -13,8 +13,7 @@ class WebhookClient(Protocol):
         payload: dict[str, Any],
         headers: dict[str, str],
         timeout_seconds: float,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 class WebhookAdapter(AdapterBase):
@@ -91,8 +90,7 @@ class WebhookAdapter(AdapterBase):
 def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
     sensitive_terms = ("authorization", "token", "api-key", "apikey", "secret", "cookie")
     return {
-        key: "***" if any(term in key.lower() for term in sensitive_terms) else value
-        for key, value in headers.items()
+        key: "***" if any(term in key.lower() for term in sensitive_terms) else value for key, value in headers.items()
     }
 
 
@@ -109,8 +107,7 @@ def _merge_pinned_headers(pinned_headers: dict[str, str], caller_headers: dict[s
 def _redact_sensitive_values(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: "***" if _is_sensitive_key(str(key)) else _redact_sensitive_values(item)
-            for key, item in value.items()
+            key: "***" if _is_sensitive_key(str(key)) else _redact_sensitive_values(item) for key, item in value.items()
         }
     if isinstance(value, list):
         return [_redact_sensitive_values(item) for item in value]

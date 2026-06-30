@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from app.core import db
 from app.api import routes_files
+from app.core import db
 from app.tools import cluster_tools, vision_tools
 from app.tools.registry import register_all_tools
 
@@ -221,7 +221,11 @@ def test_cluster_files_route_preserves_default_file_clustering(monkeypatch, tmp_
         def execute(self, args, context):  # noqa: ANN001
             captured["args"] = args
             captured["context"] = context
-            return {"ok": True, "clusters": [{"cluster_id": 0, "size": 1, "preview": [], "suggested_name": "x"}], "count": 1}
+            return {
+                "ok": True,
+                "clusters": [{"cluster_id": 0, "size": 1, "preview": [], "suggested_name": "x"}],
+                "count": 1,
+            }
 
     class FakeRegistry:
         def list(self):  # noqa: ANN201
@@ -232,7 +236,10 @@ def test_cluster_files_route_preserves_default_file_clustering(monkeypatch, tmp_
             return FakeTool()
 
     monkeypatch.setattr("app.tools.registry.registry", FakeRegistry())
-    monkeypatch.setattr("app.llm.registry.get_effective_settings", lambda: type("Settings", (), {"allowed_directories": [str(tmp_path)]})())
+    monkeypatch.setattr(
+        "app.llm.registry.get_effective_settings",
+        lambda: type("Settings", (), {"allowed_directories": [str(tmp_path)]})(),
+    )
 
     result = routes_files.cluster_files({"k": "2"})
 
@@ -259,7 +266,10 @@ def test_cluster_files_route_routes_image_group_by(monkeypatch, tmp_path: Path):
             return FakeTool()
 
     monkeypatch.setattr("app.tools.registry.registry", FakeRegistry())
-    monkeypatch.setattr("app.llm.registry.get_effective_settings", lambda: type("Settings", (), {"allowed_directories": [str(tmp_path)]})())
+    monkeypatch.setattr(
+        "app.llm.registry.get_effective_settings",
+        lambda: type("Settings", (), {"allowed_directories": [str(tmp_path)]})(),
+    )
 
     result = routes_files.cluster_files({"group_by": "scene", "paths": [str(tmp_path)]})
 

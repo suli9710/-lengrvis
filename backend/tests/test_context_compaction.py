@@ -5,11 +5,16 @@ from fastapi.testclient import TestClient
 
 from app.api.routes_context import router
 from app.config import AppSettings
-from app.context_compaction import MANUAL_COMPACT_BOUNDARY, compact_session_context, compact_task_context, manual_compact_messages
+from app.context_compaction import (
+    MANUAL_COMPACT_BOUNDARY,
+    compact_session_context,
+    compact_task_context,
+    manual_compact_messages,
+)
 from app.context_management import project_messages_for_llm
 from app.core import db
-from app.core.session_context import SessionContextStore
 from app.core.schemas import MessageType
+from app.core.session_context import SessionContextStore
 from app.orchestration.agent_bus import AgentBus
 
 
@@ -33,7 +38,11 @@ def _messages(count: int = 8, chars: int = 80) -> list[dict]:
     return [
         {"id": "system_1", "role": "system", "content": "Keep answers concise."},
         *[
-            {"id": f"msg_{index}", "role": "user" if index % 2 else "assistant", "content": f"message {index} " + ("x" * chars)}
+            {
+                "id": f"msg_{index}",
+                "role": "user" if index % 2 else "assistant",
+                "content": f"message {index} " + ("x" * chars),
+            }
             for index in range(count)
         ],
     ]
@@ -132,7 +141,10 @@ def test_projection_uses_latest_compact_boundary_view():
     contents = [message["content"] for message in projection.messages]
 
     assert "old history should be hidden" not in contents
-    assert any(message.get("metadata", {}).get("context_boundary") == MANUAL_COMPACT_BOUNDARY for message in projection.messages)
+    assert any(
+        message.get("metadata", {}).get("context_boundary") == MANUAL_COMPACT_BOUNDARY
+        for message in projection.messages
+    )
     assert projection.messages[-1]["content"] == "new work"
 
 
@@ -163,9 +175,13 @@ def test_compact_task_context_persists_boundary_and_agent_bus_projection(monkeyp
     db.init_db()
     bus = AgentBus()
     task_id = "task_compact_persist"
-    bus.publish_text(task_id, "User", "old history should be summarized", role="user", message_type=MessageType.OBSERVATION)
+    bus.publish_text(
+        task_id, "User", "old history should be summarized", role="user", message_type=MessageType.OBSERVATION
+    )
     for index in range(8):
-        bus.publish_text(task_id, "PlannerAgent", f"message {index} " + ("x" * 80), message_type=MessageType.OBSERVATION)
+        bus.publish_text(
+            task_id, "PlannerAgent", f"message {index} " + ("x" * 80), message_type=MessageType.OBSERVATION
+        )
 
     result = compact_task_context(
         task_id,
@@ -192,7 +208,9 @@ def test_context_compact_route_can_persist_task_boundary(monkeypatch, tmp_path):
     bus = AgentBus()
     task_id = "task_compact_route"
     for index in range(6):
-        bus.publish_text(task_id, "PlannerAgent", f"route message {index} " + ("x" * 60), message_type=MessageType.OBSERVATION)
+        bus.publish_text(
+            task_id, "PlannerAgent", f"route message {index} " + ("x" * 60), message_type=MessageType.OBSERVATION
+        )
 
     app = FastAPI()
     app.include_router(router, prefix="/api")
@@ -212,8 +230,7 @@ def test_context_compact_route_can_persist_task_boundary(monkeypatch, tmp_path):
     assert payload["task_id"] == task_id
     assert payload["persisted_message_id"]
     assert any(
-        message.metadata.get("context_boundary") == MANUAL_COMPACT_BOUNDARY
-        for message in bus.get_messages(task_id)
+        message.metadata.get("context_boundary") == MANUAL_COMPACT_BOUNDARY for message in bus.get_messages(task_id)
     )
 
 
@@ -248,9 +265,7 @@ def test_auto_compact_boundary_message_contains_summary_text():
 
     assert changed
     boundary = next(
-        message
-        for message in compacted
-        if (message.get("metadata") or {}).get("context_boundary") == "auto_compact"
+        message for message in compacted if (message.get("metadata") or {}).get("context_boundary") == "auto_compact"
     )
     content = str(boundary.get("content") or "")
     assert "{{" not in content

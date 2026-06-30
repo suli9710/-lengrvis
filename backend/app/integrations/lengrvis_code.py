@@ -7,15 +7,15 @@ import os
 import re
 import shlex
 import shutil
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Any, AsyncIterator, Iterable, Mapping, Sequence
+from typing import Any
 
-from app.config import AppSettings, PROJECT_ROOT, get_env
+from app.config import PROJECT_ROOT, AppSettings, get_env
 from app.orchestration.execution_models import EngineTurnResult, RunObservation, RunPhase, RunState
-
 
 VENDORED_LENGRVIS_CODE_ROOT = PROJECT_ROOT / "vendor" / "lengrvis-code"
 LENGRVIS_CODE_DISPLAY_NAME = "Lengrvis Code"
@@ -256,7 +256,7 @@ class LengrvisCodeProcessRegistry:
                 asyncio.wrap_future(future),
                 timeout=max(timeout_seconds + 0.5, timeout_seconds),
             )
-        except (RuntimeError, asyncio.TimeoutError, concurrent.futures.CancelledError):
+        except (TimeoutError, RuntimeError, concurrent.futures.CancelledError):
             future.cancel()
             return self._terminate_without_owner_loop(run_id, process)
 
@@ -274,7 +274,7 @@ class LengrvisCodeProcessRegistry:
             return False
         try:
             await asyncio.wait_for(process.wait(), timeout=timeout_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             with suppress(ProcessLookupError):
                 process.kill()
             await process.wait()
@@ -565,9 +565,7 @@ def build_lengrvis_code_command(
         raise RuntimeError(runtime.reason)
 
     model = str((settings.model if settings is not None else "") or "").strip()
-    allow_write_tools = any(
-        str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in active.allowed_tools
-    )
+    allow_write_tools = any(str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in active.allowed_tools)
     allowed_tools = validate_allowed_tools(active.allowed_tools, allow_write_tools=allow_write_tools)
 
     command = [
@@ -651,7 +649,7 @@ async def run_lengrvis_code(
     try:
         command = build_lengrvis_code_command(prompt, cwd=cwd, settings=settings, config=launch_config)
         assert_safe_lengrvis_code_invocation(command, build_env=env)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return LengrvisCodeStreamSummary(
             launch_error=str(exc),
             runtime_health=runtime_health.as_payload(),
@@ -665,7 +663,7 @@ async def run_lengrvis_code(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         return LengrvisCodeStreamSummary(
             command=_redacted_command(command),
             launch_error=str(exc),
@@ -722,19 +720,19 @@ async def run_lengrvis_code(
         if not wait_task.done():
             try:
                 await asyncio.wait_for(wait_task, timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 wait_task.cancel()
                 await asyncio.gather(wait_task, return_exceptions=True)
         else:
             await asyncio.gather(wait_task, return_exceptions=True)
         try:
             await asyncio.wait_for(asyncio.gather(stdout_task, return_exceptions=True), timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             stdout_task.cancel()
             await asyncio.gather(stdout_task, return_exceptions=True)
         try:
             summary.stderr = await asyncio.wait_for(stderr_task, timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             stderr_task.cancel()
             await asyncio.gather(stderr_task, return_exceptions=True)
         else:
@@ -813,9 +811,7 @@ def _command_safety_error(command: Sequence[str], *, build_env: Mapping[str, Any
     try:
         _assert_no_forbidden_flags(command)
         for raw_tools in _allowed_tools_args(command):
-            allow_write_tools = any(
-                str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in raw_tools
-            )
+            allow_write_tools = any(str(tool).split("(", 1)[0] in WRITE_CAPABLE_ALLOWED_TOOLS for tool in raw_tools)
             validate_allowed_tools(raw_tools, allow_write_tools=allow_write_tools)
     except ValueError as exc:
         return str(exc)
@@ -830,12 +826,12 @@ def _command_safety_error(command: Sequence[str], *, build_env: Mapping[str, Any
         sensitive_leaked = [
             key
             for key in build_env
-            if _is_sensitive_env_key(key)
-            and key not in BLOCKED_ENV_KEYS
-            and key not in ADAPTER_INJECTED_ENV_KEYS
+            if _is_sensitive_env_key(key) and key not in BLOCKED_ENV_KEYS and key not in ADAPTER_INJECTED_ENV_KEYS
         ]
         if sensitive_leaked:
-            return f"{LENGRVIS_CODE_DISPLAY_NAME} env must not include sensitive keys: {', '.join(sensitive_leaked[:5])}"
+            return (
+                f"{LENGRVIS_CODE_DISPLAY_NAME} env must not include sensitive keys: {', '.join(sensitive_leaked[:5])}"
+            )
     return ""
 
 
@@ -1384,9 +1380,7 @@ def _tool_result_message(tool_result: Mapping[str, Any]) -> str:
         return content.strip()[:500]
     if isinstance(content, list):
         texts = [
-            str(item.get("text"))
-            for item in content
-            if isinstance(item, Mapping) and isinstance(item.get("text"), str)
+            str(item.get("text")) for item in content if isinstance(item, Mapping) and isinstance(item.get("text"), str)
         ]
         if texts:
             return "\n".join(texts).strip()[:500]
@@ -1445,7 +1439,7 @@ async def _terminate_process(process: asyncio.subprocess.Process) -> None:
         return
     try:
         await asyncio.wait_for(process.wait(), timeout=1.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             process.kill()
         except ProcessLookupError:

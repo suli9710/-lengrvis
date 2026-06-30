@@ -25,7 +25,12 @@ def _isolate_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
 def test_resume_task_submits_existing_plan_to_background_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     submitted: list[dict[str, Any]] = []
-    task = Task(user_goal="resume existing plan", mode="efficiency", status=TaskPhase.EXECUTION, execution_stage=ExecutionStage.PAUSED)
+    task = Task(
+        user_goal="resume existing plan",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.PAUSED,
+    )
     db.upsert_model("tasks", task)
     plan = Plan(
         task_id=task.id,
@@ -69,7 +74,12 @@ def test_resume_task_submits_existing_plan_to_background_pool(monkeypatch: pytes
 
 def test_resume_task_without_running_loop_starts_background_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     started: list[dict[str, Any]] = []
-    task = Task(user_goal="resume from sync endpoint", mode="efficiency", status=TaskPhase.EXECUTION, execution_stage=ExecutionStage.PAUSED)
+    task = Task(
+        user_goal="resume from sync endpoint",
+        mode="efficiency",
+        status=TaskPhase.EXECUTION,
+        execution_stage=ExecutionStage.PAUSED,
+    )
     db.upsert_model("tasks", task)
 
     class Thread:

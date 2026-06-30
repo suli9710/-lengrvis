@@ -7,7 +7,7 @@ import socket
 import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
@@ -24,7 +24,6 @@ from app.policy.privacy import can_use_browser_network, can_use_browser_writes
 from app.policy.redaction import REDACTED, redact_text, redact_value
 from app.policy.risk import RiskLevel, SafetyVerdict
 from app.policy.sensitive_values import looks_sensitive_value
-
 
 BROWSER_ACTION_KINDS = {
     "open",
@@ -97,8 +96,7 @@ class BrowserActivityEvent:
 
 
 class BrowserActivityAdapter(Protocol):
-    def perform(self, session: BrowserSession, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-        ...
+    def perform(self, session: BrowserSession, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class LocalBrowserActivityAdapter:
@@ -118,7 +116,9 @@ class LocalBrowserActivityAdapter:
 
     def _observe(self, action: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         url = _validate_url(str(action.get("url") or ""))
-        max_chars = max(1, int(action.get("max_chars") or getattr(_settings(context), "browser_max_page_bytes", 250000)))
+        max_chars = max(
+            1, int(action.get("max_chars") or getattr(_settings(context), "browser_max_page_bytes", 250000))
+        )
         try:
             from playwright.sync_api import sync_playwright
 
@@ -133,7 +133,7 @@ class LocalBrowserActivityAdapter:
             data["adapter"] = "playwright"
         except ValueError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # follow_redirects=False: redirects are followed manually so every
             # hop is re-validated and IP-pinned (no rebinding / redirect SSRF).
             with httpx.Client(timeout=30, follow_redirects=False) as client:
@@ -168,7 +168,7 @@ class LocalBrowserActivityAdapter:
                 title = page.title()
                 final_url = _validate_final_url(page.url)
                 browser.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"Playwright screenshot failed: {exc}"}
         return {"ok": True, "url": final_url, "title": title, "path": str(out_path), "screenshot_url": str(out_path)}
 
@@ -189,7 +189,7 @@ class LocalBrowserActivityAdapter:
                 title = page.title()
                 final_url = _validate_final_url(page.url)
                 browser.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"wait_for failed: {exc}"}
         return {"ok": True, "url": final_url, "title": title, "present": True}
 
@@ -217,7 +217,10 @@ class LocalBrowserActivityAdapter:
                         page.fill(str(selector), str(value), timeout=8000)
                 elif kind == "submit":
                     selector = str(action.get("selector") or "form")
-                    page.evaluate("(sel) => { const el = document.querySelector(sel); if (el && el.submit) el.submit(); }", selector)
+                    page.evaluate(
+                        "(sel) => { const el = document.querySelector(sel); if (el && el.submit) el.submit(); }",
+                        selector,
+                    )
                 elif kind == "scroll":
                     page.evaluate("(y) => window.scrollBy(0, y)", int(action.get("delta_y") or action.get("y") or 500))
                 else:
@@ -225,7 +228,7 @@ class LocalBrowserActivityAdapter:
                 final_url = _validate_final_url(page.url)
                 title = page.title()
                 browser.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"{kind} failed: {exc}"}
         return {"ok": True, "url": final_url, "title": title, "changed_paths": [], "rollback_info": {}}
 
@@ -247,7 +250,7 @@ class BrowserActivityRuntime:
         self._lock = threading.RLock()
 
     def _prune_sessions_locked(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expired: list[str] = []
         for session_id, session in self._sessions.items():
             updated = _parse_iso(session.updated_at)
@@ -361,7 +364,9 @@ class BrowserActivityRuntime:
         kind = str(action.get("kind") or "").lower()
         dry_run = bool(action.get("dry_run", args.get("dry_run", kind in WRITE_ACTION_KINDS)))
         action["dry_run"] = dry_run
-        task_id = _optional_text(args.get("task_id") or action.get("task_id") or session.task_id or context.get("task_id"))
+        task_id = _optional_text(
+            args.get("task_id") or action.get("task_id") or session.task_id or context.get("task_id")
+        )
         if task_id:
             session.task_id = task_id
         step_id = _optional_text(args.get("step_id") or action.get("step_id") or context.get("step_id"))
@@ -494,7 +499,9 @@ class BrowserActivityRuntime:
             raise ValueError(str(started.get("error") or "Could not start browser session"))
         return self._require_session(str(started["session"]["id"]))
 
-    def _session_for_action(self, args: dict[str, Any], action: dict[str, Any], context: dict[str, Any]) -> BrowserSession:
+    def _session_for_action(
+        self, args: dict[str, Any], action: dict[str, Any], context: dict[str, Any]
+    ) -> BrowserSession:
         try:
             session = self.ensure_session({**args, "url": action.get("url") or args.get("url") or ""}, context)
         except ValueError as exc:
@@ -550,7 +557,9 @@ class BrowserActivityRuntime:
         return {
             "risk_level": risk_level.value if hasattr(risk_level, "value") else str(risk_level),
             "verdict": verdict.value if hasattr(verdict, "value") else str(verdict),
-            "diff_preview": [{"action": safe_action.get("kind"), **{k: v for k, v in safe_action.items() if k != "kind"}}],
+            "diff_preview": [
+                {"action": safe_action.get("kind"), **{k: v for k, v in safe_action.items() if k != "kind"}}
+            ],
         }
 
     def _require_session(self, session_id: str) -> BrowserSession:
@@ -624,7 +633,7 @@ class BrowserActivityRuntime:
                 payload,
                 task_id=event.task_id,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return
 
     def _session_dict(self, session: BrowserSession) -> dict[str, Any]:
@@ -722,14 +731,7 @@ def _private_hosts_allowed() -> bool:
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
 
 
 # RFC 2544 benchmarking range, used as the fake-IP pool by local tunneling
@@ -825,7 +827,9 @@ def _risk_for_action(kind: str) -> RiskLevel:
 
 
 def _has_approval(args: dict[str, Any], action: dict[str, Any]) -> bool:
-    return bool((args.get("approved") or action.get("approved")) and (args.get("approval_id") or action.get("approval_id")))
+    return bool(
+        (args.get("approved") or action.get("approved")) and (args.get("approval_id") or action.get("approval_id"))
+    )
 
 
 def _sensitive_action_error(action: dict[str, Any]) -> str:
@@ -904,7 +908,18 @@ def _sanitize_action(action: dict[str, Any]) -> dict[str, Any]:
             safe[key] = _safe_url(str(value or ""))
         elif key in {"selector", "text", "fields", "approval_id"}:
             safe[key] = REDACTED if value not in (None, "", {}) else value
-        elif key in {"approved", "dry_run", "kind", "max_chars", "timeout_ms", "width", "height", "full_page", "delta_y", "y"}:
+        elif key in {
+            "approved",
+            "dry_run",
+            "kind",
+            "max_chars",
+            "timeout_ms",
+            "width",
+            "height",
+            "full_page",
+            "delta_y",
+            "y",
+        }:
             safe[key] = value
         else:
             safe[key] = _redact_event_value(value)
@@ -949,7 +964,7 @@ def _safe_url(url: str) -> str:
         return ""
     try:
         parsed = urlparse(redact_text(url))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return redact_text(url)
     if not parsed.query:
         return redact_text(url)
@@ -966,7 +981,7 @@ def _parse_iso(value: str) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
     return parsed
 
 

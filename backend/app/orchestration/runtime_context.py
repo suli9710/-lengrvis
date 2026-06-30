@@ -38,7 +38,7 @@ class TaskRuntimeContext:
     abort_requested: bool = False
 
     @classmethod
-    def from_task(cls, task: Task, settings: AppSettings, bus: AgentBus) -> "TaskRuntimeContext":
+    def from_task(cls, task: Task, settings: AppSettings, bus: AgentBus) -> TaskRuntimeContext:
         return cls(
             task=task,
             settings=settings,

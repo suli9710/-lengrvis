@@ -6,11 +6,10 @@ import pytest
 
 from app.agents import memory_agent
 from app.agents.memory_agent import MemoryAgent
-from app.core import db
-from app.indexer import embedding_service
-from app.indexer import local_embedding_provider
-from app.indexer.embedding_storage import cosine_similarity as vector_cosine_similarity
 from app.config import AppSettings
+from app.core import db
+from app.indexer import embedding_service, local_embedding_provider
+from app.indexer.embedding_storage import cosine_similarity as vector_cosine_similarity
 
 
 @pytest.fixture(autouse=True)

@@ -102,7 +102,9 @@ def test_build_features_accepts_session_history():
         notes=["User likes summaries"],
     )
 
-    features = build_intent_features(screen_state=None, app_context=AppContext(process_name="notepad.exe"), history=history)
+    features = build_intent_features(
+        screen_state=None, app_context=AppContext(process_name="notepad.exe"), history=history
+    )
 
     assert features["unfinished_task_count"] == 2
     assert features["learned_preferences"] == {"format": "concise"}

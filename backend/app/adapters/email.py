@@ -6,8 +6,7 @@ from app.adapters.base import AdapterBase, AdapterConfig, AdapterResult
 
 
 class EmailClient(Protocol):
-    def send_message(self, message: dict[str, Any]) -> dict[str, Any]:
-        ...
+    def send_message(self, message: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class EmailAdapter(AdapterBase):

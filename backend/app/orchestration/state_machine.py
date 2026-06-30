@@ -7,7 +7,6 @@ from app.core.schemas import LEGACY_TASK_STATUS_MAP, Task, now_iso
 from app.orchestration.execution_stage import ExecutionStage, is_stage_transition_allowed
 from app.orchestration.task_phase import TaskPhase, is_phase_transition_allowed
 
-
 PHASE_MAP: dict[str | TaskPhase, tuple[TaskPhase, ExecutionStage]] = {
     **LEGACY_TASK_STATUS_MAP,
     TaskPhase.CREATED: (TaskPhase.CREATED, ExecutionStage.IDLE),
@@ -134,7 +133,7 @@ def safe_transition(
             from app.llm.registry import get_effective_settings
 
             strict = bool(get_effective_settings().strict_state_machine)
-        except Exception:
+        except Exception:  # noqa: BLE001
             strict = False
     return transition(task, target, actor=actor, strict=strict)
 

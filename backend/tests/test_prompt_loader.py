@@ -128,12 +128,12 @@ def test_llm_message_prompts_are_loaded_from_prompt_files():
         if "__pycache__" in path.parts:
             continue
         text = path.read_text(encoding="utf-8")
-        if "\"role\": \"system\"" not in text and "\"role\": \"user\"" not in text:
+        if '"role": "system"' not in text and '"role": "user"' not in text:
             continue
         for marker in (
-            "\"content\": \"",
+            '"content": "',
             "'content': '",
-            "\"content\": f\"",
+            '"content": f"',
             "'content': f'",
         ):
             if marker in text:

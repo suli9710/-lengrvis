@@ -75,9 +75,7 @@ def test_desktop_high_severity_audit_gate_stays_in_ci_and_security_audit(
     project_root: Path,
 ) -> None:
     ci = (project_root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    security_audit = (project_root / ".github" / "workflows" / "security-audit.yml").read_text(
-        encoding="utf-8"
-    )
+    security_audit = (project_root / ".github" / "workflows" / "security-audit.yml").read_text(encoding="utf-8")
     audit_script = (project_root / "scripts" / "run_dependency_audit.ps1").read_text(encoding="utf-8")
 
     assert "npm --prefix desktop audit --audit-level=high" in ci
@@ -97,9 +95,7 @@ def test_secret_scan_uses_strict_config_and_bypasses_line_fingerprint_ignore(
 ) -> None:
     package_json = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
     pre_commit = (project_root / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-    security_audit = (project_root / ".github" / "workflows" / "security-audit.yml").read_text(
-        encoding="utf-8"
-    )
+    security_audit = (project_root / ".github" / "workflows" / "security-audit.yml").read_text(encoding="utf-8")
     secret_scan = (project_root / "scripts" / "secret_scan.ps1").read_text(encoding="utf-8")
 
     scripts = package_json["scripts"]
@@ -121,11 +117,11 @@ def test_secret_scan_uses_strict_config_and_bypasses_line_fingerprint_ignore(
     assert "lengrvis-gitleaks-source" in secret_scan
     assert '@("dir") + $commonArgs + @($sourceSnapshot)' in secret_scan
     assert "gitleaks-empty-ignore" in security_audit
-    assert "dir --config .gitleaks-ci.toml --gitleaks-ignore-path \"$empty_ignore\"" in security_audit
+    assert 'dir --config .gitleaks-ci.toml --gitleaks-ignore-path "$empty_ignore"' in security_audit
     assert "github.com/zricethezav/gitleaks/v8@v8.30.1" in security_audit
     assert ".gitleaks-ci.toml" in security_audit
     assert ".gitleaks.toml" not in security_audit
-    assert "--log-opts=\"--all\"" in security_audit
+    assert '--log-opts="--all"' in security_audit
     strict_config = (project_root / ".gitleaks-ci.toml").read_text(encoding="utf-8")
     historical_ignore = (project_root / ".gitleaksignore").read_text(encoding="utf-8")
     assert "[allowlist]" not in strict_config
@@ -214,9 +210,7 @@ def test_acceleration_lock_stays_aligned_with_backend_optional_extras(
 
     pyproject = tomllib.loads((project_root / "backend" / "pyproject.toml").read_text(encoding="utf-8"))
     extras = pyproject["project"]["optional-dependencies"]
-    acceleration_requirements = (project_root / "scripts" / "acceleration-requirements.txt").read_text(
-        encoding="utf-8"
-    )
+    acceleration_requirements = (project_root / "scripts" / "acceleration-requirements.txt").read_text(encoding="utf-8")
     acceleration_pins = _python_direct_pins(acceleration_requirements)
 
     for package_name in ("pip", "wheel", "setuptools"):

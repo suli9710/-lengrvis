@@ -19,19 +19,14 @@ from app.commerce.licensing import sign_license, sign_revocation_manifest
 
 _RELEASE_PRIVATE_KEY_BYTES = bytes(range(1, 33))
 _RELEASE_PRIVATE_KEY = base64.urlsafe_b64encode(_RELEASE_PRIVATE_KEY_BYTES).rstrip(b"=").decode("ascii")
-_RELEASE_PUBLIC_KEY = (
-    "ed25519:"
-    + base64.urlsafe_b64encode(
-        Ed25519PrivateKey.from_private_bytes(_RELEASE_PRIVATE_KEY_BYTES)
-        .public_key()
-        .public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
+_RELEASE_PUBLIC_KEY = "ed25519:" + base64.urlsafe_b64encode(
+    Ed25519PrivateKey.from_private_bytes(_RELEASE_PRIVATE_KEY_BYTES)
+    .public_key()
+    .public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
     )
-    .rstrip(b"=")
-    .decode("ascii")
-)
+).rstrip(b"=").decode("ascii")
 
 
 def _start_app_text(project_root: Path) -> str:
@@ -1034,7 +1029,10 @@ def test_current_release_evidence_records_real_llm_secret_skip_as_incomplete(
     text = output_path.read_text(encoding="utf-8-sig")
     assert "- CI status: machine_gates_failed_or_incomplete" in text
     assert "- Real LLM quality gate: skipped" in text
-    assert "| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | skipped |" in text
+    assert (
+        "| Real LLM quality gate | Real-provider quality gate; skipped or missing credentials block release evidence | skipped |"
+        in text
+    )
     assert "machine_gates_passed" not in text
 
 
@@ -1376,7 +1374,10 @@ def test_windows_signed_build_pipeline_has_fail_closed_config_gate(project_root:
     )
 
     assert scripts["verify:signed-build-config"] == "node scripts/verify-signed-build-config.cjs"
-    assert scripts["verify:signed-build-config:structure"] == "node scripts/verify-signed-build-config.cjs --structure-only"
+    assert (
+        scripts["verify:signed-build-config:structure"]
+        == "node scripts/verify-signed-build-config.cjs --structure-only"
+    )
     assert scripts["verify:signed-build-config:mac"] == "node scripts/verify-signed-build-config.cjs mac"
     assert scripts["verify:macos-release-signatures"] == "node scripts/verify-macos-release-signatures.cjs"
     assert scripts["verify:linux-release-integrity"] == "node scripts/verify-linux-release-integrity.cjs"

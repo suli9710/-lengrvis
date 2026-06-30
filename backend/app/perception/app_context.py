@@ -149,6 +149,6 @@ def _window_metadata(hwnd: int) -> dict[str, Any]:
         import win32gui
 
         metadata["class_name"] = str(win32gui.GetClassName(hwnd) or "")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     return metadata

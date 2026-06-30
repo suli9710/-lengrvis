@@ -135,11 +135,7 @@ class GoalStack:
         }
 
     def find_related(self, goal_text: str, *, limit: int = 50) -> Goal | None:
-        related = [
-            goal
-            for goal in self._active_goals(limit=limit)
-            if self._is_related(goal.user_goal, goal_text)
-        ]
+        related = [goal for goal in self._active_goals(limit=limit) if self._is_related(goal.user_goal, goal_text)]
         if not related:
             return None
         return max(related, key=lambda item: (item.depth, item.created_at))

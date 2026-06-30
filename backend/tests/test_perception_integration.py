@@ -8,8 +8,8 @@ from app.core.schemas import Plan, Task
 from app.orchestration.dispatcher import EventDispatcher
 from app.orchestration.handlers.planning_handler import PlanningHandler
 from app.perception.context_store import clear, latest_perception_context, update_screen_state
-from app.services import perception_suggestion_service
 from app.perception.schemas import AppContext, PerceptionEvent, ScreenState, UIElement
+from app.services import perception_suggestion_service
 
 
 @pytest.fixture(autouse=True)

@@ -15,7 +15,7 @@ def vector_from_storage(raw: Any) -> np.ndarray | None:
     """Decode embedding from BLOB (preferred) or legacy JSON TEXT."""
     if raw is None:
         return None
-    if isinstance(raw, (bytes, bytearray, memoryview)):
+    if isinstance(raw, bytes | bytearray | memoryview):
         array = np.frombuffer(raw, dtype=np.float32)
         return array if array.size else None
     if isinstance(raw, str):

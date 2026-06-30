@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from app.config import AppSettings
+from app.orchestration.execution_models import RunPhase, RunState
 from app.orchestration.lengrvis_code_config import LengrvisCodeConfig
 from app.orchestration.lengrvis_code_runner import (
     LengrvisCodeProcessRegistry,
@@ -14,7 +15,6 @@ from app.orchestration.lengrvis_code_runner import (
     parse_lengrvis_code_ndjson_lines,
     run_lengrvis_code,
 )
-from app.orchestration.execution_models import RunPhase, RunState
 
 
 @pytest.fixture
@@ -176,7 +176,9 @@ async def test_cancel_terminates_fake_lengrvis_code_process(tmp_path, fake_lengr
     )
 
     task = asyncio.create_task(
-        run_lengrvis_code("wait until cancelled", cwd=tmp_path, settings=settings, config=config, cancel_event=cancel_event)
+        run_lengrvis_code(
+            "wait until cancelled", cwd=tmp_path, settings=settings, config=config, cancel_event=cancel_event
+        )
     )
     while not record_path.exists():
         await asyncio.sleep(0.01)

@@ -62,7 +62,7 @@ _COMPLETED_HISTORY_LIMIT = 200
 def _prune_completed_locked() -> None:
     finished = [task for task in _TASKS.values() if task.status != "running"]
     excess = len(finished) - _COMPLETED_HISTORY_LIMIT
-    for task in finished[:max(0, excess)]:
+    for task in finished[: max(0, excess)]:
         refresh_background_task(task)
         if task.status == "running":
             continue

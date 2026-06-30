@@ -15,16 +15,17 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Optional
 
 import app.observability.metrics as metrics
 from app.config import get_env
 
 try:  # pragma: no cover - redaction is always present in the app
     from app.policy.redaction import redact_text
-except Exception:  # pragma: no cover - defensive fallback only
+except Exception:  # pragma: no cover - defensive fallback only  # noqa: BLE001
+
     def redact_text(text, redact_generic_tokens=True):  # type: ignore[misc]
         return text
+
 
 _logger = logging.getLogger("lengrvis.observability.crash")
 _MAX_REPORTS = 50
@@ -52,7 +53,7 @@ def _default_report_dir() -> Path:
 def _prune_reports(report_dir: Path) -> None:
     try:
         reports = sorted(report_dir.glob("crash_*.json"))
-    except Exception:  # pragma: no cover
+    except Exception:  # pragma: no cover  # noqa: BLE001
         return
     excess = len(reports) - _MAX_REPORTS
     if excess <= 0:
@@ -60,15 +61,13 @@ def _prune_reports(report_dir: Path) -> None:
     for path in reports[:excess]:
         try:
             path.unlink()
-        except Exception:  # pragma: no cover
+        except Exception:  # pragma: no cover  # noqa: S112, BLE001
             continue
 
 
-def _write_report(exc: BaseException, source: str, report_dir: Optional[Path]) -> Optional[str]:
+def _write_report(exc: BaseException, source: str, report_dir: Path | None) -> str | None:
     metrics.increment_counter("crashes_total", labels={"source": source})
-    message = redact_text(
-        "{}: {}".format(type(exc).__name__, exc), redact_generic_tokens=True
-    )
+    message = redact_text(f"{type(exc).__name__}: {exc}", redact_generic_tokens=True)
     tb = redact_text(
         "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
         redact_generic_tokens=True,
@@ -83,7 +82,7 @@ def _write_report(exc: BaseException, source: str, report_dir: Optional[Path]) -
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
-        filename = "crash_{}_{}.json".format(timestamp, os.getpid())
+        filename = f"crash_{timestamp}_{os.getpid()}.json"
         path = target_dir / filename
         payload = {
             "source": source,
@@ -95,20 +94,18 @@ def _write_report(exc: BaseException, source: str, report_dir: Optional[Path]) -
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         _prune_reports(target_dir)
         return str(path)
-    except Exception:  # pragma: no cover - reporting must never raise
+    except Exception:  # pragma: no cover - reporting must never raise  # noqa: BLE001
         _logger.warning("crash.report_write_failed")
         return None
 
 
-def report_exception(
-    exc: BaseException, source: str = "manual", report_dir: Optional[Path] = None
-) -> Optional[str]:
+def report_exception(exc: BaseException, source: str = "manual", report_dir: Path | None = None) -> str | None:
     """Record a crash report for ``exc`` and return the report path (if written)."""
 
     return _write_report(exc, source, report_dir)
 
 
-def install_crash_handlers(report_dir: Optional[Path] = None) -> None:
+def install_crash_handlers(report_dir: Path | None = None) -> None:
     """Install ``sys.excepthook`` and ``threading.excepthook`` handlers once."""
 
     global _installed

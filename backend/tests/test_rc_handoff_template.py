@@ -47,16 +47,12 @@ def _latest_packet(evidence_root: Path) -> tuple[dict[str, object], str]:
     runs = sorted(evidence_root.glob("run-*"))
     assert runs, "RC handoff helper did not create an evidence run directory"
     run_root = runs[-1]
-    packet = json.loads(
-        (run_root / "rc-handoff-template.redacted.json").read_text(encoding="utf-8")
-    )
+    packet = json.loads((run_root / "rc-handoff-template.redacted.json").read_text(encoding="utf-8"))
     markdown = (run_root / "rc-handoff-template.redacted.md").read_text(encoding="utf-8")
     return packet, markdown
 
 
-def test_rc_handoff_template_missing_fields_fail_closed(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_rc_handoff_template_missing_fields_fail_closed(project_root: Path, tmp_path: Path) -> None:
     evidence_root = tmp_path / "rc-handoff"
     result = _run_rc_handoff_template(project_root, evidence_root)
 
@@ -163,9 +159,7 @@ def test_rc_handoff_template_records_redacted_material_without_claiming_pass(
     assert "claim_allowed=false" in markdown
 
 
-def test_rc_handoff_template_rejects_placeholders_and_thin_values(
-    project_root: Path, tmp_path: Path
-) -> None:
+def test_rc_handoff_template_rejects_placeholders_and_thin_values(project_root: Path, tmp_path: Path) -> None:
     evidence_root = tmp_path / "rc-handoff"
     result = _run_rc_handoff_template(
         project_root,
@@ -260,9 +254,7 @@ def test_rc_handoff_template_requires_one_exit_per_gate_command(
     assert packet["summary"]["status"] == "manual_rc_handoff_required"
     assert packet["summary"]["release_candidate_signoff"] is False
     assert packet["summary"]["claim_allowed"] is False
-    assert "gate_results.commands_and_exits_count_match" in packet["summary"][
-        "missing_required_fields"
-    ]
+    assert "gate_results.commands_and_exits_count_match" in packet["summary"]["missing_required_fields"]
     assert packet["gate_results"]["commands_and_exits_count_match"] is False
     assert packet["gate_results"]["commands_run_by_this_helper"] is False
     assert len(packet["gate_results"]["entries"]) == 2
@@ -276,12 +268,8 @@ def test_rc_handoff_template_requires_one_exit_per_gate_command(
 
 def test_rc_handoff_template_entrypoint_is_documented(project_root: Path) -> None:
     package_json = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
-    script_text = (
-        project_root / "scripts" / "collect_rc_handoff_template.ps1"
-    ).read_text(encoding="utf-8")
-    release_gate = (
-        project_root / "docs" / "qa" / "release-gate.md"
-    ).read_text(encoding="utf-8")
+    script_text = (project_root / "scripts" / "collect_rc_handoff_template.ps1").read_text(encoding="utf-8")
+    release_gate = (project_root / "docs" / "qa" / "release-gate.md").read_text(encoding="utf-8")
 
     assert (
         package_json["scripts"]["evidence:rc-handoff"]

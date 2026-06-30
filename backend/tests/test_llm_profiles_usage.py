@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from app.config import AppSettings
-from app.core import db
 from app.context_management import ContextAwareProvider, LLMCapabilityError
+from app.core import db
 from app.llm.base import LLMProvider
 from app.llm.profiles import profile_for_settings
-from app.llm.usage import list_usage_events, usage_summary
 from app.llm.types import LLMResponse, LLMUsage
+from app.llm.usage import list_usage_events, usage_summary
 
 
 class ResultProvider(LLMProvider):
@@ -173,7 +173,7 @@ def test_usage_summary_migrates_legacy_events_without_data_column(tmp_path, monk
                 20,
                 None,
                 1,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 

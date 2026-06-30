@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.orchestration.workflow import InMemoryClipboard, Workflow, WorkflowError, WorkflowRuntime, WorkflowStep, topological_order
+from app.orchestration.workflow import (
+    InMemoryClipboard,
+    Workflow,
+    WorkflowError,
+    WorkflowRuntime,
+    WorkflowStep,
+    topological_order,
+)
 
 
 class FocusRecorder:
