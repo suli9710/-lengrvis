@@ -152,6 +152,7 @@ async function main() {
 
 function runSourceAssertions() {
   const appSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "App.tsx"), "utf8");
+  const appViewModelSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "appViewModel.tsx"), "utf8");
   const zhSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "zh.ts"), "utf8");
   const officeSceneSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "features", "office", "OfficeScene.tsx"), "utf8");
 
@@ -171,17 +172,17 @@ function runSourceAssertions() {
     "non-ok settings-save responses should restore the previous renderer settings and mode"
   );
   assert.match(
-    appSource,
+    appViewModelSource,
     /const sample = safeRealtimeBadMessageSample\(\);/,
     "malformed realtime messages must use a fixed safe summary instead of sampling raw payload text"
   );
   assert.match(
-    appSource,
+    appViewModelSource,
     /function safeRealtimeBadMessageSample\(\): string \{\s*return "原始内容已隐藏，避免显示本机路径、文件名、连接地址、提示词或凭据。";\s*\}/,
     "realtime bad-message handling must fail closed without exposing raw filenames or hidden prompt text"
   );
   assert.doesNotMatch(
-    appSource,
+    appViewModelSource,
     /containsRealtimeSensitiveDetail|safeRealtimeBadMessageSample\(status\.rawMessage\)|status\.rawMessage\.replace/,
     "malformed realtime handling must not inspect and echo arbitrary raw payload snippets"
   );

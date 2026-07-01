@@ -631,6 +631,7 @@ def _image_embedding_backend(settings: Any) -> OnnxSessionBackend | None:
     return detect_session_backend(
         model_path=model,
         configured_provider=str(getattr(settings, "onnx_image_embedding_execution_provider", "") or ""),
+        available_providers=available_execution_providers(),
         settings=settings,
         model_id=str(getattr(settings, "onnx_image_embedding_model_id", "") or ""),
     )

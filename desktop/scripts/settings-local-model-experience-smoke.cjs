@@ -458,9 +458,20 @@ async function assertNoSensitiveLocalModelText(page, label) {
 
 function runSourceAssertions() {
   const settingsSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "components", "SettingsPanel.tsx"), "utf8");
-  const localModelSettingsPath = path.join(desktopRoot, "src", "renderer", "components", "settings", "LocalModelSettings.tsx");
-  const localModelSettingsSource = fs.existsSync(localModelSettingsPath) ? fs.readFileSync(localModelSettingsPath, "utf8") : "";
-  const settingsModuleSources = `${settingsSource}\n${localModelSettingsSource}`;
+  const settingsModuleSources = [
+    settingsSource,
+    ...[
+      "LocalModelSettings.tsx",
+      "LocalModelInstaller.tsx",
+      "PrivacyReadinessPanel.tsx",
+      "PrivacyModeEntry.tsx",
+      "OllamaSetup.tsx"
+    ].map((fileName) => {
+      const modulePath = path.join(desktopRoot, "src", "renderer", "components", "settings", fileName);
+      return fs.existsSync(modulePath) ? fs.readFileSync(modulePath, "utf8") : "";
+    })
+  ]
+    .join("\n");
   const apiClientSource = fs.readFileSync(path.join(desktopRoot, "src", "renderer", "lib", "api", "client.ts"), "utf8");
 
   assert.match(
@@ -472,9 +483,9 @@ function runSourceAssertions() {
   assert.match(apiClientSource, /startOllama\(\)[\s\S]*\/api\/settings\/ollama\/start/, "Ollama start helper should be explicit");
   assert.match(apiClientSource, /pullOllama\(model\?: string\)[\s\S]*\/api\/settings\/ollama\/pull/, "Ollama pull helper should be explicit");
 
-  assert.match(settingsSource, /api\.installLocalModel\(\{ model \}\)/, "settings installer should call the apiClient one-click install method");
+  assert.match(settingsModuleSources, /api\.installLocalModel\(\{ model \}\)/, "settings installer should call the apiClient one-click install method");
   assert.doesNotMatch(
-    settingsSource,
+    settingsModuleSources,
     /api\.request<[\s\S]*\/api\/settings\/install-local-model/,
     "settings installer should not post install-local-model through the generic renderer API"
   );

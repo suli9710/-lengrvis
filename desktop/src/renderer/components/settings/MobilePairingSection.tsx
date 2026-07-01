@@ -125,7 +125,7 @@ export function MobilePairingSection({
         ) : (
           <small>先生成二维码，然后打开手机 App 扫码。无需手动输入局域网地址或 token。</small>
         )}
-        <small>HTTPS/WSS 会直接用于手机连接；局域网 HTTP 会被拦截，请在电脑端启用 HTTPS/WSS 后重新生成。</small>
+        <small>HTTPS/WSS 会直接用于手机连接；局域网 HTTP 会被拦截，手机端会阻断 token 配对，请在电脑端启用 HTTPS/WSS 后重新生成。</small>
         {pairedDevices.length ? (
           <ul className="mobile-pairing__devices" aria-label="已配对手机">
             {pairedDevices.map((device) => {

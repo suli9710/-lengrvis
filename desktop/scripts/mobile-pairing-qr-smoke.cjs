@@ -128,15 +128,22 @@ async function main() {
   assert.match(dataUrl, /^data:image\/png;base64,/);
   assert.ok(dataUrl.length > 500, "generated QR image should be non-empty");
 
-  const settingsSource = fs.readFileSync(
-    path.join(__dirname, "..", "src", "renderer", "components", "SettingsPanel.tsx"),
-    "utf8",
-  );
+  const settingsSource = [
+    fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "components", "SettingsPanel.tsx"), "utf8"),
+    fs.readFileSync(
+      path.join(__dirname, "..", "src", "renderer", "components", "settings", "MobilePairingSection.tsx"),
+      "utf8",
+    ),
+    fs.readFileSync(
+      path.join(__dirname, "..", "src", "renderer", "components", "settings", "SettingsPanelHelpers.tsx"),
+      "utf8",
+    ),
+  ].join("\n");
   const visualCodeSource = fs.readFileSync(
     path.join(__dirname, "..", "src", "renderer", "components", "settings", "PairingVisualCode.tsx"),
     "utf8",
   );
-  assert.match(settingsSource, /lazy\(\(\) =>\s*import\("\.\/settings\/PairingVisualCode"\)/);
+  assert.match(settingsSource, /lazy\(\(\) =>\s*import\("\.\/(?:settings\/)?PairingVisualCode"\)/);
   assert.match(settingsSource, /<Suspense[\s\S]*<PairingVisualCode/);
   assert.match(visualCodeSource, /QRCode\.toDataURL\(qrContent\.value/);
   assert.match(visualCodeSource, /<img className="mobile-pairing__qr-image" src=\{qrImage\}/);
